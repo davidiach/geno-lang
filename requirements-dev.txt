@@ -28,4 +28,4 @@ nox>=2026.4.10,<2027
 packaging>=26.2,<27
 
 # LSP integration tests
-pygls>=1.0,<2
+pygls>=1.0,<3

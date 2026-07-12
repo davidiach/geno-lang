@@ -44,7 +44,7 @@ dev = [
     "packaging>=26.2,<27",
 ]
 lsp = [
-    "pygls>=1.0,<2",
+    "pygls>=1.0,<3",
 ]
 llm = [
     "openai>=1.0",
