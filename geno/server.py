@@ -123,6 +123,7 @@ def _env_optional_bool(key: str) -> bool | None:
 MAX_REQUEST_BODY_BYTES: int = _env_positive_int(
     "GENO_MAX_REQUEST_BODY_BYTES", 1_048_576
 )  # 1 MB
+MAX_JSON_NESTING_DEPTH: int = _env_positive_int("GENO_MAX_JSON_NESTING_DEPTH", 128)
 MAX_MODULE_SOURCE_BYTES: int = _env_non_negative_int(
     "GENO_MAX_MODULE_SOURCE_BYTES", 1_000_000
 )  # 1 MB
@@ -931,20 +932,45 @@ def _load_json_body(handler: BaseHTTPRequestHandler) -> dict:
 
     raw_body = handler.rfile.read(length)
     try:
-        payload = json.loads(
-            raw_body.decode("utf-8"),
-            parse_constant=_reject_json_constant,
-        )
-    except (UnicodeDecodeError, ValueError) as exc:
+        body_text = raw_body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RequestError("request body must be valid JSON") from exc
+    _ensure_json_nesting_within_limit(body_text)
+    try:
+        payload = json.loads(body_text, parse_constant=_reject_json_constant)
+    except ValueError as exc:
         raise RequestError("request body must be valid JSON") from exc
     except RecursionError as exc:
-        # Deeply-nested JSON exhausts the parser's recursion budget. RecursionError
-        # is not a ValueError, so without this it would escape as a 500 with a raw
-        # traceback and a zero-length response; treat it as a malformed request.
+        # Keep the parser-specific fallback even though the explicit limit above
+        # makes behavior deterministic across supported Python versions.
         raise RequestError("request body JSON is nested too deeply") from exc
     if not isinstance(payload, dict):
         raise RequestError("request body must be a JSON object")
     return payload
+
+
+def _ensure_json_nesting_within_limit(body: str) -> None:
+    """Reject deeply nested JSON without relying on Python recursion limits."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in body:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_NESTING_DEPTH:
+                raise RequestError("request body JSON is nested too deeply")
+        elif char in "]}" and depth:
+            depth -= 1
 
 
 def _reject_json_constant(value: str) -> None:
@@ -2246,6 +2272,7 @@ def main(argv: list[str] | None = None) -> None:
 __all__ = [
     "DEFAULT_ALLOWED_CAPABILITIES",
     "DEFAULT_MAX_STEPS",
+    "MAX_JSON_NESTING_DEPTH",
     "MAX_MODULES",
     "MAX_MODULE_SOURCE_BYTES",
     "MAX_REQUEST_BODY_BYTES",

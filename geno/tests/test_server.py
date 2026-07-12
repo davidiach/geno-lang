@@ -22,6 +22,7 @@ from geno.api import RunConfig, RunResult
 from geno.monitoring import RuntimeMetricsCollector
 from geno.server import (
     DEFAULT_MAX_STEPS,
+    MAX_JSON_NESTING_DEPTH,
     MAX_MODULE_SOURCE_BYTES,
     MAX_MODULES,
     MAX_REQUEST_BODY_BYTES,
@@ -31,6 +32,7 @@ from geno.server import (
     _apply_worker_resource_limits,
     _build_run_config,
     _client_ip_from_x_forwarded_for,
+    _ensure_json_nesting_within_limit,
     _execute_constrain_with_wall_timeout,
     _execute_run_with_wall_timeout,
     _execute_worker_with_wall_timeout,
@@ -656,16 +658,16 @@ class TestPostRun:
         assert "source" in data.get("error", "").lower()
 
     def test_deeply_nested_json_body_is_rejected(self, client):
-        # A deeply-nested JSON body exhausts the parser's recursion budget.
-        # RecursionError is not a ValueError, so before the guard it escaped as a
-        # 500 with a raw traceback and a zero-length response; it must now be a
-        # clean 400. Body is ~6 KB, well under the request-size cap.
-        depth = 3000
-        body = b"[" * depth + b"]" * depth
+        depth = MAX_JSON_NESTING_DEPTH + 1
+        body = b'{"value":' + b"[" * depth + b"]" * depth + b"}"
         status, response = client.post("/run", raw_body=body)
         assert status == 400
         data = json.loads(response)
         assert "nested too deeply" in data.get("error", "").lower()
+
+    def test_json_nesting_limit_ignores_delimiters_inside_strings(self):
+        body = json.dumps({"source": "[{" * (MAX_JSON_NESTING_DEPTH + 1)})
+        _ensure_json_nesting_within_limit(body)
 
     def test_oversized_body(self, client):
         # Send a Content-Length that exceeds the limit with a small actual body.
@@ -2921,6 +2923,7 @@ class TestEnvConfig:
         ("env_name", "value", "message"),
         [
             ("GENO_MAX_REQUEST_BODY_BYTES", "0", "must be positive"),
+            ("GENO_MAX_JSON_NESTING_DEPTH", "0", "must be positive"),
             ("GENO_MAX_MODULE_SOURCE_BYTES", "-1", "must be non-negative"),
             ("GENO_MAX_MODULES", "-1", "must be non-negative"),
         ],
