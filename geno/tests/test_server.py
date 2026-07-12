@@ -1394,7 +1394,8 @@ end func
 
         assert status == "result"
         assert payload.ok is True
-        assert len(payload.output) == 80000
+        # Canonical top-level string display is bare: each print emits "x\n".
+        assert len(payload.output) == 40000
 
 
 class TestConstrainWallTimeoutExecution:
