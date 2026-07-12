@@ -1,0 +1,74 @@
+problem:
+  id: "PROB-038"
+  name: "Clamp Value"
+  difficulty: "trivial"
+  domain: "math"
+  description: |
+    Write a function that clamps a value to be within a given range [min, max].
+    If value < min, return min. If value > max, return max. Otherwise return value.
+  signature:
+    function_name: "clamp"
+    inputs:
+      - name: "value"
+        type: "Int"
+      - name: "min_val"
+        type: "Int"
+      - name: "max_val"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [5, 0, 10]
+        output: 5
+        description: "Value in range"
+      - input: [-5, 0, 10]
+        output: 0
+        description: "Below minimum"
+    hidden:
+      - input: [15, 0, 10]
+        output: 10
+        description: "Above maximum"
+      - input: [0, 0, 10]
+        output: 0
+        description: "At minimum"
+      - input: [10, 0, 10]
+        output: 10
+        description: "At maximum"
+      - input: [50, 100, 200]
+        output: 100
+        description: "Below different range"
+  constraints:
+    - "min_val <= max_val"
+  canonical_solutions:
+    geno: |
+      func clamp(value: Int, min_val: Int, max_val: Int) -> Int
+          requires min_val <= max_val
+          example 5, 0, 10 -> 5
+          example -5, 0, 10 -> 0
+
+          if value < min_val then
+              return min_val
+          else
+              if value > max_val then
+                  return max_val
+              else
+                  return value
+              end if
+          end if
+      end func clamp
+    python: |
+      def clamp(value: int, min_val: int, max_val: int) -> int:
+          if value < min_val:
+              return min_val
+          elif value > max_val:
+              return max_val
+          else:
+              return value
+  metadata:
+    tags: ["math", "utility"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "if-else-if", "comparison"]

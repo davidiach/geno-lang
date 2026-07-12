@@ -1,0 +1,151 @@
+problem:
+  id: "APP-005"
+  name: "Template Renderer"
+  difficulty: "expert"
+  domain: "strings"
+  description: |
+    Render a text template with variable substitution and brace escaping.
+
+    Variables are given as "key=value" strings. In the template:
+    - "{{" renders as a literal "{"
+    - "}}" renders as a literal "}"
+    - "{key}" renders as the variable's value, or "<missing:key>" when
+      the key is not defined
+    - all other characters render unchanged
+
+    Escapes are checked before placeholders, scanning left to right:
+    in "{{name}}", the leading "{{" is an escape, so the output is
+    "{name}" with no substitution.
+  signature:
+    function_name: "render"
+    inputs:
+      - name: "template"
+        type: "String"
+      - name: "vars"
+        type: "List[String]"
+    output:
+      name: "rendered"
+      type: "String"
+  examples:
+    visible:
+      - input: ["Hello {name}!", ["name=World"]]
+        output: "Hello World!"
+        description: "Simple substitution"
+      - input: ["{{name}}", ["name=World"]]
+        output: "{name}"
+        description: "Escaped braces suppress substitution"
+      - input: ["Hi {who}", []]
+        output: "Hi <missing:who>"
+        description: "Undefined variables render a missing marker"
+    hidden:
+      - input: ["{a}{b}", ["a=1", "b=2"]]
+        output: "12"
+        description: "Adjacent placeholders"
+      - input: ["use {{ and }} for braces", []]
+        output: "use { and } for braces"
+        description: "Escapes outside placeholders"
+      - input: ["{greeting} {name}!", ["name=Ada", "greeting=Hello"]]
+        output: "Hello Ada!"
+        description: "Variable order does not matter"
+      - input: ["", ["a=1"]]
+        output: ""
+        description: "Empty template"
+      - input: ["{a} and {a}", ["a=x", "a=y"]]
+        output: "x and x"
+        description: "First definition of a key wins"
+      - input: ["100%% {{sure}}", []]
+        output: "100%% {sure}"
+        description: "Non-brace characters pass through unchanged"
+  constraints:
+    - "Braces in the template are always well-formed"
+    - "Variable keys contain no '=' characters; the first '=' separates key from value"
+    - "Placeholder keys contain no braces"
+    - "If a key is defined more than once, the first definition wins"
+  canonical_solutions:
+    geno: |
+      func lookup_var(vars: List[String], key: String) -> Option[String]
+          example ["name=World"], "name" -> Some("World")
+          example [], "name" -> None
+
+          for pair: String in vars do
+              let parts: List[String] = split(pair, "=")
+              if length(parts) == 2 and parts[0] == key then
+                  return Some(parts[1])
+              end if
+          end for
+          return None
+      end func lookup_var
+
+      func render(template: String, vars: List[String]) -> String
+          example "Hello {name}!", ["name=World"] -> "Hello World!"
+          example "Hi {who}", [] -> "Hi <missing:who>"
+
+          let chars: List[String] = to_chars(template)
+          let n: Int = length(chars)
+          var out: String = ""
+          var i: Int = 0
+          while i < n do
+              let c: String = chars[i]
+              if c == "{" and i + 1 < n and chars[i + 1] == "{" then
+                  out = out + "{"
+                  i = i + 2
+              else if c == "}" and i + 1 < n and chars[i + 1] == "}" then
+                  out = out + "}"
+                  i = i + 2
+              else if c == "{" then
+                  var j: Int = i + 1
+                  var key: String = ""
+                  while j < n and chars[j] != "}" do
+                      key = key + chars[j]
+                      j = j + 1
+                  end while
+                  let replacement: String = match lookup_var(vars, key) with
+                      | Some(v) -> v
+                      | None -> "<missing:" + key + ">"
+                  end match
+                  out = out + replacement
+                  i = j + 1
+              else
+                  out = out + c
+                  i = i + 1
+              end if
+          end while
+          return out
+      end func render
+    python: |
+      def render(template: str, vars: list[str]) -> str:
+          values: dict[str, str] = {}
+          for pair in vars:
+              key, _, value = pair.partition("=")
+              if key not in values:
+                  values[key] = value
+          out = []
+          i = 0
+          n = len(template)
+          while i < n:
+              c = template[i]
+              if c == "{" and i + 1 < n and template[i + 1] == "{":
+                  out.append("{")
+                  i += 2
+              elif c == "}" and i + 1 < n and template[i + 1] == "}":
+                  out.append("}")
+                  i += 2
+              elif c == "{":
+                  j = i + 1
+                  while j < n and template[j] != "}":
+                      j += 1
+                  key = template[i + 1 : j]
+                  out.append(values.get(key, f"<missing:{key}>"))
+                  i = j + 1
+              else:
+                  out.append(c)
+                  i += 1
+          return "".join(out)
+  metadata:
+    tags: ["app-tier", "strings", "state-machine", "escaping"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n * v)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "option", "match", "while", "for", "to_chars",
+       "split", "string-concat", "lookahead"]

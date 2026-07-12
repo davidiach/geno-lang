@@ -1,0 +1,72 @@
+problem:
+  id: "PROB-009"
+  name: "Fibonacci"
+  difficulty: "easy"
+  domain: "recursion"
+  description: |
+    Write a function that returns the nth Fibonacci number.
+    The Fibonacci sequence is: 0, 1, 1, 2, 3, 5, 8, 13, ...
+    Where fib(0) = 0, fib(1) = 1, and fib(n) = fib(n-1) + fib(n-2) for n > 1.
+  signature:
+    function_name: "fibonacci"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 0
+        output: 0
+        description: "First Fibonacci number"
+      - input: 6
+        output: 8
+        description: "fib(6) = 8"
+    hidden:
+      - input: 1
+        output: 1
+        description: "fib(1) = 1"
+      - input: 2
+        output: 1
+        description: "fib(2) = 1"
+      - input: 10
+        output: 55
+        description: "fib(10) = 55"
+      - input: 15
+        output: 610
+        description: "fib(15) = 610"
+  constraints:
+    - "n >= 0"
+    - "Can use recursion or iteration"
+  canonical_solutions:
+    geno: |
+      func fibonacci(n: Int) -> Int
+          requires n >= 0
+          example 0 -> 0
+          example 6 -> 8
+
+          if n == 0 then
+              return 0
+          else
+              if n == 1 then
+                  return 1
+              else
+                  return fibonacci(n - 1) + fibonacci(n - 2)
+              end if
+          end if
+      end func fibonacci
+    python: |
+      def fibonacci(n: int) -> int:
+          if n == 0:
+              return 0
+          elif n == 1:
+              return 1
+          else:
+              return fibonacci(n - 1) + fibonacci(n - 2)
+  metadata:
+    tags: ["recursion", "math", "classic"]
+    source: "Classic"
+    time_complexity: "O(2^n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "recursion", "if-else-if"]

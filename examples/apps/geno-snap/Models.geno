@@ -1,0 +1,36 @@
+// Models.geno — Domain types for the API mocker
+// ================================================
+
+type Method = GET | POST | PUT | DELETE
+
+type MockRoute = MockRoute(method: String, path: String, status: Int, body: String)
+
+// Convert a Method to its string representation.
+func method_to_string(m: Method) -> String
+    example GET -> "GET"
+    example POST -> "POST"
+    example PUT -> "PUT"
+    example DELETE -> "DELETE"
+
+    match m with
+        | GET -> return "GET"
+        | POST -> return "POST"
+        | PUT -> return "PUT"
+        | DELETE -> return "DELETE"
+    end match
+end func
+
+// Build a JSON success envelope.
+func json_ok(data: String) -> String
+    example "[]" -> "{\"ok\":true,\"data\":[]}"
+    example "42" -> "{\"ok\":true,\"data\":42}"
+
+    return "{\"ok\":true,\"data\":" + data + "}"
+end func
+
+// Build a JSON error envelope.
+func json_error(msg: String) -> String
+    example "not found" -> "{\"ok\":false,\"error\":\"not found\"}"
+
+    return "{\"ok\":false,\"error\":\"" + msg + "\"}"
+end func

@@ -1,0 +1,63 @@
+problem:
+  id: "PROB-031"
+  name: "Map Double"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that doubles every element in a list.
+  signature:
+    function_name: "map_double"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 4]]
+        output: [2, 4, 6, 8]
+        description: "Double each element"
+      - input: [[]]
+        output: []
+        description: "Empty list"
+    hidden:
+      - input: [[0]]
+        output: [0]
+        description: "Zero stays zero"
+      - input: [[-1, -2]]
+        output: [-2, -4]
+        description: "Negatives"
+      - input: [[5]]
+        output: [10]
+        description: "Single element"
+      - input: [[100, 200]]
+        output: [200, 400]
+        description: "Large numbers"
+  constraints:
+    - "Return list with each element multiplied by 2"
+  canonical_solutions:
+    geno: |
+      func map_double(arr: List[Int]) -> List[Int]
+          example [1, 2, 3, 4] -> [2, 4, 6, 8]
+          example [] -> []
+
+          var result: List[Int] = []
+          var i: Int = 0
+
+          while i < length(arr) do
+              result = append(result, arr[i] * 2)
+              i = i + 1
+          end while
+
+          return result
+      end func map_double
+    python: |
+      def map_double(arr: list[int]) -> list[int]:
+          return [x * 2 for x in arr]
+  metadata:
+    tags: ["list", "map"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "arithmetic", "append"]

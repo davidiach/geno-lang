@@ -1,0 +1,110 @@
+// Transform.geno — Pipeline transform operations
+// =================================================
+// All transforms take a Table and return a Table,
+// designed for |> chaining.
+
+import Types
+import Parse
+
+// 1. Select specific columns by name.
+func select_columns(table: Table, columns: List[String]) -> Table
+    example (Table(["a", "b"], [Row(["1", "2"])]), ["a"]) -> Table(["a"], [Row(["1"])])
+    let indices: List[Int] = map(columns, fn(c: String) -> column_index(headers: table.headers, name: c))
+    let new_rows: List[Row] = map(table.rows, fn(r: Row) -> Row(map(indices, fn(i: Int) -> cell_at(row: r, index: i))))
+    return Table(columns, new_rows)
+end func
+
+// 2. Filter rows where a column matches a value.
+func filter_rows(table: Table, column: String, value: String) -> Table
+    example (Table(["x"], [Row(["a"]), Row(["b"])]), "x", "a") -> Table(["x"], [Row(["a"])])
+    let idx: Int = column_index(headers: table.headers, name: column)
+    let kept: List[Row] = filter(table.rows, fn(r: Row) -> cell_at(row: r, index: idx) == value)
+    return Table(table.headers, kept)
+end func
+
+// 3. Sort rows by a column (lexicographic ascending).
+@untested("complex sort logic")
+func sort_by(table: Table, column: String) -> Table
+    let idx: Int = column_index(headers: table.headers, name: column)
+    let keys: List[String] = map(table.rows, fn(r: Row) -> cell_at(row: r, index: idx))
+    let sorted_keys: List[String] = sort_strings(keys)
+    return Table(table.headers, reorder_rows(rows: table.rows, sorted_keys: sorted_keys, idx: idx))
+end func
+
+// Reorder rows to match sorted key order.
+@untested("recursive reorder")
+func reorder_rows(rows: List[Row], sorted_keys: List[String], idx: Int) -> List[Row]
+    if length(sorted_keys) == 0 then
+        return []
+    end if
+    let key: String = sorted_keys[0]
+    let rest_keys: List[String] = tail(sorted_keys)
+    let matched: Row = find_row_by_key(rows: rows, key: key, idx: idx)
+    let remaining: List[Row] = remove_first_match(rows: rows, key: key, idx: idx)
+    return concat([matched], reorder_rows(rows: remaining, sorted_keys: rest_keys, idx: idx))
+end func
+
+// Find the first row where column idx equals key.
+@untested("row lookup")
+func find_row_by_key(rows: List[Row], key: String, idx: Int) -> Row
+    if cell_at(row: rows[0], index: idx) == key then
+        return rows[0]
+    end if
+    return find_row_by_key(rows: tail(rows), key: key, idx: idx)
+end func
+
+// Remove the first row where column idx equals key.
+@untested("row removal")
+func remove_first_match(rows: List[Row], key: String, idx: Int) -> List[Row]
+    if length(rows) == 0 then
+        return []
+    end if
+    if cell_at(row: rows[0], index: idx) == key then
+        return tail(rows)
+    end if
+    return concat([rows[0]], remove_first_match(rows: tail(rows), key: key, idx: idx))
+end func
+
+// 4. Add a computed column (applies a transform to an existing column).
+func add_column(table: Table, name: String, source: String, transform: (String) -> String) -> Table
+    example (Table(["x"], [Row(["hi"])]), "upper_x", "x", fn(s: String) -> to_upper(s)) -> Table(["x", "upper_x"], [Row(["hi", "HI"])])
+    let idx: Int = column_index(headers: table.headers, name: source)
+    let new_headers: List[String] = append(table.headers, name)
+    let new_rows: List[Row] = map(table.rows, fn(r: Row) -> Row(append(r.cells, transform(cell_at(row: r, index: idx)))))
+    return Table(new_headers, new_rows)
+end func
+
+// Helper: replace a string if it matches.
+func replace_if_match(text: String, old_val: String, new_val: String) -> String
+    example ("x", "x", "a") -> "a"
+    example ("y", "x", "a") -> "y"
+    if text == old_val then
+        return new_val
+    end if
+    return text
+end func
+
+// 5. Rename a column.
+func rename_column(table: Table, old_name: String, new_name: String) -> Table
+    example (Table(["x", "y"], []), "x", "a") -> Table(["a", "y"], [])
+    let new_headers: List[String] = map(table.headers, fn(h: String) -> replace_if_match(text: h, old_val: old_name, new_val: new_name))
+    return Table(new_headers, table.rows)
+end func
+
+// 6. Limit to first N rows.
+func take_rows(table: Table, n: Int) -> Table
+    example (Table(["x"], [Row(["a"]), Row(["b"]), Row(["c"])]), 2) -> Table(["x"], [Row(["a"]), Row(["b"])])
+    return Table(table.headers, slice(list: table.rows, start: 0, stop: n))
+end func
+
+// 7. Drop first N rows.
+func drop_rows(table: Table, n: Int) -> Table
+    example (Table(["x"], [Row(["a"]), Row(["b"]), Row(["c"])]), 1) -> Table(["x"], [Row(["b"]), Row(["c"])])
+    return Table(table.headers, slice(list: table.rows, start: n, stop: length(table.rows)))
+end func
+
+// 8. Count rows (returns a single-cell table with the count).
+func count_rows(table: Table) -> Table
+    example (Table(["x"], [Row(["a"]), Row(["b"])])) -> Table(["count"], [Row(["2"])])
+    return Table(["count"], [Row([to_string(length(table.rows))])])
+end func

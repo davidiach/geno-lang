@@ -1,0 +1,23 @@
+# EXPECT: E502
+# Use pipeline operator in a recursive function to test
+# that pipelines properly count toward the call depth.
+# Depth 1000 is well above the 500-call limit.
+# NOTE: each pipeline adds extra function call overhead;
+# without a call-depth check, this would crash the host
+# Python with a RecursionError.
+func add_one(x: Int) -> Int
+    example 0 -> 1
+    return x + 1
+end func
+
+func chain(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return n
+    end if
+    return (n - 1) |> chain()
+end func
+
+func main() -> Int
+    return chain(1000)
+end func

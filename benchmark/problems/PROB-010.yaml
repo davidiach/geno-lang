@@ -1,0 +1,70 @@
+problem:
+  id: "PROB-010"
+  name: "Find Maximum"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that finds the maximum element in a non-empty list of integers.
+  signature:
+    function_name: "find_max"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[3, 1, 4, 1, 5, 9, 2, 6]]
+        output: 9
+        description: "Maximum is 9"
+      - input: [[42]]
+        output: 42
+        description: "Single element"
+    hidden:
+      - input: [[-5, -3, -8, -1]]
+        output: -1
+        description: "All negative"
+      - input: [[5, 5, 5]]
+        output: 5
+        description: "All same"
+      - input: [[1, 2, 3, 4, 5]]
+        output: 5
+        description: "Ascending"
+      - input: [[5, 4, 3, 2, 1]]
+        output: 5
+        description: "Descending"
+  constraints:
+    - "List is non-empty"
+  canonical_solutions:
+    geno: |
+      func find_max(arr: List[Int]) -> Int
+          requires length(arr) > 0
+          example [3, 1, 4, 1, 5, 9, 2, 6] -> 9
+          example [42] -> 42
+
+          var max_val: Int = arr[0]
+          var i: Int = 1
+
+          while i < length(arr) do
+              if arr[i] > max_val then
+                  max_val = arr[i]
+              end if
+              i = i + 1
+          end while
+
+          return max_val
+      end func find_max
+    python: |
+      def find_max(arr: list[int]) -> int:
+          max_val = arr[0]
+          for x in arr[1:]:
+              if x > max_val:
+                  max_val = x
+          return max_val
+  metadata:
+    tags: ["list", "search", "loop"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "list-indexing"]

@@ -1,0 +1,35 @@
+# EXPECT: E503
+# Exploit trait method dispatch overhead.  Each call to
+# describe() triggers runtime trait resolution, which adds
+# hidden work per invocation.  Calling describe() in a tight
+# loop on many ADT variants exercises the trait dispatch path.
+# Tests that trait method dispatch is step-counted.
+type Shape = Circle(r: Int) | Square(s: Int) | Triangle(a: Int, b: Int, c: Int)
+
+trait Describable
+    func describe(self: Self) -> String
+end trait
+
+impl Describable for Shape
+    func describe(self: Shape) -> String
+        example Circle(1) -> "circle-1"
+        match self with
+            | Circle(r) -> return f"circle-{to_string(r)}"
+            | Square(s) -> return f"square-{to_string(s)}"
+            | Triangle(a, b, c) -> return f"tri-{to_string(a)}-{to_string(b)}-{to_string(c)}"
+        end match
+    end func
+end impl
+
+func main() -> Int
+    let shapes: List[Shape] = [Circle(1), Square(2), Triangle(3, 4, 5)]
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        let s: Shape = shapes[i % 3]
+        let d: String = describe(s)
+        total = total + length(d)
+        i = i + 1
+    end while
+    return total
+end func

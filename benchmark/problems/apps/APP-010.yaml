@@ -1,0 +1,98 @@
+problem:
+  id: "APP-010"
+  name: "Calendar Busy-Slot Merger"
+  difficulty: "hard"
+  domain: "arrays"
+  description: |
+    Merge a calendar's busy slots. Each slot is a pair [start, end] with
+    start <= end, and the input is sorted by start time (ties in any
+    order). Two slots merge when the next slot starts at or before the
+    current merged slot's end; the merged slot ends at the later of the
+    two ends. Touching slots (one ends exactly when the next starts)
+    merge into one.
+
+    Return the merged slots in order.
+  signature:
+    function_name: "merge_busy"
+    inputs:
+      - name: "slots"
+        type: "List[List[Int]]"
+    output:
+      name: "merged"
+      type: "List[List[Int]]"
+  examples:
+    visible:
+      - input: [[[9, 10], [9, 11], [13, 14]]]
+        output: [[9, 11], [13, 14]]
+        description: "Overlapping morning slots merge"
+      - input: [[]]
+        output: []
+        description: "Empty calendar"
+    hidden:
+      - input: [[[1, 3], [3, 5]]]
+        output: [[1, 5]]
+        description: "Touching slots merge"
+      - input: [[[1, 10], [2, 3], [4, 5]]]
+        output: [[1, 10]]
+        description: "Contained slots disappear"
+      - input: [[[1, 2], [4, 5], [7, 8]]]
+        output: [[1, 2], [4, 5], [7, 8]]
+        description: "Disjoint slots stay separate"
+      - input: [[[5, 5], [5, 6]]]
+        output: [[5, 6]]
+        description: "Zero-length slots merge into neighbors"
+      - input: [[[1, 4], [2, 3], [5, 9], [9, 12]]]
+        output: [[1, 4], [5, 12]]
+        description: "Two merge groups"
+  constraints:
+    - "Slots are sorted by start time"
+    - "start <= end for every slot"
+    - "Slots that touch (next start == current end) merge"
+  canonical_solutions:
+    geno: |
+      func merge_busy(slots: List[List[Int]]) -> List[List[Int]]
+          example [[9, 10], [9, 11], [13, 14]] -> [[9, 11], [13, 14]]
+          example [] -> []
+
+          if length(slots) == 0 then
+              return []
+          end if
+          let first: List[Int] = slots[0]
+          var merged: List[List[Int]] = []
+          var cur_start: Int = first[0]
+          var cur_end: Int = first[1]
+          var i: Int = 1
+          while i < length(slots) do
+              let slot: List[Int] = slots[i]
+              if slot[0] <= cur_end then
+                  cur_end = max(cur_end, slot[1])
+              else
+                  merged = append(merged, [cur_start, cur_end])
+                  cur_start = slot[0]
+                  cur_end = slot[1]
+              end if
+              i = i + 1
+          end while
+          return append(merged, [cur_start, cur_end])
+      end func merge_busy
+    python: |
+      def merge_busy(slots: list[list[int]]) -> list[list[int]]:
+          if not slots:
+              return []
+          merged = []
+          cur_start, cur_end = slots[0]
+          for start, end in slots[1:]:
+              if start <= cur_end:
+                  cur_end = max(cur_end, end)
+              else:
+                  merged.append([cur_start, cur_end])
+                  cur_start, cur_end = start, end
+          merged.append([cur_start, cur_end])
+          return merged
+  metadata:
+    tags: ["app-tier", "intervals", "merging", "calendar"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "while", "nested-list", "max", "list-literal", "state"]

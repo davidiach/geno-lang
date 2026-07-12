@@ -1,0 +1,41 @@
+"""Compatibility re-exports for shared builtin metadata."""
+
+from .builtin_registry import (
+    ALWAYS_AVAILABLE_BUILTINS,
+    BUILTIN_PARAM_NAMES,
+    CAPABILITY_MAP,
+    DEFAULT_ALLOWED_CAPABILITIES,
+    JS_BACKEND_BUILTIN_NAME_OVERRIDES,
+    PYTHON_BACKEND_BUILTIN_NAME_OVERRIDES,
+    SOURCE_BUILTIN_NAME_OVERRIDES,
+    SOURCE_BUILTIN_PARAM_OVERRIDES,
+    all_builtin_names,
+    allowed_gated_builtins,
+    builtin_param_name_lists,
+    interpreter_builtin_param_name_lists,
+    js_backend_builtin_helper_names,
+    js_backend_builtin_name_map,
+    python_backend_builtin_helper_names,
+    python_backend_builtin_name_map,
+    source_builtin_param_name_lists,
+)
+
+__all__ = [
+    "ALWAYS_AVAILABLE_BUILTINS",
+    "BUILTIN_PARAM_NAMES",
+    "CAPABILITY_MAP",
+    "DEFAULT_ALLOWED_CAPABILITIES",
+    "JS_BACKEND_BUILTIN_NAME_OVERRIDES",
+    "PYTHON_BACKEND_BUILTIN_NAME_OVERRIDES",
+    "SOURCE_BUILTIN_NAME_OVERRIDES",
+    "SOURCE_BUILTIN_PARAM_OVERRIDES",
+    "all_builtin_names",
+    "allowed_gated_builtins",
+    "builtin_param_name_lists",
+    "interpreter_builtin_param_name_lists",
+    "js_backend_builtin_helper_names",
+    "js_backend_builtin_name_map",
+    "python_backend_builtin_helper_names",
+    "python_backend_builtin_name_map",
+    "source_builtin_param_name_lists",
+]

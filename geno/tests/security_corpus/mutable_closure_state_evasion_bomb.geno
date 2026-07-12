@@ -1,0 +1,29 @@
+# EXPECT: E503
+# Mutable closure state to evade step counting: create many
+# closures that each capture a different set of variables.
+# Each closure invocation forces the interpreter to resolve
+# captured bindings, creating hidden per-call overhead.  Tests
+# that closure environment lookup is step-counted even when the
+# closure body is trivial.
+@untested("returns closure")
+func make_adder(a: Int, b: Int) -> (Int) -> Int
+    return fn(x: Int) -> a + b + x
+end func
+
+func chain_closures(n: Int) -> Int
+    example 0 -> 0
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let f1: (Int) -> Int = make_adder(a: i, b: i + 1)
+        let f2: (Int) -> Int = make_adder(a: f1(0), b: f1(1))
+        let f3: (Int) -> Int = make_adder(a: f2(0), b: f2(1))
+        total = total + f3(i)
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return chain_closures(500000)
+end func

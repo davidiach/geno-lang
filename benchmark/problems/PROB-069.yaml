@@ -1,0 +1,72 @@
+problem:
+  id: "PROB-069"
+  name: "String Tokenizer"
+  difficulty: "medium"
+  domain: "strings"
+  description: |
+    Write a function that tokenizes a string by splitting on spaces, then
+    filters out empty tokens and tokens that start with "#" (comments).
+    Return the remaining tokens lowercased.
+
+    Use pipeline operations with filter and map.
+  signature:
+    function_name: "tokenize"
+    inputs:
+      - name: "text"
+        type: "String"
+    output:
+      name: "result"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: "hello world"
+        output: ["hello", "world"]
+        description: "Simple words"
+      - input: "hello #comment world"
+        output: ["hello", "world"]
+        description: "Filter comments"
+      - input: ""
+        output: []
+        description: "Empty string"
+    hidden:
+      - input: "  spaced  out  "
+        output: ["spaced", "out"]
+        description: "Extra spaces"
+      - input: "#all #comments"
+        output: []
+        description: "All comments"
+      - input: "Hello WORLD"
+        output: ["hello", "world"]
+        description: "Lowercased"
+      - input: "one"
+        output: ["one"]
+        description: "Single token"
+      - input: "a #b c #d e"
+        output: ["a", "c", "e"]
+        description: "Interleaved comments"
+  constraints:
+    - "Split on spaces"
+    - "Remove empty tokens"
+    - "Remove tokens starting with '#'"
+    - "Lowercase all remaining tokens"
+  canonical_solutions:
+    geno: |
+      func tokenize(text: String) -> List[String]
+          example "hello world" -> ["hello", "world"]
+          example "hello #comment world" -> ["hello", "world"]
+
+          return text
+              |> split(" ")
+              |> filter(_, fn(w: String) -> w != "")
+              |> filter(_, fn(w: String) -> not starts_with(w, "#"))
+              |> map(_, fn(w: String) -> to_lower(w))
+      end func tokenize
+    python: |
+      def tokenize(text: str) -> list[str]:
+          return [w.lower() for w in text.split(" ") if w and not w.startswith("#")]
+  metadata:
+    tags: ["string-processing", "pipeline", "filter", "tokenization"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "pipeline", "split", "filter", "map", "lambda", "starts_with", "to_lower"]

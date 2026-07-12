@@ -1,0 +1,158 @@
+problem:
+  id: "APP-001"
+  name: "CSV Sales Report"
+  difficulty: "hard"
+  domain: "systems"
+  description: |
+    Build a small reporting tool. Each input line has the form
+    "name,region,amount" (three comma-separated fields). Produce a summary
+    string that totals amounts per region.
+
+    Rules:
+    - A line is valid only if it has exactly three fields and its third
+      field parses as an integer after trimming surrounding spaces.
+      Invalid lines are skipped.
+    - The region of a valid line is its second field, trimmed.
+    - Report regions in order of first valid appearance.
+    - The report lists "<region>: <total>" for each region, then
+      "TOTAL: <grand_total>", all joined by "; ".
+    - With no valid lines the report is exactly "TOTAL: 0".
+  signature:
+    function_name: "csv_report"
+    inputs:
+      - name: "lines"
+        type: "List[String]"
+    output:
+      name: "report"
+      type: "String"
+  examples:
+    visible:
+      - input: [["ana,north,10", "bob,north,20", "kim,south,5"]]
+        output: "north: 30; south: 5; TOTAL: 35"
+        description: "Two regions, first-appearance order"
+      - input: [["ana,north,10", "broken line", "kim,south,x"]]
+        output: "north: 10; TOTAL: 10"
+        description: "Malformed lines are skipped"
+      - input: [[]]
+        output: "TOTAL: 0"
+        description: "Empty input"
+    hidden:
+      - input: [["a,west,1", "b,east,2", "c,west,3", "d,east,4"]]
+        output: "west: 4; east: 6; TOTAL: 10"
+        description: "Interleaved regions accumulate"
+      - input: [["a,north, 7 ", "b,north,3"]]
+        output: "north: 10; TOTAL: 10"
+        description: "Amount field is trimmed before parsing"
+      - input: [["only,two"]]
+        output: "TOTAL: 0"
+        description: "Wrong field count is skipped"
+      - input: [["a,solo,0"]]
+        output: "solo: 0; TOTAL: 0"
+        description: "Zero amounts still create a region"
+      - input: [["a,n,1", "b,n,2", "c,n,3", "d,n,4", "e,n,5"]]
+        output: "n: 15; TOTAL: 15"
+        description: "Single region accumulates"
+  constraints:
+    - "Amounts are non-negative integers"
+    - "Skip lines that do not have exactly three fields"
+    - "Skip lines whose amount field does not parse as an integer"
+    - "Regions appear in the report in order of first valid appearance"
+  canonical_solutions:
+    geno: |
+      func row_amount(line: String) -> Option[Int]
+          example "a,north,10" -> Some(10)
+          example "garbage" -> None
+
+          let parts: List[String] = split(line, ",")
+          if length(parts) != 3 then
+              return None
+          end if
+          return parse_int(trim(parts[2]))
+      end func row_amount
+
+      func row_region(line: String) -> String
+          example "a,north,10" -> "north"
+
+          let parts: List[String] = split(line, ",")
+          return trim(parts[1])
+      end func row_region
+
+      func csv_report(lines: List[String]) -> String
+          example ["ana,north,10", "bob,north,20", "kim,south,5"] -> "north: 30; south: 5; TOTAL: 35"
+          example [] -> "TOTAL: 0"
+
+          var regions: List[String] = []
+          var totals: List[Int] = []
+          var grand: Int = 0
+          for line: String in lines do
+              let amount: Int = match row_amount(line) with
+                  | Some(v) -> v
+                  | None -> -1
+              end match
+              if amount >= 0 then
+                  let region: String = row_region(line)
+                  grand = grand + amount
+                  var idx: Int = -1
+                  var i: Int = 0
+                  while i < length(regions) do
+                      if regions[i] == region then
+                          idx = i
+                      end if
+                      i = i + 1
+                  end while
+                  if idx == -1 then
+                      regions = append(regions, region)
+                      totals = append(totals, amount)
+                  else
+                      var updated: List[Int] = []
+                      var j: Int = 0
+                      while j < length(totals) do
+                          if j == idx then
+                              updated = append(updated, totals[j] + amount)
+                          else
+                              updated = append(updated, totals[j])
+                          end if
+                          j = j + 1
+                      end while
+                      totals = updated
+                  end if
+              end if
+          end for
+          var out: String = ""
+          var k: Int = 0
+          while k < length(regions) do
+              out = out + regions[k] + ": " + to_string(totals[k]) + "; "
+              k = k + 1
+          end while
+          return out + "TOTAL: " + to_string(grand)
+      end func csv_report
+    python: |
+      def csv_report(lines: list[str]) -> str:
+          regions: list[str] = []
+          totals: dict[str, int] = {}
+          grand = 0
+          for line in lines:
+              parts = line.split(",")
+              if len(parts) != 3:
+                  continue
+              try:
+                  amount = int(parts[2].strip())
+              except ValueError:
+                  continue
+              region = parts[1].strip()
+              grand += amount
+              if region not in totals:
+                  regions.append(region)
+                  totals[region] = 0
+              totals[region] += amount
+          pieces = [f"{r}: {totals[r]}" for r in regions]
+          pieces.append(f"TOTAL: {grand}")
+          return "; ".join(pieces)
+  metadata:
+    tags: ["app-tier", "parsing", "aggregation", "report"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n * r)"
+    space_complexity: "O(r)"
+    constructs_tested:
+      ["function", "option", "match", "for", "while", "split", "trim",
+       "parse_int", "to_string", "string-concat", "list-rebuild"]

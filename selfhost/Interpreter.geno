@@ -1,0 +1,3166 @@
+// ============================================================================
+// Interpreter.geno — Tree-walking interpreter for the Geno self-hosted runtime
+// ============================================================================
+
+import Ast
+import Types
+
+// ============================================================================
+// Runtime value types
+// ============================================================================
+
+// A single named field inside a constructor value.
+type ValueField = ValueField(fname: String, fval: Value)
+
+// Closure data: captures params, body, environment, function name, and specs.
+type ClosureData = ClosureData(
+cl_params: List[Param],
+cl_body: List[Stmt],
+cl_env: Env,
+cl_name: String,
+cl_specs: SpecBlock,
+cl_span: SourceSpan
+)
+
+// Runtime value — every evaluated expression produces one of these.
+type Value
+= IntVal(v: Int)
+| FloatVal(fv: String)
+| StringVal(sv: String)
+| BoolVal(bv: Bool)
+| ListVal(items: List[Value])
+| TupleVal(elems: List[Value])
+| UnitVal
+| CtorVal(cname: String, cfields: List[ValueField])
+| ClosureVal(cdata: ClosureData)
+| BuiltinVal(bname: String)
+| ArrayRef(arr_elems: Vec[Value])
+| MMapRef(mm_data: MutableMap[String, Value])
+| VecRef(vec_elems: Vec[Value])
+
+// ============================================================================
+// Runtime environment (lexical scoping)
+// ============================================================================
+
+type Env = Env(
+bindings: MutableMap[String, Value],
+parent: Option[Env],
+mut_vars: MutableMap[String, Bool]
+)
+
+// ============================================================================
+// Execution result — used to propagate returns through statements
+// ============================================================================
+
+type ExecResult
+= ExecNormal
+| ExecReturn(rval: Value)
+
+// ============================================================================
+// Interpreter state
+// ============================================================================
+
+// CtorInfo stores field names for a constructor variant.
+type CtorInfo = CtorInfo(ci_fields: List[String])
+
+type InterpState = InterpState(
+global_env: Env,
+ctor_info: MutableMap[String, CtorInfo],
+func_defs: MutableMap[String, Def],
+out_buf: Vec[String],
+depth_ref: Vec[Int],
+max_depth: Int,
+builtin_params: MutableMap[String, List[String]],
+err_flag: Vec[Bool],
+diagnostics: Vec[Diagnostic],
+diag_stack: Vec[SourceSpan]
+)
+
+// ============================================================================
+// Environment functions
+// ============================================================================
+
+// Create a fresh environment with no parent.
+func new_env(dummy: Int) -> Env
+    example 0 -> Env(mutable_map_new(), None, mutable_map_new())
+    return Env(mutable_map_new(), None, mutable_map_new())
+end func new_env
+
+// Create a child environment whose parent is the given env.
+func env_child(parent_env: Env) -> Env
+    example Env(mutable_map_new(), None, mutable_map_new()) -> Env(mutable_map_new(), Some(Env(mutable_map_new(), None, mutable_map_new())), mutable_map_new())
+    return Env(mutable_map_new(), Some(parent_env), mutable_map_new())
+end func env_child
+
+// Bind an immutable variable in the environment.
+func env_bind(env: Env, name: String, val: Value) -> Unit
+    example (Env(mutable_map_new(), None, mutable_map_new()), "x", IntVal(1)) -> ()
+    mutable_map_set(map: env.bindings, key: name, value: val)
+    return ()
+end func env_bind
+
+// Bind a mutable variable in the environment.
+func env_bind_mut(env: Env, name: String, val: Value) -> Unit
+    example (Env(mutable_map_new(), None, mutable_map_new()), "x", IntVal(1)) -> ()
+    mutable_map_set(map: env.bindings, key: name, value: val)
+    mutable_map_set(map: env.mut_vars, key: name, value: true)
+    return ()
+end func env_bind_mut
+
+// Look up a variable by name, searching parent chain.
+func env_lookup(env: Env, name: String) -> Option[Value]
+    example (Env(mutable_map_new(), None, mutable_map_new()), "x") -> None
+    let found: Option[Value] = mutable_map_get(map: env.bindings, key: name)
+    if is_some(found) then
+        return found
+    end if
+    match env.parent with
+        | Some(p) -> return env_lookup(p, name)
+        | None -> return None
+    end match
+end func env_lookup
+
+// Assign to a mutable variable, searching parent chain. Returns true on success.
+func env_assign(env: Env, name: String, val: Value) -> Bool
+    example (Env(mutable_map_new(), None, mutable_map_new()), "x", IntVal(1)) -> false
+    let found: Option[Value] = mutable_map_get(map: env.bindings, key: name)
+    if is_some(found) then
+        if mutable_map_contains(map: env.mut_vars, key: name) then
+            mutable_map_set(map: env.bindings, key: name, value: val)
+            return true
+        end if
+        return false
+    end if
+    match env.parent with
+        | Some(p) -> return env_assign(env: p, name: name, val: val)
+        | None -> return false
+    end match
+end func env_assign
+
+// ============================================================================
+// Value helper functions
+// ============================================================================
+
+// Get a field value from a CtorVal's field list by name.
+func ctor_get_field(fields: List[ValueField], name: String) -> Option[Value]
+    example ([], "x") -> None
+    if length(fields) == 0 then
+        return None
+    end if
+    let f: ValueField = head(fields)
+    if f.fname == name then
+        return Some(f.fval)
+    end if
+    return ctor_get_field(tail(fields), name)
+end func ctor_get_field
+
+// Get the list of field values from a CtorVal's field list (in order).
+func ctor_field_vals(fields: List[ValueField]) -> List[Value]
+    example [] -> []
+    if length(fields) == 0 then
+        return []
+    end if
+    let f: ValueField = head(fields)
+    return concat([f.fval], ctor_field_vals(tail(fields)))
+end func ctor_field_vals
+
+// Get the list of field names from a CtorVal's field list (in order).
+func ctor_field_names(fields: List[ValueField]) -> List[String]
+    example [] -> []
+    if length(fields) == 0 then
+        return []
+    end if
+    let f: ValueField = head(fields)
+    return concat([f.fname], ctor_field_names(tail(fields)))
+end func ctor_field_names
+
+// Build a list of ValueFields from parallel name and value lists.
+func build_fields(names: List[String], vals: List[Value]) -> List[ValueField]
+    example ([], []) -> []
+    if length(names) == 0 then
+        return []
+    end if
+    let n: String = head(names)
+    let v: Value = head(vals)
+    return concat([ValueField(n, v)], build_fields(tail(names), tail(vals)))
+end func build_fields
+
+// Copy a CtorVal's fields, replacing any that appear in the updates list.
+func update_fields(orig: List[ValueField], updates: List[ValueField]) -> List[ValueField]
+    example ([], []) -> []
+    if length(orig) == 0 then
+        return []
+    end if
+    let f: ValueField = head(orig)
+    let replacement: Option[Value] = ctor_get_field(updates, f.fname)
+    if is_some(replacement) then
+        let rv: Value = unwrap(replacement)
+        return concat([ValueField(f.fname, rv)], update_fields(tail(orig), updates))
+    end if
+    return concat([f], update_fields(tail(orig), updates))
+end func update_fields
+
+// ============================================================================
+// Value formatting (to_string for display / print)
+// ============================================================================
+
+// Convert a Value to its string representation (unquoted for strings).
+func value_to_str(val: Value) -> String
+    example IntVal(42) -> "42"
+    match val with
+        | IntVal(n) -> return to_string(n)
+        | FloatVal(s) -> return s
+        | StringVal(s) -> return s
+        | BoolVal(b) ->
+        if b then
+            return "true"
+        end if
+        return "false"
+        | UnitVal -> return "()"
+        | ListVal(items) -> return "[" + format_val_list(items) + "]"
+        | TupleVal(elems) -> return "(" + format_val_list(elems) + ")"
+        | CtorVal(cn, cf) ->
+        if length(cf) == 0 then
+            return cn
+        end if
+        return cn + "(" + format_field_list(cf) + ")"
+        | ClosureVal(cd) -> return "<function " + cd.cl_name + ">"
+        | BuiltinVal(bn) -> return "<builtin " + bn + ">"
+        | ArrayRef(ae) -> return "Array([" + format_vec_vals(ae, 0) + "])"
+        | MMapRef(md) -> return "MutableMap(...)"
+        | VecRef(ve) -> return "Vec([" + format_vec_vals(ve, 0) + "])"
+    end match
+end func value_to_str
+
+// Format a Value for display (strings get quotes).
+func format_val(val: Value) -> String
+    example IntVal(42) -> "42"
+    match val with
+        | StringVal(s) -> return s
+        | _ -> return value_to_str(val)
+    end match
+end func format_val
+
+// Format a list of values separated by commas.
+func format_val_list(vals: List[Value]) -> String
+    example [] -> ""
+    if length(vals) == 0 then
+        return ""
+    end if
+    if length(vals) == 1 then
+        return value_to_str(head(vals))
+    end if
+    return value_to_str(head(vals)) + ", " + format_val_list(tail(vals))
+end func format_val_list
+
+// Format a list of ValueFields separated by commas.
+func format_field_list(fields: List[ValueField]) -> String
+    example [] -> ""
+    if length(fields) == 0 then
+        return ""
+    end if
+    let f: ValueField = head(fields)
+    let s: String = f.fname + ": " + value_to_str(f.fval)
+    if length(fields) == 1 then
+        return s
+    end if
+    return s + ", " + format_field_list(tail(fields))
+end func format_field_list
+
+// Format Vec elements by index.
+func format_vec_vals(v: Vec[Value], idx: Int) -> String
+    example (vec_new(), 0) -> ""
+    if idx >= vec_length(v) then
+        return ""
+    end if
+    let s: String = value_to_str(vec_get(v, idx))
+    if idx == vec_length(v) - 1 then
+        return s
+    end if
+    return s + ", " + format_vec_vals(v, idx + 1)
+end func format_vec_vals
+
+// ============================================================================
+// Value equality (deep comparison)
+// ============================================================================
+
+// Check if two values are equal (deep structural equality).
+func values_equal(a: Value, b: Value) -> Bool
+    example (IntVal(1), IntVal(1)) -> true
+    match a with
+        | IntVal(av) ->
+        match b with
+            | IntVal(bv) -> return av == bv
+            | _ -> return false
+        end match
+        | FloatVal(af) ->
+        match b with
+            | FloatVal(bf) -> return af == bf
+            | _ -> return false
+        end match
+        | StringVal(as_) ->
+        match b with
+            | StringVal(bs) -> return as_ == bs
+            | _ -> return false
+        end match
+        | BoolVal(ab) ->
+        match b with
+            | BoolVal(bb) -> return ab == bb
+            | _ -> return false
+        end match
+        | UnitVal ->
+        match b with
+            | UnitVal -> return true
+            | _ -> return false
+        end match
+        | ListVal(ai) ->
+        match b with
+            | ListVal(bi) -> return list_vals_equal(ai, bi)
+            | _ -> return false
+        end match
+        | TupleVal(ae) ->
+        match b with
+            | TupleVal(be_) -> return list_vals_equal(ae, be_)
+            | _ -> return false
+        end match
+        | CtorVal(acn, acf) ->
+        match b with
+            | CtorVal(bcn, bcf) ->
+            if acn != bcn then
+                return false
+            end if
+            return list_vals_equal(ctor_field_vals(acf), ctor_field_vals(bcf))
+            | _ -> return false
+        end match
+        | ArrayRef(av) ->
+        match b with
+            | ArrayRef(bv) -> return vec_vals_equal(a: av, b: bv, idx: 0)
+            | _ -> return false
+        end match
+        | VecRef(av) ->
+        match b with
+            | VecRef(bv) -> return vec_vals_equal(a: av, b: bv, idx: 0)
+            | _ -> return false
+        end match
+        | MMapRef(am) ->
+        match b with
+            | MMapRef(bm) -> return mmap_vals_equal(am, bm)
+            | _ -> return false
+        end match
+        | _ -> return false
+    end match
+end func values_equal
+
+// Check if two lists of values are element-wise equal.
+func list_vals_equal(a: List[Value], b: List[Value]) -> Bool
+    example ([], []) -> true
+    if length(a) != length(b) then
+        return false
+    end if
+    if length(a) == 0 then
+        return true
+    end if
+    if not values_equal(head(a), head(b)) then
+        return false
+    end if
+    return list_vals_equal(tail(a), tail(b))
+end func list_vals_equal
+
+// Check if two Vecs of values are element-wise equal.
+func vec_vals_equal(a: Vec[Value], b: Vec[Value], idx: Int) -> Bool
+    example (vec_new(), vec_new(), 0) -> true
+    if vec_length(a) != vec_length(b) then
+        return false
+    end if
+    if idx >= vec_length(a) then
+        return true
+    end if
+    if not values_equal(vec_get(a, idx), vec_get(b, idx)) then
+        return false
+    end if
+    return vec_vals_equal(a: a, b: b, idx: idx + 1)
+end func vec_vals_equal
+
+// Check if two MutableMaps of values are equal (same keys with equal values).
+func mmap_vals_equal(a: MutableMap[String, Value], b: MutableMap[String, Value]) -> Bool
+    example (mutable_map_new(), mutable_map_new()) -> true
+    if mutable_map_size(a) != mutable_map_size(b) then
+        return false
+    end if
+    let keys_a: List[String] = mutable_map_keys(a)
+    return mmap_keys_all_equal(a: a, b: b, keys: keys_a)
+end func mmap_vals_equal
+
+// Check that all keys from a have equal values in b.
+func mmap_keys_all_equal(a: MutableMap[String, Value], b: MutableMap[String, Value], keys: List[String]) -> Bool
+    example (mutable_map_new(), mutable_map_new(), []) -> true
+    if length(keys) == 0 then
+        return true
+    end if
+    let k: String = head(keys)
+    if not mutable_map_contains(map: b, key: k) then
+        return false
+    end if
+    let va: Value = unwrap(mutable_map_get(map: a, key: k))
+    let vb: Value = unwrap(mutable_map_get(map: b, key: k))
+    if not values_equal(va, vb) then
+        return false
+    end if
+    return mmap_keys_all_equal(a: a, b: b, keys: tail(keys))
+end func mmap_keys_all_equal
+
+// ============================================================================
+// Interpreter state creation
+// ============================================================================
+
+// Create a fresh interpreter state.
+@untested("registers builtins via mutation")
+func make_interp_state_with_filename(filename: String) -> InterpState
+    let ge: Env = new_env(0)
+    let dr: Vec[Int] = vec_new()
+    vec_push(dr, 0)
+    let bp: MutableMap[String, List[String]] = mutable_map_new()
+    let ef: Vec[Bool] = vec_new()
+    vec_push(ef, false)
+    let st: InterpState = InterpState(ge, mutable_map_new(), mutable_map_new(), vec_new(), dr, 100, bp, ef, vec_new(), vec_from_list([SourceSpan(filename, 1, 1, 1, 1)]))
+    init_builtins(st)
+    return st
+end func make_interp_state_with_filename
+
+func make_interp_state(dummy: Int) -> InterpState
+    example 0 -> make_interp_state_with_filename("<input>")
+    return make_interp_state_with_filename("<input>")
+end func make_interp_state
+
+func interp_current_span(st: InterpState) -> SourceSpan
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> dummy_span(0)
+    if vec_length(st.diag_stack) == 0 then
+        return dummy_span(0)
+    end if
+    return vec_get(st.diag_stack, vec_length(st.diag_stack) - 1)
+end func interp_current_span
+
+func interp_push_span(st: InterpState, span: SourceSpan) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), dummy_span(0)) -> ()
+    vec_push(st.diag_stack, span)
+    return ()
+end func interp_push_span
+
+func interp_pop_span(st: InterpState) -> Unit
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> ()
+    if vec_length(st.diag_stack) > 0 then
+        let popped: Option[SourceSpan] = vec_pop(st.diag_stack)
+    end if
+    return ()
+end func interp_pop_span
+
+// Get the current call depth.
+func get_depth(st: InterpState) -> Int
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> 0
+    if vec_length(st.depth_ref) == 0 then
+        return 0
+    end if
+    return vec_get(st.depth_ref, 0)
+end func get_depth
+
+// Set the current call depth.
+func set_depth(st: InterpState, d: Int) -> Unit
+    example (make_interp_state(0), 1) -> ()
+    vec_set(vec: st.depth_ref, index: 0, value: d)
+    return ()
+end func set_depth
+
+// Check if an error has been recorded.
+func interp_has_error(st: InterpState) -> Bool
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> false
+    if vec_length(st.err_flag) == 0 then
+        return false
+    end if
+    return vec_get(st.err_flag, 0)
+end func interp_has_error
+
+// Record a runtime error and set the error flag so that further execution
+// is short-circuited.
+func rt_error(st: InterpState, msg: String) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "test") -> UnitVal
+    vec_push(st.diagnostics, Diagnostic(DiagError, msg, interp_current_span(st)))
+    if vec_length(st.err_flag) > 0 then
+        vec_set(vec: st.err_flag, index: 0, value: true)
+    end if
+    return UnitVal
+end func rt_error
+
+// ============================================================================
+// Builtin registration
+// ============================================================================
+
+// Register a builtin with its parameter names.
+func reg_builtin(st: InterpState, name: String, params: List[String]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "f", []) -> ()
+    env_bind(env: st.global_env, name: name, val: BuiltinVal(name))
+    mutable_map_set(map: st.builtin_params, key: name, value: params)
+    return ()
+end func reg_builtin
+
+// Register all builtin function names in the global environment.
+func init_builtins(st: InterpState) -> Unit
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> ()
+    // List operations
+    reg_builtin(st: st, name: "length", params: ["list"])
+    reg_builtin(st: st, name: "head", params: ["list"])
+    reg_builtin(st: st, name: "tail", params: ["list"])
+    reg_builtin(st: st, name: "append", params: ["list", "element"])
+    reg_builtin(st: st, name: "concat", params: ["list1", "list2"])
+    reg_builtin(st: st, name: "set_at", params: ["list", "index", "value"])
+    reg_builtin(st: st, name: "slice", params: ["list", "start", "stop"])
+    reg_builtin(st: st, name: "contains", params: ["list", "element"])
+    reg_builtin(st: st, name: "reverse", params: ["list"])
+    // Higher-order list
+    reg_builtin(st: st, name: "filter", params: ["list", "predicate"])
+    reg_builtin(st: st, name: "map", params: ["list", "transform"])
+    reg_builtin(st: st, name: "fold", params: ["list", "initial", "reducer"])
+    reg_builtin(st: st, name: "take_while", params: ["list", "predicate"])
+    reg_builtin(st: st, name: "all", params: ["list", "predicate"])
+    // Namespaced list operations
+    reg_builtin(st: st, name: "list_length", params: ["list"])
+    reg_builtin(st: st, name: "list_map", params: ["list", "transform"])
+    reg_builtin(st: st, name: "list_filter", params: ["list", "predicate"])
+    // String operations
+    reg_builtin(st: st, name: "split", params: ["text", "delimiter"])
+    reg_builtin(st: st, name: "join", params: ["parts", "separator"])
+    reg_builtin(st: st, name: "trim", params: ["text"])
+    reg_builtin(st: st, name: "to_lower", params: ["text"])
+    reg_builtin(st: st, name: "to_upper", params: ["text"])
+    reg_builtin(st: st, name: "replace", params: ["text", "old", "new"])
+    reg_builtin(st: st, name: "split_once", params: ["text", "delimiter"])
+    reg_builtin(st: st, name: "starts_with", params: ["text", "prefix"])
+    reg_builtin(st: st, name: "ends_with", params: ["text", "suffix"])
+    reg_builtin(st: st, name: "contains_substring", params: ["text", "substring"])
+    reg_builtin(st: st, name: "to_chars", params: ["text"])
+    reg_builtin(st: st, name: "sort_strings", params: ["items"])
+    reg_builtin(st: st, name: "substring", params: ["text", "start", "stop"])
+    reg_builtin(st: st, name: "repeat_string", params: ["text", "count"])
+    // Namespaced string operations
+    reg_builtin(st: st, name: "string_trim", params: ["text"])
+    reg_builtin(st: st, name: "string_trim_start", params: ["text"])
+    reg_builtin(st: st, name: "string_trim_end", params: ["text"])
+    reg_builtin(st: st, name: "string_split", params: ["text", "delimiter"])
+    reg_builtin(st: st, name: "string_join", params: ["parts", "separator"])
+    reg_builtin(st: st, name: "string_substring", params: ["text", "start", "stop"])
+    reg_builtin(st: st, name: "string_replace", params: ["text", "old", "new"])
+    reg_builtin(st: st, name: "string_to_upper", params: ["text"])
+    reg_builtin(st: st, name: "string_to_lower", params: ["text"])
+    reg_builtin(st: st, name: "string_starts_with", params: ["text", "prefix"])
+    reg_builtin(st: st, name: "string_ends_with", params: ["text", "suffix"])
+    reg_builtin(st: st, name: "string_contains", params: ["text", "substring"])
+    reg_builtin(st: st, name: "string_split_once", params: ["text", "delimiter"])
+    reg_builtin(st: st, name: "string_char_at", params: ["text", "index"])
+    reg_builtin(st: st, name: "string_index_of", params: ["text", "substring"])
+    reg_builtin(st: st, name: "string_last_index_of", params: ["text", "substring"])
+    reg_builtin(st: st, name: "string_pad_left", params: ["text", "width", "fill_char"])
+    reg_builtin(st: st, name: "string_pad_right", params: ["text", "width", "fill_char"])
+    reg_builtin(st: st, name: "string_repeat", params: ["text", "count"])
+    // Math
+    reg_builtin(st: st, name: "add", params: ["a", "b"])
+    reg_builtin(st: st, name: "subtract", params: ["a", "b"])
+    reg_builtin(st: st, name: "multiply", params: ["a", "b"])
+    reg_builtin(st: st, name: "divide", params: ["a", "b"])
+    reg_builtin(st: st, name: "sqrt", params: ["value"])
+    reg_builtin(st: st, name: "max", params: ["a", "b"])
+    reg_builtin(st: st, name: "abs", params: ["value"])
+    reg_builtin(st: st, name: "math_abs", params: ["value"])
+    reg_builtin(st: st, name: "math_max", params: ["a", "b"])
+    reg_builtin(st: st, name: "square", params: ["value"])
+    // Predicates
+    reg_builtin(st: st, name: "is_sorted", params: ["list"])
+    reg_builtin(st: st, name: "is_positive", params: ["value"])
+    reg_builtin(st: st, name: "is_numeric_string", params: ["text"])
+    reg_builtin(st: st, name: "is_permutation", params: ["list1", "list2"])
+    // Conversions
+    reg_builtin(st: st, name: "parse_int", params: ["text"])
+    reg_builtin(st: st, name: "to_string", params: ["value"])
+    reg_builtin(st: st, name: "float_to_int", params: ["value"])
+    reg_builtin(st: st, name: "int_to_float", params: ["value"])
+    // Char
+    reg_builtin(st: st, name: "char_code", params: ["text"])
+    reg_builtin(st: st, name: "from_char_code", params: ["code"])
+    // Option
+    reg_builtin(st: st, name: "is_some", params: ["option"])
+    reg_builtin(st: st, name: "is_none", params: ["option"])
+    reg_builtin(st: st, name: "unwrap", params: ["option"])
+    reg_builtin(st: st, name: "unwrap_or", params: ["option", "default"])
+    reg_builtin(st: st, name: "option_is_some", params: ["option"])
+    reg_builtin(st: st, name: "option_is_none", params: ["option"])
+    reg_builtin(st: st, name: "option_unwrap_or", params: ["option", "default"])
+    // Map (immutable)
+    reg_builtin(st: st, name: "map_insert", params: ["map", "key", "value"])
+    reg_builtin(st: st, name: "map_get", params: ["map", "key"])
+    // IO
+    reg_builtin(st: st, name: "print", params: ["value"])
+    // Clock / random
+    reg_builtin(st: st, name: "clock_now", params: [])
+    reg_builtin(st: st, name: "random_int", params: ["min", "max"])
+    reg_builtin(st: st, name: "random_float", params: [])
+    reg_builtin(st: st, name: "math_random_int", params: ["lo", "hi"])
+    reg_builtin(st: st, name: "math_random_float", params: [])
+    // Array operations
+    reg_builtin(st: st, name: "array_new", params: ["size", "default"])
+    reg_builtin(st: st, name: "array_from_list", params: ["list"])
+    reg_builtin(st: st, name: "array_get", params: ["array", "index"])
+    reg_builtin(st: st, name: "array_set", params: ["array", "index", "value"])
+    reg_builtin(st: st, name: "array_length", params: ["array"])
+    reg_builtin(st: st, name: "array_to_list", params: ["array"])
+    reg_builtin(st: st, name: "array_fill", params: ["array", "value"])
+    reg_builtin(st: st, name: "array_copy", params: ["array"])
+    // MutableMap operations
+    reg_builtin(st: st, name: "mutable_map_new", params: [])
+    reg_builtin(st: st, name: "mutable_map_set", params: ["map", "key", "value"])
+    reg_builtin(st: st, name: "mutable_map_get", params: ["map", "key"])
+    reg_builtin(st: st, name: "mutable_map_contains", params: ["map", "key"])
+    reg_builtin(st: st, name: "mutable_map_delete", params: ["map", "key"])
+    reg_builtin(st: st, name: "mutable_map_size", params: ["map"])
+    reg_builtin(st: st, name: "mutable_map_keys", params: ["map"])
+    // Vec operations
+    reg_builtin(st: st, name: "vec_new", params: [])
+    reg_builtin(st: st, name: "vec_push", params: ["vec", "item"])
+    reg_builtin(st: st, name: "vec_get", params: ["vec", "index"])
+    reg_builtin(st: st, name: "vec_set", params: ["vec", "index", "value"])
+    reg_builtin(st: st, name: "vec_length", params: ["vec"])
+    reg_builtin(st: st, name: "vec_pop", params: ["vec"])
+    reg_builtin(st: st, name: "vec_to_list", params: ["vec"])
+    reg_builtin(st: st, name: "vec_from_list", params: ["list"])
+    // Graphics stubs
+    reg_builtin(st: st, name: "clear_screen", params: ["color"])
+    reg_builtin(st: st, name: "draw_rect", params: ["x", "y", "width", "height", "color"])
+    reg_builtin(st: st, name: "draw_rect_outline", params: ["x", "y", "width", "height", "color"])
+    reg_builtin(st: st, name: "draw_circle", params: ["x", "y", "radius", "color"])
+    reg_builtin(st: st, name: "draw_line", params: ["x1", "y1", "x2", "y2", "color"])
+    reg_builtin(st: st, name: "draw_text", params: ["text", "x", "y", "size", "color"])
+    reg_builtin(st: st, name: "screen_width", params: [])
+    reg_builtin(st: st, name: "screen_height", params: [])
+    // Input stubs
+    reg_builtin(st: st, name: "is_key_down", params: ["key"])
+    reg_builtin(st: st, name: "is_key_pressed", params: ["key"])
+    // CLI
+    reg_builtin(st: st, name: "cli_args", params: [])
+    // File/network
+    reg_builtin(st: st, name: "fs_exists", params: ["path"])
+    reg_builtin(st: st, name: "fs_read_text", params: ["path"])
+    reg_builtin(st: st, name: "fs_write_text", params: ["path", "content"])
+    reg_builtin(st: st, name: "http_fetch", params: ["url"])
+    return ()
+end func init_builtins
+
+// ============================================================================
+// Builtin value extractors
+// ============================================================================
+
+// Extract Int from a Value, returning 0 on type mismatch.
+func as_int(val: Value) -> Int
+    example IntVal(42) -> 42
+    match val with
+        | IntVal(n) -> return n
+        | _ -> return 0
+    end match
+end func as_int
+
+// Extract String from a Value, returning "" on type mismatch.
+func as_str(val: Value) -> String
+    example StringVal("hi") -> "hi"
+    match val with
+        | StringVal(s) -> return s
+        | _ -> return ""
+    end match
+end func as_str
+
+// Extract Bool from a Value, returning false on type mismatch.
+func as_bool(val: Value) -> Bool
+    example BoolVal(true) -> true
+    match val with
+        | BoolVal(b) -> return b
+        | _ -> return false
+    end match
+end func as_bool
+
+// Check whether a runtime Value is numeric.
+func is_numeric_value(val: Value) -> Bool
+    example IntVal(1) -> true
+    example FloatVal("1.0") -> true
+    match val with
+        | IntVal(n) -> return true
+        | FloatVal(s) -> return true
+        | _ -> return false
+    end match
+end func is_numeric_value
+
+// Check whether both runtime Values are Ints.
+func both_int_values(left: Value, right: Value) -> Bool
+    example (IntVal(1), IntVal(2)) -> true
+    match left with
+        | IntVal(a) ->
+        match right with
+            | IntVal(b) -> return true
+            | _ -> return false
+        end match
+        | _ -> return false
+    end match
+end func both_int_values
+
+// Convert an IntVal or FloatVal into a Float.
+func value_to_float(val: Value) -> Option[Float]
+    example IntVal(2) -> Some(2.0)
+    example FloatVal("2.5") -> Some(2.5)
+    match val with
+        | IntVal(n) -> return Some(int_to_float(n))
+        | FloatVal(s) -> return parse_float(s)
+        | _ -> return None
+    end match
+end func value_to_float
+
+// Extract list items from a Value, returning [] on type mismatch.
+func as_list(val: Value) -> List[Value]
+    example ListVal([]) -> []
+    match val with
+        | ListVal(items) -> return items
+        | _ -> return []
+    end match
+end func as_list
+
+// ============================================================================
+// Builtin helper: list operations on Values
+// ============================================================================
+
+// Convert a list of Value strings to a list of geno Strings.
+func val_list_to_strs(vals: List[Value]) -> List[String]
+    example [] -> []
+    if length(vals) == 0 then
+        return []
+    end if
+    return concat([as_str(head(vals))], val_list_to_strs(tail(vals)))
+end func val_list_to_strs
+
+// Convert a list of geno Strings to a list of Value StringVals.
+func strs_to_val_list(strs: List[String]) -> List[Value]
+    example [] -> []
+    if length(strs) == 0 then
+        return []
+    end if
+    return concat([StringVal(head(strs))], strs_to_val_list(tail(strs)))
+end func strs_to_val_list
+
+// Create a Value list by setting element at index.
+func list_set_at(items: List[Value], idx: Int, val: Value) -> List[Value]
+    example ([], 0, IntVal(1)) -> []
+    if length(items) == 0 then
+        return []
+    end if
+    if idx == 0 then
+        return concat([val], tail(items))
+    end if
+    return concat([head(items)], list_set_at(items: tail(items), idx: idx - 1, val: val))
+end func list_set_at
+
+// Slice a list of Values from start to stop.
+func list_slice(items: List[Value], start: Int, stop: Int, cur: Int) -> List[Value]
+    example ([], 0, 0, 0) -> []
+    if length(items) == 0 then
+        return []
+    end if
+    if cur >= stop then
+        return []
+    end if
+    if cur < start then
+        return list_slice(items: tail(items), start: start, stop: stop, cur: cur + 1)
+    end if
+    return concat([head(items)], list_slice(items: tail(items), start: start, stop: stop, cur: cur + 1))
+end func list_slice
+
+// Check if a list contains a value.
+func list_contains(items: List[Value], target: Value) -> Bool
+    example ([], IntVal(1)) -> false
+    if length(items) == 0 then
+        return false
+    end if
+    if values_equal(head(items), target) then
+        return true
+    end if
+    return list_contains(tail(items), target)
+end func list_contains
+
+// Reverse a list of Values.
+func list_reverse_acc(items: List[Value], acc: List[Value]) -> List[Value]
+    example ([], []) -> []
+    if length(items) == 0 then
+        return acc
+    end if
+    return list_reverse_acc(tail(items), concat([head(items)], acc))
+end func list_reverse_acc
+
+// Check if a list of IntVals is sorted.
+func list_is_sorted(items: List[Value]) -> Bool
+    example [] -> true
+    if length(items) <= 1 then
+        return true
+    end if
+    let a: Int = as_int(head(items))
+    let rest: List[Value] = tail(items)
+    let b: Int = as_int(head(rest))
+    if a > b then
+        return false
+    end if
+    return list_is_sorted(rest)
+end func list_is_sorted
+
+// Check if one list is a permutation of another.
+func list_is_permutation(a: List[Value], b: List[Value]) -> Bool
+    example ([], []) -> true
+    if length(a) != length(b) then
+        return false
+    end if
+    return perm_check_all(a, b)
+end func list_is_permutation
+
+func perm_check_all(a: List[Value], b: List[Value]) -> Bool
+    example ([], []) -> true
+    if length(a) == 0 then
+        return true
+    end if
+    let v: Value = head(a)
+    if not list_contains(b, v) then
+        return false
+    end if
+    return perm_check_all(tail(a), b)
+end func perm_check_all
+
+// Check if a string is numeric.
+func str_is_numeric(s: String) -> Bool
+    example "123" -> true
+    if length(s) == 0 then
+        return false
+    end if
+    let chars: List[String] = to_chars(s)
+    return chars_all_digits(chars)
+end func str_is_numeric
+
+func chars_all_digits(chars: List[String]) -> Bool
+    example [] -> true
+    if length(chars) == 0 then
+        return true
+    end if
+    let c: String = head(chars)
+    let code: Int = char_code(c)
+    if code < 48 then
+        return false
+    end if
+    if code > 57 then
+        return false
+    end if
+    return chars_all_digits(tail(chars))
+end func chars_all_digits
+
+// Build an array Vec filled with n copies of a default value.
+func build_array_vec(n: Int, default_val: Value, v: Vec[Value], idx: Int) -> Vec[Value]
+    example (0, UnitVal, vec_new(), 0) -> vec_new()
+    if idx >= n then
+        return v
+    end if
+    vec_push(v, default_val)
+    return build_array_vec(n: n, default_val: default_val, v: v, idx: idx + 1)
+end func build_array_vec
+
+// Copy list items into a Vec.
+func list_to_vec(items: List[Value], v: Vec[Value]) -> Vec[Value]
+    example ([], vec_new()) -> vec_new()
+    if length(items) == 0 then
+        return v
+    end if
+    vec_push(v, head(items))
+    return list_to_vec(tail(items), v)
+end func list_to_vec
+
+// Copy Vec items to a list.
+func vec_to_val_list(v: Vec[Value], idx: Int) -> List[Value]
+    example (vec_new(), 0) -> []
+    if idx >= vec_length(v) then
+        return []
+    end if
+    return concat([vec_get(v, idx)], vec_to_val_list(v, idx + 1))
+end func vec_to_val_list
+
+// Copy MutableMap string keys to a Value list.
+func mmap_keys_to_vals(keys: List[String]) -> List[Value]
+    example [] -> []
+    if length(keys) == 0 then
+        return []
+    end if
+    return concat([StringVal(head(keys))], mmap_keys_to_vals(tail(keys)))
+end func mmap_keys_to_vals
+
+// Remove a key from an immutable map (association list of TupleVal pairs).
+func imap_remove_key(pairs: List[Value], key: Value) -> List[Value]
+    example ([], IntVal(1)) -> []
+    if length(pairs) == 0 then
+        return []
+    end if
+    let pair: Value = head(pairs)
+    match pair with
+        | TupleVal(elems) ->
+        if values_equal(head(elems), key) then
+            return imap_remove_key(pairs: tail(pairs), key: key)
+        end if
+        return concat([pair], imap_remove_key(pairs: tail(pairs), key: key))
+        | _ -> return concat([pair], imap_remove_key(pairs: tail(pairs), key: key))
+    end match
+end func imap_remove_key
+
+// Look up a key in an immutable map (association list of TupleVal pairs).
+// Returns CtorVal("Some", ...) or CtorVal("None", []).
+func imap_lookup(pairs: List[Value], key: Value) -> Value
+    example ([], IntVal(1)) -> CtorVal("None", [])
+    if length(pairs) == 0 then
+        return CtorVal("None", [])
+    end if
+    let pair: Value = head(pairs)
+    match pair with
+        | TupleVal(elems) ->
+        if values_equal(head(elems), key) then
+            return CtorVal("Some", [ValueField("value", head(tail(elems)))])
+        end if
+        return imap_lookup(pairs: tail(pairs), key: key)
+        | _ -> return imap_lookup(pairs: tail(pairs), key: key)
+    end match
+end func imap_lookup
+
+// ============================================================================
+// Builtin dispatch
+// ============================================================================
+
+// Dispatch a builtin function call by name.
+// st is needed for higher-order builtins (map, filter, fold) and print.
+// env is needed for higher-order builtins that call closures.
+func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "length", [ListVal([])], Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(0)
+
+    // ---- List operations ----
+    if name == "length" or name == "list_length" then
+        let arg: Value = head(args)
+        match arg with
+            | ListVal(items) -> return IntVal(length(items))
+            | StringVal(s) -> return IntVal(length(s))
+            | _ -> return rt_error(st, "length: expected list or string")
+        end match
+    end if
+
+    if name == "head" then
+        let items: List[Value] = as_list(head(args))
+        if length(items) == 0 then
+            return rt_error(st, "head: empty list")
+        end if
+        return head(items)
+    end if
+
+    if name == "tail" then
+        let items: List[Value] = as_list(head(args))
+        if length(items) == 0 then
+            return rt_error(st, "tail: empty list")
+        end if
+        return ListVal(tail(items))
+    end if
+
+    if name == "append" then
+        let items: List[Value] = as_list(head(args))
+        let elem: Value = head(tail(args))
+        return ListVal(append(items, elem))
+    end if
+
+    if name == "concat" then
+        let a: List[Value] = as_list(head(args))
+        let b: List[Value] = as_list(head(tail(args)))
+        return ListVal(concat(a, b))
+    end if
+
+    if name == "set_at" then
+        let items: List[Value] = as_list(head(args))
+        let idx: Int = as_int(head(tail(args)))
+        let val: Value = head(tail(tail(args)))
+        return ListVal(list_set_at(items: items, idx: idx, val: val))
+    end if
+
+    if name == "slice" then
+        let items: List[Value] = as_list(head(args))
+        let start: Int = as_int(head(tail(args)))
+        let stop: Int = as_int(head(tail(tail(args))))
+        return ListVal(list_slice(items: items, start: start, stop: stop, cur: 0))
+    end if
+
+    if name == "contains" then
+        let items: List[Value] = as_list(head(args))
+        let elem: Value = head(tail(args))
+        return BoolVal(list_contains(items, elem))
+    end if
+
+    if name == "reverse" then
+        let items: List[Value] = as_list(head(args))
+        return ListVal(list_reverse_acc(items, []))
+    end if
+
+    // ---- Higher-order list operations ----
+    if name == "filter" or name == "list_filter" then
+        let items: List[Value] = as_list(head(args))
+        let pred: Value = head(tail(args))
+        return ListVal(builtin_filter(st: st, items: items, pred: pred, env: env))
+    end if
+
+    if name == "map" or name == "list_map" then
+        let items: List[Value] = as_list(head(args))
+        let func_val: Value = head(tail(args))
+        return ListVal(builtin_map(st: st, items: items, func_val: func_val, env: env))
+    end if
+
+    if name == "fold" then
+        let items: List[Value] = as_list(head(args))
+        let init_val: Value = head(tail(args))
+        let func_val: Value = head(tail(tail(args)))
+        return builtin_fold(st: st, items: items, acc: init_val, func_val: func_val, env: env)
+    end if
+
+    if name == "take_while" then
+        let items: List[Value] = as_list(head(args))
+        let pred: Value = head(tail(args))
+        return ListVal(builtin_take_while(st: st, items: items, pred: pred, env: env))
+    end if
+
+    if name == "all" then
+        let items: List[Value] = as_list(head(args))
+        let pred: Value = head(tail(args))
+        return BoolVal(builtin_all(st: st, items: items, pred: pred, env: env))
+    end if
+
+    // ---- String operations ----
+    if name == "split" or name == "string_split" then
+        let text: String = as_str(head(args))
+        let delim: String = as_str(head(tail(args)))
+        let parts: List[String] = split(text, delim)
+        return ListVal(strs_to_val_list(parts))
+    end if
+
+    if name == "join" or name == "string_join" then
+        let parts: List[Value] = as_list(head(args))
+        let sep: String = as_str(head(tail(args)))
+        let strs: List[String] = val_list_to_strs(parts)
+        return StringVal(join(strs, sep))
+    end if
+
+    if name == "trim" or name == "string_trim" then
+        return StringVal(trim(as_str(head(args))))
+    end if
+
+    if name == "to_lower" or name == "string_to_lower" then
+        return StringVal(to_lower(as_str(head(args))))
+    end if
+
+    if name == "to_upper" or name == "string_to_upper" then
+        return StringVal(to_upper(as_str(head(args))))
+    end if
+
+    if name == "split_once" or name == "string_split_once" then
+        let text: String = as_str(head(args))
+        let delim: String = as_str(head(tail(args)))
+        let result: Option[(String, String)] = split_once(text, delim)
+        if is_some(result) then
+            let (lp, rp): (String, String) = unwrap(result)
+            return CtorVal("Some", [ValueField("value", TupleVal([StringVal(lp), StringVal(rp)]))])
+        end if
+        return CtorVal("None", [])
+    end if
+
+    if name == "starts_with" or name == "string_starts_with" then
+        let text: String = as_str(head(args))
+        let prefix: String = as_str(head(tail(args)))
+        return BoolVal(starts_with(text, prefix))
+    end if
+
+    if name == "ends_with" or name == "string_ends_with" then
+        let text: String = as_str(head(args))
+        let suffix: String = as_str(head(tail(args)))
+        return BoolVal(ends_with(text, suffix))
+    end if
+
+    if name == "contains_substring" or name == "string_contains" then
+        let text: String = as_str(head(args))
+        let sub: String = as_str(head(tail(args)))
+        return BoolVal(contains_substring(text, sub))
+    end if
+
+    if name == "to_chars" then
+        let text: String = as_str(head(args))
+        let chars: List[String] = to_chars(text)
+        return ListVal(strs_to_val_list(chars))
+    end if
+
+    if name == "sort_strings" then
+        let items: List[Value] = as_list(head(args))
+        let strs: List[String] = val_list_to_strs(items)
+        let sorted: List[String] = sort_strings(strs)
+        return ListVal(strs_to_val_list(sorted))
+    end if
+
+    if name == "substring" or name == "string_substring" then
+        let text: String = as_str(head(args))
+        let start: Int = as_int(head(tail(args)))
+        let stop: Int = as_int(head(tail(tail(args))))
+        return StringVal(substring(text: text, start: start, stop: stop))
+    end if
+
+    if name == "repeat_string" or name == "string_repeat" then
+        let text: String = as_str(head(args))
+        let count: Int = as_int(head(tail(args)))
+        if count < 0 then
+            return rt_error(st, name + ": count must be non-negative")
+        end if
+        if length(text) * count > selfhost_max_collection_size(0) then
+            return rt_error(st, name + ": result would exceed collection size limit")
+        end if
+        return StringVal(selfhost_repeat_text(text: text, count: count))
+    end if
+
+    if name == "string_char_at" then
+        let text: String = as_str(head(args))
+        let idx: Int = as_int(head(tail(args)))
+        if idx < 0 then
+            return StringVal("")
+        end if
+        if idx >= length(text) then
+            return StringVal("")
+        end if
+        return StringVal(substring(text: text, start: idx, stop: idx + 1))
+    end if
+
+    if name == "string_index_of" then
+        let text: String = as_str(head(args))
+        let sub: String = as_str(head(tail(args)))
+        return IntVal(selfhost_index_of(text: text, sub: sub))
+    end if
+
+    if name == "string_last_index_of" then
+        let text: String = as_str(head(args))
+        let sub: String = as_str(head(tail(args)))
+        return IntVal(selfhost_last_index_of(text: text, sub: sub))
+    end if
+
+    if name == "string_pad_left" or name == "string_pad_right" then
+        let text: String = as_str(head(args))
+        let width: Int = as_int(head(tail(args)))
+        let fill_char: String = as_str(head(tail(tail(args))))
+        if length(fill_char) != 1 then
+            return rt_error(st, name + ": fill_char must be a single character")
+        end if
+        if selfhost_pad_target_size(text: text, width: width) > selfhost_max_collection_size(0) then
+            return rt_error(st, name + ": result would exceed collection size limit")
+        end if
+        if name == "string_pad_left" then
+            return StringVal(selfhost_pad_left(text: text, width: width, fill_char: fill_char))
+        end if
+        return StringVal(selfhost_pad_right(text: text, width: width, fill_char: fill_char))
+    end if
+
+    // ---- Namespaced string operations (no legacy equivalent dispatched above) ----
+    if name == "string_trim_start" then
+        return StringVal(string_trim_start(as_str(head(args))))
+    end if
+
+    if name == "string_trim_end" then
+        return StringVal(string_trim_end(as_str(head(args))))
+    end if
+
+    if name == "replace" or name == "string_replace" then
+        let text: String = as_str(head(args))
+        let old_val: String = as_str(head(tail(args)))
+        let new_val: String = as_str(head(tail(tail(args))))
+        return StringVal(
+        string_replace(text: text, old: old_val, new: new_val)
+        )
+    end if
+
+    // ---- Math operations ----
+    if name == "add" then
+        return IntVal(as_int(head(args)) + as_int(head(tail(args))))
+    end if
+
+    if name == "subtract" then
+        return IntVal(as_int(head(args)) - as_int(head(tail(args))))
+    end if
+
+    if name == "multiply" then
+        return IntVal(as_int(head(args)) * as_int(head(tail(args))))
+    end if
+
+    if name == "divide" then
+        let divisor: Int = as_int(head(tail(args)))
+        if divisor == 0 then
+            return rt_error(st, "divide: division by zero")
+        end if
+        return IntVal(as_int(head(args)) / divisor)
+    end if
+
+    if name == "sqrt" then
+        // Approximate integer sqrt
+        let n: Int = as_int(head(args))
+        return IntVal(int_sqrt(n))
+    end if
+
+    if name == "max" or name == "math_max" then
+        let a: Int = as_int(head(args))
+        let b: Int = as_int(head(tail(args)))
+        if a > b then
+            return IntVal(a)
+        end if
+        return IntVal(b)
+    end if
+
+    if name == "abs" or name == "math_abs" then
+        let n: Int = as_int(head(args))
+        if n < 0 then
+            return IntVal(0 - n)
+        end if
+        return IntVal(n)
+    end if
+
+    if name == "square" then
+        let n: Int = as_int(head(args))
+        return IntVal(n * n)
+    end if
+
+    // ---- Type predicates ----
+    if name == "is_sorted" then
+        let items: List[Value] = as_list(head(args))
+        return BoolVal(list_is_sorted(items))
+    end if
+
+    if name == "is_positive" then
+        return BoolVal(as_int(head(args)) > 0)
+    end if
+
+    if name == "is_numeric_string" then
+        return BoolVal(str_is_numeric(as_str(head(args))))
+    end if
+
+    if name == "is_permutation" then
+        let a: List[Value] = as_list(head(args))
+        let b: List[Value] = as_list(head(tail(args)))
+        return BoolVal(list_is_permutation(a, b))
+    end if
+
+    // ---- Conversions ----
+    if name == "parse_int" then
+        let text: String = as_str(head(args))
+        let result: Option[Int] = parse_int(text)
+        if is_some(result) then
+            let n: Int = unwrap(result)
+            return CtorVal("Some", [ValueField("value", IntVal(n))])
+        end if
+        return CtorVal("None", [])
+    end if
+
+    if name == "to_string" then
+        return StringVal(value_to_str(head(args)))
+    end if
+
+    if name == "float_to_int" then
+        // Float stored as string — truncate towards zero like Python's int()
+        match head(args) with
+            | FloatVal(s) ->
+            // Split on "." and parse the integer part
+            let parts: List[String] = split(text: s, delimiter: ".")
+            let int_part: String = head(parts)
+            // Handle "-0" or just "-" edge case
+            if int_part == "-" then
+                return IntVal(0)
+            end if
+            if int_part == "-0" then
+                return IntVal(0)
+            end if
+            let result: Option[Int] = parse_int(int_part)
+            if is_some(result) then
+                return IntVal(unwrap(result))
+            end if
+            return IntVal(0)
+            | IntVal(n) -> return IntVal(n)
+            | _ -> return IntVal(0)
+        end match
+    end if
+
+    if name == "int_to_float" then
+        return FloatVal(to_string(as_int(head(args))) + ".0")
+    end if
+
+    // ---- Char operations ----
+    if name == "char_code" then
+        let text: String = as_str(head(args))
+        return IntVal(char_code(text))
+    end if
+
+    if name == "from_char_code" then
+        let code: Int = as_int(head(args))
+        return StringVal(from_char_code(code))
+    end if
+
+    // ---- Option operations ----
+    if name == "is_some" or name == "option_is_some" then
+        match head(args) with
+            | CtorVal(cn, cf) ->
+            if cn == "Some" then
+                return BoolVal(true)
+            end if
+            return BoolVal(false)
+            | _ -> return BoolVal(false)
+        end match
+    end if
+
+    if name == "is_none" or name == "option_is_none" then
+        match head(args) with
+            | CtorVal(cn, cf) ->
+            if cn == "None" then
+                return BoolVal(true)
+            end if
+            return BoolVal(false)
+            | UnitVal -> return BoolVal(true)
+            | _ -> return BoolVal(false)
+        end match
+    end if
+
+    if name == "unwrap" then
+        match head(args) with
+            | CtorVal(cn, cf) ->
+            if cn == "Some" then
+                let fv: Option[Value] = ctor_get_field(cf, "value")
+                if is_some(fv) then
+                    return unwrap(fv)
+                end if
+            end if
+            return rt_error(st, "unwrap: called on None")
+            | _ -> return rt_error(st, "unwrap: called on non-Option")
+        end match
+    end if
+
+    if name == "unwrap_or" or name == "option_unwrap_or" then
+        let opt: Value = head(args)
+        let default_v: Value = head(tail(args))
+        match opt with
+            | CtorVal(cn, cf) ->
+            if cn == "Some" then
+                let fv: Option[Value] = ctor_get_field(cf, "value")
+                if is_some(fv) then
+                    return unwrap(fv)
+                end if
+            end if
+            return default_v
+            | _ -> return default_v
+        end match
+    end if
+
+    // ---- Map (immutable) operations ----
+    // Immutable maps are represented as ListVal of TupleVal([key, value]) pairs.
+    if name == "map_insert" then
+        let m: Value = head(args)
+        let key: Value = head(tail(args))
+        let val: Value = head(tail(tail(args)))
+        // Get existing pairs, filter out the old key, add new pair
+        let old_pairs: List[Value] = as_list(m)
+        let filtered: List[Value] = imap_remove_key(pairs: old_pairs, key: key)
+        return ListVal(concat([TupleVal([key, val])], filtered))
+    end if
+
+    if name == "map_get" then
+        let m: Value = head(args)
+        let key: Value = head(tail(args))
+        let pairs: List[Value] = as_list(m)
+        return imap_lookup(pairs: pairs, key: key)
+    end if
+
+    // ---- IO ----
+    if name == "print" then
+        let text: String = format_val(head(args))
+        vec_push(st.out_buf, text + "\n")
+        print(text)
+        return UnitVal
+    end if
+
+    // ---- Clock / random ----
+    if name == "clock_now" then
+        return IntVal(0)
+    end if
+
+    if name == "random_int" or name == "math_random_int" then
+        let lo: Int = as_int(head(args))
+        let hi: Int = as_int(head(tail(args)))
+        return IntVal(lo)
+    end if
+
+    if name == "random_float" or name == "math_random_float" then
+        return FloatVal("0.0")
+    end if
+
+    // ---- Array operations ----
+    if name == "array_new" then
+        let sz: Int = as_int(head(args))
+        let def_val: Value = head(tail(args))
+        let v: Vec[Value] = build_array_vec(n: sz, default_val: def_val, v: vec_new(), idx: 0)
+        return ArrayRef(v)
+    end if
+
+    if name == "array_from_list" then
+        let items: List[Value] = as_list(head(args))
+        let v: Vec[Value] = list_to_vec(items, vec_new())
+        return ArrayRef(v)
+    end if
+
+    if name == "array_get" then
+        match head(args) with
+            | ArrayRef(v) ->
+            let idx: Int = as_int(head(tail(args)))
+            if idx < 0 then
+                return rt_error(st, "array_get: index out of bounds")
+            end if
+            if idx >= vec_length(v) then
+                return rt_error(st, "array_get: index out of bounds")
+            end if
+            return vec_get(v, idx)
+            | _ -> return rt_error(st, "array_get: expected array")
+        end match
+    end if
+
+    if name == "array_set" then
+        match head(args) with
+            | ArrayRef(v) ->
+            let idx: Int = as_int(head(tail(args)))
+            let val: Value = head(tail(tail(args)))
+            vec_set(vec: v, index: idx, value: val)
+            return UnitVal
+            | _ -> return rt_error(st, "array_set: expected array")
+        end match
+    end if
+
+    if name == "array_length" then
+        match head(args) with
+            | ArrayRef(v) -> return IntVal(vec_length(v))
+            | _ -> return rt_error(st, "array_length: expected array")
+        end match
+    end if
+
+    if name == "array_to_list" then
+        match head(args) with
+            | ArrayRef(v) -> return ListVal(vec_to_val_list(v, 0))
+            | _ -> return rt_error(st, "array_to_list: expected array")
+        end match
+    end if
+
+    if name == "array_fill" then
+        match head(args) with
+            | ArrayRef(v) ->
+            let val: Value = head(tail(args))
+            array_fill_vec(v: v, val: val, idx: 0)
+            return UnitVal
+            | _ -> return rt_error(st, "array_fill: expected array")
+        end match
+    end if
+
+    if name == "array_copy" then
+        match head(args) with
+            | ArrayRef(v) ->
+            let new_v: Vec[Value] = vec_new()
+            copy_vec_elems(src: v, dst: new_v, idx: 0)
+            return ArrayRef(new_v)
+            | _ -> return rt_error(st, "array_copy: expected array")
+        end match
+    end if
+
+    // ---- MutableMap operations ----
+    if name == "mutable_map_new" then
+        return MMapRef(mutable_map_new())
+    end if
+
+    if name == "mutable_map_set" then
+        match head(args) with
+            | MMapRef(m) ->
+            let key: String = as_str(head(tail(args)))
+            let val: Value = head(tail(tail(args)))
+            mutable_map_set(map: m, key: key, value: val)
+            return UnitVal
+            | _ -> return rt_error(st, "mutable_map_set: expected mutable map")
+        end match
+    end if
+
+    if name == "mutable_map_get" then
+        match head(args) with
+            | MMapRef(m) ->
+            let key: String = as_str(head(tail(args)))
+            let found: Option[Value] = mutable_map_get(map: m, key: key)
+            if is_some(found) then
+                let fv: Value = unwrap(found)
+                return CtorVal("Some", [ValueField("value", fv)])
+            end if
+            return CtorVal("None", [])
+            | _ -> return rt_error(st, "mutable_map_get: expected mutable map")
+        end match
+    end if
+
+    if name == "mutable_map_contains" then
+        match head(args) with
+            | MMapRef(m) ->
+            let key: String = as_str(head(tail(args)))
+            return BoolVal(mutable_map_contains(map: m, key: key))
+            | _ -> return rt_error(st, "mutable_map_contains: expected mutable map")
+        end match
+    end if
+
+    if name == "mutable_map_delete" then
+        match head(args) with
+            | MMapRef(m) ->
+            let key: String = as_str(head(tail(args)))
+            mutable_map_delete(map: m, key: key)
+            return UnitVal
+            | _ -> return rt_error(st, "mutable_map_delete: expected mutable map")
+        end match
+    end if
+
+    if name == "mutable_map_size" then
+        match head(args) with
+            | MMapRef(m) -> return IntVal(mutable_map_size(m))
+            | _ -> return rt_error(st, "mutable_map_size: expected mutable map")
+        end match
+    end if
+
+    if name == "mutable_map_keys" then
+        match head(args) with
+            | MMapRef(m) ->
+            let keys: List[String] = mutable_map_keys(m)
+            return ListVal(mmap_keys_to_vals(keys))
+            | _ -> return rt_error(st, "mutable_map_keys: expected mutable map")
+        end match
+    end if
+
+    // ---- Vec operations ----
+    if name == "vec_new" then
+        return VecRef(vec_new())
+    end if
+
+    if name == "vec_push" then
+        match head(args) with
+            | VecRef(v) ->
+            let item: Value = head(tail(args))
+            vec_push(v, item)
+            return UnitVal
+            | _ -> return rt_error(st, "vec_push: expected vec")
+        end match
+    end if
+
+    if name == "vec_get" then
+        match head(args) with
+            | VecRef(v) ->
+            let idx: Int = as_int(head(tail(args)))
+            if idx < 0 then
+                return rt_error(st, "vec_get: index out of bounds")
+            end if
+            if idx >= vec_length(v) then
+                return rt_error(st, "vec_get: index out of bounds")
+            end if
+            return vec_get(v, idx)
+            | _ -> return rt_error(st, "vec_get: expected vec")
+        end match
+    end if
+
+    if name == "vec_set" then
+        match head(args) with
+            | VecRef(v) ->
+            let idx: Int = as_int(head(tail(args)))
+            let val: Value = head(tail(tail(args)))
+            vec_set(vec: v, index: idx, value: val)
+            return UnitVal
+            | _ -> return rt_error(st, "vec_set: expected vec")
+        end match
+    end if
+
+    if name == "vec_length" then
+        match head(args) with
+            | VecRef(v) -> return IntVal(vec_length(v))
+            | _ -> return rt_error(st, "vec_length: expected vec")
+        end match
+    end if
+
+    if name == "vec_pop" then
+        match head(args) with
+            | VecRef(v) ->
+            if vec_length(v) == 0 then
+                return CtorVal("None", [])
+            end if
+            let popped: Option[Value] = vec_pop(v)
+            if is_some(popped) then
+                let pv: Value = unwrap(popped)
+                return CtorVal("Some", [ValueField("value", pv)])
+            end if
+            return CtorVal("None", [])
+            | _ -> return rt_error(st, "vec_pop: expected vec")
+        end match
+    end if
+
+    if name == "vec_to_list" then
+        match head(args) with
+            | VecRef(v) -> return ListVal(vec_to_val_list(v, 0))
+            | _ -> return rt_error(st, "vec_to_list: expected vec")
+        end match
+    end if
+
+    if name == "vec_from_list" then
+        let items: List[Value] = as_list(head(args))
+        let v: Vec[Value] = list_to_vec(items, vec_new())
+        return VecRef(v)
+    end if
+
+    // ---- Graphics stubs (return unit) ----
+    if name == "clear_screen" then
+        return UnitVal
+    end if
+    if name == "draw_rect" then
+        return UnitVal
+    end if
+    if name == "draw_rect_outline" then
+        return UnitVal
+    end if
+    if name == "draw_circle" then
+        return UnitVal
+    end if
+    if name == "draw_line" then
+        return UnitVal
+    end if
+    if name == "draw_text" then
+        return UnitVal
+    end if
+    if name == "screen_width" then
+        return IntVal(800)
+    end if
+    if name == "screen_height" then
+        return IntVal(600)
+    end if
+
+    // ---- Input stubs ----
+    if name == "is_key_down" then
+        return BoolVal(false)
+    end if
+    if name == "is_key_pressed" then
+        return BoolVal(false)
+    end if
+
+    // ---- Host bridges (delegate to compiled runtime) ----
+    if name == "cli_args" then
+        let raw_args: List[String] = cli_args()
+        return ListVal(mmap_keys_to_vals(raw_args))
+    end if
+    if name == "fs_exists" then
+        let epath: String = as_str(head(args))
+        return BoolVal(fs_exists(epath))
+    end if
+    if name == "fs_read_text" then
+        let path: String = as_str(head(args))
+        let content: String = fs_read_text(path)
+        return StringVal(content)
+    end if
+    if name == "fs_write_text" then
+        let fpath: String = as_str(head(args))
+        let fcontent: String = as_str(head(tail(args)))
+        fs_write_text(path: fpath, content: fcontent)
+        return UnitVal
+    end if
+    if name == "http_fetch" then
+        return rt_error(st, "http_fetch: host callback not available")
+    end if
+
+    return rt_error(st, "Unknown builtin: " + name)
+end func dispatch_builtin
+
+func selfhost_max_collection_size(dummy: Int) -> Int
+    example 0 -> 10000000
+    return 10000000
+end func selfhost_max_collection_size
+
+// Repeat text count times for selfhost string builtins.
+func selfhost_repeat_text(text: String, count: Int) -> String
+    example ("ab", 3) -> "ababab"
+    if text == "" then
+        return ""
+    end if
+    var result: String = ""
+    var i: Int = 0
+    while i < count do
+        result = result + text
+        i = i + 1
+    end while
+    return result
+end func selfhost_repeat_text
+
+func selfhost_index_of(text: String, sub: String) -> Int
+    example ("hello", "ll") -> 2
+    if sub == "" then
+        return 0
+    end if
+    let sub_len: Int = length(sub)
+    let text_len: Int = length(text)
+    var i: Int = 0
+    while i + sub_len <= text_len do
+        if substring(text: text, start: i, stop: i + sub_len) == sub then
+            return i
+        end if
+        i = i + 1
+    end while
+    return -1
+end func selfhost_index_of
+
+func selfhost_last_index_of(text: String, sub: String) -> Int
+    example ("banana", "na") -> 4
+    if sub == "" then
+        return length(text)
+    end if
+    let sub_len: Int = length(sub)
+    let text_len: Int = length(text)
+    var i: Int = text_len - sub_len
+    while i >= 0 do
+        if substring(text: text, start: i, stop: i + sub_len) == sub then
+            return i
+        end if
+        i = i - 1
+    end while
+    return -1
+end func selfhost_last_index_of
+
+func selfhost_pad_target_size(text: String, width: Int) -> Int
+    example ("hi", 4) -> 4
+    if length(text) > width then
+        return length(text)
+    end if
+    return width
+end func selfhost_pad_target_size
+
+func selfhost_pad_left(text: String, width: Int, fill_char: String) -> String
+    example ("x", 3, "0") -> "00x"
+    var result: String = text
+    while length(result) < width do
+        result = fill_char + result
+    end while
+    return result
+end func selfhost_pad_left
+
+func selfhost_pad_right(text: String, width: Int, fill_char: String) -> String
+    example ("x", 3, "0") -> "x00"
+    var result: String = text
+    while length(result) < width do
+        result = result + fill_char
+    end while
+    return result
+end func selfhost_pad_right
+
+// Integer square root (floor).
+func int_sqrt(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    var guess: Int = n
+    while guess * guess > n do
+        guess = (guess + n / guess) / 2
+    end while
+    return guess
+end func int_sqrt
+
+// Fill a Vec with a value at every index.
+func array_fill_vec(v: Vec[Value], val: Value, idx: Int) -> Unit
+    example (vec_new(), UnitVal, 0) -> ()
+    if idx >= vec_length(v) then
+        return ()
+    end if
+    vec_set(vec: v, index: idx, value: val)
+    return array_fill_vec(v: v, val: val, idx: idx + 1)
+end func array_fill_vec
+
+// Copy all elements from one Vec to another.
+func copy_vec_elems(src: Vec[Value], dst: Vec[Value], idx: Int) -> Unit
+    example (vec_new(), vec_new(), 0) -> ()
+    if idx >= vec_length(src) then
+        return ()
+    end if
+    vec_push(dst, vec_get(src, idx))
+    return copy_vec_elems(src: src, dst: dst, idx: idx + 1)
+end func copy_vec_elems
+
+// ============================================================================
+// Higher-order builtin helpers
+// ============================================================================
+
+// filter: keep items where predicate returns true.
+func builtin_filter(st: InterpState, items: List[Value], pred: Value, env: Env) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    if interp_has_error(st) then
+        return []
+    end if
+    if length(items) == 0 then
+        return []
+    end if
+    let item: Value = head(items)
+    let result: Value = call_function(st: st, func_val: pred, call_args: [item], env: env)
+    let rest: List[Value] = builtin_filter(st: st, items: tail(items), pred: pred, env: env)
+    if as_bool(result) then
+        return concat([item], rest)
+    end if
+    return rest
+end func builtin_filter
+
+// map: apply function to each item.
+func builtin_map(st: InterpState, items: List[Value], func_val: Value, env: Env) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("to_string"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    if interp_has_error(st) then
+        return []
+    end if
+    if length(items) == 0 then
+        return []
+    end if
+    let item: Value = head(items)
+    let result: Value = call_function(st: st, func_val: func_val, call_args: [item], env: env)
+    let rest: List[Value] = builtin_map(st: st, items: tail(items), func_val: func_val, env: env)
+    return concat([result], rest)
+end func builtin_map
+
+// fold: accumulate over list with function.
+func builtin_fold(st: InterpState, items: List[Value], acc: Value, func_val: Value, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], IntVal(0), BuiltinVal("add"), Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(0)
+    if interp_has_error(st) then
+        return acc
+    end if
+    if length(items) == 0 then
+        return acc
+    end if
+    let item: Value = head(items)
+    let new_acc: Value = call_function(st: st, func_val: func_val, call_args: [acc, item], env: env)
+    return builtin_fold(st: st, items: tail(items), acc: new_acc, func_val: func_val, env: env)
+end func builtin_fold
+
+// take_while: take items while predicate is true.
+func builtin_take_while(st: InterpState, items: List[Value], pred: Value, env: Env) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    if interp_has_error(st) then
+        return []
+    end if
+    if length(items) == 0 then
+        return []
+    end if
+    let item: Value = head(items)
+    let result: Value = call_function(st: st, func_val: pred, call_args: [item], env: env)
+    if not as_bool(result) then
+        return []
+    end if
+    return concat([item], builtin_take_while(st: st, items: tail(items), pred: pred, env: env))
+end func builtin_take_while
+
+// all: check if all items satisfy predicate.
+func builtin_all(st: InterpState, items: List[Value], pred: Value, env: Env) -> Bool
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> true
+    if interp_has_error(st) then
+        return false
+    end if
+    if length(items) == 0 then
+        return true
+    end if
+    let item: Value = head(items)
+    let result: Value = call_function(st: st, func_val: pred, call_args: [item], env: env)
+    if not as_bool(result) then
+        return false
+    end if
+    return builtin_all(st: st, items: tail(items), pred: pred, env: env)
+end func builtin_all
+
+// ============================================================================
+// Expression evaluation
+// ============================================================================
+
+// Evaluate an expression AST node and return a runtime Value.
+func eval_expr(st: InterpState, expr: Expr, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(42), Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(42)
+    if interp_has_error(st) then
+        return UnitVal
+    end if
+    match expr with
+        | IntLit(v) -> return IntVal(v)
+        | FloatLit(fv) -> return FloatVal(fv)
+        | StrLit(sv) -> return StringVal(sv)
+        | BoolLit(bv) -> return BoolVal(bv)
+        | Ident(name) -> return eval_ident(st: st, name: name, env: env)
+        | TypeIdent(name) -> return eval_type_ident(st, name)
+        | ListLitExpr(elems) -> return ListVal(eval_expr_list(st: st, exprs: elems, env: env))
+        | BinOp(op, left, right) -> return eval_binop(st: st, op: op, left: left, right: right, env: env)
+        | UnaryOpExpr(op, operand) -> return eval_unary(st: st, op: op, operand: operand, env: env)
+        | CallExpr(func_expr, call_args) -> return eval_call(st: st, func_expr: func_expr, call_args: call_args, env: env)
+        | IndexExpr(target, idx) -> return eval_index(st: st, target: target, idx: idx, env: env)
+        | FieldExpr(target, field_name) -> return eval_field_access(st: st, target: target, field_name: field_name, env: env)
+        | PipelineExpr(init, stages) -> return eval_pipeline(st: st, init: init, stages: stages, env: env)
+        | PlaceholderE -> return UnitVal
+        | LambdaE(params, ret_type, body) -> return eval_lambda(st: st, params: params, body: body, env: env)
+        | MatchE(scrutinee, arms) -> return eval_match_expr(st: st, scrutinee: scrutinee, arms: arms, env: env)
+        | ConstructorE(name, ctor_args) -> return eval_ctor_call(st: st, name: name, ctor_args: ctor_args, env: env)
+        | TupleE(elems) -> return eval_tuple(st: st, elems: elems, env: env)
+        | TypedHoleE(name, hole_type, constraint) -> return rt_error(st, "Encountered unfilled hole: ?" + name)
+        | WithE(target, updates) -> return eval_with(st: st, target: target, updates: updates, env: env)
+    end match
+end func eval_expr
+
+// Evaluate a list of expressions.
+func eval_expr_list(st: InterpState, exprs: List[Expr], env: Env) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> []
+    if length(exprs) == 0 then
+        return []
+    end if
+    let v: Value = eval_expr(st: st, expr: head(exprs), env: env)
+    return concat([v], eval_expr_list(st: st, exprs: tail(exprs), env: env))
+end func eval_expr_list
+
+// Evaluate an identifier (variable lookup).
+func eval_ident(st: InterpState, name: String, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    let found: Option[Value] = env_lookup(env, name)
+    if is_some(found) then
+        return unwrap(found)
+    end if
+    return rt_error(st, "Undefined variable: " + name)
+end func eval_ident
+
+// Evaluate a type identifier (nullary constructor).
+func eval_type_ident(st: InterpState, name: String) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "None") -> CtorVal("None", [])
+    // Check if it's a known nullary constructor
+    let info: Option[CtorInfo] = mutable_map_get(map: st.ctor_info, key: name)
+    if is_some(info) then
+        let ci: CtorInfo = unwrap(info)
+        if length(ci.ci_fields) == 0 then
+            return CtorVal(name, [])
+        end if
+    end if
+    // Built-in nullary constructors
+    if name == "None" then
+        return CtorVal("None", [])
+    end if
+    return rt_error(st, "Unknown constructor: " + name)
+end func eval_type_ident
+
+// Evaluate a binary operation.
+func eval_binop(st: InterpState, op: String, left: Expr, right: Expr, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "+", IntLit(1), IntLit(2), Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(3)
+
+    // Short-circuit for and/or
+    if op == "and" then
+        let lv: Value = eval_expr(st: st, expr: left, env: env)
+        if not as_bool(lv) then
+            return BoolVal(false)
+        end if
+        return BoolVal(as_bool(eval_expr(st: st, expr: right, env: env)))
+    end if
+
+    if op == "or" then
+        let lv: Value = eval_expr(st: st, expr: left, env: env)
+        if as_bool(lv) then
+            return BoolVal(true)
+        end if
+        return BoolVal(as_bool(eval_expr(st: st, expr: right, env: env)))
+    end if
+
+    let lv: Value = eval_expr(st: st, expr: left, env: env)
+    let rv: Value = eval_expr(st: st, expr: right, env: env)
+
+    // Equality / inequality work on all types
+    if op == "==" then
+        return BoolVal(values_equal(lv, rv))
+    end if
+    if op == "!=" then
+        return BoolVal(not values_equal(lv, rv))
+    end if
+
+    // String concatenation
+    if op == "+" then
+        match lv with
+            | StringVal(ls) ->
+            match rv with
+                | StringVal(rs) -> return StringVal(ls + rs)
+                | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
+            end match
+            | ListVal(li) ->
+            match rv with
+                | ListVal(ri) -> return ListVal(concat(li, ri))
+                | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
+            end match
+            | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
+        end match
+    end if
+
+    return binop_numeric(st: st, op: op, lv: lv, rv: rv)
+end func eval_binop
+
+// Numeric binary operations.
+func binop_numeric(st: InterpState, op: String, lv: Value, rv: Value) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "+", IntVal(1), IntVal(2)) -> IntVal(3)
+    if not is_numeric_value(lv) or not is_numeric_value(rv) then
+        return rt_error(st, "Operator '" + op + "' expects numeric operands")
+    end if
+
+    if both_int_values(lv, rv) then
+        let a: Int = as_int(lv)
+        let b: Int = as_int(rv)
+        if op == "+" then
+            return IntVal(a + b)
+        end if
+        if op == "-" then
+            return IntVal(a - b)
+        end if
+        if op == "*" then
+            return IntVal(a * b)
+        end if
+        if op == "/" then
+            if b == 0 then
+                return rt_error(st, "Division by zero")
+            end if
+            return IntVal(a / b)
+        end if
+        if op == "%" then
+            if b == 0 then
+                return rt_error(st, "Modulo by zero")
+            end if
+            return IntVal(a % b)
+        end if
+        if op == "<" then
+            return BoolVal(a < b)
+        end if
+        if op == ">" then
+            return BoolVal(a > b)
+        end if
+        if op == "<=" then
+            return BoolVal(a <= b)
+        end if
+        if op == ">=" then
+            return BoolVal(a >= b)
+        end if
+        return rt_error(st, "Unknown operator: " + op)
+    end if
+
+    let left_num: Option[Float] = value_to_float(lv)
+    let right_num: Option[Float] = value_to_float(rv)
+    if not is_some(left_num) or not is_some(right_num) then
+        return rt_error(st, "Operator '" + op + "' received invalid numeric value")
+    end if
+    let fa: Float = unwrap(left_num)
+    let fb: Float = unwrap(right_num)
+    if op == "+" then
+        return FloatVal(to_string(fa + fb))
+    end if
+    if op == "-" then
+        return FloatVal(to_string(fa - fb))
+    end if
+    if op == "*" then
+        return FloatVal(to_string(fa * fb))
+    end if
+    if op == "/" then
+        if fb == 0.0 then
+            return rt_error(st, "Division by zero")
+        end if
+        return FloatVal(to_string(fa / fb))
+    end if
+    if op == "%" then
+        if fb == 0.0 then
+            return rt_error(st, "Modulo by zero")
+        end if
+        return FloatVal(to_string(fa % fb))
+    end if
+    if op == "<" then
+        return BoolVal(fa < fb)
+    end if
+    if op == ">" then
+        return BoolVal(fa > fb)
+    end if
+    if op == "<=" then
+        return BoolVal(fa <= fb)
+    end if
+    if op == ">=" then
+        return BoolVal(fa >= fb)
+    end if
+    return rt_error(st, "Unknown operator: " + op)
+end func binop_numeric
+
+// Evaluate a unary operation.
+func eval_unary(st: InterpState, op: String, operand: Expr, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "-", IntLit(5), Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(0 - 5)
+    let v: Value = eval_expr(st: st, expr: operand, env: env)
+    if op == "-" then
+        match v with
+            | IntVal(n) -> return IntVal(0 - n)
+            | FloatVal(s) ->
+            let parsed: Option[Float] = parse_float(s)
+            if is_some(parsed) then
+                return FloatVal(to_string(0.0 - unwrap(parsed)))
+            end if
+            return rt_error(st, "Unary '-' received invalid numeric value")
+            | _ -> return rt_error(st, "Unary '-' expects numeric operand")
+        end match
+    end if
+    if op == "not" then
+        return BoolVal(not as_bool(v))
+    end if
+    return rt_error(st, "Unknown unary operator: " + op)
+end func eval_unary
+
+// Evaluate a function call expression.
+func eval_call(st: InterpState, func_expr: Expr, call_args: List[CallArg], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), Ident("length"), [CallArg(None, ListLitExpr([]))], Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    let func_val: Value = eval_expr(st: st, expr: func_expr, env: env)
+
+    // Check for named arguments
+    let has_named: Bool = call_args_have_names(call_args)
+
+    if has_named then
+        // Reorder named arguments to match parameter order
+        match func_val with
+            | ClosureVal(cd) ->
+            let param_names: List[String] = get_param_names(cd.cl_params)
+            let reordered: List[Value] = reorder_named_args(st: st, call_args: call_args, param_names: param_names, env: env)
+            return call_function(st: st, func_val: func_val, call_args: reordered, env: env)
+            | BuiltinVal(bn) ->
+            // Reorder named args using builtin parameter names
+            let bp_opt: Option[List[String]] = mutable_map_get(map: st.builtin_params, key: bn)
+            if is_some(bp_opt) then
+                let bp_names: List[String] = unwrap(bp_opt)
+                let reordered: List[Value] = reorder_named_args(st: st, call_args: call_args, param_names: bp_names, env: env)
+                return call_function(st: st, func_val: func_val, call_args: reordered, env: env)
+            end if
+            let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
+            return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
+            | _ ->
+            let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
+            return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
+        end match
+    end if
+
+    let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
+    return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
+end func eval_call
+
+// Check if any CallArg has a name.
+func call_args_have_names(args: List[CallArg]) -> Bool
+    example [] -> false
+    if length(args) == 0 then
+        return false
+    end if
+    let arg: CallArg = head(args)
+    if is_some(arg.name) then
+        return true
+    end if
+    return call_args_have_names(tail(args))
+end func call_args_have_names
+
+// Get parameter names from a Param list.
+func get_param_names(params: List[Param]) -> List[String]
+    example [] -> []
+    if length(params) == 0 then
+        return []
+    end if
+    let p: Param = head(params)
+    return concat([p.name], get_param_names(tail(params)))
+end func get_param_names
+
+// Evaluate call arguments positionally (ignoring names).
+func eval_call_args_positional(st: InterpState, call_args: List[CallArg], env: Env) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> []
+    if length(call_args) == 0 then
+        return []
+    end if
+    let arg: CallArg = head(call_args)
+    let v: Value = eval_expr(st: st, expr: arg.value, env: env)
+    return concat([v], eval_call_args_positional(st: st, call_args: tail(call_args), env: env))
+end func eval_call_args_positional
+
+// Reorder named arguments to match parameter order.
+func reorder_named_args(st: InterpState, call_args: List[CallArg], param_names: List[String], env: Env) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], [], Env(mutable_map_new(), None, mutable_map_new())) -> []
+    // Build a map of name -> evaluated value for named args
+    let named_map: MutableMap[String, Value] = mutable_map_new()
+    let positional: Vec[Value] = vec_new()
+    fill_named_and_positional(st: st, call_args: call_args, env: env, named_map: named_map, positional: positional)
+    // Now build result in param order
+    return build_reordered(param_names: param_names, named_map: named_map, positional: positional, pos_idx: 0)
+end func reorder_named_args
+
+// Separate named and positional args.
+func fill_named_and_positional(st: InterpState, call_args: List[CallArg], env: Env, named_map: MutableMap[String, Value], positional: Vec[Value]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), vec_new()) -> ()
+    if length(call_args) == 0 then
+        return ()
+    end if
+    let arg: CallArg = head(call_args)
+    let val: Value = eval_expr(st: st, expr: arg.value, env: env)
+    if is_some(arg.name) then
+        let n: String = unwrap(arg.name)
+        mutable_map_set(map: named_map, key: n, value: val)
+    else
+        vec_push(positional, val)
+    end if
+    return fill_named_and_positional(st: st, call_args: tail(call_args), env: env, named_map: named_map, positional: positional)
+end func fill_named_and_positional
+
+// Build reordered argument list from param names.
+func build_reordered(param_names: List[String], named_map: MutableMap[String, Value], positional: Vec[Value], pos_idx: Int) -> List[Value]
+    example ([], mutable_map_new(), vec_new(), 0) -> []
+    if length(param_names) == 0 then
+        return []
+    end if
+    let pname: String = head(param_names)
+    let named_val: Option[Value] = mutable_map_get(map: named_map, key: pname)
+    if is_some(named_val) then
+        let nv: Value = unwrap(named_val)
+        return concat([nv], build_reordered(param_names: tail(param_names), named_map: named_map, positional: positional, pos_idx: pos_idx))
+    end if
+    // Use next positional arg
+    if pos_idx < vec_length(positional) then
+        let pv: Value = vec_get(positional, pos_idx)
+        return concat([pv], build_reordered(param_names: tail(param_names), named_map: named_map, positional: positional, pos_idx: pos_idx + 1))
+    end if
+    // Missing argument — use UnitVal as fallback
+    return concat([UnitVal], build_reordered(param_names: tail(param_names), named_map: named_map, positional: positional, pos_idx: pos_idx))
+end func build_reordered
+
+// Evaluate index access (list/string/array indexing).
+func eval_index(st: InterpState, target: Expr, idx: Expr, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), ListLitExpr([]), IntLit(0), Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    let target_val: Value = eval_expr(st: st, expr: target, env: env)
+    let idx_val: Value = eval_expr(st: st, expr: idx, env: env)
+    let i: Int = as_int(idx_val)
+
+    match target_val with
+        | ListVal(items) ->
+        if i < 0 then
+            return rt_error(st, "Index out of bounds: " + to_string(i))
+        end if
+        if i >= length(items) then
+            return rt_error(st, "Index out of bounds: " + to_string(i))
+        end if
+        return list_get_at(items, i)
+        | StringVal(s) ->
+        if i < 0 then
+            return rt_error(st, "Index out of bounds: " + to_string(i))
+        end if
+        if i >= length(s) then
+            return rt_error(st, "Index out of bounds: " + to_string(i))
+        end if
+        let chars: List[String] = to_chars(s)
+        return StringVal(list_str_get_at(chars, i))
+        | ArrayRef(v) ->
+        if i < 0 then
+            return rt_error(st, "Index out of bounds: " + to_string(i))
+        end if
+        if i >= vec_length(v) then
+            return rt_error(st, "Index out of bounds: " + to_string(i))
+        end if
+        return vec_get(v, i)
+        | _ -> return rt_error(st, "Cannot index into non-indexable value")
+    end match
+end func eval_index
+
+// Get the nth element of a list.
+func list_get_at(items: List[Value], idx: Int) -> Value
+    example ([IntVal(1)], 0) -> IntVal(1)
+    if length(items) == 0 then
+        return UnitVal
+    end if
+    if idx == 0 then
+        return head(items)
+    end if
+    return list_get_at(tail(items), idx - 1)
+end func list_get_at
+
+// Get the nth element of a string list.
+func list_str_get_at(items: List[String], idx: Int) -> String
+    example (["a"], 0) -> "a"
+    if length(items) == 0 then
+        return ""
+    end if
+    if idx == 0 then
+        return head(items)
+    end if
+    return list_str_get_at(tail(items), idx - 1)
+end func list_str_get_at
+
+// Evaluate field access on a constructor value.
+func eval_field_access(st: InterpState, target: Expr, field_name: String, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(0), "x", Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    let target_val: Value = eval_expr(st: st, expr: target, env: env)
+    match target_val with
+        | CtorVal(cn, cf) ->
+        let fv: Option[Value] = ctor_get_field(cf, field_name)
+        if is_some(fv) then
+            return unwrap(fv)
+        end if
+        return rt_error(st, "No field '" + field_name + "' on " + cn)
+        | _ -> return rt_error(st, "Cannot access field on non-constructor value")
+    end match
+end func eval_field_access
+
+// Evaluate a pipeline expression.
+func eval_pipeline(st: InterpState, init: Expr, stages: List[PipeStage], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(1), [], Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(1)
+    let current: Value = eval_expr(st: st, expr: init, env: env)
+    return eval_pipeline_stages(st: st, current: current, stages: stages, env: env)
+end func eval_pipeline
+
+// Process pipeline stages one at a time.
+func eval_pipeline_stages(st: InterpState, current: Value, stages: List[PipeStage], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntVal(1), [], Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(1)
+    if length(stages) == 0 then
+        return current
+    end if
+    let stage: PipeStage = head(stages)
+    let func_val: Value = eval_expr(st: st, expr: stage.func_expr, env: env)
+
+    // Evaluate stage args, replacing placeholders with current
+    let stage_args: List[Value] = eval_pipe_args(st: st, exprs: stage.args, env: env, current: current)
+    let has_placeholder: Bool = pipe_has_placeholder(stage.args)
+
+    var final_args: List[Value] = stage_args
+    if not has_placeholder then
+        final_args = concat([current], stage_args)
+    end if
+
+    let result: Value = call_function(st: st, func_val: func_val, call_args: final_args, env: env)
+    return eval_pipeline_stages(st: st, current: result, stages: tail(stages), env: env)
+end func eval_pipeline_stages
+
+// Check if any expression in a list is a PlaceholderE.
+func pipe_has_placeholder(exprs: List[Expr]) -> Bool
+    example [] -> false
+    if length(exprs) == 0 then
+        return false
+    end if
+    match head(exprs) with
+        | PlaceholderE -> return true
+        | _ -> return pipe_has_placeholder(tail(exprs))
+    end match
+end func pipe_has_placeholder
+
+// Evaluate pipeline stage arguments, replacing placeholders.
+func eval_pipe_args(st: InterpState, exprs: List[Expr], env: Env, current: Value) -> List[Value]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new()), IntVal(0)) -> []
+    if length(exprs) == 0 then
+        return []
+    end if
+    let e: Expr = head(exprs)
+    match e with
+        | PlaceholderE ->
+        return concat([current], eval_pipe_args(st: st, exprs: tail(exprs), env: env, current: current))
+        | _ ->
+        let v: Value = eval_expr(st: st, expr: e, env: env)
+        return concat([v], eval_pipe_args(st: st, exprs: tail(exprs), env: env, current: current))
+    end match
+end func eval_pipe_args
+
+// Evaluate a lambda expression (creates a closure).
+func eval_lambda(st: InterpState, params: List[Param], body: Expr, env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], IntLit(0), Env(mutable_map_new(), None, mutable_map_new())) -> ClosureVal(ClosureData([], [ReturnStmt(IntLit(0))], Env(mutable_map_new(), None, mutable_map_new()), "<lambda>", SpecBlock([], [], []), dummy_span(0)))
+    // Lambda body is a single expression — wrap in a ReturnStmt
+    let body_stmts: List[Stmt] = [ReturnStmt(body)]
+    let cd: ClosureData = ClosureData(params, body_stmts, env, "<lambda>", empty_specs(0), interp_current_span(st))
+    return ClosureVal(cd)
+end func eval_lambda
+
+// Evaluate a constructor call.
+func eval_ctor_call(st: InterpState, name: String, ctor_args: List[Expr], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "None", [], Env(mutable_map_new(), None, mutable_map_new())) -> CtorVal("None", [])
+
+    // Built-in: Some
+    if name == "Some" then
+        if length(ctor_args) == 1 then
+            let v: Value = eval_expr(st: st, expr: head(ctor_args), env: env)
+            return CtorVal("Some", [ValueField("value", v)])
+        end if
+        return rt_error(st, "Some expects 1 argument")
+    end if
+
+    // Built-in: None
+    if name == "None" then
+        return CtorVal("None", [])
+    end if
+
+    // Built-in: Ok
+    if name == "Ok" then
+        if length(ctor_args) == 1 then
+            let v: Value = eval_expr(st: st, expr: head(ctor_args), env: env)
+            return CtorVal("Ok", [ValueField("value", v)])
+        end if
+        return rt_error(st, "Ok expects 1 argument")
+    end if
+
+    // Built-in: Err
+    if name == "Err" then
+        if length(ctor_args) == 1 then
+            let v: Value = eval_expr(st: st, expr: head(ctor_args), env: env)
+            return CtorVal("Err", [ValueField("error", v)])
+        end if
+        return rt_error(st, "Err expects 1 argument")
+    end if
+
+    // User-defined constructor
+    let info: Option[CtorInfo] = mutable_map_get(map: st.ctor_info, key: name)
+    if is_some(info) then
+        let ci: CtorInfo = unwrap(info)
+        let field_names: List[String] = ci.ci_fields
+        let vals: List[Value] = eval_expr_list(st: st, exprs: ctor_args, env: env)
+        let fields: List[ValueField] = build_fields(field_names, vals)
+        return CtorVal(name, fields)
+    end if
+
+    return rt_error(st, "Unknown constructor: " + name)
+end func eval_ctor_call
+
+// Evaluate a tuple expression.
+func eval_tuple(st: InterpState, elems: List[Expr], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    if length(elems) == 0 then
+        return UnitVal
+    end if
+    return TupleVal(eval_expr_list(st: st, exprs: elems, env: env))
+end func eval_tuple
+
+// Evaluate a match expression.
+func eval_match_expr(st: InterpState, scrutinee: Expr, arms: List[MatchArm], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(1), [], Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    let val: Value = eval_expr(st: st, expr: scrutinee, env: env)
+    return try_match_arms_expr(st: st, val: val, arms: arms, env: env)
+end func eval_match_expr
+
+// Try match arms in order for a match expression.
+func try_match_arms_expr(st: InterpState, val: Value, arms: List[MatchArm], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntVal(1), [], Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    if length(arms) == 0 then
+        return rt_error(st, "No matching pattern in match expression")
+    end if
+    let arm: MatchArm = head(arms)
+    let bindings: Option[List[ValueField]] = match_pattern(st: st, pat: arm.pat, val: val)
+    if is_some(bindings) then
+        let bs: List[ValueField] = unwrap(bindings)
+        let arm_env: Env = env_child(env)
+        bind_pattern_vars(arm_env, bs)
+        // Execute arm body
+        let result: ExecResult = exec_stmts(st: st, stmts: arm.body, env: arm_env)
+        match result with
+            | ExecReturn(rv) -> return rv
+            | ExecNormal -> return UnitVal
+        end match
+    end if
+    return try_match_arms_expr(st: st, val: val, arms: tail(arms), env: env)
+end func try_match_arms_expr
+
+// Bind pattern variables into an environment.
+func bind_pattern_vars(env: Env, bindings: List[ValueField]) -> Unit
+    example (Env(mutable_map_new(), None, mutable_map_new()), []) -> ()
+    if length(bindings) == 0 then
+        return ()
+    end if
+    let b: ValueField = head(bindings)
+    env_bind(env: env, name: b.fname, val: b.fval)
+    return bind_pattern_vars(env, tail(bindings))
+end func bind_pattern_vars
+
+// Evaluate a with expression (constructor value copy with updated fields).
+func eval_with(st: InterpState, target: Expr, updates: List[FieldUpdate], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(0), [], Env(mutable_map_new(), None, mutable_map_new())) -> UnitVal
+    let target_val: Value = eval_expr(st: st, expr: target, env: env)
+    match target_val with
+        | CtorVal(cn, cf) ->
+        let update_fields_list: List[ValueField] = eval_field_updates(st: st, updates: updates, env: env)
+        let new_fields: List[ValueField] = update_fields(cf, update_fields_list)
+        return CtorVal(cn, new_fields)
+        | _ -> return rt_error(st, "'with' requires a constructor value")
+    end match
+end func eval_with
+
+// Evaluate field update expressions.
+func eval_field_updates(st: InterpState, updates: List[FieldUpdate], env: Env) -> List[ValueField]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> []
+    if length(updates) == 0 then
+        return []
+    end if
+    let upd: FieldUpdate = head(updates)
+    let val: Value = eval_expr(st: st, expr: upd.value, env: env)
+    return concat([ValueField(upd.name, val)], eval_field_updates(st: st, updates: tail(updates), env: env))
+end func eval_field_updates
+
+// ============================================================================
+// Pattern matching
+// ============================================================================
+
+// Try to match a pattern against a value.
+// Returns Some(bindings) on success, None on failure.
+// Bindings are represented as a list of ValueFields (name -> value pairs).
+func match_pattern(st: InterpState, pat: Pattern, val: Value) -> Option[List[ValueField]]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), WildcardPat, IntVal(1)) -> Some([])
+    match pat with
+        | WildcardPat -> return Some([])
+        | VarPat(name) -> return Some([ValueField(name, val)])
+        | LitPat(lit_expr) ->
+        let lit_val: Value = eval_lit_pattern(lit_expr)
+        if values_equal(lit_val, val) then
+            return Some([])
+        end if
+        return None
+        | CtorPat(ctor_name, sub_pats) ->
+        return match_ctor_pattern(st: st, ctor_name: ctor_name, sub_pats: sub_pats, val: val)
+        | ListPat(elem_pats) ->
+        return match_list_pattern(st: st, elem_pats: elem_pats, val: val)
+    end match
+end func match_pattern
+
+// Evaluate a literal pattern expression to a Value.
+func eval_lit_pattern(expr: Expr) -> Value
+    example IntLit(42) -> IntVal(42)
+    match expr with
+        | IntLit(v) -> return IntVal(v)
+        | FloatLit(fv) -> return FloatVal(fv)
+        | StrLit(sv) -> return StringVal(sv)
+        | BoolLit(bv) -> return BoolVal(bv)
+        | _ -> return UnitVal
+    end match
+end func eval_lit_pattern
+
+// Match a constructor pattern.
+func match_ctor_pattern(st: InterpState, ctor_name: String, sub_pats: List[Pattern], val: Value) -> Option[List[ValueField]]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "None", [], CtorVal("None", [])) -> Some([])
+    match val with
+        | CtorVal(cn, cf) ->
+        if cn != ctor_name then
+            return None
+        end if
+        let field_vals: List[Value] = ctor_field_vals(cf)
+        if length(sub_pats) != length(field_vals) then
+            return None
+        end if
+        return match_sub_patterns(st: st, pats: sub_pats, vals: field_vals)
+        | _ -> return None
+    end match
+end func match_ctor_pattern
+
+// Match sub-patterns against corresponding values.
+func match_sub_patterns(st: InterpState, pats: List[Pattern], vals: List[Value]) -> Option[List[ValueField]]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], []) -> Some([])
+    if length(pats) == 0 then
+        return Some([])
+    end if
+    let sub_result: Option[List[ValueField]] = match_pattern(st: st, pat: head(pats), val: head(vals))
+    if is_none(sub_result) then
+        return None
+    end if
+    let sub_bindings: List[ValueField] = unwrap(sub_result)
+    let rest_result: Option[List[ValueField]] = match_sub_patterns(st: st, pats: tail(pats), vals: tail(vals))
+    if is_none(rest_result) then
+        return None
+    end if
+    let rest_bindings: List[ValueField] = unwrap(rest_result)
+    return Some(concat(sub_bindings, rest_bindings))
+end func match_sub_patterns
+
+// Match a list pattern.
+func match_list_pattern(st: InterpState, elem_pats: List[Pattern], val: Value) -> Option[List[ValueField]]
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], ListVal([])) -> Some([])
+    match val with
+        | ListVal(items) ->
+        if length(elem_pats) != length(items) then
+            return None
+        end if
+        return match_sub_patterns(st: st, pats: elem_pats, vals: items)
+        | _ -> return None
+    end match
+end func match_list_pattern
+
+// ============================================================================
+// Statement execution
+// ============================================================================
+
+// Execute a single statement. Returns ExecNormal or ExecReturn.
+func exec_stmt(st: InterpState, stmt: Stmt, env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), ReturnStmt(IntLit(1)), Env(mutable_map_new(), None, mutable_map_new())) -> ExecReturn(IntVal(1))
+    match stmt with
+        | LetStmt(name, type_ann, value_expr) -> return exec_let(st: st, name: name, value_expr: value_expr, env: env)
+        | VarStmt(name, type_ann, value_expr) -> return exec_var(st: st, name: name, value_expr: value_expr, env: env)
+        | AssignStmt(target, value_expr) -> return exec_assign(st: st, target: target, value_expr: value_expr, env: env)
+        | IfStmt(cond, then_body, else_body) -> return exec_if(st: st, cond: cond, then_body: then_body, else_body: else_body, env: env)
+        | WhileStmt(cond, body) -> return exec_while(st: st, cond: cond, body: body, env: env)
+        | ForStmt(var_name, var_type, iterable, body) -> return exec_for(st: st, var_name: var_name, iterable: iterable, body: body, env: env)
+        | MatchStmt(scrutinee, arms) -> return exec_match_stmt(st: st, scrutinee: scrutinee, arms: arms, env: env)
+        | ReturnStmt(value_expr) -> return exec_return(st: st, value_expr: value_expr, env: env)
+        | ExprStmt(expr) ->
+        let dummy: Value = eval_expr(st: st, expr: expr, env: env)
+        return ExecNormal
+    end match
+end func exec_stmt
+
+// Execute a list of statements, propagating returns.
+func exec_stmts(st: InterpState, stmts: List[Stmt], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    if interp_has_error(st) then
+        return ExecNormal
+    end if
+    if length(stmts) == 0 then
+        return ExecNormal
+    end if
+    let result: ExecResult = exec_stmt(st: st, stmt: head(stmts), env: env)
+    match result with
+        | ExecReturn(rv) -> return ExecReturn(rv)
+        | ExecNormal -> return exec_stmts(st: st, stmts: tail(stmts), env: env)
+    end match
+end func exec_stmts
+
+// Execute a let statement (immutable binding).
+func exec_let(st: InterpState, name: String, value_expr: Expr, env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", IntLit(1), Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    let val: Value = eval_expr(st: st, expr: value_expr, env: env)
+    // Copy lists for value semantics
+    let final_val: Value = copy_if_list(val)
+    env_bind(env: env, name: name, val: final_val)
+    return ExecNormal
+end func exec_let
+
+// Copy a ListVal to ensure value semantics for let bindings.
+func copy_if_list(val: Value) -> Value
+    example IntVal(1) -> IntVal(1)
+    match val with
+        | ListVal(items) -> return ListVal(copy_val_list(items))
+        | _ -> return val
+    end match
+end func copy_if_list
+
+// Shallow copy a list of values.
+func copy_val_list(items: List[Value]) -> List[Value]
+    example [] -> []
+    if length(items) == 0 then
+        return []
+    end if
+    return concat([head(items)], copy_val_list(tail(items)))
+end func copy_val_list
+
+// Execute a var statement (mutable binding).
+func exec_var(st: InterpState, name: String, value_expr: Expr, env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", IntLit(1), Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    let val: Value = eval_expr(st: st, expr: value_expr, env: env)
+    let final_val: Value = copy_if_list(val)
+    env_bind_mut(env: env, name: name, val: final_val)
+    return ExecNormal
+end func exec_var
+
+// Execute an assignment statement.
+func exec_assign(st: InterpState, target: String, value_expr: Expr, env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", IntLit(1), Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    let val: Value = eval_expr(st: st, expr: value_expr, env: env)
+    let success: Bool = env_assign(env: env, name: target, val: val)
+    if not success then
+        let dummy: Value = rt_error(st, "Cannot assign to '" + target + "': not mutable or not defined")
+    end if
+    return ExecNormal
+end func exec_assign
+
+// Execute an if statement.
+func exec_if(st: InterpState, cond: Expr, then_body: List[Stmt], else_body: List[Stmt], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), BoolLit(true), [], [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    if interp_has_error(st) then
+        return ExecNormal
+    end if
+    let cond_val: Value = eval_expr(st: st, expr: cond, env: env)
+    if as_bool(cond_val) then
+        let block_env: Env = env_child(env)
+        return exec_stmts(st: st, stmts: then_body, env: block_env)
+    else
+        let block_env: Env = env_child(env)
+        return exec_stmts(st: st, stmts: else_body, env: block_env)
+    end if
+end func exec_if
+
+// Execute a while loop.
+func exec_while(st: InterpState, cond: Expr, body: List[Stmt], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), BoolLit(false), [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    if interp_has_error(st) then
+        return ExecNormal
+    end if
+    let cond_val: Value = eval_expr(st: st, expr: cond, env: env)
+    if not as_bool(cond_val) then
+        return ExecNormal
+    end if
+    let body_env: Env = env_child(env)
+    let result: ExecResult = exec_stmts(st: st, stmts: body, env: body_env)
+    match result with
+        | ExecReturn(rv) -> return ExecReturn(rv)
+        | ExecNormal -> return exec_while(st: st, cond: cond, body: body, env: env)
+    end match
+end func exec_while
+
+// Execute a for loop.
+func exec_for(st: InterpState, var_name: String, iterable: Expr, body: List[Stmt], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", ListLitExpr([]), [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    let iter_val: Value = eval_expr(st: st, expr: iterable, env: env)
+    match iter_val with
+        | ListVal(items) ->
+        return exec_for_items(st: st, var_name: var_name, items: items, body: body, env: env)
+        | ArrayRef(v) ->
+        let items: List[Value] = vec_to_val_list(v, 0)
+        return exec_for_items(st: st, var_name: var_name, items: items, body: body, env: env)
+        | _ ->
+        let dummy: Value = rt_error(st, "Cannot iterate over non-iterable value")
+        return ExecNormal
+    end match
+end func exec_for
+
+// Execute for loop body over list items.
+func exec_for_items(st: InterpState, var_name: String, items: List[Value], body: List[Stmt], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", [], [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    if interp_has_error(st) then
+        return ExecNormal
+    end if
+    if length(items) == 0 then
+        return ExecNormal
+    end if
+    let body_env: Env = env_child(env)
+    env_bind(env: body_env, name: var_name, val: head(items))
+    let result: ExecResult = exec_stmts(st: st, stmts: body, env: body_env)
+    match result with
+        | ExecReturn(rv) -> return ExecReturn(rv)
+        | ExecNormal -> return exec_for_items(st: st, var_name: var_name, items: tail(items), body: body, env: env)
+    end match
+end func exec_for_items
+
+// Execute a match statement.
+func exec_match_stmt(st: InterpState, scrutinee: Expr, arms: List[MatchArm], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(1), [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    let val: Value = eval_expr(st: st, expr: scrutinee, env: env)
+    return try_match_arms_stmt(st: st, val: val, arms: arms, env: env)
+end func exec_match_stmt
+
+// Try match arms for a match statement.
+func try_match_arms_stmt(st: InterpState, val: Value, arms: List[MatchArm], env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntVal(1), [], Env(mutable_map_new(), None, mutable_map_new())) -> ExecNormal
+    if length(arms) == 0 then
+        let dummy: Value = rt_error(st, "No matching pattern in match statement")
+        return ExecNormal
+    end if
+    let arm: MatchArm = head(arms)
+    let bindings: Option[List[ValueField]] = match_pattern(st: st, pat: arm.pat, val: val)
+    if is_some(bindings) then
+        let bs: List[ValueField] = unwrap(bindings)
+        let arm_env: Env = env_child(env)
+        bind_pattern_vars(arm_env, bs)
+        return exec_stmts(st: st, stmts: arm.body, env: arm_env)
+    end if
+    return try_match_arms_stmt(st: st, val: val, arms: tail(arms), env: env)
+end func try_match_arms_stmt
+
+// Execute a return statement.
+func exec_return(st: InterpState, value_expr: Expr, env: Env) -> ExecResult
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), IntLit(42), Env(mutable_map_new(), None, mutable_map_new())) -> ExecReturn(IntVal(42))
+    let val: Value = eval_expr(st: st, expr: value_expr, env: env)
+    return ExecReturn(val)
+end func exec_return
+
+// ============================================================================
+// Function calling
+// ============================================================================
+
+// Call a function value (closure or builtin) with evaluated arguments.
+func call_function(st: InterpState, func_val: Value, call_args: List[Value], env: Env) -> Value
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), BuiltinVal("length"), [ListVal([])], Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(0)
+    if interp_has_error(st) then
+        return UnitVal
+    end if
+    match func_val with
+        | ClosureVal(cd) ->
+        return call_closure(st: st, cd: cd, call_args: call_args, env: env)
+        | BuiltinVal(bn) ->
+        return dispatch_builtin(st: st, name: bn, args: call_args, env: env)
+        | _ -> return rt_error(st, "Cannot call non-function value")
+    end match
+end func call_function
+
+// Call a closure with arguments.
+func call_closure(st: InterpState, cd: ClosureData, call_args: List[Value], env: Env) -> Value
+    example (make_interp_state(0), ClosureData([], [ReturnStmt(IntLit(1))], Env(mutable_map_new(), None, mutable_map_new()), "f", SpecBlock([], [], []), dummy_span(0)), [], Env(mutable_map_new(), None, mutable_map_new())) -> IntVal(1)
+    interp_push_span(st, cd.cl_span)
+    if length(cd.cl_params) != length(call_args) then
+        let err_val: Value = rt_error(st, "Expected " + to_string(length(cd.cl_params)) + " arguments, got " + to_string(length(call_args)))
+        interp_pop_span(st)
+        return err_val
+    end if
+
+    // Check recursion depth
+    let depth: Int = get_depth(st)
+    if depth >= st.max_depth then
+        let err_val: Value = rt_error(st, "Maximum recursion depth exceeded (" + to_string(st.max_depth) + ")")
+        interp_pop_span(st)
+        return err_val
+    end if
+    set_depth(st, depth + 1)
+
+    // Create call environment from closure's captured env
+    let call_env: Env = env_child(cd.cl_env)
+    interp_bind_params(env: call_env, params: cd.cl_params, args: call_args)
+
+    // Check preconditions (requires clauses)
+    check_preconditions(st: st, specs: cd.cl_specs, env: call_env)
+
+    // Execute body
+    let result: ExecResult = exec_stmts(st: st, stmts: cd.cl_body, env: call_env)
+
+    set_depth(st, depth)
+
+    match result with
+        | ExecReturn(rv) ->
+        // Check postconditions
+        check_postconditions(st: st, specs: cd.cl_specs, env: call_env, result_val: rv)
+        interp_pop_span(st)
+        return rv
+        | ExecNormal ->
+        check_postconditions(st: st, specs: cd.cl_specs, env: call_env, result_val: UnitVal)
+        interp_pop_span(st)
+        return UnitVal
+    end match
+end func call_closure
+
+// Bind parameters to arguments in an environment.
+func interp_bind_params(env: Env, params: List[Param], args: List[Value]) -> Unit
+    example (Env(mutable_map_new(), None, mutable_map_new()), [], []) -> ()
+    if length(params) == 0 then
+        return ()
+    end if
+    let p: Param = head(params)
+    env_bind(env: env, name: p.name, val: head(args))
+    return interp_bind_params(env: env, params: tail(params), args: tail(args))
+end func interp_bind_params
+
+// Check requires (precondition) clauses.
+func check_preconditions(st: InterpState, specs: SpecBlock, env: Env) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), SpecBlock([], [], []), Env(mutable_map_new(), None, mutable_map_new())) -> ()
+    let reqs: List[RequiresClause] = specs.req_clauses
+    check_requires_list(st: st, reqs: reqs, env: env)
+    return ()
+end func check_preconditions
+
+func check_requires_list(st: InterpState, reqs: List[RequiresClause], env: Env) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> ()
+    if interp_has_error(st) then
+        return ()
+    end if
+    if length(reqs) == 0 then
+        return ()
+    end if
+    let req: RequiresClause = head(reqs)
+    let cond_val: Value = eval_expr(st: st, expr: req.cond, env: env)
+    if not as_bool(cond_val) then
+        let dummy: Value = rt_error(st, "Precondition failed")
+    end if
+    return check_requires_list(st: st, reqs: tail(reqs), env: env)
+end func check_requires_list
+
+// Check ensures (postcondition) clauses.
+func check_postconditions(st: InterpState, specs: SpecBlock, env: Env, result_val: Value) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), SpecBlock([], [], []), Env(mutable_map_new(), None, mutable_map_new()), UnitVal) -> ()
+    let enss: List[EnsuresClause] = specs.ens_clauses
+    if length(enss) == 0 then
+        return ()
+    end if
+    let ensures_env: Env = env_child(env)
+    env_bind(env: ensures_env, name: "result", val: result_val)
+    check_ensures_list(st: st, enss: enss, env: ensures_env)
+    return ()
+end func check_postconditions
+
+func check_ensures_list(st: InterpState, enss: List[EnsuresClause], env: Env) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], Env(mutable_map_new(), None, mutable_map_new())) -> ()
+    if interp_has_error(st) then
+        return ()
+    end if
+    if length(enss) == 0 then
+        return ()
+    end if
+    let ens: EnsuresClause = head(enss)
+    let cond_val: Value = eval_expr(st: st, expr: ens.cond, env: env)
+    if not as_bool(cond_val) then
+        let dummy: Value = rt_error(st, "Postcondition failed")
+    end if
+    return check_ensures_list(st: st, enss: tail(enss), env: env)
+end func check_ensures_list
+
+// ============================================================================
+// Example verification
+// ============================================================================
+
+// Verify all example clauses for all registered functions.
+func verify_examples(st: InterpState) -> Unit
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> ()
+    let func_names: List[String] = mutable_map_keys(st.func_defs)
+    verify_examples_for_funcs(st, func_names)
+    return ()
+end func verify_examples
+
+func verify_examples_for_funcs(st: InterpState, names: List[String]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), []) -> ()
+    if interp_has_error(st) then
+        return ()
+    end if
+    if length(names) == 0 then
+        return ()
+    end if
+    let name: String = head(names)
+    let def_opt: Option[Def] = mutable_map_get(map: st.func_defs, key: name)
+    if is_some(def_opt) then
+        let d: Def = unwrap(def_opt)
+        match d with
+            | FuncDef(fn_name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
+            interp_push_span(st, span)
+            verify_func_examples(st: st, fn_name: fn_name, specs: specs)
+            interp_pop_span(st)
+            | _ -> let dummy: Int = 0
+        end match
+    end if
+    return verify_examples_for_funcs(st, tail(names))
+end func verify_examples_for_funcs
+
+func verify_func_examples(st: InterpState, fn_name: String, specs: SpecBlock) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "f", SpecBlock([], [], [])) -> ()
+    let examples: List[ExampleClause] = specs.examples
+    verify_example_list(st: st, fn_name: fn_name, examples: examples)
+    return ()
+end func verify_func_examples
+
+func verify_example_list(st: InterpState, fn_name: String, examples: List[ExampleClause]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "f", []) -> ()
+    if interp_has_error(st) then
+        return ()
+    end if
+    if length(examples) == 0 then
+        return ()
+    end if
+    let ex: ExampleClause = head(examples)
+    // Evaluate input and expected output
+    let input_val: Value = eval_expr(st: st, expr: ex.input_expr, env: st.global_env)
+    let expected: Value = eval_expr(st: st, expr: ex.output_expr, env: st.global_env)
+
+    // Call the function
+    let func_opt: Option[Value] = env_lookup(st.global_env, fn_name)
+    if is_some(func_opt) then
+        let func_val: Value = unwrap(func_opt)
+        // If input is a tuple, spread as args; otherwise wrap in list
+        var call_args: List[Value] = [input_val]
+        match input_val with
+            | TupleVal(elems) -> call_args = elems
+            | _ -> call_args = [input_val]
+        end match
+        let actual: Value = call_function(st: st, func_val: func_val, call_args: call_args, env: st.global_env)
+        if interp_has_error(st) then
+            return ()
+        end if
+        if not values_equal(actual, expected) then
+            let dummy: Value = rt_error(st, "Example verification failed for " + fn_name + ": expected " + value_to_str(expected) + ", got " + value_to_str(actual))
+            return ()
+        end if
+    end if
+    return verify_example_list(st: st, fn_name: fn_name, examples: tail(examples))
+end func verify_example_list
+
+// ============================================================================
+// Definition collection
+// ============================================================================
+
+// Register a type definition's constructors in the interpreter state.
+func register_type_def(st: InterpState, td: Def) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), ImportDef("x", dummy_span(0))) -> ()
+    match td with
+        | TypeDefNode(name, type_params, variants, span) ->
+        register_variants(st, variants)
+        return ()
+        | _ -> return ()
+    end match
+end func register_type_def
+
+// Register all variants of a type definition.
+func register_variants(st: InterpState, variants: List[TypeVariant]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), []) -> ()
+    if length(variants) == 0 then
+        return ()
+    end if
+    let v: TypeVariant = head(variants)
+    let field_names: List[String] = variant_field_names(v.fields)
+    mutable_map_set(map: st.ctor_info, key: v.name, value: CtorInfo(field_names))
+    return register_variants(st, tail(variants))
+end func register_variants
+
+// Get field names from a variant's field list.
+func variant_field_names(fields: List[TypeVariantField]) -> List[String]
+    example [] -> []
+    if length(fields) == 0 then
+        return []
+    end if
+    let f: TypeVariantField = head(fields)
+    return concat([f.name], variant_field_names(tail(fields)))
+end func variant_field_names
+
+// Register a function definition.
+func register_func_def(st: InterpState, fd: Def) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), ImportDef("x", dummy_span(0))) -> ()
+    match fd with
+        | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
+        mutable_map_set(map: st.func_defs, key: name, value: fd)
+        let cd: ClosureData = ClosureData(params, body, st.global_env, name, specs, span)
+        env_bind(env: st.global_env, name: name, val: ClosureVal(cd))
+        return ()
+        | _ -> return ()
+    end match
+end func register_func_def
+
+// Collect all definitions from a program.
+func collect_defs(st: InterpState, defs: List[Def]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), []) -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | TypeDefNode(name, type_params, variants, span) ->
+        register_type_def(st, d)
+        | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
+        register_func_def(st, d)
+        | ImportDef(module_name, span) ->
+        // Imports handled separately
+        let dummy: Int = 0
+    end match
+    return collect_defs(st, tail(defs))
+end func collect_defs
+
+// ============================================================================
+// Module import resolution
+// ============================================================================
+
+// Resolve imports for a program given a map of module_name -> Program.
+func interp_resolve_imports(st: InterpState, defs: List[Def], modules: MutableMap[String, Program], resolved: MutableMap[String, Bool]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], mutable_map_new(), mutable_map_new()) -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | ImportDef(module_name, span) ->
+        interp_push_span(st, span)
+        resolve_single_import(st: st, module_name: module_name, modules: modules, resolved: resolved)
+        interp_pop_span(st)
+        | _ -> let dummy: Int = 0
+    end match
+    return interp_resolve_imports(st: st, defs: tail(defs), modules: modules, resolved: resolved)
+end func interp_resolve_imports
+
+func resolve_single_import(st: InterpState, module_name: String, modules: MutableMap[String, Program], resolved: MutableMap[String, Bool]) -> Unit
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "x", mutable_map_new(), mutable_map_new()) -> ()
+    // Skip if already resolved
+    if mutable_map_contains(map: resolved, key: module_name) then
+        return ()
+    end if
+
+    let mod_opt: Option[Program] = mutable_map_get(map: modules, key: module_name)
+    if is_none(mod_opt) then
+        let dummy: Value = rt_error(st, "Unknown module: '" + module_name + "'")
+        return ()
+    end if
+
+    mutable_map_set(map: resolved, key: module_name, value: true)
+    let mod_prog: Program = unwrap(mod_opt)
+
+    // Recursively resolve imports within the module
+    interp_resolve_imports(st: st, defs: mod_prog.defs, modules: modules, resolved: resolved)
+
+    // Register all definitions from the module
+    collect_defs(st, mod_prog.defs)
+    return ()
+end func resolve_single_import
+
+// ============================================================================
+// Main entry point: run a program
+// ============================================================================
+
+// Run a program, optionally with modules for imports.
+// Returns the result of main(), or UnitVal if no main function.
+func run_program_with_state(st: InterpState, program: Program, modules: MutableMap[String, Program], check_ex: Bool) -> Value
+    example (make_interp_state(0), Program([]), mutable_map_new(), false) -> UnitVal
+    // Resolve imports
+    let resolved: MutableMap[String, Bool] = mutable_map_new()
+    interp_resolve_imports(st: st, defs: program.defs, modules: modules, resolved: resolved)
+
+    // Collect definitions from the main program
+    collect_defs(st, program.defs)
+
+    // Verify examples if requested
+    if check_ex then
+        verify_examples(st)
+        if interp_has_error(st) then
+            return UnitVal
+        end if
+    end if
+
+    // Look for and call main
+    let main_opt: Option[Value] = env_lookup(st.global_env, "main")
+    if is_some(main_opt) then
+        let main_fn: Value = unwrap(main_opt)
+        let result: Value = call_function(st: st, func_val: main_fn, call_args: [], env: st.global_env)
+        if interp_has_error(st) then
+            return UnitVal
+        end if
+        return result
+    end if
+
+    return UnitVal
+end func run_program_with_state
+
+func run_program(program: Program, modules: MutableMap[String, Program], check_ex: Bool) -> Value
+    example (Program([]), mutable_map_new(), false) -> UnitVal
+    let st: InterpState = make_interp_state(0)
+    return run_program_with_state(st: st, program: program, modules: modules, check_ex: check_ex)
+end func run_program
+
+// Verify examples using an existing interpreter state without invoking main().
+func run_examples_with_state(st: InterpState, program: Program, modules: MutableMap[String, Program]) -> Unit
+    example (make_interp_state(0), Program([]), mutable_map_new()) -> ()
+    let resolved: MutableMap[String, Bool] = mutable_map_new()
+    interp_resolve_imports(st: st, defs: program.defs, modules: modules, resolved: resolved)
+    collect_defs(st, program.defs)
+    verify_examples(st)
+    return ()
+end func run_examples_with_state
+
+// Run a program and report whether execution completed without runtime errors.
+func run_program_ok(program: Program, modules: MutableMap[String, Program], check_ex: Bool) -> Bool
+    example (Program([]), mutable_map_new(), false) -> true
+    let st: InterpState = make_interp_state(0)
+    let _result: Value = run_program_with_state(st: st, program: program, modules: modules, check_ex: check_ex)
+    return not interp_has_error(st)
+end func run_program_ok
+
+// Verify examples without invoking main().
+func run_examples_ok(program: Program, modules: MutableMap[String, Program]) -> Bool
+    example (Program([]), mutable_map_new()) -> true
+    let st: InterpState = make_interp_state(0)
+    run_examples_with_state(st: st, program: program, modules: modules)
+    return not interp_has_error(st)
+end func run_examples_ok
+
+// Convenience: run a single-module program with no example checking.
+func run_program_simple(program: Program) -> Value
+    example Program([]) -> UnitVal
+    return run_program(program: program, modules: mutable_map_new(), check_ex: false)
+end func run_program_simple
+
+// Get the output buffer contents as a single string.
+func get_output(st: InterpState) -> String
+    example InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()) -> ""
+    let parts: List[String] = vec_to_list(st.out_buf)
+    return join(parts, "")
+end func get_output

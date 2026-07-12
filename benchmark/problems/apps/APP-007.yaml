@@ -1,0 +1,141 @@
+problem:
+  id: "APP-007"
+  name: "Shopping Cart Total"
+  difficulty: "hard"
+  domain: "systems"
+  description: |
+    Compute a shopping cart's final total in cents. Each item line has the
+    form "name:price:qty" where price (cents) and qty are non-negative
+    integers. Lines that do not have exactly three fields, or whose price
+    or qty does not parse as a non-negative integer, are skipped.
+
+    Pricing rules, applied in this order with integer arithmetic:
+    1. subtotal = sum of price * qty over valid items.
+    2. If subtotal is 0, the total is 0 (nothing to ship).
+    3. If code is "SAVE10" and subtotal >= 10000, the subtotal becomes
+       subtotal * 90 / 100 (integer division). Any other code changes
+       nothing.
+    4. Shipping: if the (possibly discounted) subtotal is below 5000,
+       add 500; otherwise shipping is free.
+  signature:
+    function_name: "cart_total"
+    inputs:
+      - name: "items"
+        type: "List[String]"
+      - name: "code"
+        type: "String"
+    output:
+      name: "total"
+      type: "Int"
+  examples:
+    visible:
+      - input: [["apple:150:2", "bread:300:1"], ""]
+        output: 1100
+        description: "600 subtotal plus 500 shipping"
+      - input: [["tv:60000:1"], "SAVE10"]
+        output: 54000
+        description: "10 percent discount, free shipping"
+      - input: [["x:100:1", "junk"], ""]
+        output: 600
+        description: "Malformed items are skipped"
+    hidden:
+      - input: [["a:5000:1"], ""]
+        output: 5000
+        description: "Shipping boundary: exactly 5000 ships free"
+      - input: [["a:4999:1"], ""]
+        output: 5499
+        description: "Just below the free-shipping threshold"
+      - input: [["a:10000:1"], "SAVE10"]
+        output: 9000
+        description: "Discount boundary, shipping checked after discount"
+      - input: [["a:11000:1"], "SAVE99"]
+        output: 11000
+        description: "Unknown codes change nothing"
+      - input: [["a:100:x", "b:200:2"], "SAVE10"]
+        output: 900
+        description: "Invalid qty skipped; subtotal below discount threshold"
+      - input: [[], ""]
+        output: 0
+        description: "Empty cart costs nothing"
+  constraints:
+    - "Prices and quantities are non-negative integers"
+    - "Use integer division for the discount"
+    - "Shipping is decided on the discounted subtotal"
+    - "An empty (or fully invalid) cart totals 0"
+  canonical_solutions:
+    geno: |
+      func item_cost(item: String) -> Option[Int]
+          example "apple:150:2" -> Some(300)
+          example "junk" -> None
+
+          let parts: List[String] = split(item, ":")
+          if length(parts) != 3 then
+              return None
+          end if
+          let price: Int = match parse_int(parts[1]) with
+              | Some(v) -> v
+              | None -> -1
+          end match
+          let qty: Int = match parse_int(parts[2]) with
+              | Some(v) -> v
+              | None -> -1
+          end match
+          if price < 0 or qty < 0 then
+              return None
+          end if
+          return Some(price * qty)
+      end func item_cost
+
+      func cart_total(items: List[String], code: String) -> Int
+          example ["apple:150:2", "bread:300:1"], "" -> 1100
+          example [], "" -> 0
+
+          var subtotal: Int = 0
+          for item: String in items do
+              let cost: Int = match item_cost(item) with
+                  | Some(v) -> v
+                  | None -> 0
+              end match
+              subtotal = subtotal + cost
+          end for
+          if subtotal == 0 then
+              return 0
+          end if
+          if code == "SAVE10" and subtotal >= 10000 then
+              subtotal = subtotal * 90 / 100
+          end if
+          if subtotal < 5000 then
+              subtotal = subtotal + 500
+          end if
+          return subtotal
+      end func cart_total
+    python: |
+      def cart_total(items: list[str], code: str) -> int:
+          subtotal = 0
+          for item in items:
+              parts = item.split(":")
+              if len(parts) != 3:
+                  continue
+              try:
+                  price = int(parts[1])
+                  qty = int(parts[2])
+              except ValueError:
+                  continue
+              if price < 0 or qty < 0:
+                  continue
+              subtotal += price * qty
+          if subtotal == 0:
+              return 0
+          if code == "SAVE10" and subtotal >= 10000:
+              subtotal = subtotal * 90 // 100
+          if subtotal < 5000:
+              subtotal += 500
+          return subtotal
+  metadata:
+    tags: ["app-tier", "parsing", "pricing-rules", "validation"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested:
+      ["function", "option", "match", "for", "split", "parse_int",
+       "integer-division", "thresholds"]

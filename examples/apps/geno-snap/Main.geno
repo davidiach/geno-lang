@@ -1,0 +1,41 @@
+// Main.geno — Entry point for geno-snap API mocker
+// ===================================================
+// Run with: geno run --cap serve,env examples/apps/geno-snap
+// Set port: GENO_PORT=3000 geno run --cap serve,env examples/apps/geno-snap
+
+import Routes
+
+func default_port() -> Int
+    example () -> 8080
+    return 8080
+end func
+
+func parse_port(s: String) -> Int
+    example "3000" -> 3000
+    example "bad" -> 8080
+    example "" -> 8080
+    match parse_int(s) with
+        | Some(p) -> return p
+        | None -> return default_port()
+    end match
+end func
+
+func main() -> Unit
+    let port_str: String = unwrap_or(env_get("GENO_PORT"), "8080")
+    let port: Int = parse_port(port_str)
+
+    // Register CORS preflight handlers
+    http_route(method: "OPTIONS", path: "/api/users", handler: Routes.handle_options)
+    http_route(method: "OPTIONS", path: "/api/user", handler: Routes.handle_options)
+    http_route(method: "OPTIONS", path: "/api/items", handler: Routes.handle_options)
+    http_route(method: "OPTIONS", path: "/api/echo", handler: Routes.handle_options)
+
+    // Register API routes
+    http_route(method: "GET", path: "/api/users", handler: Routes.handle_users)
+    http_route(method: "GET", path: "/api/user", handler: Routes.handle_user_by_id)
+    http_route(method: "GET", path: "/api/items", handler: Routes.handle_items)
+    http_route(method: "POST", path: "/api/echo", handler: Routes.handle_echo)
+
+    // Start the server
+    http_listen(port)
+end func

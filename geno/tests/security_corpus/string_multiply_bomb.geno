@@ -1,0 +1,7 @@
+# EXPECT: E499
+# String multiplication to exhaust memory.
+# Verifies _safe_mul enforces size limits.
+func main() -> Int
+    let s: String = string_repeat("A", count: 999999999)
+    return length(s)
+end func

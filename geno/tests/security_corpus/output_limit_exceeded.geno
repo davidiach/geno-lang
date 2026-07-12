@@ -1,0 +1,12 @@
+# EXPECT: E499
+# Flood stdout with output to exhaust the output buffer limit.
+# Verifies that the sandbox enforces max_output_length.
+// (Run with capabilities={"print"} — see test harness config.)
+func main() -> Int
+    var i: Int = 0
+    while i < 1000000 do
+        print(to_string(i))
+        i = i + 1
+    end while
+    return 0
+end func

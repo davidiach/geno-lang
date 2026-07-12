@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling env_get without the "env" capability should fail.
+func main() -> Option[String]
+    return env_get(name: "HOME")
+end func

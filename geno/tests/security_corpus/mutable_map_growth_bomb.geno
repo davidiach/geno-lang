@@ -1,0 +1,13 @@
+# EXPECT: E503
+# Grow a MutableMap by inserting millions of entries in a
+# tight loop.  Verifies that mutable map operations are
+# step-counted before the map exhausts memory.
+func main() -> Int
+    var m: MutableMap[String, Int] = mutable_map_new()
+    var i: Int = 0
+    while i < 10000000 do
+        mutable_map_set(map: m, key: to_string(i), value: i)
+        i = i + 1
+    end while
+    return mutable_map_size(m)
+end func

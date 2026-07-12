@@ -1,0 +1,35 @@
+// Quicksort implementation in Geno
+// =====================================
+// Demonstrates: recursion, pattern matching, list operations, pipelines
+
+func quicksort(arr: List[Int]) -> List[Int]
+    requires true
+    ensures is_sorted(result)
+    ensures length(result) == length(arr)
+    example [] -> []
+    example [1] -> [1]
+    example [3, 1, 2] -> [1, 2, 3]
+    example [5, 2, 8, 1, 9] -> [1, 2, 5, 8, 9]
+
+    if length(arr) <= 1 then
+        return arr
+    end if
+
+    let pivot: Int = head(arr)
+    let rest: List[Int] = tail(arr)
+
+    let less: List[Int] = rest |> filter(_, fn(x: Int) -> x < pivot)
+    let greater: List[Int] = rest |> filter(_, fn(x: Int) -> x >= pivot)
+
+    let sorted_less: List[Int] = quicksort(less)
+    let sorted_greater: List[Int] = quicksort(greater)
+
+    return concat(sorted_less, concat([pivot], sorted_greater))
+end func quicksort
+
+
+func main() -> List[Int]
+    let unsorted: List[Int] = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3]
+    let sorted: List[Int] = quicksort(unsorted)
+    return sorted
+end func main

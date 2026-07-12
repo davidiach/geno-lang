@@ -1,0 +1,79 @@
+// Theme.geno — Color palette and sizing constants
+// ==================================================
+
+@untested("color constant")
+func bg_color() -> String
+    return "#1a1a2e"
+end func
+
+@untested("color constant")
+func panel_color() -> String
+    return "#16213e"
+end func
+
+@untested("color constant")
+func accent_color() -> String
+    return "#0f3460"
+end func
+
+@untested("color constant")
+func text_color() -> String
+    return "#e0e0e0"
+end func
+
+@untested("color constant")
+func green_color() -> String
+    return "#4caf50"
+end func
+
+@untested("color constant")
+func red_color() -> String
+    return "#f44336"
+end func
+
+@untested("color constant")
+func blue_color() -> String
+    return "#2196f3"
+end func
+
+@untested("color constant")
+func yellow_color() -> String
+    return "#ffeb3b"
+end func
+
+func bar_colors(index: Int) -> String
+    example 0 -> "#2196f3"
+    example 1 -> "#4caf50"
+    example 2 -> "#ff9800"
+    example 3 -> "#9c27b0"
+    example 4 -> "#2196f3"
+
+    let colors: List[String] = ["#2196f3", "#4caf50", "#ff9800", "#9c27b0"]
+    let i: Int = index % 4
+    match i with
+        | 0 -> return "#2196f3"
+        | 1 -> return "#4caf50"
+        | 2 -> return "#ff9800"
+        | _ -> return "#9c27b0"
+    end match
+end func
+
+@untested("sizing constant")
+func panel_padding() -> Int
+    return 15
+end func
+
+@untested("sizing constant")
+func title_size() -> Int
+    return 20
+end func
+
+@untested("sizing constant")
+func label_size() -> Int
+    return 14
+end func
+
+@untested("sizing constant")
+func value_size() -> Int
+    return 28
+end func

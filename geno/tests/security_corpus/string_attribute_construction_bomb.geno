@@ -1,0 +1,36 @@
+# EXPECT: E503
+# String-based attribute construction bypass attempt: use
+# char_code/from_char_code to dynamically build strings that match
+# blocked attribute names (e.g. "__class__"), then use them in
+# string operations and comparisons.  Even though Geno doesn't
+# expose Python getattr, this tests that string construction of
+# dangerous names is step-counted and that no string-to-attribute
+# access path exists.
+func build_name(codes: List[Int]) -> String
+    example [104, 105] -> "hi"
+    var result: String = ""
+    var i: Int = 0
+    while i < length(codes) do
+        result = result + from_char_code(codes[i])
+        i = i + 1
+    end while
+    return result
+end func
+
+func probe_many(n: Int) -> Int
+    example 0 -> 0
+    var count: Int = 0
+    var i: Int = 0
+    while i < n do
+        let name1: String = build_name([95, 95, 99, 108, 97, 115, 115, 95, 95])
+        let name2: String = build_name([95, 95, 98, 97, 115, 101, 115, 95, 95])
+        let name3: String = build_name([95, 95, 105, 109, 112, 111, 114, 116, 95, 95])
+        count = count + length(name1) + length(name2) + length(name3)
+        i = i + 1
+    end while
+    return count
+end func
+
+func main() -> Int
+    return probe_many(1000000)
+end func

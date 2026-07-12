@@ -1,0 +1,122 @@
+// ============================================================================
+// Tokens.geno — Token types and keyword lookup for the Geno self-hosted frontend
+// ============================================================================
+
+// Token type enumeration — one variant per distinct token kind.
+type TokenType
+// Literals
+= TkInteger
+| TkFloat
+| TkString
+| TkTrue
+| TkFalse
+// Identifiers
+| TkIdentifier
+| TkTypeIdentifier
+// Keywords
+| TkFunc
+| TkEnd
+| TkLet
+| TkVar
+| TkIf
+| TkThen
+| TkElse
+| TkWhile
+| TkDo
+| TkFor
+| TkIn
+| TkMatch
+| TkWith
+| TkReturn
+| TkAnd
+| TkOr
+| TkNot
+| TkType
+| TkRequires
+| TkEnsures
+| TkExample
+| TkRef
+| TkFn
+| TkWhere
+| TkImport
+// Operators
+| TkPlus
+| TkMinus
+| TkStar
+| TkSlash
+| TkPercent
+| TkEq
+| TkNeq
+| TkLt
+| TkGt
+| TkLte
+| TkGte
+| TkAssign
+| TkArrow
+| TkPipe
+| TkBar
+// Delimiters
+| TkLParen
+| TkRParen
+| TkLBracket
+| TkRBracket
+| TkLBrace
+| TkRBrace
+| TkComma
+| TkColon
+| TkSemicolon
+| TkDot
+| TkUnderscore
+| TkQuestion
+| TkAt
+// Special
+| TkEof
+// Lexical-error sentinel.  The lexer emits this (with the error message
+// as the token ``value``) when it encounters a malformed token — for
+// example an unterminated string literal.  The parser's ``expect``
+// helper will then surface the message through ``push_parser_error``
+// rather than silently accepting the malformed input.  F-0030 in #664.
+| TkError
+
+// A single token with its type, lexeme value, and source location.
+type Token = Token(tt: TokenType, value: String, line: Int, col: Int)
+
+// Build the keyword lookup table. Called once at startup.
+@untested("builds mutable state")
+func build_keyword_map() -> MutableMap[String, TokenType]
+    let m: MutableMap[String, TokenType] = mutable_map_new()
+    mutable_map_set(map: m, key: "func", value: TkFunc)
+    mutable_map_set(map: m, key: "end", value: TkEnd)
+    mutable_map_set(map: m, key: "let", value: TkLet)
+    mutable_map_set(map: m, key: "var", value: TkVar)
+    mutable_map_set(map: m, key: "if", value: TkIf)
+    mutable_map_set(map: m, key: "then", value: TkThen)
+    mutable_map_set(map: m, key: "else", value: TkElse)
+    mutable_map_set(map: m, key: "while", value: TkWhile)
+    mutable_map_set(map: m, key: "do", value: TkDo)
+    mutable_map_set(map: m, key: "for", value: TkFor)
+    mutable_map_set(map: m, key: "in", value: TkIn)
+    mutable_map_set(map: m, key: "match", value: TkMatch)
+    mutable_map_set(map: m, key: "with", value: TkWith)
+    mutable_map_set(map: m, key: "return", value: TkReturn)
+    mutable_map_set(map: m, key: "and", value: TkAnd)
+    mutable_map_set(map: m, key: "or", value: TkOr)
+    mutable_map_set(map: m, key: "not", value: TkNot)
+    mutable_map_set(map: m, key: "true", value: TkTrue)
+    mutable_map_set(map: m, key: "false", value: TkFalse)
+    mutable_map_set(map: m, key: "type", value: TkType)
+    mutable_map_set(map: m, key: "requires", value: TkRequires)
+    mutable_map_set(map: m, key: "ensures", value: TkEnsures)
+    mutable_map_set(map: m, key: "example", value: TkExample)
+    mutable_map_set(map: m, key: "ref", value: TkRef)
+    mutable_map_set(map: m, key: "fn", value: TkFn)
+    mutable_map_set(map: m, key: "where", value: TkWhere)
+    mutable_map_set(map: m, key: "import", value: TkImport)
+    return m
+end func build_keyword_map
+
+// Look up whether a word is a keyword. Returns the keyword token type or None.
+func lookup_keyword(keywords: MutableMap[String, TokenType], word: String) -> Option[TokenType]
+    example (mutable_map_new(), "hello") -> None
+    return mutable_map_get(keywords, word)
+end func lookup_keyword

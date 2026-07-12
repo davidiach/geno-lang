@@ -1,0 +1,49 @@
+# EXPECT: E503
+# Fold callback amplification: use fold() with callbacks that
+# invoke other functions which throw and catch exceptions internally,
+# testing whether exception handling inside higher-order function
+# callbacks is properly step-counted.  Each fold iteration triggers
+# multiple throw-catch cycles via helper functions.
+func risky_add(acc: Int, x: Int) -> Int
+    example 0, 1 -> 2
+    var result: Int = acc
+    try
+        if x % 3 == 0 then
+            throw f"skip-{to_string(x)}"
+        end if
+        result = result + x
+    catch e: String
+        result = result + length(e)
+    end try
+    try
+        if x % 5 == 0 then
+            throw f"alt-{to_string(x)}"
+        end if
+        result = result + 1
+    catch e: String
+        result = result - 1
+    end try
+    return result
+end func
+
+func run_fold(data: List[Int]) -> Int
+    example [0, 1] -> 7
+    var total: Int = 0
+    var i: Int = 0
+    while i < length(data) do
+        total = risky_add(acc: total, x: data[i])
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var round: Int = 0
+    while round < 50000 do
+        let data: List[Int] = range(0, 20)
+        total = total + run_fold(data: data)
+        round = round + 1
+    end while
+    return total
+end func

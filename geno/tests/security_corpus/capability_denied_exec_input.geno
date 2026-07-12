@@ -1,0 +1,5 @@
+# EXPECT: E412
+# exec_with_input without the "process" capability should fail.
+func main() -> Result[ProcessResult, String]
+    return exec_with_input(command: "cat", stdin: "data")
+end func

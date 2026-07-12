@@ -1,0 +1,25 @@
+# Normalize line endings
+* text=auto
+
+# Source code
+*.py text diff=python
+*.gen text diff
+*.geno text diff
+*.yaml text
+*.yml text
+*.toml text
+*.md text
+*.rst text
+
+# Shell scripts
+*.sh text eol=lf
+
+# GitHub linguist: classify Geno source files
+*.gen linguist-language=Geno
+*.geno linguist-language=Geno
+
+# Binary files
+*.png binary
+*.jpg binary
+*.ico binary
+*.whl binary

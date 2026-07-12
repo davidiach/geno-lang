@@ -1,0 +1,92 @@
+func zip(xs: List[Int], ys: List[Int]) -> List[(Int, Int)]
+    example [1, 2, 3], [4, 5, 6] -> [(1, 4), (2, 5), (3, 6)]
+    return list_zip(xs, ys)
+end func
+
+func enumerate(xs: List[String]) -> List[(Int, String)]
+    example ["a", "b"] -> [(0, "a"), (1, "b")]
+    return list_enumerate(xs)
+end func
+
+func flatten(xss: List[List[Int]]) -> List[Int]
+    example [[1, 2], [3, 4], [5]] -> [1, 2, 3, 4, 5]
+    example [] -> []
+    return list_flatten(xss)
+end func
+
+func chunk(xs: List[Int], size: Int) -> List[List[Int]]
+    example [1, 2, 3, 4, 5], 2 -> [[1, 2], [3, 4], [5]]
+    example [1, 2, 3], 3 -> [[1, 2, 3]]
+    return list_chunk(xs, size)
+end func
+
+func take(xs: List[Int], count: Int) -> List[Int]
+    example [1, 2, 3, 4, 5], 3 -> [1, 2, 3]
+    example [1, 2], 5 -> [1, 2]
+    return list_take(xs, count)
+end func
+
+func drop(xs: List[Int], count: Int) -> List[Int]
+    example [1, 2, 3, 4, 5], 2 -> [3, 4, 5]
+    example [1, 2], 5 -> []
+    return list_drop(xs, count)
+end func
+
+func find(xs: List[Int], predicate: (Int) -> Bool) -> Option[Int]
+    example [1, 2, 3], fn(x: Int) -> x > 1 -> Some(2)
+    example [1, 2, 3], fn(x: Int) -> x > 10 -> None
+    return list_find(xs, predicate)
+end func
+
+func find_index(xs: List[Int], predicate: (Int) -> Bool) -> Option[Int]
+    example [10, 20, 30], fn(x: Int) -> x > 15 -> Some(1)
+    example [1, 2, 3], fn(x: Int) -> x > 10 -> None
+    return list_find_index(xs, predicate)
+end func
+
+func all(xs: List[Int], predicate: (Int) -> Bool) -> Bool
+    example [2, 4, 6], fn(x: Int) -> x > 0 -> true
+    example [2, -1, 6], fn(x: Int) -> x > 0 -> false
+    return list_all(xs, predicate)
+end func
+
+func any(xs: List[Int], predicate: (Int) -> Bool) -> Bool
+    example [1, 2, 3], fn(x: Int) -> x > 2 -> true
+    example [1, 2, 3], fn(x: Int) -> x > 5 -> false
+    return list_any(xs, predicate)
+end func
+
+func fold_right(xs: List[Int], init: Int, f: (Int, Int) -> Int) -> Int
+    example [1, 2, 3], 0, fn(a: Int, b: Int) -> a + b -> 6
+    return list_fold_right(list: xs, init: init, f: f)
+end func
+
+func intersperse(xs: List[Int], separator: Int) -> List[Int]
+    example [1, 2, 3], 0 -> [1, 0, 2, 0, 3]
+    example [], 0 -> []
+    return list_intersperse(xs, separator)
+end func
+
+func group_by(xs: List[Int], key_fn: (Int) -> Int) -> List[(Int, List[Int])]
+    example [1, 2, 3, 4], fn(x: Int) -> x % 2 -> [(1, [1, 3]), (0, [2, 4])]
+    example [], fn(x: Int) -> x -> []
+    return list_group_by(xs, key_fn)
+end func
+
+func length(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 3
+    example [] -> 0
+    return list_length(xs)
+end func
+
+func map(xs: List[Int], transform: (Int) -> Int) -> List[Int]
+    example [1, 2, 3], fn(x: Int) -> x * 2 -> [2, 4, 6]
+    example [], fn(x: Int) -> x + 1 -> []
+    return list_map(xs, transform)
+end func
+
+func filter(xs: List[Int], predicate: (Int) -> Bool) -> List[Int]
+    example [1, 2, 3, 4], fn(x: Int) -> x > 2 -> [3, 4]
+    example [1, 2, 3], fn(x: Int) -> x > 10 -> []
+    return list_filter(xs, predicate)
+end func

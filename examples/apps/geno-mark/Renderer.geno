@@ -1,0 +1,200 @@
+// Renderer.geno — HTML generation from block AST
+// =================================================
+// Demonstrates: pattern matching for dispatch, string building,
+// list operations (map, fold, join), and pipeline composition.
+
+import Types
+import Parser
+import Inline
+
+// ---------- Block-level rendering ----------
+
+// Render a heading as <h1> through <h6> with an anchor ID.
+func render_heading(level: Int, content: String) -> String
+    example (1, "Hello") -> "<h1 id=\"hello\">Hello</h1>"
+    example (2, "World") -> "<h2 id=\"world\">World</h2>"
+
+    let tag: String = "h" + to_string(level)
+    let id: String = escape_html_attr(slugify(content))
+    let html_content: String = render_inline(content)
+    return "<" + tag + " id=\"" + id + "\">" + html_content + "</" + tag + ">"
+end func
+
+// Render a paragraph with inline formatting.
+func render_paragraph(content: String) -> String
+    example "hello" -> "<p>hello</p>"
+
+    return "<p>" + render_inline(content) + "</p>"
+end func
+
+// Render a fenced code block with optional language class.
+func render_code_block(language: String, code: String) -> String
+    example ("", "x = 1") -> "<pre><code>x = 1</code></pre>"
+    example ("py", "x = 1") -> "<pre><code class=\"language-py\">x = 1</code></pre>"
+
+    let escaped: String = escape_html(code)
+    let safe_language: String = escape_html_attr(language)
+    if length(language) == 0 then
+        return "<pre><code>" + escaped + "</code></pre>"
+    end if
+    return "<pre><code class=\"language-" + safe_language + "\">" + escaped + "</code></pre>"
+end func
+
+// Render a single list item.
+func render_list_item(text: String) -> String
+    example "hello" -> "  <li>hello</li>"
+
+    return "  <li>" + render_inline(text) + "</li>"
+end func
+
+// Render an unordered (bullet) list.
+func render_bullet_list(items: List[String]) -> String
+    example ["a", "b"] -> "<ul>\n  <li>a</li>\n  <li>b</li>\n</ul>"
+
+    let rendered: List[String] = map(items, fn(item: String) -> render_list_item(item))
+    return "<ul>\n" + join(rendered, "\n") + "\n</ul>"
+end func
+
+// Render an ordered (numbered) list.
+func render_number_list(items: List[String]) -> String
+    example ["first", "second"] -> "<ol>\n  <li>first</li>\n  <li>second</li>\n</ol>"
+
+    let rendered: List[String] = map(items, fn(item: String) -> render_list_item(item))
+    return "<ol>\n" + join(rendered, "\n") + "\n</ol>"
+end func
+
+// Render a blockquote.
+func render_quote(content: String) -> String
+    example "wise words" -> "<blockquote>\n<p>wise words</p>\n</blockquote>"
+
+    return "<blockquote>\n<p>" + render_inline(content) + "</p>\n</blockquote>"
+end func
+
+// Render a thematic break.
+func render_break() -> String
+    example () -> "<hr>"
+
+    return "<hr>"
+end func
+
+// Render a single block to HTML by dispatching on its type.
+@untested("top-level dispatch")
+func render_block(b: Block) -> String
+    match b with
+        | Heading(level, content) -> return render_heading(level, content)
+        | Paragraph(content) -> return render_paragraph(content)
+        | CodeBlock(language, code) -> return render_code_block(language, code)
+        | BulletList(items) -> return render_bullet_list(items)
+        | NumberList(items) -> return render_number_list(items)
+        | Quote(content) -> return render_quote(content)
+        | ThematicBreak -> return render_break()
+        | EmptyBlock -> return ""
+    end match
+end func
+
+// Render a list of blocks into an HTML body string.
+func render_body(blocks: List[Block]) -> String
+    example [] -> ""
+    example [ThematicBreak] -> "<hr>"
+
+    let parts: List[String] = map(blocks, fn(b: Block) -> render_block(b))
+    let non_empty: List[String] = filter(parts, fn(s: String) -> length(s) > 0)
+    return join(non_empty, "\n")
+end func
+
+// ---------- Table of contents ----------
+
+// Check if a block is a heading.
+func is_heading_block(b: Block) -> Bool
+    example Paragraph("x") -> false
+    example Heading(1, "x") -> true
+
+    match b with
+        | Heading(_, _) -> return true
+        | _ -> return false
+    end match
+end func
+
+// Extract the heading level, defaulting to 0 for non-headings.
+func get_heading_level(b: Block) -> Int
+    example Heading(2, "x") -> 2
+    example Paragraph("x") -> 0
+
+    match b with
+        | Heading(level, _) -> return level
+        | _ -> return 0
+    end match
+end func
+
+// Extract the heading content, defaulting to "" for non-headings.
+func get_heading_content(b: Block) -> String
+    example Heading(1, "Intro") -> "Intro"
+    example Paragraph("x") -> ""
+
+    match b with
+        | Heading(_, content) -> return content
+        | _ -> return ""
+    end match
+end func
+
+// Build a single TOC entry as an HTML list item with an anchor link.
+func toc_entry(b: Block) -> String
+    example Heading(1, "Intro") -> "<li><a href=\"#intro\">Intro</a></li>"
+
+    let content: String = get_heading_content(b)
+    let id: String = escape_html_attr(slugify(content))
+    let safe_text: String = escape_html(content)
+    return "<li><a href=\"#" + id + "\">" + safe_text + "</a></li>"
+end func
+
+// Generate a table of contents from all headings in the document.
+func generate_toc(blocks: List[Block]) -> String
+    example [] -> ""
+    example [Paragraph("x")] -> ""
+
+    let headings: List[Block] = filter(blocks, fn(b: Block) -> is_heading_block(b))
+    if length(headings) == 0 then
+        return ""
+    end if
+    let entries: List[String] = map(headings, fn(b: Block) -> toc_entry(b))
+    return "<nav class=\"toc\">\n<h2>Contents</h2>\n<ul>\n" + join(entries, "\n") + "\n</ul>\n</nav>"
+end func
+
+// ---------- Page wrapper ----------
+
+// Generate CSS styles for the HTML page.
+@untested("returns constant CSS")
+func css_styles() -> String
+    return "body { font-family: -apple-system, sans-serif; max-width: 48em; margin: 2em auto; padding: 0 1em; line-height: 1.6; color: #333; } pre { background: #f5f5f5; padding: 1em; overflow-x: auto; border-radius: 4px; } code { font-family: monospace; background: #f0f0f0; padding: 0.15em 0.3em; border-radius: 3px; } pre code { background: none; padding: 0; } blockquote { border-left: 4px solid #ddd; margin: 1em 0; padding: 0.5em 1em; color: #666; } h1, h2, h3 { margin-top: 1.5em; } hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; } .toc { background: #fafafa; padding: 1em 1.5em; border-radius: 4px; margin-bottom: 2em; } .toc ul { padding-left: 1.5em; } a { color: #0066cc; text-decoration: none; } a:hover { text-decoration: underline; } ul, ol { padding-left: 2em; } li { margin: 0.3em 0; }"
+end func
+
+// Wrap an HTML body in a complete page with head, title, and styles.
+func wrap_html_page(title: String, body: String) -> String
+    example ("Test", "<p>hi</p>") -> "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Test</title>\n<style>\nbody { font-family: -apple-system, sans-serif; max-width: 48em; margin: 2em auto; padding: 0 1em; line-height: 1.6; color: #333; } pre { background: #f5f5f5; padding: 1em; overflow-x: auto; border-radius: 4px; } code { font-family: monospace; background: #f0f0f0; padding: 0.15em 0.3em; border-radius: 3px; } pre code { background: none; padding: 0; } blockquote { border-left: 4px solid #ddd; margin: 1em 0; padding: 0.5em 1em; color: #666; } h1, h2, h3 { margin-top: 1.5em; } hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; } .toc { background: #fafafa; padding: 1em 1.5em; border-radius: 4px; margin-bottom: 2em; } .toc ul { padding-left: 1.5em; } a { color: #0066cc; text-decoration: none; } a:hover { text-decoration: underline; } ul, ol { padding-left: 2em; } li { margin: 0.3em 0; }\n</style>\n</head>\n<body>\n<p>hi</p>\n</body>\n</html>"
+
+    let styles: String = css_styles()
+    let safe_title: String = escape_html(title)
+    return "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>" + safe_title + "</title>\n<style>\n" + styles + "\n</style>\n</head>\n<body>\n" + body + "\n</body>\n</html>"
+end func
+
+// Count the number of content blocks (excluding empties).
+func count_content_blocks(blocks: List[Block]) -> Int
+    example [] -> 0
+    example [Paragraph("x"), EmptyBlock] -> 1
+    example [Heading(1, "a"), Paragraph("b")] -> 2
+
+    return length(filter(blocks, fn(b: Block) -> block_tag(b) != "empty"))
+end func
+
+// Extract the document title from the first heading, or use a default.
+func extract_title(blocks: List[Block]) -> String
+    example [] -> "Untitled"
+    example [Paragraph("x")] -> "Untitled"
+    example [Heading(1, "Hello")] -> "Hello"
+
+    let headings: List[Block] = filter(blocks, fn(b: Block) -> is_heading_block(b))
+    if length(headings) == 0 then
+        return "Untitled"
+    end if
+    return get_heading_content(headings[0])
+end func

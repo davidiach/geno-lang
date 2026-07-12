@@ -1,0 +1,63 @@
+// Main.geno — Entry point for geno-check config validator
+// =========================================================
+// Usage: geno run --cap fs,print,env examples/apps/geno-check -- config.json
+// Detects file type by extension and runs appropriate validators.
+
+import JsonRules
+import CsvRules
+import TomlRules
+import Report
+import Violation
+
+// Detect file type from extension.
+func detect_type(path: String) -> String
+    example "config.json" -> "json"
+    example "data.csv" -> "csv"
+    example "settings.toml" -> "toml"
+    example "readme.txt" -> "unknown"
+
+    if ends_with(path, ".json") then
+        return "json"
+    else
+        if ends_with(path, ".csv") then
+            return "csv"
+        else
+            if ends_with(path, ".toml") then
+                return "toml"
+            else
+                return "unknown"
+            end if
+        end if
+    end if
+end func
+
+// Run validation on file contents based on type.
+@untested("dispatches to capability-gated validators")
+func validate(file: String, text: String, file_type: String) -> List[Violation]
+    match file_type with
+        | "json" -> return JsonRules.validate_json(file, text)
+        | "csv" -> return CsvRules.validate_csv(file, text)
+        | "toml" -> return TomlRules.validate_toml(file, text)
+        | _ -> return [Violation(file, "<root>", "unsupported", "unsupported file type: " + file_type, "json/csv/toml", file_type, Error)]
+    end match
+end func
+
+@untested("entry point — uses fs_read_text and cli_args")
+func main() -> Int
+    let args: List[String] = cli_args()
+    if length(args) == 0 then
+        print("Usage: geno run --cap fs,print,env examples/apps/geno-check -- <file>")
+        return 1
+    end if
+    let file_path: String = head(args)
+    let file_type: String = detect_type(file_path)
+    let text: String = fs_read_text(file_path)
+    let violations: List[Violation] = validate(file: file_path, text: text, file_type: file_type)
+    let report: String = Report.format_report(violations)
+    print(report)
+    if Report.validation_passed(violations) then
+        return 0
+    else
+        return 1
+    end if
+end func

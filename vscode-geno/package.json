@@ -1,0 +1,111 @@
+{
+  "name": "geno",
+  "displayName": "Geno",
+  "description": "Syntax highlighting, snippets, diagnostics, and language support for the Geno programming language",
+  "version": "0.3.1",
+  "publisher": "geno-lang",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidiach/geno-lang.git",
+    "directory": "vscode-geno"
+  },
+  "engines": {
+    "vscode": "^1.80.0",
+    "node": ">=20 <25"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Linters"
+  ],
+  "keywords": [
+    "geno",
+    "functional",
+    "programming language",
+    "syntax highlighting"
+  ],
+  "activationEvents": [
+    "onLanguage:geno"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Syntax highlighting and snippets remain available, but commands, diagnostics, and language server execution are disabled until the workspace is trusted.",
+      "restrictedConfigurations": [
+        "geno.serverPath"
+      ]
+    }
+  },
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "geno",
+        "aliases": [
+          "Geno",
+          "geno"
+        ],
+        "extensions": [
+          ".geno"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "geno",
+        "scopeName": "source.geno",
+        "path": "./syntaxes/geno.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "geno",
+        "path": "./snippets/geno.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "geno.runFile",
+        "title": "Run Geno File",
+        "category": "Geno"
+      }
+    ],
+    "configuration": {
+      "title": "Geno",
+      "properties": {
+        "geno.serverPath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "geno",
+          "markdownDescription": "Trusted local path to the Geno executable used to start the language server, fallback diagnostics, and run-file commands."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "geno.runFile",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorLangId == geno"
+      }
+    ]
+  },
+  "scripts": {
+    "check:node": "node ./scripts/check-node-version.js",
+    "compile": "tsc -p ./",
+    "test": "npm run check:node && npm run compile && node ./out/shellEscape.test.js && node ./out/lspStatus.test.js",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^6.0.3",
+    "@vscode/vsce": "^3.9.1"
+  }
+}

@@ -1,0 +1,73 @@
+problem:
+  id: "PROB-029"
+  name: "Find First Even"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that finds the first even number in a list.
+    Return Some(value) if found, None if no even number exists.
+  signature:
+    function_name: "find_first_even"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Option[Int]"
+  examples:
+    visible:
+      - input: [[1, 3, 4, 7, 8]]
+        output: {"Some": 4}
+        description: "First even is 4"
+      - input: [[1, 3, 5, 7]]
+        output: "None"
+        description: "No even numbers"
+    hidden:
+      - input: [[]]
+        output: "None"
+        description: "Empty list"
+      - input: [[2]]
+        output: {"Some": 2}
+        description: "Single even"
+      - input: [[1]]
+        output: "None"
+        description: "Single odd"
+      - input: [[2, 4, 6]]
+        output: {"Some": 2}
+        description: "All even"
+      - input: [[-2, -1, 0]]
+        output: {"Some": -2}
+        description: "Negative even first"
+  constraints:
+    - "Return first even found"
+    - "Return None if none exist"
+  canonical_solutions:
+    geno: |
+      func find_first_even(arr: List[Int]) -> Option[Int]
+          example [1, 3, 4, 7, 8] -> Some(4)
+          example [1, 3, 5, 7] -> None
+
+          var i: Int = 0
+          while i < length(arr) do
+              if arr[i] % 2 == 0 then
+                  return Some(arr[i])
+              end if
+              i = i + 1
+          end while
+
+          return None
+      end func find_first_even
+    python: |
+      from typing import Optional
+
+      def find_first_even(arr: list[int]) -> Optional[int]:
+          for x in arr:
+              if x % 2 == 0:
+                  return x
+          return None
+  metadata:
+    tags: ["option", "search", "list"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "option-type", "early-return"]

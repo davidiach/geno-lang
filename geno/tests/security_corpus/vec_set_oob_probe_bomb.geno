@@ -1,0 +1,42 @@
+# EXPECT: E503
+# Vec mutation boundary probing: use vec_set with carefully chosen
+# indices near the boundary of the vec's length to test whether
+# out-of-bounds writes can corrupt adjacent memory or leak internal
+# Python list implementation details via error messages.  The
+# tight loop of set/get/push/pop operations tests that mutable
+# collection operations are step-counted and that error recovery
+# from invalid indices doesn't leak sandbox information.
+func probe_vec(n: Int) -> Int
+    example 0 -> 0
+    let v: Vec[Int] = vec_new()
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        vec_push(vec: v, item: i)
+        if vec_length(vec: v) > 1 then
+            let last_idx: Int = vec_length(vec: v) - 1
+            vec_set(vec: v, index: last_idx, value: i * 2)
+            let val: Int = vec_get(vec: v, index: last_idx)
+            total = total + val
+        end if
+        if vec_length(vec: v) > 10 then
+            let popped: Option[Int] = vec_pop(vec: v)
+            match popped with
+            | Some(x) -> total = total + x
+            | None -> total = total + 1
+            end match
+        end if
+        try
+            let bad: Int = vec_get(vec: v, index: vec_length(vec: v) + 100)
+            total = total + bad
+        catch e: String
+            total = total + length(e)
+        end try
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return probe_vec(200000)
+end func

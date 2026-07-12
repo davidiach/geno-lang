@@ -1,0 +1,65 @@
+# EXPECT: E503
+# Exception handler manipulation via error message content probing:
+# Deliberately trigger different categories of runtime errors and
+# inspect the caught error messages for information about sandbox
+# internals (Python tracebacks, file paths, class names, etc.).
+# Unlike the existing try_catch_sandbox_error_probe which just
+# collects message lengths, this constructs a dictionary of error
+# patterns and searches for sandbox-revealing substrings.
+@untested("returns error message")
+func trigger_div_zero() -> String
+    try
+        let x: Int = 1 / 0
+    catch e: String
+        return e
+    end try
+    return ""
+end func
+
+@untested("returns error message")
+func trigger_index_oob() -> String
+    try
+        let empty: List[Int] = []
+        let x: Int = empty[0]
+    catch e: String
+        return e
+    end try
+    return ""
+end func
+
+@untested("returns error message")
+func trigger_unwrap_none() -> String
+    try
+        let nothing: Option[Int] = None
+        let x: Int = unwrap(nothing)
+    catch e: String
+        return e
+    end try
+    return ""
+end func
+
+func search_for_leaks(msg: String) -> Int
+    example "" -> 0
+    var score: Int = 0
+    if contains_substring(text: msg, substring: "sandbox") then
+        score = score + 10
+    end if
+    if contains_substring(text: msg, substring: ".py") then
+        score = score + 50
+    end if
+    return score
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 200000 do
+        let e1: String = trigger_div_zero()
+        let e2: String = trigger_index_oob()
+        let e3: String = trigger_unwrap_none()
+        total = total + search_for_leaks(e1) + search_for_leaks(e2) + search_for_leaks(e3)
+        total = total + length(e1) + length(e2) + length(e3)
+        i = i + 1
+    end while
+    return total
+end func

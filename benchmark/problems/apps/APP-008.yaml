@@ -1,0 +1,119 @@
+problem:
+  id: "APP-008"
+  name: "Markdown Heading Outline"
+  difficulty: "hard"
+  domain: "strings"
+  description: |
+    Build a numbered outline from markdown heading lines. A heading line
+    starts with "# ", "## ", or "### " (marker, then a single space, then
+    a non-empty title that may contain spaces). All other lines are
+    ignored.
+
+    Maintain hierarchical counters:
+    - "# Title"   -> "<h1> Title"     (increments h1, resets h2 and h3)
+    - "## Title"  -> "<h1>.<h2> Title" (increments h2, resets h3)
+    - "### Title" -> "<h1>.<h2>.<h3> Title" (increments h3)
+
+    For example the second h2 under the first h1 is numbered "1.2".
+    Return the outline lines in input order.
+  signature:
+    function_name: "outline"
+    inputs:
+      - name: "lines"
+        type: "List[String]"
+    output:
+      name: "entries"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: [["# Intro", "## Setup", "some text", "## Usage", "# End"]]
+        output: ["1 Intro", "1.1 Setup", "1.2 Usage", "2 End"]
+        description: "Two chapters with numbered sections"
+      - input: [[]]
+        output: []
+        description: "No lines"
+    hidden:
+      - input: [["# A", "## B", "### C", "### D", "## E", "### F"]]
+        output: ["1 A", "1.1 B", "1.1.1 C", "1.1.2 D", "1.2 E", "1.2.1 F"]
+        description: "Three levels with resets"
+      - input: [["# Multi word title here"]]
+        output: ["1 Multi word title here"]
+        description: "Titles keep their spaces"
+      - input: [["no headings", "just text"]]
+        output: []
+        description: "Plain text produces nothing"
+      - input: [["# A", "# B", "# C"]]
+        output: ["1 A", "2 B", "3 C"]
+        description: "Top-level sequence"
+      - input: [["# A", "## B", "# C", "## D"]]
+        output: ["1 A", "1.1 B", "2 C", "2.1 D"]
+        description: "New chapter resets the section counter"
+      - input: [["#### too deep", "# A"]]
+        output: ["1 A"]
+        description: "Deeper markers are not headings"
+  constraints:
+    - "Heading markers are followed by exactly one space and a non-empty title"
+    - "Heading levels never skip (an h2 follows some h1, an h3 follows some h2)"
+    - "Lines that are not h1/h2/h3 headings are ignored"
+  canonical_solutions:
+    geno: |
+      func heading_title(line: String) -> String
+          example "# Intro" -> "Intro"
+
+          let parts: List[String] = split(line, " ")
+          let rest: List[String] = slice(list: parts, start: 1, stop: length(parts))
+          return join(rest, " ")
+      end func heading_title
+
+      func outline(lines: List[String]) -> List[String]
+          example ["# Intro", "## Setup", "some text", "## Usage", "# End"] -> ["1 Intro", "1.1 Setup", "1.2 Usage", "2 End"]
+          example [] -> []
+
+          var entries: List[String] = []
+          var h1: Int = 0
+          var h2: Int = 0
+          var h3: Int = 0
+          for line: String in lines do
+              if starts_with(line, "### ") then
+                  h3 = h3 + 1
+                  let number: String = to_string(h1) + "." + to_string(h2) + "." + to_string(h3)
+                  entries = append(entries, number + " " + heading_title(line))
+              else if starts_with(line, "## ") then
+                  h2 = h2 + 1
+                  h3 = 0
+                  let number: String = to_string(h1) + "." + to_string(h2)
+                  entries = append(entries, number + " " + heading_title(line))
+              else if starts_with(line, "# ") then
+                  h1 = h1 + 1
+                  h2 = 0
+                  h3 = 0
+                  entries = append(entries, to_string(h1) + " " + heading_title(line))
+              end if
+          end for
+          return entries
+      end func outline
+    python: |
+      def outline(lines: list[str]) -> list[str]:
+          entries = []
+          h1 = h2 = h3 = 0
+          for line in lines:
+              if line.startswith("### "):
+                  h3 += 1
+                  entries.append(f"{h1}.{h2}.{h3} {line[4:]}")
+              elif line.startswith("## "):
+                  h2 += 1
+                  h3 = 0
+                  entries.append(f"{h1}.{h2} {line[3:]}")
+              elif line.startswith("# "):
+                  h1 += 1
+                  h2 = h3 = 0
+                  entries.append(f"{h1} {line[2:]}")
+          return entries
+  metadata:
+    tags: ["app-tier", "strings", "counters", "formatting"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "for", "starts_with", "split", "slice", "join",
+       "to_string", "counters"]

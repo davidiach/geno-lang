@@ -1,0 +1,63 @@
+# Capability-sweep configuration for the Geno vs Python correctness
+# experiment (see docs/design/benchmark-v2.md).
+#
+# The sweep tests the core prediction of Geno's design hypothesis: if the
+# language's guardrails (explicit block structure, static types,
+# examples-as-tests) make generated code more reliable, the Geno-minus-Python
+# pass-rate delta should grow as model capability decreases. Frontier-only
+# runs cannot show this once models saturate the suite.
+#
+# Before running, replace each model `name` / `model_snapshot` with the exact
+# provider IDs available on the run date. Small-tier models are cheap; the
+# sweep adds little cost over the frontier run.
+
+experiment_id: "capability_sweep_YYYYMMDD"
+
+models:
+  # Frontier tier
+  - name: "claude-sonnet-4-6"
+    provider: "anthropic"
+    model_family: "Claude Sonnet"
+    capability_tier: "frontier"
+    model_snapshot: "record exact provider model ID before run"
+  - name: "gpt-5.4"
+    provider: "openai"
+    model_family: "GPT-5-class"
+    capability_tier: "frontier"
+    model_snapshot: "record exact provider model ID before run"
+  - name: "gemini-3.1-pro"
+    provider: "google"
+    model_family: "Gemini Pro"
+    capability_tier: "frontier"
+    model_snapshot: "record exact provider model ID before run"
+  # Small tier
+  - name: "claude-haiku-4-5"
+    provider: "anthropic"
+    model_family: "Claude Haiku"
+    capability_tier: "small"
+    model_snapshot: "record exact provider model ID before run"
+  - name: "gpt-5.4-mini"
+    provider: "openai"
+    model_family: "GPT-5-class mini"
+    capability_tier: "small"
+    model_snapshot: "record exact provider model ID before run"
+  - name: "gemini-3.5-flash"
+    provider: "google"
+    model_family: "Gemini Flash"
+    capability_tier: "small"
+    model_snapshot: "record exact provider model ID before run"
+
+languages:
+  - "geno"
+  - "python"
+
+trials_per_condition: 3
+temperature: 0.0
+max_tokens: 2048
+timeout_seconds: 5.0
+few_shot_examples: 0
+output_dir: "results/capability_sweep_YYYYMMDD"
+
+# Omit this key for the full run. Keep it only for smoke runs.
+# difficulties:
+#   - "easy"

@@ -1,0 +1,58 @@
+problem:
+  id: "PROB-005"
+  name: "List Length"
+  difficulty: "trivial"
+  domain: "arrays"
+  description: |
+    Write a function that returns the length of a list.
+  signature:
+    function_name: "list_length"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, 2, 3]]
+        output: 3
+        description: "Three elements"
+      - input: [[]]
+        output: 0
+        description: "Empty list"
+    hidden:
+      - input: [[1]]
+        output: 1
+        description: "Single element"
+      - input: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
+        output: 10
+        description: "Ten elements"
+      - input: [[0, 0, 0]]
+        output: 3
+        description: "List of zeros"
+      - input: [[-1, -2]]
+        output: 2
+        description: "Negative elements"
+      - input: [[5, 5, 5, 5, 5]]
+        output: 5
+        description: "Five identical elements"
+  constraints:
+    - "Use the built-in length function"
+  canonical_solutions:
+    geno: |
+      func list_length(arr: List[Int]) -> Int
+          example [1, 2, 3] -> 3
+          example [] -> 0
+
+          return length(arr)
+      end func list_length
+    python: |
+      def list_length(arr: list[int]) -> int:
+          return len(arr)
+  metadata:
+    tags: ["list", "basic"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "list", "built-in"]

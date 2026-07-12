@@ -1,0 +1,58 @@
+# EXPECT: E503
+# Trait dispatch abuse via multiple trait implementations on the
+# same ADT type: implement several traits on a complex ADT and
+# call trait methods in a cross-referencing pattern where each
+# trait method calls another trait method on a sub-value.  This
+# creates hidden dispatch overhead per call and tests that trait
+# method resolution through ADT variants is step-counted even
+# when the call graph is non-obvious.
+type Expr = Num(val: Int) | Add(left: Expr, right: Expr) | Neg(inner: Expr)
+
+trait Evaluable
+    func eval_expr(self: Self) -> Int
+end trait
+
+trait Printable
+    func show(self: Self) -> String
+end trait
+
+impl Evaluable for Expr
+    func eval_expr(self: Expr) -> Int
+        example Num(1) -> 1
+        match self with
+        | Num(v) -> return v
+        | Add(l, r) -> return eval_expr(l) + eval_expr(r)
+        | Neg(inner) -> return 0 - eval_expr(inner)
+        end match
+    end func
+end impl
+
+impl Printable for Expr
+    func show(self: Expr) -> String
+        example Num(1) -> "1"
+        match self with
+        | Num(v) -> return to_string(v)
+        | Add(l, r) -> return f"({show(l)}+{show(r)})"
+        | Neg(inner) -> return f"(-{show(inner)})"
+        end match
+    end func
+end impl
+
+func build_expr(depth: Int) -> Expr
+    example 0 -> Num(1)
+    if depth <= 0 then
+        return Num(1)
+    end if
+    return Add(Neg(build_expr(depth - 1)), build_expr(depth - 1))
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 100000 do
+        let e: Expr = build_expr(5)
+        total = total + eval_expr(e) + length(show(e))
+        i = i + 1
+    end while
+    return total
+end func

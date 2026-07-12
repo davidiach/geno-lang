@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "target_mapping": {
+        "python-cli": "Compiled Python executed via CLI",
+        "node-cli": "Compiled JavaScript executed via Node.js",
+        "browser": "Compiled JavaScript executed in browser"
+    },
+    "notes": {
+        "status": "No public packages are listed yet. Entries are added only after their repositories and release tags are publicly available."
+    },
+    "packages": []
+}

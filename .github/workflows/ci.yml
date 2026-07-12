@@ -1,0 +1,441 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clean-install-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: '20'
+
+    - name: Build and install wheel
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip wheel . --wheel-dir dist
+        python -m pip install --force-reinstall dist/*.whl
+
+    - name: Run clean install smoke
+      run: python scripts/smoke_clean_install.py
+
+  release-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Run release gate
+      run: make release-check
+
+  optional-test-collection:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install without Hypothesis
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+        pip install "pytest>=9.0.3,<10"
+
+    - name: Collect optional property tests
+      run: make optional-test-collection PYTHON=python
+
+  fuzz-property-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Run fuzz and property tests
+      run: python -m pytest geno/tests/test_property_based.py geno/tests/test_fuzzing.py geno/tests/test_differential_fuzzing.py -q --tb=short --timeout=60
+
+  lsp-tests:
+    # Runs the FULL suite with the lsp extra installed, not just
+    # geno/tests/test_lsp.py: importorskip("pygls")-guarded tests exist in
+    # other files (e.g. test_project_resolution_consistency.py) and are
+    # silently skipped everywhere else — the main test matrix installs only
+    # the dev extra. The per-test timeout stays at 60s; the slow doc-cache
+    # eviction test carries its own pytest.mark.timeout(360) override.
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install LSP dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev,lsp]"
+
+    - name: Run full test suite with LSP extra
+      run: python -m pytest geno/tests/ -q --tb=short --timeout=60
+
+  sandbox-regression:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.13'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Run sandbox regression slice
+      run: make sandbox-regression PYTHON=python
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install "pip-audit==2.10.0"
+
+    - name: Audit Python dependencies
+      run: make dependency-audit PYTHON=python
+
+  docker-smoke:
+    # Exercises the shipped Docker/compose deployment so a broken image or a
+    # misconfigured runtime (Host allow-list, missing SIGTERM handling, OOM
+    # sizing) is caught before release (M-02).
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Build image
+      run: docker build -t geno-server:ci .
+
+    - name: Start container
+      run: |
+        docker run -d --name geno-ci \
+          -e GENO_API_KEY=ci-smoke-key \
+          -e GENO_ALLOWED_HOSTS='*' \
+          -p 127.0.0.1:8000:8000 \
+          geno-server:ci
+
+    - name: Wait for healthy
+      run: |
+        for i in $(seq 1 30); do
+          status=$(docker inspect --format '{{.State.Health.Status}}' geno-ci 2>/dev/null || echo starting)
+          if [ "$status" = "healthy" ]; then echo "healthy"; exit 0; fi
+          sleep 2
+        done
+        echo "container never became healthy"; docker logs geno-ci; exit 1
+
+    - name: Smoke /healthz and /run
+      run: |
+        code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/healthz)
+        [ "$code" = "200" ] || { echo "healthz status=$code"; exit 1; }
+        body=$(curl -sS -X POST http://127.0.0.1:8000/run \
+          -H 'X-API-Key: ci-smoke-key' -H 'Content-Type: application/json' \
+          -d '{"source":"func main() -> Int\n  example () -> 3\n  return 1 + 2\nend func"}')
+        echo "$body"
+        echo "$body" | grep -q '"ok":true' || { echo "run did not return ok"; exit 1; }
+        echo "$body" | grep -q '"value":3' || { echo "run returned wrong value"; exit 1; }
+
+    - name: Assert graceful stop within grace period
+      run: |
+        # docker stop sends SIGTERM; the server must exit before the 10s SIGKILL.
+        start=$(date +%s)
+        docker stop -t 10 geno-ci
+        elapsed=$(( $(date +%s) - start ))
+        echo "stopped in ${elapsed}s"
+        [ "$elapsed" -lt 10 ] || { echo "did not stop gracefully before SIGKILL"; exit 1; }
+
+    - name: Cleanup
+      if: always()
+      run: docker rm -f geno-ci || true
+
+  test:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: '3.10'
+          - os: ubuntu-latest
+            python-version: '3.11'
+          - os: ubuntu-latest
+            python-version: '3.12'
+          - os: ubuntu-latest
+            python-version: '3.13'
+          - os: macos-latest
+            python-version: '3.11'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Run tests with coverage
+      run: |
+        python -m pytest geno/tests/ -v --tb=short --cov=geno --cov-report=xml --cov-report=term --cov-fail-under=80 --timeout=60
+
+    - name: Upload coverage to Codecov
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6
+      with:
+        files: ./coverage.xml
+        fail_ci_if_error: false
+
+    - name: Run type checker on examples
+      run: |
+        for f in examples/*.geno; do
+          if [ -f "$f" ]; then
+            echo "Checking $f..."
+            python -m geno check "$f"
+          fi
+        done
+
+    - name: Selfhost parity check
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      run: python scripts/check_selfhost_parity.py
+
+    - name: Selfhost smoke check
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      run: |
+        for f in selfhost/*.geno; do
+          echo "Checking $f..."
+          python -m geno check "$f"
+        done
+
+  windows-smoke:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev,lsp]"
+
+    - name: Run Windows smoke tests
+      run: python -m pytest geno/tests/test_cli.py geno/tests/test_api.py geno/tests/test_compiler.py geno/tests/test_js_compiler.py geno/tests/test_package_index.py geno/tests/test_sandbox_config.py geno/tests/test_package_manager.py::TestManifestParse::test_manifest_filesystem_sensitive_dependency_name_raises -q --tb=short --timeout=60
+
+    - name: Run Windows LSP and project-resolution tests
+      run: python -m pytest geno/tests/test_lsp.py geno/tests/test_project_resolution_consistency.py -q --tb=short --timeout=60
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Check formatting and linting with ruff
+      run: |
+        python -m ruff check geno/ benchmark/ experiment/ analysis/
+        python -m ruff format --check geno/ benchmark/ experiment/ analysis/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Run mypy
+      run: |
+        python -m mypy geno/ --ignore-missing-imports --no-error-summary
+
+  js-output:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+        npm install -g typescript
+
+    - name: Validate JS compilation and source maps
+      run: |
+        set -euo pipefail
+
+        # Compile a test program
+        cat > /tmp/test.geno <<'GENO'
+        type Shape = Circle(radius: Float) | Rectangle(w: Float, h: Float)
+
+        func area(s: Shape) -> Float
+            example Circle(1.0) -> 3.14159
+            match s with
+                | Circle(r) -> return 3.14159 * r * r
+                | Rectangle(w, h) -> return w * h
+            end match
+        end func
+        GENO
+
+        # Standard JS compile (must use --target js)
+        python -m geno compile /tmp/test.geno --target js -o /tmp/test.js
+        echo "  JS compile OK"
+
+        # ESM compile
+        python -m geno compile /tmp/test.geno --target js --esm -o /tmp/test.mjs
+        echo "  ESM compile OK"
+
+        # Validate ESM is importable by Node
+        node --input-type=module -e "await import('file:///tmp/test.mjs')" 2>&1
+        echo "  ESM import OK"
+
+        # Validate .d.ts with tsc (blocking — fail the job on errors)
+        if [ -f /tmp/test.d.ts ]; then
+          tsc --noEmit --strict /tmp/test.d.ts 2>&1
+          echo "  .d.ts validation OK"
+        fi
+
+        # Source map structure check (must use --target js)
+        python -m geno compile /tmp/test.geno --target js --source-map -o /tmp/sm_test.js
+        if [ -f /tmp/sm_test.js.map ]; then
+          python3 -c "
+        import json, sys
+        sm = json.load(open('/tmp/sm_test.js.map'))
+        assert sm['version'] == 3, 'Bad source map version'
+        assert 'mappings' in sm, 'Missing mappings'
+        assert 'sources' in sm, 'Missing sources'
+        print('  Source map structure OK')
+        "
+        fi
+
+    - name: Run semantic source map tests
+      run: python -m pytest geno/tests/test_js_source_maps.py -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Run security lint
+      run: |
+        python -m ruff check geno/ --select S --ignore S101
+
+    - name: Run security corpus and bounty
+      run: make security PYTHON=python

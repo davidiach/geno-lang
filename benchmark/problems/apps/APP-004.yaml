@@ -1,0 +1,151 @@
+problem:
+  id: "APP-004"
+  name: "Config Validator"
+  difficulty: "hard"
+  domain: "systems"
+  description: |
+    Validate configuration lines of the form "key=value" against these
+    rules and return a list of error strings, or ["ok"] when there are
+    no errors.
+
+    Known keys: "host", "port", "mode".
+
+    Per line, in input order (first matching error only per line):
+    - "malformed: <line>" if the line does not split into exactly two
+      parts on "=".
+    - "duplicate key: <key>" if the key already appeared (a key counts
+      as seen even if its value was invalid; duplicates are not
+      value-checked).
+    - "unknown key: <key>" if the key is not one of the known keys.
+    - "invalid port: <value>" if key is "port" and the value does not
+      parse as an integer between 1 and 65535 inclusive.
+    - "invalid mode: <value>" if key is "mode" and the value is neither
+      "dev" nor "prod".
+
+    After all lines: append "missing key: host" and then
+    "missing key: port" for required keys that never appeared.
+  signature:
+    function_name: "validate_config"
+    inputs:
+      - name: "lines"
+        type: "List[String]"
+    output:
+      name: "errors"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: [["host=example.com", "port=8080"]]
+        output: ["ok"]
+        description: "Valid minimal config"
+      - input: [["host=a", "port=99999"]]
+        output: ["invalid port: 99999"]
+        description: "Out-of-range port"
+      - input: [["port=80", "colour=red"]]
+        output: ["unknown key: colour", "missing key: host"]
+        description: "Unknown key plus missing required key"
+    hidden:
+      - input: [[]]
+        output: ["missing key: host", "missing key: port"]
+        description: "Empty config misses both required keys"
+      - input: [["host=a", "host=b", "port=80"]]
+        output: ["duplicate key: host"]
+        description: "Duplicate keys are reported once per repeat"
+      - input: [["host=a", "port=abc"]]
+        output: ["invalid port: abc"]
+        description: "Non-numeric port is invalid but counts as seen"
+      - input: [["host=a", "port=80", "mode=staging"]]
+        output: ["invalid mode: staging"]
+        description: "Mode must be dev or prod"
+      - input: [["bad line", "host=a", "port=1", "mode=prod"]]
+        output: ["malformed: bad line"]
+        description: "Malformed lines do not block valid ones"
+      - input: [["host=a", "port=0"]]
+        output: ["invalid port: 0"]
+        description: "Port lower bound is 1"
+  constraints:
+    - "Keys and values contain no '=' characters"
+    - "Error order: per-line errors in input order, then missing host, then missing port"
+    - "A key with an invalid value still counts as present"
+  canonical_solutions:
+    geno: |
+      func validate_config(lines: List[String]) -> List[String]
+          example ["host=example.com", "port=8080"] -> ["ok"]
+          example ["host=a", "port=99999"] -> ["invalid port: 99999"]
+
+          var errors: List[String] = []
+          var seen: List[String] = []
+          for line: String in lines do
+              let parts: List[String] = split(line, "=")
+              if length(parts) != 2 then
+                  errors = append(errors, "malformed: " + line)
+              else
+                  let key: String = parts[0]
+                  let value: String = parts[1]
+                  if contains(seen, key) then
+                      errors = append(errors, "duplicate key: " + key)
+                  else
+                      seen = append(seen, key)
+                      if key == "port" then
+                          let port: Int = match parse_int(value) with
+                              | Some(v) -> v
+                              | None -> -1
+                          end match
+                          if port < 1 or port > 65535 then
+                              errors = append(errors, "invalid port: " + value)
+                          end if
+                      else if key == "mode" then
+                          if value != "dev" and value != "prod" then
+                              errors = append(errors, "invalid mode: " + value)
+                          end if
+                      else if key != "host" then
+                          errors = append(errors, "unknown key: " + key)
+                      end if
+                  end if
+              end if
+          end for
+          if contains(seen, "host") == false then
+              errors = append(errors, "missing key: host")
+          end if
+          if contains(seen, "port") == false then
+              errors = append(errors, "missing key: port")
+          end if
+          if length(errors) == 0 then
+              return ["ok"]
+          end if
+          return errors
+      end func validate_config
+    python: |
+      def validate_config(lines: list[str]) -> list[str]:
+          errors = []
+          seen = set()
+          for line in lines:
+              parts = line.split("=")
+              if len(parts) != 2:
+                  errors.append(f"malformed: {line}")
+                  continue
+              key, value = parts
+              if key in seen:
+                  errors.append(f"duplicate key: {key}")
+                  continue
+              seen.add(key)
+              if key == "port":
+                  if not value.isdigit() or not 1 <= int(value) <= 65535:
+                      errors.append(f"invalid port: {value}")
+              elif key == "mode":
+                  if value not in ("dev", "prod"):
+                      errors.append(f"invalid mode: {value}")
+              elif key != "host":
+                  errors.append(f"unknown key: {key}")
+          if "host" not in seen:
+              errors.append("missing key: host")
+          if "port" not in seen:
+              errors.append("missing key: port")
+          return errors if errors else ["ok"]
+  metadata:
+    tags: ["app-tier", "validation", "parsing", "errors"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n * k)"
+    space_complexity: "O(k)"
+    constructs_tested:
+      ["function", "for", "split", "contains", "option", "match",
+       "parse_int", "string-concat", "ordering"]

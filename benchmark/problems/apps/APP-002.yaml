@@ -1,0 +1,110 @@
+problem:
+  id: "APP-002"
+  name: "Token Bucket Rate Limiter"
+  difficulty: "hard"
+  domain: "systems"
+  description: |
+    Simulate a token-bucket rate limiter. The bucket holds at most
+    `capacity` tokens and starts full at time 0. Tokens refill at
+    `refill_rate` tokens per time unit.
+
+    Each request is a pair [timestamp, cost] and requests arrive with
+    non-decreasing timestamps. For each request, in order:
+    1. Refill: tokens = min(capacity, tokens + elapsed * refill_rate),
+       where elapsed is the time since the previous request (or since
+       time 0 for the first request).
+    2. If cost <= tokens, the request is allowed and cost is deducted;
+       otherwise it is denied and the token count is unchanged.
+
+    Return one boolean per request: true if allowed, false if denied.
+  signature:
+    function_name: "rate_limit"
+    inputs:
+      - name: "capacity"
+        type: "Int"
+      - name: "refill_rate"
+        type: "Int"
+      - name: "requests"
+        type: "List[List[Int]]"
+    output:
+      name: "allowed"
+      type: "List[Bool]"
+  examples:
+    visible:
+      - input: [10, 1, [[0, 6], [1, 6], [10, 6]]]
+        output: [true, false, true]
+        description: "Second request lacks tokens; refill recovers by t=10"
+      - input: [5, 2, [[0, 5], [1, 2], [1, 1]]]
+        output: [true, true, false]
+        description: "Same-timestamp requests share one refill"
+      - input: [3, 1, []]
+        output: []
+        description: "No requests"
+    hidden:
+      - input: [10, 0, [[0, 4], [100, 4], [200, 4]]]
+        output: [true, true, false]
+        description: "Zero refill rate never recovers tokens"
+      - input: [2, 5, [[0, 2], [1, 2], [2, 2]]]
+        output: [true, true, true]
+        description: "Refill is capped at capacity"
+      - input: [10, 1, [[5, 10], [6, 1], [7, 2]]]
+        output: [true, true, false]
+        description: "Bucket starts full; deductions accumulate"
+      - input: [1, 1, [[0, 2]]]
+        output: [false]
+        description: "Cost above capacity is always denied"
+      - input: [4, 1, [[0, 4], [2, 3], [3, 3], [9, 4]]]
+        output: [true, false, true, true]
+        description: "Denied requests do not consume tokens"
+  constraints:
+    - "Timestamps are non-decreasing and non-negative"
+    - "capacity >= 0, refill_rate >= 0, costs are non-negative"
+    - "The bucket starts full at time 0"
+    - "Denied requests do not change the token count"
+  canonical_solutions:
+    geno: |
+      func rate_limit(capacity: Int, refill_rate: Int, requests: List[List[Int]]) -> List[Bool]
+          example 3, 1, [] -> []
+          example 1, 1, [[0, 2]] -> [false]
+
+          var tokens: Int = capacity
+          var last_time: Int = 0
+          var allowed: List[Bool] = []
+          for request: List[Int] in requests do
+              let now: Int = request[0]
+              let cost: Int = request[1]
+              let refilled: Int = tokens + (now - last_time) * refill_rate
+              tokens = clamp(value: refilled, min: 0, max: capacity)
+              last_time = now
+              if cost <= tokens then
+                  tokens = tokens - cost
+                  allowed = append(allowed, true)
+              else
+                  allowed = append(allowed, false)
+              end if
+          end for
+          return allowed
+      end func rate_limit
+    python: |
+      def rate_limit(
+          capacity: int, refill_rate: int, requests: list[list[int]]
+      ) -> list[bool]:
+          tokens = capacity
+          last_time = 0
+          allowed = []
+          for now, cost in requests:
+              tokens = min(capacity, tokens + (now - last_time) * refill_rate)
+              last_time = now
+              if cost <= tokens:
+                  tokens -= cost
+                  allowed.append(True)
+              else:
+                  allowed.append(False)
+          return allowed
+  metadata:
+    tags: ["app-tier", "state-machine", "rate-limiting", "simulation"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "for", "nested-list", "min", "bool-list", "state"]

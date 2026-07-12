@@ -1,0 +1,100 @@
+// CsvRules.geno — Validation rules for CSV data files
+// =====================================================
+// Validates CSV rows using map_get on header-parsed records.
+// Demonstrates pipeline operator for rule chaining.
+
+import Violation
+
+// Check that a field value is non-empty.
+func field_non_empty(value: String) -> Bool
+    example "hello" -> true
+    example "" -> false
+
+    return length(to_chars(value)) > 0
+end func
+
+// Check that a field value is a valid positive integer.
+func field_is_positive_int(value: String) -> Bool
+    example "42" -> true
+    example "0" -> false
+    example "-5" -> false
+    example "abc" -> false
+
+    match parse_int(value) with
+        | Some(n) -> return n > 0
+        | None -> return false
+    end match
+end func
+
+// Check that a field value is one of the allowed values.
+func field_in_list(value: String, allowed: List[String]) -> Bool
+    example ("admin", ["admin", "user", "guest"]) -> true
+    example ("superuser", ["admin", "user", "guest"]) -> false
+
+    return contains(allowed, value)
+end func
+
+// Validate a single CSV row for a required non-empty field.
+@untested("uses map_get on CSV row")
+func check_required(file: String, row_label: String, row: Map[String, String], field: String) -> List[Violation]
+    match map_get(row, field) with
+        | Some(value) ->
+        if field_non_empty(value) then
+            return []
+        else
+            return [Violation(file, row_label + "." + field, "required", "field '" + field + "' must not be empty", "non-empty", "empty", Error)]
+        end if
+        | None ->
+        return [Violation(file, row_label, "missing_column", "column '" + field + "' not found", "present", "missing", Error)]
+    end match
+end func
+
+// Validate a single CSV row for a numeric field.
+@untested("uses map_get on CSV row")
+func check_numeric(file: String, row_label: String, row: Map[String, String], field: String) -> List[Violation]
+    match map_get(row, field) with
+        | Some(value) ->
+        if field_is_positive_int(value) then
+            return []
+        else
+            return [Violation(file, row_label + "." + field, "numeric", "expected positive integer, got '" + value + "'", "positive integer", value, Error)]
+        end if
+        | None -> return []
+    end match
+end func
+
+// Validate a single CSV row for an allowed-values field.
+@untested("uses map_get on CSV row")
+func check_allowed_values(file: String, row_label: String, row: Map[String, String], field: String, allowed: List[String]) -> List[Violation]
+    match map_get(row, field) with
+        | Some(value) ->
+        if field_in_list(value, allowed) then
+            return []
+        else
+            return [Violation(file, row_label + "." + field, "allowed_values", "'" + value + "' not in allowed values", "one of allowed", value, Warning)]
+        end if
+        | None -> return []
+    end match
+end func
+
+// Validate one CSV row against the users schema.
+// Pipeline: check name, email, age, role in sequence.
+@untested("uses map_get on CSV row")
+func validate_user_row(file: String, row_label: String, row: Map[String, String]) -> List[Violation]
+    return []
+    |> concat(_, check_required(file: file, row_label: row_label, row: row, field: "name"))
+    |> concat(_, check_required(file: file, row_label: row_label, row: row, field: "email"))
+    |> concat(_, check_numeric(file: file, row_label: row_label, row: row, field: "age"))
+    |> concat(_, check_allowed_values(file: file, row_label: row_label, row: row, field: "role", allowed: ["admin", "user", "guest"]))
+end func
+
+// Validate an entire CSV file using the users schema.
+@untested("uses capability-gated csv_parse_with_headers")
+func validate_csv(file: String, text: String) -> List[Violation]
+    let rows: List[Map[String, String]] = csv_parse_with_headers(text)
+    match length(rows) with
+        | 0 -> return [Violation(file, "<root>", "empty", "CSV file has no data rows", "at least 1 row", "0 rows", Error)]
+        | _ ->
+        return fold(list: rows, initial: [], reducer: fn(acc: List[Violation], row: Map[String, String]) -> concat(acc, validate_user_row(file: file, row_label: "row", row: row)))
+    end match
+end func

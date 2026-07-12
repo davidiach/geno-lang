@@ -1,0 +1,82 @@
+problem:
+  id: "PROB-046"
+  name: "Anagram Check"
+  difficulty: "easy"
+  domain: "strings"
+  description: |
+    Write a function that checks if two strings are anagrams of each other.
+    Two strings are anagrams if they contain the same characters with the same frequencies.
+  signature:
+    function_name: "is_anagram"
+    inputs:
+      - name: "s1"
+        type: "String"
+      - name: "s2"
+        type: "String"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: ["listen", "silent"]
+        output: true
+        description: "Classic anagram"
+      - input: ["hello", "world"]
+        output: false
+        description: "Not anagrams"
+    hidden:
+      - input: ["", ""]
+        output: true
+        description: "Empty strings"
+      - input: ["a", "a"]
+        output: true
+        description: "Single char same"
+      - input: ["a", "b"]
+        output: false
+        description: "Single char different"
+      - input: ["ab", "ba"]
+        output: true
+        description: "Two chars"
+      - input: ["aab", "aba"]
+        output: true
+        description: "Repeated char"
+      - input: ["aab", "abb"]
+        output: false
+        description: "Different frequencies"
+  constraints:
+    - "Case sensitive"
+  canonical_solutions:
+    geno: |
+      func is_anagram(s1: String, s2: String) -> Bool
+          example "listen", "silent" -> true
+          example "hello", "world" -> false
+
+          let chars1: List[String] = to_chars(s1)
+          let chars2: List[String] = to_chars(s2)
+
+          if length(chars1) != length(chars2) then
+              return false
+          end if
+
+          let sorted1: List[String] = sort_strings(chars1)
+          let sorted2: List[String] = sort_strings(chars2)
+
+          var i: Int = 0
+          while i < length(sorted1) do
+              if sorted1[i] != sorted2[i] then
+                  return false
+              end if
+              i = i + 1
+          end while
+
+          return true
+      end func is_anagram
+    python: |
+      def is_anagram(s1: str, s2: str) -> bool:
+          return sorted(s1) == sorted(s2)
+  metadata:
+    tags: ["string", "sorting", "anagram"]
+    source: "LeetCode #242"
+    time_complexity: "O(n log n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "sorting"]

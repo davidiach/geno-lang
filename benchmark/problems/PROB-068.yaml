@@ -1,0 +1,68 @@
+problem:
+  id: "PROB-068"
+  name: "Zip Sum Lists"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that takes two lists of integers of equal length and
+    returns a new list where each element is the sum of the corresponding
+    elements from the two input lists. Use a for loop with index tracking.
+  signature:
+    function_name: "zip_sum"
+    inputs:
+      - name: "a"
+        type: "List[Int]"
+      - name: "b"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 3], [4, 5, 6]]
+        output: [5, 7, 9]
+        description: "Element-wise sum"
+      - input: [[], []]
+        output: []
+        description: "Empty lists"
+      - input: [[10], [20]]
+        output: [30]
+        description: "Single elements"
+    hidden:
+      - input: [[-1, -2], [1, 2]]
+        output: [0, 0]
+        description: "Negatives and positives cancel"
+      - input: [[0, 0, 0], [0, 0, 0]]
+        output: [0, 0, 0]
+        description: "All zeros"
+      - input: [[100, 200, 300, 400], [1, 2, 3, 4]]
+        output: [101, 202, 303, 404]
+        description: "Longer lists"
+  constraints:
+    - "Both lists have the same length"
+    - "Use a for loop or while loop with indexing"
+  canonical_solutions:
+    geno: |
+      func zip_sum(a: List[Int], b: List[Int]) -> List[Int]
+          example [1, 2, 3], [4, 5, 6] -> [5, 7, 9]
+          example [], [] -> []
+
+          var result: List[Int] = []
+          var i: Int = 0
+
+          while i < length(a) do
+              result = append(result, a[i] + b[i])
+              i = i + 1
+          end while
+
+          return result
+      end func zip_sum
+    python: |
+      def zip_sum(a: list[int], b: list[int]) -> list[int]:
+          return [x + y for x, y in zip(a, b)]
+  metadata:
+    tags: ["zip", "list-building", "element-wise"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "list-building", "index-access", "append"]

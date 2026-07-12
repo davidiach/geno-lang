@@ -1,0 +1,124 @@
+// Format.geno — Output formatters (CSV, JSON, table, markdown)
+// ==============================================================
+
+import Types
+
+// Format a table as CSV.
+func format_csv(table: Table) -> String
+    example (Table(["a", "b"], [Row(["1", "2"])])) -> "a,b\n1,2"
+    let header: String = join(table.headers, ",")
+    let rows: List[String] = map(table.rows, fn(r: Row) -> join(r.cells, ","))
+    return join(concat([header], rows), "\n")
+end func
+
+// Simple row-to-JSON using positional matching.
+func row_to_json_simple(headers: List[String], cells: List[String]) -> String
+    example (["a"], ["1"]) -> "{\"a\": \"1\"}"
+    let n: Int = length(headers)
+    let pairs: List[String] = build_pairs(headers: headers, cells: cells, idx: 0, count: n)
+    return "{" + join(pairs, ", ") + "}"
+end func
+
+// Build JSON key-value pairs recursively.
+func build_pairs(headers: List[String], cells: List[String], idx: Int, count: Int) -> List[String]
+    example (["a"], ["1"], 0, 1) -> ["\"a\": \"1\""]
+    if idx >= count then
+        return []
+    end if
+    let pair: String = "\"" + headers[idx] + "\": \"" + cells[idx] + "\""
+    return concat([pair], build_pairs(headers: headers, cells: cells, idx: idx + 1, count: count))
+end func
+
+// Format a table as JSON array of objects.
+func format_json(table: Table) -> String
+    example (Table(["x"], [Row(["1"])])) -> "[\n  {\"x\": \"1\"}\n]"
+    let objects: List[String] = map(table.rows, fn(r: Row) -> "  " + row_to_json_simple(headers: table.headers, cells: r.cells))
+    return "[\n" + join(objects, ",\n") + "\n]"
+end func
+
+// Pad a string to a fixed width with spaces.
+func pad(text: String, width: Int) -> String
+    example ("hi", 5) -> "hi   "
+    let padding: Int = width - length(text)
+    if padding <= 0 then
+        return text
+    end if
+    return text + repeat_string(" ", padding)
+end func
+
+// Get max width for a column across all rows.
+func max_col_width(table: Table, col: Int) -> Int
+    example (Table(["ab"], [Row(["x"])]), 0) -> 2
+    let header_len: Int = length(table.headers[col])
+    let cell_lens: List[Int] = map(table.rows, fn(r: Row) -> length(r.cells[col]))
+    return fold(list: cell_lens, initial: header_len, reducer: fn(acc: Int, v: Int) -> max(acc, v))
+end func
+
+// Build a list of column widths.
+@untested("recursive width builder")
+func column_widths_list(table: Table, idx: Int, count: Int) -> List[Int]
+    if idx >= count then
+        return []
+    end if
+    return concat([max_col_width(table, idx)], column_widths_list(table: table, idx: idx + 1, count: count))
+end func
+
+// Format a row with padding.
+@untested("recursive padded row builder")
+func format_row_padded(cells: List[String], widths: List[Int], idx: Int, count: Int) -> List[String]
+    if idx >= count then
+        return []
+    end if
+    return concat([pad(cells[idx], widths[idx])], format_row_padded(cells: cells, widths: widths, idx: idx + 1, count: count))
+end func
+
+// Format a table as an aligned text table.
+func format_table(table: Table) -> String
+    example (Table(["x"], [Row(["a"])])) -> "x\n-\na"
+    let ncols: Int = length(table.headers)
+    let widths: List[Int] = column_widths_list(table: table, idx: 0, count: ncols)
+
+    // Header line
+    let header_padded: List[String] = format_row_padded(cells: table.headers, widths: widths, idx: 0, count: ncols)
+    let header_line: String = join(header_padded, " | ")
+
+    // Separator
+    let sep_parts: List[String] = map(widths, fn(w: Int) -> repeat_string("-", w))
+    let sep_line: String = join(sep_parts, "-+-")
+
+    // Data rows
+    let data_lines: List[String] = map(table.rows, fn(r: Row) -> join(format_row_padded(cells: r.cells, widths: widths, idx: 0, count: ncols), " | "))
+
+    return join(concat([header_line, sep_line], data_lines), "\n")
+end func
+
+// Format a table as markdown.
+func format_markdown(table: Table) -> String
+    example (Table(["x"], [Row(["a"])])) -> "| x |\n| --- |\n| a |"
+    let header_line: String = "| " + join(table.headers, " | ") + " |"
+    let seps: List[String] = map(table.headers, fn(h: String) -> "---")
+    let sep_line: String = "| " + join(seps, " | ") + " |"
+    let data_lines: List[String] = map(table.rows, fn(r: Row) -> "| " + join(r.cells, " | ") + " |")
+    return join(concat([header_line, sep_line], data_lines), "\n")
+end func
+
+// Format a table using the specified output format.
+func format_output_csv(table: Table, fmt: OutputFormat) -> String
+    example (Table(["x"], [Row(["1"])]), CsvFormat) -> "x\n1"
+    match fmt with
+        | CsvFormat -> return format_csv(table)
+        | _ -> format_csv(table)
+    end match
+    return format_output_other(table: table, fmt: fmt)
+end func
+
+// Dispatch non-CSV formats.
+@untested("format dispatch helper")
+func format_output_other(table: Table, fmt: OutputFormat) -> String
+    match fmt with
+        | JsonFormat -> return format_json(table)
+        | TableFormat -> return format_table(table)
+        | _ -> return format_markdown(table)
+    end match
+    return format_markdown(table)
+end func

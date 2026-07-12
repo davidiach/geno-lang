@@ -1,0 +1,27 @@
+# EXPECT: E502
+# Closure-based mutual recursion evasion: use closures to create
+# indirect mutual recursion between two functions.  Function A
+# creates a closure that calls function B, and B calls A with
+# a closure.  Tests that the recursion depth tracker catches
+# indirect recursive calls mediated through closure invocations.
+func bounce_a(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    let step: (Int) -> Int = fn(x: Int) -> bounce_b(x)
+    return step(n - 1)
+end func
+
+func bounce_b(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    let step: (Int) -> Int = fn(x: Int) -> bounce_a(x)
+    return step(n - 1) + 1
+end func
+
+func main() -> Int
+    return bounce_a(100000)
+end func

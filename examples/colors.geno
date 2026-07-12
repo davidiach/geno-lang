@@ -1,0 +1,44 @@
+// Colors — Algebraic data types + pattern matching
+// ====================================================
+// Demonstrates: ADT definition, constructors, exhaustive match
+
+type Color = Red | Green | Blue
+
+func color_name(c: Color) -> String
+    example Red -> "red"
+    example Green -> "green"
+    example Blue -> "blue"
+
+    match c with
+        | Red -> return "red"
+        | Green -> return "green"
+        | Blue -> return "blue"
+    end match
+end func color_name
+
+
+func is_primary(c: Color) -> Bool
+    example Red -> true
+    example Blue -> true
+
+    match c with
+        | Red -> return true
+        | Green -> return false
+        | Blue -> return true
+    end match
+end func is_primary
+
+
+func main() -> List[String]
+    let colors: List[Color] = [Red, Green, Blue]
+    var names: List[String] = []
+    var i: Int = 0
+
+    while i < length(colors) do
+        let c: Color = colors[i]
+        names = append(names, color_name(c))
+        i = i + 1
+    end while
+
+    return names
+end func main

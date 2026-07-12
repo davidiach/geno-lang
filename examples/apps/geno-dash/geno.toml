@@ -1,0 +1,11 @@
+name = "geno-dash"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["browser"]
+files = [
+    "Data.geno",
+    "Widgets.geno",
+    "Layout.geno",
+    "Theme.geno",
+    "Main.geno",
+]

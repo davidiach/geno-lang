@@ -1,0 +1,21 @@
+# EXPECT: E502
+# Build a deeply nested ADT value via recursion: each call
+# wraps the previous result in a new Branch constructor.
+# At depth 1000 this exceeds the 500-call recursion limit,
+# testing that recursive constructor nesting is properly
+# bounded even though each call does minimal work.
+type Tree = Leaf(value: Int) | Branch(left: Tree, right: Tree)
+
+func build_deep(n: Int) -> Tree
+    example 0 -> Leaf(0)
+    if n <= 0 then
+        return Leaf(0)
+    end if
+    let sub: Tree = build_deep(n - 1)
+    return Branch(sub, Leaf(n))
+end func
+
+func main() -> Int
+    let tree: Tree = build_deep(1000)
+    return 0
+end func

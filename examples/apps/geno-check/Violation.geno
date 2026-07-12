@@ -1,0 +1,49 @@
+// Violation.geno — Core violation type and helpers
+// ==================================================
+
+type Severity = Error | Warning
+
+type Violation = Violation(file: String, field: String, rule: String, message: String, expected: String, actual: String, severity: Severity)
+
+// Format severity as a string.
+func severity_label(s: Severity) -> String
+    example Error -> "ERROR"
+    example Warning -> "WARN"
+
+    match s with
+        | Error -> return "ERROR"
+        | Warning -> return "WARN"
+    end match
+end func
+
+// Check if a violation is an error (not just a warning).
+func is_error(v: Violation) -> Bool
+    example Violation("f", "x", "r", "m", "", "", Error) -> true
+    example Violation("f", "x", "r", "m", "", "", Warning) -> false
+
+    match v.severity with
+        | Error -> return true
+        | Warning -> return false
+    end match
+end func
+
+// Format a single violation as a report line.
+func format_violation(v: Violation) -> String
+    example Violation("f.json", "port", "range", "must be 1-65535", "1-65535", "99999", Error) -> "[ERROR] f.json: port — range: must be 1-65535 (expected: 1-65535, actual: 99999)"
+
+    let base: String = "[" + severity_label(v.severity) + "] " + v.file + ": " + v.field + " — " + v.rule + ": " + v.message
+    if v.expected == "" then
+        return base
+    else
+        return base + " (expected: " + v.expected + ", actual: " + v.actual + ")"
+    end if
+end func
+
+// Count errors (not warnings) in a list of violations.
+func count_errors(violations: List[Violation]) -> Int
+    example [Violation("f", "x", "r", "m", "", "", Error), Violation("f", "y", "r", "m", "", "", Warning)] -> 1
+    example [Violation("f", "x", "r", "m", "", "", Warning)] -> 0
+    example [] -> 0
+
+    return length(filter(violations, fn(v: Violation) -> is_error(v)))
+end func

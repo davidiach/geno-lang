@@ -1,0 +1,36 @@
+# EXPECT: E503
+# Pipeline composition to amplify computation: build a chain of
+# higher-order functions via repeated pipeline (|>) composition,
+# creating deeply nested callback chains.  Each pipeline step
+# applies a transformation, and the full chain creates O(n * depth)
+# total work that should be step-counted.
+func double(x: Int) -> Int
+    example 1 -> 2
+    return x * 2
+end func
+
+func increment(x: Int) -> Int
+    example 1 -> 2
+    return x + 1
+end func
+
+func apply_chain(xs: List[Int], rounds: Int) -> List[Int]
+    example [1], 0 -> [1]
+    var current: List[Int] = xs
+    var i: Int = 0
+    while i < rounds do
+        current = current
+            |> map(_, fn(x: Int) -> x + 1)
+            |> map(_, fn(x: Int) -> x * 2)
+            |> filter(_, fn(x: Int) -> x % 2 == 0)
+            |> map(_, fn(x: Int) -> x - 1)
+        i = i + 1
+    end while
+    return current
+end func
+
+func main() -> Int
+    let data: List[Int] = range(0, 100)
+    let result: List[Int] = apply_chain(data, 10000)
+    return length(result)
+end func

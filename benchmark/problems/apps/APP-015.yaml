@@ -1,0 +1,118 @@
+problem:
+  id: "APP-015"
+  name: "Customer Spending Report"
+  difficulty: "expert"
+  domain: "systems"
+  description: |
+    Join two small tables into a spending report.
+
+    - users: lines of the form "id,name" (exactly two fields; lines with
+      a different field count are skipped). Ids are unique; names may
+      contain spaces but no commas.
+    - orders: lines of the form "id,amount" where amount must parse as
+      an integer; malformed order lines and orders whose id matches no
+      user are ignored.
+
+    For every valid user, in users order, compute the total amount of
+    their orders (0 when they have none) and emit "name: total". Join
+    the entries with "; ". With no valid users return the empty string.
+  signature:
+    function_name: "spending_report"
+    inputs:
+      - name: "users"
+        type: "List[String]"
+      - name: "orders"
+        type: "List[String]"
+    output:
+      name: "report"
+      type: "String"
+  examples:
+    visible:
+      - input: [["u1,Ada", "u2,Bob"], ["u1,30", "u2,5", "u1,20"]]
+        output: "Ada: 50; Bob: 5"
+        description: "Totals accumulate per user"
+      - input: [[], ["u1,10"]]
+        output: ""
+        description: "No users, empty report"
+    hidden:
+      - input: [["u1,Ada"], []]
+        output: "Ada: 0"
+        description: "Users with no orders report zero"
+      - input: [["u1,Ada", "u2,Bob"], ["u3,99", "u2,7"]]
+        output: "Ada: 0; Bob: 7"
+        description: "Orders for unknown users are ignored"
+      - input: [["u1,Ada"], ["u1,x", "u1,3"]]
+        output: "Ada: 3"
+        description: "Malformed amounts are skipped"
+      - input: [["u1,Ada L"], ["u1,2", "u1,2"]]
+        output: "Ada L: 4"
+        description: "Names keep their spaces"
+      - input: [["bad", "u1,Ada"], ["u1,4"]]
+        output: "Ada: 4"
+        description: "Malformed user lines are skipped"
+  constraints:
+    - "User ids are unique; names contain no commas"
+    - "Report users in input order"
+    - "Amounts are integers and may be negative (refunds)"
+    - "Return the empty string when there are no valid users"
+  canonical_solutions:
+    geno: |
+      func spending_report(users: List[String], orders: List[String]) -> String
+          example ["u1,Ada", "u2,Bob"], ["u1,30", "u2,5", "u1,20"] -> "Ada: 50; Bob: 5"
+          example [], ["u1,10"] -> ""
+
+          var ids: List[String] = []
+          var names: List[String] = []
+          for user: String in users do
+              let parts: List[String] = split(user, ",")
+              if length(parts) == 2 then
+                  ids = append(ids, parts[0])
+                  names = append(names, parts[1])
+              end if
+          end for
+          var pieces: List[String] = []
+          var i: Int = 0
+          while i < length(ids) do
+              var total: Int = 0
+              for order: String in orders do
+                  let parts: List[String] = split(order, ",")
+                  if length(parts) == 2 and parts[0] == ids[i] then
+                      let amount: Int = match parse_int(parts[1]) with
+                          | Some(v) -> v
+                          | None -> 0
+                      end match
+                      total = total + amount
+                  end if
+              end for
+              pieces = append(pieces, names[i] + ": " + to_string(total))
+              i = i + 1
+          end while
+          return join(pieces, "; ")
+      end func spending_report
+    python: |
+      def spending_report(users: list[str], orders: list[str]) -> str:
+          entries = []
+          for user in users:
+              parts = user.split(",")
+              if len(parts) != 2:
+                  continue
+              uid, name = parts
+              total = 0
+              for order in orders:
+                  oparts = order.split(",")
+                  if len(oparts) != 2 or oparts[0] != uid:
+                      continue
+                  try:
+                      total += int(oparts[1])
+                  except ValueError:
+                      continue
+              entries.append(f"{name}: {total}")
+          return "; ".join(entries)
+  metadata:
+    tags: ["app-tier", "join", "aggregation", "report"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(u * o)"
+    space_complexity: "O(u)"
+    constructs_tested:
+      ["function", "for", "while", "split", "parse_int", "match",
+       "join", "to_string"]

@@ -1,0 +1,66 @@
+problem:
+  id: "PROB-002"
+  name: "Absolute Value"
+  difficulty: "trivial"
+  domain: "math"
+  description: |
+    Write a function that returns the absolute value of an integer.
+    The absolute value of a number is its distance from zero.
+  signature:
+    function_name: "abs_val"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 5
+        output: 5
+        description: "Positive number"
+      - input: -5
+        output: 5
+        description: "Negative number"
+    hidden:
+      - input: 0
+        output: 0
+        description: "Zero"
+      - input: -100
+        output: 100
+        description: "Large negative"
+      - input: 1
+        output: 1
+        description: "Small positive"
+      - input: 999
+        output: 999
+        description: "Larger positive"
+      - input: -1
+        output: 1
+        description: "Negative one"
+  constraints:
+    - "Do not use built-in abs function"
+  canonical_solutions:
+    geno: |
+      func abs_val(n: Int) -> Int
+          example 5 -> 5
+          example -5 -> 5
+
+          if n < 0 then
+              return -n
+          else
+              return n
+          end if
+      end func abs_val
+    python: |
+      def abs_val(n: int) -> int:
+          if n < 0:
+              return -n
+          else:
+              return n
+  metadata:
+    tags: ["arithmetic", "conditional"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "if-else", "comparison"]

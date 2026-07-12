@@ -1,0 +1,16 @@
+# EXPECT: E502
+# Tail-recursive function at depth 1000 (double the 500
+# call-depth limit).  Verifies that the interpreter's
+# call-depth tracker catches deep recursion before
+# Python's own stack overflows.
+func descend(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    return descend(n - 1)
+end func
+
+func main() -> Int
+    return descend(1000)
+end func

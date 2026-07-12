@@ -1,0 +1,84 @@
+problem:
+  id: "PROB-062"
+  name: "Safe Division Chain"
+  difficulty: "medium"
+  domain: "math"
+  description: |
+    Write a function that divides a dividend by a list of divisors sequentially.
+    If any divisor is zero, return Err("division by zero") immediately.
+    Otherwise return Ok with the final result (using integer division).
+
+    For example, divide_chain(100, [2, 5]) computes 100 / 2 / 5 = 10.
+  signature:
+    function_name: "divide_chain"
+    inputs:
+      - name: "dividend"
+        type: "Int"
+      - name: "divisors"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Result[Int, String]"
+  examples:
+    visible:
+      - input: [100, [2, 5]]
+        output: {Ok: 10}
+        description: "100 / 2 / 5 = 10"
+      - input: [10, [0, 5]]
+        output: {Err: "division by zero"}
+        description: "Division by zero"
+      - input: [42, []]
+        output: {Ok: 42}
+        description: "No divisors"
+    hidden:
+      - input: [1000, [10, 10, 10]]
+        output: {Ok: 1}
+        description: "Multiple divisions"
+      - input: [7, [2]]
+        output: {Ok: 3}
+        description: "Integer division truncation"
+      - input: [50, [5, 0]]
+        output: {Err: "division by zero"}
+        description: "Zero at end"
+      - input: [0, [1, 2, 3]]
+        output: {Ok: 0}
+        description: "Zero dividend"
+      - input: [-20, [4]]
+        output: {Ok: -5}
+        description: "Negative dividend"
+  constraints:
+    - "Use integer division"
+    - "Return Err immediately on division by zero"
+  canonical_solutions:
+    geno: |
+      func divide_chain(dividend: Int, divisors: List[Int]) -> Result[Int, String]
+          example 100, [2, 5] -> Ok(10)
+          example 10, [0, 5] -> Err("division by zero")
+
+          var result: Int = dividend
+          var i: Int = 0
+
+          while i < length(divisors) do
+              if divisors[i] == 0 then
+                  return Err("division by zero")
+              end if
+              result = result / divisors[i]
+              i = i + 1
+          end while
+
+          return Ok(result)
+      end func divide_chain
+    python: |
+      def divide_chain(dividend: int, divisors: list[int]) -> dict:
+          result = dividend
+          for d in divisors:
+              if d == 0:
+                  return {"Err": "division by zero"}
+              result = int(result / d) if result < 0 else result // d
+          return {"Ok": result}
+  metadata:
+    tags: ["result-type", "error-handling", "division", "safety"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "result", "ok-err", "while", "if-else", "return"]

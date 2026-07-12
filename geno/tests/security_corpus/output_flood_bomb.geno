@@ -1,0 +1,12 @@
+# EXPECT: E499
+# Print a very long string repeatedly to exceed output limit.
+# The runtime catches the output limit as a runtime error (E499).
+func main() -> Unit
+    let big: String = string_repeat("X", count: 10000)
+    var i: Int = 0
+    while i < 100 do
+        print(big)
+        i = i + 1
+    end while
+    return ()
+end func

@@ -1,0 +1,26 @@
+# EXPECT: E503
+# Chain with-expressions to create exponential constructor
+# copies.  Each iteration creates multiple with-copies,
+# passing the result through a pipeline of transformations.
+# Tests that with-expression evaluation and field copying
+# are properly step-counted even when chained.
+type Config = Settings(a: Int, b: Int, c: Int, d: Int, e: Int)
+
+func transform(cfg: Config, i: Int) -> Config
+    example Settings(0, 0, 0, 0, 0), 1 -> Settings(1, 1, 1, 1, 1)
+    let c1: Config = cfg with (a: i)
+    let c2: Config = c1 with (b: i)
+    let c3: Config = c2 with (c: i)
+    let c4: Config = c3 with (d: i)
+    return c4 with (e: i)
+end func
+
+func main() -> Int
+    var cfg: Config = Settings(0, 0, 0, 0, 0)
+    var i: Int = 0
+    while i < 1000000 do
+        cfg = transform(cfg, i)
+        i = i + 1
+    end while
+    return cfg.a
+end func

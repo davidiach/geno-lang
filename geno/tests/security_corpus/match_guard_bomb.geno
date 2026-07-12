@@ -1,0 +1,26 @@
+# EXPECT: E502
+# Use match guards with expensive recursive predicates
+# to attempt resource exhaustion.  Each match guard
+# triggers a deep recursive call, multiplying work.
+func expensive(n: Int) -> Bool
+    example 0 -> true
+    if n <= 0 then
+        return true
+    end if
+    return expensive(n - 1)
+end func
+
+func attack(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    match n with
+    | x when expensive(x) -> return attack(n - 1)
+    | _ -> return 0
+    end match
+end func
+
+func main() -> Int
+    return attack(100000)
+end func

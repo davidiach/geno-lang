@@ -1,0 +1,26 @@
+# EXPECT: E502
+# Build a tree with structural sharing (O(n) memory) then
+# traverse it recursively (O(2^n) time).  The call-depth
+# limit should catch this before the traversal completes.
+type Tree = Leaf(x: Int) | Node(l: Tree, r: Tree)
+
+func grow(t: Tree, d: Int) -> Tree
+    example Leaf(0), 0 -> Leaf(0)
+    if d <= 0 then
+        return t
+    end if
+    return grow(Node(t, t), d - 1)
+end func
+
+func count(t: Tree) -> Int
+    example Leaf(0) -> 1
+    match t with
+    | Leaf(x) -> return 1
+    | Node(l, r) -> return 1 + count(l) + count(r)
+    end match
+end func
+
+func main() -> Int
+    let t: Tree = grow(Leaf(1), 499)
+    return count(t)
+end func

@@ -1,0 +1,4 @@
+func main() -> List[Int]
+    let xs: List[Int] = [1, 2]
+    return append(xs, "bad")
+end func

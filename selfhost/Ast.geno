@@ -1,0 +1,128 @@
+// ============================================================================
+// Ast.geno — AST node types for the Geno self-hosted frontend + interpreter
+// ============================================================================
+
+import Types
+
+// ---- Type annotations (used in parameter/return type positions) ----
+
+type TypeAnnot
+= SimpleTypeAnnot(name: String, params: List[TypeAnnot])
+| FuncTypeAnnot(param_types: List[TypeAnnot], ret_type: TypeAnnot, effects: List[String])
+
+// ---- Expressions ----
+
+type CallArg = CallArg(name: Option[String], value: Expr)
+
+type PipeStage = PipeStage(func_expr: Expr, args: List[Expr], line: Int, col: Int)
+
+type FieldUpdate = FieldUpdate(name: String, value: Expr)
+
+type Expr
+= IntLit(value: Int)
+| FloatLit(value: String)  // stored as string to avoid float precision loss in AST
+| StrLit(value: String)
+| BoolLit(value: Bool)
+| Ident(name: String)
+| TypeIdent(name: String)
+| ListLitExpr(elements: List[Expr])
+| BinOp(op: String, left: Expr, right: Expr)
+| UnaryOpExpr(op: String, operand: Expr)
+| CallExpr(func_expr: Expr, args: List[CallArg])
+| IndexExpr(target: Expr, idx: Expr)
+| FieldExpr(target: Expr, field_name: String)
+| PipelineExpr(init: Expr, stages: List[PipeStage])
+| PlaceholderE
+| LambdaE(params: List[Param], ret_type: Option[TypeAnnot], body: Expr)
+| MatchE(scrutinee: Expr, arms: List[MatchArm])
+| ConstructorE(name: String, args: List[Expr])
+| TupleE(elements: List[Expr])
+| TypedHoleE(name: String, hole_type: TypeAnnot, constraint: Option[Expr])
+| WithE(target: Expr, updates: List[FieldUpdate])
+
+// ---- Patterns ----
+
+type Pattern
+= WildcardPat
+| VarPat(name: String)
+| CtorPat(ctor_name: String, sub_pats: List[Pattern])
+| LitPat(value: Expr)
+| ListPat(elements: List[Pattern])
+
+// ---- Match arms ----
+
+type MatchArm = MatchArm(pat: Pattern, body: List[Stmt], line: Int, col: Int)
+
+// ---- Statements ----
+
+type Stmt
+= LetStmt(name: String, type_ann: TypeAnnot, value: Expr)
+| VarStmt(name: String, type_ann: TypeAnnot, value: Expr)
+| AssignStmt(target: String, value: Expr)
+| IfStmt(cond: Expr, then_body: List[Stmt], else_body: List[Stmt])
+| WhileStmt(cond: Expr, body: List[Stmt])
+| ForStmt(var_name: String, var_type: TypeAnnot, iterable: Expr, body: List[Stmt])
+| MatchStmt(scrutinee: Expr, arms: List[MatchArm])
+| ReturnStmt(value: Expr)
+| ExprStmt(expr: Expr)
+
+// ---- Specifications ----
+
+type ExampleClause = ExampleClause(input_expr: Expr, output_expr: Expr)
+type RequiresClause = RequiresClause(cond: Expr)
+type EnsuresClause = EnsuresClause(cond: Expr)
+
+type SpecBlock = SpecBlock(
+req_clauses: List[RequiresClause],
+ens_clauses: List[EnsuresClause],
+examples: List[ExampleClause]
+)
+
+// ---- Parameters ----
+
+type Param = Param(name: String, param_type: TypeAnnot, line: Int, col: Int)
+
+// ---- Type variants ----
+
+type TypeVariantField = TypeVariantField(name: String, field_type: TypeAnnot)
+type TypeVariant = TypeVariant(name: String, fields: List[TypeVariantField], line: Int, col: Int)
+
+// ---- Annotations ----
+
+type Annotation = Annotation(name: String, args: List[String])
+
+// ---- Top-level definitions ----
+
+type Def
+= FuncDef(
+name: String,
+params: List[Param],
+ret_type: TypeAnnot,
+specs: SpecBlock,
+body: List[Stmt],
+closing_name: Option[String],
+annotations: List[Annotation],
+effects: List[String],
+span: SourceSpan
+)
+| TypeDefNode(
+name: String,
+type_params: List[String],
+variants: List[TypeVariant],
+span: SourceSpan
+)
+| ImportDef(module_name: String, span: SourceSpan)
+
+// ---- Program ----
+
+type Program = Program(defs: List[Def])
+
+// ---- Constructors for empty spec blocks ----
+
+// Helper: create an empty spec block.
+// Called as empty_specs(0) — dummy arg needed because zero-arg functions
+// cannot have example clauses in geno.
+func empty_specs(dummy: Int) -> SpecBlock
+    example 0 -> SpecBlock([], [], [])
+    return SpecBlock([], [], [])
+end func empty_specs

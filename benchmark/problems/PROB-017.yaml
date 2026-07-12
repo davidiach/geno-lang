@@ -1,0 +1,92 @@
+problem:
+  id: "PROB-017"
+  name: "Is Prime"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that determines if a number is prime.
+    A prime number is a natural number greater than 1 that has no positive divisors other than 1 and itself.
+  signature:
+    function_name: "is_prime"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: 7
+        output: true
+        description: "7 is prime"
+      - input: 12
+        output: false
+        description: "12 = 3 * 4"
+    hidden:
+      - input: 1
+        output: false
+        description: "1 is not prime"
+      - input: 2
+        output: true
+        description: "2 is prime"
+      - input: 4
+        output: false
+        description: "4 = 2 * 2"
+      - input: 17
+        output: true
+        description: "17 is prime"
+      - input: 25
+        output: false
+        description: "25 = 5 * 5"
+      - input: 97
+        output: true
+        description: "97 is prime"
+  constraints:
+    - "n >= 1"
+  canonical_solutions:
+    geno: |
+      func is_prime(n: Int) -> Bool
+          requires n >= 1
+          example 7 -> true
+          example 12 -> false
+
+          if n <= 1 then
+              return false
+          end if
+          if n <= 3 then
+              return true
+          end if
+          if n % 2 == 0 then
+              return false
+          end if
+
+          var i: Int = 3
+          while i * i <= n do
+              if n % i == 0 then
+                  return false
+              end if
+              i = i + 2
+          end while
+
+          return true
+      end func is_prime
+    python: |
+      def is_prime(n: int) -> bool:
+          if n <= 1:
+              return False
+          if n <= 3:
+              return True
+          if n % 2 == 0:
+              return False
+          i = 3
+          while i * i <= n:
+              if n % i == 0:
+                  return False
+              i += 2
+          return True
+  metadata:
+    tags: ["math", "primality"]
+    source: "Classic"
+    time_complexity: "O(sqrt(n))"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "modulo", "early-return"]

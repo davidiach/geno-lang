@@ -1,0 +1,118 @@
+problem:
+  id: "PROB-058"
+  name: "Binary Operation Evaluator"
+  difficulty: "medium"
+  domain: "matching"
+  description: |
+    Write a function that evaluates a sequence of binary operations applied
+    left-to-right. Given a list of integer values and a list of operator strings
+    ("+", "-", or "*"), compute the result by applying each operator to the
+    running total and the next value.
+
+    For example, values [2, 3, 4] with ops ["+", "*"] computes (2 + 3) * 4 = 20.
+
+    Your solution should define an algebraic data type for the operations
+    and use pattern matching to apply each one.
+  signature:
+    function_name: "eval_ops"
+    inputs:
+      - name: "values"
+        type: "List[Int]"
+      - name: "ops"
+        type: "List[String]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[2, 3, 4], ["+", "*"]]
+        output: 20
+        description: "(2 + 3) * 4 = 20"
+      - input: [[10, 3, 2], ["-", "+"]]
+        output: 9
+        description: "(10 - 3) + 2 = 9"
+      - input: [[5], []]
+        output: 5
+        description: "Single value, no ops"
+    hidden:
+      - input: [[1, 2, 3, 4], ["+", "+", "+"]]
+        output: 10
+        description: "All addition"
+      - input: [[100, 50, 25], ["-", "-"]]
+        output: 25
+        description: "All subtraction"
+      - input: [[2, 3, 4, 5], ["*", "*", "*"]]
+        output: 120
+        description: "All multiplication"
+      - input: [[0, 5, 10], ["+", "*"]]
+        output: 50
+        description: "Starting from zero"
+      - input: [[-3, 4, -2], ["*", "+"]]
+        output: -14
+        description: "Negative numbers"
+  constraints:
+    - "Operators are '+', '-', or '*'"
+    - "values has at least one element"
+    - "length(ops) == length(values) - 1"
+  canonical_solutions:
+    geno: |
+      type Op = Add | Sub | Mul
+
+      func parse_op(s: String) -> Op
+          example "+" -> Add
+          example "-" -> Sub
+
+          if s == "+" then
+              return Add
+          else
+              if s == "-" then
+                  return Sub
+              else
+                  return Mul
+              end if
+          end if
+      end func parse_op
+
+      func apply_op(op: Op, a: Int, b: Int) -> Int
+          example Add, 1, 2 -> 3
+          example Mul, 3, 4 -> 12
+
+          match op with
+              | Add -> return a + b
+              | Sub -> return a - b
+              | Mul -> return a * b
+          end match
+      end func apply_op
+
+      func eval_ops(values: List[Int], ops: List[String]) -> Int
+          example [2, 3, 4], ["+", "*"] -> 20
+          example [10, 3, 2], ["-", "+"] -> 9
+
+          var result: Int = head(values)
+          var i: Int = 0
+
+          while i < length(ops) do
+              let op: Op = parse_op(ops[i])
+              result = apply_op(op: op, a: result, b: values[i + 1])
+              i = i + 1
+          end while
+
+          return result
+      end func eval_ops
+    python: |
+      def eval_ops(values: list[int], ops: list[str]) -> int:
+          result = values[0]
+          for i, op in enumerate(ops):
+              if op == "+":
+                  result += values[i + 1]
+              elif op == "-":
+                  result -= values[i + 1]
+              else:
+                  result *= values[i + 1]
+          return result
+  metadata:
+    tags: ["adt", "pattern-matching", "evaluation", "multi-function"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["type", "match", "constructor", "function", "while", "multi-function", "named-arguments"]

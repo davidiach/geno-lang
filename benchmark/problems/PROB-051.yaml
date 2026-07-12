@@ -1,0 +1,84 @@
+problem:
+  id: "PROB-051"
+  name: "Longest Common Prefix"
+  difficulty: "easy"
+  domain: "strings"
+  description: |
+    Write a function that finds the longest common prefix string amongst an array of strings.
+    If there is no common prefix, return an empty string.
+  signature:
+    function_name: "longest_common_prefix"
+    inputs:
+      - name: "strs"
+        type: "List[String]"
+    output:
+      name: "result"
+      type: "String"
+  examples:
+    visible:
+      - input: [["flower", "flow", "flight"]]
+        output: "fl"
+        description: "Common prefix is fl"
+      - input: [["dog", "racecar", "car"]]
+        output: ""
+        description: "No common prefix"
+    hidden:
+      - input: [[]]
+        output: ""
+        description: "Empty list"
+      - input: [["a"]]
+        output: "a"
+        description: "Single string"
+      - input: [["", "abc"]]
+        output: ""
+        description: "Empty string in list"
+      - input: [["abc", "abc"]]
+        output: "abc"
+        description: "Identical strings"
+      - input: [["ab", "a"]]
+        output: "a"
+        description: "One is prefix"
+  constraints:
+    - "All characters are lowercase letters"
+  canonical_solutions:
+    geno: |
+      func longest_common_prefix(strs: List[String]) -> String
+          example ["flower", "flow", "flight"] -> "fl"
+          example ["dog", "racecar", "car"] -> ""
+
+          if length(strs) == 0 then
+              return ""
+          end if
+
+          var prefix: String = strs[0]
+          var i: Int = 1
+
+          while i < length(strs) do
+              while not starts_with(strs[i], prefix) do
+                  if length(prefix) == 0 then
+                      return ""
+                  end if
+                  prefix = substring(text: prefix, start: 0, stop: length(prefix) - 1)
+              end while
+              i = i + 1
+          end while
+
+          return prefix
+      end func longest_common_prefix
+    python: |
+      def longest_common_prefix(strs: list[str]) -> str:
+          if not strs:
+              return ""
+          prefix = strs[0]
+          for s in strs[1:]:
+              while not s.startswith(prefix):
+                  prefix = prefix[:-1]
+                  if not prefix:
+                      return ""
+          return prefix
+  metadata:
+    tags: ["string", "prefix"]
+    source: "LeetCode #14"
+    time_complexity: "O(S)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "nested-while", "string-ops"]

@@ -1,0 +1,11 @@
+name = "geno-mark"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["python-cli"]
+files = [
+    "Types.geno",
+    "Inline.geno",
+    "Parser.geno",
+    "Renderer.geno",
+    "Main.geno",
+]

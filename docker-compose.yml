@@ -1,0 +1,50 @@
+services:
+  geno:
+    build: .
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      GENO_SERVICE: geno-api
+      GENO_REVISION: dev
+      GENO_API_KEY: ${GENO_API_KEY:?Set GENO_API_KEY before starting}
+      # The container binds 0.0.0.0 (required for Docker port mapping), so the Host
+      # allow-list must be set explicitly: comma-separated hostnames clients use
+      # (e.g. api.example.com), or "*" to disable Host-header validation. A loopback
+      # Host header (127.0.0.1/localhost) is accepted only from a loopback peer such
+      # as the in-container healthcheck, so the probe works without letting an
+      # external client bypass the allow-list.
+      GENO_ALLOWED_HOSTS: ${GENO_ALLOWED_HOSTS:?Set GENO_ALLOWED_HOSTS (hostnames clients use, or * to disable Host validation)}
+      # Keep the memory budget self-consistent (M-03): the default worker rlimit
+      # is 256MB and the default concurrency is 16, so 16x256MB would dwarf the
+      # 512M container cap and OOM-kill under load. Bound concurrency and the
+      # per-worker rlimit so worst case (4 x 100MB) + parent + tmpfs fits.
+      # Sizing: container_limit >= MAX_CONCURRENT_REQUESTS x WORKER_MAX_MEMORY_BYTES
+      #         + parent (~50MB) + tmpfs (16MB).
+      GENO_MAX_CONCURRENT_REQUESTS: "4"
+      GENO_WORKER_MAX_MEMORY_BYTES: "104857600"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys, urllib.request; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200 else sys.exit(1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # 4 workers x 100MB + parent + tmpfs fits with headroom (see the
+          # GENO_MAX_CONCURRENT_REQUESTS/GENO_WORKER_MAX_MEMORY_BYTES env above).
+          memory: 512M
+          cpus: "1.0"
+    security_opt:
+      - no-new-privileges:true
+    user: "geno"

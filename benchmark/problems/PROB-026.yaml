@@ -1,0 +1,87 @@
+problem:
+  id: "PROB-026"
+  name: "Selection Sort"
+  difficulty: "medium"
+  domain: "sorting"
+  description: |
+    Implement the selection sort algorithm to sort a list of integers in ascending order.
+  signature:
+    function_name: "selection_sort"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[64, 25, 12, 22, 11]]
+        output: [11, 12, 22, 25, 64]
+        description: "Sort unsorted list"
+      - input: [[]]
+        output: []
+        description: "Empty list"
+    hidden:
+      - input: [[1]]
+        output: [1]
+        description: "Single element"
+      - input: [[2, 1]]
+        output: [1, 2]
+        description: "Two elements"
+      - input: [[1, 2, 3, 4, 5]]
+        output: [1, 2, 3, 4, 5]
+        description: "Already sorted"
+      - input: [[5, 4, 3, 2, 1]]
+        output: [1, 2, 3, 4, 5]
+        description: "Reverse sorted"
+  constraints:
+    - "Use selection sort algorithm"
+  canonical_solutions:
+    geno: |
+      func selection_sort(arr: List[Int]) -> List[Int]
+          example [64, 25, 12, 22, 11] -> [11, 12, 22, 25, 64]
+          example [] -> []
+
+          var result: List[Int] = arr
+          let n: Int = length(result)
+          var i: Int = 0
+
+          while i < n - 1 do
+              var min_idx: Int = i
+              var j: Int = i + 1
+
+              while j < n do
+                  if result[j] < result[min_idx] then
+                      min_idx = j
+                  end if
+                  j = j + 1
+              end while
+
+              if min_idx != i then
+                  let temp: Int = result[i]
+                  result = set_at(list: result, index: i, value: result[min_idx])
+                  result = set_at(list: result, index: min_idx, value: temp)
+              end if
+              i = i + 1
+          end while
+
+          return result
+      end func selection_sort
+    python: |
+      def selection_sort(arr: list[int]) -> list[int]:
+          result = arr.copy()
+          n = len(result)
+          for i in range(n - 1):
+              min_idx = i
+              for j in range(i + 1, n):
+                  if result[j] < result[min_idx]:
+                      min_idx = j
+              if min_idx != i:
+                  result[i], result[min_idx] = result[min_idx], result[i]
+          return result
+  metadata:
+    tags: ["sorting", "classic"]
+    source: "Classic"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "nested-while", "if", "list-mutation"]

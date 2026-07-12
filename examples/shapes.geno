@@ -1,0 +1,47 @@
+// Shapes — ADTs with fields + tuples + for loops
+// ==================================================
+// Demonstrates: ADTs with data, field access, tuples, for loop
+
+type Shape = Circle(radius: Float) | Rectangle(width: Float, height: Float)
+
+func area(s: Shape) -> Float
+    example Circle(1.0) -> 3.141592653589793
+    example Rectangle(3.0, 4.0) -> 12.0
+
+    match s with
+        | Circle(r) ->
+        return 3.141592653589793 * r * r
+        | Rectangle(w, h) ->
+        return w * h
+    end match
+end func area
+
+
+func describe(s: Shape) -> String
+    example Circle(5.0) -> "circle"
+    example Rectangle(2.0, 3.0) -> "rectangle"
+
+    match s with
+        | Circle(_) -> return "circle"
+        | Rectangle(_, _) -> return "rectangle"
+    end match
+end func describe
+
+
+func total_area(shapes: List[Shape]) -> Float
+    example [Circle(1.0), Rectangle(2.0, 3.0)] -> 9.141592653589793
+
+    var total: Float = 0.0
+
+    for s: Shape in shapes do
+        total = total + area(s)
+    end for
+
+    return total
+end func total_area
+
+
+func main() -> Float
+    let shapes: List[Shape] = [Circle(1.0), Rectangle(2.0, 3.0)]
+    return total_area(shapes)
+end func main

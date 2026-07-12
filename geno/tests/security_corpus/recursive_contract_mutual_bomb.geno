@@ -1,0 +1,44 @@
+# EXPECT: E502
+# Recursive contract amplification via mutual recursion: two functions
+# with requires/ensures clauses that cross-reference each other.
+# The contract evaluation itself triggers recursive calls, creating
+# deep recursion that should be caught by the recursion depth limit.
+func is_valid_a(n: Int) -> Bool
+    example 0 -> true
+    if n <= 0 then
+        return true
+    end if
+    return is_valid_b(n - 1)
+end func
+
+func is_valid_b(n: Int) -> Bool
+    example 0 -> true
+    if n <= 0 then
+        return true
+    end if
+    return is_valid_a(n - 1)
+end func
+
+func compute_a(n: Int) -> Int
+    requires is_valid_a(n)
+    ensures is_valid_b(result)
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    return n + compute_b(n - 1)
+end func
+
+func compute_b(n: Int) -> Int
+    requires is_valid_b(n)
+    ensures is_valid_a(result)
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    return n + compute_a(n - 1)
+end func
+
+func main() -> Int
+    return compute_a(5000)
+end func

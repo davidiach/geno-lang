@@ -1,0 +1,21 @@
+# EXPECT: E503
+# Decorator-style abuse: use higher-order functions as wrappers
+# that compose other functions.  Chain N wrappers to create a
+# function that calls the underlying function 2^N times.  Tests
+# that step counting covers the full exponential chain of
+# higher-order function invocations.
+func apply_twice(f: (Int) -> Int, x: Int) -> Int
+    example fn(a: Int) -> a + 1, 0 -> 2
+    return f(f(x))
+end func
+
+func main() -> Int
+    var f: (Int) -> Int = fn(x: Int) -> x + 1
+    var i: Int = 0
+    while i < 30 do
+        let prev: (Int) -> Int = f
+        f = fn(x: Int) -> apply_twice(prev, x)
+        i = i + 1
+    end while
+    return f(0)
+end func

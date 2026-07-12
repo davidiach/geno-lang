@@ -1,0 +1,86 @@
+problem:
+  id: "PROB-018"
+  name: "Binary Search"
+  difficulty: "medium"
+  domain: "searching"
+  description: |
+    Write a function that performs binary search on a sorted list.
+    Return the index of the target if found, -1 otherwise.
+  signature:
+    function_name: "binary_search"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+      - name: "target"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, 3, 5, 7, 9, 11], 7]
+        output: 3
+        description: "Found at index 3"
+      - input: [[1, 3, 5, 7, 9], 4]
+        output: -1
+        description: "Not found"
+    hidden:
+      - input: [[], 5]
+        output: -1
+        description: "Empty list"
+      - input: [[5], 5]
+        output: 0
+        description: "Single element found"
+      - input: [[1, 2, 3, 4, 5], 1]
+        output: 0
+        description: "First element"
+      - input: [[1, 2, 3, 4, 5], 5]
+        output: 4
+        description: "Last element"
+      - input: [[2, 4, 6, 8, 10, 12, 14], 8]
+        output: 3
+        description: "Middle element"
+  constraints:
+    - "Input list is sorted in ascending order"
+  canonical_solutions:
+    geno: |
+      func binary_search(arr: List[Int], target: Int) -> Int
+          example [1, 3, 5, 7, 9, 11], 7 -> 3
+          example [1, 3, 5, 7, 9], 4 -> -1
+
+          var left: Int = 0
+          var right: Int = length(arr) - 1
+
+          while left <= right do
+              let mid: Int = left + (right - left) / 2
+              if arr[mid] == target then
+                  return mid
+              else
+                  if arr[mid] < target then
+                      left = mid + 1
+                  else
+                      right = mid - 1
+                  end if
+              end if
+          end while
+
+          return -1
+      end func binary_search
+    python: |
+      def binary_search(arr: list[int], target: int) -> int:
+          left, right = 0, len(arr) - 1
+          while left <= right:
+              mid = left + (right - left) // 2
+              if arr[mid] == target:
+                  return mid
+              elif arr[mid] < target:
+                  left = mid + 1
+              else:
+                  right = mid - 1
+          return -1
+  metadata:
+    tags: ["search", "divide-conquer", "classic"]
+    source: "Classic"
+    time_complexity: "O(log n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if-else-if", "list-indexing"]

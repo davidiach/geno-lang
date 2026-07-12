@@ -1,0 +1,66 @@
+problem:
+  id: "PROB-036"
+  name: "All Positive"
+  difficulty: "trivial"
+  domain: "arrays"
+  description: |
+    Write a function that checks if all elements in a list are positive.
+  signature:
+    function_name: "all_positive"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 4]]
+        output: true
+        description: "All positive"
+      - input: [[1, -2, 3]]
+        output: false
+        description: "Contains negative"
+    hidden:
+      - input: [[]]
+        output: true
+        description: "Empty list (vacuously true)"
+      - input: [[0]]
+        output: false
+        description: "Zero is not positive"
+      - input: [[1]]
+        output: true
+        description: "Single positive"
+      - input: [[-1]]
+        output: false
+        description: "Single negative"
+      - input: [[1, 0, 1]]
+        output: false
+        description: "Contains zero"
+  constraints:
+    - "Positive means > 0"
+  canonical_solutions:
+    geno: |
+      func all_positive(arr: List[Int]) -> Bool
+          example [1, 2, 3, 4] -> true
+          example [1, -2, 3] -> false
+
+          var i: Int = 0
+          while i < length(arr) do
+              if arr[i] <= 0 then
+                  return false
+              end if
+              i = i + 1
+          end while
+
+          return true
+      end func all_positive
+    python: |
+      def all_positive(arr: list[int]) -> bool:
+          return all(x > 0 for x in arr)
+  metadata:
+    tags: ["list", "predicate"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "early-return", "boolean"]

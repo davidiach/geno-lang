@@ -1,0 +1,100 @@
+problem:
+  id: "PROB-063"
+  name: "Frequency Counter"
+  difficulty: "medium"
+  domain: "arrays"
+  description: |
+    Write a function that finds the most frequently occurring element in a
+    non-empty list of integers. If there is a tie, return the smallest value
+    among the most frequent.
+  signature:
+    function_name: "most_frequent"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, 2, 2, 3]]
+        output: 2
+        description: "2 appears most"
+      - input: [[1, 1, 2, 2]]
+        output: 1
+        description: "Tie: return smallest"
+      - input: [[5]]
+        output: 5
+        description: "Single element"
+    hidden:
+      - input: [[3, 3, 3]]
+        output: 3
+        description: "All same"
+      - input: [[4, 1, 4, 1, 4]]
+        output: 4
+        description: "4 appears 3 times"
+      - input: [[10, 20, 30]]
+        output: 10
+        description: "All unique, return smallest"
+      - input: [[-1, -1, 2, 2, -1]]
+        output: -1
+        description: "Negative most frequent"
+      - input: [[0, 0, 1]]
+        output: 0
+        description: "Zero most frequent"
+  constraints:
+    - "List is non-empty"
+    - "On ties, return the smallest value"
+  canonical_solutions:
+    geno: |
+      func count_of(nums: List[Int], target: Int) -> Int
+          example [1, 2, 2, 3], 2 -> 2
+          example [1, 2, 3], 4 -> 0
+
+          var count: Int = 0
+          var i: Int = 0
+          while i < length(nums) do
+              if nums[i] == target then
+                  count = count + 1
+              end if
+              i = i + 1
+          end while
+          return count
+      end func count_of
+
+      func most_frequent(nums: List[Int]) -> Int
+          example [1, 2, 2, 3] -> 2
+          example [1, 1, 2, 2] -> 1
+
+          var best: Int = nums[0]
+          var best_count: Int = 0
+          var i: Int = 0
+
+          while i < length(nums) do
+              let c: Int = count_of(nums, nums[i])
+              if c > best_count then
+                  best = nums[i]
+                  best_count = c
+              else
+                  if c == best_count and nums[i] < best then
+                      best = nums[i]
+                  end if
+              end if
+              i = i + 1
+          end while
+
+          return best
+      end func most_frequent
+    python: |
+      def most_frequent(nums: list[int]) -> int:
+          counts = {}
+          for n in nums:
+              counts[n] = counts.get(n, 0) + 1
+          max_count = max(counts.values())
+          return min(k for k, v in counts.items() if v == max_count)
+  metadata:
+    tags: ["frequency", "counting", "searching"]
+    source: "Original"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if-else", "multi-function"]

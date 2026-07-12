@@ -1,0 +1,13 @@
+# EXPECT: E499
+# Deeply nested list construction via repeated wrapping.
+# Each iteration grows the previous list, starting near
+# the cap so the oversized concat is reached quickly.
+func main() -> Int
+    var lst: List[Int] = range(0, 5000001)
+    var i: Int = 0
+    while i < 1 do
+        lst = concat(lst, concat(lst, lst))
+        i = i + 1
+    end while
+    return length(lst)
+end func

@@ -1,0 +1,125 @@
+# Geno .gitignore
+
+# Hypothesis (property-based testing)
+.hypothesis/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Experiment outputs
+results/
+results.json
+*.log
+experiment.log
+
+# API keys (never commit these!)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+service-account*.json
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+/.npmrc
+/.pypirc
+
+# Generated reports
+report.md
+report.txt
+report.html
+
+# AI Generation Prompts (should not be public)
+LLM_*_Prompt.md
+*_Prompt.md
+
+# Local Claude Code settings
+.claude/*.local.json
+.claude/settings.local.json
+.claude/worktrees/
+.claude/prompts/
+.claude/*.lock
+CLAUDE.local.md
+
+# Local browser automation state
+.playwright-mcp/
+
+# Public-release scratch artifacts
+/various/
+/GOAL_*.md
+/REVIEW.md
+/REVIEW_*.md
+/ISSUE_BACKLOG_*.md
+/*_release_backlog.md
+/*_code_maturity_tasks.md
+/calculator.html
+/notetaker.html
+/tetris.html
+
+# JavaScript extension dependencies/build output
+vscode-geno/node_modules/
+vscode-geno/out/
+
+# macOS (ensure all are excluded)
+**/.DS_Store
+
+# Local experiment configurations
+experiment_config.local.yaml
+*_config.local.yaml
+.envrc

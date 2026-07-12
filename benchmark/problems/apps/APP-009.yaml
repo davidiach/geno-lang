@@ -1,0 +1,130 @@
+problem:
+  id: "APP-009"
+  name: "Dependency Install Order"
+  difficulty: "expert"
+  domain: "graphs"
+  description: |
+    Compute the installation order for a package and its transitive
+    dependencies. Rules have the form "name:dep1,dep2,..." — the package
+    name, a colon, and a comma-separated dependency list (which may be
+    empty, as in "core:").
+
+    Resolution semantics (depth-first):
+    - To install a package, first install each of its dependencies in
+      the order they are listed, then the package itself.
+    - A package is installed at most once; later occurrences are skipped.
+    - A dependency with no rule line is a leaf (it has no dependencies).
+    - The dependency graph is acyclic.
+
+    Return the install order for the target, ending with the target.
+  signature:
+    function_name: "install_order"
+    inputs:
+      - name: "rules"
+        type: "List[String]"
+      - name: "target"
+        type: "String"
+    output:
+      name: "order"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: [["app:lib,db", "lib:core", "db:core", "core:"], "app"]
+        output: ["core", "lib", "db", "app"]
+        description: "Shared dependency installs once"
+      - input: [["a:"], "a"]
+        output: ["a"]
+        description: "No dependencies"
+    hidden:
+      - input: [["a:b", "b:c", "c:"], "a"]
+        output: ["c", "b", "a"]
+        description: "Linear chain"
+      - input: [["a:b,c", "b:", "c:b"], "a"]
+        output: ["b", "c", "a"]
+        description: "Dependency of a dependency already installed"
+      - input: [["a:missing"], "a"]
+        output: ["missing", "a"]
+        description: "Unknown packages are leaves"
+      - input: [["a:b", "b:", "z:"], "b"]
+        output: ["b"]
+        description: "Unrelated rules are ignored"
+      - input: [["a:b,b", "b:"], "a"]
+        output: ["b", "a"]
+        description: "Duplicate dependency entries install once"
+  constraints:
+    - "The dependency graph is acyclic"
+    - "Package names contain no ':' or ',' characters"
+    - "Dependencies install in their listed order, before their dependent"
+    - "Each package appears at most once in the result"
+  canonical_solutions:
+    geno: |
+      func visit(name: String, names: List[String], deps: List[String], order: List[String]) -> List[String]
+          example "a", [], [], [] -> ["a"]
+
+          if contains(order, name) then
+              return order
+          end if
+          var dep_text: String = ""
+          var i: Int = 0
+          while i < length(names) do
+              if names[i] == name then
+                  dep_text = deps[i]
+              end if
+              i = i + 1
+          end while
+          var out: List[String] = order
+          if dep_text != "" then
+              let parts: List[String] = split(dep_text, ",")
+              for d: String in parts do
+                  if d != "" then
+                      out = visit(name: d, names: names, deps: deps, order: out)
+                  end if
+              end for
+          end if
+          return append(out, name)
+      end func visit
+
+      func install_order(rules: List[String], target: String) -> List[String]
+          example ["app:lib,db", "lib:core", "db:core", "core:"], "app" -> ["core", "lib", "db", "app"]
+          example ["a:"], "a" -> ["a"]
+
+          var names: List[String] = []
+          var deps: List[String] = []
+          for rule: String in rules do
+              let parts: List[String] = split(rule, ":")
+              if length(parts) == 2 then
+                  names = append(names, parts[0])
+                  deps = append(deps, parts[1])
+              end if
+          end for
+          return visit(name: target, names: names, deps: deps, order: [])
+      end func install_order
+    python: |
+      def install_order(rules: list[str], target: str) -> list[str]:
+          deps: dict[str, list[str]] = {}
+          for rule in rules:
+              parts = rule.split(":")
+              if len(parts) != 2:
+                  continue
+              name, dep_text = parts
+              deps[name] = [d for d in dep_text.split(",") if d]
+
+          order: list[str] = []
+
+          def visit(name: str) -> None:
+              if name in order:
+                  return
+              for dep in deps.get(name, []):
+                  visit(dep)
+              order.append(name)
+
+          visit(target)
+          return order
+  metadata:
+    tags: ["app-tier", "graphs", "recursion", "topological-order"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n * d)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "recursion", "named-arguments", "contains", "split",
+       "for", "while", "dedup"]

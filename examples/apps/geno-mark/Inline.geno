@@ -1,0 +1,195 @@
+// Inline.geno — Inline text formatting
+// =======================================
+// Demonstrates: recursive string processing, string builtins,
+// pipeline composition, and example clauses.
+
+// Escape HTML special characters so raw text is safe in HTML output.
+func escape_html(text: String) -> String
+    example "hello" -> "hello"
+    example "a & b" -> "a &amp; b"
+    example "1 < 2" -> "1 &lt; 2"
+    example "x > y" -> "x &gt; y"
+
+    let step1: String = replace(text: text, old: "&", new: "&amp;")
+    let step2: String = replace(text: step1, old: "<", new: "&lt;")
+    return replace(text: step2, old: ">", new: "&gt;")
+end func
+
+// Escape text for use inside HTML attributes.
+func escape_html_attr(text: String) -> String
+    example "plain" -> "plain"
+    example "a\"b" -> "a&quot;b"
+    example "x & y" -> "x &amp; y"
+
+    let escaped: String = escape_html(text)
+    let with_quotes: String = replace(text: escaped, old: "\"", new: "&quot;")
+    return replace(text: with_quotes, old: "'", new: "&#39;")
+end func
+
+// Process inline code spans: `code` -> <code>code</code>.
+// Finds the first backtick pair and recurses on the remainder.
+func process_code_spans(text: String) -> String
+    example "no code" -> "no code"
+    example "`hello`" -> "<code>hello</code>"
+    example "a `b` c" -> "a <code>b</code> c"
+
+    let start: Int = string_index_of(text, "`")
+    if start < 0 then
+        return text
+    end if
+    let after_open: String = substring(text: text, start: start + 1, stop: length(text))
+    let end_pos: Int = string_index_of(after_open, "`")
+    if end_pos < 0 then
+        return text
+    end if
+    let before: String = substring(text: text, start: 0, stop: start)
+    let code_text: String = substring(text: after_open, start: 0, stop: end_pos)
+    let rest: String = substring(text: after_open, start: end_pos + 1, stop: length(after_open))
+    return process_code_spans(before + "<code>" + code_text + "</code>" + rest)
+end func
+
+// Process bold markers: **text** -> <strong>text</strong>.
+func process_bold(text: String) -> String
+    example "no bold" -> "no bold"
+    example "**hello**" -> "<strong>hello</strong>"
+    example "a **b** c" -> "a <strong>b</strong> c"
+    example "**a** and **b**" -> "<strong>a</strong> and <strong>b</strong>"
+
+    let start: Int = string_index_of(text, "**")
+    if start < 0 then
+        return text
+    end if
+    let after_open: String = substring(text: text, start: start + 2, stop: length(text))
+    let end_pos: Int = string_index_of(after_open, "**")
+    if end_pos < 0 then
+        return text
+    end if
+    let before: String = substring(text: text, start: 0, stop: start)
+    let bold_text: String = substring(text: after_open, start: 0, stop: end_pos)
+    let rest: String = substring(text: after_open, start: end_pos + 2, stop: length(after_open))
+    return process_bold(before + "<strong>" + bold_text + "</strong>" + rest)
+end func
+
+// Process italic markers: *text* -> <em>text</em>.
+// Called after bold processing, so remaining * are single-star italic markers.
+func process_italic(text: String) -> String
+    example "no italic" -> "no italic"
+    example "*hello*" -> "<em>hello</em>"
+    example "a *b* c" -> "a <em>b</em> c"
+
+    let start: Int = string_index_of(text, "*")
+    if start < 0 then
+        return text
+    end if
+    let after_open: String = substring(text: text, start: start + 1, stop: length(text))
+    let end_pos: Int = string_index_of(after_open, "*")
+    if end_pos < 0 then
+        return text
+    end if
+    let before: String = substring(text: text, start: 0, stop: start)
+    let em_text: String = substring(text: after_open, start: 0, stop: end_pos)
+    let rest: String = substring(text: after_open, start: end_pos + 1, stop: length(after_open))
+    return process_italic(before + "<em>" + em_text + "</em>" + rest)
+end func
+
+// Process markdown links: [text](url) -> <a href="url">text</a>.
+func process_links(text: String) -> String
+    example "no links" -> "no links"
+    example "[hi](url)" -> "<a href=\"url\">hi</a>"
+
+    let bracket_pos: Int = string_index_of(text, "[")
+    if bracket_pos < 0 then
+        return text
+    end if
+    let after_bracket: String = substring(text: text, start: bracket_pos + 1, stop: length(text))
+    let close_pos: Int = string_index_of(after_bracket, "](")
+    if close_pos < 0 then
+        return text
+    end if
+    let link_text: String = substring(text: after_bracket, start: 0, stop: close_pos)
+    let after_paren: String = substring(text: after_bracket, start: close_pos + 2, stop: length(after_bracket))
+    let paren_close: Int = string_index_of(after_paren, ")")
+    if paren_close < 0 then
+        return text
+    end if
+    let url: String = substring(text: after_paren, start: 0, stop: paren_close)
+    let before: String = substring(text: text, start: 0, stop: bracket_pos)
+    let rest: String = substring(text: after_paren, start: paren_close + 1, stop: length(after_paren))
+    let safe_url: String = escape_html_attr(url)
+    return process_links(before + "<a href=\"" + safe_url + "\">" + link_text + "</a>" + rest)
+end func
+
+// Apply all inline formatting to a text string.
+// Order matters: escape HTML first, then code spans (preserve literal content),
+// then links, then bold (** before *), then italic.
+func render_inline(text: String) -> String
+    example "hello" -> "hello"
+    example "**bold**" -> "<strong>bold</strong>"
+
+    let escaped: String = escape_html(text)
+    let with_code: String = process_code_spans(escaped)
+    let with_links: String = process_links(with_code)
+    let with_bold: String = process_bold(with_links)
+    return process_italic(with_bold)
+end func
+
+// Convert a heading text to a URL-friendly slug for anchor IDs.
+func slugify(text: String) -> String
+    example "Hello World" -> "hello-world"
+    example "My Title" -> "my-title"
+
+    let lower: String = to_lower(text)
+    return replace(text: lower, old: " ", new: "-")
+end func
+
+// Count words in a text string (split on spaces).
+func count_words(text: String) -> Int
+    example "hello world" -> 2
+    example "" -> 0
+    example "one" -> 1
+
+    let trimmed: String = trim(text)
+    if length(trimmed) == 0 then
+        return 0
+    end if
+    return length(split(trimmed, " "))
+end func
+
+// Format a word count as a human-readable label.
+func word_count_label(n: Int) -> String
+    example 0 -> "0 words"
+    example 1 -> "1 word"
+    example 5 -> "5 words"
+
+    if n == 1 then
+        return "1 word"
+    end if
+    return to_string(n) + " words"
+end func
+
+// Capitalize the first character of a string.
+func capitalize_first(text: String) -> String
+    example "hello" -> "Hello"
+    example "" -> ""
+    example "A" -> "A"
+
+    if length(text) == 0 then
+        return ""
+    end if
+    let first: String = to_upper(string_char_at(text, 0))
+    if length(text) == 1 then
+        return first
+    end if
+    return first + substring(text: text, start: 1, stop: length(text))
+end func
+
+// Truncate text to a maximum length, adding "..." if truncated.
+func truncate(text: String, max_len: Int) -> String
+    example ("hello", 10) -> "hello"
+    example ("hello world", 5) -> "he..."
+
+    if length(text) <= max_len then
+        return text
+    end if
+    return substring(text: text, start: 0, stop: max_len - 3) + "..."
+end func

@@ -1,0 +1,39 @@
+# EXPECT: E503
+# Import smuggling / builtins reconstruction attempt via mutable
+# map operations: rapidly insert and look up keys in a mutable map,
+# using string keys constructed from char codes that spell blocked
+# module and builtin names.  Tests that mutable map operations are
+# step-counted and that constructing dangerous strings as map keys
+# does not enable any sandbox bypass.
+func build_name(codes: List[Int]) -> String
+    example [104, 105] -> "hi"
+    var result: String = ""
+    var i: Int = 0
+    while i < length(codes) do
+        result = result + from_char_code(codes[i])
+        i = i + 1
+    end while
+    return result
+end func
+
+func main() -> Int
+    var m: MutableMap[String, Int] = mutable_map_new()
+    let name1: String = build_name([95, 95, 99, 108, 97, 115, 115, 95, 95])
+    let name2: String = build_name([95, 95, 98, 97, 115, 101, 115, 95, 95])
+    let name3: String = build_name([95, 95, 105, 109, 112, 111, 114, 116, 95, 95])
+    var i: Int = 0
+    while i < 1000000 do
+        var stem: String = name1
+        if i % 3 == 1 then
+            stem = name2
+        end if
+        if i % 3 == 2 then
+            stem = name3
+        end if
+        let key: String = f"{stem}_{to_string(i % 1000)}"
+        mutable_map_set(map: m, key: key, value: i)
+        let has: Bool = mutable_map_contains(map: m, key: key)
+        i = i + 1
+    end while
+    return mutable_map_size(m)
+end func

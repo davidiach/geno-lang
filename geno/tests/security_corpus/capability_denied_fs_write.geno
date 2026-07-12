@@ -1,0 +1,6 @@
+# EXPECT: E412
+# fs_write_text without the "fs" capability should fail.
+func main() -> Unit
+    fs_write_text(path: "/tmp/evil", content: "pwned")
+    return ()
+end func

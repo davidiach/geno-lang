@@ -1,0 +1,80 @@
+problem:
+  id: "PROB-049"
+  name: "Move Zeros"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Given an integer array, move all zeros to the end while maintaining
+    the relative order of non-zero elements.
+  signature:
+    function_name: "move_zeros"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[0, 1, 0, 3, 12]]
+        output: [1, 3, 12, 0, 0]
+        description: "Move zeros to end"
+      - input: [[0]]
+        output: [0]
+        description: "Single zero"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[1, 2, 3]]
+        output: [1, 2, 3]
+        description: "No zeros"
+      - input: [[0, 0, 0]]
+        output: [0, 0, 0]
+        description: "All zeros"
+      - input: [[1, 0, 1]]
+        output: [1, 1, 0]
+        description: "Zero in middle"
+      - input: [[0, 0, 1]]
+        output: [1, 0, 0]
+        description: "Zeros at start"
+  constraints:
+    - "Preserve relative order of non-zeros"
+  canonical_solutions:
+    geno: |
+      func move_zeros(nums: List[Int]) -> List[Int]
+          example [0, 1, 0, 3, 12] -> [1, 3, 12, 0, 0]
+          example [0] -> [0]
+
+          var non_zeros: List[Int] = []
+          var zero_count: Int = 0
+          var i: Int = 0
+
+          while i < length(nums) do
+              if nums[i] != 0 then
+                  non_zeros = append(non_zeros, nums[i])
+              else
+                  zero_count = zero_count + 1
+              end if
+              i = i + 1
+          end while
+
+          var result: List[Int] = non_zeros
+          i = 0
+          while i < zero_count do
+              result = append(result, 0)
+              i = i + 1
+          end while
+
+          return result
+      end func move_zeros
+    python: |
+      def move_zeros(nums: list[int]) -> list[int]:
+          non_zeros = [x for x in nums if x != 0]
+          return non_zeros + [0] * (len(nums) - len(non_zeros))
+  metadata:
+    tags: ["array", "two-pointers"]
+    source: "LeetCode #283"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "append"]

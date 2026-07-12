@@ -1,0 +1,78 @@
+// Fibonacci implementations in Geno
+// ======================================
+// Demonstrates: recursion, iteration, pattern matching
+
+// Recursive Fibonacci
+func fib_recursive(n: Int) -> Int
+    requires n >= 0
+    ensures result >= 0
+    example 0 -> 0
+    example 1 -> 1
+    example 5 -> 5
+    example 10 -> 55
+
+    if n == 0 then
+        return 0
+    else
+        if n == 1 then
+            return 1
+        else
+            return fib_recursive(n - 1) + fib_recursive(n - 2)
+        end if
+    end if
+end func fib_recursive
+
+
+// Iterative Fibonacci (more efficient)
+func fib_iterative(n: Int) -> Int
+    requires n >= 0
+    ensures result >= 0
+    example 0 -> 0
+    example 1 -> 1
+    example 10 -> 55
+    example 20 -> 6765
+
+    if n == 0 then
+        return 0
+    end if
+    if n == 1 then
+        return 1
+    end if
+
+    var prev: Int = 0
+    var curr: Int = 1
+    var i: Int = 2
+
+    while i <= n do
+        let next: Int = prev + curr
+        prev = curr
+        curr = next
+        i = i + 1
+    end while "count up to n"
+
+    return curr
+end func fib_iterative
+
+
+// Generate first n Fibonacci numbers
+func fib_sequence(n: Int) -> List[Int]
+    requires n >= 0
+    example 0 -> []
+    example 1 -> [0]
+    example 5 -> [0, 1, 1, 2, 3]
+
+    var result: List[Int] = []
+    var i: Int = 0
+
+    while i < n do
+        result = append(result, fib_iterative(i))
+        i = i + 1
+    end while
+
+    return result
+end func fib_sequence
+
+
+func main() -> List[Int]
+    return fib_sequence(10)
+end func main

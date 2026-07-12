@@ -1,0 +1,95 @@
+problem:
+  id: "PROB-076"
+  name: "Matrix Multiply"
+  difficulty: "hard"
+  domain: "math"
+  description: |
+    Write a function that multiplies two matrices represented as lists of
+    lists of integers. Matrix A is m×n and matrix B is n×p, producing an
+    m×p result matrix.
+  signature:
+    function_name: "mat_mul"
+    inputs:
+      - name: "a"
+        type: "List[List[Int]]"
+      - name: "b"
+        type: "List[List[Int]]"
+    output:
+      name: "result"
+      type: "List[List[Int]]"
+  examples:
+    visible:
+      - input: [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+        output: [[19, 22], [43, 50]]
+        description: "2x2 * 2x2"
+      - input: [[[1, 0], [0, 1]], [[5, 6], [7, 8]]]
+        output: [[5, 6], [7, 8]]
+        description: "Identity matrix"
+      - input: [[[1, 2, 3]], [[4], [5], [6]]]
+        output: [[32]]
+        description: "1x3 * 3x1 = 1x1"
+    hidden:
+      - input: [[[2]], [[3]]]
+        output: [[6]]
+        description: "1x1 * 1x1"
+      - input: [[[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[1, 2, 3], [4, 5, 6], [7, 8, 9]]]
+        output: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        description: "3x3 identity"
+      - input: [[[1, 2], [3, 4], [5, 6]], [[7, 8, 9], [10, 11, 12]]]
+        output: [[27, 30, 33], [61, 68, 75], [95, 106, 117]]
+        description: "3x2 * 2x3"
+      - input: [[[0, 0], [0, 0]], [[1, 2], [3, 4]]]
+        output: [[0, 0], [0, 0]]
+        description: "Zero matrix"
+  constraints:
+    - "Matrices are compatible for multiplication"
+    - "Use nested loops"
+  canonical_solutions:
+    geno: |
+      func mat_mul(a: List[List[Int]], b: List[List[Int]]) -> List[List[Int]]
+          example [[1, 2], [3, 4]], [[5, 6], [7, 8]] -> [[19, 22], [43, 50]]
+          example [[1, 0], [0, 1]], [[5, 6], [7, 8]] -> [[5, 6], [7, 8]]
+
+          let m: Int = length(a)
+          let n: Int = length(a[0])
+          let p: Int = length(b[0])
+
+          var result: List[List[Int]] = []
+          var i: Int = 0
+
+          while i < m do
+              var row: List[Int] = []
+              var j: Int = 0
+              while j < p do
+                  var sum: Int = 0
+                  var k: Int = 0
+                  while k < n do
+                      sum = sum + a[i][k] * b[k][j]
+                      k = k + 1
+                  end while
+                  row = append(row, sum)
+                  j = j + 1
+              end while
+              result = append(result, row)
+              i = i + 1
+          end while
+
+          return result
+      end func mat_mul
+    python: |
+      def mat_mul(a: list[list[int]], b: list[list[int]]) -> list[list[int]]:
+          m, n, p = len(a), len(a[0]), len(b[0])
+          result = []
+          for i in range(m):
+              row = []
+              for j in range(p):
+                  s = sum(a[i][k] * b[k][j] for k in range(n))
+                  row.append(s)
+              result.append(row)
+          return result
+  metadata:
+    tags: ["matrix", "linear-algebra", "nested-loops"]
+    source: "Classic"
+    time_complexity: "O(m*n*p)"
+    space_complexity: "O(m*p)"
+    constructs_tested: ["function", "while", "nested-while", "list-building", "index-access", "arithmetic", "var"]

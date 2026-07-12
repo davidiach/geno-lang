@@ -1,0 +1,84 @@
+func abs(x: Int) -> Int
+    example 5 -> 5
+    example -3 -> 3
+    example 0 -> 0
+    return math_abs(x)
+end func
+
+func min(a: Int, b: Int) -> Int
+    example 3, 7 -> 3
+    example 10, 2 -> 2
+    return math_min(a, b)
+end func
+
+func max(a: Int, b: Int) -> Int
+    example 3, 7 -> 7
+    example 10, 2 -> 10
+    return math_max(a, b)
+end func
+
+func clamp(value: Int, lo: Int, hi: Int) -> Int
+    example 5, 0, 10 -> 5
+    example -3, 0, 10 -> 0
+    example 15, 0, 10 -> 10
+    return math_clamp(value: value, lo: lo, hi: hi)
+end func
+
+func floor(x: Float) -> Int
+    example 3.7 -> 3
+    example -1.2 -> -2
+    return math_floor(x)
+end func
+
+func ceil(x: Float) -> Int
+    example 3.2 -> 4
+    example -1.7 -> -1
+    return math_ceil(x)
+end func
+
+func round(x: Float) -> Int
+    example 3.5 -> 4
+    example 3.4 -> 3
+    return math_round(x)
+end func
+
+func sqrt(x: Float) -> Float
+    example 4.0 -> 2.0
+    example 9.0 -> 3.0
+    return math_sqrt(x)
+end func
+
+func log(x: Float) -> Float
+    example 1.0 -> 0.0
+    return math_log(x)
+end func
+
+func sin(x: Float) -> Float
+    example 0.0 -> 0.0
+    return math_sin(x)
+end func
+
+func cos(x: Float) -> Float
+    example 0.0 -> 1.0
+    return math_cos(x)
+end func
+
+func pi() -> Float
+    example () -> 3.141592653589793
+    return math_pi()
+end func
+
+func e() -> Float
+    example () -> 2.718281828459045
+    return math_e()
+end func
+
+@untested("random output")
+func random_int(lo: Int, hi: Int) -> Int
+    return math_random_int(lo, hi)
+end func
+
+@untested("random output")
+func random_float() -> Float
+    return math_random_float()
+end func

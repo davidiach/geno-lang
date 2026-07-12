@@ -1,0 +1,16 @@
+# EXPECT: E503
+# Create many closures in a tight loop, each capturing
+# a computed value.  Tests that closure allocation is
+# properly step-counted and cannot exhaust memory before
+# the step budget fires.
+func main() -> Int
+    var fns: List[(Int) -> Int] = []
+    var i: Int = 0
+    while i < 1000000 do
+        let captured: Int = i * i
+        let f: (Int) -> Int = fn(n: Int) -> n + captured
+        fns = append(fns, f)
+        i = i + 1
+    end while
+    return length(fns)
+end func

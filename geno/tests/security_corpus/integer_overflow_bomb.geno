@@ -1,0 +1,12 @@
+# EXPECT: E499
+# Exponential integer growth via repeated squaring.
+# Verifies _safe_mul enforces integer bit-length limits.
+func main() -> Int
+    var x: Int = 2
+    var i: Int = 0
+    while i < 100 do
+        x = x * x
+        i = i + 1
+    end while
+    return x
+end func

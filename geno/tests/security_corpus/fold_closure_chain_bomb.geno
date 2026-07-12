@@ -1,0 +1,15 @@
+# EXPECT: E502
+# Use fold to build a chain of nested closures, then invoke
+# the result.  Each fold step wraps the accumulator closure
+# in another layer.  Invoking the final closure triggers
+# N nested calls, exceeding the recursion limit.
+# Tests that closure composition chains are depth-counted.
+func main() -> Int
+    let fns: List[(Int) -> Int] = map(range(0, 1000), fn(i: Int) -> fn(x: Int) -> x + 1)
+    let composed: (Int) -> Int = fold(
+        list: fns,
+        initial: fn(x: Int) -> x,
+        reducer: fn(acc: (Int) -> Int, f: (Int) -> Int) -> fn(x: Int) -> f(acc(x))
+    )
+    return composed(0)
+end func

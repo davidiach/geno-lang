@@ -1,0 +1,16 @@
+// Types.geno — Core types for the markdown converter
+// ====================================================
+// Demonstrates: algebraic data types, record types, and enumerations.
+
+// Block-level markdown elements.
+type Block = Heading(level: Int, content: String) | Paragraph(content: String) | CodeBlock(language: String, code: String) | BulletList(items: List[String]) | NumberList(items: List[String]) | Quote(content: String) | ThematicBreak | EmptyBlock
+
+// Result of converting a markdown document.
+type ConvertResult = ConvertResult(
+html: String,
+block_count: Int,
+line_count: Int
+)
+
+// Output mode: full HTML page or just the body fragment.
+type OutputMode = FullPage | Fragment

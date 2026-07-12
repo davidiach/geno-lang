@@ -1,0 +1,116 @@
+func pad_left(text: String, width: Int, fill_char: String) -> String
+    example "hi", 5, " " -> "   hi"
+    example "hello", 3, " " -> "hello"
+    example "42", 5, "0" -> "00042"
+    return string_pad_left(text: text, width: width, fill_char: fill_char)
+end func
+
+func pad_right(text: String, width: Int, fill_char: String) -> String
+    example "hi", 5, " " -> "hi   "
+    example "hello", 3, " " -> "hello"
+    return string_pad_right(text: text, width: width, fill_char: fill_char)
+end func
+
+func trim(text: String) -> String
+    example "  hello  " -> "hello"
+    example "hi" -> "hi"
+    return string_trim(text)
+end func
+
+func trim_start(text: String) -> String
+    example "  hello  " -> "hello  "
+    example "hi" -> "hi"
+    return string_trim_start(text)
+end func
+
+func trim_end(text: String) -> String
+    example "  hello  " -> "  hello"
+    example "hi" -> "hi"
+    return string_trim_end(text)
+end func
+
+func repeat(text: String, count: Int) -> String
+    example "ab", 3 -> "ababab"
+    example "x", 0 -> ""
+    return string_repeat(text, count)
+end func
+
+func char_at(text: String, index: Int) -> String
+    example "hello", 0 -> "h"
+    example "hello", 4 -> "o"
+    example "hello", 10 -> ""
+    return string_char_at(text, index)
+end func
+
+func index_of(text: String, sub: String) -> Int
+    example "hello world", "world" -> 6
+    example "hello", "xyz" -> -1
+    example "abcabc", "bc" -> 1
+    return string_index_of(text, sub)
+end func
+
+func last_index_of(text: String, sub: String) -> Int
+    example "abcabc", "bc" -> 4
+    example "hello", "xyz" -> -1
+    return string_last_index_of(text, sub)
+end func
+
+func substring(text: String, start: Int, stop: Int) -> String
+    example "hello world", 0, 5 -> "hello"
+    example "hello world", 6, 11 -> "world"
+    return string_substring(text: text, start: start, stop: stop)
+end func
+
+func split(text: String, delimiter: String) -> List[String]
+    example "a,b,c", "," -> ["a", "b", "c"]
+    example "hello", "x" -> ["hello"]
+    return string_split(text, delimiter)
+end func
+
+func join(parts: List[String], separator: String) -> String
+    example ["a", "b", "c"], "," -> "a,b,c"
+    example ["hello"], " " -> "hello"
+    return string_join(parts, separator)
+end func
+
+func replace(text: String, old: String, new: String) -> String
+    example "hello world", "world", "geno" -> "hello geno"
+    example "aaa", "a", "b" -> "bbb"
+    return string_replace(text: text, old: old, new: new)
+end func
+
+func to_upper(text: String) -> String
+    example "hello" -> "HELLO"
+    example "Hello World" -> "HELLO WORLD"
+    return string_to_upper(text)
+end func
+
+func to_lower(text: String) -> String
+    example "HELLO" -> "hello"
+    example "Hello World" -> "hello world"
+    return string_to_lower(text)
+end func
+
+func starts_with(text: String, prefix: String) -> Bool
+    example "hello world", "hello" -> true
+    example "hello world", "world" -> false
+    return string_starts_with(text, prefix)
+end func
+
+func ends_with(text: String, suffix: String) -> Bool
+    example "hello world", "world" -> true
+    example "hello world", "hello" -> false
+    return string_ends_with(text, suffix)
+end func
+
+func contains(text: String, substring: String) -> Bool
+    example "hello world", "world" -> true
+    example "hello world", "xyz" -> false
+    return string_contains(text, substring)
+end func
+
+func split_once(text: String, delimiter: String) -> Option[(String, String)]
+    example "key=value", "=" -> Some(("key", "value"))
+    example "no-delimiter", "=" -> None
+    return string_split_once(text, delimiter)
+end func

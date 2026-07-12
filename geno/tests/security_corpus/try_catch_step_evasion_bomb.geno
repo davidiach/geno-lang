@@ -1,0 +1,18 @@
+# EXPECT: E503
+# Use try/catch as control flow in a tight loop, verifying
+# that exception handling paths are properly step-counted.
+# Each iteration throws and catches, adding overhead that
+# should still be metered by the step counter.
+func main() -> Int
+    var count: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        try
+            throw "step"
+        catch e: String
+            count = count + 1
+        end try
+        i = i + 1
+    end while
+    return count
+end func

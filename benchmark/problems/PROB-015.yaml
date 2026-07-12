@@ -1,0 +1,77 @@
+problem:
+  id: "PROB-015"
+  name: "Power of Two"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that determines if an integer is a power of two.
+    A power of two is a number of the form 2^n where n >= 0.
+  signature:
+    function_name: "is_power_of_two"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: 8
+        output: true
+        description: "8 = 2^3"
+      - input: 6
+        output: false
+        description: "6 is not a power of 2"
+    hidden:
+      - input: 1
+        output: true
+        description: "1 = 2^0"
+      - input: 0
+        output: false
+        description: "0 is not a power of 2"
+      - input: 16
+        output: true
+        description: "16 = 2^4"
+      - input: 15
+        output: false
+        description: "15 is not a power of 2"
+      - input: 1024
+        output: true
+        description: "1024 = 2^10"
+  constraints:
+    - "Consider n <= 0 as false"
+  canonical_solutions:
+    geno: |
+      func is_power_of_two(n: Int) -> Bool
+          example 8 -> true
+          example 6 -> false
+
+          if n <= 0 then
+              return false
+          end if
+
+          var current: Int = n
+          while current > 1 do
+              if current % 2 != 0 then
+                  return false
+              end if
+              current = current / 2
+          end while
+
+          return true
+      end func is_power_of_two
+    python: |
+      def is_power_of_two(n: int) -> bool:
+          if n <= 0:
+              return False
+          while n > 1:
+              if n % 2 != 0:
+                  return False
+              n = n // 2
+          return True
+  metadata:
+    tags: ["math", "bit-manipulation"]
+    source: "LeetCode #231"
+    time_complexity: "O(log n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "modulo"]

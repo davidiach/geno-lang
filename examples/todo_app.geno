@@ -1,0 +1,148 @@
+// Todo App — ADTs, pattern matching, list operations
+// =====================================================
+// Demonstrates: ADTs with fields, pattern matching, filter, fold, map, format
+
+type Priority = High | Medium | Low
+
+type Status = Pending | Done
+
+type Todo = Task(title: String, priority: Priority, status: Status)
+
+
+// Return a display name for a priority level
+func priority_name(p: Priority) -> String
+    example High -> "high"
+    example Medium -> "medium"
+    example Low -> "low"
+
+    match p with
+        | High -> return "high"
+        | Medium -> return "medium"
+        | Low -> return "low"
+    end match
+end func priority_name
+
+
+// Return a display name for a status
+func status_name(s: Status) -> String
+    example Pending -> "pending"
+    example Done -> "done"
+
+    match s with
+        | Pending -> return "pending"
+        | Done -> return "done"
+    end match
+end func status_name
+
+
+// Check whether a todo item is still pending
+func is_pending(todo: Todo) -> Bool
+    example Task("Buy milk", High, Pending) -> true
+    example Task("Walk dog", Low, Done) -> false
+
+    match todo with
+        | Task(_, _, Pending) -> return true
+        | Task(_, _, Done) -> return false
+    end match
+end func is_pending
+
+
+// Check whether a todo item has the given priority
+func has_priority(todo: Todo, p: Priority) -> Bool
+    example (Task("Buy milk", High, Pending), High) -> true
+    example (Task("Buy milk", High, Pending), Low) -> false
+
+    match todo with
+        | Task(_, High, _) ->
+        match p with
+            | High -> return true
+            | Medium -> return false
+            | Low -> return false
+        end match
+        | Task(_, Medium, _) ->
+        match p with
+            | High -> return false
+            | Medium -> return true
+            | Low -> return false
+        end match
+        | Task(_, Low, _) ->
+        match p with
+            | High -> return false
+            | Medium -> return false
+            | Low -> return true
+        end match
+    end match
+end func has_priority
+
+
+// Mark a todo item as done
+func mark_done(todo: Todo) -> Todo
+    example Task("Buy milk", High, Pending) -> Task("Buy milk", High, Done)
+    example Task("Walk dog", Low, Done) -> Task("Walk dog", Low, Done)
+
+    match todo with
+        | Task(t, p, _) -> return Task(t, p, Done)
+    end match
+end func mark_done
+
+
+// Count how many items in the list are still pending
+func count_pending(todos: List[Todo]) -> Int
+    example [Task("A", High, Pending), Task("B", Low, Done)] -> 1
+    example [Task("A", High, Done)] -> 0
+
+    let pending: List[Todo] = filter(todos, fn(t: Todo) -> is_pending(t))
+    return length(pending)
+end func count_pending
+
+
+// Format a single todo item as a readable string
+func describe(todo: Todo) -> String
+    example Task("Buy milk", High, Pending) -> "[pending] Buy milk (high)"
+
+    match todo with
+        | Task(title, pri, stat) ->
+        return format(template: "[{}] {} ({})", values: [status_name(stat), title, priority_name(pri)])
+    end match
+end func describe
+
+
+func main() -> Int
+    // Build a list of todos
+    let todos: List[Todo] = [
+    Task("Buy groceries", High, Pending),
+    Task("Read chapter 5", Medium, Pending),
+    Task("Clean desk", Low, Pending),
+    Task("Reply to email", High, Done)
+    ]
+
+    // Show all todos
+    print("=== All Todos ===")
+    let descriptions: List[String] = map(todos, fn(t: Todo) -> describe(t))
+    var i: Int = 0
+    while i < length(descriptions) do
+        print(descriptions[i])
+        i = i + 1
+    end while
+
+    // Count pending
+    let pending: Int = count_pending(todos)
+    print(format(template: "Pending: {}", values: [to_string(pending)]))
+
+    // Filter high-priority items
+    let urgent: List[Todo] = filter(todos, fn(t: Todo) -> has_priority(t, High))
+    print("=== High Priority ===")
+    var j: Int = 0
+    while j < length(urgent) do
+        print(describe(urgent[j]))
+        j = j + 1
+    end while
+
+    // Mark all as done and show updated list
+    let completed: List[Todo] = map(todos, fn(t: Todo) -> mark_done(t))
+    print("=== After Marking All Done ===")
+    let new_pending: Int = count_pending(completed)
+    print(format(template: "Pending: {}", values: [to_string(new_pending)]))
+
+    return 0
+end func main

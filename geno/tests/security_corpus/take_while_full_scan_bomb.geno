@@ -1,0 +1,11 @@
+# EXPECT: E503
+# Call take_while with a predicate that always returns true
+# on a huge list.  take_while must visit every element
+# (returning the full list), so the work is O(n) per call.
+# Doing this in a loop amplifies to O(n * iterations).
+# Tests that take_while callbacks are step-counted.
+func main() -> Int
+    let big: List[Int] = range(0, 100000)
+    let result: List[Int] = take_while(big, fn(x: Int) -> x >= 0)
+    return length(result)
+end func

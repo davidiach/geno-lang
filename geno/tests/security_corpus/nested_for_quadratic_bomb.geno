@@ -1,0 +1,15 @@
+# EXPECT: E503
+# Nested for-loops over two 10K-element lists producing
+# 100 million iterations (quadratic blowup).  Verifies
+# that step counting applies inside nested loop bodies
+# and prevents quadratic computation bombs.
+func main() -> Int
+    let xs: List[Int] = range(0, 10000)
+    var total: Int = 0
+    for x: Int in xs do
+        for y: Int in xs do
+            total = total + 1
+        end for
+    end for
+    return total
+end func

@@ -1,0 +1,77 @@
+problem:
+  id: "PROB-041"
+  name: "Climbing Stairs"
+  difficulty: "medium"
+  domain: "dp"
+  description: |
+    You are climbing a staircase with n steps. You can climb 1 or 2 steps at a time.
+    Return the number of distinct ways to reach the top.
+  signature:
+    function_name: "climb_stairs"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 2
+        output: 2
+        description: "1+1 or 2"
+      - input: 3
+        output: 3
+        description: "1+1+1, 1+2, 2+1"
+    hidden:
+      - input: 1
+        output: 1
+        description: "Only one step"
+      - input: 4
+        output: 5
+        description: "Five ways"
+      - input: 5
+        output: 8
+        description: "Eight ways"
+      - input: 10
+        output: 89
+        description: "Fibonacci pattern"
+  constraints:
+    - "n >= 1"
+  canonical_solutions:
+    geno: |
+      func climb_stairs(n: Int) -> Int
+          requires n >= 1
+          example 2 -> 2
+          example 3 -> 3
+
+          if n <= 2 then
+              return n
+          end if
+
+          var prev2: Int = 1
+          var prev1: Int = 2
+          var i: Int = 3
+
+          while i <= n do
+              let curr: Int = prev1 + prev2
+              prev2 = prev1
+              prev1 = curr
+              i = i + 1
+          end while
+
+          return prev1
+      end func climb_stairs
+    python: |
+      def climb_stairs(n: int) -> int:
+          if n <= 2:
+              return n
+          prev2, prev1 = 1, 2
+          for _ in range(3, n + 1):
+              prev2, prev1 = prev1, prev1 + prev2
+          return prev1
+  metadata:
+    tags: ["dynamic-programming", "fibonacci"]
+    source: "LeetCode #70"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "variable"]

@@ -1,0 +1,66 @@
+problem:
+  id: "PROB-008"
+  name: "Factorial"
+  difficulty: "easy"
+  domain: "recursion"
+  description: |
+    Write a function that computes the factorial of a non-negative integer n.
+    The factorial of n (written n!) is the product of all positive integers up to n.
+    By definition, 0! = 1.
+  signature:
+    function_name: "factorial"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 5
+        output: 120
+        description: "5! = 5*4*3*2*1 = 120"
+      - input: 0
+        output: 1
+        description: "0! = 1 by definition"
+    hidden:
+      - input: 1
+        output: 1
+        description: "1! = 1"
+      - input: 3
+        output: 6
+        description: "3! = 6"
+      - input: 6
+        output: 720
+        description: "6! = 720"
+      - input: 10
+        output: 3628800
+        description: "10! = 3628800"
+  constraints:
+    - "n >= 0"
+    - "Can use recursion or iteration"
+  canonical_solutions:
+    geno: |
+      func factorial(n: Int) -> Int
+          requires n >= 0
+          example 5 -> 120
+          example 0 -> 1
+
+          if n <= 1 then
+              return 1
+          else
+              return n * factorial(n - 1)
+          end if
+      end func factorial
+    python: |
+      def factorial(n: int) -> int:
+          if n <= 1:
+              return 1
+          else:
+              return n * factorial(n - 1)
+  metadata:
+    tags: ["recursion", "math", "classic"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "recursion", "if-else"]

@@ -1,0 +1,60 @@
+problem:
+  id: "PROB-001"
+  name: "Add Two Numbers"
+  difficulty: "trivial"
+  domain: "math"
+  description: |
+    Write a function that takes two integers and returns their sum.
+  signature:
+    function_name: "add"
+    inputs:
+      - name: "a"
+        type: "Int"
+      - name: "b"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [2, 3]
+        output: 5
+        description: "Basic addition"
+      - input: [0, 0]
+        output: 0
+        description: "Adding zeros"
+    hidden:
+      - input: [-1, 1]
+        output: 0
+        description: "Negative and positive"
+      - input: [100, 200]
+        output: 300
+        description: "Larger numbers"
+      - input: [-5, -3]
+        output: -8
+        description: "Two negatives"
+      - input: [1000000, 1]
+        output: 1000001
+        description: "Large number"
+      - input: [0, -7]
+        output: -7
+        description: "Zero plus negative"
+  constraints:
+    - "Return a + b"
+  canonical_solutions:
+    geno: |
+      func add(a: Int, b: Int) -> Int
+          example 2, 3 -> 5
+          example 0, 0 -> 0
+
+          return a + b
+      end func add
+    python: |
+      def add(a: int, b: int) -> int:
+          return a + b
+  metadata:
+    tags: ["arithmetic", "basic"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "return", "arithmetic"]

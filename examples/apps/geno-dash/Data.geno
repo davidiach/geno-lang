@@ -1,0 +1,127 @@
+// Data.geno — Data types and simulated data source
+// ===================================================
+// Simulates live metrics using random_int for demonstration.
+// Result types wrap all data to demonstrate error handling.
+
+type Metric = Metric(name: String, value: Int, unit: String)
+
+type Status = Healthy | Degraded | Down
+
+// Format a status as a display string.
+func status_label(s: Status) -> String
+    example Healthy -> "HEALTHY"
+    example Degraded -> "DEGRADED"
+    example Down -> "DOWN"
+
+    match s with
+        | Healthy -> return "HEALTHY"
+        | Degraded -> return "DEGRADED"
+        | Down -> return "DOWN"
+    end match
+end func
+
+// Determine service status from response time.
+func status_from_latency(ms: Int) -> Status
+    example 50 -> Healthy
+    example 300 -> Degraded
+    example 5000 -> Down
+
+    if ms < 200 then
+        return Healthy
+    else
+        if ms < 1000 then
+            return Degraded
+        else
+            return Down
+        end if
+    end if
+end func
+
+// Clamp a value to a range.
+func clamp_val(value: Int, lo: Int, hi: Int) -> Int
+    example (50, 0, 100) -> 50
+    example (-10, 0, 100) -> 0
+    example (150, 0, 100) -> 100
+
+    if value < lo then
+        return lo
+    else
+        if value > hi then
+            return hi
+        else
+            return value
+        end if
+    end if
+end func
+
+// Return a safe divisor (avoid division by zero).
+func safe_divisor(n: Int) -> Int
+    example 0 -> 1
+    example 5 -> 5
+    example -3 -> -3
+
+    if n == 0 then
+        return 1
+    else
+        return n
+    end if
+end func
+
+// Simulate fetching a metric value. Uses Result to model potential failure.
+@untested("uses random_int")
+func fetch_metric(name: String, base: Int, variance: Int) -> Result[Metric, String]
+    let delta: Int = random_int(0 - variance, variance)
+    let value: Int = clamp_val(value: base + delta, lo: 0, hi: 9999)
+    return Ok(Metric(name, value, ""))
+end func
+
+// Simulate a history buffer: shift left and append new value.
+func shift_append(history: List[Int], new_val: Int) -> List[Int]
+    example ([1, 2, 3, 4], 5) -> [2, 3, 4, 5]
+    example ([10], 20) -> [20]
+    example ([], 5) -> [5]
+
+    match length(history) with
+        | 0 -> return [new_val]
+        | _ -> return append(tail(history), new_val)
+    end match
+end func
+
+// Compute the average of a list of integers.
+func average(values: List[Int]) -> Int
+    example [10, 20, 30] -> 20
+    example [100] -> 100
+    example [] -> 0
+
+    match length(values) with
+        | 0 -> return 0
+        | n ->
+        let total: Int = fold(list: values, initial: 0, reducer: fn(a: Int, b: Int) -> a + b)
+        return total / n
+    end match
+end func
+
+// Return the larger of two integers.
+func int_max(a: Int, b: Int) -> Int
+    example (5, 3) -> 5
+    example (2, 7) -> 7
+    example (4, 4) -> 4
+
+    if a > b then
+        return a
+    else
+        return b
+    end if
+end func
+
+// Compute the max of a list of integers.
+func list_max(values: List[Int]) -> Int
+    example [10, 50, 30] -> 50
+    example [7] -> 7
+    example [] -> 0
+
+    match length(values) with
+        | 0 -> return 0
+        | _ -> return fold(list: values, initial: 0, reducer: fn(a: Int, b: Int) -> int_max(a, b))
+    end match
+end func

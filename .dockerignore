@@ -1,0 +1,19 @@
+.git
+.github
+.env
+.env.*
+experiment_config.yaml
+analysis/
+benchmark/
+docs/
+examples/
+scripts/
+*.md
+# pyproject declares readme = "README.md"; keep it in the build context so the
+# installed wheel ships a non-empty long description (M-01).
+!README.md
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache

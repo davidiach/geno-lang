@@ -1,0 +1,101 @@
+problem:
+  id: "APP-011"
+  name: "Word Wrap Formatter"
+  difficulty: "hard"
+  domain: "strings"
+  description: |
+    Wrap text greedily to a maximum line width. Words in the input are
+    separated by single spaces and never broken. Pack words onto the
+    current line (joined by single spaces) as long as the line stays
+    within `width` characters; otherwise start a new line with the word.
+
+    An empty text produces no lines.
+  signature:
+    function_name: "wrap_text"
+    inputs:
+      - name: "text"
+        type: "String"
+      - name: "width"
+        type: "Int"
+    output:
+      name: "wrapped"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: ["the quick brown fox", 10]
+        output: ["the quick", "brown fox"]
+        description: "Greedy packing at width 10"
+      - input: ["", 5]
+        output: []
+        description: "Empty text"
+    hidden:
+      - input: ["a b c d", 3]
+        output: ["a b", "c d"]
+        description: "Short words pack in pairs"
+      - input: ["hello world", 5]
+        output: ["hello", "world"]
+        description: "Each word exactly fills a line"
+      - input: ["one", 10]
+        output: ["one"]
+        description: "Single word"
+      - input: ["aa bb cc", 2]
+        output: ["aa", "bb", "cc"]
+        description: "No room for separators"
+      - input: ["ab cd ef gh", 5]
+        output: ["ab cd", "ef gh"]
+        description: "Exact-width lines"
+  constraints:
+    - "Words are separated by single spaces"
+    - "No word is longer than width"
+    - "width >= 1"
+    - "Lines join words with single spaces and never exceed width"
+  canonical_solutions:
+    geno: |
+      func wrap_text(text: String, width: Int) -> List[String]
+          example "the quick brown fox", 10 -> ["the quick", "brown fox"]
+          example "", 5 -> []
+
+          let words: List[String] = split(text, " ")
+          var wrapped: List[String] = []
+          var line: String = ""
+          for word: String in words do
+              if word != "" then
+                  if line == "" then
+                      line = word
+                  else if length(line) + 1 + length(word) <= width then
+                      line = line + " " + word
+                  else
+                      wrapped = append(wrapped, line)
+                      line = word
+                  end if
+              end if
+          end for
+          if line != "" then
+              wrapped = append(wrapped, line)
+          end if
+          return wrapped
+      end func wrap_text
+    python: |
+      def wrap_text(text: str, width: int) -> list[str]:
+          wrapped = []
+          line = ""
+          for word in text.split(" "):
+              if not word:
+                  continue
+              if not line:
+                  line = word
+              elif len(line) + 1 + len(word) <= width:
+                  line += " " + word
+              else:
+                  wrapped.append(line)
+                  line = word
+          if line:
+              wrapped.append(line)
+          return wrapped
+  metadata:
+    tags: ["app-tier", "strings", "formatting", "greedy"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "for", "split", "length", "string-concat", "greedy"]

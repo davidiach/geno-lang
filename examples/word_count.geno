@@ -1,0 +1,49 @@
+// Word Count — String operations + pipeline operator
+// =====================================================
+// Demonstrates: split, trim, join, pipeline |>, lambda expressions, filter/map
+
+func count_words(text: String) -> Int
+    example "hello world" -> 2
+    example "  one  two  three  " -> 3
+    example "" -> 0
+
+    let words: List[String] = text
+    |> split(" ")
+    |> filter(fn(w: String) -> w != "")
+    return length(words)
+end func count_words
+
+
+func normalize(text: String) -> String
+    example "  hello   world  " -> "hello world"
+
+    let words: List[String] = text
+    |> trim()
+    |> split(" ")
+    |> filter(fn(w: String) -> w != "")
+    return join(words, " ")
+end func normalize
+
+
+func word_list(text: String) -> List[String]
+    example "  hi   there  " -> ["hi", "there"]
+    example "" -> []
+
+    return text
+    |> split(" ")
+    |> filter(fn(w: String) -> w != "")
+end func word_list
+
+
+func main() -> List[Int]
+    let texts: List[String] = ["hello world", "  one  two  three  ", ""]
+    var counts: List[Int] = []
+    var i: Int = 0
+
+    while i < length(texts) do
+        counts = append(counts, count_words(texts[i]))
+        i = i + 1
+    end while
+
+    return counts
+end func main

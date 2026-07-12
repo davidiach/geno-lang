@@ -1,0 +1,32 @@
+# EXPECT: E503
+# Decorator-like abuse via higher-order functions smuggling
+# capabilities: create a chain of higher-order functions where
+# each wraps the previous, attempting to accumulate or smuggle
+# capabilities through closure capture.  The wrapper chain creates
+# O(n) nested closures each capturing the previous, testing that
+# closure-through-closure capture doesn't leak sandbox internals
+# and that the deep call chain is step-counted.
+@untested("returns closure")
+func wrap_fn(inner: (Int) -> Int, offset: Int) -> (Int) -> Int
+    return fn(x: Int) -> inner(x + offset)
+end func
+
+@untested("returns closure")
+func build_chain(depth: Int) -> (Int) -> Int
+    if depth <= 0 then
+        return fn(x: Int) -> x
+    end if
+    let inner: (Int) -> Int = build_chain(depth - 1)
+    return wrap_fn(inner: inner, offset: depth)
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 100000 do
+        let chain: (Int) -> Int = build_chain(20)
+        total = total + chain(i)
+        i = i + 1
+    end while
+    return total
+end func

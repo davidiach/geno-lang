@@ -1,0 +1,57 @@
+# Experiment Configuration Example
+# =================================
+#
+# Copy this file and adjust for your run:
+#   cp experiment/config.example.yaml my_experiment.yaml
+#
+# scripts/run_experiment.py --config reads this flat schema and maps it
+# into ExperimentConfig defaults. Explicit CLI flags still win.
+# See experiment/README.md for full documentation.
+
+# Required: unique identifier for this run
+experiment_id: "exp_claude_20260414"
+
+# Required: models to evaluate (use exact provider model IDs)
+models:
+  - "claude-sonnet-4-6"
+  # - "gpt-4"
+  # - "claude-opus-4-6"
+
+# Languages to compare (default: both)
+languages:
+  - "geno"
+  - "python"
+
+# Number of generation attempts per (problem, model, language) triple.
+# Higher values enable pass@k analysis but increase API cost.
+trials_per_condition: 5
+
+# Sampling temperature. Use 0.0 for deterministic output.
+temperature: 0.0
+
+# Maximum response tokens per generation
+max_tokens: 2048
+
+# Execution timeout per evaluation (seconds)
+timeout_seconds: 5.0
+
+# Artifact directory recorded in ExperimentConfig. The CLI still writes
+# one combined JSON payload to --output; save_results() uses output_dir.
+output_dir: "results/exp_claude_20260414"
+
+# Number of few-shot examples to include in prompt (0 = zero-shot)
+few_shot_examples: 0
+
+# Optional CLI-side difficulty filter (omit for all problems)
+difficulties:
+  - "trivial"
+  - "easy"
+  - "medium"
+  - "hard"
+  # - "expert"
+
+# API keys are read from environment variables:
+#   ANTHROPIC_API_KEY  - for Claude models
+#   OPENAI_API_KEY     - for OpenAI models
+#
+# Do NOT put API keys in this file.

@@ -1,0 +1,5 @@
+# EXPECT: E412
+# fs_exists without the "fs" capability should fail.
+func main() -> Bool
+    return fs_exists(path: "/etc/passwd")
+end func

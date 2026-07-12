@@ -1,0 +1,71 @@
+problem:
+  id: "PROB-055"
+  name: "Running Sum"
+  difficulty: "trivial"
+  domain: "arrays"
+  description: |
+    Given an array nums, return the running sum of elements.
+    running_sum[i] = nums[0] + nums[1] + ... + nums[i]
+  signature:
+    function_name: "running_sum"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 4]]
+        output: [1, 3, 6, 10]
+        description: "Running sum"
+      - input: [[1, 1, 1, 1, 1]]
+        output: [1, 2, 3, 4, 5]
+        description: "All ones"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[5]]
+        output: [5]
+        description: "Single element"
+      - input: [[3, 1, 2]]
+        output: [3, 4, 6]
+        description: "Three elements"
+      - input: [[-1, 1, -1, 1]]
+        output: [-1, 0, -1, 0]
+        description: "Alternating"
+  constraints:
+    - "Compute prefix sums"
+  canonical_solutions:
+    geno: |
+      func running_sum(nums: List[Int]) -> List[Int]
+          example [1, 2, 3, 4] -> [1, 3, 6, 10]
+          example [1, 1, 1, 1, 1] -> [1, 2, 3, 4, 5]
+
+          var result: List[Int] = []
+          var total: Int = 0
+          var i: Int = 0
+
+          while i < length(nums) do
+              total = total + nums[i]
+              result = append(result, total)
+              i = i + 1
+          end while
+
+          return result
+      end func running_sum
+    python: |
+      def running_sum(nums: list[int]) -> list[int]:
+          result = []
+          total = 0
+          for num in nums:
+              total += num
+              result.append(total)
+          return result
+  metadata:
+    tags: ["array", "prefix-sum"]
+    source: "LeetCode #1480"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "accumulator"]

@@ -1,0 +1,39 @@
+# EXPECT: E503
+# Import smuggling via JSON parse/stringify cycle: repeatedly
+# parse JSON strings containing keys that match blocked attribute
+# names (__class__, __globals__, etc.) and convert them back to
+# strings.  Tests that json_parse does not expose internal Python
+# objects and that the parse-stringify cycle is step-counted.
+# Also tests that JsonValue objects with dangerous key names
+# cannot be used to access sandbox internals.
+func build_payload(i: Int) -> String
+    example 0 -> "{\"key_0\": 0}"
+    let lbrace: String = from_char_code(123)
+    let rbrace: String = from_char_code(125)
+    let quote: String = from_char_code(34)
+    let key: String = "key_" + to_string(i)
+    return lbrace + quote + key + quote + ": " + to_string(i) + rbrace
+end func
+
+func probe_json(n: Int) -> Int
+    example 0 -> 0
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let payload: String = build_payload(i)
+        let parsed: Result[JsonValue, String] = json_parse(text: payload)
+        match parsed with
+        | Ok(val) ->
+            let repr: String = to_string(val)
+            total = total + length(repr)
+        | Err(e) ->
+            total = total + length(e)
+        end match
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return probe_json(500000)
+end func

@@ -1,0 +1,67 @@
+problem:
+  id: "PROB-003"
+  name: "Maximum of Two"
+  difficulty: "trivial"
+  domain: "math"
+  description: |
+    Write a function that returns the maximum of two integers.
+  signature:
+    function_name: "max_of_two"
+    inputs:
+      - name: "a"
+        type: "Int"
+      - name: "b"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [3, 5]
+        output: 5
+        description: "Second is larger"
+      - input: [7, 2]
+        output: 7
+        description: "First is larger"
+    hidden:
+      - input: [5, 5]
+        output: 5
+        description: "Equal numbers"
+      - input: [-3, -1]
+        output: -1
+        description: "Negative numbers"
+      - input: [-5, 5]
+        output: 5
+        description: "Mixed signs"
+      - input: [0, 0]
+        output: 0
+        description: "Both zero"
+      - input: [1000, -1000]
+        output: 1000
+        description: "Large magnitude"
+  constraints:
+    - "Return the larger of the two values"
+  canonical_solutions:
+    geno: |
+      func max_of_two(a: Int, b: Int) -> Int
+          example 3, 5 -> 5
+          example 7, 2 -> 7
+
+          if a > b then
+              return a
+          else
+              return b
+          end if
+      end func max_of_two
+    python: |
+      def max_of_two(a: int, b: int) -> int:
+          if a > b:
+              return a
+          else:
+              return b
+  metadata:
+    tags: ["comparison", "basic"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "if-else", "comparison"]

@@ -1,0 +1,82 @@
+problem:
+  id: "PROB-025"
+  name: "Bubble Sort"
+  difficulty: "medium"
+  domain: "sorting"
+  description: |
+    Implement the bubble sort algorithm to sort a list of integers in ascending order.
+  signature:
+    function_name: "bubble_sort"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[5, 2, 8, 1, 9]]
+        output: [1, 2, 5, 8, 9]
+        description: "Sort unsorted list"
+      - input: [[1, 2, 3]]
+        output: [1, 2, 3]
+        description: "Already sorted"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[1]]
+        output: [1]
+        description: "Single element"
+      - input: [[3, 2, 1]]
+        output: [1, 2, 3]
+        description: "Reverse sorted"
+      - input: [[5, 5, 5]]
+        output: [5, 5, 5]
+        description: "All same"
+      - input: [[-3, 0, 2, -1]]
+        output: [-3, -1, 0, 2]
+        description: "Mixed signs"
+  constraints:
+    - "Use bubble sort algorithm"
+    - "Return new sorted list"
+  canonical_solutions:
+    geno: |
+      func bubble_sort(arr: List[Int]) -> List[Int]
+          example [5, 2, 8, 1, 9] -> [1, 2, 5, 8, 9]
+          example [1, 2, 3] -> [1, 2, 3]
+
+          var result: List[Int] = arr
+          let n: Int = length(result)
+          var i: Int = 0
+
+          while i < n do
+              var j: Int = 0
+              while j < n - i - 1 do
+                  if result[j] > result[j + 1] then
+                      let temp: Int = result[j]
+                      result = set_at(list: result, index: j, value: result[j + 1])
+                      result = set_at(list: result, index: j + 1, value: temp)
+                  end if
+                  j = j + 1
+              end while
+              i = i + 1
+          end while
+
+          return result
+      end func bubble_sort
+    python: |
+      def bubble_sort(arr: list[int]) -> list[int]:
+          result = arr.copy()
+          n = len(result)
+          for i in range(n):
+              for j in range(n - i - 1):
+                  if result[j] > result[j + 1]:
+                      result[j], result[j + 1] = result[j + 1], result[j]
+          return result
+  metadata:
+    tags: ["sorting", "classic"]
+    source: "Classic"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "nested-while", "if", "list-mutation"]

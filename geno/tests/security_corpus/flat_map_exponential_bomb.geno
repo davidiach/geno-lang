@@ -1,0 +1,14 @@
+# EXPECT: E503
+# Use flat_map to attempt exponential list growth: each
+# element is replaced by two elements, so the list doubles
+# in size every iteration.  Tests that step counting and
+# collection size limits catch flat_map-driven expansion.
+func main() -> Int
+    var lst: List[Int] = [1, 2, 3]
+    var i: Int = 0
+    while i < 30 do
+        lst = flat_map(lst, fn(x: Int) -> [x, x + 1])
+        i = i + 1
+    end while
+    return length(lst)
+end func

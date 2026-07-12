@@ -1,0 +1,23 @@
+# EXPECT: E503
+# Generator/coroutine-style abuse via list comprehension with
+# recursive filter: use a list comprehension where the filter
+# predicate is a recursive function.  This creates implicit
+# iteration (like a generator) with recursive computation at
+# each step, testing that comprehension filter evaluation is
+# step-counted.
+func is_interesting(n: Int) -> Bool
+    example 0 -> true
+    if n <= 1 then
+        return true
+    end if
+    if n % 2 == 0 then
+        return is_interesting(n / 2)
+    end if
+    return is_interesting(n - 1)
+end func
+
+func main() -> List[Int]
+    let big_range: List[Int] = range(0, 100000)
+    let filtered: List[Int] = [x for x: Int in big_range if is_interesting(x)]
+    return filtered
+end func

@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling random_int without the "random" capability should fail.
+func main() -> Int
+    return random_int(min: 1, max: 10)
+end func

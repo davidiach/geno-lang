@@ -1,0 +1,9 @@
+# EXPECT: E503
+# Large for-range loop to test step counting in for loops.
+func main() -> Int
+    var total: Int = 0
+    for i: Int in range(0, 1000000) do
+        total = total + 1
+    end for
+    return total
+end func

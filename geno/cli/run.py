@@ -1,0 +1,549 @@
+"""``geno run`` — run a Geno source file."""
+
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from .._serve import (
+    install_clock_callbacks as _install_clock_callbacks,
+)
+from .._serve import (
+    install_fs_callbacks as _install_fs_callbacks,
+)
+from .._serve import (
+    install_http_callbacks as _install_http_callbacks,
+)
+from .._serve import (
+    install_process_callbacks as _install_process_callbacks,
+)
+from .._serve import (
+    install_serve_callbacks as _install_serve_callbacks,
+)
+from .._serve import (
+    install_stdin_callbacks as _install_stdin_callbacks,
+)
+from ._util import (
+    _format_source_snippet,
+    _print_error,
+    _print_runtime_error,
+    report_deep_nesting_error,
+)
+
+RunMode = Literal["json", "unsafe", "process"]
+
+
+@dataclass(frozen=True)
+class ResolvedRunProgram:
+    """Resolved source graph and target plan for ``geno run``."""
+
+    dependency_graph: Any
+    program: Any
+    parsed_modules: dict[str, Any] | None
+    check_targets: list[str | None]
+    project_root: Any
+
+
+def _select_run_mode(*, unsafe: bool, json_output: bool) -> RunMode:
+    if json_output:
+        return "json"
+    if unsafe:
+        return "unsafe"
+    return "process"
+
+
+def _program_has_example_clauses(
+    program: Any, parsed_modules: dict[str, Any] | None
+) -> bool:
+    """True when any function example or test block exists to verify.
+
+    Gates the interpreter example pre-pass: with nothing to verify, the
+    pre-pass is pure re-registration of definitions the typechecker has
+    already validated, and skipping it keeps the interpreter (and the
+    builtin registry behind it) entirely unimported for the common
+    example-free ``geno run``.
+    """
+    from ..ast_nodes import FunctionDef, ImplDef, TestBlock
+
+    for prog in (program, *(parsed_modules or {}).values()):
+        for defn in prog.definitions:
+            if isinstance(defn, TestBlock):
+                return True
+            if isinstance(defn, FunctionDef):
+                if defn.specs and defn.specs.examples:
+                    return True
+            elif isinstance(defn, ImplDef):
+                for method in defn.methods:
+                    if method.specs and method.specs.examples:
+                        return True
+    return False
+
+
+def _resolve_run_program(filename: str, target: str | None) -> ResolvedRunProgram:
+    """Resolve source files and target checks for ``geno run``."""
+    from ..project_resolution import resolve_project_context
+    from ..target_profile import resolve_manifest_targets
+
+    resolved = resolve_project_context(filename)
+    dependency_graph = resolved.dependency_graph
+    target_names: list[str] = (
+        [target]
+        if target is not None
+        else resolve_manifest_targets(resolved.project.root)
+    )
+    check_targets: list[str | None] = list(target_names) if target_names else [None]
+    return ResolvedRunProgram(
+        dependency_graph=dependency_graph,
+        program=dependency_graph.parsed[resolved.entrypoint],
+        parsed_modules=resolved.parsed_modules or None,
+        check_targets=check_targets,
+        project_root=resolved.project.root,
+    )
+
+
+def _typecheck_run_graph(
+    dependency_graph: Any, check_targets: list[str | None]
+) -> None:
+    """Type-check the resolved run graph for each requested target."""
+    from ..target_profile import TargetProfile
+    from ..typechecker import TypeChecker
+
+    for target_name in check_targets:
+        target_profile = (
+            TargetProfile.load(target_name) if target_name is not None else None
+        )
+        checker = TypeChecker(target_profile=target_profile)
+        checker.check_project_graph(dependency_graph)
+
+
+def _format_json_run_output(result: Any) -> str:
+    """Serialize embedding API run output for ``geno run --json``."""
+    import json as json_mod
+
+    output = {
+        "ok": result.ok,
+        "value": result.value,
+        "output": result.output,
+        "diagnostics": [d.to_dict() for d in result.diagnostics],
+        "timing": {
+            "total_ms": round(result.timing.total_ms, 2),
+            "lex_ms": round(result.timing.lex_ms, 2),
+            "parse_ms": round(result.timing.parse_ms, 2),
+            "typecheck_ms": round(result.timing.typecheck_ms, 2),
+            "run_ms": round(result.timing.run_ms, 2),
+        },
+        "steps_used": result.steps_used,
+    }
+    return json_mod.dumps(output, indent=2, allow_nan=False)
+
+
+def _explicit_fs_roots_for_run(
+    filename: str,
+    project_root,
+    program_args: list[str] | None,
+) -> list[str]:
+    """Scope CLI fs grants to the project, cwd, source file, and path args."""
+    roots = [os.getcwd(), os.path.dirname(os.path.abspath(filename))]
+    if project_root is not None:
+        roots.append(os.fspath(project_root))
+
+    for arg in program_args or []:
+        if not isinstance(arg, str) or "\x00" in arg:
+            continue
+        if os.path.isabs(arg):
+            candidate = os.path.realpath(arg)
+        elif os.sep in arg or (os.altsep and os.altsep in arg):
+            candidate = os.path.realpath(os.path.abspath(arg))
+        else:
+            continue
+        roots.append(
+            candidate if os.path.isdir(candidate) else os.path.dirname(candidate)
+        )
+
+    return roots
+
+
+def run_file(
+    filename: str,
+    check_examples: bool = True,
+    unsafe: bool = False,
+    timeout: float = 30.0,
+    max_steps: int | None = None,
+    max_recursion_depth: int = 500,
+    max_output_length: int = 100_000,
+    max_collection_size: int = 10_000_000,
+    max_integer_bits: int = 33_219,
+    max_memory_bytes: int | None = 256 * 1024 * 1024,
+    max_cpu_time: float | None = None,
+    max_file_size_bytes: int = 0,
+    max_processes: int = 1,
+    capabilities: set[str] | None = None,
+    target: str | None = None,
+    json_output: bool = False,
+    program_args: list[str] | None = None,
+):
+    """Run a Geno source file.
+
+    By default, compiles to Python and runs in ProcessSandbox for hard timeouts.
+    Use --unsafe to run with the direct interpreter (no process isolation).
+    Use --json to get structured JSON output via the embedding API.
+    """
+    import json as json_mod
+
+    run_mode = _select_run_mode(unsafe=unsafe, json_output=json_output)
+    previous_cli_args = os.environ.get("GENO_CLI_ARGS")
+
+    def _set_cli_args_env() -> None:
+        if program_args is not None:
+            os.environ["GENO_CLI_ARGS"] = json_mod.dumps(program_args)
+
+    def _restore_cli_args_env() -> None:
+        if program_args is None:
+            return
+        if previous_cli_args is None:
+            os.environ.pop("GENO_CLI_ARGS", None)
+        else:
+            os.environ["GENO_CLI_ARGS"] = previous_cli_args
+
+    # --cap is currently supported by the interpreter/embedding paths only.
+    # Require the user to choose that execution mode explicitly so capability
+    # grants cannot silently downgrade process isolation.
+    if run_mode == "process" and capabilities is not None:
+        print(
+            "Error: --cap is not supported in the default process-isolated "
+            "run mode. Use --unsafe --cap ... to run with capability callbacks "
+            "in the direct interpreter, or use --json --cap ... for embedding "
+            "API execution.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    process_only_overrides = []
+    if max_memory_bytes not in (256 * 1024 * 1024,):
+        process_only_overrides.append("--max-memory-bytes")
+    if max_cpu_time is not None:
+        process_only_overrides.append("--max-cpu-time")
+    if max_file_size_bytes != 0:
+        process_only_overrides.append("--max-file-size-bytes")
+    if max_processes != 1:
+        process_only_overrides.append("--max-processes")
+    if run_mode != "process" and process_only_overrides:
+        print(
+            "Error: "
+            + ", ".join(process_only_overrides)
+            + " only apply to the default process-isolated run mode.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # --max-steps only applies to interpreter mode (--unsafe or --json).
+    if run_mode == "process":
+        if max_steps is not None:
+            print(
+                "Warning: --max-steps is ignored in compiled mode. "
+                "Use --unsafe or --json for step limiting.",
+                file=sys.stderr,
+            )
+
+    # --json mode uses the embedding API for structured output
+    if run_mode == "json":
+        from ..api import RunConfig, RunResult
+        from ..api import run_path as api_run_path
+        from ..diagnostics import Diagnostic, ErrorCode, Severity
+
+        try:
+            cfg_kwargs: dict[str, Any] = {
+                "timeout": timeout,
+                "max_recursion_depth": max_recursion_depth,
+                "max_output_length": max_output_length,
+                "max_collection_size": max_collection_size,
+                "max_integer_bits": max_integer_bits,
+                "capabilities": capabilities,
+                "target": target,
+                "check_examples": check_examples,
+            }
+            if max_steps is not None:
+                cfg_kwargs["max_steps"] = max_steps
+            cfg = RunConfig(**cfg_kwargs)
+        except ValueError as exc:
+            result = RunResult(
+                ok=False,
+                diagnostics=[
+                    Diagnostic(
+                        code=ErrorCode.RUNTIME_UNKNOWN,
+                        message=str(exc),
+                        severity=Severity.ERROR,
+                    )
+                ],
+            )
+            print(_format_json_run_output(result))
+            sys.exit(1)
+
+        _set_cli_args_env()
+        try:
+            result = api_run_path(filename, cfg)
+        finally:
+            _restore_cli_args_env()
+        print(_format_json_run_output(result))
+        if not result.ok:
+            sys.exit(1)
+        return
+
+    from ..ast_nodes import FunctionDef
+    from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
+    from ..compiler import (
+        Compiler,
+        _compiled_main_result_capture,
+        _insert_compiled_runtime_capability_assignment,
+        _strip_runtime_prelude_imports,
+        _trusted_runtime_prelude_line_count,
+    )
+    from ..dependency_graph import (
+        CircularDependencyError,
+        DependencyGraphError,
+        NameCollisionError,
+    )
+    from ..lexer import Lexer, LexerError
+    from ..parser import ParseError, ParseErrors, Parser
+    from ..project_graph import ProjectGraphError
+    from ..project_resolution import ProjectResolutionError
+    from ..sandbox import (
+        SandboxConfig,
+        SandboxError,
+        SecurityViolation,
+        StepLimitExceeded,
+        TimeoutError,
+        run_sandboxed,
+    )
+    from ..typechecker import TypeError
+    from ..values import RuntimeError as GenoRuntimeError
+
+    try:
+        resolved_run = _resolve_run_program(filename, target)
+        dg = resolved_run.dependency_graph
+        program = resolved_run.program
+        parsed_modules = resolved_run.parsed_modules
+
+        # Type check all modules (not just the entrypoint)
+        _typecheck_run_graph(dg, resolved_run.check_targets)
+
+        if run_mode == "unsafe":
+            # Direct interpreter (no process isolation)
+            from ..api import _apply_capabilities
+            from ..interpreter import Interpreter
+
+            sandbox_kwargs: dict[str, Any] = {
+                "timeout": timeout,
+                "max_recursion_depth": max_recursion_depth,
+                "max_output_length": max_output_length,
+                "max_collection_size": max_collection_size,
+                "max_integer_bits": max_integer_bits,
+            }
+            if max_steps is not None:
+                sandbox_kwargs["max_steps"] = max_steps
+            sandbox_config = SandboxConfig(**sandbox_kwargs)
+            if capabilities is not None:
+                interpreter = Interpreter(
+                    check_examples=check_examples,
+                    sandbox_config=sandbox_config,
+                    capabilities=capabilities,
+                )
+            else:
+                interpreter = Interpreter(
+                    check_examples=check_examples,
+                    sandbox_config=sandbox_config,
+                )
+            if capabilities is not None:
+                _apply_capabilities(interpreter, capabilities)
+
+            # Provide real file I/O only when fs capability is explicitly granted
+            if capabilities is not None and "fs" in capabilities:
+                _install_fs_callbacks(
+                    interpreter,
+                    roots=_explicit_fs_roots_for_run(
+                        filename, resolved_run.project_root, program_args
+                    ),
+                    allow_absolute_paths=True,
+                )
+            if capabilities is not None and "http" in capabilities:
+                _install_http_callbacks(interpreter)
+            if capabilities is not None and "process" in capabilities:
+                _install_process_callbacks(
+                    interpreter, inherit_env="env" in capabilities
+                )
+            if capabilities is not None and "serve" in capabilities:
+                _install_serve_callbacks(interpreter)
+            if capabilities is not None and "clock" in capabilities:
+                _install_clock_callbacks(interpreter)
+            if capabilities is not None and "stdin" in capabilities:
+                _install_stdin_callbacks(interpreter)
+
+            _set_cli_args_env()
+            try:
+                result = interpreter.run(program, modules=parsed_modules)
+            finally:
+                _restore_cli_args_env()
+            run_output = interpreter.get_output()
+            if run_output:
+                print(run_output, end="")
+            if result is not None:
+                print(f"=> {interpreter._format_value(result)}")
+        else:
+            # Verify examples via the interpreter before compiling.
+            # The compiler only preserves examples as docstrings; it does
+            # not execute them.  Running the interpreter in check-only mode
+            # ensures parity with --unsafe and --json. Skipped entirely
+            # when there is nothing to verify, which also keeps the
+            # interpreter import off the example-free fast path.
+            if check_examples and _program_has_example_clauses(program, parsed_modules):
+                from ..api import _apply_capabilities as _apply_example_capabilities
+                from ..interpreter import Interpreter as _ExInterp
+
+                _ex_interp = _ExInterp(
+                    check_examples=True,
+                    sandbox_config=SandboxConfig(
+                        timeout=timeout,
+                        max_recursion_depth=max_recursion_depth,
+                        max_output_length=max_output_length,
+                        max_collection_size=max_collection_size,
+                        max_integer_bits=max_integer_bits,
+                    ),
+                )
+                _apply_example_capabilities(
+                    _ex_interp, set(DEFAULT_ALLOWED_CAPABILITIES)
+                )
+                # Verify example clauses only: the compiled sandbox run below
+                # is the authoritative execution of main. Interpreting main
+                # here too would run the whole program twice (the tree-walker
+                # is orders of magnitude slower) and double any side effects.
+                _ex_interp.run(program, modules=parsed_modules, execute_main=False)
+
+            # Compile and run in ProcessSandbox (default - secure)
+            compiler = Compiler()
+            if parsed_modules:
+                python_code = compiler.compile_project(dg)
+            else:
+                python_code = compiler.compile(program)
+            python_code = _strip_runtime_prelude_imports(python_code)
+            trusted_prelude_line_count = _trusted_runtime_prelude_line_count(
+                python_code
+            )
+            python_code = _insert_compiled_runtime_capability_assignment(
+                python_code, DEFAULT_ALLOWED_CAPABILITIES
+            )
+
+            # Add code to call main() if it exists and capture result
+            # Use try/except instead of dir() which is blocked
+            main_defn = next(
+                (
+                    defn
+                    for defn in program.definitions
+                    if isinstance(defn, FunctionDef) and defn.name == "main"
+                ),
+                None,
+            )
+            python_code += _compiled_main_result_capture(
+                bool(main_defn and main_defn.is_async),
+                catch_name_error=True,
+            )
+
+            # Use strict=False because:
+            # 1. Geno source was already type-checked above
+            # 2. Compiled code has trusted runtime prelude symbols pre-injected
+            # 3. Static validation would flag our own generated runtime support
+            # Security is still enforced at runtime by:
+            # - ProcessSandbox with hard timeouts
+            # - safe_getattr/safe_hasattr blocking dunder access
+            # - Whitelisted imports only
+            # - Output limits
+            # Forward program args to the sandbox subprocess via env var
+            if program_args:
+                os.environ["GENO_CLI_ARGS"] = json_mod.dumps(program_args)
+            config = SandboxConfig(
+                timeout=timeout,
+                max_memory_bytes=max_memory_bytes,
+                max_cpu_time=max_cpu_time,
+                max_file_size_bytes=max_file_size_bytes,
+                max_processes=max_processes,
+                max_recursion_depth=max_recursion_depth,
+                max_output_length=max_output_length,
+                max_collection_size=max_collection_size,
+                max_integer_bits=max_integer_bits,
+                strict=False,
+                compiled_runtime_prelude=True,
+                trusted_prelude_line_count=trusted_prelude_line_count,
+            )
+            _set_cli_args_env()
+            try:
+                result, run_output = run_sandboxed(
+                    python_code, config, use_process=True
+                )
+            finally:
+                _restore_cli_args_env()
+
+            if run_output:
+                print(run_output, end="")
+            if result is not None:
+                print(f"=> {result}")
+
+    except FileNotFoundError:
+        print(f"Error: File not found: {filename}", file=sys.stderr)
+        sys.exit(1)
+    except ProjectResolutionError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ProjectGraphError as e:
+        print(f"Project Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except CircularDependencyError as e:
+        print(f"Circular Import: {e}", file=sys.stderr)
+        sys.exit(1)
+    except NameCollisionError as e:
+        print(f"Name Collision: {e}", file=sys.stderr)
+        sys.exit(1)
+    except DependencyGraphError as e:
+        print(f"Dependency Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Manifest Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except LexerError as e:
+        _print_error("Lexer Error", e)
+        sys.exit(1)
+    except ParseErrors as e:
+        print(f"Parse Errors ({len(e.errors)} errors):", file=sys.stderr)
+        for err in e.errors:
+            snippet = _format_source_snippet(getattr(err, "location", None))
+            print(f"  {err}{snippet}", file=sys.stderr)
+        sys.exit(1)
+    except ParseError as e:
+        _print_error("Parse Error", e)
+        sys.exit(1)
+    except TypeError as e:
+        _print_error("Type Error", e)
+        sys.exit(1)
+    except SecurityViolation as e:
+        print(f"Security Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (TimeoutError, StepLimitExceeded) as e:
+        print(f"Limit Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except SandboxError as e:
+        # Infrastructure failure inside the process sandbox (e.g. the worker's
+        # result channel was lost) — not a user-program error.
+        print(f"Sandbox Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RecursionError:
+        report_deep_nesting_error(filename)
+    except GenoRuntimeError as e:
+        # Must precede builtin RuntimeError since GenoRuntimeError
+        # (geno.values.RuntimeError) extends Exception, not builtin RuntimeError.
+        # Use e.message to avoid "Runtime Error: Runtime Error: ..." duplication
+        # since str(e) already includes the "Runtime Error:" prefix.
+        _print_runtime_error(e)
+        sys.exit(1)
+    except RuntimeError as e:
+        _print_runtime_error(e)
+        sys.exit(1)

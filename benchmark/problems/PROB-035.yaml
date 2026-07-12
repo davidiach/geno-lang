@@ -1,0 +1,85 @@
+problem:
+  id: "PROB-035"
+  name: "Rotate List Left"
+  difficulty: "medium"
+  domain: "arrays"
+  description: |
+    Write a function that rotates a list to the left by k positions.
+    Elements that fall off the left end should wrap around to the right.
+  signature:
+    function_name: "rotate_left"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+      - name: "k"
+        type: "Int"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 4, 5], 2]
+        output: [3, 4, 5, 1, 2]
+        description: "Rotate left by 2"
+      - input: [[1, 2, 3], 0]
+        output: [1, 2, 3]
+        description: "No rotation"
+    hidden:
+      - input: [[], 5]
+        output: []
+        description: "Empty list"
+      - input: [[1], 1]
+        output: [1]
+        description: "Single element"
+      - input: [[1, 2, 3], 3]
+        output: [1, 2, 3]
+        description: "Full rotation"
+      - input: [[1, 2, 3], 5]
+        output: [3, 1, 2]
+        description: "k > length"
+      - input: [[1, 2, 3, 4], 1]
+        output: [2, 3, 4, 1]
+        description: "Rotate by 1"
+  constraints:
+    - "k >= 0"
+    - "Handle k > length(arr)"
+  canonical_solutions:
+    geno: |
+      func rotate_left(arr: List[Int], k: Int) -> List[Int]
+          example [1, 2, 3, 4, 5], 2 -> [3, 4, 5, 1, 2]
+          example [1, 2, 3], 0 -> [1, 2, 3]
+
+          if length(arr) == 0 then
+              return []
+          end if
+
+          let n: Int = length(arr)
+          let effective_k: Int = k % n
+          var result: List[Int] = []
+          var i: Int = effective_k
+
+          while i < n do
+              result = append(result, arr[i])
+              i = i + 1
+          end while
+
+          i = 0
+          while i < effective_k do
+              result = append(result, arr[i])
+              i = i + 1
+          end while
+
+          return result
+      end func rotate_left
+    python: |
+      def rotate_left(arr: list[int], k: int) -> list[int]:
+          if len(arr) == 0:
+              return []
+          k = k % len(arr)
+          return arr[k:] + arr[:k]
+  metadata:
+    tags: ["array", "rotation"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "modulo", "append"]

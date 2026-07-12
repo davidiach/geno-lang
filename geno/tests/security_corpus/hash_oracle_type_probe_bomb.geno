@@ -1,0 +1,30 @@
+# EXPECT: E503
+# Type-distinguishing oracle via char_code and to_string: probe
+# whether to_string on different value types reveals Python type
+# names, memory addresses, or other sandbox-internal information.
+# An attacker could use these string patterns to map internal
+# Python object structure.  The repeated probing should be
+# step-counted.
+type Wrapper = Box(val: Int) | Tag(name: String)
+
+func probe_types(n: Int) -> Int
+    example 0 -> 0
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let s1: String = to_string(i)
+        let s2: String = to_string(true)
+        let s3: String = to_string(3.14)
+        let s4: String = to_string(Box(i))
+        let s5: String = to_string(Tag(s1))
+        let s6: String = to_string([i, i + 1])
+        let s7: String = to_string((i, s1))
+        total = total + length(s1) + length(s2) + length(s3) + length(s4) + length(s5) + length(s6) + length(s7)
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return probe_types(500000)
+end func

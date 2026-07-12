@@ -1,0 +1,6 @@
+type Box = Box(value: Int)
+
+func main() -> Int
+    let box: Box = Box(1)
+    return box.missing
+end func

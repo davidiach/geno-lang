@@ -1,0 +1,91 @@
+// Main.geno — Form builder entry point (init/update/render loop)
+// ================================================================
+// Showcase app demonstrating how Geno types map to form fields,
+// requires-style constraints become validators,
+// and example values become placeholders.
+
+import Types
+import Fields
+import Validate
+import Render
+import Forms
+
+// Initialize with the first form definition.
+func init() -> FormState
+    let fields: List[FieldDef] = get_form_fields(0)
+    let values: List[FieldValue] = map(fields, fn(f: FieldDef) -> default_value(field: f))
+    return FormState("Registration", fields, values, [], false, 0)
+end func
+
+// Update on user interaction.
+func update(state: FormState, dt: Float) -> FormState
+    // Check for form tab switch via keyboard (1 or 2)
+    if is_key_pressed(key: "1") then
+        let fields: List[FieldDef] = get_form_fields(0)
+        let values: List[FieldValue] = map(fields, fn(f: FieldDef) -> default_value(field: f))
+        return FormState("Registration", fields, values, [], false, 0)
+    end if
+
+    if is_key_pressed(key: "2") then
+        let fields: List[FieldDef] = get_form_fields(1)
+        let values: List[FieldValue] = map(fields, fn(f: FieldDef) -> default_value(field: f))
+        return FormState("Contact", fields, values, [], false, 1)
+    end if
+
+    // Check for submit (Enter key)
+    if is_key_pressed(key: "Enter") and not state.submitted then
+        let errors: List[FieldError] = validate_all(fields: state.fields, values: state.values)
+        if length(errors) == 0 then
+            return FormState(state.title, state.fields, state.values, [], true, state.active_form)
+        else
+            return FormState(state.title, state.fields, state.values, errors, false, state.active_form)
+        end if
+    end if
+
+    return state
+end func
+
+// Render the form.
+@untested("canvas drawing function")
+func render(state: FormState) -> Unit
+    clear_screen(color: color_bg())
+
+    // Title
+    draw_text(text: "Geno Form Builder", x: 40, y: 20, size: 20, color: "#000000")
+    draw_text(text: state.title + " Form", x: 40, y: 45, size: 16, color: color_label())
+
+    // Tab indicators
+    var tab1_color: String = color_border()
+    if state.active_form == 0 then
+        var tab1_color: String = color_button()
+    end if
+    var tab2_color: String = color_border()
+    if state.active_form == 1 then
+        var tab2_color: String = color_button()
+    end if
+    draw_rect(x: 40, y: 65, width: 100, height: 24, color: tab1_color)
+    draw_text(text: "[1] Register", x: 48, y: 70, size: 12, color: "#ffffff")
+    draw_rect(x: 150, y: 65, width: 100, height: 24, color: tab2_color)
+    draw_text(text: "[2] Contact", x: 158, y: 70, size: 12, color: "#ffffff")
+
+    // Render each field
+    var y: Int = 110
+    for i: Int in range(0, length(state.fields)) do
+        let field: FieldDef = state.fields[i]
+        let value: FieldValue = state.values[i]
+        match field.kind with
+            | BoolInput ->
+            var y: Int = render_bool_field(field: field, value: value, y: y)
+            | _ ->
+            var y: Int = render_text_field(field: field, value: value, errors: state.errors, y: y)
+        end match
+    end for
+
+    // Submit button or success message
+    if state.submitted then
+        let unused: Int = render_success(y: y)
+    else
+        let unused: Int = render_button(label: "Submit", y: y)
+        draw_text(text: "Press Enter to submit", x: 170, y: y + 10, size: 12, color: color_placeholder())
+    end if
+end func

@@ -1,0 +1,69 @@
+problem:
+  id: "PROB-030"
+  name: "Filter Positives"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that filters a list to keep only positive numbers.
+  signature:
+    function_name: "filter_positives"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[-2, -1, 0, 1, 2, 3]]
+        output: [1, 2, 3]
+        description: "Keep only positives"
+      - input: [[-5, -3, -1]]
+        output: []
+        description: "No positives"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[1, 2, 3]]
+        output: [1, 2, 3]
+        description: "All positive"
+      - input: [[0]]
+        output: []
+        description: "Zero only"
+      - input: [[5]]
+        output: [5]
+        description: "Single positive"
+      - input: [[-1, 1, -2, 2, -3, 3]]
+        output: [1, 2, 3]
+        description: "Alternating"
+  constraints:
+    - "Positive means > 0"
+    - "Preserve order"
+  canonical_solutions:
+    geno: |
+      func filter_positives(arr: List[Int]) -> List[Int]
+          example [-2, -1, 0, 1, 2, 3] -> [1, 2, 3]
+          example [-5, -3, -1] -> []
+
+          var result: List[Int] = []
+          var i: Int = 0
+
+          while i < length(arr) do
+              if arr[i] > 0 then
+                  result = append(result, arr[i])
+              end if
+              i = i + 1
+          end while
+
+          return result
+      end func filter_positives
+    python: |
+      def filter_positives(arr: list[int]) -> list[int]:
+          return [x for x in arr if x > 0]
+  metadata:
+    tags: ["list", "filter"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "append"]

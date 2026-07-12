@@ -1,0 +1,21 @@
+// Shared data model for the node-cli log summarizer.
+
+type Event = Event(service: String, status: String, latency: Int)
+
+func sample_events() -> List[Event]
+    example () -> [
+    Event("api", "ok", 120),
+    Event("worker", "ok", 85),
+    Event("api", "error", 240),
+    Event("db", "ok", 160),
+    Event("worker", "error", 310)
+    ]
+
+    return [
+    Event("api", "ok", 120),
+    Event("worker", "ok", 85),
+    Event("api", "error", 240),
+    Event("db", "ok", 160),
+    Event("worker", "error", 310)
+    ]
+end func

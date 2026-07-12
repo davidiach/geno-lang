@@ -1,0 +1,13 @@
+# EXPECT: E499
+# Repeated squaring should be caught by the integer bit-length limit.
+# Verifies that _safe_mul rejects astronomically large integers
+# before they exhaust memory.
+func main() -> Int
+    var x: Int = 2
+    var i: Int = 0
+    while i < 200 do
+        x = x * x
+        i = i + 1
+    end while
+    return x
+end func

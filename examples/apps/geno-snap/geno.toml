@@ -1,0 +1,11 @@
+name = "geno-snap"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["python-hosted"]
+files = [
+    "Models.geno",
+    "Validate.geno",
+    "Responses.geno",
+    "Routes.geno",
+    "Main.geno",
+]

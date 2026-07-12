@@ -1,0 +1,75 @@
+problem:
+  id: "PROB-052"
+  name: "Pascal's Triangle Row"
+  difficulty: "medium"
+  domain: "math"
+  description: |
+    Given a non-negative integer n, return the nth row of Pascal's triangle.
+    Row indexing starts at 0, where row 0 is [1].
+  signature:
+    function_name: "pascals_row"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: 4
+        output: [1, 4, 6, 4, 1]
+        description: "5th row (index 4)"
+      - input: 0
+        output: [1]
+        description: "First row"
+    hidden:
+      - input: 1
+        output: [1, 1]
+        description: "Second row"
+      - input: 2
+        output: [1, 2, 1]
+        description: "Third row"
+      - input: 3
+        output: [1, 3, 3, 1]
+        description: "Fourth row"
+      - input: 5
+        output: [1, 5, 10, 10, 5, 1]
+        description: "Sixth row"
+  constraints:
+    - "n >= 0"
+  canonical_solutions:
+    geno: |
+      func pascals_row(n: Int) -> List[Int]
+          requires n >= 0
+          example 4 -> [1, 4, 6, 4, 1]
+          example 0 -> [1]
+
+          var row: List[Int] = [1]
+
+          var i: Int = 0
+          while i < n do
+              var new_row: List[Int] = [1]
+              var j: Int = 0
+              while j < length(row) - 1 do
+                  new_row = append(new_row, row[j] + row[j + 1])
+                  j = j + 1
+              end while
+              new_row = append(new_row, 1)
+              row = new_row
+              i = i + 1
+          end while
+
+          return row
+      end func pascals_row
+    python: |
+      def pascals_row(n: int) -> list[int]:
+          row = [1]
+          for _ in range(n):
+              row = [1] + [row[i] + row[i+1] for i in range(len(row)-1)] + [1]
+          return row
+  metadata:
+    tags: ["math", "combinatorics"]
+    source: "LeetCode #119"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "nested-while", "list-building"]

@@ -1,0 +1,93 @@
+problem:
+  id: "APP-014"
+  name: "Sensor Run Compressor"
+  difficulty: "hard"
+  domain: "arrays"
+  description: |
+    Compress a stream of sensor readings with run-length encoding.
+    Consecutive equal values collapse into a pair [value, count].
+    Return the pairs in stream order.
+  signature:
+    function_name: "compress_runs"
+    inputs:
+      - name: "values"
+        type: "List[Int]"
+    output:
+      name: "runs"
+      type: "List[List[Int]]"
+  examples:
+    visible:
+      - input: [[1, 1, 1, 5, 5, 2]]
+        output: [[1, 3], [5, 2], [2, 1]]
+        description: "Three runs"
+      - input: [[]]
+        output: []
+        description: "Empty stream"
+    hidden:
+      - input: [[7]]
+        output: [[7, 1]]
+        description: "Single reading"
+      - input: [[1, 2, 3]]
+        output: [[1, 1], [2, 1], [3, 1]]
+        description: "No repeats"
+      - input: [[4, 4, 4, 4]]
+        output: [[4, 4]]
+        description: "One long run"
+      - input: [[-1, -1, 0]]
+        output: [[-1, 2], [0, 1]]
+        description: "Negative readings"
+      - input: [[1, 1, 2, 2, 1]]
+        output: [[1, 2], [2, 2], [1, 1]]
+        description: "Values can recur in later runs"
+  constraints:
+    - "Only consecutive equal values form a run"
+    - "Counts are at least 1"
+    - "Preserve stream order"
+  canonical_solutions:
+    geno: |
+      func compress_runs(values: List[Int]) -> List[List[Int]]
+          example [1, 1, 1, 5, 5, 2] -> [[1, 3], [5, 2], [2, 1]]
+          example [] -> []
+
+          if length(values) == 0 then
+              return []
+          end if
+          var runs: List[List[Int]] = []
+          var current: Int = values[0]
+          var count: Int = 1
+          var i: Int = 1
+          while i < length(values) do
+              if values[i] == current then
+                  count = count + 1
+              else
+                  runs = append(runs, [current, count])
+                  current = values[i]
+                  count = 1
+              end if
+              i = i + 1
+          end while
+          return append(runs, [current, count])
+      end func compress_runs
+    python: |
+      def compress_runs(values: list[int]) -> list[list[int]]:
+          if not values:
+              return []
+          runs = []
+          current = values[0]
+          count = 1
+          for v in values[1:]:
+              if v == current:
+                  count += 1
+              else:
+                  runs.append([current, count])
+                  current = v
+                  count = 1
+          runs.append([current, count])
+          return runs
+  metadata:
+    tags: ["app-tier", "encoding", "runs", "streams"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "while", "nested-list", "list-literal", "state"]

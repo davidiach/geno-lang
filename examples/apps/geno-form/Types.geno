@@ -1,0 +1,34 @@
+// Types.geno — Core types for the form builder
+// ================================================
+
+// Supported input kinds.
+type InputKind = TextInput | NumberInput | EmailInput | BoolInput | SelectInput(options: List[String])
+
+// A single form field definition.
+type FieldDef = FieldDef(
+name: String,
+label: String,
+kind: InputKind,
+placeholder: String,
+required: Bool,
+min_length: Int,
+max_length: Int,
+min_value: Int,
+max_value: Int
+)
+
+// Validation result for a single field.
+type FieldError = FieldError(field_name: String, message: String)
+
+// Current value of a form field.
+type FieldValue = StringVal(value: String) | IntVal(value: Int) | BoolVal(value: Bool)
+
+// The overall form state.
+type FormState = FormState(
+title: String,
+fields: List[FieldDef],
+values: List[FieldValue],
+errors: List[FieldError],
+submitted: Bool,
+active_form: Int
+)

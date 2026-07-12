@@ -1,0 +1,74 @@
+problem:
+  id: "PROB-039"
+  name: "Quicksort"
+  difficulty: "hard"
+  domain: "sorting"
+  description: |
+    Implement the quicksort algorithm to sort a list of integers in ascending order.
+    Use the first element as the pivot.
+  signature:
+    function_name: "quicksort"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[3, 1, 4, 1, 5, 9, 2, 6]]
+        output: [1, 1, 2, 3, 4, 5, 6, 9]
+        description: "Sort unsorted list"
+      - input: [[]]
+        output: []
+        description: "Empty list"
+    hidden:
+      - input: [[1]]
+        output: [1]
+        description: "Single element"
+      - input: [[2, 1]]
+        output: [1, 2]
+        description: "Two elements"
+      - input: [[5, 4, 3, 2, 1]]
+        output: [1, 2, 3, 4, 5]
+        description: "Reverse sorted"
+      - input: [[1, 1, 1]]
+        output: [1, 1, 1]
+        description: "All same"
+      - input: [[-3, 5, -1, 0, 2]]
+        output: [-3, -1, 0, 2, 5]
+        description: "Mixed signs"
+  constraints:
+    - "Use divide and conquer approach"
+  canonical_solutions:
+    geno: |
+      func quicksort(arr: List[Int]) -> List[Int]
+          example [3, 1, 4, 1, 5, 9, 2, 6] -> [1, 1, 2, 3, 4, 5, 6, 9]
+          example [] -> []
+
+          if length(arr) <= 1 then
+              return arr
+          end if
+
+          let pivot: Int = head(arr)
+          let rest: List[Int] = tail(arr)
+
+          let less: List[Int] = rest |> filter(_, fn(x: Int) -> x < pivot)
+          let greater: List[Int] = rest |> filter(_, fn(x: Int) -> x >= pivot)
+
+          return concat(quicksort(less), concat([pivot], quicksort(greater)))
+      end func quicksort
+    python: |
+      def quicksort(arr: list[int]) -> list[int]:
+          if len(arr) <= 1:
+              return arr
+          pivot = arr[0]
+          less = [x for x in arr[1:] if x < pivot]
+          greater = [x for x in arr[1:] if x >= pivot]
+          return quicksort(less) + [pivot] + quicksort(greater)
+  metadata:
+    tags: ["sorting", "divide-conquer", "recursion"]
+    source: "Classic"
+    time_complexity: "O(n log n) average"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "recursion", "pipeline", "lambda", "filter"]

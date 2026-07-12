@@ -1,0 +1,13 @@
+# EXPECT: E499
+# Exponential string growth via repeated self-concatenation.
+# Verifies that _safe_add enforces the collection size limit
+# before allocating the oversized result.
+func main() -> Int
+    var s: String = "AAAA"
+    var i: Int = 0
+    while i < 50 do
+        s = s + s
+        i = i + 1
+    end while
+    return length(s)
+end func

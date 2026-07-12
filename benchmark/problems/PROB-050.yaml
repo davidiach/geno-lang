@@ -1,0 +1,83 @@
+problem:
+  id: "PROB-050"
+  name: "Plus One"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Given a non-empty array of digits representing a non-negative integer,
+    increment one to the integer. The digits are stored from most significant
+    to least significant.
+  signature:
+    function_name: "plus_one"
+    inputs:
+      - name: "digits"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 3]]
+        output: [1, 2, 4]
+        description: "123 + 1 = 124"
+      - input: [[9, 9, 9]]
+        output: [1, 0, 0, 0]
+        description: "999 + 1 = 1000"
+    hidden:
+      - input: [[0]]
+        output: [1]
+        description: "0 + 1 = 1"
+      - input: [[9]]
+        output: [1, 0]
+        description: "9 + 1 = 10"
+      - input: [[1, 9]]
+        output: [2, 0]
+        description: "19 + 1 = 20"
+      - input: [[8, 9, 9]]
+        output: [9, 0, 0]
+        description: "899 + 1 = 900"
+  constraints:
+    - "Each digit is 0-9"
+    - "No leading zeros except for 0 itself"
+  canonical_solutions:
+    geno: |
+      func plus_one(digits: List[Int]) -> List[Int]
+          example [1, 2, 3] -> [1, 2, 4]
+          example [9, 9, 9] -> [1, 0, 0, 0]
+
+          var result: List[Int] = digits
+          var i: Int = length(result) - 1
+          var carry: Int = 1
+
+          while i >= 0 and carry > 0 do
+              let sum: Int = result[i] + carry
+              result = set_at(list: result, index: i, value: sum % 10)
+              carry = sum / 10
+              i = i - 1
+          end while
+
+          if carry > 0 then
+              result = concat([1], result)
+          end if
+
+          return result
+      end func plus_one
+    python: |
+      def plus_one(digits: list[int]) -> list[int]:
+          result = digits.copy()
+          carry = 1
+          for i in range(len(result) - 1, -1, -1):
+              total = result[i] + carry
+              result[i] = total % 10
+              carry = total // 10
+              if carry == 0:
+                  break
+          if carry:
+              result.insert(0, 1)
+          return result
+  metadata:
+    tags: ["array", "math"]
+    source: "LeetCode #66"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "list-mutation", "concat"]

@@ -1,0 +1,9 @@
+// Entry point for the node-cli reference app.
+
+import Report
+import Types
+
+func main() -> String
+    let events: List[Event] = sample_events()
+    return format_report(events)
+end func

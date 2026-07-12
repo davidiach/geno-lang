@@ -1,0 +1,146 @@
+problem:
+  id: "PROB-071"
+  name: "Graph BFS Shortest Path"
+  difficulty: "hard"
+  domain: "graphs"
+  description: |
+    Write a function that finds the shortest path length between two nodes
+    in an unweighted, undirected graph using BFS. The graph is given as a
+    number of nodes (0 to n-1) and a list of edges [u, v].
+
+    Return the shortest path length (number of edges), or -1 if no path exists.
+  signature:
+    function_name: "shortest_path"
+    inputs:
+      - name: "n"
+        type: "Int"
+      - name: "edges"
+        type: "List[List[Int]]"
+      - name: "start"
+        type: "Int"
+      - name: "target"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [4, [[0, 1], [1, 2], [2, 3]], 0, 3]
+        output: 3
+        description: "Linear path 0->1->2->3"
+      - input: [4, [[0, 1], [0, 2], [2, 3]], 0, 3]
+        output: 2
+        description: "Shorter path via 0->2->3"
+      - input: [3, [[0, 1]], 0, 2]
+        output: -1
+        description: "No path exists"
+    hidden:
+      - input: [1, [], 0, 0]
+        output: 0
+        description: "Same start and target"
+      - input: [5, [[0, 1], [1, 2], [2, 3], [3, 4], [0, 4]], 0, 4]
+        output: 1
+        description: "Direct edge shorter than long path"
+      - input: [2, [], 0, 1]
+        output: -1
+        description: "Disconnected nodes"
+      - input: [6, [[0, 1], [0, 2], [1, 3], [2, 3], [3, 4], [4, 5]], 0, 5]
+        output: 4
+        description: "Larger graph"
+      - input: [3, [[0, 1], [1, 2], [0, 2]], 0, 2]
+        output: 1
+        description: "Direct edge vs two-hop"
+  constraints:
+    - "Graph is undirected"
+    - "Use BFS for shortest path"
+    - "Return -1 if no path exists"
+    - "Nodes are numbered 0 to n-1"
+  canonical_solutions:
+    geno: |
+      func shortest_path(n: Int, edges: List[List[Int]], start: Int, target: Int) -> Int
+          example 4, [[0, 1], [1, 2], [2, 3]], 0, 3 -> 3
+          example 4, [[0, 1], [0, 2], [2, 3]], 0, 3 -> 2
+
+          if start == target then
+              return 0
+          end if
+
+          // Build adjacency lists as flat list: adj_data[i] is neighbor list for node i
+          var adj: List[List[Int]] = []
+          var i: Int = 0
+          while i < n do
+              adj = append(adj, [])
+              i = i + 1
+          end while
+
+          i = 0
+          while i < length(edges) do
+              let u: Int = edges[i][0]
+              let v: Int = edges[i][1]
+              adj = set_at(list: adj, index: u, value: append(adj[u], v))
+              adj = set_at(list: adj, index: v, value: append(adj[v], u))
+              i = i + 1
+          end while
+
+          // BFS using queue and distance array (-1 = unvisited)
+          var dist: List[Int] = []
+          i = 0
+          while i < n do
+              dist = append(dist, -1)
+              i = i + 1
+          end while
+          dist = set_at(list: dist, index: start, value: 0)
+
+          var queue: List[Int] = [start]
+
+          while length(queue) > 0 do
+              let curr: Int = head(queue)
+              queue = tail(queue)
+              let curr_dist: Int = dist[curr]
+              let neighbors: List[Int] = adj[curr]
+
+              var j: Int = 0
+              while j < length(neighbors) do
+                  let nb: Int = neighbors[j]
+                  if dist[nb] == -1 then
+                      let new_dist: Int = curr_dist + 1
+                      if nb == target then
+                          return new_dist
+                      end if
+                      dist = set_at(list: dist, index: nb, value: new_dist)
+                      queue = append(queue, nb)
+                  end if
+                  j = j + 1
+              end while
+          end while
+
+          return -1
+      end func shortest_path
+    python: |
+      def shortest_path(n: int, edges: list[list[int]], start: int, target: int) -> int:
+          if start == target:
+              return 0
+          adj = [[] for _ in range(n)]
+          for u, v in edges:
+              adj[u].append(v)
+              adj[v].append(u)
+          dist = [-1] * n
+          dist[start] = 0
+          queue = [start]
+          qi = 0
+          while qi < len(queue):
+              node = queue[qi]
+              qi += 1
+              for nb in adj[node]:
+                  if dist[nb] == -1:
+                      dist[nb] = dist[node] + 1
+                      if nb == target:
+                          return dist[nb]
+                      queue.append(nb)
+          return -1
+  metadata:
+    tags: ["graph", "bfs", "shortest-path"]
+    source: "Classic"
+    time_complexity: "O(V + E)"
+    space_complexity: "O(V + E)"
+    constructs_tested: ["function", "while", "if-else", "set_at", "append", "named-arguments"]

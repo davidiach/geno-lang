@@ -1,0 +1,126 @@
+problem:
+  id: "APP-013"
+  name: "Query String Parser"
+  difficulty: "expert"
+  domain: "strings"
+  description: |
+    Normalize a URL query string into decoded "key=value" entries.
+
+    - Segments are separated by "&"; empty segments are skipped.
+    - A valid segment contains exactly one "=" separating key and value
+      (either may be empty apart from the rules below); segments without
+      exactly one "=" are skipped.
+    - Decoding applies to both keys and values: "+" becomes a space and
+      the escape "%20" becomes a space. "%20" is the only percent escape
+      that can appear.
+
+    Return the decoded "key=value" strings in input order, keeping
+    duplicates.
+  signature:
+    function_name: "parse_query"
+    inputs:
+      - name: "query"
+        type: "String"
+    output:
+      name: "pairs"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: ["name=Ada+Lovelace&lang=geno"]
+        output: ["name=Ada Lovelace", "lang=geno"]
+        description: "Plus signs decode to spaces"
+      - input: [""]
+        output: []
+        description: "Empty query"
+    hidden:
+      - input: ["a=1&&b=2"]
+        output: ["a=1", "b=2"]
+        description: "Empty segments are skipped"
+      - input: ["q=hello%20world"]
+        output: ["q=hello world"]
+        description: "Percent-20 decodes to a space"
+      - input: ["k="]
+        output: ["k="]
+        description: "Empty values survive"
+      - input: ["junk&a=b"]
+        output: ["a=b"]
+        description: "Segments without '=' are skipped"
+      - input: ["a=x+y%20z"]
+        output: ["a=x y z"]
+        description: "Mixed encodings in one value"
+      - input: ["first+name=Ada&first+name=Eva"]
+        output: ["first name=Ada", "first name=Eva"]
+        description: "Keys decode too; duplicates are kept"
+  constraints:
+    - "Keys and values contain no '&' or '=' characters after decoding"
+    - "The only percent escape that appears is %20"
+    - "Preserve input order and duplicates"
+  canonical_solutions:
+    geno: |
+      func decode_component(text: String) -> String
+          example "Ada+Lovelace" -> "Ada Lovelace"
+          example "hello%20world" -> "hello world"
+
+          let chars: List[String] = to_chars(text)
+          let n: Int = length(chars)
+          var out: String = ""
+          var i: Int = 0
+          while i < n do
+              let c: String = chars[i]
+              if c == "+" then
+                  out = out + " "
+                  i = i + 1
+              else if c == "%" then
+                  out = out + " "
+                  i = i + 3
+              else
+                  out = out + c
+                  i = i + 1
+              end if
+          end while
+          return out
+      end func decode_component
+
+      func parse_query(query: String) -> List[String]
+          example "name=Ada+Lovelace&lang=geno" -> ["name=Ada Lovelace", "lang=geno"]
+          example "" -> []
+
+          if query == "" then
+              return []
+          end if
+          var pairs: List[String] = []
+          let segments: List[String] = split(query, "&")
+          for segment: String in segments do
+              if segment != "" then
+                  let parts: List[String] = split(segment, "=")
+                  if length(parts) == 2 then
+                      let key: String = decode_component(parts[0])
+                      let value: String = decode_component(parts[1])
+                      pairs = append(pairs, key + "=" + value)
+                  end if
+              end if
+          end for
+          return pairs
+      end func parse_query
+    python: |
+      def parse_query(query: str) -> list[str]:
+          def decode(text: str) -> str:
+              return text.replace("+", " ").replace("%20", " ")
+
+          pairs = []
+          for segment in query.split("&"):
+              if not segment:
+                  continue
+              parts = segment.split("=")
+              if len(parts) != 2:
+                  continue
+              pairs.append(f"{decode(parts[0])}={decode(parts[1])}")
+          return pairs
+  metadata:
+    tags: ["app-tier", "strings", "decoding", "url"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested:
+      ["function", "to_chars", "while", "lookahead", "split", "for",
+       "string-concat"]

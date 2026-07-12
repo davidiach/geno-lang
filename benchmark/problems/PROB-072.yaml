@@ -1,0 +1,123 @@
+problem:
+  id: "PROB-072"
+  name: "BST In-Order Traversal"
+  difficulty: "expert"
+  domain: "trees"
+  description: |
+    Write a function that builds a binary search tree from a list of integers,
+    then performs an in-order traversal to return the elements in sorted order.
+    Duplicate values go to the right subtree.
+
+    Define a Tree algebraic data type, implement insert and in-order traversal
+    as separate helper functions using pattern matching and recursion.
+  signature:
+    function_name: "bst_sort"
+    inputs:
+      - name: "values"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[5, 3, 7, 1, 4, 6, 8]]
+        output: [1, 3, 4, 5, 6, 7, 8]
+        description: "Balanced BST sorted"
+      - input: [[3, 1, 2]]
+        output: [1, 2, 3]
+        description: "Small tree"
+      - input: [[]]
+        output: []
+        description: "Empty input"
+    hidden:
+      - input: [[1]]
+        output: [1]
+        description: "Single element"
+      - input: [[1, 2, 3, 4, 5]]
+        output: [1, 2, 3, 4, 5]
+        description: "Already sorted (degenerate tree)"
+      - input: [[5, 5, 5]]
+        output: [5, 5, 5]
+        description: "All duplicates"
+      - input: [[10, 5, 15, 3, 7, 12, 20, 1]]
+        output: [1, 3, 5, 7, 10, 12, 15, 20]
+        description: "Larger tree"
+      - input: [[3, 1, 3, 2, 3]]
+        output: [1, 2, 3, 3, 3]
+        description: "Duplicates mixed in"
+  constraints:
+    - "Define a Tree ADT"
+    - "Insert values left-to-right"
+    - "Duplicates go to the right subtree"
+    - "Use pattern matching and recursion"
+  canonical_solutions:
+    geno: |
+      type Tree = Empty | Node(val: Int, left: Tree, right: Tree)
+
+      func insert(tree: Tree, value: Int) -> Tree
+          example Empty, 5 -> Node(5, Empty, Empty)
+
+          match tree with
+              | Empty ->
+                  return Node(value, Empty, Empty)
+              | Node(v, l, r) ->
+                  if value < v then
+                      return Node(v, insert(l, value), r)
+                  else
+                      return Node(v, l, insert(r, value))
+                  end if
+          end match
+      end func insert
+
+      func inorder(tree: Tree) -> List[Int]
+          example Empty -> []
+
+          match tree with
+              | Empty -> return []
+              | Node(v, l, r) ->
+                  let left_vals: List[Int] = inorder(l)
+                  let right_vals: List[Int] = inorder(r)
+                  return concat(left_vals, concat([v], right_vals))
+          end match
+      end func inorder
+
+      func bst_sort(values: List[Int]) -> List[Int]
+          example [5, 3, 7, 1, 4, 6, 8] -> [1, 3, 4, 5, 6, 7, 8]
+          example [3, 1, 2] -> [1, 2, 3]
+
+          var tree: Tree = Empty
+          var i: Int = 0
+
+          while i < length(values) do
+              tree = insert(tree, values[i])
+              i = i + 1
+          end while
+
+          return inorder(tree)
+      end func bst_sort
+    python: |
+      def bst_sort(values: list[int]) -> list[int]:
+          if not values:
+              return []
+          tree = None
+          def insert(node, val):
+              if node is None:
+                  return [val, None, None]
+              if val < node[0]:
+                  node[1] = insert(node[1], val)
+              else:
+                  node[2] = insert(node[2], val)
+              return node
+          def inorder(node):
+              if node is None:
+                  return []
+              return inorder(node[1]) + [node[0]] + inorder(node[2])
+          for v in values:
+              tree = insert(tree, v)
+          return inorder(tree)
+  metadata:
+    tags: ["tree", "bst", "adt", "recursion", "pattern-matching", "sorting", "multi-function"]
+    source: "Classic"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(n)"
+    constructs_tested: ["type", "match", "constructor", "field-destructuring", "recursion", "function", "while", "multi-function", "concat"]

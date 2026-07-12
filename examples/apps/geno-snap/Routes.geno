@@ -1,0 +1,53 @@
+// Routes.geno — Route handler definitions
+// ==========================================
+
+import Models
+import Validate
+import Responses
+
+// Handle GET /api/users — return all mock users.
+@untested("server handler")
+func handle_users(req: HttpRequest) -> HttpResponse
+    return Responses.ok_response(Responses.mock_users())
+end func
+
+// Handle GET /api/user?id=N — return a user by ID.
+// Requires: "id" query parameter must be present and a positive integer.
+@untested("server handler")
+func handle_user_by_id(req: HttpRequest) -> HttpResponse
+    let query: String = req.query
+    if not Validate.has_param(query, "id") then
+        return Responses.bad_request("missing required parameter: id")
+    end if
+    let id_val: String = Validate.get_param(query, "id")
+    if not Validate.is_positive_int(id_val) then
+        return Responses.bad_request("parameter 'id' must be a positive integer")
+    end if
+    let user: String = Responses.mock_user(id_val)
+    match user with
+        | "" -> return Responses.not_found()
+        | data -> return Responses.ok_response(data)
+    end match
+end func
+
+// Handle GET /api/items — return all mock items.
+@untested("server handler")
+func handle_items(req: HttpRequest) -> HttpResponse
+    return Responses.ok_response(Responses.mock_items())
+end func
+
+// Handle POST /api/echo — echo back the request body.
+@untested("server handler")
+func handle_echo(req: HttpRequest) -> HttpResponse
+    let body: String = req.body
+    if not Validate.is_non_empty(body) then
+        return Responses.bad_request("request body must not be empty")
+    end if
+    return Responses.ok_response(body)
+end func
+
+// Handle OPTIONS for any preflight request (CORS).
+@untested("server handler")
+func handle_options(req: HttpRequest) -> HttpResponse
+    return HttpResponse(204, "", Responses.cors_headers())
+end func

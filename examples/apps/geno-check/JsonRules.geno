@@ -1,0 +1,63 @@
+// JsonRules.geno — Validation rules for JSON config files
+// =========================================================
+// Validates JSON structure: parse success, top-level object,
+// and required keys presence via json_to_string inspection.
+
+import Violation
+
+// Check if a string is one of the allowed values.
+func is_one_of(value: String, allowed: List[String]) -> Bool
+    example ("info", ["debug", "info", "warn", "error"]) -> true
+    example ("trace", ["debug", "info", "warn", "error"]) -> false
+
+    return contains(allowed, value)
+end func
+
+// Check if a port number is in valid range.
+func valid_port(n: Int) -> Bool
+    example 80 -> true
+    example 8080 -> true
+    example 0 -> false
+    example 65536 -> false
+
+    return n > 0 and n <= 65535
+end func
+
+// Check that text contains a given key pattern (simple substring check).
+func has_json_key(text: String, key: String) -> Bool
+    example ("{\"host\": \"localhost\"}", "host") -> true
+    example ("{\"port\": 8080}", "name") -> false
+
+    return contains_substring(text, "\"" + key + "\"")
+end func
+
+// Validate a JSON config file. Returns list of violations.
+// Uses pipeline chaining to accumulate rule results.
+@untested("uses capability-gated json_parse and fs_read_text")
+func validate_json(file: String, text: String) -> List[Violation]
+    match json_parse(text) with
+        | Err(msg) ->
+        return [Violation(file, "<root>", "parse", "invalid JSON: " + msg, "valid JSON", "parse error", Error)]
+        | Ok(json) ->
+        match json with
+            | JsonObject(entries) ->
+            let raw: String = json_to_string(json)
+            // Pipeline: accumulate violations from each rule
+            return []
+            |> concat(_, check_required_key(file: file, raw: raw, key: "host"))
+            |> concat(_, check_required_key(file: file, raw: raw, key: "port"))
+            | _ ->
+            return [Violation(file, "<root>", "type", "expected a JSON object", "object", "non-object", Error)]
+        end match
+    end match
+end func
+
+// Check that a required key exists in the JSON text.
+@untested("depends on json_to_string format")
+func check_required_key(file: String, raw: String, key: String) -> List[Violation]
+    if has_json_key(raw, key) then
+        return []
+    else
+        return [Violation(file, key, "required", "field '" + key + "' is required", "present", "missing", Error)]
+    end if
+end func

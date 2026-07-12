@@ -1,0 +1,11 @@
+entrypoint = "Main"
+files = [
+    "Tokens.geno",
+    "Ast.geno",
+    "Types.geno",
+    "Lexer.geno",
+    "Parser.geno",
+    "TypeChecker.geno",
+    "Interpreter.geno",
+    "Main.geno",
+]

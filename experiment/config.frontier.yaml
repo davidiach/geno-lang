@@ -1,0 +1,50 @@
+# Canonical frontier-model configuration for a future public Geno vs Python
+# correctness experiment. Public frontier-model publication is currently
+# deferred, but this config preserves the auditable run shape.
+#
+# Model availability last verified 2026-06-12: gpt-4o (the previous OpenAI
+# entry) was retired by the provider and is replaced with gpt-5.4;
+# gemini-2.5-pro was replaced with gemini-3.1-pro (GA since 2026-02);
+# claude-sonnet-4-6 remains generally available.
+#
+# Before running, replace each model `name` / `model_snapshot` with the exact
+# provider IDs available on the run date (check each provider's model-list
+# endpoint). The extra metadata fields are copied into results/config.json so
+# the published result is auditable.
+#
+# Provider parameter notes (handled by experiment/llm_client.py):
+# - anthropic: claude-opus-4-7/4-8 and the Claude 5 family reject the
+#   `temperature` parameter; the client omits it for those models.
+# - openai: GPT-5-class and o-series models require `max_completion_tokens`
+#   and only accept the default temperature; the client handles both.
+
+experiment_id: "frontier_correctness_YYYYMMDD"
+
+models:
+  - name: "claude-sonnet-4-6"
+    provider: "anthropic"
+    model_family: "Claude Sonnet"
+    model_snapshot: "record exact provider model ID before run"
+  - name: "gpt-5.4"
+    provider: "openai"
+    model_family: "GPT-5-class"
+    model_snapshot: "record exact provider model ID before run"
+  - name: "gemini-3.1-pro"
+    provider: "google"
+    model_family: "Gemini Pro"
+    model_snapshot: "record exact provider model ID before run"
+
+languages:
+  - "geno"
+  - "python"
+
+trials_per_condition: 3
+temperature: 0.0
+max_tokens: 2048
+timeout_seconds: 5.0
+few_shot_examples: 0
+output_dir: "results/frontier_correctness_YYYYMMDD"
+
+# Omit this key for the full 78-problem run. Keep it only for smoke runs.
+# difficulties:
+#   - "easy"

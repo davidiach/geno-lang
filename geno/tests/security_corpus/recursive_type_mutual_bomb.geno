@@ -1,0 +1,41 @@
+# EXPECT: E502
+# Recursive type construction to exhaust resources: define two
+# mutually recursive ADT types and build deeply interleaved
+# structures.  The mutual reference means each construction
+# step creates values of alternating types, testing that
+# recursion limits apply across type boundaries.
+type Even = EvenLeaf(value: Int) | EvenNode(child: Odd)
+type Odd = OddLeaf(value: Int) | OddNode(child: Even)
+
+func build_even(n: Int) -> Even
+    example 0 -> EvenLeaf(0)
+    if n <= 0 then
+        return EvenLeaf(0)
+    end if
+    return EvenNode(build_odd(n - 1))
+end func
+
+func build_odd(n: Int) -> Odd
+    example 0 -> OddLeaf(0)
+    if n <= 0 then
+        return OddLeaf(0)
+    end if
+    return OddNode(build_even(n - 1))
+end func
+
+func count_depth(e: Even) -> Int
+    example EvenLeaf(0) -> 0
+    match e with
+    | EvenLeaf(_) -> return 0
+    | EvenNode(child) ->
+        match child with
+        | OddLeaf(_) -> return 1
+        | OddNode(inner) -> return 2 + count_depth(inner)
+        end match
+    end match
+end func
+
+func main() -> Int
+    let deep: Even = build_even(10000)
+    return count_depth(deep)
+end func

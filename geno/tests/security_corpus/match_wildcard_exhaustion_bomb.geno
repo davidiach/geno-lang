@@ -1,0 +1,34 @@
+# EXPECT: E503
+# Use match expressions with many when-guard clauses to amplify
+# step cost.  Each match arm evaluates a guard condition before
+# falling through to the next arm, creating O(arms * iterations)
+# evaluations.  Tests that match guard evaluation is step-counted
+# across many arms.
+type Token = Word(val: String) | Num(val: Int) | Punct(val: String)
+
+func classify(t: Token) -> Int
+    example Word("hi") -> 3
+    match t with
+        | Word(v) when length(v) > 100 -> return 1
+        | Word(v) when length(v) > 50 -> return 2
+        | Word(v) -> return 3
+        | Num(v) when v > 1000000 -> return 4
+        | Num(v) when v > 1000 -> return 5
+        | Num(v) -> return 6
+        | Punct(v) when v == ";" -> return 7
+        | Punct(v) when v == "," -> return 8
+        | Punct(v) -> return 9
+    end match
+end func
+
+func main() -> Int
+    let tokens: List[Token] = [Word("hello"), Num(42), Punct(".")]
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        let t: Token = tokens[i % 3]
+        total = total + classify(t)
+        i = i + 1
+    end while
+    return total
+end func

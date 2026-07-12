@@ -1,0 +1,15 @@
+# EXPECT: E503
+# Nested list comprehensions creating quadratic work.
+# The outer comprehension iterates over a range, and for
+# each element calls a function that itself uses a
+# comprehension.  Total work is O(n^2) in steps.
+# Tests that comprehension step counting accumulates properly.
+func squares_up_to(n: Int) -> List[Int]
+    example 0 -> []
+    return [i * i for i: Int in range(0, n)]
+end func
+
+func main() -> Int
+    let results: List[List[Int]] = [squares_up_to(100) for i: Int in range(0, 100)]
+    return length(results)
+end func

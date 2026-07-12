@@ -1,0 +1,39 @@
+# EXPECT: E503
+# Match statement pattern abuse for object introspection: build a
+# deeply nested ADT and use match expressions inside a loop to
+# repeatedly decompose and reconstruct it.  Each iteration peels
+# one layer, inspects it, and wraps it back, creating O(n^2) total
+# match+constructor work that should be caught by the step counter.
+type Wrapper = Layer(inner: Wrapper, tag: Int) | Base(value: Int)
+
+func wrap_deep(depth: Int) -> Wrapper
+    example 0 -> Base(0)
+    if depth <= 0 then
+        return Base(0)
+    end if
+    return Layer(wrap_deep(depth - 1), depth)
+end func
+
+func peel_and_rewrap(w: Wrapper, rounds: Int) -> Int
+    example Base(0), 0 -> 0
+    var current: Wrapper = w
+    var i: Int = 0
+    while i < rounds do
+        match current with
+        | Layer(inner, tag) ->
+            current = Layer(Layer(inner, tag), i)
+        | Base(v) ->
+            current = Layer(Base(v), i)
+        end match
+        i = i + 1
+    end while
+    match current with
+    | Layer(_, tag) -> return tag
+    | Base(v) -> return v
+    end match
+end func
+
+func main() -> Int
+    let deep: Wrapper = wrap_deep(100)
+    return peel_and_rewrap(deep, 1000000)
+end func

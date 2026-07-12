@@ -1,0 +1,11 @@
+name = "geno-pipe"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["python-cli"]
+files = [
+    "Types.geno",
+    "Transform.geno",
+    "Parse.geno",
+    "Format.geno",
+    "Main.geno",
+]

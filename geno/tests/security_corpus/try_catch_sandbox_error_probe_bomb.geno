@@ -1,0 +1,36 @@
+# EXPECT: E503
+# Exception handler manipulation to catch and inspect sandbox errors:
+# Deliberately trigger errors via division by zero, out-of-bounds
+# access, and unwrap of None, then inspect the error messages via
+# try/catch to probe for information leakage about sandbox internals.
+# The repeated throw-catch cycles should be step-counted.
+func probe_errors(n: Int) -> Int
+    example 0 -> 0
+    var info_len: Int = 0
+    var i: Int = 0
+    while i < n do
+        try
+            let bad: Int = 1 / 0
+        catch e: String
+            info_len = info_len + length(e)
+        end try
+        try
+            let empty: List[Int] = []
+            let bad: Int = empty[999]
+        catch e: String
+            info_len = info_len + length(e)
+        end try
+        try
+            let nothing: Option[Int] = None
+            let bad: Int = unwrap(nothing)
+        catch e: String
+            info_len = info_len + length(e)
+        end try
+        i = i + 1
+    end while
+    return info_len
+end func
+
+func main() -> Int
+    return probe_errors(500000)
+end func

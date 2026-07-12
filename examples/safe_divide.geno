@@ -1,0 +1,63 @@
+// Safe Divide — Result/Option types + error handling
+// =====================================================
+// Demonstrates: Result[T, E], Option[T], pattern matching on built-in ADTs
+
+func safe_divide(a: Int, b: Int) -> Result[Int, String]
+    example (10, 2) -> Ok(5)
+    example (10, 0) -> Err("division by zero")
+
+    if b == 0 then
+        return Err("division by zero")
+    else
+        return Ok(a / b)
+    end if
+end func safe_divide
+
+
+func find_positive(nums: List[Int]) -> Option[Int]
+    example [0, 0, 3, 5] -> Some(3)
+    example [0, 0, 0] -> None
+
+    var i: Int = 0
+
+    while i < length(nums) do
+        if nums[i] > 0 then
+            return Some(nums[i])
+        end if
+        i = i + 1
+    end while
+
+    return None
+end func find_positive
+
+
+func result_message(r: Result[Int, String]) -> String
+    example Ok(42) -> "ok"
+    example Err("bad") -> "error"
+
+    match r with
+        | Ok(_) -> return "ok"
+        | Err(_) -> return "error"
+    end match
+end func result_message
+
+
+func option_message(o: Option[Int]) -> String
+    example Some(7) -> "found"
+    example None -> "none"
+
+    match o with
+        | Some(_) -> return "found"
+        | None -> return "none"
+    end match
+end func option_message
+
+
+func main() -> List[String]
+    let r1: Result[Int, String] = safe_divide(10, 2)
+    let r2: Result[Int, String] = safe_divide(10, 0)
+    let o1: Option[Int] = find_positive([0, 0, 3, 5])
+    let o2: Option[Int] = find_positive([0, 0, 0])
+
+    return [result_message(r1), result_message(r2), option_message(o1), option_message(o2)]
+end func main

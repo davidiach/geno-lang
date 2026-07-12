@@ -1,0 +1,97 @@
+// Widgets.geno — Dashboard widget rendering (canvas-based)
+// =========================================================
+// Three widget types: stat card, bar chart, sparkline.
+
+import Theme
+import Data
+
+// Widget 1: Stat card — large number with label and status color.
+@untested("uses draw_rect and draw_text")
+func draw_stat_card(x: Int, y: Int, w: Int, h: Int, label: String, value: String, color: String) -> Unit
+    draw_rect(x: x, y: y, width: w, height: h, color: Theme.panel_color())
+    draw_rect_outline(x: x, y: y, width: w, height: h, color: color)
+    draw_text(text: label, x: x + Theme.panel_padding(), y: y + 20, size: Theme.label_size(), color: Theme.text_color())
+    draw_text(text: value, x: x + Theme.panel_padding(), y: y + 55, size: Theme.value_size(), color: color)
+end func
+
+// Widget 2: Bar chart — horizontal bars for comparing values.
+@untested("uses draw_rect and draw_text")
+func draw_bar_chart(x: Int, y: Int, w: Int, h: Int, title: String, labels: List[String], values: List[Int]) -> Unit
+    draw_rect(x: x, y: y, width: w, height: h, color: Theme.panel_color())
+    draw_text(text: title, x: x + Theme.panel_padding(), y: y + 20, size: Theme.label_size(), color: Theme.text_color())
+
+    let max_val: Int = Data.list_max(values)
+    let safe_max: Int = Data.safe_divisor(max_val)
+    let bar_area_w: Int = w - 120
+    let bar_h: Int = 18
+    let bar_gap: Int = 6
+    let start_y: Int = y + 40
+
+    let count: Int = length(values)
+    if count > 0 then
+        draw_single_bar(x: x, start_y: start_y, bar_area_w: bar_area_w, bar_h: bar_h, bar_gap: bar_gap, safe_max: safe_max, labels: labels, values: values, index: 0)
+    end if
+    if count > 1 then
+        draw_single_bar(x: x, start_y: start_y, bar_area_w: bar_area_w, bar_h: bar_h, bar_gap: bar_gap, safe_max: safe_max, labels: labels, values: values, index: 1)
+    end if
+    if count > 2 then
+        draw_single_bar(x: x, start_y: start_y, bar_area_w: bar_area_w, bar_h: bar_h, bar_gap: bar_gap, safe_max: safe_max, labels: labels, values: values, index: 2)
+    end if
+    if count > 3 then
+        draw_single_bar(x: x, start_y: start_y, bar_area_w: bar_area_w, bar_h: bar_h, bar_gap: bar_gap, safe_max: safe_max, labels: labels, values: values, index: 3)
+    end if
+end func
+
+// Helper: draw one bar in a bar chart.
+@untested("uses draw_rect and draw_text")
+func draw_single_bar(x: Int, start_y: Int, bar_area_w: Int, bar_h: Int, bar_gap: Int, safe_max: Int, labels: List[String], values: List[Int], index: Int) -> Unit
+    let bar_x: Int = x + 90
+    let bar_y: Int = start_y + index * (bar_h + bar_gap)
+    let value: Int = head(slice(list: values, start: index, stop: index + 1))
+    let bar_w: Int = value * bar_area_w / safe_max
+    let label: String = head(slice(list: labels, start: index, stop: index + 1))
+    draw_text(text: label, x: x + Theme.panel_padding(), y: bar_y + 14, size: 12, color: Theme.text_color())
+    draw_rect(x: bar_x, y: bar_y, width: bar_w, height: bar_h, color: Theme.bar_colors(index))
+    draw_text(text: to_string(value), x: bar_x + bar_w + 5, y: bar_y + 14, size: 12, color: Theme.text_color())
+end func
+
+// Widget 3: Sparkline — mini line chart from a history buffer.
+@untested("uses draw_line and draw_rect")
+func draw_sparkline(x: Int, y: Int, w: Int, h: Int, title: String, history: List[Int], color: String) -> Unit
+    draw_rect(x: x, y: y, width: w, height: h, color: Theme.panel_color())
+    draw_text(text: title, x: x + Theme.panel_padding(), y: y + 20, size: Theme.label_size(), color: Theme.text_color())
+
+    let chart_x: Int = x + Theme.panel_padding()
+    let chart_y: Int = y + 35
+    let chart_w: Int = w - 2 * Theme.panel_padding()
+    let chart_h: Int = h - 55
+    let max_val: Int = Data.list_max(history)
+    let safe_max: Int = Data.safe_divisor(max_val)
+    let count: Int = length(history)
+
+    if count > 1 then
+        let step_x: Int = chart_w / (count - 1)
+        draw_sparkline_segments(chart_x: chart_x, chart_y: chart_y, chart_h: chart_h, step_x: step_x, safe_max: safe_max, history: history, color: color, index: 0, count: count - 1)
+    end if
+
+    // Show latest value
+    if count > 0 then
+        let latest: Int = head(slice(list: history, start: count - 1, stop: count))
+        draw_text(text: to_string(latest), x: x + w - 50, y: y + 20, size: Theme.label_size(), color: color)
+    end if
+end func
+
+// Draw sparkline segments recursively.
+@untested("uses draw_line")
+func draw_sparkline_segments(chart_x: Int, chart_y: Int, chart_h: Int, step_x: Int, safe_max: Int, history: List[Int], color: String, index: Int, count: Int) -> Unit
+    if index < count then
+        let v1: Int = head(slice(list: history, start: index, stop: index + 1))
+        let v2: Int = head(slice(list: history, start: index + 1, stop: index + 2))
+        let x1: Int = chart_x + index * step_x
+        let y1: Int = chart_y + chart_h - v1 * chart_h / safe_max
+        let x2: Int = chart_x + (index + 1) * step_x
+        let y2: Int = chart_y + chart_h - v2 * chart_h / safe_max
+        draw_line(x1: x1, y1: y1, x2: x2, y2: y2, color: color)
+        draw_sparkline_segments(chart_x: chart_x, chart_y: chart_y, chart_h: chart_h, step_x: step_x, safe_max: safe_max, history: history, color: color, index: index + 1, count: count)
+    end if
+end func

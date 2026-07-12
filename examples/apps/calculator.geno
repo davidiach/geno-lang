@@ -1,0 +1,299 @@
+// Calculator — GUI calculator with clickable buttons
+// ====================================================
+// Demonstrates: mouse input, format, floor, app mode
+
+type State = State(
+display: String,
+accumulator: Float,
+operator: String,
+waiting_input: Bool,
+just_computed: Bool
+)
+
+func button_cols() -> Int
+    return 4
+end func button_cols
+
+func button_rows() -> Int
+    return 5
+end func button_rows
+
+func btn_w() -> Int
+    return 120
+end func btn_w
+
+func btn_h() -> Int
+    return 70
+end func btn_h
+
+func btn_gap() -> Int
+    return 8
+end func btn_gap
+
+func grid_x() -> Int
+    return 50
+end func grid_x
+
+func grid_y() -> Int
+    return 130
+end func grid_y
+
+func button_label(row: Int, col: Int) -> String
+    // Row 0: C, +/-, %, /
+    if row == 0 then
+        if col == 0 then return "C" end if
+        if col == 1 then return "+/-" end if
+        if col == 2 then return "%" end if
+        return "/"
+    end if
+    // Row 1: 7, 8, 9, *
+    if row == 1 then
+        if col == 0 then return "7" end if
+        if col == 1 then return "8" end if
+        if col == 2 then return "9" end if
+        return "*"
+    end if
+    // Row 2: 4, 5, 6, -
+    if row == 2 then
+        if col == 0 then return "4" end if
+        if col == 1 then return "5" end if
+        if col == 2 then return "6" end if
+        return "-"
+    end if
+    // Row 3: 1, 2, 3, +
+    if row == 3 then
+        if col == 0 then return "1" end if
+        if col == 1 then return "2" end if
+        if col == 2 then return "3" end if
+        return "+"
+    end if
+    // Row 4: 0, ., =, (empty)
+    if col == 0 then return "0" end if
+    if col == 1 then return "." end if
+    if col == 2 then return "=" end if
+    return ""
+end func button_label
+
+func is_digit(label: String) -> Bool
+    if label == "0" then return true end if
+    if label == "1" then return true end if
+    if label == "2" then return true end if
+    if label == "3" then return true end if
+    if label == "4" then return true end if
+    if label == "5" then return true end if
+    if label == "6" then return true end if
+    if label == "7" then return true end if
+    if label == "8" then return true end if
+    if label == "9" then return true end if
+    return false
+end func is_digit
+
+func is_operator(label: String) -> Bool
+    if label == "+" then return true end if
+    if label == "-" then return true end if
+    if label == "*" then return true end if
+    if label == "/" then return true end if
+    return false
+end func is_operator
+
+func compute(acc: Float, op: String, current: Float) -> Float
+    if op == "+" then return acc + current end if
+    if op == "-" then return acc - current end if
+    if op == "*" then return acc * current end if
+    if op == "/" then
+        if current == 0.0 then return 0.0 end if
+        return acc / current
+    end if
+    return current
+end func compute
+
+func parse_display(display: String) -> Float
+    let result: Option[Float] = parse_float(display)
+    match result with
+        | Some(v) -> return v
+        | None -> return 0.0
+    end match
+end func parse_display
+
+func format_result(val: Float) -> String
+    let int_val: Int = float_to_int(val)
+    if int_to_float(int_val) == val then
+        return to_string(int_val)
+    end if
+    return to_string(val)
+end func format_result
+
+func init() -> State
+    return State("0", 0.0, "", false, false)
+end func init
+
+func hit_button(mx: Int, my: Int) -> String
+    // Check if click is in grid area
+    let gx: Int = grid_x()
+    let gy: Int = grid_y()
+    let bw: Int = btn_w() + btn_gap()
+    let bh: Int = btn_h() + btn_gap()
+
+    if mx < gx then return "" end if
+    if my < gy then return "" end if
+
+    let col: Int = floor(int_to_float(mx - gx) / int_to_float(bw))
+    let row: Int = floor(int_to_float(my - gy) / int_to_float(bh))
+
+    if col < 0 then return "" end if
+    if col >= button_cols() then return "" end if
+    if row < 0 then return "" end if
+    if row >= button_rows() then return "" end if
+
+    // Check within button bounds (not in gap)
+    let bx: Int = gx + col * bw
+    let by: Int = gy + row * bh
+    if mx > bx + btn_w() then return "" end if
+    if my > by + btn_h() then return "" end if
+
+    return button_label(row, col)
+end func hit_button
+
+func update(state: State, dt: Float) -> State
+    if not is_mouse_clicked() then
+        return state
+    end if
+
+    let label: String = hit_button(mouse_x(), mouse_y())
+    if label == "" then
+        return state
+    end if
+
+    var display: String = state.display
+    var acc: Float = state.accumulator
+    var op: String = state.operator
+    var waiting: Bool = state.waiting_input
+    var just_computed: Bool = state.just_computed
+
+    if label == "C" then
+        return State("0", 0.0, "", false, false)
+    end if
+
+    if is_digit(label) then
+        if waiting then
+            display = label
+            waiting = false
+        else
+            if just_computed then
+                display = label
+                just_computed = false
+            else
+                if display == "0" then
+                    display = label
+                else
+                    display = display + label
+                end if
+            end if
+        end if
+        return State(display, acc, op, false, false)
+    end if
+
+    if label == "." then
+        if waiting then
+            display = "0."
+            waiting = false
+        else
+            if just_computed then
+                display = "0."
+                just_computed = false
+            else
+                if not contains(to_chars(display), ".") then
+                    display = display + "."
+                end if
+            end if
+        end if
+        return State(display, acc, op, false, false)
+    end if
+
+    if label == "+/-" then
+        if display != "0" then
+            if starts_with(display, "-") then
+                display = substring(text: display, start: 1, stop: length(display))
+            else
+                display = "-" + display
+            end if
+        end if
+        return State(display, acc, op, waiting, just_computed)
+    end if
+
+    if label == "%" then
+        let val: Float = parse_display(display) / 100.0
+        display = format_result(val)
+        return State(display, acc, op, waiting, false)
+    end if
+
+    if is_operator(label) then
+        if op != "" then
+            if not waiting then
+                let result: Float = compute(acc: acc, op: op, current: parse_display(display))
+                display = format_result(result)
+                acc = result
+            end if
+        else
+            acc = parse_display(display)
+        end if
+        op = label
+        waiting = true
+        return State(display, acc, op, true, false)
+    end if
+
+    if label == "=" then
+        if op != "" then
+            let result: Float = compute(acc: acc, op: op, current: parse_display(display))
+            display = format_result(result)
+            return State(display, result, "", false, true)
+        end if
+        return state
+    end if
+
+    return state
+end func update
+
+func render(state: State) -> Unit
+    clear_screen("#2d2d2d")
+
+    // Display area
+    draw_rect(x: grid_x(), y: 40, width: button_cols() * (btn_w() + btn_gap()) - btn_gap(), height: 60, color: "#1a1a1a")
+    draw_text(text: state.display, x: grid_x() + 10, y: 55, size: 32, color: "#FFFFFF")
+
+    // Buttons
+    var row: Int = 0
+    while row < button_rows() do
+        var col: Int = 0
+        while col < button_cols() do
+            let label: String = button_label(row, col)
+            if label != "" then
+                let bx: Int = grid_x() + col * (btn_w() + btn_gap())
+                let by: Int = grid_y() + row * (btn_h() + btn_gap())
+
+                // Button color
+                var color: String = "#505050"
+                if is_operator(label) then
+                    color = "#FF9500"
+                end if
+                if label == "=" then
+                    color = "#FF9500"
+                end if
+                if label == "C" then
+                    color = "#A5A5A5"
+                end if
+                if label == "+/-" then
+                    color = "#A5A5A5"
+                end if
+                if label == "%" then
+                    color = "#A5A5A5"
+                end if
+
+                draw_rect(x: bx, y: by, width: btn_w(), height: btn_h(), color: color)
+                draw_text(text: label, x: bx + 45, y: by + 25, size: 24, color: "#FFFFFF")
+            end if
+            col = col + 1
+        end while
+        row = row + 1
+    end while
+end func render

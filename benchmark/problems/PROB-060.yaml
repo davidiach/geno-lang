@@ -1,0 +1,62 @@
+problem:
+  id: "PROB-060"
+  name: "Fold to CSV String"
+  difficulty: "easy"
+  domain: "strings"
+  description: |
+    Write a function that converts a list of integers into a comma-separated
+    string. For example, [1, 2, 3] becomes "1,2,3". An empty list returns
+    an empty string.
+
+    Use fold to build the result string.
+  signature:
+    function_name: "to_csv"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "String"
+  examples:
+    visible:
+      - input: [[1, 2, 3]]
+        output: "1,2,3"
+        description: "Basic list"
+      - input: [[]]
+        output: ""
+        description: "Empty list"
+      - input: [[42]]
+        output: "42"
+        description: "Single element"
+    hidden:
+      - input: [[-1, 0, 1]]
+        output: "-1,0,1"
+        description: "Negative and zero"
+      - input: [[100, 200]]
+        output: "100,200"
+        description: "Two elements"
+      - input: [[5, 5, 5, 5]]
+        output: "5,5,5,5"
+        description: "All same"
+  constraints:
+    - "Use fold to construct the string"
+    - "No trailing or leading commas"
+  canonical_solutions:
+    geno: |
+      func to_csv(nums: List[Int]) -> String
+          example [1, 2, 3] -> "1,2,3"
+          example [] -> ""
+
+          let strs: List[String] = nums
+              |> map(_, fn(x: Int) -> to_string(x))
+          return join(strs, ",")
+      end func to_csv
+    python: |
+      def to_csv(nums: list[int]) -> str:
+          return ",".join(str(x) for x in nums)
+  metadata:
+    tags: ["fold", "string-building", "pipeline", "conversion"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "pipeline", "map", "lambda", "to_string", "join"]

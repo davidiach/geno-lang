@@ -1,0 +1,40 @@
+func map(option: Option[Int], f: (Int) -> Int) -> Option[Int]
+    example Some(5), fn(x: Int) -> x * 2 -> Some(10)
+    example None, fn(x: Int) -> x * 2 -> None
+    return option_map(option, f)
+end func
+
+func and_then(option: Option[Int], f: (Int) -> Option[Int]) -> Option[Int]
+    example Some(5), fn(x: Int) -> Some(x * 2) -> Some(10)
+    example None, fn(x: Int) -> Some(x * 2) -> None
+    return option_and_then(option, f)
+end func
+
+func unwrap_or(option: Option[Int], default: Int) -> Int
+    example Some(5), 0 -> 5
+    example None, 0 -> 0
+    return option_unwrap_or(option, default)
+end func
+
+func is_some(option: Option[Int]) -> Bool
+    example Some(1) -> true
+    example None -> false
+    return option_is_some(option)
+end func
+
+func is_none(option: Option[Int]) -> Bool
+    example None -> true
+    example Some(1) -> false
+    return option_is_none(option)
+end func
+
+func flatten(option: Option[Option[Int]]) -> Option[Int]
+    example Some(Some(5)) -> Some(5)
+    example Some(None) -> None
+    return option_flatten(option)
+end func
+
+func to_result(option: Option[Int], err: String) -> Result[Int, String]
+    example Some(42), "missing" -> Ok(42)
+    return option_to_result(option, err)
+end func

@@ -1,0 +1,12 @@
+# EXPECT: E503
+# Grow a list in a tight loop. Step limit should fire
+# before the collection size limit.
+func main() -> Int
+    var lst: List[Int] = []
+    var i: Int = 0
+    while i < 1000000 do
+        lst = append(lst, i)
+        i = i + 1
+    end while
+    return length(lst)
+end func

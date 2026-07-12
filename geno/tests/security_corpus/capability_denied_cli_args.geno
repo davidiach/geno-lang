@@ -1,0 +1,5 @@
+# EXPECT: E412
+# cli_args without the "env" capability should fail.
+func main() -> List[String]
+    return cli_args()
+end func

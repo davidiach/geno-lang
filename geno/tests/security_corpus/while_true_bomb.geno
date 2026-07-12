@@ -1,0 +1,9 @@
+# EXPECT: E503
+# Tight infinite while loop with work in body.
+func main() -> Int
+    var x: Int = 0
+    while true do
+        x = x + 1
+    end while
+    return x
+end func

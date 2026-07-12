@@ -1,0 +1,86 @@
+problem:
+  id: "PROB-024"
+  name: "Remove Duplicates"
+  difficulty: "medium"
+  domain: "arrays"
+  description: |
+    Write a function that removes duplicate elements from a list while preserving
+    the order of first occurrences.
+  signature:
+    function_name: "remove_duplicates"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 2, 3, 1, 4]]
+        output: [1, 2, 3, 4]
+        description: "Remove duplicates, keep order"
+      - input: [[1, 1, 1, 1]]
+        output: [1]
+        description: "All same"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[1, 2, 3]]
+        output: [1, 2, 3]
+        description: "No duplicates"
+      - input: [[5]]
+        output: [5]
+        description: "Single element"
+      - input: [[3, 3, 2, 2, 1, 1]]
+        output: [3, 2, 1]
+        description: "Pairs"
+      - input: [[1, 2, 3, 2, 1]]
+        output: [1, 2, 3]
+        description: "Symmetric input"
+  constraints:
+    - "Preserve order of first occurrences"
+  canonical_solutions:
+    geno: |
+      func remove_duplicates(arr: List[Int]) -> List[Int]
+          example [1, 2, 2, 3, 1, 4] -> [1, 2, 3, 4]
+          example [1, 1, 1, 1] -> [1]
+
+          var result: List[Int] = []
+          var i: Int = 0
+
+          while i < length(arr) do
+              let val: Int = arr[i]
+              var found: Bool = false
+              var j: Int = 0
+
+              while j < length(result) do
+                  if result[j] == val then
+                      found = true
+                  end if
+                  j = j + 1
+              end while
+
+              if not found then
+                  result = append(result, val)
+              end if
+              i = i + 1
+          end while
+
+          return result
+      end func remove_duplicates
+    python: |
+      def remove_duplicates(arr: list[int]) -> list[int]:
+          seen = set()
+          result = []
+          for x in arr:
+              if x not in seen:
+                  seen.add(x)
+                  result.append(x)
+          return result
+  metadata:
+    tags: ["array", "deduplication"]
+    source: "Classic"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "nested-while", "if", "boolean"]

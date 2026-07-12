@@ -1,0 +1,13 @@
+# EXPECT: E499
+# Exponential list growth via repeated self-concatenation.
+# Start near the cap so concat enforces the collection
+# size limit before allocating the oversized result.
+func main() -> Int
+    var lst: List[Int] = range(0, 5000001)
+    var i: Int = 0
+    while i < 1 do
+        lst = concat(lst, lst)
+        i = i + 1
+    end while
+    return length(lst)
+end func

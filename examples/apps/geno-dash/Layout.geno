@@ -1,0 +1,48 @@
+// Layout.geno — Dashboard layout constants
+// ===========================================
+
+@untested("layout constant")
+func header_height() -> Int
+    return 50
+end func
+
+@untested("layout constant")
+func margin() -> Int
+    return 20
+end func
+
+@untested("layout constant")
+func card_width() -> Int
+    return 180
+end func
+
+@untested("layout constant")
+func card_height() -> Int
+    return 80
+end func
+
+@untested("layout constant")
+func chart_height() -> Int
+    return 160
+end func
+
+// Compute the x position for the nth card in a row.
+func card_x(index: Int) -> Int
+    example 0 -> 20
+    example 1 -> 210
+    example 2 -> 400
+
+    return margin() + index * (card_width() + 10)
+end func
+
+// The y position for the stat cards row.
+@untested("depends on other layout constants")
+func cards_y() -> Int
+    return header_height() + margin()
+end func
+
+// The y position for the charts row.
+@untested("depends on other layout constants")
+func charts_y() -> Int
+    return cards_y() + card_height() + margin()
+end func

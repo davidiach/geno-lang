@@ -1,0 +1,66 @@
+problem:
+  id: "PROB-037"
+  name: "Any Negative"
+  difficulty: "trivial"
+  domain: "arrays"
+  description: |
+    Write a function that checks if any element in a list is negative.
+  signature:
+    function_name: "any_negative"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: [[1, 2, -3, 4]]
+        output: true
+        description: "Contains negative"
+      - input: [[1, 2, 3]]
+        output: false
+        description: "No negatives"
+    hidden:
+      - input: [[]]
+        output: false
+        description: "Empty list"
+      - input: [[-1]]
+        output: true
+        description: "Single negative"
+      - input: [[0]]
+        output: false
+        description: "Zero is not negative"
+      - input: [[-1, -2, -3]]
+        output: true
+        description: "All negative"
+      - input: [[0, 0, 0]]
+        output: false
+        description: "All zeros"
+  constraints:
+    - "Negative means < 0"
+  canonical_solutions:
+    geno: |
+      func any_negative(arr: List[Int]) -> Bool
+          example [1, 2, -3, 4] -> true
+          example [1, 2, 3] -> false
+
+          var i: Int = 0
+          while i < length(arr) do
+              if arr[i] < 0 then
+                  return true
+              end if
+              i = i + 1
+          end while
+
+          return false
+      end func any_negative
+    python: |
+      def any_negative(arr: list[int]) -> bool:
+          return any(x < 0 for x in arr)
+  metadata:
+    tags: ["list", "predicate"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "early-return", "boolean"]

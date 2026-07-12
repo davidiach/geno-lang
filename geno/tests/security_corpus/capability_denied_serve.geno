@@ -1,0 +1,5 @@
+# EXPECT: E412
+# http_listen without the "serve" capability should fail.
+func main() -> Unit
+    return http_listen(port: 8080)
+end func

@@ -1,0 +1,10 @@
+name = "geno-log"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["node-cli"]
+files = [
+    "Types.geno",
+    "Stats.geno",
+    "Report.geno",
+    "Main.geno",
+]

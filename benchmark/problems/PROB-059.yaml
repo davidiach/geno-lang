@@ -1,0 +1,68 @@
+problem:
+  id: "PROB-059"
+  name: "Pipeline Sum of Squares"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that computes the sum of squares of all positive numbers
+    in a list. Use the pipeline operator (|>) with filter and map, and fold
+    to compute the sum.
+  signature:
+    function_name: "sum_of_pos_squares"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, -2, 3]]
+        output: 10
+        description: "1^2 + 3^2 = 10"
+      - input: [[-1, -2, -3]]
+        output: 0
+        description: "No positive numbers"
+      - input: [[4, 5]]
+        output: 41
+        description: "4^2 + 5^2 = 41"
+    hidden:
+      - input: [[]]
+        output: 0
+        description: "Empty list"
+      - input: [[0, 0, 0]]
+        output: 0
+        description: "All zeros (not positive)"
+      - input: [[1]]
+        output: 1
+        description: "Single positive element"
+      - input: [[1, 2, 3, 4, 5]]
+        output: 55
+        description: "All positive"
+      - input: [[-10, 10]]
+        output: 100
+        description: "Mixed positive and negative"
+  constraints:
+    - "Only include strictly positive numbers (> 0)"
+    - "Use pipeline, filter, map, and fold"
+  canonical_solutions:
+    geno: |
+      func sum_of_pos_squares(nums: List[Int]) -> Int
+          example [1, -2, 3] -> 10
+          example [-1, -2, -3] -> 0
+
+          let positives: List[Int] = nums
+              |> filter(_, fn(x: Int) -> x > 0)
+          let squares: List[Int] = positives
+              |> map(_, fn(x: Int) -> x * x)
+          return fold(list: squares, initial: 0, reducer: fn(acc: Int, x: Int) -> acc + x)
+      end func sum_of_pos_squares
+    python: |
+      def sum_of_pos_squares(nums: list[int]) -> int:
+          return sum(x * x for x in nums if x > 0)
+  metadata:
+    tags: ["pipeline", "filter", "map", "fold", "lambda", "higher-order"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "pipeline", "filter", "map", "fold", "lambda"]

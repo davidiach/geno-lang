@@ -1,0 +1,2632 @@
+// ============================================================================
+// TypeChecker.geno — Static type checker for the Geno self-hosted frontend
+// ============================================================================
+
+import Tokens
+import Ast
+import Types
+
+// ---- Checker state ----
+// Holds all mutable state needed during type checking.
+
+type CheckerState = CheckerState(
+global_env: TypeEnv,
+type_defs: MutableMap[String, TypeDefEntry],
+func_params: MutableMap[String, List[String]],
+ret_type_stack: Vec[GType],
+errors: Vec[String],
+user_defined: MutableMap[String, Bool],
+diagnostics: Vec[Diagnostic],
+diag_stack: Vec[SourceSpan]
+)
+
+// Create a fresh checker state with builtins registered.
+@untested("registers builtins via mutation")
+func make_checker_with_filename(filename: String) -> CheckerState
+    let cs: CheckerState = CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_from_list([SourceSpan(filename, 1, 1, 1, 1)]))
+    init_builtin_types(cs)
+    init_builtin_funcs(cs)
+    return cs
+end func make_checker_with_filename
+
+func make_checker(dummy: Int) -> CheckerState
+    example 0 -> make_checker_with_filename("<input>")
+    return make_checker_with_filename("<input>")
+end func make_checker
+
+func checker_current_span(cs: CheckerState) -> SourceSpan
+    example CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()) -> dummy_span(0)
+    if vec_length(cs.diag_stack) == 0 then
+        return dummy_span(0)
+    end if
+    return vec_get(cs.diag_stack, vec_length(cs.diag_stack) - 1)
+end func checker_current_span
+
+func checker_push_span(cs: CheckerState, span: SourceSpan) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), dummy_span(0)) -> ()
+    vec_push(cs.diag_stack, span)
+    return ()
+end func checker_push_span
+
+func checker_pop_span(cs: CheckerState) -> Unit
+    example CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()) -> ()
+    if vec_length(cs.diag_stack) > 0 then
+        let popped: Option[SourceSpan] = vec_pop(cs.diag_stack)
+    end if
+    return ()
+end func checker_pop_span
+
+// Render a GType the way Python's ``Type.__str__`` does, so selfhost
+// diagnostics read the same as the reference implementation.  Keeps the
+// non-exhaustive-patterns message for ``TList`` (F-0031 in #665) and
+// any future user-visible type formatting in parity with
+// ``geno/typechecker.py``.
+func format_gtype(t: GType) -> String
+    example TInt -> "Int"
+    match t with
+        | TInt -> return "Int"
+        | TFloat -> return "Float"
+        | TBool -> return "Bool"
+        | TString -> return "String"
+        | TUnit -> return "Unit"
+        | TAny -> return "Any"
+        | TVar(n) -> return n
+        | TList(elem) -> return "List[" + format_gtype(elem) + "]"
+        | TArray(elem) -> return "Array[" + format_gtype(elem) + "]"
+        | TVec(elem) -> return "Vec[" + format_gtype(elem) + "]"
+        | TOption(v) -> return "Option[" + format_gtype(v) + "]"
+        | TResult(o, e) -> return "Result[" + format_gtype(o) + ", " + format_gtype(e) + "]"
+        | TTuple(elems) -> return "(" + format_gtype_list(elems) + ")"
+        | TMap(k, v) -> return "Map[" + format_gtype(k) + ", " + format_gtype(v) + "]"
+        | TMutableMap(k, v) -> return "MutableMap[" + format_gtype(k) + ", " + format_gtype(v) + "]"
+        | TUser(name, targs) -> return format_gtype_user(name, targs)
+        | TFunc(params, ret, effects) -> return "(" + format_gtype_list(params) + ") -> " + format_gtype(ret)
+    end match
+end func format_gtype
+
+func format_gtype_list(ts: List[GType]) -> String
+    example [] -> ""
+    if length(ts) == 0 then
+        return ""
+    end if
+    if length(ts) == 1 then
+        return format_gtype(head(ts))
+    end if
+    return format_gtype(head(ts)) + ", " + format_gtype_list(tail(ts))
+end func format_gtype_list
+
+func format_gtype_user(name: String, targs: List[GType]) -> String
+    example ("Foo", []) -> "Foo"
+    if length(targs) == 0 then
+        return name
+    end if
+    return name + "[" + format_gtype_list(targs) + "]"
+end func format_gtype_user
+
+func span_for_param(filename: String, p: Param) -> SourceSpan
+    example ("Main.geno", Param("x", SimpleTypeAnnot("Int", []), 2, 4)) -> SourceSpan("Main.geno", 2, 4, 2, 4)
+    let end_col: Int = p.col + length(p.name) - 1
+    return SourceSpan(filename, p.line, p.col, p.line, end_col)
+end func span_for_param
+
+// Record a type error.
+func tc_error(cs: CheckerState, msg: String) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "err") -> ()
+    vec_push(cs.errors, msg)
+    vec_push(cs.diagnostics, Diagnostic(DiagError, msg, checker_current_span(cs)))
+    return ()
+end func tc_error
+
+// Get the current expected return type (or TAny if none).
+func current_return_type(cs: CheckerState) -> GType
+    example CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()) -> TAny
+    if vec_length(cs.ret_type_stack) > 0 then
+        return vec_get(cs.ret_type_stack, vec_length(cs.ret_type_stack) - 1)
+    end if
+    return TAny
+end func current_return_type
+
+// Push a return type onto the stack.
+func push_return_type(cs: CheckerState, t: GType) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), TInt) -> ()
+    vec_push(cs.ret_type_stack, t)
+    return ()
+end func push_return_type
+
+// Pop a return type from the stack.
+func pop_return_type(cs: CheckerState) -> Unit
+    example CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()) -> ()
+    if vec_length(cs.ret_type_stack) > 0 then
+        let ignore: Option[GType] = vec_pop(cs.ret_type_stack)
+        return ()
+    end if
+    return ()
+end func pop_return_type
+
+// Register a builtin function signature.
+func register_builtin(cs: CheckerState, name: String, ft: GType, params: List[String]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "f", TFunc([], TUnit, []), []) -> ()
+    type_env_bind(env: cs.global_env, name: name, t: ft)
+    mutable_map_set(map: cs.func_params, key: name, value: params)
+    return ()
+end func register_builtin
+
+// ---- Initialize builtin type definitions ----
+
+func init_builtin_types(cs: CheckerState) -> Unit
+    example CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()) -> ()
+    // Option type
+    let opt_fields: MutableMap[String, List[FieldInfo]] = mutable_map_new()
+    mutable_map_set(map: opt_fields, key: "Some", value: [FieldInfo("value", TVar("T"))])
+    mutable_map_set(map: opt_fields, key: "None", value: [])
+    let opt_def: TypeDefEntry = TypeDefEntry("Option", ["T"], ["Some", "None"], opt_fields)
+    mutable_map_set(map: cs.type_defs, key: "Option", value: opt_def)
+    // Result type
+    let res_fields: MutableMap[String, List[FieldInfo]] = mutable_map_new()
+    mutable_map_set(map: res_fields, key: "Ok", value: [FieldInfo("value", TVar("T"))])
+    mutable_map_set(map: res_fields, key: "Err", value: [FieldInfo("error", TVar("E"))])
+    let res_def: TypeDefEntry = TypeDefEntry("Result", ["T", "E"], ["Ok", "Err"], res_fields)
+    mutable_map_set(map: cs.type_defs, key: "Result", value: res_def)
+    return ()
+end func init_builtin_types
+
+// ---- Initialize builtin function signatures ----
+
+func init_builtin_funcs(cs: CheckerState) -> Unit
+    example CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()) -> ()
+    // List operations
+    register_builtin(cs: cs, name: "length", ft: TFunc([TList(TVar("T"))], TInt, []), params: ["list"])
+    register_builtin(cs: cs, name: "head", ft: TFunc([TList(TVar("T"))], TVar("T"), []), params: ["list"])
+    register_builtin(cs: cs, name: "tail", ft: TFunc([TList(TVar("T"))], TList(TVar("T")), []), params: ["list"])
+    register_builtin(cs: cs, name: "append", ft: TFunc([TList(TVar("T")), TVar("T")], TList(TVar("T")), []), params: ["list", "element"])
+    register_builtin(cs: cs, name: "concat", ft: TFunc([TList(TVar("T")), TList(TVar("T"))], TList(TVar("T")), []), params: ["list1", "list2"])
+    register_builtin(cs: cs, name: "set_at", ft: TFunc([TList(TVar("T")), TInt, TVar("T")], TList(TVar("T")), []), params: ["list", "index", "value"])
+    register_builtin(cs: cs, name: "slice", ft: TFunc([TList(TVar("T")), TInt, TInt], TList(TVar("T")), []), params: ["list", "start", "stop"])
+    register_builtin(cs: cs, name: "filter", ft: TFunc([TList(TVar("T")), TFunc([TVar("T")], TBool, [])], TList(TVar("T")), []), params: ["list", "predicate"])
+    register_builtin(cs: cs, name: "map", ft: TFunc([TList(TVar("T")), TFunc([TVar("T")], TVar("U"), [])], TList(TVar("U")), []), params: ["list", "transform"])
+    register_builtin(cs: cs, name: "fold", ft: TFunc([TList(TVar("T")), TVar("U"), TFunc([TVar("U"), TVar("T")], TVar("U"), [])], TVar("U"), []), params: ["list", "initial", "reducer"])
+    register_builtin(cs: cs, name: "contains", ft: TFunc([TList(TVar("T")), TVar("T")], TBool, []), params: ["list", "element"])
+    register_builtin(cs: cs, name: "reverse", ft: TFunc([TList(TVar("T"))], TList(TVar("T")), []), params: ["list"])
+    register_builtin(cs: cs, name: "take_while", ft: TFunc([TList(TVar("T")), TFunc([TVar("T")], TBool, [])], TList(TVar("T")), []), params: ["list", "predicate"])
+    register_builtin(cs: cs, name: "all", ft: TFunc([TList(TVar("T")), TFunc([TVar("T")], TBool, [])], TBool, []), params: ["list", "predicate"])
+
+    // Namespaced list operations
+    register_builtin(cs: cs, name: "list_length", ft: TFunc([TList(TVar("T"))], TInt, []), params: ["list"])
+    register_builtin(cs: cs, name: "list_map", ft: TFunc([TList(TVar("T")), TFunc([TVar("T")], TVar("U"), [])], TList(TVar("U")), []), params: ["list", "transform"])
+    register_builtin(cs: cs, name: "list_filter", ft: TFunc([TList(TVar("T")), TFunc([TVar("T")], TBool, [])], TList(TVar("T")), []), params: ["list", "predicate"])
+
+    // String operations
+    register_builtin(cs: cs, name: "split", ft: TFunc([TString, TString], TList(TString), []), params: ["text", "delimiter"])
+    register_builtin(cs: cs, name: "join", ft: TFunc([TList(TString), TString], TString, []), params: ["parts", "separator"])
+    register_builtin(cs: cs, name: "trim", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "to_lower", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "to_upper", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "replace", ft: TFunc([TString, TString, TString], TString, []), params: ["text", "old", "new"])
+    register_builtin(cs: cs, name: "split_once", ft: TFunc([TString, TString], TOption(TTuple([TString, TString])), []), params: ["text", "delimiter"])
+    register_builtin(cs: cs, name: "starts_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "prefix"])
+    register_builtin(cs: cs, name: "ends_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "suffix"])
+    register_builtin(cs: cs, name: "contains_substring", ft: TFunc([TString, TString], TBool, []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "to_chars", ft: TFunc([TString], TList(TString), []), params: ["text"])
+    register_builtin(cs: cs, name: "sort_strings", ft: TFunc([TList(TString)], TList(TString), []), params: ["items"])
+    register_builtin(cs: cs, name: "substring", ft: TFunc([TString, TInt, TInt], TString, []), params: ["text", "start", "stop"])
+    register_builtin(cs: cs, name: "repeat_string", ft: TFunc([TString, TInt], TString, []), params: ["text", "count"])
+
+    // Namespaced string operations
+    register_builtin(cs: cs, name: "string_trim", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "string_trim_start", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "string_trim_end", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "string_split", ft: TFunc([TString, TString], TList(TString), []), params: ["text", "delimiter"])
+    register_builtin(cs: cs, name: "string_join", ft: TFunc([TList(TString), TString], TString, []), params: ["parts", "separator"])
+    register_builtin(cs: cs, name: "string_substring", ft: TFunc([TString, TInt, TInt], TString, []), params: ["text", "start", "stop"])
+    register_builtin(cs: cs, name: "string_replace", ft: TFunc([TString, TString, TString], TString, []), params: ["text", "old", "new"])
+    register_builtin(cs: cs, name: "string_to_upper", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "string_to_lower", ft: TFunc([TString], TString, []), params: ["text"])
+    register_builtin(cs: cs, name: "string_starts_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "prefix"])
+    register_builtin(cs: cs, name: "string_ends_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "suffix"])
+    register_builtin(cs: cs, name: "string_contains", ft: TFunc([TString, TString], TBool, []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_split_once", ft: TFunc([TString, TString], TOption(TTuple([TString, TString])), []), params: ["text", "delimiter"])
+    register_builtin(cs: cs, name: "string_char_at", ft: TFunc([TString, TInt], TString, []), params: ["text", "index"])
+    register_builtin(cs: cs, name: "string_index_of", ft: TFunc([TString, TString], TInt, []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_last_index_of", ft: TFunc([TString, TString], TInt, []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_pad_left", ft: TFunc([TString, TInt, TString], TString, []), params: ["text", "width", "fill_char"])
+    register_builtin(cs: cs, name: "string_pad_right", ft: TFunc([TString, TInt, TString], TString, []), params: ["text", "width", "fill_char"])
+    register_builtin(cs: cs, name: "string_repeat", ft: TFunc([TString, TInt], TString, []), params: ["text", "count"])
+
+    // Char code operations
+    register_builtin(cs: cs, name: "char_code", ft: TFunc([TString], TInt, []), params: ["text"])
+    register_builtin(cs: cs, name: "from_char_code", ft: TFunc([TInt], TString, []), params: ["code"])
+
+    // Math operations
+    register_builtin(cs: cs, name: "add", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
+    register_builtin(cs: cs, name: "subtract", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
+    register_builtin(cs: cs, name: "multiply", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
+    register_builtin(cs: cs, name: "divide", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
+    register_builtin(cs: cs, name: "sqrt", ft: TFunc([TFloat], TFloat, []), params: ["value"])
+    register_builtin(cs: cs, name: "max", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
+    register_builtin(cs: cs, name: "abs", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
+    register_builtin(cs: cs, name: "math_abs", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
+    register_builtin(cs: cs, name: "math_max", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
+    register_builtin(cs: cs, name: "square", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
+
+    // Type predicates
+    register_builtin(cs: cs, name: "is_sorted", ft: TFunc([TList(TInt)], TBool, []), params: ["list"])
+    register_builtin(cs: cs, name: "is_positive", ft: TFunc([TInt], TBool, []), params: ["value"])
+    register_builtin(cs: cs, name: "is_numeric_string", ft: TFunc([TString], TBool, []), params: ["text"])
+    register_builtin(cs: cs, name: "is_permutation", ft: TFunc([TList(TVar("T")), TList(TVar("T"))], TBool, []), params: ["list1", "list2"])
+
+    // Conversions
+    register_builtin(cs: cs, name: "parse_int", ft: TFunc([TString], TOption(TInt), []), params: ["text"])
+    register_builtin(cs: cs, name: "to_string", ft: TFunc([TVar("T")], TString, []), params: ["value"])
+    register_builtin(cs: cs, name: "float_to_int", ft: TFunc([TFloat], TInt, []), params: ["value"])
+    register_builtin(cs: cs, name: "int_to_float", ft: TFunc([TInt], TFloat, []), params: ["value"])
+
+    // Option operations
+    register_builtin(cs: cs, name: "is_some", ft: TFunc([TOption(TVar("T"))], TBool, []), params: ["option"])
+    register_builtin(cs: cs, name: "is_none", ft: TFunc([TOption(TVar("T"))], TBool, []), params: ["option"])
+    register_builtin(cs: cs, name: "unwrap", ft: TFunc([TOption(TVar("T"))], TVar("T"), []), params: ["option"])
+    register_builtin(cs: cs, name: "unwrap_or", ft: TFunc([TOption(TVar("T")), TVar("T")], TVar("T"), []), params: ["option", "default"])
+    register_builtin(cs: cs, name: "option_is_some", ft: TFunc([TOption(TVar("T"))], TBool, []), params: ["option"])
+    register_builtin(cs: cs, name: "option_is_none", ft: TFunc([TOption(TVar("T"))], TBool, []), params: ["option"])
+    register_builtin(cs: cs, name: "option_unwrap_or", ft: TFunc([TOption(TVar("T")), TVar("T")], TVar("T"), []), params: ["option", "default"])
+
+    // Map operations
+    register_builtin(cs: cs, name: "map_insert", ft: TFunc([TMap(TVar("K"), TVar("V")), TVar("K"), TVar("V")], TMap(TVar("K"), TVar("V")), []), params: ["map", "key", "value"])
+    register_builtin(cs: cs, name: "map_get", ft: TFunc([TMap(TVar("K"), TVar("V")), TVar("K")], TOption(TVar("V")), []), params: ["map", "key"])
+
+    // I/O
+    register_builtin(cs: cs, name: "print", ft: TFunc([TVar("T")], TUnit, []), params: ["value"])
+    register_builtin(cs: cs, name: "clock_now", ft: TFunc([], TInt, []), params: [])
+    register_builtin(cs: cs, name: "random_int", ft: TFunc([TInt, TInt], TInt, []), params: ["min", "max"])
+    register_builtin(cs: cs, name: "random_float", ft: TFunc([], TFloat, []), params: [])
+    register_builtin(cs: cs, name: "math_random_int", ft: TFunc([TInt, TInt], TInt, []), params: ["lo", "hi"])
+    register_builtin(cs: cs, name: "math_random_float", ft: TFunc([], TFloat, []), params: [])
+
+    // CLI
+    register_builtin(cs: cs, name: "cli_args", ft: TFunc([], TList(TString), []), params: [])
+
+    // File/network
+    register_builtin(cs: cs, name: "fs_exists", ft: TFunc([TString], TBool, []), params: ["path"])
+    register_builtin(cs: cs, name: "fs_read_text", ft: TFunc([TString], TString, []), params: ["path"])
+    register_builtin(cs: cs, name: "fs_write_text", ft: TFunc([TString, TString], TUnit, []), params: ["path", "content"])
+    register_builtin(cs: cs, name: "http_fetch", ft: TFunc([TString], TString, []), params: ["url"])
+
+    // Graphics builtins
+    register_builtin(cs: cs, name: "clear_screen", ft: TFunc([TString], TUnit, []), params: ["color"])
+    register_builtin(cs: cs, name: "draw_rect", ft: TFunc([TInt, TInt, TInt, TInt, TString], TUnit, []), params: ["x", "y", "width", "height", "color"])
+    register_builtin(cs: cs, name: "draw_rect_outline", ft: TFunc([TInt, TInt, TInt, TInt, TString], TUnit, []), params: ["x", "y", "width", "height", "color"])
+    register_builtin(cs: cs, name: "draw_circle", ft: TFunc([TInt, TInt, TInt, TString], TUnit, []), params: ["x", "y", "radius", "color"])
+    register_builtin(cs: cs, name: "draw_line", ft: TFunc([TInt, TInt, TInt, TInt, TString], TUnit, []), params: ["x", "y1", "x2", "y2", "color"])
+    register_builtin(cs: cs, name: "draw_text", ft: TFunc([TString, TInt, TInt, TInt, TString], TUnit, []), params: ["text", "x", "y", "size", "color"])
+    register_builtin(cs: cs, name: "screen_width", ft: TFunc([], TInt, []), params: [])
+    register_builtin(cs: cs, name: "screen_height", ft: TFunc([], TInt, []), params: [])
+    register_builtin(cs: cs, name: "is_key_down", ft: TFunc([TString], TBool, []), params: ["key"])
+    register_builtin(cs: cs, name: "is_key_pressed", ft: TFunc([TString], TBool, []), params: ["key"])
+
+    // Array operations
+    register_builtin(cs: cs, name: "array_new", ft: TFunc([TInt, TVar("T")], TArray(TVar("T")), []), params: ["size", "default"])
+    register_builtin(cs: cs, name: "array_from_list", ft: TFunc([TList(TVar("T"))], TArray(TVar("T")), []), params: ["list"])
+    register_builtin(cs: cs, name: "array_get", ft: TFunc([TArray(TVar("T")), TInt], TVar("T"), []), params: ["array", "index"])
+    register_builtin(cs: cs, name: "array_set", ft: TFunc([TArray(TVar("T")), TInt, TVar("T")], TUnit, []), params: ["array", "index", "value"])
+    register_builtin(cs: cs, name: "array_length", ft: TFunc([TArray(TVar("T"))], TInt, []), params: ["array"])
+    register_builtin(cs: cs, name: "array_to_list", ft: TFunc([TArray(TVar("T"))], TList(TVar("T")), []), params: ["array"])
+    register_builtin(cs: cs, name: "array_fill", ft: TFunc([TArray(TVar("T")), TVar("T")], TUnit, []), params: ["array", "value"])
+    register_builtin(cs: cs, name: "array_copy", ft: TFunc([TArray(TVar("T"))], TArray(TVar("T")), []), params: ["array"])
+
+    // MutableMap operations
+    register_builtin(cs: cs, name: "mutable_map_new", ft: TFunc([], TMutableMap(TVar("K"), TVar("V")), []), params: [])
+    register_builtin(cs: cs, name: "mutable_map_set", ft: TFunc([TMutableMap(TVar("K"), TVar("V")), TVar("K"), TVar("V")], TUnit, []), params: ["map", "key", "value"])
+    register_builtin(cs: cs, name: "mutable_map_get", ft: TFunc([TMutableMap(TVar("K"), TVar("V")), TVar("K")], TOption(TVar("V")), []), params: ["map", "key"])
+    register_builtin(cs: cs, name: "mutable_map_contains", ft: TFunc([TMutableMap(TVar("K"), TVar("V")), TVar("K")], TBool, []), params: ["map", "key"])
+    register_builtin(cs: cs, name: "mutable_map_delete", ft: TFunc([TMutableMap(TVar("K"), TVar("V")), TVar("K")], TUnit, []), params: ["map", "key"])
+    register_builtin(cs: cs, name: "mutable_map_size", ft: TFunc([TMutableMap(TVar("K"), TVar("V"))], TInt, []), params: ["map"])
+    register_builtin(cs: cs, name: "mutable_map_keys", ft: TFunc([TMutableMap(TVar("K"), TVar("V"))], TList(TVar("K")), []), params: ["map"])
+
+    // Vec operations
+    register_builtin(cs: cs, name: "vec_new", ft: TFunc([], TVec(TVar("T")), []), params: [])
+    register_builtin(cs: cs, name: "vec_push", ft: TFunc([TVec(TVar("T")), TVar("T")], TUnit, []), params: ["vec", "item"])
+    register_builtin(cs: cs, name: "vec_get", ft: TFunc([TVec(TVar("T")), TInt], TVar("T"), []), params: ["vec", "index"])
+    register_builtin(cs: cs, name: "vec_set", ft: TFunc([TVec(TVar("T")), TInt, TVar("T")], TUnit, []), params: ["vec", "index", "value"])
+    register_builtin(cs: cs, name: "vec_length", ft: TFunc([TVec(TVar("T"))], TInt, []), params: ["vec"])
+    register_builtin(cs: cs, name: "vec_pop", ft: TFunc([TVec(TVar("T"))], TOption(TVar("T")), []), params: ["vec"])
+    register_builtin(cs: cs, name: "vec_to_list", ft: TFunc([TVec(TVar("T"))], TList(TVar("T")), []), params: ["vec"])
+    register_builtin(cs: cs, name: "vec_from_list", ft: TFunc([TList(TVar("T"))], TVec(TVar("T")), []), params: ["list"])
+    return ()
+end func init_builtin_funcs
+
+// ============================================================================
+// Type resolution — convert TypeAnnot AST nodes to GType
+// ============================================================================
+
+// Resolve a type annotation to an internal GType.
+func resolve_type(cs: CheckerState, annot: TypeAnnot, tparams: List[String]) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), SimpleTypeAnnot("Int", []), []) -> TInt
+    match annot with
+        | SimpleTypeAnnot(name, params) -> return resolve_simple_type(cs: cs, name: name, params: params, tparams: tparams)
+        | FuncTypeAnnot(pt, rt, _effs) ->
+        let resolved_params: List[GType] = resolve_type_list(cs: cs, annots: pt, tparams: tparams)
+        let resolved_ret: GType = resolve_type(cs: cs, annot: rt, tparams: tparams)
+        return TFunc(resolved_params, resolved_ret, [])
+    end match
+end func resolve_type
+
+// Resolve a list of type annotations.
+func resolve_type_list(cs: CheckerState, annots: List[TypeAnnot], tparams: List[String]) -> List[GType]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], []) -> []
+    if length(annots) == 0 then
+        return []
+    end if
+    let first: GType = resolve_type(cs: cs, annot: head(annots), tparams: tparams)
+    let rest: List[GType] = resolve_type_list(cs: cs, annots: tail(annots), tparams: tparams)
+    return concat([first], rest)
+end func resolve_type_list
+
+// Resolve a simple (named) type annotation.
+func resolve_simple_type(cs: CheckerState, name: String, params: List[TypeAnnot], tparams: List[String]) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "Bool", [], []) -> TBool
+    // Check if it's a type parameter
+    if list_contains_str(tparams, name) then
+        return TVar(name)
+    end if
+    // Primitive types (no params)
+    if name == "Int" then
+        if length(params) == 0 then return TInt end if
+    end if
+    if name == "Float" then
+        if length(params) == 0 then return TFloat end if
+    end if
+    if name == "Bool" then
+        if length(params) == 0 then return TBool end if
+    end if
+    if name == "String" then
+        if length(params) == 0 then return TString end if
+    end if
+    if name == "Unit" then
+        if length(params) == 0 then return TUnit end if
+    end if
+    // Parameterized built-in types
+    if name == "List" then
+        if length(params) == 1 then
+            return TList(resolve_type(cs: cs, annot: head(params), tparams: tparams))
+        end if
+    end if
+    if name == "Array" then
+        if length(params) == 1 then
+            return TArray(resolve_type(cs: cs, annot: head(params), tparams: tparams))
+        end if
+    end if
+    if name == "Option" then
+        if length(params) == 1 then
+            return TOption(resolve_type(cs: cs, annot: head(params), tparams: tparams))
+        end if
+    end if
+    if name == "Result" then
+        if length(params) == 2 then
+            let ok_t: GType = resolve_type(cs: cs, annot: head(params), tparams: tparams)
+            let err_t: GType = resolve_type(cs: cs, annot: head(tail(params)), tparams: tparams)
+            return TResult(ok_t, err_t)
+        end if
+    end if
+    if name == "Map" then
+        if length(params) == 2 then
+            let kt: GType = resolve_type(cs: cs, annot: head(params), tparams: tparams)
+            let vt: GType = resolve_type(cs: cs, annot: head(tail(params)), tparams: tparams)
+            return TMap(kt, vt)
+        end if
+    end if
+    if name == "MutableMap" then
+        if length(params) == 2 then
+            let kt: GType = resolve_type(cs: cs, annot: head(params), tparams: tparams)
+            let vt: GType = resolve_type(cs: cs, annot: head(tail(params)), tparams: tparams)
+            return TMutableMap(kt, vt)
+        end if
+    end if
+    if name == "Vec" then
+        if length(params) == 1 then
+            return TVec(resolve_type(cs: cs, annot: head(params), tparams: tparams))
+        end if
+    end if
+    // Tuple types.  The parser emits the canonical name ``Tuple`` for
+    // ``(T1, T2, ...)`` syntax; there is no ``Tuple2`` / ``Tuple3``
+    // surface.  Using a ``starts_with`` prefix match previously let a
+    // user-defined type such as ``TupleFoo[T]`` be silently classified
+    // as a builtin tuple — F-0033 in #665.  Require an exact match.
+    if name == "Tuple" then
+        if length(params) > 0 then
+            return TTuple(resolve_type_list(cs: cs, annots: params, tparams: tparams))
+        end if
+    end if
+    // User-defined types
+    if mutable_map_contains(cs.type_defs, name) then
+        let type_args: List[GType] = resolve_type_list(cs: cs, annots: params, tparams: tparams)
+        return TUser(name, type_args)
+    end if
+    // Unknown type — treat as user type (forward reference)
+    return TUser(name, [])
+end func resolve_simple_type
+
+// Helper: check if a string is in a list.
+func list_contains_str(lst: List[String], s: String) -> Bool
+    example ([], "x") -> false
+    if length(lst) == 0 then
+        return false
+    end if
+    if head(lst) == s then
+        return true
+    end if
+    return list_contains_str(tail(lst), s)
+end func list_contains_str
+
+// ============================================================================
+// Type compatibility
+// ============================================================================
+
+// Check if actual type is compatible with expected type.
+// TypeVars act as wildcards; AnyType is compatible with everything.
+func types_compatible(expected: GType, actual: GType) -> Bool
+    example (TInt, TInt) -> true
+    // Any is compatible with everything
+    match expected with
+        | TAny -> return true
+        | _ ->
+        match actual with
+            | TAny -> return true
+            | _ ->
+            // TypeVar acts as wildcard
+            match expected with
+                | TVar(n1) -> return true
+                | _ ->
+                match actual with
+                    | TVar(n2) -> return true
+                    | _ -> return types_structural(expected, actual)
+                end match
+            end match
+        end match
+    end match
+end func types_compatible
+
+// Structural type compatibility check.
+func types_structural(expected: GType, actual: GType) -> Bool
+    example (TInt, TInt) -> true
+    // Any/TypeVar wildcards
+    match expected with
+        | TAny -> return true
+        | _ -> return types_structural_inner(expected, actual)
+    end match
+end func types_structural
+
+func types_structural_inner(expected: GType, actual: GType) -> Bool
+    example (TBool, TBool) -> true
+    match actual with
+        | TAny -> return true
+        | TVar(n) -> return true
+        | _ ->
+        match expected with
+            | TVar(n) -> return true
+            | _ -> return types_structural_core(expected, actual)
+        end match
+    end match
+end func types_structural_inner
+
+func types_structural_core(expected: GType, actual: GType) -> Bool
+    example (TString, TString) -> true
+    // Primitives
+    match expected with
+        | TInt ->
+        match actual with
+            | TInt -> return true
+            | _ -> return false
+        end match
+        | TFloat ->
+        match actual with
+            | TFloat -> return true
+            | TInt -> return true
+            | _ -> return false
+        end match
+        | TBool ->
+        match actual with
+            | TBool -> return true
+            | _ -> return false
+        end match
+        | TString ->
+        match actual with
+            | TString -> return true
+            | _ -> return false
+        end match
+        | TUnit ->
+        match actual with
+            | TUnit -> return true
+            | _ -> return false
+        end match
+        | TList(e1) ->
+        match actual with
+            | TList(e2) -> return types_structural(e1, e2)
+            | _ -> return false
+        end match
+        | TArray(e1) ->
+        match actual with
+            | TArray(e2) -> return types_structural(e1, e2)
+            | _ -> return false
+        end match
+        | TVec(e1) ->
+        match actual with
+            | TVec(e2) -> return types_structural(e1, e2)
+            | _ -> return false
+        end match
+        | TOption(v1) ->
+        match actual with
+            | TOption(v2) -> return types_structural(v1, v2)
+            | _ -> return false
+        end match
+        | TResult(o1, e1) ->
+        match actual with
+            | TResult(o2, e2) -> return types_structural(o1, o2) and types_structural(e1, e2)
+            | _ -> return false
+        end match
+        | TTuple(elems1) ->
+        match actual with
+            | TTuple(elems2) -> return types_list_compatible(elems1, elems2)
+            | _ -> return false
+        end match
+        | TFunc(p1, r1, _e1) ->
+        match actual with
+            | TFunc(p2, r2, _e2) ->
+            if length(p1) != length(p2) then
+                return false
+            end if
+            // Contravariant params, covariant return
+            if not types_list_compatible(p2, p1) then
+                return false
+            end if
+            return types_structural(r1, r2)
+            | _ -> return false
+        end match
+        | TMap(k1, v1) ->
+        match actual with
+            | TMap(k2, v2) -> return types_structural(k1, k2) and types_structural(v1, v2)
+            | _ -> return false
+        end match
+        | TMutableMap(k1, v1) ->
+        match actual with
+            | TMutableMap(k2, v2) -> return types_structural(k1, k2) and types_structural(v1, v2)
+            | _ -> return false
+        end match
+        | TUser(n1, args1) ->
+        match actual with
+            | TUser(n2, args2) ->
+            if n1 != n2 then
+                return false
+            end if
+            return types_list_compatible(args1, args2)
+            | _ -> return false
+        end match
+        | TVar(n) -> return true
+        | TAny -> return true
+    end match
+end func types_structural_core
+
+// Check that two lists of types are pairwise compatible.
+func types_list_compatible(as_list: List[GType], bs: List[GType]) -> Bool
+    example ([], []) -> true
+    if length(as_list) != length(bs) then
+        return false
+    end if
+    if length(as_list) == 0 then
+        return true
+    end if
+    if not types_structural(head(as_list), head(bs)) then
+        return false
+    end if
+    return types_list_compatible(tail(as_list), tail(bs))
+end func types_list_compatible
+
+// ============================================================================
+// TypeVar substitution tracking for generic function calls
+// ============================================================================
+
+// Check if a type contains any TypeVar.
+func has_type_vars(t: GType) -> Bool
+    example TInt -> false
+    match t with
+        | TVar(n) -> return true
+        | TList(e) -> return has_type_vars(e)
+        | TArray(e) -> return has_type_vars(e)
+        | TVec(e) -> return has_type_vars(e)
+        | TOption(v) -> return has_type_vars(v)
+        | TResult(o, e) -> return has_type_vars(o) or has_type_vars(e)
+        | TMap(k, v) -> return has_type_vars(k) or has_type_vars(v)
+        | TMutableMap(k, v) -> return has_type_vars(k) or has_type_vars(v)
+        | TTuple(elems) -> return has_type_vars_list(elems)
+        | TFunc(params, ret, _effs) -> return has_type_vars_list(params) or has_type_vars(ret)
+        | TUser(n, args) -> return has_type_vars_list(args)
+        | _ -> return false
+    end match
+end func has_type_vars
+
+// Check if any type in a list contains TypeVars.
+func has_type_vars_list(ts: List[GType]) -> Bool
+    example [] -> false
+    if length(ts) == 0 then
+        return false
+    end if
+    if has_type_vars(head(ts)) then
+        return true
+    end if
+    return has_type_vars_list(tail(ts))
+end func has_type_vars_list
+
+// Apply substitutions to a type, replacing TypeVars with their bindings.
+func apply_subs(t: GType, subs: MutableMap[String, GType]) -> GType
+    example (TInt, mutable_map_new()) -> TInt
+    match t with
+        | TVar(n) ->
+        let found: Option[GType] = mutable_map_get(subs, n)
+        match found with
+            | Some(bound) -> return bound
+            | None -> return t
+        end match
+        | TList(e) -> return TList(apply_subs(e, subs))
+        | TArray(e) -> return TArray(apply_subs(e, subs))
+        | TVec(e) -> return TVec(apply_subs(e, subs))
+        | TOption(v) -> return TOption(apply_subs(v, subs))
+        | TResult(o, e) -> return TResult(apply_subs(o, subs), apply_subs(e, subs))
+        | TMap(k, v) -> return TMap(apply_subs(k, subs), apply_subs(v, subs))
+        | TMutableMap(k, v) -> return TMutableMap(apply_subs(k, subs), apply_subs(v, subs))
+        | TTuple(elems) -> return TTuple(apply_subs_list(elems, subs))
+        | TFunc(params, ret, effs) -> return TFunc(apply_subs_list(params, subs), apply_subs(ret, subs), effs)
+        | TUser(n, args) ->
+        if length(args) > 0 then
+            return TUser(n, apply_subs_list(args, subs))
+        end if
+        return t
+        | _ -> return t
+    end match
+end func apply_subs
+
+// Apply substitutions to a list of types.
+func apply_subs_list(ts: List[GType], subs: MutableMap[String, GType]) -> List[GType]
+    example ([], mutable_map_new()) -> []
+    if length(ts) == 0 then
+        return []
+    end if
+    return concat([apply_subs(head(ts), subs)], apply_subs_list(tail(ts), subs))
+end func apply_subs_list
+
+// Type compatibility with substitution tracking.
+// When expected is a TypeVar, bind it in subs if unbound, or check against bound type.
+func types_compatible_with_subs(expected: GType, actual: GType, subs: MutableMap[String, GType]) -> Bool
+    example (TInt, TInt, mutable_map_new()) -> true
+    match expected with
+        | TAny -> return true
+        | _ ->
+        match actual with
+            | TAny -> return true
+            | _ -> return tcompat_subs_inner(expected: expected, actual: actual, subs: subs)
+        end match
+    end match
+end func types_compatible_with_subs
+
+func tcompat_subs_inner(expected: GType, actual: GType, subs: MutableMap[String, GType]) -> Bool
+    example (TInt, TInt, mutable_map_new()) -> true
+    match expected with
+        | TVar(n) ->
+        let found: Option[GType] = mutable_map_get(subs, n)
+        match found with
+            | Some(bound) -> return types_structural(bound, actual)
+            | None ->
+            mutable_map_set(map: subs, key: n, value: actual)
+            return true
+        end match
+        | _ ->
+        match actual with
+            | TVar(n2) -> return true
+            | _ -> return tcompat_subs_core(expected: expected, actual: actual, subs: subs)
+        end match
+    end match
+end func tcompat_subs_inner
+
+func tcompat_subs_core(expected: GType, actual: GType, subs: MutableMap[String, GType]) -> Bool
+    example (TBool, TBool, mutable_map_new()) -> true
+    match expected with
+        | TInt ->
+        match actual with
+            | TInt -> return true
+            | _ -> return false
+        end match
+        | TFloat ->
+        match actual with
+            | TFloat -> return true
+            | TInt -> return true
+            | _ -> return false
+        end match
+        | TBool ->
+        match actual with
+            | TBool -> return true
+            | _ -> return false
+        end match
+        | TString ->
+        match actual with
+            | TString -> return true
+            | _ -> return false
+        end match
+        | TUnit ->
+        match actual with
+            | TUnit -> return true
+            | _ -> return false
+        end match
+        | TList(e1) ->
+        match actual with
+            | TList(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+            | _ -> return false
+        end match
+        | TArray(e1) ->
+        match actual with
+            | TArray(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+            | _ -> return false
+        end match
+        | TVec(e1) ->
+        match actual with
+            | TVec(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+            | _ -> return false
+        end match
+        | TOption(v1) ->
+        match actual with
+            | TOption(v2) -> return types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
+            | _ -> return false
+        end match
+        | TResult(o1, e1) ->
+        match actual with
+            | TResult(o2, e2) -> return types_compatible_with_subs(expected: o1, actual: o2, subs: subs) and types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+            | _ -> return false
+        end match
+        | TTuple(elems1) ->
+        match actual with
+            | TTuple(elems2) -> return tcompat_subs_list(as_list: elems1, bs: elems2, subs: subs)
+            | _ -> return false
+        end match
+        | TFunc(p1, r1, _e1) ->
+        match actual with
+            | TFunc(p2, r2, _e2) ->
+            if length(p1) != length(p2) then
+                return false
+            end if
+            if not tcompat_subs_list(as_list: p2, bs: p1, subs: subs) then
+                return false
+            end if
+            return types_compatible_with_subs(expected: r1, actual: r2, subs: subs)
+            | _ -> return false
+        end match
+        | TMap(k1, v1) ->
+        match actual with
+            | TMap(k2, v2) -> return types_compatible_with_subs(expected: k1, actual: k2, subs: subs) and types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
+            | _ -> return false
+        end match
+        | TMutableMap(k1, v1) ->
+        match actual with
+            | TMutableMap(k2, v2) -> return types_compatible_with_subs(expected: k1, actual: k2, subs: subs) and types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
+            | _ -> return false
+        end match
+        | TUser(n1, args1) ->
+        match actual with
+            | TUser(n2, args2) ->
+            if n1 != n2 then
+                return false
+            end if
+            return tcompat_subs_list(as_list: args1, bs: args2, subs: subs)
+            | _ -> return false
+        end match
+        | _ -> return false
+    end match
+end func tcompat_subs_core
+
+// Pairwise compatibility with substitution tracking.
+func tcompat_subs_list(as_list: List[GType], bs: List[GType], subs: MutableMap[String, GType]) -> Bool
+    example ([], [], mutable_map_new()) -> true
+    if length(as_list) != length(bs) then
+        return false
+    end if
+    if length(as_list) == 0 then
+        return true
+    end if
+    if not types_compatible_with_subs(expected: head(as_list), actual: head(bs), subs: subs) then
+        return false
+    end if
+    return tcompat_subs_list(as_list: tail(as_list), bs: tail(bs), subs: subs)
+end func tcompat_subs_list
+
+// ============================================================================
+// Expression type checking
+// ============================================================================
+
+// Type check an expression and return its inferred type.
+func check_expr(cs: CheckerState, expr: Expr, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(1), new_type_env(None)) -> TInt
+    match expr with
+        | IntLit(v) -> return TInt
+        | FloatLit(v) -> return TFloat
+        | StrLit(v) -> return TString
+        | BoolLit(v) -> return TBool
+        | Ident(name) -> return check_ident(cs: cs, name: name, env: env)
+        | TypeIdent(name) -> return check_type_ident(cs, name)
+        | ListLitExpr(elems) -> return check_list_lit(cs: cs, elems: elems, env: env)
+        | BinOp(op, left, right) -> return check_binop(cs: cs, op: op, left: left, right: right, env: env)
+        | UnaryOpExpr(op, operand) -> return check_unary(cs: cs, op: op, operand: operand, env: env)
+        | CallExpr(func_expr, args) -> return check_call(cs: cs, func_expr: func_expr, args: args, env: env)
+        | IndexExpr(target, idx) -> return check_index(cs: cs, target: target, idx: idx, env: env)
+        | FieldExpr(target, field_name) -> return check_field(cs: cs, target: target, field_name: field_name, env: env)
+        | PipelineExpr(init, stages) -> return check_pipeline(cs: cs, init: init, stages: stages, env: env)
+        | PlaceholderE -> return TAny
+        | LambdaE(params, ret_type, body) -> return check_lambda(cs: cs, params: params, ret_type: ret_type, body: body, env: env)
+        | MatchE(scrutinee, arms) -> return check_match_expr(cs: cs, scrutinee: scrutinee, arms: arms, env: env)
+        | ConstructorE(name, args) -> return check_constructor(cs: cs, name: name, args: args, env: env)
+        | TupleE(elems) -> return check_tuple(cs: cs, elems: elems, env: env)
+        | TypedHoleE(name, hole_type, constraint) -> return resolve_type(cs: cs, annot: hole_type, tparams: [])
+        | WithE(target, updates) -> return check_with(cs: cs, target: target, updates: updates, env: env)
+    end match
+end func check_expr
+
+// Check an identifier expression.
+func check_ident(cs: CheckerState, name: String, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "x", new_type_env(None)) -> TAny
+    let found: Option[GType] = type_env_lookup(env, name)
+    match found with
+        | Some(t) -> return t
+        | None ->
+        tc_error(cs, "Undefined variable: " + name)
+        return TAny
+    end match
+end func check_ident
+
+// Check a type identifier (nullary constructor like None).
+func check_type_ident(cs: CheckerState, name: String) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "None") -> TAny
+    let type_names: List[String] = mutable_map_keys(cs.type_defs)
+    return check_type_ident_loop(cs: cs, name: name, type_names: type_names)
+end func check_type_ident
+
+func check_type_ident_loop(cs: CheckerState, name: String, type_names: List[String]) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "None", []) -> TAny
+    if length(type_names) == 0 then
+        tc_error(cs, "Unknown constructor: " + name)
+        return TAny
+    end if
+    let tname: String = head(type_names)
+    let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+    if is_some(tdef_opt) then
+        let tdef: TypeDefEntry = unwrap(tdef_opt)
+        if list_contains_str(tdef.variant_names, name) then
+            let fields_opt: Option[List[FieldInfo]] = mutable_map_get(tdef.variant_fields, name)
+            if is_some(fields_opt) then
+                let fields: List[FieldInfo] = unwrap(fields_opt)
+                if length(fields) == 0 then
+                    if length(tdef.type_params) > 0 then
+                        let any_args: List[GType] = make_any_list(length(tdef.type_params))
+                        return TUser(tname, any_args)
+                    end if
+                    return TUser(tname, [])
+                end if
+            else
+                return check_type_ident_loop(cs: cs, name: name, type_names: tail(type_names))
+            end if
+        end if
+        return check_type_ident_loop(cs: cs, name: name, type_names: tail(type_names))
+    end if
+    return check_type_ident_loop(cs: cs, name: name, type_names: tail(type_names))
+end func check_type_ident_loop
+
+// Create a list of TAny of given length.
+func make_any_list(n: Int) -> List[GType]
+    example 0 -> []
+    if n <= 0 then
+        return []
+    end if
+    return concat([TAny], make_any_list(n - 1))
+end func make_any_list
+
+// Check a list literal.
+func check_list_lit(cs: CheckerState, elems: List[Expr], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> TList(TAny)
+    if length(elems) == 0 then
+        return TList(TAny)
+    end if
+    let first_type: GType = check_expr(cs: cs, expr: head(elems), env: env)
+    check_list_lit_rest(cs: cs, elems: tail(elems), env: env, expected: first_type)
+    return TList(first_type)
+end func check_list_lit
+
+func check_list_lit_rest(cs: CheckerState, elems: List[Expr], env: TypeEnv, expected: GType) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None), TInt) -> ()
+    if length(elems) == 0 then
+        return ()
+    end if
+    let elem_type: GType = check_expr(cs: cs, expr: head(elems), env: env)
+    if not types_compatible(expected, elem_type) then
+        tc_error(cs, "List element type mismatch")
+    end if
+    check_list_lit_rest(cs: cs, elems: tail(elems), env: env, expected: expected)
+    return ()
+end func check_list_lit_rest
+
+// Check a binary operation.
+func check_binop(cs: CheckerState, op: String, left: Expr, right: Expr, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "+", IntLit(1), IntLit(2), new_type_env(None)) -> TInt
+    let lt: GType = check_expr(cs: cs, expr: left, env: env)
+    let rt: GType = check_expr(cs: cs, expr: right, env: env)
+    if op == "+" then
+        return check_arith_op(cs: cs, op: op, lt: lt, rt: rt)
+    end if
+    if op == "-" then
+        return check_arith_op(cs: cs, op: op, lt: lt, rt: rt)
+    end if
+    if op == "*" then
+        return check_arith_op(cs: cs, op: op, lt: lt, rt: rt)
+    end if
+    if op == "/" then
+        return check_arith_op(cs: cs, op: op, lt: lt, rt: rt)
+    end if
+    if op == "%" then
+        return check_arith_op(cs: cs, op: op, lt: lt, rt: rt)
+    end if
+    if op == "==" then return check_cmp_op(cs: cs, lt: lt, rt: rt) end if
+    if op == "!=" then return check_cmp_op(cs: cs, lt: lt, rt: rt) end if
+    if op == "<" then return check_cmp_op(cs: cs, lt: lt, rt: rt) end if
+    if op == ">" then return check_cmp_op(cs: cs, lt: lt, rt: rt) end if
+    if op == "<=" then return check_cmp_op(cs: cs, lt: lt, rt: rt) end if
+    if op == ">=" then return check_cmp_op(cs: cs, lt: lt, rt: rt) end if
+    if op == "and" then return check_logic_op(cs: cs, op: op, lt: lt, rt: rt) end if
+    if op == "or" then return check_logic_op(cs: cs, op: op, lt: lt, rt: rt) end if
+    tc_error(cs, "Unknown operator: " + op)
+    return TAny
+end func check_binop
+
+// Check an arithmetic operator.
+func check_arith_op(cs: CheckerState, op: String, lt: GType, rt: GType) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "+", TInt, TInt) -> TInt
+    // String concatenation
+    if op == "+" then
+        match lt with
+            | TString ->
+            match rt with
+                | TString -> return TString
+                | _ -> return check_arith_numeric(cs: cs, op: op, lt: lt, rt: rt)
+            end match
+            | _ -> return check_arith_numeric(cs: cs, op: op, lt: lt, rt: rt)
+        end match
+    end if
+    return check_arith_numeric(cs: cs, op: op, lt: lt, rt: rt)
+end func check_arith_op
+
+func check_arith_numeric(cs: CheckerState, op: String, lt: GType, rt: GType) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "+", TFloat, TFloat) -> TFloat
+    match lt with
+        | TInt ->
+        match rt with
+            | TInt -> return TInt
+            | TFloat -> return TFloat
+            | _ ->
+            tc_error(cs, "Cannot apply " + op + " to these types")
+            return TAny
+        end match
+        | TFloat ->
+        match rt with
+            | TInt -> return TFloat
+            | TFloat -> return TFloat
+            | _ ->
+            tc_error(cs, "Cannot apply " + op + " to these types")
+            return TAny
+        end match
+        | _ ->
+        tc_error(cs, "Cannot apply " + op + " to these types")
+        return TAny
+    end match
+end func check_arith_numeric
+
+// Check a comparison operator.
+func check_cmp_op(cs: CheckerState, lt: GType, rt: GType) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), TInt, TInt) -> TBool
+    if not types_compatible(lt, rt) then
+        tc_error(cs, "Cannot compare incompatible types")
+    end if
+    return TBool
+end func check_cmp_op
+
+// Check a logical operator.
+func check_logic_op(cs: CheckerState, op: String, lt: GType, rt: GType) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "and", TBool, TBool) -> TBool
+    match lt with
+        | TBool ->
+        match rt with
+            | TBool -> return TBool
+            | _ -> tc_error(cs, "Right operand of '" + op + "' must be Bool")
+        end match
+        | _ -> tc_error(cs, "Left operand of '" + op + "' must be Bool")
+    end match
+    return TBool
+end func check_logic_op
+
+// Check a unary operation.
+func check_unary(cs: CheckerState, op: String, operand: Expr, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "-", IntLit(1), new_type_env(None)) -> TInt
+    let ot: GType = check_expr(cs: cs, expr: operand, env: env)
+    if op == "-" then
+        match ot with
+            | TInt -> return TInt
+            | TFloat -> return TFloat
+            | _ ->
+            tc_error(cs, "Cannot negate non-numeric type")
+            return TAny
+        end match
+    end if
+    if op == "not" then
+        match ot with
+            | TBool -> return TBool
+            | _ ->
+            tc_error(cs, "'not' requires Bool")
+            return TBool
+        end match
+    end if
+    tc_error(cs, "Unknown unary operator: " + op)
+    return TAny
+end func check_unary
+
+// Check a function call expression.
+func check_call(cs: CheckerState, func_expr: Expr, args: List[CallArg], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), Ident("f"), [], new_type_env(None)) -> TAny
+    // Special case: length() accepts List, String, or Array
+    match func_expr with
+        | Ident(fname) ->
+        if fname == "length" then
+            if length(args) == 1 then
+                if not mutable_map_contains(cs.user_defined, fname) then
+                    return check_length_call(cs: cs, args: args, env: env)
+                end if
+            end if
+        end if
+        | _ -> return check_call_general(cs: cs, func_expr: func_expr, args: args, env: env)
+    end match
+    return check_call_general(cs: cs, func_expr: func_expr, args: args, env: env)
+end func check_call
+
+// Special handling for length() builtin.
+func check_length_call(cs: CheckerState, args: List[CallArg], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> TInt
+    if length(args) == 1 then
+        let arg: CallArg = head(args)
+        let arg_type: GType = check_expr(cs: cs, expr: arg.value, env: env)
+        match arg_type with
+            | TList(e) -> return TInt
+            | TString -> return TInt
+            | TArray(e) -> return TInt
+            | TAny -> return TInt
+            | TVar(n) -> return TInt
+            | _ ->
+            tc_error(cs, "length() expects List, String, or Array")
+            return TInt
+        end match
+    end if
+    return TInt
+end func check_length_call
+
+// General function call checking.
+func check_call_general(cs: CheckerState, func_expr: Expr, args: List[CallArg], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), Ident("f"), [], new_type_env(None)) -> TAny
+    let func_type: GType = check_expr(cs: cs, expr: func_expr, env: env)
+    match func_type with
+        | TFunc(param_types, ret_type, _effs) ->
+        // Check argument count
+        if length(args) != length(param_types) then
+            tc_error(cs, "Expected " + to_string(length(param_types)) + " arguments, got " + to_string(length(args)))
+        end if
+        // Get parameter names if available
+        let param_names: List[String] = get_func_param_names(cs: cs, func_expr: func_expr)
+        // Named argument enforcement: 3+ params require named args
+        if length(param_types) >= 3 then
+            let pos_count: Int = count_positional_args(args)
+            if pos_count > 0 then
+                let fname: String = get_func_name(func_expr)
+                tc_error(cs, "Function '" + fname + "' has " + to_string(length(param_types)) + " parameters; use named arguments for clarity")
+            end if
+        end if
+        // Check argument types with substitution tracking
+        let use_subs: Bool = has_type_vars_list(param_types) or has_type_vars(ret_type)
+        if use_subs then
+            let subs: MutableMap[String, GType] = mutable_map_new()
+            let has_named: Bool = has_named_args(args)
+            if has_named then
+                if length(param_names) > 0 then
+                    let ordered: List[Option[CallArg]] = reorder_args(cs: cs, args: args, param_names: param_names)
+                    check_ordered_args_subs(cs: cs, ordered: ordered, param_types: param_types, param_names: param_names, env: env, subs: subs)
+                else
+                    tc_error(cs, "Named arguments not supported for this call")
+                    check_positional_args_subs(cs: cs, args: args, param_types: param_types, env: env, subs: subs)
+                end if
+            else
+                check_positional_args_subs(cs: cs, args: args, param_types: param_types, env: env, subs: subs)
+            end if
+            if mutable_map_size(subs) > 0 then
+                return apply_subs(ret_type, subs)
+            end if
+            return ret_type
+        else
+            let has_named: Bool = has_named_args(args)
+            if has_named then
+                if length(param_names) > 0 then
+                    let ordered: List[Option[CallArg]] = reorder_args(cs: cs, args: args, param_names: param_names)
+                    check_ordered_args_no_subs(cs: cs, ordered: ordered, param_types: param_types, param_names: param_names, env: env)
+                else
+                    tc_error(cs, "Named arguments not supported for this call")
+                    check_positional_args_no_subs(cs: cs, args: args, param_types: param_types, env: env, idx: 0)
+                end if
+            else
+                check_positional_args_no_subs(cs: cs, args: args, param_types: param_types, env: env, idx: 0)
+            end if
+            return ret_type
+        end if
+        | TAny -> return TAny
+        | TVar(n) -> return TAny
+        | _ ->
+        tc_error(cs, "Cannot call non-function type")
+        return TAny
+    end match
+end func check_call_general
+
+// Get function name for error messages.
+func get_func_name(func_expr: Expr) -> String
+    example Ident("foo") -> "foo"
+    match func_expr with
+        | Ident(n) -> return n
+        | _ -> return "function"
+    end match
+end func get_func_name
+
+// Get parameter names for a function call.
+func get_func_param_names(cs: CheckerState, func_expr: Expr) -> List[String]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), Ident("f")) -> []
+    match func_expr with
+        | Ident(n) ->
+        let found: Option[List[String]] = mutable_map_get(cs.func_params, n)
+        match found with
+            | Some(names) -> return names
+            | None -> return []
+        end match
+        | _ -> return []
+    end match
+end func get_func_param_names
+
+// Count positional (unnamed) arguments.
+func count_positional_args(args: List[CallArg]) -> Int
+    example [] -> 0
+    if length(args) == 0 then
+        return 0
+    end if
+    let arg: CallArg = head(args)
+    match arg.name with
+        | Some(n) -> return count_positional_args(tail(args))
+        | None -> return 1 + count_positional_args(tail(args))
+    end match
+end func count_positional_args
+
+// Check if any argument is named.
+func has_named_args(args: List[CallArg]) -> Bool
+    example [] -> false
+    if length(args) == 0 then
+        return false
+    end if
+    let arg: CallArg = head(args)
+    match arg.name with
+        | Some(n) -> return true
+        | None -> return has_named_args(tail(args))
+    end match
+end func has_named_args
+
+// Reorder named arguments to match parameter order.
+func reorder_args(cs: CheckerState, args: List[CallArg], param_names: List[String]) -> List[Option[CallArg]]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], []) -> []
+    let result_arr: Array[Option[CallArg]] = array_new(size: length(param_names), default: None)
+    let used: MutableMap[Int, Bool] = mutable_map_new()
+    reorder_args_loop(cs: cs, args: args, param_names: param_names, result_arr: result_arr, used: used, pos_idx_arr: array_from_list([0]))
+    return array_to_list(result_arr)
+end func reorder_args
+
+func reorder_args_loop(cs: CheckerState, args: List[CallArg], param_names: List[String], result_arr: Array[Option[CallArg]], used: MutableMap[Int, Bool], pos_idx_arr: Array[Int]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], array_new(size: 0, default: None), mutable_map_new(), array_from_list([0])) -> ()
+    if length(args) == 0 then
+        return ()
+    end if
+    let arg: CallArg = head(args)
+    if is_some(arg.name) then
+        let n: String = unwrap(arg.name)
+        let pos: Int = find_param_index(names: param_names, target: n, idx: 0)
+        if pos < 0 then
+            tc_error(cs, "Unknown parameter name: " + n)
+        else
+            if mutable_map_contains(used, pos) then
+                tc_error(cs, "Duplicate argument for parameter: " + n)
+            else
+                array_set(array: result_arr, index: pos, value: Some(arg))
+                mutable_map_set(map: used, key: pos, value: true)
+            end if
+        end if
+    else
+        var pos_idx: Int = array_get(pos_idx_arr, 0)
+        while mutable_map_contains(used, pos_idx) do
+            pos_idx = pos_idx + 1
+        end while
+        if pos_idx < length(param_names) then
+            array_set(array: result_arr, index: pos_idx, value: Some(arg))
+            mutable_map_set(map: used, key: pos_idx, value: true)
+            array_set(array: pos_idx_arr, index: 0, value: pos_idx + 1)
+        end if
+    end if
+    reorder_args_loop(cs: cs, args: tail(args), param_names: param_names, result_arr: result_arr, used: used, pos_idx_arr: pos_idx_arr)
+    return ()
+end func reorder_args_loop
+
+// Find the index of a parameter name in the list (returns -1 if not found).
+func find_param_index(names: List[String], target: String, idx: Int) -> Int
+    example ([], "x", 0) -> -1
+    if length(names) == 0 then
+        return -1
+    end if
+    if head(names) == target then
+        return idx
+    end if
+    return find_param_index(names: tail(names), target: target, idx: idx + 1)
+end func find_param_index
+
+// Check positional args with substitution tracking.
+func check_positional_args_subs(cs: CheckerState, args: List[CallArg], param_types: List[GType], env: TypeEnv, subs: MutableMap[String, GType]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], new_type_env(None), mutable_map_new()) -> ()
+    if length(args) == 0 then
+        return ()
+    end if
+    if length(param_types) == 0 then
+        return ()
+    end if
+    let arg: CallArg = head(args)
+    let arg_type: GType = check_expr(cs: cs, expr: arg.value, env: env)
+    let expected: GType = head(param_types)
+    if not types_compatible_with_subs(expected: expected, actual: arg_type, subs: subs) then
+        tc_error(cs, "Argument type mismatch")
+    end if
+    check_positional_args_subs(cs: cs, args: tail(args), param_types: tail(param_types), env: env, subs: subs)
+    return ()
+end func check_positional_args_subs
+
+// Check positional args without substitution tracking.
+func check_positional_args_no_subs(cs: CheckerState, args: List[CallArg], param_types: List[GType], env: TypeEnv, idx: Int) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], new_type_env(None), 0) -> ()
+    if length(args) == 0 then
+        return ()
+    end if
+    if length(param_types) == 0 then
+        return ()
+    end if
+    let arg: CallArg = head(args)
+    let arg_type: GType = check_expr(cs: cs, expr: arg.value, env: env)
+    let expected: GType = head(param_types)
+    if not types_compatible(expected, arg_type) then
+        tc_error(cs, "Argument type mismatch")
+    end if
+    check_positional_args_no_subs(cs: cs, args: tail(args), param_types: tail(param_types), env: env, idx: idx + 1)
+    return ()
+end func check_positional_args_no_subs
+
+// Check ordered (reordered named) args with substitution tracking.
+func check_ordered_args_subs(cs: CheckerState, ordered: List[Option[CallArg]], param_types: List[GType], param_names: List[String], env: TypeEnv, subs: MutableMap[String, GType]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], [], new_type_env(None), mutable_map_new()) -> ()
+    if length(ordered) == 0 then
+        return ()
+    end if
+    if length(param_types) == 0 then
+        return ()
+    end if
+    let opt_arg: Option[CallArg] = head(ordered)
+    if is_some(opt_arg) then
+        let arg: CallArg = unwrap(opt_arg)
+        let arg_type: GType = check_expr(cs: cs, expr: arg.value, env: env)
+        let expected: GType = head(param_types)
+        if not types_compatible_with_subs(expected: expected, actual: arg_type, subs: subs) then
+            tc_error(cs, "Argument type mismatch")
+        end if
+    end if
+    check_ordered_args_subs(cs: cs, ordered: tail(ordered), param_types: tail(param_types), param_names: tail(param_names), env: env, subs: subs)
+    return ()
+end func check_ordered_args_subs
+
+// Check ordered (reordered named) args without substitution tracking.
+func check_ordered_args_no_subs(cs: CheckerState, ordered: List[Option[CallArg]], param_types: List[GType], param_names: List[String], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], [], new_type_env(None)) -> ()
+    if length(ordered) == 0 then
+        return ()
+    end if
+    if length(param_types) == 0 then
+        return ()
+    end if
+    let opt_arg: Option[CallArg] = head(ordered)
+    if is_some(opt_arg) then
+        let arg: CallArg = unwrap(opt_arg)
+        let arg_type: GType = check_expr(cs: cs, expr: arg.value, env: env)
+        let expected: GType = head(param_types)
+        if not types_compatible(expected, arg_type) then
+            tc_error(cs, "Argument type mismatch")
+        end if
+    end if
+    check_ordered_args_no_subs(cs: cs, ordered: tail(ordered), param_types: tail(param_types), param_names: tail(param_names), env: env)
+    return ()
+end func check_ordered_args_no_subs
+
+// Check index access expression.
+func check_index(cs: CheckerState, target: Expr, idx: Expr, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), StrLit("hi"), IntLit(0), new_type_env(None)) -> TString
+    let target_type: GType = check_expr(cs: cs, expr: target, env: env)
+    let idx_type: GType = check_expr(cs: cs, expr: idx, env: env)
+    match target_type with
+        | TList(elem) ->
+        match idx_type with
+            | TInt -> return elem
+            | _ ->
+            tc_error(cs, "List index must be Int")
+            return elem
+        end match
+        | TArray(elem) ->
+        match idx_type with
+            | TInt -> return elem
+            | _ ->
+            tc_error(cs, "Array index must be Int")
+            return elem
+        end match
+        | TString ->
+        match idx_type with
+            | TInt -> return TString
+            | _ ->
+            tc_error(cs, "String index must be Int")
+            return TString
+        end match
+        | TMap(kt, vt) ->
+        if not types_compatible(kt, idx_type) then
+            tc_error(cs, "Map key type mismatch")
+        end if
+        return vt
+        | _ ->
+        tc_error(cs, "Cannot index into this type")
+        return TAny
+    end match
+end func check_index
+
+// Check field access expression.
+func check_field(cs: CheckerState, target: Expr, field_name: String, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(0), "x", new_type_env(None)) -> TAny
+    let target_type: GType = check_expr(cs: cs, expr: target, env: env)
+    match target_type with
+        | TUser(tname, targs) ->
+        let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+        if is_some(tdef_opt) then
+            let tdef: TypeDefEntry = unwrap(tdef_opt)
+            let found: GType = find_field_in_variants(tdef: tdef, field_name: field_name)
+            match found with
+                | TAny ->
+                tc_error(cs, "Unknown field '" + field_name + "' on type " + tname)
+                return TAny
+                | _ -> return found
+            end match
+        else
+            tc_error(cs, "Unknown type in field access: " + tname)
+            return TAny
+        end if
+        | _ ->
+        tc_error(cs, "Cannot access field on this type")
+        return TAny
+    end match
+end func check_field
+
+// Search all variants of a type def for a field.
+func find_field_in_variants(tdef: TypeDefEntry, field_name: String) -> GType
+    example (TypeDefEntry("T", [], [], mutable_map_new()), "x") -> TAny
+    return find_field_loop(variant_names: tdef.variant_names, variant_fields: tdef.variant_fields, field_name: field_name)
+end func find_field_in_variants
+
+func find_field_loop(variant_names: List[String], variant_fields: MutableMap[String, List[FieldInfo]], field_name: String) -> GType
+    example ([], mutable_map_new(), "x") -> TAny
+    if length(variant_names) == 0 then
+        return TAny
+    end if
+    let vname: String = head(variant_names)
+    let fields_opt: Option[List[FieldInfo]] = mutable_map_get(variant_fields, vname)
+    if is_some(fields_opt) then
+        let fields: List[FieldInfo] = unwrap(fields_opt)
+        let found: GType = find_field_in_list(fields, field_name)
+        match found with
+            | TAny -> return find_field_loop(variant_names: tail(variant_names), variant_fields: variant_fields, field_name: field_name)
+            | _ -> return found
+        end match
+    end if
+    return find_field_loop(variant_names: tail(variant_names), variant_fields: variant_fields, field_name: field_name)
+end func find_field_loop
+
+func find_field_in_list(fields: List[FieldInfo], field_name: String) -> GType
+    example ([], "x") -> TAny
+    if length(fields) == 0 then
+        return TAny
+    end if
+    let fi: FieldInfo = head(fields)
+    if fi.name == field_name then
+        return fi.field_type
+    end if
+    return find_field_in_list(tail(fields), field_name)
+end func find_field_in_list
+
+// Check a with expression.
+func check_with(cs: CheckerState, target: Expr, updates: List[FieldUpdate], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(0), [], new_type_env(None)) -> TAny
+    let target_type: GType = check_expr(cs: cs, expr: target, env: env)
+    match target_type with
+        | TUser(tname, targs) ->
+        let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+        if is_some(tdef_opt) then
+            let tdef: TypeDefEntry = unwrap(tdef_opt)
+            if length(tdef.variant_names) != 1 then
+                tc_error(cs, "'with' expression requires a single-variant type")
+                return TAny
+            end if
+            check_with_updates(cs: cs, updates: updates, tdef: tdef, env: env)
+            return target_type
+        else
+            tc_error(cs, "Unknown type in 'with' expression")
+            return TAny
+        end if
+        | _ ->
+        tc_error(cs, "'with' expression requires a user-defined type")
+        return TAny
+    end match
+end func check_with
+
+func check_with_updates(cs: CheckerState, updates: List[FieldUpdate], tdef: TypeDefEntry, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], TypeDefEntry("T", [], [], mutable_map_new()), new_type_env(None)) -> ()
+    if length(updates) == 0 then
+        return ()
+    end if
+    let upd: FieldUpdate = head(updates)
+    let expected_field: GType = find_field_in_variants(tdef: tdef, field_name: upd.name)
+    match expected_field with
+        | TAny -> tc_error(cs, "Unknown field '" + upd.name + "' in with expression")
+        | _ ->
+        let val_type: GType = check_expr(cs: cs, expr: upd.value, env: env)
+        if not types_compatible(expected_field, val_type) then
+            tc_error(cs, "Field '" + upd.name + "' type mismatch in with expression")
+        end if
+    end match
+    check_with_updates(cs: cs, updates: tail(updates), tdef: tdef, env: env)
+    return ()
+end func check_with_updates
+
+// Check a pipeline expression.
+func check_pipeline(cs: CheckerState, init: Expr, stages: List[PipeStage], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(1), [], new_type_env(None)) -> TInt
+    let cur_type: GType = check_expr(cs: cs, expr: init, env: env)
+    return check_pipeline_stages(cs: cs, stages: stages, cur_type: cur_type, env: env)
+end func check_pipeline
+
+func check_pipeline_stages(cs: CheckerState, stages: List[PipeStage], cur_type: GType, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], TInt, new_type_env(None)) -> TInt
+    if length(stages) == 0 then
+        return cur_type
+    end if
+    let stage: PipeStage = head(stages)
+    let func_type: GType = check_expr(cs: cs, expr: stage.func_expr, env: env)
+    match func_type with
+        | TFunc(param_types, ret_type, _effs) ->
+        if length(param_types) == 0 then
+            tc_error(cs, "Pipeline function must take at least one argument")
+            return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: cur_type, env: env)
+        end if
+        // Check placeholder positions
+        let has_placeholder: Bool = has_placeholder_in_list(stage.args)
+        if has_placeholder then
+            // Placeholder mode: stage.args count == param_types count
+            if length(stage.args) != length(param_types) then
+                tc_error(cs, "Pipeline stage argument count mismatch")
+            end if
+        else
+            // No placeholder: piped value prepended
+            if length(stage.args) + 1 != length(param_types) then
+                tc_error(cs, "Pipeline stage argument count mismatch")
+            end if
+            // Check piped value against first param
+            if not types_compatible(head(param_types), cur_type) then
+                tc_error(cs, "Pipeline type mismatch")
+            end if
+        end if
+        // Check stage extra arguments
+        check_pipeline_args(cs: cs, args: stage.args, param_types: param_types, env: env, has_placeholder: has_placeholder)
+        return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: ret_type, env: env)
+        | _ ->
+        tc_error(cs, "Pipeline stage must be a function")
+        return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: cur_type, env: env)
+    end match
+end func check_pipeline_stages
+
+func has_placeholder_in_list(exprs: List[Expr]) -> Bool
+    example [] -> false
+    if length(exprs) == 0 then
+        return false
+    end if
+    match head(exprs) with
+        | PlaceholderE -> return true
+        | _ -> return has_placeholder_in_list(tail(exprs))
+    end match
+end func has_placeholder_in_list
+
+func check_pipeline_args(cs: CheckerState, args: List[Expr], param_types: List[GType], env: TypeEnv, has_placeholder: Bool) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], new_type_env(None), false) -> ()
+    if length(args) == 0 then
+        return ()
+    end if
+    let arg: Expr = head(args)
+    match arg with
+        | PlaceholderE ->
+        check_pipeline_args(cs: cs, args: tail(args), param_types: tail(param_types), env: env, has_placeholder: has_placeholder)
+        return ()
+        | _ ->
+        // Determine which param type to check against
+        let pt: List[GType] = param_types
+        if not has_placeholder then
+            if length(pt) > 0 then
+                // Skip first param (piped value)
+                let remaining_pt: List[GType] = tail(pt)
+                if length(remaining_pt) > 0 then
+                    let arg_type: GType = check_expr(cs: cs, expr: arg, env: env)
+                    if not types_compatible(head(remaining_pt), arg_type) then
+                        tc_error(cs, "Pipeline argument type mismatch")
+                    end if
+                end if
+            end if
+        else
+            if length(pt) > 0 then
+                let arg_type: GType = check_expr(cs: cs, expr: arg, env: env)
+                if not types_compatible(head(pt), arg_type) then
+                    tc_error(cs, "Pipeline argument type mismatch")
+                end if
+            end if
+        end if
+        check_pipeline_args(cs: cs, args: tail(args), param_types: tail(param_types), env: env, has_placeholder: has_placeholder)
+        return ()
+    end match
+end func check_pipeline_args
+
+// Check a lambda expression.
+func check_lambda(cs: CheckerState, params: List[Param], ret_type: Option[TypeAnnot], body: Expr, env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], None, IntLit(1), new_type_env(None)) -> TFunc([], TInt, [])
+    let lambda_env: TypeEnv = type_env_child(env)
+    let param_gtypes: List[GType] = bind_lambda_params(cs: cs, params: params, env: lambda_env)
+    let body_type: GType = check_expr(cs: cs, expr: body, env: lambda_env)
+    return TFunc(param_gtypes, body_type, [])
+end func check_lambda
+
+func bind_lambda_params(cs: CheckerState, params: List[Param], env: TypeEnv) -> List[GType]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> []
+    if length(params) == 0 then
+        return []
+    end if
+    let p: Param = head(params)
+    let pt: GType = resolve_type(cs: cs, annot: p.param_type, tparams: [])
+    type_env_bind(env: env, name: p.name, t: pt)
+    let rest: List[GType] = bind_lambda_params(cs: cs, params: tail(params), env: env)
+    return concat([pt], rest)
+end func bind_lambda_params
+
+// Check a constructor call.
+func check_constructor(cs: CheckerState, name: String, args: List[Expr], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "Foo", [], new_type_env(None)) -> TAny
+    let type_names: List[String] = mutable_map_keys(cs.type_defs)
+    return check_constructor_loop(cs: cs, name: name, args: args, env: env, type_names: type_names)
+end func check_constructor
+
+func check_constructor_loop(cs: CheckerState, name: String, args: List[Expr], env: TypeEnv, type_names: List[String]) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "Foo", [], new_type_env(None), []) -> TAny
+    if length(type_names) == 0 then
+        tc_error(cs, "Unknown constructor: " + name)
+        return TAny
+    end if
+    let tname: String = head(type_names)
+    let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+    if is_some(tdef_opt) then
+        let tdef: TypeDefEntry = unwrap(tdef_opt)
+        if list_contains_str(tdef.variant_names, name) then
+            let fields_opt: Option[List[FieldInfo]] = mutable_map_get(tdef.variant_fields, name)
+            if is_some(fields_opt) then
+                let fields: List[FieldInfo] = unwrap(fields_opt)
+                if length(args) != length(fields) then
+                    tc_error(cs, "Constructor " + name + " expects " + to_string(length(fields)) + " arguments, got " + to_string(length(args)))
+                end if
+                let bindings: MutableMap[String, GType] = mutable_map_new()
+                check_constructor_args(cs: cs, args: args, fields: fields, env: env, bindings: bindings)
+                if tname == "Option" then
+                    let val_t: GType = get_binding_or_any(bindings, "T")
+                    return TOption(val_t)
+                end if
+                if tname == "Result" then
+                    let ok_t: GType = get_binding_or_any(bindings, "T")
+                    let err_t: GType = get_binding_or_any(bindings, "E")
+                    return TResult(ok_t, err_t)
+                end if
+                if length(tdef.type_params) > 0 then
+                    let inferred: List[GType] = infer_type_params(tdef.type_params, bindings)
+                    return TUser(tname, inferred)
+                end if
+                return TUser(tname, [])
+            else
+                return check_constructor_loop(cs: cs, name: name, args: args, env: env, type_names: tail(type_names))
+            end if
+        end if
+        return check_constructor_loop(cs: cs, name: name, args: args, env: env, type_names: tail(type_names))
+    end if
+    return check_constructor_loop(cs: cs, name: name, args: args, env: env, type_names: tail(type_names))
+end func check_constructor_loop
+
+func check_constructor_args(cs: CheckerState, args: List[Expr], fields: List[FieldInfo], env: TypeEnv, bindings: MutableMap[String, GType]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], new_type_env(None), mutable_map_new()) -> ()
+    if length(args) == 0 then
+        return ()
+    end if
+    if length(fields) == 0 then
+        return ()
+    end if
+    let arg: Expr = head(args)
+    let fi: FieldInfo = head(fields)
+    let arg_type: GType = check_expr(cs: cs, expr: arg, env: env)
+    match fi.field_type with
+        | TVar(n) -> mutable_map_set(map: bindings, key: n, value: arg_type)
+        | _ ->
+        if not types_compatible(fi.field_type, arg_type) then
+            tc_error(cs, "Constructor field type mismatch")
+        end if
+    end match
+    check_constructor_args(cs: cs, args: tail(args), fields: tail(fields), env: env, bindings: bindings)
+    return ()
+end func check_constructor_args
+
+func get_binding_or_any(bindings: MutableMap[String, GType], name: String) -> GType
+    example (mutable_map_new(), "T") -> TAny
+    let found: Option[GType] = mutable_map_get(bindings, name)
+    match found with
+        | Some(t) -> return t
+        | None -> return TAny
+    end match
+end func get_binding_or_any
+
+func infer_type_params(params: List[String], bindings: MutableMap[String, GType]) -> List[GType]
+    example ([], mutable_map_new()) -> []
+    if length(params) == 0 then
+        return []
+    end if
+    let t: GType = get_binding_or_any(bindings, head(params))
+    return concat([t], infer_type_params(tail(params), bindings))
+end func infer_type_params
+
+// Check a tuple expression.
+func check_tuple(cs: CheckerState, elems: List[Expr], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> TUnit
+    if length(elems) == 0 then
+        return TUnit
+    end if
+    let elem_types: List[GType] = check_expr_list(cs: cs, exprs: elems, env: env)
+    return TTuple(elem_types)
+end func check_tuple
+
+// Type check a list of expressions.
+func check_expr_list(cs: CheckerState, exprs: List[Expr], env: TypeEnv) -> List[GType]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> []
+    if length(exprs) == 0 then
+        return []
+    end if
+    let t: GType = check_expr(cs: cs, expr: head(exprs), env: env)
+    return concat([t], check_expr_list(cs: cs, exprs: tail(exprs), env: env))
+end func check_expr_list
+
+// Check a match expression.
+func check_match_expr(cs: CheckerState, scrutinee: Expr, arms: List[MatchArm], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(1), [], new_type_env(None)) -> TAny
+    let scrut_type: GType = check_expr(cs: cs, expr: scrutinee, env: env)
+    let result_type: GType = check_match_arms_expr(cs: cs, arms: arms, scrut_type: scrut_type, env: env, result_type: TAny, has_result: false)
+    check_exhaustiveness(cs: cs, scrut_type: scrut_type, arms: arms)
+    return result_type
+end func check_match_expr
+
+func check_match_arms_expr(cs: CheckerState, arms: List[MatchArm], scrut_type: GType, env: TypeEnv, result_type: GType, has_result: Bool) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], TInt, new_type_env(None), TAny, false) -> TAny
+    if length(arms) == 0 then
+        return result_type
+    end if
+    let arm: MatchArm = head(arms)
+    let arm_env: TypeEnv = type_env_child(env)
+    check_pattern(cs: cs, pat: arm.pat, expected: scrut_type, env: arm_env)
+    // Look for return statements in the arm body to determine the arm's type
+    let arm_type: GType = get_arm_return_type(cs: cs, stmts: arm.body, env: arm_env)
+    if has_result then
+        if not types_compatible(result_type, arm_type) then
+            tc_error(cs, "Match arm type mismatch")
+        end if
+        return check_match_arms_expr(cs: cs, arms: tail(arms), scrut_type: scrut_type, env: env, result_type: result_type, has_result: true)
+    else
+        return check_match_arms_expr(cs: cs, arms: tail(arms), scrut_type: scrut_type, env: env, result_type: arm_type, has_result: true)
+    end if
+end func check_match_arms_expr
+
+func get_arm_return_type(cs: CheckerState, stmts: List[Stmt], env: TypeEnv) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> TAny
+    if length(stmts) == 0 then
+        return TAny
+    end if
+    let stmt: Stmt = head(stmts)
+    match stmt with
+        | ReturnStmt(value) -> return check_expr(cs: cs, expr: value, env: env)
+        | _ ->
+        check_stmt(cs: cs, stmt: stmt, env: env)
+        return get_arm_return_type(cs: cs, stmts: tail(stmts), env: env)
+    end match
+end func get_arm_return_type
+
+// ============================================================================
+// Statement type checking
+// ============================================================================
+
+// Type check a statement.
+func check_stmt(cs: CheckerState, stmt: Stmt, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), ReturnStmt(IntLit(0)), new_type_env(None)) -> ()
+    match stmt with
+        | LetStmt(name, type_ann, value) -> check_let_stmt(cs: cs, name: name, type_ann: type_ann, value: value, env: env)
+        | VarStmt(name, type_ann, value) -> check_var_stmt(cs: cs, name: name, type_ann: type_ann, value: value, env: env)
+        | AssignStmt(target, value) -> check_assign_stmt(cs: cs, target: target, value: value, env: env)
+        | IfStmt(cond, then_body, else_body) -> check_if_stmt(cs: cs, cond: cond, then_body: then_body, else_body: else_body, env: env)
+        | WhileStmt(cond, body) -> check_while_stmt(cs: cs, cond: cond, body: body, env: env)
+        | ForStmt(var_name, var_type, iterable, body) -> check_for_stmt(cs: cs, var_name: var_name, var_type: var_type, iterable: iterable, body: body, env: env)
+        | MatchStmt(scrutinee, arms) -> check_match_stmt(cs: cs, scrutinee: scrutinee, arms: arms, env: env)
+        | ReturnStmt(value) -> check_return_stmt(cs: cs, value: value, env: env)
+        | ExprStmt(expr) ->
+        let ignore: GType = check_expr(cs: cs, expr: expr, env: env)
+        return ()
+    end match
+end func check_stmt
+
+// Check a let statement.
+func check_let_stmt(cs: CheckerState, name: String, type_ann: TypeAnnot, value: Expr, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "x", SimpleTypeAnnot("Int", []), IntLit(1), new_type_env(None)) -> ()
+    let declared: GType = resolve_type(cs: cs, annot: type_ann, tparams: [])
+    let actual: GType = check_expr(cs: cs, expr: value, env: env)
+    if not types_compatible(declared, actual) then
+        tc_error(cs, "Type mismatch in let: declared vs actual for '" + name + "'")
+    end if
+    type_env_bind(env: env, name: name, t: declared)
+    return ()
+end func check_let_stmt
+
+// Check a var statement.
+func check_var_stmt(cs: CheckerState, name: String, type_ann: TypeAnnot, value: Expr, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "x", SimpleTypeAnnot("Int", []), IntLit(1), new_type_env(None)) -> ()
+    let declared: GType = resolve_type(cs: cs, annot: type_ann, tparams: [])
+    let actual: GType = check_expr(cs: cs, expr: value, env: env)
+    if not types_compatible(declared, actual) then
+        tc_error(cs, "Type mismatch in var: declared vs actual for '" + name + "'")
+    end if
+    type_env_bind_mut(env: env, name: name, t: declared)
+    return ()
+end func check_var_stmt
+
+// Check an assignment statement.
+func check_assign_stmt(cs: CheckerState, target: String, value: Expr, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "x", IntLit(1), new_type_env(None)) -> ()
+    let var_type_opt: Option[GType] = type_env_lookup(env, target)
+    match var_type_opt with
+        | None ->
+        tc_error(cs, "Undefined variable: " + target)
+        return ()
+        | Some(var_type) ->
+        if not type_env_is_mutable(env, target) then
+            tc_error(cs, "Cannot assign to immutable variable: " + target)
+            return ()
+        end if
+        let val_type: GType = check_expr(cs: cs, expr: value, env: env)
+        if not types_compatible(var_type, val_type) then
+            tc_error(cs, "Type mismatch in assignment to '" + target + "'")
+        end if
+        return ()
+    end match
+end func check_assign_stmt
+
+// Check an if statement.
+func check_if_stmt(cs: CheckerState, cond: Expr, then_body: List[Stmt], else_body: List[Stmt], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), BoolLit(true), [], [], new_type_env(None)) -> ()
+    let cond_type: GType = check_expr(cs: cs, expr: cond, env: env)
+    if not types_compatible(TBool, cond_type) then
+        tc_error(cs, "If condition must be Bool")
+    end if
+    let then_env: TypeEnv = type_env_child(env)
+    check_stmts(cs: cs, stmts: then_body, env: then_env)
+    let else_env: TypeEnv = type_env_child(env)
+    check_stmts(cs: cs, stmts: else_body, env: else_env)
+    return ()
+end func check_if_stmt
+
+// Check a while statement.
+func check_while_stmt(cs: CheckerState, cond: Expr, body: List[Stmt], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), BoolLit(true), [], new_type_env(None)) -> ()
+    let cond_type: GType = check_expr(cs: cs, expr: cond, env: env)
+    if not types_compatible(TBool, cond_type) then
+        tc_error(cs, "While condition must be Bool")
+    end if
+    let body_env: TypeEnv = type_env_child(env)
+    check_stmts(cs: cs, stmts: body, env: body_env)
+    return ()
+end func check_while_stmt
+
+// Check a for statement.
+func check_for_stmt(cs: CheckerState, var_name: String, var_type: TypeAnnot, iterable: Expr, body: List[Stmt], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "x", SimpleTypeAnnot("Int", []), ListLitExpr([]), [], new_type_env(None)) -> ()
+    let iter_type: GType = check_expr(cs: cs, expr: iterable, env: env)
+    let elem_type: GType = extract_elem_type(cs: cs, iter_type: iter_type)
+    let declared: GType = resolve_type(cs: cs, annot: var_type, tparams: [])
+    if not types_compatible(declared, elem_type) then
+        tc_error(cs, "For variable type doesn't match iterable element type")
+    end if
+    let body_env: TypeEnv = type_env_child(env)
+    type_env_bind(env: body_env, name: var_name, t: declared)
+    check_stmts(cs: cs, stmts: body, env: body_env)
+    return ()
+end func check_for_stmt
+
+// Extract the element type from a list or array type.
+func extract_elem_type(cs: CheckerState, iter_type: GType) -> GType
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), TList(TInt)) -> TInt
+    match iter_type with
+        | TList(e) -> return e
+        | TArray(e) -> return e
+        | TAny -> return TAny
+        | TVar(n) -> return TAny
+        | _ ->
+        tc_error(cs, "For loop requires List or Array")
+        return TAny
+    end match
+end func extract_elem_type
+
+// Check a match statement.
+func check_match_stmt(cs: CheckerState, scrutinee: Expr, arms: List[MatchArm], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(1), [], new_type_env(None)) -> ()
+    let scrut_type: GType = check_expr(cs: cs, expr: scrutinee, env: env)
+    check_match_arms_stmt(cs: cs, arms: arms, scrut_type: scrut_type, env: env)
+    check_exhaustiveness(cs: cs, scrut_type: scrut_type, arms: arms)
+    return ()
+end func check_match_stmt
+
+func check_match_arms_stmt(cs: CheckerState, arms: List[MatchArm], scrut_type: GType, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], TInt, new_type_env(None)) -> ()
+    if length(arms) == 0 then
+        return ()
+    end if
+    let arm: MatchArm = head(arms)
+    let arm_env: TypeEnv = type_env_child(env)
+    check_pattern(cs: cs, pat: arm.pat, expected: scrut_type, env: arm_env)
+    check_stmts(cs: cs, stmts: arm.body, env: arm_env)
+    check_match_arms_stmt(cs: cs, arms: tail(arms), scrut_type: scrut_type, env: env)
+    return ()
+end func check_match_arms_stmt
+
+// Check a return statement.
+func check_return_stmt(cs: CheckerState, value: Expr, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), IntLit(0), new_type_env(None)) -> ()
+    let ret: GType = current_return_type(cs)
+    let val_type: GType = check_expr(cs: cs, expr: value, env: env)
+    if not types_compatible(ret, val_type) then
+        tc_error(cs, "Return type mismatch")
+    end if
+    return ()
+end func check_return_stmt
+
+// Check a list of statements.
+func check_stmts(cs: CheckerState, stmts: List[Stmt], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> ()
+    if length(stmts) == 0 then
+        return ()
+    end if
+    check_stmt(cs: cs, stmt: head(stmts), env: env)
+    check_stmts(cs: cs, stmts: tail(stmts), env: env)
+    return ()
+end func check_stmts
+
+// ============================================================================
+// Pattern checking
+// ============================================================================
+
+// Type check a pattern and bind variables in the environment.
+func check_pattern(cs: CheckerState, pat: Pattern, expected: GType, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), WildcardPat, TInt, new_type_env(None)) -> ()
+    match pat with
+        | WildcardPat -> return ()
+        | VarPat(name) ->
+        type_env_bind(env: env, name: name, t: expected)
+        return ()
+        | LitPat(value) ->
+        let lit_type: GType = check_expr(cs: cs, expr: value, env: env)
+        if not types_compatible(expected, lit_type) then
+            tc_error(cs, "Pattern type mismatch")
+        end if
+        return ()
+        | CtorPat(ctor_name, sub_pats) ->
+        check_ctor_pattern(cs: cs, ctor_name: ctor_name, sub_pats: sub_pats, expected: expected, env: env)
+        return ()
+        | ListPat(elems) ->
+        check_list_pattern(cs: cs, elems: elems, expected: expected, env: env)
+        return ()
+    end match
+end func check_pattern
+
+// Check a constructor pattern.
+func check_ctor_pattern(cs: CheckerState, ctor_name: String, sub_pats: List[Pattern], expected: GType, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "None", [], TAny, new_type_env(None)) -> ()
+    // Determine the type name from the expected type
+    let tname: String = get_type_name_for_pattern(expected)
+    if tname == "" then
+        tc_error(cs, "Constructor pattern not valid for this type")
+        return ()
+    end if
+    let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+    if not is_some(tdef_opt) then
+        tc_error(cs, "Unknown type in pattern: " + tname)
+        return ()
+    end if
+    let tdef: TypeDefEntry = unwrap(tdef_opt)
+    if not list_contains_str(tdef.variant_names, ctor_name) then
+        tc_error(cs, "Constructor " + ctor_name + " does not belong to type " + tname)
+        return ()
+    end if
+    let fields_opt: Option[List[FieldInfo]] = mutable_map_get(tdef.variant_fields, ctor_name)
+    if not is_some(fields_opt) then
+        return ()
+    end if
+    let fields: List[FieldInfo] = unwrap(fields_opt)
+    if length(sub_pats) != length(fields) then
+        tc_error(cs, "Constructor " + ctor_name + " expects " + to_string(length(fields)) + " fields, got " + to_string(length(sub_pats)))
+        return ()
+    end if
+    check_sub_patterns(cs: cs, pats: sub_pats, fields: fields, env: env)
+    return ()
+end func check_ctor_pattern
+
+// Get the type name for pattern matching from an expected type.
+func get_type_name_for_pattern(expected: GType) -> String
+    example TInt -> ""
+    match expected with
+        | TUser(n, args) -> return n
+        | TOption(v) -> return "Option"
+        | TResult(o, e) -> return "Result"
+        | TAny -> return ""
+        | TVar(n) -> return ""
+        | _ -> return ""
+    end match
+end func get_type_name_for_pattern
+
+// Check sub-patterns against constructor fields.
+func check_sub_patterns(cs: CheckerState, pats: List[Pattern], fields: List[FieldInfo], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], new_type_env(None)) -> ()
+    if length(pats) == 0 then
+        return ()
+    end if
+    if length(fields) == 0 then
+        return ()
+    end if
+    let fi: FieldInfo = head(fields)
+    check_pattern(cs: cs, pat: head(pats), expected: fi.field_type, env: env)
+    check_sub_patterns(cs: cs, pats: tail(pats), fields: tail(fields), env: env)
+    return ()
+end func check_sub_patterns
+
+// Check a list pattern.
+func check_list_pattern(cs: CheckerState, elems: List[Pattern], expected: GType, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], TList(TInt), new_type_env(None)) -> ()
+    match expected with
+        | TList(elem_type) ->
+        check_list_pattern_elems(cs: cs, elems: elems, elem_type: elem_type, env: env)
+        return ()
+        | TAny -> return ()
+        | TVar(n) -> return ()
+        | _ ->
+        tc_error(cs, "List pattern used with non-list type")
+        return ()
+    end match
+end func check_list_pattern
+
+func check_list_pattern_elems(cs: CheckerState, elems: List[Pattern], elem_type: GType, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], TInt, new_type_env(None)) -> ()
+    if length(elems) == 0 then
+        return ()
+    end if
+    check_pattern(cs: cs, pat: head(elems), expected: elem_type, env: env)
+    check_list_pattern_elems(cs: cs, elems: tail(elems), elem_type: elem_type, env: env)
+    return ()
+end func check_list_pattern_elems
+
+// ============================================================================
+// Pattern exhaustiveness checking
+// ============================================================================
+
+func check_exhaustiveness(cs: CheckerState, scrut_type: GType, arms: List[MatchArm]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), TInt, []) -> ()
+    // Wildcard or variable pattern covers everything
+    if has_catch_all_pattern(arms) then
+        return ()
+    end if
+    match scrut_type with
+        | TOption(v) ->
+        check_option_exhaustiveness(cs: cs, arms: arms)
+        return ()
+        | TResult(o, e) ->
+        check_result_exhaustiveness(cs: cs, arms: arms)
+        return ()
+        | TUser(tname, targs) ->
+        check_user_type_exhaustiveness(cs: cs, tname: tname, arms: arms)
+        return ()
+        | TBool ->
+        check_bool_exhaustiveness(cs: cs, arms: arms)
+        return ()
+        | TList(elem) ->
+        // Matching on ``List[T]`` without a wildcard / variable
+        // catch-all is non-exhaustive: a fixed-length list pattern
+        // can only cover one length, but lists are unbounded.
+        // Python's reference check only returns exhaustive when a
+        // rest pattern (``| [x, ...xs] -> ...``) is present; the
+        // selfhost pattern grammar doesn't support rest patterns,
+        // so the only way to be exhaustive here is the catch-all
+        // (already handled above).  F-0031 in #665.
+        tc_error(cs, "Non-exhaustive patterns: match on " + format_gtype(scrut_type) + " requires a default arm")
+        return ()
+        | _ -> return ()
+    end match
+end func check_exhaustiveness
+
+func has_catch_all_pattern(arms: List[MatchArm]) -> Bool
+    example [] -> false
+    if length(arms) == 0 then
+        return false
+    end if
+    let arm: MatchArm = head(arms)
+    match arm.pat with
+        | WildcardPat -> return true
+        | VarPat(n) -> return true
+        | _ -> return has_catch_all_pattern(tail(arms))
+    end match
+end func has_catch_all_pattern
+
+func check_option_exhaustiveness(cs: CheckerState, arms: List[MatchArm]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> ()
+    let has_some: Bool = has_ctor_pattern(arms, "Some")
+    let has_none: Bool = has_ctor_pattern(arms, "None")
+    if not has_some then
+        tc_error(cs, "Non-exhaustive patterns: missing Some")
+    end if
+    if not has_none then
+        tc_error(cs, "Non-exhaustive patterns: missing None")
+    end if
+    return ()
+end func check_option_exhaustiveness
+
+func check_result_exhaustiveness(cs: CheckerState, arms: List[MatchArm]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> ()
+    let has_ok: Bool = has_ctor_pattern(arms, "Ok")
+    let has_err: Bool = has_ctor_pattern(arms, "Err")
+    if not has_ok then
+        tc_error(cs, "Non-exhaustive patterns: missing Ok")
+    end if
+    if not has_err then
+        tc_error(cs, "Non-exhaustive patterns: missing Err")
+    end if
+    return ()
+end func check_result_exhaustiveness
+
+func check_user_type_exhaustiveness(cs: CheckerState, tname: String, arms: List[MatchArm]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), "T", []) -> ()
+    let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+    if is_some(tdef_opt) then
+        let tdef: TypeDefEntry = unwrap(tdef_opt)
+        check_variants_covered(cs: cs, variant_names: tdef.variant_names, arms: arms)
+    end if
+    return ()
+end func check_user_type_exhaustiveness
+
+func check_variants_covered(cs: CheckerState, variant_names: List[String], arms: List[MatchArm]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], []) -> ()
+    if length(variant_names) == 0 then
+        return ()
+    end if
+    let vname: String = head(variant_names)
+    if not has_ctor_pattern(arms, vname) then
+        tc_error(cs, "Non-exhaustive patterns: missing " + vname)
+    end if
+    check_variants_covered(cs: cs, variant_names: tail(variant_names), arms: arms)
+    return ()
+end func check_variants_covered
+
+func check_bool_exhaustiveness(cs: CheckerState, arms: List[MatchArm]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> ()
+    let has_true: Bool = has_bool_lit_pattern(arms, true)
+    let has_false: Bool = has_bool_lit_pattern(arms, false)
+    if not has_true then
+        tc_error(cs, "Non-exhaustive patterns: missing true")
+    end if
+    if not has_false then
+        tc_error(cs, "Non-exhaustive patterns: missing false")
+    end if
+    return ()
+end func check_bool_exhaustiveness
+
+func has_ctor_pattern(arms: List[MatchArm], ctor_name: String) -> Bool
+    example ([], "None") -> false
+    if length(arms) == 0 then
+        return false
+    end if
+    let arm: MatchArm = head(arms)
+    match arm.pat with
+        | CtorPat(cn, sp) ->
+        if cn == ctor_name then
+            return true
+        end if
+        return has_ctor_pattern(tail(arms), ctor_name)
+        | _ -> return has_ctor_pattern(tail(arms), ctor_name)
+    end match
+end func has_ctor_pattern
+
+func has_bool_lit_pattern(arms: List[MatchArm], val: Bool) -> Bool
+    example ([], true) -> false
+    if length(arms) == 0 then
+        return false
+    end if
+    let arm: MatchArm = head(arms)
+    match arm.pat with
+        | LitPat(expr) ->
+        match expr with
+            | BoolLit(b) ->
+            if b == val then
+                return true
+            end if
+            return has_bool_lit_pattern(tail(arms), val)
+            | _ -> return has_bool_lit_pattern(tail(arms), val)
+        end match
+        | _ -> return has_bool_lit_pattern(tail(arms), val)
+    end match
+end func has_bool_lit_pattern
+
+// ============================================================================
+// Specification checking
+// ============================================================================
+
+func check_specs(cs: CheckerState, defn: Def, env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), ImportDef("M", dummy_span(0)), new_type_env(None)) -> ()
+    match defn with
+        | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
+        checker_push_span(cs, span)
+        // Check requires clauses
+        check_requires_clauses(cs: cs, clauses: specs.req_clauses, env: env)
+        // Check ensures clauses (with 'result' bound)
+        let ensures_env: TypeEnv = type_env_child(env)
+        type_env_bind(env: ensures_env, name: "result", t: current_return_type(cs))
+        check_ensures_clauses(cs: cs, clauses: specs.ens_clauses, env: ensures_env)
+        // Check example clauses
+        check_example_clauses(cs: cs, examples: specs.examples, params: params, env: env)
+        checker_pop_span(cs)
+        return ()
+        | _ -> return ()
+    end match
+end func check_specs
+
+func check_requires_clauses(cs: CheckerState, clauses: List[RequiresClause], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> ()
+    if length(clauses) == 0 then
+        return ()
+    end if
+    let clause: RequiresClause = head(clauses)
+    let req_type: GType = check_expr(cs: cs, expr: clause.cond, env: env)
+    match req_type with
+        | TBool -> return check_requires_clauses(cs: cs, clauses: tail(clauses), env: env)
+        | _ -> tc_error(cs, "Requires clause must be Bool")
+    end match
+    check_requires_clauses(cs: cs, clauses: tail(clauses), env: env)
+    return ()
+end func check_requires_clauses
+
+func check_ensures_clauses(cs: CheckerState, clauses: List[EnsuresClause], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> ()
+    if length(clauses) == 0 then
+        return ()
+    end if
+    let clause: EnsuresClause = head(clauses)
+    let ens_type: GType = check_expr(cs: cs, expr: clause.cond, env: env)
+    match ens_type with
+        | TBool -> return check_ensures_clauses(cs: cs, clauses: tail(clauses), env: env)
+        | _ -> tc_error(cs, "Ensures clause must be Bool")
+    end match
+    check_ensures_clauses(cs: cs, clauses: tail(clauses), env: env)
+    return ()
+end func check_ensures_clauses
+
+func check_example_clauses(cs: CheckerState, examples: List[ExampleClause], params: List[Param], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], [], new_type_env(None)) -> ()
+    if length(examples) == 0 then
+        return ()
+    end if
+    let ex: ExampleClause = head(examples)
+    let input_type: GType = check_expr(cs: cs, expr: ex.input_expr, env: cs.global_env)
+    // Validate input types match params
+    if length(params) == 1 then
+        let expected_param: GType = resolve_type(cs: cs, annot: head(params).param_type, tparams: [])
+        if not types_compatible(expected_param, input_type) then
+            tc_error(cs, "Example input type mismatch")
+        end if
+    end if
+    if length(params) > 1 then
+        match input_type with
+            | TTuple(elem_types) ->
+            if length(elem_types) != length(params) then
+                tc_error(cs, "Example expects " + to_string(length(params)) + " inputs")
+            end if
+            | _ -> return check_example_clauses(cs: cs, examples: tail(examples), params: params, env: env)
+        end match
+    end if
+    // Check output type
+    let output_type: GType = check_expr(cs: cs, expr: ex.output_expr, env: cs.global_env)
+    let ret: GType = current_return_type(cs)
+    if not types_compatible(ret, output_type) then
+        tc_error(cs, "Example output type mismatch")
+    end if
+    check_example_clauses(cs: cs, examples: tail(examples), params: params, env: env)
+    return ()
+end func check_example_clauses
+
+// ============================================================================
+// Function definition checking
+// ============================================================================
+
+// Check if a function body definitely returns on all paths.
+func definitely_returns(stmts: List[Stmt]) -> Bool
+    example [] -> false
+    if length(stmts) == 0 then
+        return false
+    end if
+    let stmt: Stmt = head(stmts)
+    if stmt_returns(stmt) then
+        return true
+    end if
+    return definitely_returns(tail(stmts))
+end func definitely_returns
+
+func stmt_returns(stmt: Stmt) -> Bool
+    example ReturnStmt(IntLit(0)) -> true
+    match stmt with
+        | ReturnStmt(v) -> return true
+        | IfStmt(cond, then_body, else_body) ->
+        return definitely_returns(then_body) and definitely_returns(else_body)
+        | MatchStmt(scrutinee, arms) ->
+        return all_arms_return(arms)
+        | _ -> return false
+    end match
+end func stmt_returns
+
+func all_arms_return(arms: List[MatchArm]) -> Bool
+    example [] -> false
+    if length(arms) == 0 then
+        return false
+    end if
+    // Need ALL arms to return — check first, then rest must also all return
+    let arm: MatchArm = head(arms)
+    if not definitely_returns(arm.body) then
+        return false
+    end if
+    if length(tail(arms)) == 0 then
+        return true
+    end if
+    return all_arms_return(tail(arms))
+end func all_arms_return
+
+// Collect a type definition into the checker state.
+func collect_type_def(cs: CheckerState, defn: Def) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), ImportDef("M", dummy_span(0))) -> ()
+    match defn with
+        | TypeDefNode(name, type_params, variants, span) ->
+        checker_push_span(cs, span)
+        let variant_fields: MutableMap[String, List[FieldInfo]] = mutable_map_new()
+        let variant_names: List[String] = collect_variant_names(variants)
+        collect_variant_fields(cs: cs, variants: variants, variant_fields: variant_fields, type_params: type_params)
+        let tde: TypeDefEntry = TypeDefEntry(name, type_params, variant_names, variant_fields)
+        mutable_map_set(map: cs.type_defs, key: name, value: tde)
+        checker_pop_span(cs)
+        return ()
+        | _ -> return ()
+    end match
+end func collect_type_def
+
+func collect_variant_names(variants: List[TypeVariant]) -> List[String]
+    example [] -> []
+    if length(variants) == 0 then
+        return []
+    end if
+    let v: TypeVariant = head(variants)
+    return concat([v.name], collect_variant_names(tail(variants)))
+end func collect_variant_names
+
+func collect_variant_fields(cs: CheckerState, variants: List[TypeVariant], variant_fields: MutableMap[String, List[FieldInfo]], type_params: List[String]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], mutable_map_new(), []) -> ()
+    if length(variants) == 0 then
+        return ()
+    end if
+    let v: TypeVariant = head(variants)
+    let fields: List[FieldInfo] = resolve_variant_fields(cs: cs, tvfields: v.fields, type_params: type_params)
+    mutable_map_set(map: variant_fields, key: v.name, value: fields)
+    collect_variant_fields(cs: cs, variants: tail(variants), variant_fields: variant_fields, type_params: type_params)
+    return ()
+end func collect_variant_fields
+
+func resolve_variant_fields(cs: CheckerState, tvfields: List[TypeVariantField], type_params: List[String]) -> List[FieldInfo]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], []) -> []
+    if length(tvfields) == 0 then
+        return []
+    end if
+    let tvf: TypeVariantField = head(tvfields)
+    let ft: GType = resolve_type(cs: cs, annot: tvf.field_type, tparams: type_params)
+    let fi: FieldInfo = FieldInfo(tvf.name, ft)
+    return concat([fi], resolve_variant_fields(cs: cs, tvfields: tail(tvfields), type_params: type_params))
+end func resolve_variant_fields
+
+// Collect a function signature into the global environment.
+func collect_function_sig(cs: CheckerState, defn: Def) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), ImportDef("M", dummy_span(0))) -> ()
+    match defn with
+        | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
+        checker_push_span(cs, span)
+        let param_types: List[GType] = resolve_param_types(cs: cs, params: params)
+        let return_t: GType = resolve_type(cs: cs, annot: ret_type, tparams: [])
+        let func_t: GType = TFunc(param_types, return_t, [])
+        type_env_bind(env: cs.global_env, name: name, t: func_t)
+        mutable_map_set(map: cs.user_defined, key: name, value: true)
+        let pnames: List[String] = extract_param_names(params)
+        mutable_map_set(map: cs.func_params, key: name, value: pnames)
+        checker_pop_span(cs)
+        return ()
+        | _ -> return ()
+    end match
+end func collect_function_sig
+
+func resolve_param_types(cs: CheckerState, params: List[Param]) -> List[GType]
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> []
+    if length(params) == 0 then
+        return []
+    end if
+    let p: Param = head(params)
+    let pt: GType = resolve_type(cs: cs, annot: p.param_type, tparams: [])
+    return concat([pt], resolve_param_types(cs: cs, params: tail(params)))
+end func resolve_param_types
+
+func extract_param_names(params: List[Param]) -> List[String]
+    example [] -> []
+    if length(params) == 0 then
+        return []
+    end if
+    return concat([head(params).name], extract_param_names(tail(params)))
+end func extract_param_names
+
+func has_annotation(anns: List[Annotation], name: String) -> Bool
+    example ([Annotation("untested", ["skip"])], "untested") -> true
+    example ([Annotation("other", [])], "untested") -> false
+    if length(anns) == 0 then
+        return false
+    end if
+    let ann: Annotation = head(anns)
+    if ann.name == name then
+        return true
+    end if
+    return has_annotation(tail(anns), name)
+end func has_annotation
+
+// Check a function definition body.
+func check_function_def(cs: CheckerState, defn: Def) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), ImportDef("M", dummy_span(0))) -> ()
+    match defn with
+        | FuncDef(name, params, ret_type, specs, body, closing, anns, _effs, span) ->
+        checker_push_span(cs, span)
+        // Enforce example requirement (except main, init, update, render)
+        if name != "main" then
+            if name != "init" then
+                if name != "update" then
+                    if name != "render" then
+                        if not has_annotation(anns, "untested") then
+                            if length(specs.examples) == 0 then
+                                tc_error(cs, "Function '" + name + "' must have at least one example clause")
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+        end if
+        // Check for duplicate parameter names
+        check_duplicate_params(cs: cs, params: params, seen: mutable_map_new())
+        // Create local environment with parameters
+        let local_env: TypeEnv = type_env_child(cs.global_env)
+        bind_params(cs: cs, params: params, env: local_env)
+        // Set return type
+        let return_t: GType = resolve_type(cs: cs, annot: ret_type, tparams: [])
+        push_return_type(cs, return_t)
+        // Check specs
+        check_specs(cs: cs, defn: defn, env: local_env)
+        // Check body
+        check_stmts(cs: cs, stmts: body, env: local_env)
+        // Check return path coverage for non-Unit functions
+        match return_t with
+            | TUnit -> let dummy: Int = 0
+            | _ ->
+            if not definitely_returns(body) then
+                tc_error(cs, "Function '" + name + "' may not return a value on all paths")
+            end if
+        end match
+        pop_return_type(cs)
+        checker_pop_span(cs)
+        return ()
+        | _ -> return ()
+    end match
+end func check_function_def
+
+func check_duplicate_params(cs: CheckerState, params: List[Param], seen: MutableMap[String, Bool]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], mutable_map_new()) -> ()
+    if length(params) == 0 then
+        return ()
+    end if
+    let p: Param = head(params)
+    if mutable_map_contains(seen, p.name) then
+        checker_push_span(cs, span_for_param(checker_current_span(cs).filename, p))
+        tc_error(cs, "Duplicate parameter name '" + p.name + "'")
+        checker_pop_span(cs)
+    end if
+    mutable_map_set(map: seen, key: p.name, value: true)
+    check_duplicate_params(cs: cs, params: tail(params), seen: seen)
+    return ()
+end func check_duplicate_params
+
+func bind_params(cs: CheckerState, params: List[Param], env: TypeEnv) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], new_type_env(None)) -> ()
+    if length(params) == 0 then
+        return ()
+    end if
+    let p: Param = head(params)
+    let pt: GType = resolve_type(cs: cs, annot: p.param_type, tparams: [])
+    type_env_bind(env: env, name: p.name, t: pt)
+    bind_params(cs: cs, params: tail(params), env: env)
+    return ()
+end func bind_params
+
+// ============================================================================
+// Import resolution
+// ============================================================================
+
+func resolve_import(cs: CheckerState, imp: Def, modules: MutableMap[String, Program], resolved: MutableMap[String, Bool]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), ImportDef("M", dummy_span(0)), mutable_map_new(), mutable_map_new()) -> ()
+    match imp with
+        | ImportDef(mod_name, span) ->
+        checker_push_span(cs, span)
+        if mutable_map_contains(resolved, mod_name) then
+            checker_pop_span(cs)
+            return ()
+        end if
+        mutable_map_set(map: resolved, key: mod_name, value: true)
+        let mod_opt: Option[Program] = mutable_map_get(modules, mod_name)
+        if not is_some(mod_opt) then
+            tc_error(cs, "Unknown module: '" + mod_name + "'")
+            checker_pop_span(cs)
+            return ()
+        end if
+        let mod_prog: Program = unwrap(mod_opt)
+        resolve_module_imports(cs: cs, defs: mod_prog.defs, modules: modules, resolved: resolved, mod_name: mod_name)
+        collect_defs_pass1(cs: cs, defs: mod_prog.defs)
+        collect_defs_pass2(cs: cs, defs: mod_prog.defs)
+        checker_pop_span(cs)
+        return ()
+        | _ -> return ()
+    end match
+end func resolve_import
+
+func resolve_module_imports(cs: CheckerState, defs: List[Def], modules: MutableMap[String, Program], resolved: MutableMap[String, Bool], mod_name: String) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], mutable_map_new(), mutable_map_new(), "M") -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | ImportDef(sub_mod, span) ->
+        checker_push_span(cs, span)
+        if sub_mod == mod_name then
+            tc_error(cs, "Circular import: module '" + mod_name + "' imports itself")
+        else
+            if not mutable_map_contains(resolved, sub_mod) then
+                resolve_import(cs: cs, imp: d, modules: modules, resolved: resolved)
+            end if
+        end if
+        checker_pop_span(cs)
+        | _ -> return resolve_module_imports(cs: cs, defs: tail(defs), modules: modules, resolved: resolved, mod_name: mod_name)
+    end match
+    resolve_module_imports(cs: cs, defs: tail(defs), modules: modules, resolved: resolved, mod_name: mod_name)
+    return ()
+end func resolve_module_imports
+
+// ============================================================================
+// Top-level: check_program (three-pass)
+// ============================================================================
+
+// Pass 1: collect type definitions.
+func collect_defs_pass1(cs: CheckerState, defs: List[Def]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | TypeDefNode(name, tp, variants, span) -> collect_type_def(cs, d)
+        | _ -> return collect_defs_pass1(cs, tail(defs))
+    end match
+    collect_defs_pass1(cs, tail(defs))
+    return ()
+end func collect_defs_pass1
+
+// Pass 2: collect function signatures.
+func collect_defs_pass2(cs: CheckerState, defs: List[Def]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | FuncDef(name, params, ret, specs, body, closing, _anns, _effs, span) -> collect_function_sig(cs, d)
+        | _ -> return collect_defs_pass2(cs, tail(defs))
+    end match
+    collect_defs_pass2(cs, tail(defs))
+    return ()
+end func collect_defs_pass2
+
+// Pass 3: check function bodies.
+func check_defs_pass3(cs: CheckerState, defs: List[Def]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), []) -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | FuncDef(name, params, ret, specs, body, closing, _anns, _effs, span) -> check_function_def(cs, d)
+        | _ -> return check_defs_pass3(cs, tail(defs))
+    end match
+    check_defs_pass3(cs, tail(defs))
+    return ()
+end func check_defs_pass3
+
+// Resolve imports from the program.
+func resolve_imports(cs: CheckerState, defs: List[Def], modules: MutableMap[String, Program], resolved: MutableMap[String, Bool]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), [], mutable_map_new(), mutable_map_new()) -> ()
+    if length(defs) == 0 then
+        return ()
+    end if
+    let d: Def = head(defs)
+    match d with
+        | ImportDef(mod_name, span) -> resolve_import(cs: cs, imp: d, modules: modules, resolved: resolved)
+        | _ -> return resolve_imports(cs: cs, defs: tail(defs), modules: modules, resolved: resolved)
+    end match
+    resolve_imports(cs: cs, defs: tail(defs), modules: modules, resolved: resolved)
+    return ()
+end func resolve_imports
+
+// Main entry point: type check a complete program.
+func check_program(cs: CheckerState, program: Program, modules: MutableMap[String, Program]) -> Int
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new()), Program([]), mutable_map_new()) -> 0
+    // Resolve imports
+    let resolved: MutableMap[String, Bool] = mutable_map_new()
+    resolve_imports(cs: cs, defs: program.defs, modules: modules, resolved: resolved)
+    // Pass 1: collect type definitions
+    collect_defs_pass1(cs, program.defs)
+    // Pass 2: collect function signatures
+    collect_defs_pass2(cs, program.defs)
+    // Pass 3: check function bodies
+    check_defs_pass3(cs, program.defs)
+    // Return error count
+    return vec_length(cs.errors)
+end func check_program

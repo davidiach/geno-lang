@@ -1,0 +1,44 @@
+// Fields.geno — Field constructors mapping types to inputs
+// ==========================================================
+
+import Types
+
+// Create a text field with validation constraints.
+func text_field(name: String, label: String, placeholder: String, required: Bool, min_length: Int, max_length: Int) -> FieldDef
+    example ("username", "Username", "john_doe", true, 3, 20) -> FieldDef("username", "Username", TextInput, "john_doe", true, 3, 20, 0, 0)
+    return FieldDef(name, label, TextInput, placeholder, required, min_length, max_length, 0, 0)
+end func
+
+// Create an email field.
+func email_field(name: String, label: String, placeholder: String, required: Bool) -> FieldDef
+    example ("email", "Email", "user@example.com", true) -> FieldDef("email", "Email", EmailInput, "user@example.com", true, 0, 254, 0, 0)
+    return FieldDef(name, label, EmailInput, placeholder, required, 0, 254, 0, 0)
+end func
+
+// Create a number field with min/max range.
+func number_field(name: String, label: String, placeholder: String, required: Bool, min_value: Int, max_value: Int) -> FieldDef
+    example ("age", "Age", "25", true, 0, 150) -> FieldDef("age", "Age", NumberInput, "25", true, 0, 0, 0, 150)
+    return FieldDef(name, label, NumberInput, placeholder, required, 0, 0, min_value, max_value)
+end func
+
+// Create a boolean checkbox field.
+func bool_field(name: String, label: String) -> FieldDef
+    example ("agree", "I agree") -> FieldDef("agree", "I agree", BoolInput, "", false, 0, 0, 0, 0)
+    return FieldDef(name, label, BoolInput, "", false, 0, 0, 0, 0)
+end func
+
+// Create a select dropdown field.
+func select_field(name: String, label: String, options: List[String], required: Bool) -> FieldDef
+    example ("role", "Role", ["Admin", "User"], true) -> FieldDef("role", "Role", SelectInput(["Admin", "User"]), "", true, 0, 0, 0, 0)
+    return FieldDef(name, label, SelectInput(options), "", required, 0, 0, 0, 0)
+end func
+
+// Default value for a field definition.
+func default_value(field: FieldDef) -> FieldValue
+    example (FieldDef("x", "X", TextInput, "", false, 0, 0, 0, 0)) -> StringVal("")
+    return match field.kind with
+    | NumberInput -> IntVal(0)
+    | BoolInput -> BoolVal(false)
+    | _ -> StringVal("")
+end match
+end func

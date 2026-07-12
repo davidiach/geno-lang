@@ -1,0 +1,61 @@
+# EXPECT: E503
+# Match statement pattern abuse via exhaustive variant enumeration:
+# Create an ADT with many variants and use match expressions to
+# probe whether the runtime match dispatch reveals internal type
+# tag representations.  Each match branch converts the matched
+# variant to a string and checks if the string representation
+# leaks Python dataclass internals (field names, class names,
+# module paths).  The O(variants * iterations) match operations
+# should be step-counted.
+type Token = Ident(name: String)
+           | IntLit(val: Int)
+           | FloatLit(val: Float)
+           | StringLit(val: String)
+           | BoolLit(val: Bool)
+           | LParen
+           | RParen
+           | Comma
+           | Dot
+           | Arrow
+
+func classify(t: Token) -> String
+    example Ident("x") -> "ident:x"
+    match t with
+    | Ident(n) -> return f"ident:{n}"
+    | IntLit(v) -> return f"int:{to_string(v)}"
+    | FloatLit(v) -> return f"float:{to_string(v)}"
+    | StringLit(v) -> return f"str:{v}"
+    | BoolLit(v) -> return f"bool:{to_string(v)}"
+    | LParen -> return "lparen"
+    | RParen -> return "rparen"
+    | Comma -> return "comma"
+    | Dot -> return "dot"
+    | Arrow -> return "arrow"
+    end match
+end func
+
+func to_string_probe(t: Token) -> Int
+    example Ident("x") -> 23
+    let repr: String = to_string(t)
+    let classified: String = classify(t)
+    return length(repr) + length(classified)
+end func
+
+func main() -> Int
+    let tokens: List[Token] = [
+        Ident("x"), IntLit(42), FloatLit(3.14),
+        StringLit("hello"), BoolLit(true),
+        LParen, RParen, Comma, Dot, Arrow
+    ]
+    var total: Int = 0
+    var i: Int = 0
+    while i < 100000 do
+        var j: Int = 0
+        while j < length(tokens) do
+            total = total + to_string_probe(tokens[j])
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+    return total
+end func

@@ -1,0 +1,28 @@
+# EXPECT: E503
+# Closure variable capture to leak sandbox internals via to_string:
+# Build closures that capture progressively more variables, then
+# serialize them with to_string to probe whether closure internals
+# (captured environment, parameter names, body) leak through the
+# string representation.  The tight loop with repeated to_string
+# calls on closures should be step-counted.
+@untested("returns closure")
+func make_capturer(a: Int, b: Int, c: Int) -> (Int) -> Int
+    return fn(x: Int) -> a + b + c + x
+end func
+
+func probe_closure_repr(n: Int) -> Int
+    example 0 -> 0
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let f: (Int) -> Int = make_capturer(a: i, b: i + 1, c: i + 2)
+        let repr: String = to_string(f)
+        total = total + length(repr)
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return probe_closure_repr(1000000)
+end func

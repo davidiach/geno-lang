@@ -1,0 +1,67 @@
+problem:
+  id: "PROB-011"
+  name: "Count Occurrences"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that counts how many times a target value appears in a list.
+  signature:
+    function_name: "count_occurrences"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+      - name: "target"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 2, 4, 2], 2]
+        output: 3
+        description: "2 appears 3 times"
+      - input: [[1, 2, 3], 5]
+        output: 0
+        description: "Target not found"
+    hidden:
+      - input: [[], 1]
+        output: 0
+        description: "Empty list"
+      - input: [[5, 5, 5, 5], 5]
+        output: 4
+        description: "All same"
+      - input: [[1], 1]
+        output: 1
+        description: "Single match"
+      - input: [[-1, -1, 0, -1], -1]
+        output: 3
+        description: "Negative target"
+  constraints:
+    - "Count all exact matches"
+  canonical_solutions:
+    geno: |
+      func count_occurrences(arr: List[Int], target: Int) -> Int
+          example [1, 2, 3, 2, 4, 2], 2 -> 3
+          example [1, 2, 3], 5 -> 0
+
+          var count: Int = 0
+          var i: Int = 0
+
+          while i < length(arr) do
+              if arr[i] == target then
+                  count = count + 1
+              end if
+              i = i + 1
+          end while
+
+          return count
+      end func count_occurrences
+    python: |
+      def count_occurrences(arr: list[int], target: int) -> int:
+          return arr.count(target)
+  metadata:
+    tags: ["list", "counting", "loop"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "comparison"]

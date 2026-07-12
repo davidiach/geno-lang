@@ -1,0 +1,76 @@
+problem:
+  id: "PROB-067"
+  name: "Contract-Checked Integer Square Root"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that computes the integer square root of a non-negative
+    integer (the largest integer r such that r*r <= n).
+
+    Use requires/ensures contracts to specify the precondition and postconditions.
+  signature:
+    function_name: "int_sqrt"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 16
+        output: 4
+        description: "Perfect square"
+      - input: 10
+        output: 3
+        description: "Non-perfect square: 3*3=9 <= 10 < 16=4*4"
+      - input: 0
+        output: 0
+        description: "Zero"
+    hidden:
+      - input: 1
+        output: 1
+        description: "One"
+      - input: 2
+        output: 1
+        description: "Between 1 and 4"
+      - input: 100
+        output: 10
+        description: "Larger perfect square"
+      - input: 99
+        output: 9
+        description: "Just below 100"
+      - input: 10000
+        output: 100
+        description: "Large number"
+  constraints:
+    - "n >= 0"
+    - "Use requires and ensures clauses"
+  canonical_solutions:
+    geno: |
+      func int_sqrt(n: Int) -> Int
+          requires n >= 0
+          ensures result * result <= n
+          example 16 -> 4
+          example 10 -> 3
+
+          var r: Int = 0
+
+          while (r + 1) * (r + 1) <= n do
+              r = r + 1
+          end while
+
+          return r
+      end func int_sqrt
+    python: |
+      def int_sqrt(n: int) -> int:
+          r = 0
+          while (r + 1) * (r + 1) <= n:
+              r += 1
+          return r
+  metadata:
+    tags: ["contracts", "requires", "ensures", "math", "sqrt"]
+    source: "Original"
+    time_complexity: "O(sqrt(n))"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "requires", "ensures", "while", "arithmetic", "var"]

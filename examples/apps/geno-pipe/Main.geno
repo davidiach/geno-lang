@@ -1,0 +1,84 @@
+// Main.geno — Pipeline entry point
+// ===================================
+// Demonstrates: parse CSV, pipe through transforms, format output.
+// Supports CLI file input via `cli_args()` and `fs_read_text()`,
+// or falls back to built-in sample data when no arguments are given.
+
+import Types
+import Parse
+import Transform
+import Format
+
+// Sample CSV data for demonstration.
+@untested("returns constant data")
+func sample_data() -> String
+    return "name,age,city,role\nAlice,30,NYC,Engineer\nBob,25,SF,Designer\nCharlie,35,NYC,Manager\nDiana,28,LA,Engineer\nEve,32,SF,Engineer"
+end func
+
+// Detect whether a file path refers to a CSV file by its extension.
+func is_csv_path(path: String) -> Bool
+    example ("data.csv") -> true
+    example ("data.CSV") -> true
+    example ("data.json") -> false
+    example ("file.txt") -> false
+    return ends_with(to_lower(path), ".csv")
+end func
+
+// Read input text: from a file path if provided, or sample data as fallback.
+@untested("uses fs_read_text capability")
+func read_input(args: List[String]) -> String
+    if length(args) == 0 then
+        return sample_data()
+    end if
+    let file_path: String = args[0]
+    return fs_read_text(file_path)
+end func
+
+// Run the pipeline on input text and print results.
+@untested("orchestrates IO and pipeline")
+func run_pipeline(input: String) -> Int
+    // Parse CSV into a table
+    let table: Table = parse_csv(input)
+
+    // Pipeline: filter engineers, sort by name, select columns, take 3
+    let result: Table = table
+    |> filter_rows(_, "role", "Engineer")
+    |> sort_by(_, "name")
+    |> select_columns(_, ["name", "age", "city"])
+    |> take_rows(_, 3)
+
+    // Output in all 4 formats
+    print("=== CSV ===")
+    print(format_output_csv(table: result, fmt: CsvFormat))
+
+    print("\n=== JSON ===")
+    print(format_output_csv(table: result, fmt: JsonFormat))
+
+    print("\n=== Table ===")
+    print(format_output_csv(table: result, fmt: TableFormat))
+
+    print("\n=== Markdown ===")
+    print(format_output_csv(table: result, fmt: MarkdownFormat))
+
+    // Show count
+    let counted: Table = result |> count_rows
+    print("\n=== Row Count ===")
+    print(format_output_csv(table: counted, fmt: TableFormat))
+
+    return 0
+end func
+
+// Entry point: read CLI args, load input, run pipeline.
+@untested("entry point -- uses cli_args and fs_read_text")
+func main() -> Int
+    let args: List[String] = cli_args()
+    if length(args) > 0 then
+        let file_path: String = args[0]
+        if is_csv_path(file_path) == false then
+            print("Error: expected a .csv file, got: " + file_path)
+            return 1
+        end if
+    end if
+    let input: String = read_input(args)
+    return run_pipeline(input)
+end func

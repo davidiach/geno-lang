@@ -1,0 +1,112 @@
+problem:
+  id: "PROB-040"
+  name: "Merge Sort"
+  difficulty: "hard"
+  domain: "sorting"
+  description: |
+    Implement the merge sort algorithm to sort a list of integers in ascending order.
+  signature:
+    function_name: "merge_sort"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[38, 27, 43, 3, 9, 82, 10]]
+        output: [3, 9, 10, 27, 38, 43, 82]
+        description: "Sort unsorted list"
+      - input: [[1, 2]]
+        output: [1, 2]
+        description: "Two elements"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[1]]
+        output: [1]
+        description: "Single element"
+      - input: [[5, 4, 3, 2, 1]]
+        output: [1, 2, 3, 4, 5]
+        description: "Reverse sorted"
+      - input: [[1, 1, 1, 1]]
+        output: [1, 1, 1, 1]
+        description: "All same"
+      - input: [[-5, 3, -2, 0, 1]]
+        output: [-5, -2, 0, 1, 3]
+        description: "Mixed signs"
+  constraints:
+    - "Use divide and conquer approach"
+  canonical_solutions:
+    geno: |
+      func merge(left: List[Int], right: List[Int]) -> List[Int]
+          example [1, 3], [2, 4] -> [1, 2, 3, 4]
+
+          var result: List[Int] = []
+          var i: Int = 0
+          var j: Int = 0
+
+          while i < length(left) and j < length(right) do
+              if left[i] <= right[j] then
+                  result = append(result, left[i])
+                  i = i + 1
+              else
+                  result = append(result, right[j])
+                  j = j + 1
+              end if
+          end while
+
+          while i < length(left) do
+              result = append(result, left[i])
+              i = i + 1
+          end while
+
+          while j < length(right) do
+              result = append(result, right[j])
+              j = j + 1
+          end while
+
+          return result
+      end func merge
+
+      func merge_sort(arr: List[Int]) -> List[Int]
+          example [38, 27, 43, 3, 9, 82, 10] -> [3, 9, 10, 27, 38, 43, 82]
+          example [1, 2] -> [1, 2]
+
+          if length(arr) <= 1 then
+              return arr
+          end if
+
+          let mid: Int = length(arr) / 2
+          let left: List[Int] = slice(list: arr, start: 0, stop: mid)
+          let right: List[Int] = slice(list: arr, start: mid, stop: length(arr))
+
+          return merge(merge_sort(left), merge_sort(right))
+      end func merge_sort
+    python: |
+      def merge_sort(arr: list[int]) -> list[int]:
+          if len(arr) <= 1:
+              return arr
+          mid = len(arr) // 2
+          left = merge_sort(arr[:mid])
+          right = merge_sort(arr[mid:])
+          result = []
+          i = j = 0
+          while i < len(left) and j < len(right):
+              if left[i] <= right[j]:
+                  result.append(left[i])
+                  i += 1
+              else:
+                  result.append(right[j])
+                  j += 1
+          result.extend(left[i:])
+          result.extend(right[j:])
+          return result
+  metadata:
+    tags: ["sorting", "divide-conquer", "recursion"]
+    source: "Classic"
+    time_complexity: "O(n log n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "recursion", "helper-function", "while"]

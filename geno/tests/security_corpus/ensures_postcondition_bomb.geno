@@ -1,0 +1,27 @@
+# EXPECT: E503
+# Exploit ensures (postcondition) clauses for hidden computation.
+# Each invocation of accum() checks an ensures clause that calls
+# verify(), which iterates over a range.  The postcondition cost
+# is O(result) per call, creating quadratic total work.
+# Tests that ensures clause evaluation is step-counted.
+func verify(n: Int) -> Bool
+    example 0 -> true
+    var i: Int = 0
+    while i < n do
+        i = i + 1
+    end while
+    return true
+end func
+
+func accum(n: Int) -> Int
+    ensures verify(result)
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    return n + accum(n - 1)
+end func
+
+func main() -> Int
+    return accum(200)
+end func

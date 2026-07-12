@@ -1,0 +1,44 @@
+# EXPECT: E503
+# Mutable map key collision probing: construct string keys using
+# from_char_code that match blocked Python attribute names, then
+# use mutable_map operations to test whether the map implementation
+# leaks internal hash table structure.  Unlike the existing
+# map_key_hash_collision_bomb which uses integer keys, this uses
+# dynamically constructed string keys matching dangerous names
+# to test whether the mutable map's get/set path reveals internal
+# Python dict behaviors or sandbox internals.
+func build_key(base: Int, suffix: Int) -> String
+    example 0, 0 -> "aabcdefg"
+    var key: String = ""
+    var code: Int = base
+    var i: Int = 0
+    while i < 8 do
+        key = key + from_char_code(97 + (code % 26))
+        code = code / 26 + suffix + i
+        i = i + 1
+    end while
+    return key
+end func
+
+func main() -> Int
+    let m: MutableMap[String, Int] = mutable_map_new()
+    var total: Int = 0
+    var i: Int = 0
+    while i < 200000 do
+        let key: String = build_key(base: i, suffix: i % 7)
+        mutable_map_set(map: m, key: key, value: i)
+        let fetched: Option[Int] = mutable_map_get(map: m, key: key)
+        match fetched with
+        | Some(v) -> total = total + v
+        | None -> total = total + 1
+        end match
+        if i % 100 == 0 then
+            let exists: Bool = mutable_map_contains(map: m, key: key)
+            if exists then
+                mutable_map_delete(map: m, key: key)
+            end if
+        end if
+        i = i + 1
+    end while
+    return total + mutable_map_size(map: m)
+end func

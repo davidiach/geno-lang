@@ -1,0 +1,485 @@
+// ============================================================================
+// Main.geno — Entry point for the Geno self-hosted frontend + interpreter
+// ============================================================================
+
+import Tokens
+import Ast
+import Types
+import Lexer
+import Parser
+import TypeChecker
+import Interpreter
+
+// Format a token type as a string for display.
+func tt_name(tt: TokenType) -> String
+    example TkEof -> "EOF"
+    match tt with
+        | TkInteger -> return "INTEGER"
+        | TkFloat -> return "FLOAT"
+        | TkString -> return "STRING"
+        | TkTrue -> return "TRUE"
+        | TkFalse -> return "FALSE"
+        | TkIdentifier -> return "IDENT"
+        | TkTypeIdentifier -> return "TYPE_IDENT"
+        | TkFunc -> return "FUNC"
+        | TkEnd -> return "END"
+        | TkLet -> return "LET"
+        | TkVar -> return "VAR"
+        | TkIf -> return "IF"
+        | TkThen -> return "THEN"
+        | TkElse -> return "ELSE"
+        | TkWhile -> return "WHILE"
+        | TkDo -> return "DO"
+        | TkFor -> return "FOR"
+        | TkIn -> return "IN"
+        | TkMatch -> return "MATCH"
+        | TkWith -> return "WITH"
+        | TkReturn -> return "RETURN"
+        | TkAnd -> return "AND"
+        | TkOr -> return "OR"
+        | TkNot -> return "NOT"
+        | TkType -> return "TYPE"
+        | TkRequires -> return "REQUIRES"
+        | TkEnsures -> return "ENSURES"
+        | TkExample -> return "EXAMPLE"
+        | TkRef -> return "REF"
+        | TkFn -> return "FN"
+        | TkWhere -> return "WHERE"
+        | TkImport -> return "IMPORT"
+        | TkPlus -> return "PLUS"
+        | TkMinus -> return "MINUS"
+        | TkStar -> return "STAR"
+        | TkSlash -> return "SLASH"
+        | TkPercent -> return "PERCENT"
+        | TkEq -> return "EQ"
+        | TkNeq -> return "NEQ"
+        | TkLt -> return "LT"
+        | TkGt -> return "GT"
+        | TkLte -> return "LTE"
+        | TkGte -> return "GTE"
+        | TkAssign -> return "ASSIGN"
+        | TkArrow -> return "ARROW"
+        | TkPipe -> return "PIPE"
+        | TkBar -> return "BAR"
+        | TkLParen -> return "LPAREN"
+        | TkRParen -> return "RPAREN"
+        | TkLBracket -> return "LBRACKET"
+        | TkRBracket -> return "RBRACKET"
+        | TkLBrace -> return "LBRACE"
+        | TkRBrace -> return "RBRACE"
+        | TkComma -> return "COMMA"
+        | TkColon -> return "COLON"
+        | TkSemicolon -> return "SEMICOLON"
+        | TkDot -> return "DOT"
+        | TkUnderscore -> return "UNDERSCORE"
+        | TkQuestion -> return "QUESTION"
+        | TkAt -> return "AT"
+        | TkEof -> return "EOF"
+        | TkError -> return "ERROR"
+    end match
+end func tt_name
+
+func print_diag_list(diags: List[Diagnostic]) -> Unit
+    example [] -> ()
+    if length(diags) == 0 then
+        return ()
+    end if
+    print("  " + format_diagnostic(head(diags)))
+    return print_diag_list(tail(diags))
+end func print_diag_list
+
+// Print usage information.
+func print_usage() -> Unit
+    example () -> ()
+    print("Usage: geno-selfhost <command> <path>")
+    print("")
+    print("Commands:")
+    print("  check <path>   Type-check a Geno source file or project")
+    print("  run <path>     Parse, check, and interpret a Geno file or project")
+    print("  test <path>    Verify examples in a Geno file or project")
+    print("  demo           Run the built-in demo pipeline")
+    print("")
+    print("Examples:")
+    print("  geno-selfhost check myfile.geno")
+    print("  geno-selfhost run myproject")
+    print("  geno-selfhost test myproject")
+    return ()
+end func print_usage
+
+// Join a directory and file name into a path.
+func path_join(dir: String, name: String) -> String
+    example (".", "Main.geno") -> "Main.geno"
+    example ("project", "Main.geno") -> "project/Main.geno"
+    if dir == "." or length(dir) == 0 then
+        return name
+    end if
+    let last_char: String = dir[length(dir) - 1]
+    if last_char == "/" or last_char == "\\" then
+        return dir + name
+    end if
+    return dir + "/" + name
+end func path_join
+
+// Check whether a path ends with a suffix.
+func has_suffix(text: String, suffix: String) -> Bool
+    example ("Main.geno", ".geno") -> true
+    example ("Main.txt", ".geno") -> false
+    if length(text) < length(suffix) then
+        return false
+    end if
+    return substring(
+    text: text,
+    start: length(text) - length(suffix),
+    stop: length(text)
+    ) == suffix
+end func has_suffix
+
+// Get the directory portion of a path.
+func path_dirname(path: String) -> String
+    example "Main.geno" -> "."
+    example "project/Main.geno" -> "project"
+    var i: Int = length(path) - 1
+    while i >= 0 do
+        let ch: String = path[i]
+        if ch == "/" or ch == "\\" then
+            if i == 0 then
+                return "/"
+            end if
+            return substring(text: path, start: 0, stop: i)
+        end if
+        i = i - 1
+    end while
+    return "."
+end func path_dirname
+
+// Resolve a CLI path to a source file or project entrypoint.
+@untested("host fs bridge")
+func resolve_entry_path(path: String) -> String
+    if has_suffix(path, ".geno") or has_suffix(path, ".gen") then
+        return path
+    end if
+    let candidate: String = path_join(path, "Main.geno")
+    if fs_exists(candidate) then
+        return candidate
+    end if
+    return path
+end func resolve_entry_path
+
+// Load source code from a file path.
+//
+// Returns ``None`` when the file does not exist or is unreadable, and
+// ``Some(content)`` when it does — so callers can distinguish a missing
+// / unreadable file from an existing-but-empty one.  Previously this
+// helper collapsed I/O failure into an empty-source return value, so
+// ``cmd_check`` / ``cmd_run`` / ``cmd_test`` could not tell the two
+// apart and issued the same generic error for either case (F-0034 in
+// #664).
+@untested("host fs bridge")
+func load_source(path: String) -> Option[String]
+    if not fs_exists(path) then
+        return None
+    end if
+    try
+        return Some(fs_read_text(path))
+    catch e: String
+        return None
+    end try
+end func load_source
+
+// Load and parse a module by name, given a base directory.
+@untested("host fs bridge")
+func load_module(base_dir: String, mod_name: String) -> Option[Program]
+    let path: String = path_join(base_dir, mod_name + ".geno")
+    if not fs_exists(path) then
+        return None
+    end if
+    let source: String = fs_read_text(path)
+    if length(source) == 0 then
+        return None
+    end if
+    return Some(parse_with_filename(source: source, filename: path))
+end func load_module
+
+// Collect imported module names from a definition list.
+func collect_import_names(defs: List[Def]) -> List[String]
+    example [] -> []
+    if length(defs) == 0 then
+        return []
+    end if
+    let d: Def = head(defs)
+    let rest: List[String] = collect_import_names(tail(defs))
+    match d with
+        | ImportDef(module_name, span) -> return concat([module_name], rest)
+        | _ -> return rest
+    end match
+end func collect_import_names
+
+// Recursively load imported modules from disk.
+@untested("host fs bridge")
+func load_named_modules(
+    base_dir: String,
+    names: List[String],
+    modules: MutableMap[String, Program],
+    seen: MutableMap[String, Bool]
+    ) -> Unit
+    if length(names) == 0 then
+        return ()
+    end if
+
+    let mod_name: String = head(names)
+    if not mutable_map_contains(modules, mod_name) and not mutable_map_contains(seen, mod_name) then
+        mutable_map_set(map: seen, key: mod_name, value: true)
+        let mod_opt: Option[Program] = load_module(base_dir, mod_name)
+        match mod_opt with
+            | Some(mod_program) ->
+            mutable_map_set(map: modules, key: mod_name, value: mod_program)
+            let nested_imports: List[String] = collect_import_names(mod_program.defs)
+            load_named_modules(
+            base_dir: base_dir,
+            names: nested_imports,
+            modules: modules,
+            seen: seen
+            )
+            | None -> let _unused: Int = 0
+        end match
+    end if
+
+    return load_named_modules(
+    base_dir: base_dir,
+    names: tail(names),
+    modules: modules,
+    seen: seen
+    )
+end func load_named_modules
+
+// Load all modules reachable from a program's imports.
+@untested("host fs bridge")
+func load_program_modules(base_dir: String, program: Program) -> MutableMap[String, Program]
+    let modules: MutableMap[String, Program] = mutable_map_new()
+    let seen: MutableMap[String, Bool] = mutable_map_new()
+    let imports: List[String] = collect_import_names(program.defs)
+    load_named_modules(base_dir: base_dir, names: imports, modules: modules, seen: seen)
+    return modules
+end func load_program_modules
+
+// Parse a file-backed program and surface any parser diagnostics.
+@untested("host fs bridge")
+func parse_entry_program(path: String, source: String) -> Option[Program]
+    let tokens: List[Token] = tokenize(source)
+    let ps: ParserState = make_parser(tokens, path)
+    let program: Program = parse_program(ps)
+    if vec_length(ps.diagnostics) > 0 then
+        print_diag_list(vec_to_list(ps.diagnostics))
+        return None
+    end if
+    return Some(program)
+end func parse_entry_program
+
+// Type-check a file-backed program and print any diagnostics.
+@untested("helper for CLI diagnostics")
+func type_check_entry(path: String, program: Program, modules: MutableMap[String, Program]) -> Int
+    let cs: CheckerState = make_checker_with_filename(path)
+    let errors: Int = check_program(cs: cs, program: program, modules: modules)
+    if errors > 0 then
+        print_diag_list(vec_to_list(cs.diagnostics))
+    end if
+    return errors
+end func type_check_entry
+
+// Run a program and print runtime diagnostics if present.
+@untested("helper for CLI diagnostics")
+func run_entry(path: String, program: Program, modules: MutableMap[String, Program]) -> Bool
+    let st: InterpState = make_interp_state_with_filename(path)
+    let _result: Value = run_program_with_state(st: st, program: program, modules: modules, check_ex: false)
+    if vec_length(st.diagnostics) > 0 then
+        print_diag_list(vec_to_list(st.diagnostics))
+        return false
+    end if
+    return true
+end func run_entry
+
+// Verify examples without invoking main, and print diagnostics if present.
+@untested("helper for CLI diagnostics")
+func test_entry(path: String, program: Program, modules: MutableMap[String, Program]) -> Bool
+    let st: InterpState = make_interp_state_with_filename(path)
+    run_examples_with_state(st: st, program: program, modules: modules)
+    if vec_length(st.diagnostics) > 0 then
+        print_diag_list(vec_to_list(st.diagnostics))
+        return false
+    end if
+    return true
+end func test_entry
+
+// Run the check command: parse and type-check a file.
+@untested("host fs bridge")
+func cmd_check(path: String) -> Int
+    let entry_path: String = resolve_entry_path(path)
+    let source_opt: Option[String] = load_source(entry_path)
+    if is_none(source_opt) then
+        print("Error: could not read file or project: " + path)
+        return 1
+    end if
+    let source: String = unwrap(source_opt)
+
+    let program_opt: Option[Program] = parse_entry_program(entry_path, source)
+    if is_none(program_opt) then
+        return 1
+    end if
+    let program: Program = unwrap(program_opt)
+    let base_dir: String = path_dirname(entry_path)
+    let modules: MutableMap[String, Program] = load_program_modules(base_dir, program)
+    let errors: Int = type_check_entry(path: entry_path, program: program, modules: modules)
+
+    if errors > 0 then
+        print(path + ": " + to_string(errors) + " type error(s)")
+        return 1
+    end if
+
+    print(path + ": ok")
+    return 0
+end func cmd_check
+
+// Run the run command: parse, check, and interpret a file.
+@untested("host fs bridge")
+func cmd_run(path: String) -> Int
+    let entry_path: String = resolve_entry_path(path)
+    let source_opt: Option[String] = load_source(entry_path)
+    if is_none(source_opt) then
+        print("Error: could not read file or project: " + path)
+        return 1
+    end if
+    let source: String = unwrap(source_opt)
+
+    let program_opt: Option[Program] = parse_entry_program(entry_path, source)
+    if is_none(program_opt) then
+        return 1
+    end if
+    let program: Program = unwrap(program_opt)
+    let base_dir: String = path_dirname(entry_path)
+    let modules: MutableMap[String, Program] = load_program_modules(base_dir, program)
+    let errors: Int = type_check_entry(path: entry_path, program: program, modules: modules)
+
+    if errors > 0 then
+        print(path + ": " + to_string(errors) + " type error(s), aborting")
+        return 1
+    end if
+
+    if not run_entry(path: entry_path, program: program, modules: modules) then
+        return 1
+    end if
+    return 0
+end func cmd_run
+
+// Run the test command: parse, check, and verify examples without calling main.
+@untested("host fs bridge")
+func cmd_test(path: String) -> Int
+    let entry_path: String = resolve_entry_path(path)
+    let source_opt: Option[String] = load_source(entry_path)
+    if is_none(source_opt) then
+        print("Error: could not read file or project: " + path)
+        return 1
+    end if
+    let source: String = unwrap(source_opt)
+
+    let program_opt: Option[Program] = parse_entry_program(entry_path, source)
+    if is_none(program_opt) then
+        return 1
+    end if
+    let program: Program = unwrap(program_opt)
+    let base_dir: String = path_dirname(entry_path)
+    let modules: MutableMap[String, Program] = load_program_modules(base_dir, program)
+    let errors: Int = type_check_entry(path: entry_path, program: program, modules: modules)
+
+    if errors > 0 then
+        print(path + ": " + to_string(errors) + " type error(s), aborting tests")
+        return 1
+    end if
+
+    if not test_entry(path: entry_path, program: program, modules: modules) then
+        print(path + ": test failures")
+        return 1
+    end if
+
+    print(path + ": ok")
+    return 0
+end func cmd_test
+
+// Run the built-in demo pipeline (the original smoke test).
+func cmd_demo() -> Int
+    example () -> 0
+    let source: String = "func double(x: Int) -> Int\n    example 3 -> 6\n    return x * 2\nend func double\n\nfunc main() -> Int\n    let result: Int = double(5)\n    print(to_string(result))\n    return result\nend func main"
+    let filename: String = "<demo>"
+
+    print("=== Geno Self-Hosted Frontend + Interpreter ===")
+    print("")
+
+    print("Stage 1: Lexing...")
+    let tokens: List[Token] = tokenize(source)
+    print("  Tokens: " + to_string(length(tokens)))
+
+    print("Stage 2: Parsing...")
+    let ps: ParserState = make_parser(tokens, filename)
+    let program: Program = parse_program(ps)
+    print("  Definitions: " + to_string(length(program.defs)))
+    print_diag_list(vec_to_list(ps.diagnostics))
+
+    print("Stage 3: Type checking...")
+    let cs: CheckerState = make_checker_with_filename(filename)
+    let errors: Int = check_program(cs: cs, program: program, modules: mutable_map_new())
+    print("  Errors: " + to_string(errors))
+    print_diag_list(vec_to_list(cs.diagnostics))
+
+    print("Stage 4: Interpreting...")
+    let st: InterpState = make_interp_state_with_filename(filename)
+    let result: Value = run_program_with_state(st: st, program: program, modules: mutable_map_new(), check_ex: false)
+    print("  Result: " + value_to_str(result))
+    print_diag_list(vec_to_list(st.diagnostics))
+
+    print("")
+    print("=== Pipeline complete ===")
+    return 0
+end func cmd_demo
+
+@untested("entry point")
+func main() -> Int
+    let args: List[String] = cli_args()
+
+    if length(args) == 0 then
+        print_usage()
+        return 1
+    end if
+
+    let command: String = head(args)
+
+    if command == "demo" then
+        return cmd_demo()
+    end if
+
+    if command == "check" then
+        if length(args) < 2 then
+            print("Error: check requires a file or project path")
+            return 1
+        end if
+        return cmd_check(head(tail(args)))
+    end if
+
+    if command == "run" then
+        if length(args) < 2 then
+            print("Error: run requires a file or project path")
+            return 1
+        end if
+        return cmd_run(head(tail(args)))
+    end if
+
+    if command == "test" then
+        if length(args) < 2 then
+            print("Error: test requires a file or project path")
+            return 1
+        end if
+        return cmd_test(head(tail(args)))
+    end if
+
+    print("Unknown command: " + command)
+    print_usage()
+    return 1
+end func main

@@ -1,0 +1,5 @@
+# EXPECT: E413
+# exec with "process" capability but no host callback.
+func main() -> Result[ProcessResult, String]
+    return exec(command: "echo hi")
+end func

@@ -1,0 +1,24 @@
+# EXPECT: E502
+# Type annotation / to_string abuse: create deeply nested ADT
+# values and convert them to strings inside recursive calls.
+# Each level builds two sub-trees and serializes them, combining
+# exponential tree growth with string creation overhead.  Tests
+# that to_string inside deep recursion hits the recursion limit
+# before exhausting memory.
+type Tree = Leaf(v: Int) | Node(left: Tree, right: Tree, label: String)
+
+func build_and_stringify(depth: Int) -> String
+    example 0 -> "Leaf(v: 0)"
+    if depth <= 0 then
+        return to_string(Leaf(0))
+    end if
+    let sub: String = build_and_stringify(depth - 1)
+    let left: Tree = Node(Leaf(depth), Leaf(depth - 1), sub)
+    let right: Tree = Node(Leaf(depth), Leaf(depth - 1), sub)
+    let node: Tree = Node(left, right, to_string(depth))
+    return to_string(node)
+end func
+
+func main() -> String
+    return build_and_stringify(1000)
+end func

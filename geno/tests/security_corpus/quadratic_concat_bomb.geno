@@ -1,0 +1,13 @@
+# EXPECT: E503
+# Quadratic string construction via loop concatenation.
+# Each iteration appends a string, and the step limit
+# should trigger before the collection limit.
+func main() -> Int
+    var s: String = ""
+    var i: Int = 0
+    while i < 1000000 do
+        s = s + "A"
+        i = i + 1
+    end while
+    return length(s)
+end func

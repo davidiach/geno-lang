@@ -1,0 +1,72 @@
+problem:
+  id: "PROB-066"
+  name: "For-Loop Matrix Sum"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that computes the sum of all elements in a 2D matrix
+    (a list of lists of integers). Use a for loop to iterate over rows
+    and elements.
+  signature:
+    function_name: "matrix_sum"
+    inputs:
+      - name: "matrix"
+        type: "List[List[Int]]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[[1, 2], [3, 4]]]
+        output: 10
+        description: "2x2 matrix"
+      - input: [[[1, 2, 3], [4, 5, 6], [7, 8, 9]]]
+        output: 45
+        description: "3x3 matrix"
+      - input: [[[]]]
+        output: 0
+        description: "Empty matrix"
+    hidden:
+      - input: [[[10]]]
+        output: 10
+        description: "Single element"
+      - input: [[[-1, -2], [-3, -4]]]
+        output: -10
+        description: "Negative numbers"
+      - input: [[[0, 0], [0, 0]]]
+        output: 0
+        description: "All zeros"
+      - input: [[[1], [2], [3]]]
+        output: 6
+        description: "Column vector"
+      - input: [[[100, 200, 300]]]
+        output: 600
+        description: "Single row"
+  constraints:
+    - "Use for loops"
+    - "Matrix can be empty or have empty rows"
+  canonical_solutions:
+    geno: |
+      func matrix_sum(matrix: List[List[Int]]) -> Int
+          example [[1, 2], [3, 4]] -> 10
+          example [[1, 2, 3], [4, 5, 6], [7, 8, 9]] -> 45
+
+          var total: Int = 0
+
+          for row: List[Int] in matrix do
+              for elem: Int in row do
+                  total = total + elem
+              end for
+          end for
+
+          return total
+      end func matrix_sum
+    python: |
+      def matrix_sum(matrix: list[list[int]]) -> int:
+          return sum(elem for row in matrix for elem in row)
+  metadata:
+    tags: ["for-loop", "matrix", "nested-iteration"]
+    source: "Original"
+    time_complexity: "O(n*m)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "for", "nested-for", "var", "arithmetic"]

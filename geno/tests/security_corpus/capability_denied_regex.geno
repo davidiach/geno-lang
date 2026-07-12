@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling regex_match without the "regex" capability should fail.
+func main() -> Option[String]
+    return regex_match(pattern: "abc", text: "xabcx")
+end func

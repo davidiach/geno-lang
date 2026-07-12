@@ -1,0 +1,194 @@
+problem:
+  id: "APP-003"
+  name: "Inventory Command Processor"
+  difficulty: "expert"
+  domain: "systems"
+  description: |
+    Process a sequence of inventory commands against an initially empty
+    stock and report a status for each command, in order.
+
+    Command formats (colon-separated, exactly three fields):
+    - "add:<item>:<qty>"    — increase the item's stock by qty
+    - "remove:<item>:<qty>" — decrease the item's stock by qty
+
+    Rules, applied per command in input order:
+    - A command is malformed if it does not have exactly three fields,
+      its verb is not "add" or "remove", or its quantity does not parse
+      as a non-negative integer. Malformed commands report "error" and
+      change nothing.
+    - Items not seen before have stock 0.
+    - A remove that would drive an item's stock below zero reports
+      "insufficient" and changes nothing.
+    - Every other command applies its change and reports "ok".
+
+    Define an algebraic data type for parsed commands and use pattern
+    matching to process them.
+  signature:
+    function_name: "process_commands"
+    inputs:
+      - name: "commands"
+        type: "List[String]"
+    output:
+      name: "statuses"
+      type: "List[String]"
+  examples:
+    visible:
+      - input: [["add:apple:5", "remove:apple:2", "remove:apple:4"]]
+        output: ["ok", "ok", "insufficient"]
+        description: "Stock is tracked across commands"
+      - input: [["remove:pear:1", "junk", "add:pear:3"]]
+        output: ["insufficient", "error", "ok"]
+        description: "Unknown items have stock 0; malformed reports error"
+      - input: [[]]
+        output: []
+        description: "No commands"
+    hidden:
+      - input: [["add:a:1", "add:b:2", "remove:a:1", "remove:b:2", "remove:a:1"]]
+        output: ["ok", "ok", "ok", "ok", "insufficient"]
+        description: "Independent per-item stock"
+      - input: [["add:apple:x"]]
+        output: ["error"]
+        description: "Non-numeric quantity is malformed"
+      - input: [["drop:apple:1"]]
+        output: ["error"]
+        description: "Unknown verb is malformed"
+      - input: [["add:apple:0", "remove:apple:0"]]
+        output: ["ok", "ok"]
+        description: "Zero quantities are allowed"
+      - input: [["add:apple:2", "add:apple:3", "remove:apple:5"]]
+        output: ["ok", "ok", "ok"]
+        description: "Adds accumulate"
+      - input: [["remove:apple:1", "add:apple:1", "remove:apple:1"]]
+        output: ["insufficient", "ok", "ok"]
+        description: "Failed removes change nothing"
+  constraints:
+    - "Quantities are non-negative integers"
+    - "Item names contain no ':' characters"
+    - "Malformed and insufficient commands must not change stock"
+    - "Define an ADT for commands and use pattern matching"
+  canonical_solutions:
+    geno: |
+      type Command = Add(item: String, qty: Int) | Remove(item: String, qty: Int) | Bad
+
+      func parse_command(text: String) -> Command
+          example "add:apple:5" -> Add("apple", 5)
+          example "junk" -> Bad
+
+          let parts: List[String] = split(text, ":")
+          if length(parts) != 3 then
+              return Bad
+          end if
+          let qty: Int = match parse_int(parts[2]) with
+              | Some(v) -> v
+              | None -> -1
+          end match
+          if qty < 0 then
+              return Bad
+          end if
+          if parts[0] == "add" then
+              return Add(parts[1], qty)
+          end if
+          if parts[0] == "remove" then
+              return Remove(parts[1], qty)
+          end if
+          return Bad
+      end func parse_command
+
+      func process_commands(commands: List[String]) -> List[String]
+          example ["add:apple:5", "remove:apple:2", "remove:apple:4"] -> ["ok", "ok", "insufficient"]
+          example [] -> []
+
+          var items: List[String] = []
+          var stock: List[Int] = []
+          var statuses: List[String] = []
+          for cmd: String in commands do
+              let parsed: Command = parse_command(cmd)
+              let is_bad: Bool = match parsed with
+                  | Bad -> true
+                  | Add(name, qty) -> false
+                  | Remove(name, qty) -> false
+              end match
+              if is_bad then
+                  statuses = append(statuses, "error")
+              else
+                  let item: String = match parsed with
+                      | Add(name, qty) -> name
+                      | Remove(name, qty) -> name
+                      | Bad -> ""
+                  end match
+                  let delta: Int = match parsed with
+                      | Add(name, qty) -> qty
+                      | Remove(name, qty) -> 0 - qty
+                      | Bad -> 0
+                  end match
+                  var idx: Int = -1
+                  var i: Int = 0
+                  while i < length(items) do
+                      if items[i] == item then
+                          idx = i
+                      end if
+                      i = i + 1
+                  end while
+                  var current: Int = 0
+                  if idx >= 0 then
+                      current = stock[idx]
+                  end if
+                  if current + delta < 0 then
+                      statuses = append(statuses, "insufficient")
+                  else
+                      if idx == -1 then
+                          items = append(items, item)
+                          stock = append(stock, current + delta)
+                      else
+                          var updated: List[Int] = []
+                          var j: Int = 0
+                          while j < length(stock) do
+                              if j == idx then
+                                  updated = append(updated, current + delta)
+                              else
+                                  updated = append(updated, stock[j])
+                              end if
+                              j = j + 1
+                          end while
+                          stock = updated
+                      end if
+                      statuses = append(statuses, "ok")
+                  end if
+              end if
+          end for
+          return statuses
+      end func process_commands
+    python: |
+      def process_commands(commands: list[str]) -> list[str]:
+          stock: dict[str, int] = {}
+          statuses = []
+          for cmd in commands:
+              parts = cmd.split(":")
+              if len(parts) != 3 or parts[0] not in ("add", "remove"):
+                  statuses.append("error")
+                  continue
+              try:
+                  qty = int(parts[1 + 1])
+              except ValueError:
+                  statuses.append("error")
+                  continue
+              if qty < 0:
+                  statuses.append("error")
+                  continue
+              item = parts[1]
+              delta = qty if parts[0] == "add" else -qty
+              current = stock.get(item, 0)
+              if current + delta < 0:
+                  statuses.append("insufficient")
+              else:
+                  stock[item] = current + delta
+                  statuses.append("ok")
+          return statuses
+  metadata:
+    tags: ["app-tier", "adt", "state-machine", "parsing"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n * k)"
+    space_complexity: "O(k)"
+    constructs_tested:
+      ["adt", "match", "option", "for", "while", "split", "parse_int",
+       "list-rebuild", "state"]

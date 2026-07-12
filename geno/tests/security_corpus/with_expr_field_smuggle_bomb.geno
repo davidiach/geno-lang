@@ -1,0 +1,25 @@
+# EXPECT: E503
+# With-expression field smuggling: use with-expressions to create
+# copies of ADT values with modified fields in a tight loop,
+# attempting to use the copy mechanism to bypass immutability
+# guarantees or leak internal field data.  Each with-expression
+# creates a new value and should be step-counted.
+type Packet = Data(payload: String, seq: Int, checksum: Int, flag: Bool)
+
+func scramble(p: Packet, i: Int) -> Packet
+    example Data("x", 0, 0, false), 1 -> Data("x1", 1, 7, false)
+    let p1: Packet = p with (seq: i)
+    let p2: Packet = p1 with (checksum: i * 7)
+    let p3: Packet = p2 with (flag: i % 2 == 0)
+    return p3 with (payload: f"{p.payload}{to_string(i)}")
+end func
+
+func main() -> Int
+    var pkt: Packet = Data("init", 0, 0, true)
+    var i: Int = 0
+    while i < 500000 do
+        pkt = scramble(p: pkt, i: i)
+        i = i + 1
+    end while
+    return pkt.seq
+end func

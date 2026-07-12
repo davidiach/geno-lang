@@ -1,0 +1,12 @@
+# EXPECT: E503
+# Nested fold-within-fold creates O(n^2) work: the outer
+# fold iterates N elements, and for each element the inner
+# fold iterates all N elements again.  Tests that step
+# counting applies inside nested higher-order function
+# callbacks.
+func main() -> Int
+    let lst: List[Int] = range(0, 1000)
+    return fold(list: lst, initial: 0, reducer: fn(acc: Int, x: Int) ->
+        acc + fold(list: lst, initial: 0, reducer: fn(a2: Int, y: Int) -> a2 + y)
+    )
+end func

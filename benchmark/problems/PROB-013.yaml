@@ -1,0 +1,71 @@
+problem:
+  id: "PROB-013"
+  name: "Linear Search"
+  difficulty: "easy"
+  domain: "searching"
+  description: |
+    Write a function that performs linear search to find the index of a target value in a list.
+    Return -1 if the target is not found.
+  signature:
+    function_name: "linear_search"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+      - name: "target"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[10, 20, 30, 40, 50], 30]
+        output: 2
+        description: "Found at index 2"
+      - input: [[1, 2, 3], 5]
+        output: -1
+        description: "Not found"
+    hidden:
+      - input: [[], 1]
+        output: -1
+        description: "Empty list"
+      - input: [[5], 5]
+        output: 0
+        description: "Single element found"
+      - input: [[1, 2, 2, 2], 2]
+        output: 1
+        description: "First occurrence"
+      - input: [[5, 4, 3, 2, 1], 1]
+        output: 4
+        description: "Found at end"
+  constraints:
+    - "Return first occurrence index"
+    - "Return -1 if not found"
+  canonical_solutions:
+    geno: |
+      func linear_search(arr: List[Int], target: Int) -> Int
+          example [10, 20, 30, 40, 50], 30 -> 2
+          example [1, 2, 3], 5 -> -1
+
+          var i: Int = 0
+
+          while i < length(arr) do
+              if arr[i] == target then
+                  return i
+              end if
+              i = i + 1
+          end while
+
+          return -1
+      end func linear_search
+    python: |
+      def linear_search(arr: list[int], target: int) -> int:
+          for i, x in enumerate(arr):
+              if x == target:
+                  return i
+          return -1
+  metadata:
+    tags: ["search", "basic"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "early-return"]

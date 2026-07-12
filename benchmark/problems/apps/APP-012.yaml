@@ -1,0 +1,173 @@
+problem:
+  id: "APP-012"
+  name: "Date Add Days"
+  difficulty: "expert"
+  domain: "math"
+  description: |
+    Add a number of days to a calendar date. The date is given as
+    "YYYY-MM-DD" (zero-padded) and the result must use the same format.
+
+    Use Gregorian calendar rules:
+    - Months have 31, 28/29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 days.
+    - February has 29 days in leap years: a year divisible by 4 is a
+      leap year, unless it is divisible by 100 and not by 400.
+  signature:
+    function_name: "add_days"
+    inputs:
+      - name: "date"
+        type: "String"
+      - name: "days"
+        type: "Int"
+    output:
+      name: "result"
+      type: "String"
+  examples:
+    visible:
+      - input: ["2026-02-27", 2]
+        output: "2026-03-01"
+        description: "Non-leap February rolls into March"
+      - input: ["2024-02-28", 1]
+        output: "2024-02-29"
+        description: "Leap year keeps February 29"
+    hidden:
+      - input: ["2024-02-29", 1]
+        output: "2024-03-01"
+        description: "Leap day rolls into March"
+      - input: ["2026-12-31", 1]
+        output: "2027-01-01"
+        description: "Year rollover"
+      - input: ["2026-01-01", 0]
+        output: "2026-01-01"
+        description: "Zero days is identity"
+      - input: ["2000-02-28", 1]
+        output: "2000-02-29"
+        description: "Divisible by 400 is a leap year"
+      - input: ["1900-02-28", 1]
+        output: "1900-03-01"
+        description: "Divisible by 100 but not 400 is not a leap year"
+      - input: ["2026-06-12", 30]
+        output: "2026-07-12"
+        description: "Crossing a 30-day month"
+      - input: ["0001-01-01", 0]
+        output: "0001-01-01"
+        description: "Years below 1000 keep their zero padding"
+      - input: ["0999-12-31", 1]
+        output: "1000-01-01"
+        description: "Year padding across the 1000 boundary"
+  constraints:
+    - "The input date is valid and zero-padded"
+    - "0 <= days <= 10000"
+    - "Result years stay within 4 digits"
+  canonical_solutions:
+    geno: |
+      func is_leap(year: Int) -> Bool
+          example 2024 -> true
+          example 1900 -> false
+
+          return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+      end func is_leap
+
+      func month_days(month: Int, year: Int) -> Int
+          example 2, 2024 -> 29
+          example 4, 2026 -> 30
+
+          if month == 2 then
+              if is_leap(year) then
+                  return 29
+              end if
+              return 28
+          end if
+          if month == 4 or month == 6 or month == 9 or month == 11 then
+              return 30
+          end if
+          return 31
+      end func month_days
+
+      func pad2(n: Int) -> String
+          example 7 -> "07"
+          example 12 -> "12"
+
+          if n < 10 then
+              return "0" + to_string(n)
+          end if
+          return to_string(n)
+      end func pad2
+
+      func pad4(n: Int) -> String
+          example 7 -> "0007"
+          example 2026 -> "2026"
+
+          if n < 10 then
+              return "000" + to_string(n)
+          end if
+          if n < 100 then
+              return "00" + to_string(n)
+          end if
+          if n < 1000 then
+              return "0" + to_string(n)
+          end if
+          return to_string(n)
+      end func pad4
+
+      func add_days(date: String, days: Int) -> String
+          example "2026-02-27", 2 -> "2026-03-01"
+          example "2026-01-01", 0 -> "2026-01-01"
+
+          let parts: List[String] = split(date, "-")
+          var year: Int = match parse_int(parts[0]) with
+              | Some(v) -> v
+              | None -> 0
+          end match
+          var month: Int = match parse_int(parts[1]) with
+              | Some(v) -> v
+              | None -> 1
+          end match
+          var day: Int = match parse_int(parts[2]) with
+              | Some(v) -> v
+              | None -> 1
+          end match
+          var remaining: Int = days
+          while remaining > 0 do
+              day = day + 1
+              if day > month_days(month, year) then
+                  day = 1
+                  month = month + 1
+                  if month > 12 then
+                      month = 1
+                      year = year + 1
+                  end if
+              end if
+              remaining = remaining - 1
+          end while
+          return pad4(year) + "-" + pad2(month) + "-" + pad2(day)
+      end func add_days
+    python: |
+      def add_days(date: str, days: int) -> str:
+          def is_leap(year: int) -> bool:
+              return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+          def month_days(month: int, year: int) -> int:
+              if month == 2:
+                  return 29 if is_leap(year) else 28
+              if month in (4, 6, 9, 11):
+                  return 30
+              return 31
+
+          year, month, day = (int(p) for p in date.split("-"))
+          for _ in range(days):
+              day += 1
+              if day > month_days(month, year):
+                  day = 1
+                  month += 1
+                  if month > 12:
+                      month = 1
+                      year += 1
+          return f"{year:04d}-{month:02d}-{day:02d}"
+  metadata:
+    tags: ["app-tier", "dates", "calendar", "formatting"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(days)"
+    space_complexity: "O(1)"
+    constructs_tested:
+      ["function", "helpers", "while", "split", "parse_int", "match",
+       "bool-logic", "zero-padding"]

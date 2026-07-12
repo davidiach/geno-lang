@@ -1,0 +1,90 @@
+problem:
+  id: "PROB-053"
+  name: "Best Time to Buy and Sell Stock"
+  difficulty: "medium"
+  domain: "dp"
+  description: |
+    You are given an array where prices[i] is the price of a stock on day i.
+    Find the maximum profit you can achieve from one transaction (buy then sell).
+    Return 0 if no profit is possible.
+  signature:
+    function_name: "max_profit"
+    inputs:
+      - name: "prices"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[7, 1, 5, 3, 6, 4]]
+        output: 5
+        description: "Buy at 1, sell at 6"
+      - input: [[7, 6, 4, 3, 1]]
+        output: 0
+        description: "No profit possible"
+    hidden:
+      - input: [[]]
+        output: 0
+        description: "Empty list"
+      - input: [[1]]
+        output: 0
+        description: "Single price"
+      - input: [[1, 2]]
+        output: 1
+        description: "Two days profit"
+      - input: [[2, 1]]
+        output: 0
+        description: "Two days no profit"
+      - input: [[3, 3, 3]]
+        output: 0
+        description: "All same"
+  constraints:
+    - "One transaction only (buy then sell)"
+    - "Must buy before selling"
+  canonical_solutions:
+    geno: |
+      func max_profit(prices: List[Int]) -> Int
+          example [7, 1, 5, 3, 6, 4] -> 5
+          example [7, 6, 4, 3, 1] -> 0
+
+          if length(prices) < 2 then
+              return 0
+          end if
+
+          var min_price: Int = prices[0]
+          var max_profit: Int = 0
+          var i: Int = 1
+
+          while i < length(prices) do
+              if prices[i] < min_price then
+                  min_price = prices[i]
+              else
+                  let profit: Int = prices[i] - min_price
+                  if profit > max_profit then
+                      max_profit = profit
+                  end if
+              end if
+              i = i + 1
+          end while
+
+          return max_profit
+      end func max_profit
+    python: |
+      def max_profit(prices: list[int]) -> int:
+          if len(prices) < 2:
+              return 0
+          min_price = prices[0]
+          max_profit = 0
+          for price in prices[1:]:
+              if price < min_price:
+                  min_price = price
+              else:
+                  max_profit = max(max_profit, price - min_price)
+          return max_profit
+  metadata:
+    tags: ["dynamic-programming", "array"]
+    source: "LeetCode #121"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if-else", "tracking-min"]

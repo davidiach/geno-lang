@@ -1,0 +1,78 @@
+problem:
+  id: "PROB-048"
+  name: "Single Number"
+  difficulty: "medium"
+  domain: "arrays"
+  description: |
+    Given a non-empty array of integers where every element appears twice except for one,
+    find that single element.
+  signature:
+    function_name: "single_number"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[2, 2, 1]]
+        output: 1
+        description: "1 is single"
+      - input: [[4, 1, 2, 1, 2]]
+        output: 4
+        description: "4 is single"
+    hidden:
+      - input: [[1]]
+        output: 1
+        description: "Only one element"
+      - input: [[1, 2, 1]]
+        output: 2
+        description: "Single in middle"
+      - input: [[5, 3, 5]]
+        output: 3
+        description: "Another case"
+      - input: [[-1, -1, -2]]
+        output: -2
+        description: "Negative numbers"
+  constraints:
+    - "Every element appears exactly twice except one"
+    - "Array is non-empty"
+  canonical_solutions:
+    geno: |
+      func single_number(nums: List[Int]) -> Int
+          requires length(nums) > 0
+          example [2, 2, 1] -> 1
+          example [4, 1, 2, 1, 2] -> 4
+
+          var i: Int = 0
+          while i < length(nums) do
+              let candidate: Int = nums[i]
+              var count: Int = 0
+              var j: Int = 0
+              while j < length(nums) do
+                  if nums[j] == candidate then
+                      count = count + 1
+                  end if
+                  j = j + 1
+              end while
+              if count == 1 then
+                  return candidate
+              end if
+              i = i + 1
+          end while
+
+          return nums[0]
+      end func single_number
+    python: |
+      def single_number(nums: list[int]) -> int:
+          result = 0
+          for num in nums:
+              result ^= num
+          return result
+  metadata:
+    tags: ["array", "bit-manipulation"]
+    source: "LeetCode #136"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "nested-while", "if", "counting"]

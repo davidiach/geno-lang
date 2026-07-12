@@ -1,0 +1,73 @@
+problem:
+  id: "PROB-022"
+  name: "Count Vowels"
+  difficulty: "easy"
+  domain: "strings"
+  description: |
+    Write a function that counts the number of vowels (a, e, i, o, u) in a string.
+    The function should be case-insensitive.
+  signature:
+    function_name: "count_vowels"
+    inputs:
+      - name: "s"
+        type: "String"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: "hello"
+        output: 2
+        description: "e and o"
+      - input: "xyz"
+        output: 0
+        description: "No vowels"
+    hidden:
+      - input: ""
+        output: 0
+        description: "Empty string"
+      - input: "aeiou"
+        output: 5
+        description: "All vowels"
+      - input: "HELLO"
+        output: 2
+        description: "Uppercase"
+      - input: "AeIoU"
+        output: 5
+        description: "Mixed case vowels"
+      - input: "bcdfg"
+        output: 0
+        description: "Only consonants"
+  constraints:
+    - "Case insensitive"
+    - "Only count a, e, i, o, u"
+  canonical_solutions:
+    geno: |
+      func count_vowels(s: String) -> Int
+          example "hello" -> 2
+          example "xyz" -> 0
+
+          let lower: String = to_lower(s)
+          let chars: List[String] = to_chars(lower)
+          var count: Int = 0
+          var i: Int = 0
+
+          while i < length(chars) do
+              let c: String = chars[i]
+              if c == "a" or c == "e" or c == "i" or c == "o" or c == "u" then
+                  count = count + 1
+              end if
+              i = i + 1
+          end while
+
+          return count
+      end func count_vowels
+    python: |
+      def count_vowels(s: str) -> int:
+          return sum(1 for c in s.lower() if c in 'aeiou')
+  metadata:
+    tags: ["string", "counting"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "or", "string-ops"]

@@ -1,0 +1,101 @@
+problem:
+  id: "PROB-044"
+  name: "Valid Parentheses"
+  difficulty: "medium"
+  domain: "strings"
+  description: |
+    Given a string containing only '(', ')', '{', '}', '[' and ']',
+    determine if the input string is valid. A string is valid if:
+    1. Open brackets are closed by the same type of brackets.
+    2. Open brackets are closed in the correct order.
+  signature:
+    function_name: "is_valid_parens"
+    inputs:
+      - name: "s"
+        type: "String"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: "()"
+        output: true
+        description: "Simple pair"
+      - input: "()[]{}"
+        output: true
+        description: "Multiple pairs"
+      - input: "(]"
+        output: false
+        description: "Mismatched"
+    hidden:
+      - input: ""
+        output: true
+        description: "Empty string"
+      - input: "((()))"
+        output: true
+        description: "Nested"
+      - input: "([)]"
+        output: false
+        description: "Interleaved"
+      - input: "{[]}"
+        output: true
+        description: "Nested mixed"
+      - input: "((("
+        output: false
+        description: "Unclosed"
+  constraints:
+    - "String contains only brackets"
+  canonical_solutions:
+    geno: |
+      func is_valid_parens(s: String) -> Bool
+          example "()" -> true
+          example "()[]{}" -> true
+          example "(]" -> false
+
+          let chars: List[String] = to_chars(s)
+          var stack: List[String] = []
+          var i: Int = 0
+
+          while i < length(chars) do
+              let c: String = chars[i]
+              if c == "(" or c == "[" or c == "{" then
+                  stack = append(stack, c)
+              else
+                  if length(stack) == 0 then
+                      return false
+                  end if
+                  let top: String = stack[length(stack) - 1]
+                  stack = slice(list: stack, start: 0, stop: length(stack) - 1)
+                  if c == ")" and top != "(" then
+                      return false
+                  end if
+                  if c == "]" and top != "[" then
+                      return false
+                  end if
+                  if c == "}" and top != "{" then
+                      return false
+                  end if
+              end if
+              i = i + 1
+          end while
+
+          return length(stack) == 0
+      end func is_valid_parens
+    python: |
+      def is_valid_parens(s: str) -> bool:
+          stack = []
+          pairs = {')': '(', ']': '[', '}': '{'}
+          for c in s:
+              if c in '([{':
+                  stack.append(c)
+              else:
+                  if not stack or stack[-1] != pairs[c]:
+                      return False
+                  stack.pop()
+          return len(stack) == 0
+  metadata:
+    tags: ["stack", "string"]
+    source: "LeetCode #20"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "list-as-stack"]

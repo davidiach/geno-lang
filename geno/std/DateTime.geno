@@ -1,0 +1,38 @@
+type DateTime = DateTime(timestamp: Int)
+
+@untested("depends on current time")
+func now() -> DateTime
+    return DateTime(datetime_now())
+end func
+
+func from_timestamp(ts: Int) -> DateTime
+    example 0 -> DateTime(0)
+    example 1000 -> DateTime(1000)
+    return DateTime(ts)
+end func
+
+func to_timestamp(dt: DateTime) -> Int
+    example DateTime(0) -> 0
+    example DateTime(1000) -> 1000
+    return dt.timestamp
+end func
+
+func format(dt: DateTime, fmt: String) -> String
+    example DateTime(0), "%Y-%m-%d" -> "1970-01-01"
+    example DateTime(0), "%H:%M:%S" -> "00:00:00"
+    return datetime_format(dt.timestamp, fmt)
+end func
+
+func parse(text: String, fmt: String) -> Option[DateTime]
+    example "1970-01-01", "%Y-%m-%d" -> Some(DateTime(0))
+    return match datetime_parse(text, fmt) with
+        | Some(ts) -> Some(DateTime(ts))
+        | None -> None
+    end match
+end func
+
+func elapsed(start: DateTime, end_time: DateTime) -> Int
+    example DateTime(100), DateTime(200) -> 100
+    example DateTime(0), DateTime(3600) -> 3600
+    return datetime_elapsed(start.timestamp, end_time.timestamp)
+end func

@@ -1,0 +1,90 @@
+problem:
+  id: "PROB-070"
+  name: "Linked List Sum (ADT)"
+  difficulty: "medium"
+  domain: "linked"
+  description: |
+    Write a function that takes a list of integers, builds a linked list
+    from them using an algebraic data type, and then recursively sums
+    all elements of the linked list.
+
+    Define a linked list type with Nil (empty) and Cons (element + rest)
+    constructors.
+  signature:
+    function_name: "linked_sum"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, 2, 3]]
+        output: 6
+        description: "Sum of 1+2+3"
+      - input: [[]]
+        output: 0
+        description: "Empty list"
+      - input: [[42]]
+        output: 42
+        description: "Single element"
+    hidden:
+      - input: [[10, 20, 30, 40]]
+        output: 100
+        description: "Longer list"
+      - input: [[-1, 1, -1, 1]]
+        output: 0
+        description: "Cancelling elements"
+      - input: [[0, 0, 0]]
+        output: 0
+        description: "All zeros"
+      - input: [[100]]
+        output: 100
+        description: "Single large element"
+      - input: [[5, -5, 10, -10, 15]]
+        output: 15
+        description: "Mixed positive and negative"
+  constraints:
+    - "Define a linked list ADT"
+    - "Build the linked list from the input array"
+    - "Use recursive pattern matching to compute the sum"
+  canonical_solutions:
+    geno: |
+      type LList = Nil | Cons(value: Int, rest: LList)
+
+      func build_list(nums: List[Int], index: Int) -> LList
+          example [], 0 -> Nil
+
+          if index >= length(nums) then
+              return Nil
+          else
+              return Cons(nums[index], build_list(nums, index + 1))
+          end if
+      end func build_list
+
+      func sum_linked(ll: LList) -> Int
+          example Nil -> 0
+
+          match ll with
+              | Nil -> return 0
+              | Cons(v, rest) -> return v + sum_linked(rest)
+          end match
+      end func sum_linked
+
+      func linked_sum(nums: List[Int]) -> Int
+          example [1, 2, 3] -> 6
+          example [] -> 0
+
+          let ll: LList = build_list(nums, 0)
+          return sum_linked(ll)
+      end func linked_sum
+    python: |
+      def linked_sum(nums: list[int]) -> int:
+          return sum(nums)
+  metadata:
+    tags: ["linked-list", "adt", "recursion", "pattern-matching"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["type", "match", "constructor", "field-destructuring", "recursion", "function", "multi-function", "if-else"]

@@ -1,0 +1,68 @@
+problem:
+  id: "PROB-034"
+  name: "Sum of Digits"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that computes the sum of digits of a non-negative integer.
+  signature:
+    function_name: "sum_digits"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 123
+        output: 6
+        description: "1 + 2 + 3 = 6"
+      - input: 9999
+        output: 36
+        description: "9 + 9 + 9 + 9 = 36"
+    hidden:
+      - input: 0
+        output: 0
+        description: "Zero"
+      - input: 5
+        output: 5
+        description: "Single digit"
+      - input: 10
+        output: 1
+        description: "1 + 0"
+      - input: 12345
+        output: 15
+        description: "1+2+3+4+5"
+  constraints:
+    - "n >= 0"
+  canonical_solutions:
+    geno: |
+      func sum_digits(n: Int) -> Int
+          requires n >= 0
+          example 123 -> 6
+          example 9999 -> 36
+
+          var total: Int = 0
+          var current: Int = n
+
+          while current > 0 do
+              total = total + current % 10
+              current = current / 10
+          end while
+
+          return total
+      end func sum_digits
+    python: |
+      def sum_digits(n: int) -> int:
+          total = 0
+          while n > 0:
+              total += n % 10
+              n //= 10
+          return total
+  metadata:
+    tags: ["math", "digit-manipulation"]
+    source: "Classic"
+    time_complexity: "O(log n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "modulo", "division"]

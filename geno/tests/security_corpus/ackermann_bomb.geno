@@ -1,0 +1,17 @@
+# EXPECT: E503
+# Ackermann function: super-exponential growth
+# in both recursion depth and step count.
+func ack(m: Int, n: Int) -> Int
+    example 0, 0 -> 1
+    if m == 0 then
+        return n + 1
+    end if
+    if n == 0 then
+        return ack(m - 1, 1)
+    end if
+    return ack(m - 1, ack(m, n - 1))
+end func
+
+func main() -> Int
+    return ack(3, 10)
+end func

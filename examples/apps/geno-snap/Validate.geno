@@ -1,0 +1,73 @@
+// Validate.geno — Request parameter validation
+// ================================================
+
+// Check that a string is non-empty.
+func is_non_empty(s: String) -> Bool
+    example "" -> false
+    example "hello" -> true
+    example " " -> true
+
+    return length(to_chars(s)) > 0
+end func
+
+// Check that a string represents a positive integer.
+func is_positive_int(s: String) -> Bool
+    example "42" -> true
+    example "0" -> false
+    example "-1" -> false
+    example "abc" -> false
+    example "" -> false
+
+    match parse_int(s) with
+        | Some(n) -> return n > 0
+        | None -> return false
+    end match
+end func
+
+// Extract the key from a "key=value" pair.
+func pair_key(pair: String) -> String
+    example "name=alice" -> "name"
+    example "age=30" -> "age"
+    example "solo" -> "solo"
+
+    return head(split(pair, "="))
+end func
+
+// Validate that a required query parameter exists in the query string.
+// Query string format: "key1=val1&key2=val2"
+func has_param(query: String, param: String) -> Bool
+    example ("name=alice&age=30", "name") -> true
+    example ("name=alice&age=30", "color") -> false
+    example ("", "name") -> false
+
+    let pairs: List[String] = split(query, "&")
+    let keys: List[String] = map(pairs, fn(p: String) -> pair_key(p))
+    return contains(keys, param)
+end func
+
+// Check if a query pair starts with a given key prefix ("key=").
+func pair_matches_key(pair: String, key: String) -> Bool
+    example ("name=alice", "name") -> true
+    example ("age=30", "name") -> false
+
+    return starts_with(pair, key + "=")
+end func
+
+// Extract a query parameter value. Returns the value or empty string.
+func get_param(query: String, param: String) -> String
+    example ("name=alice&age=30", "name") -> "alice"
+    example ("name=alice&age=30", "age") -> "30"
+    example ("", "name") -> ""
+
+    let pairs: List[String] = split(query, "&")
+    let matching: List[String] = filter(pairs, fn(p: String) -> pair_matches_key(p, param))
+    match length(matching) with
+        | 0 -> return ""
+        | _ ->
+        let parts: List[String] = split(head(matching), "=")
+        match length(parts) with
+            | 1 -> return ""
+            | _ -> return head(tail(parts))
+        end match
+    end match
+end func

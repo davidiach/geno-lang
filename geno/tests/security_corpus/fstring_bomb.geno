@@ -1,0 +1,13 @@
+# EXPECT: E499
+# Use f-string interpolation in a loop to construct an
+# exponentially growing string.  Verifies that the
+# collection size limit applies to f-string results.
+func main() -> Int
+    var s: String = "A"
+    var i: Int = 0
+    while i < 50 do
+        s = f"{s}{s}"
+        i = i + 1
+    end while
+    return length(s)
+end func

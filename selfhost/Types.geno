@@ -1,0 +1,137 @@
+// ============================================================================
+// Types.geno — Internal type representations for the Geno type checker
+// ============================================================================
+
+// Internal type representation used by the type checker.
+type GType
+= TInt
+| TFloat
+| TBool
+| TString
+| TUnit
+| TList(elem: GType)
+| TArray(elem: GType)
+| TVec(elem: GType)
+| TOption(val_type: GType)
+| TResult(ok_type: GType, err_type: GType)
+| TTuple(elem_types: List[GType])
+| TFunc(param_types: List[GType], ret_type: GType, effects: List[String])
+| TMap(key_type: GType, val_type: GType)
+| TMutableMap(key_type: GType, val_type: GType)
+| TVar(name: String)
+| TUser(name: String, type_args: List[GType])
+| TAny
+
+// Structured source span for diagnostics.
+type SourceSpan = SourceSpan(
+filename: String,
+line: Int,
+col: Int,
+end_line: Int,
+end_col: Int
+)
+
+func dummy_span(dummy: Int) -> SourceSpan
+    example 0 -> SourceSpan("<input>", 1, 1, 1, 1)
+    return SourceSpan("<input>", 1, 1, 1, 1)
+end func dummy_span
+
+// Structured diagnostic for parse, type, and runtime errors.
+type DiagSeverity = DiagError | DiagWarning
+
+type Diagnostic = Diagnostic(
+severity: DiagSeverity,
+message: String,
+span: SourceSpan
+)
+
+func format_span(span: SourceSpan) -> String
+    example SourceSpan("Main.geno", 10, 5, 10, 14) -> "Main.geno:10:5-14"
+    if span.line == span.end_line then
+        if span.col == span.end_col then
+            return span.filename + ":" + to_string(span.line) + ":" + to_string(span.col)
+        end if
+        return span.filename + ":" + to_string(span.line) + ":" + to_string(span.col) + "-" + to_string(span.end_col)
+    end if
+    return span.filename + ":" + to_string(span.line) + ":" + to_string(span.col) + "-" + to_string(span.end_line) + ":" + to_string(span.end_col)
+end func format_span
+
+// Format a diagnostic for human-readable output.
+func format_diagnostic(d: Diagnostic) -> String
+    example Diagnostic(DiagError, "unexpected token", SourceSpan("Main.geno", 10, 5, 10, 14)) -> "Main.geno:10:5-14: error: unexpected token"
+    match d.severity with
+        | DiagError -> return format_span(d.span) + ": error: " + d.message
+        | DiagWarning -> return format_span(d.span) + ": warning: " + d.message
+    end match
+end func format_diagnostic
+
+// Field info for type variant definitions.
+type FieldInfo = FieldInfo(name: String, field_type: GType)
+
+// Information about a user-defined type collected during type checking.
+type TypeDefEntry = TypeDefEntry(
+name: String,
+type_params: List[String],
+variant_names: List[String],
+variant_fields: MutableMap[String, List[FieldInfo]]
+)
+
+// Type environment: maps variable names to types with scoped lookup.
+type TypeEnv = TypeEnv(
+bindings: MutableMap[String, GType],
+mutable_vars: MutableMap[String, Bool],
+parent: Option[TypeEnv]
+)
+
+// Create a new empty type environment.
+func new_type_env(parent: Option[TypeEnv]) -> TypeEnv
+    example None -> TypeEnv(mutable_map_new(), mutable_map_new(), None)
+    return TypeEnv(mutable_map_new(), mutable_map_new(), parent)
+end func new_type_env
+
+// Look up a name in the type environment chain.
+func type_env_lookup(env: TypeEnv, name: String) -> Option[GType]
+    example (TypeEnv(mutable_map_new(), mutable_map_new(), None), "x") -> None
+    let result: Option[GType] = mutable_map_get(env.bindings, name)
+    match result with
+        | Some(t) -> return Some(t)
+        | None ->
+        match env.parent with
+            | Some(p) -> return type_env_lookup(p, name)
+            | None -> return None
+        end match
+    end match
+end func type_env_lookup
+
+// Bind a name in the type environment.
+func type_env_bind(env: TypeEnv, name: String, t: GType) -> Unit
+    example (TypeEnv(mutable_map_new(), mutable_map_new(), None), "x", TInt) -> ()
+    mutable_map_set(map: env.bindings, key: name, value: t)
+    return ()
+end func type_env_bind
+
+// Bind a mutable variable.
+func type_env_bind_mut(env: TypeEnv, name: String, t: GType) -> Unit
+    example (TypeEnv(mutable_map_new(), mutable_map_new(), None), "x", TInt) -> ()
+    mutable_map_set(map: env.bindings, key: name, value: t)
+    mutable_map_set(map: env.mutable_vars, key: name, value: true)
+    return ()
+end func type_env_bind_mut
+
+// Check if a variable is mutable.
+func type_env_is_mutable(env: TypeEnv, name: String) -> Bool
+    example (TypeEnv(mutable_map_new(), mutable_map_new(), None), "x") -> false
+    if mutable_map_contains(env.mutable_vars, name) then
+        return true
+    end if
+    match env.parent with
+        | Some(p) -> return type_env_is_mutable(p, name)
+        | None -> return false
+    end match
+end func type_env_is_mutable
+
+// Create a child environment.
+func type_env_child(env: TypeEnv) -> TypeEnv
+    example TypeEnv(mutable_map_new(), mutable_map_new(), None) -> TypeEnv(mutable_map_new(), mutable_map_new(), Some(TypeEnv(mutable_map_new(), mutable_map_new(), None)))
+    return new_type_env(Some(env))
+end func type_env_child

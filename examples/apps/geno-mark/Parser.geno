@@ -1,0 +1,369 @@
+// Parser.geno — Markdown to block-level AST
+// ===========================================
+// Demonstrates: pattern matching, ADT construction, string operations,
+// Result types, for loops with mutable state, and example clauses.
+
+import Types
+
+// ---------- Line classification helpers ----------
+
+// Check if a line is a heading (starts with 1-6 # followed by space).
+func is_heading(line: String) -> Bool
+    example "# Title" -> true
+    example "## Subtitle" -> true
+    example "###### Deep" -> true
+    example "Not a heading" -> false
+    example "" -> false
+    example "#no space" -> false
+
+    if length(line) < 2 then
+        return false
+    end if
+    if starts_with(line, "###### ") then
+        return true
+    end if
+    if starts_with(line, "##### ") then
+        return true
+    end if
+    if starts_with(line, "#### ") then
+        return true
+    end if
+    if starts_with(line, "### ") then
+        return true
+    end if
+    if starts_with(line, "## ") then
+        return true
+    end if
+    return starts_with(line, "# ")
+end func
+
+// Count the heading level from 1 to 6.
+func heading_level(line: String) -> Int
+    example "# H1" -> 1
+    example "## H2" -> 2
+    example "### H3" -> 3
+    example "#### H4" -> 4
+    example "##### H5" -> 5
+    example "###### H6" -> 6
+
+    if starts_with(line, "###### ") then
+        return 6
+    end if
+    if starts_with(line, "##### ") then
+        return 5
+    end if
+    if starts_with(line, "#### ") then
+        return 4
+    end if
+    if starts_with(line, "### ") then
+        return 3
+    end if
+    if starts_with(line, "## ") then
+        return 2
+    end if
+    return 1
+end func
+
+// Extract heading text after the # prefix and space.
+func heading_text(line: String) -> String
+    example "# Hello" -> "Hello"
+    example "## World" -> "World"
+    example "### Deep" -> "Deep"
+
+    let level: Int = heading_level(line)
+    return substring(text: line, start: level + 1, stop: length(line))
+end func
+
+// Check if a line is a code fence (starts with ```).
+func is_code_fence(line: String) -> Bool
+    example "```" -> true
+    example "```python" -> true
+    example "```js" -> true
+    example "not code" -> false
+    example "" -> false
+
+    return starts_with(trim(line), "```")
+end func
+
+// Extract the language identifier from a code fence line.
+func fence_language(line: String) -> String
+    example "```python" -> "python"
+    example "```js" -> "js"
+    example "```" -> ""
+
+    let trimmed: String = trim(line)
+    if length(trimmed) <= 3 then
+        return ""
+    end if
+    return trim(substring(text: trimmed, start: 3, stop: length(trimmed)))
+end func
+
+// Check if a line is a bullet list item (starts with "- ").
+func is_bullet_item(line: String) -> Bool
+    example "- item" -> true
+    example "- another" -> true
+    example "not a bullet" -> false
+    example "" -> false
+
+    return starts_with(trim(line), "- ")
+end func
+
+// Extract text from a bullet list item.
+func bullet_text(line: String) -> String
+    example "- hello" -> "hello"
+    example "  - indented" -> "indented"
+
+    let trimmed: String = trim(line)
+    return substring(text: trimmed, start: 2, stop: length(trimmed))
+end func
+
+// Check if a line is a numbered list item (digit(s) followed by ". ").
+func is_number_item(line: String) -> Bool
+    example "1. first" -> true
+    example "2. second" -> true
+    example "10. tenth" -> true
+    example "not numbered" -> false
+    example "" -> false
+
+    let trimmed: String = trim(line)
+    let dot_pos: Int = string_index_of(trimmed, ". ")
+    if dot_pos < 1 then
+        return false
+    end if
+    let prefix: String = substring(text: trimmed, start: 0, stop: dot_pos)
+    return is_some(parse_int(prefix))
+end func
+
+// Extract text from a numbered list item.
+func number_text(line: String) -> String
+    example "1. first" -> "first"
+    example "10. tenth" -> "tenth"
+
+    let trimmed: String = trim(line)
+    let dot_pos: Int = string_index_of(trimmed, ". ")
+    return substring(text: trimmed, start: dot_pos + 2, stop: length(trimmed))
+end func
+
+// Check if a line is a blockquote (starts with ">").
+func is_quote_line(line: String) -> Bool
+    example "> quoted" -> true
+    example ">compact" -> true
+    example "not quoted" -> false
+
+    return starts_with(trim(line), ">")
+end func
+
+// Extract text from a blockquote line.
+func quote_text(line: String) -> String
+    example "> hello" -> "hello"
+    example ">world" -> "world"
+
+    let trimmed: String = trim(line)
+    if starts_with(trimmed, "> ") then
+        return substring(text: trimmed, start: 2, stop: length(trimmed))
+    end if
+    return substring(text: trimmed, start: 1, stop: length(trimmed))
+end func
+
+// Check if a line is a thematic break (---, ***, or ___).
+func is_thematic_break(line: String) -> Bool
+    example "---" -> true
+    example "***" -> true
+    example "___" -> true
+    example "----" -> true
+    example "not a break" -> false
+    example "--" -> false
+
+    let trimmed: String = trim(line)
+    if length(trimmed) < 3 then
+        return false
+    end if
+    let no_dashes: String = replace(text: trimmed, old: "-", new: "")
+    if length(no_dashes) == 0 then
+        return true
+    end if
+    let no_stars: String = replace(text: trimmed, old: "*", new: "")
+    if length(no_stars) == 0 then
+        return true
+    end if
+    let no_under: String = replace(text: trimmed, old: "_", new: "")
+    return length(no_under) == 0
+end func
+
+// Check if a line is blank (empty or whitespace only).
+func is_blank_line(line: String) -> Bool
+    example "" -> true
+    example "  " -> true
+    example "text" -> false
+
+    return length(trim(line)) == 0
+end func
+
+// Classify a non-code-fence line into a single Block.
+// Code fences are handled separately in parse_blocks.
+@untested("dispatch helper")
+func classify_line(line: String) -> Block
+    if is_heading(line) then
+        return Heading(heading_level(line), heading_text(line))
+    end if
+    if is_thematic_break(line) then
+        return ThematicBreak
+    end if
+    if is_bullet_item(line) then
+        return BulletList([bullet_text(line)])
+    end if
+    if is_number_item(line) then
+        return NumberList([number_text(line)])
+    end if
+    if is_quote_line(line) then
+        return Quote(quote_text(line))
+    end if
+    if is_blank_line(line) then
+        return EmptyBlock
+    end if
+    return Paragraph(line)
+end func
+
+// ---------- Block merging ----------
+
+// Get a string tag for a block's type (used for merge detection).
+func block_tag(b: Block) -> String
+    example Paragraph("hi") -> "paragraph"
+    example ThematicBreak -> "break"
+    example EmptyBlock -> "empty"
+
+    match b with
+        | Heading(_, _) -> return "heading"
+        | Paragraph(_) -> return "paragraph"
+        | CodeBlock(_, _) -> return "code"
+        | BulletList(_) -> return "bullet"
+        | NumberList(_) -> return "number"
+        | Quote(_) -> return "quote"
+        | ThematicBreak -> return "break"
+        | EmptyBlock -> return "empty"
+    end match
+end func
+
+// Check whether two tag strings represent mergeable block types.
+func can_merge_tags(tag_a: String, tag_b: String) -> Bool
+    example ("paragraph", "paragraph") -> true
+    example ("bullet", "bullet") -> true
+    example ("number", "number") -> true
+    example ("quote", "quote") -> true
+    example ("heading", "paragraph") -> false
+    example ("bullet", "number") -> false
+
+    if tag_a == "paragraph" and tag_b == "paragraph" then
+        return true
+    end if
+    if tag_a == "bullet" and tag_b == "bullet" then
+        return true
+    end if
+    if tag_a == "number" and tag_b == "number" then
+        return true
+    end if
+    if tag_a == "quote" and tag_b == "quote" then
+        return true
+    end if
+    return false
+end func
+
+// Merge two adjacent blocks of the same type into one.
+@untested("nested pattern match")
+func merge_two(a: Block, b: Block) -> Block
+    match a with
+        | Paragraph(t1) ->
+        match b with
+            | Paragraph(t2) -> return Paragraph(t1 + "\n" + t2)
+            | _ -> return a
+        end match
+        | BulletList(items1) ->
+        match b with
+            | BulletList(items2) -> return BulletList(concat(items1, items2))
+            | _ -> return a
+        end match
+        | NumberList(items1) ->
+        match b with
+            | NumberList(items2) -> return NumberList(concat(items1, items2))
+            | _ -> return a
+        end match
+        | Quote(t1) ->
+        match b with
+            | Quote(t2) -> return Quote(t1 + "\n" + t2)
+            | _ -> return a
+        end match
+        | _ -> return a
+    end match
+end func
+
+// Merge consecutive same-type blocks in a list.
+// Filters out empty blocks, then iteratively merges adjacent pairs.
+@untested("iterative merge loop")
+func merge_blocks(blocks: List[Block]) -> List[Block]
+    let filtered: List[Block] = filter(blocks, fn(b: Block) -> block_tag(b) != "empty")
+    if length(filtered) < 2 then
+        return filtered
+    end if
+
+    var result: List[Block] = [filtered[0]]
+    for i: Int in range(1, length(filtered)) do
+        let current: Block = filtered[i]
+        let last_idx: Int = length(result) - 1
+        let prev: Block = result[last_idx]
+        if can_merge_tags(block_tag(prev), block_tag(current)) then
+            let merged: Block = merge_two(prev, current)
+            result = append(slice(list: result, start: 0, stop: last_idx), merged)
+        else
+            result = append(result, current)
+        end if
+    end for
+    return result
+end func
+
+// ---------- Main parser ----------
+
+// Parse markdown text into a list of blocks.
+// Handles code fences as a multi-line toggle; all other lines classified individually,
+// then adjacent same-type blocks are merged.
+@untested("multi-line state machine with code fence toggle")
+func parse_blocks(text: String) -> List[Block]
+    let lines: List[String] = split(text, "\n")
+    var blocks: List[Block] = []
+    var in_code: Bool = false
+    var code_lang: String = ""
+    var code_buf: List[String] = []
+
+    for i: Int in range(0, length(lines)) do
+        let line: String = lines[i]
+
+        // Inside a code block: collect lines or close on fence
+        if in_code then
+            if is_code_fence(line) then
+                blocks = append(blocks, CodeBlock(code_lang, join(code_buf, "\n")))
+                in_code = false
+                code_buf = []
+            else
+                code_buf = append(code_buf, line)
+            end if
+            continue
+        end if
+
+        // Opening a new code block
+        if is_code_fence(line) then
+            in_code = true
+            code_lang = fence_language(line)
+            code_buf = []
+            continue
+        end if
+
+        // Regular line: classify into a block
+        blocks = append(blocks, classify_line(line))
+    end for
+
+    // Flush unclosed code block
+    if in_code then
+        blocks = append(blocks, CodeBlock(code_lang, join(code_buf, "\n")))
+    end if
+
+    return merge_blocks(blocks)
+end func

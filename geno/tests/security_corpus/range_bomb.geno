@@ -1,0 +1,6 @@
+# EXPECT: E499
+# Create a huge range to exhaust memory.
+func main() -> Int
+    let lst: List[Int] = range(0, 999999999)
+    return length(lst)
+end func

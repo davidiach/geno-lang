@@ -1,0 +1,58 @@
+# EXPECT: E503
+# Abuse example clauses for hidden computation.
+# Define many functions each with expensive example clauses.
+# Example verification runs before main() using the same step
+# budget, so expensive examples should exhaust the budget.
+# Tests that example verification is step-counted.
+func slow_a(n: Int) -> Int
+    example 100 -> 100
+    return n
+end func
+
+func slow_b(n: Int) -> Int
+    example 100 -> 100
+    return n
+end func
+
+func burner(n: Int) -> Int
+    example 0 -> 5050
+    var total: Int = 0
+    var i: Int = 0
+    while i <= 100 do
+        total = total + i
+        i = i + 1
+    end while
+    return total
+end func
+
+func burner2(n: Int) -> Int
+    example 0 -> 5050
+    var total: Int = 0
+    var i: Int = 0
+    while i <= 100 do
+        total = total + i
+        i = i + 1
+    end while
+    return total
+end func
+
+func burner3(n: Int) -> Int
+    example 0 -> 5050
+    var total: Int = 0
+    var i: Int = 0
+    while i <= 100 do
+        total = total + i
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        total = total + 1
+        i = i + 1
+    end while
+    return total
+end func

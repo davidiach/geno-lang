@@ -1,0 +1,13 @@
+# EXPECT: E502
+# Deep recursion with match to test recursion limit.
+func spin(n: Int) -> Int
+    example 0 -> 0
+    match n with
+        | 0 -> return 0
+        | _ -> return spin(n - 1)
+    end match
+end func
+
+func main() -> Int
+    return spin(1000)
+end func

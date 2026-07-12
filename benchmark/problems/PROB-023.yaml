@@ -1,0 +1,64 @@
+problem:
+  id: "PROB-023"
+  name: "Reverse String"
+  difficulty: "trivial"
+  domain: "strings"
+  description: |
+    Write a function that reverses a string.
+  signature:
+    function_name: "reverse_string"
+    inputs:
+      - name: "s"
+        type: "String"
+    output:
+      name: "result"
+      type: "String"
+  examples:
+    visible:
+      - input: "hello"
+        output: "olleh"
+        description: "Reverse hello"
+      - input: ""
+        output: ""
+        description: "Empty string"
+    hidden:
+      - input: "a"
+        output: "a"
+        description: "Single character"
+      - input: "ab"
+        output: "ba"
+        description: "Two characters"
+      - input: "12345"
+        output: "54321"
+        description: "Numbers"
+      - input: "racecar"
+        output: "racecar"
+        description: "Palindrome unchanged"
+  constraints:
+    - "Return reversed string"
+  canonical_solutions:
+    geno: |
+      func reverse_string(s: String) -> String
+          example "hello" -> "olleh"
+          example "" -> ""
+
+          let chars: List[String] = to_chars(s)
+          var result: String = ""
+          var i: Int = length(chars) - 1
+
+          while i >= 0 do
+              result = result + chars[i]
+              i = i - 1
+          end while
+
+          return result
+      end func reverse_string
+    python: |
+      def reverse_string(s: str) -> str:
+          return s[::-1]
+  metadata:
+    tags: ["string", "basic"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "string-concat"]

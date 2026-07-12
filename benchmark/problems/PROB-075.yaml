@@ -1,0 +1,127 @@
+problem:
+  id: "PROB-075"
+  name: "JSON-like Value Formatter"
+  difficulty: "expert"
+  domain: "systems"
+  description: |
+    Write a function that takes a flat token list representing a simple
+    JSON-like value and formats it as a compact string. Tokens represent
+    either integers, strings (quoted), or nested lists.
+
+    Token encoding:
+    - "i:<number>" represents an integer, e.g. "i:42"
+    - "s:<text>" represents a string, e.g. "s:hello"
+    - "[" starts a list
+    - "]" ends a list
+
+    For example, ["[", "i:1", "s:hello", "]"] formats as "[1, \"hello\"]".
+    Nested lists are supported: ["[", "[", "i:1", "]", "]"] becomes "[[1]]".
+    An empty list "[ ]" becomes "[]".
+  signature:
+    function_name: "format_tokens"
+    inputs:
+      - name: "tokens"
+        type: "List[String]"
+    output:
+      name: "result"
+      type: "String"
+  examples:
+    visible:
+      - input: [["[", "i:1", "s:hello", "]"]]
+        output: "[1, \"hello\"]"
+        description: "List with int and string"
+      - input: [["i:42"]]
+        output: "42"
+        description: "Single integer"
+      - input: [["[", "]"]]
+        output: "[]"
+        description: "Empty list"
+    hidden:
+      - input: [["s:world"]]
+        output: "\"world\""
+        description: "Single string"
+      - input: [["[", "i:1", "i:2", "i:3", "]"]]
+        output: "[1, 2, 3]"
+        description: "List of integers"
+      - input: [["[", "[", "i:1", "]", "[", "i:2", "]", "]"]]
+        output: "[[1], [2]]"
+        description: "Nested lists"
+      - input: [["[", "[", "]", "]"]]
+        output: "[[]]"
+        description: "Nested empty list"
+      - input: [["[", "i:0", "[", "s:a", "s:b", "]", "i:3", "]"]]
+        output: "[0, [\"a\", \"b\"], 3]"
+        description: "Mixed nested"
+  constraints:
+    - "Tokens always form a valid encoding"
+    - "Strings do not contain special characters"
+    - "Use recursive or stack-based processing for nested lists"
+  canonical_solutions:
+    geno: |
+      func format_tokens(tokens: List[String]) -> String
+          example ["[", "i:1", "s:hello", "]"] -> "[1, \"hello\"]"
+          example ["i:42"] -> "42"
+
+          // Stack-based approach: each level collects formatted items
+          var stack: List[List[String]] = []
+          var current: List[String] = []
+          var i: Int = 0
+
+          while i < length(tokens) do
+              let tok: String = tokens[i]
+              if tok == "[" then
+                  stack = append(stack, current)
+                  current = []
+              else
+                  if tok == "]" then
+                      let inner: String = "[" + join(current, ", ") + "]"
+                      let prev: List[String] = stack[length(stack) - 1]
+                      stack = slice(list: stack, start: 0, stop: length(stack) - 1)
+                      current = append(prev, inner)
+                  else
+                      if starts_with(tok, "i:") then
+                          let parts: List[String] = split(tok, ":")
+                          let num_str: String = parts[1]
+                          current = append(current, num_str)
+                      else
+                          if starts_with(tok, "s:") then
+                              let sparts: List[String] = split(tok, ":")
+                              let str_val: String = sparts[1]
+                              let quoted: String = "\"" + str_val + "\""
+                              current = append(current, quoted)
+                          end if
+                      end if
+                  end if
+              end if
+              i = i + 1
+          end while
+
+          if length(current) == 1 then
+              return current[0]
+          else
+              return join(current, ", ")
+          end if
+      end func format_tokens
+    python: |
+      def format_tokens(tokens: list[str]) -> str:
+          stack = []
+          current = []
+          for tok in tokens:
+              if tok == "[":
+                  stack.append(current)
+                  current = []
+              elif tok == "]":
+                  inner = "[" + ", ".join(current) + "]"
+                  current = stack.pop()
+                  current.append(inner)
+              elif tok.startswith("i:"):
+                  current.append(tok[2:])
+              elif tok.startswith("s:"):
+                  current.append('"' + tok[2:] + '"')
+          return current[0] if len(current) == 1 else ", ".join(current)
+  metadata:
+    tags: ["parsing", "formatting", "stack", "string-building", "systems"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if-else", "starts_with", "split", "join", "slice", "named-arguments"]

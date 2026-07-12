@@ -1,0 +1,117 @@
+// Main.geno — CLI entry point for the markdown converter
+// ========================================================
+// Demonstrates: capabilities (fs, print), CLI argument handling,
+// Result types, and orchestrating multi-module pipelines.
+
+import Types
+import Parser
+import Inline
+import Renderer
+
+// Built-in sample markdown for demonstration when no file is provided.
+@untested("returns constant sample data")
+func sample_markdown() -> String
+    return "# Geno Markdown Converter\n\nThis document was converted from **Markdown** to HTML by `geno-mark`,\na multi-module application written in [Geno](https://geno.dev).\n\n## Features\n\nThe converter supports common markdown elements:\n\n- **Headings** from H1 through H6\n- **Bold** and *italic* text\n- Inline `code` spans\n- Fenced code blocks with language hints\n- Bullet lists and numbered lists\n- Blockquotes for callouts\n- Thematic breaks (horizontal rules)\n- Links with URLs\n\n## Code Example\n\nHere is a small Geno function:\n\n```geno\nfunc greet(name: String) -> String\n    example \"Alice\" -> \"Hello, Alice!\"\n    return \"Hello, \" + name + \"!\"\nend func\n```\n\nEvery function has `example` clauses that serve as both\ndocumentation and lightweight tests.\n\n## Why Geno?\n\n> Geno is designed for a world where LLMs write most first-draft code.\n> Its type system and example clauses catch errors *before* runtime.\n\n1. Static types catch shape errors at compile time\n2. Example clauses verify behavior inline\n3. Capability-based security limits what code can do\n\n---\n\nBuilt with Geno. Compiles to both Python and JavaScript."
+end func
+
+// Check if a file path ends with a markdown extension.
+func is_md_path(path: String) -> Bool
+    example "readme.md" -> true
+    example "README.MD" -> true
+    example "notes.markdown" -> true
+    example "file.txt" -> false
+    example "data.csv" -> false
+
+    let lower: String = to_lower(path)
+    if ends_with(lower, ".md") then
+        return true
+    end if
+    return ends_with(lower, ".markdown")
+end func
+
+// Convert markdown text to an HTML body fragment (no page wrapper).
+@untested("orchestrates parse and render")
+func convert_fragment(text: String) -> ConvertResult
+    let blocks: List[Block] = parse_blocks(text)
+    let body: String = render_body(blocks)
+    let n_blocks: Int = count_content_blocks(blocks)
+    let n_lines: Int = length(split(text, "\n"))
+    return ConvertResult(body, n_blocks, n_lines)
+end func
+
+// Convert markdown text to a full HTML page with TOC and styles.
+@untested("orchestrates parse, render, and page wrapping")
+func convert_page(text: String) -> ConvertResult
+    let blocks: List[Block] = parse_blocks(text)
+    let title: String = extract_title(blocks)
+    let toc: String = generate_toc(blocks)
+    let body: String = render_body(blocks)
+    let full_body: String = toc + "\n" + body
+    let html: String = wrap_html_page(title, full_body)
+    let n_blocks: Int = count_content_blocks(blocks)
+    let n_lines: Int = length(split(text, "\n"))
+    return ConvertResult(html, n_blocks, n_lines)
+end func
+
+// Read markdown input: from a file if a path is given, or sample data.
+@untested("uses fs_read_text capability")
+func read_input(args: List[String]) -> String
+    if length(args) == 0 then
+        return sample_markdown()
+    end if
+    return fs_read_text(args[0])
+end func
+
+// Determine the output mode from CLI arguments.
+func detect_mode(args: List[String]) -> OutputMode
+    example [] -> FullPage
+    example ["file.md"] -> FullPage
+    example ["file.md", "--fragment"] -> Fragment
+
+    if length(args) >= 2 then
+        if args[1] == "--fragment" then
+            return Fragment
+        end if
+    end if
+    return FullPage
+end func
+
+// Convert markdown using the specified output mode.
+@untested("dispatch helper")
+func convert_with_mode(text: String, mode: OutputMode) -> ConvertResult
+    match mode with
+        | FullPage -> return convert_page(text)
+        | Fragment -> return convert_fragment(text)
+    end match
+end func
+
+// Format a summary line for the conversion result.
+func format_summary(result: ConvertResult) -> String
+    example ConvertResult("", 0, 0) -> "Converted 0 lines into 0 blocks"
+    example ConvertResult("x", 3, 10) -> "Converted 10 lines into 3 blocks"
+
+    return "Converted " + to_string(result.line_count) + " lines into " + to_string(result.block_count) + " blocks"
+end func
+
+// Entry point: read markdown, convert, and write output.
+@untested("entry point — uses cli_args, fs, and print capabilities")
+func main() -> Int
+    let args: List[String] = cli_args()
+
+    // Validate file extension if a path was given
+    if length(args) > 0 then
+        if not is_md_path(args[0]) then
+            print("Error: expected a .md or .markdown file, got: " + args[0])
+            return 1
+        end if
+    end if
+
+    let input: String = read_input(args)
+    let mode: OutputMode = detect_mode(args)
+    let result: ConvertResult = convert_with_mode(input, mode)
+
+    print(result.html)
+    print("")
+    print("<!-- " + format_summary(result) + " -->")
+    return 0
+end func

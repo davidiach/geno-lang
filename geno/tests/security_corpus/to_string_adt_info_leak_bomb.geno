@@ -1,0 +1,32 @@
+# EXPECT: E503
+# ADT to_string information leakage: construct complex nested ADTs
+# and use to_string() to serialize them, probing whether the string
+# representation reveals internal Python type names, memory addresses,
+# or other sandbox information.  The repeated serialization of
+# deep structures should be step-counted.
+type Tree = Leaf(val: Int) | Branch(left: Tree, right: Tree, tag: String)
+
+func build_tree(depth: Int) -> Tree
+    example 0 -> Leaf(0)
+    if depth <= 0 then
+        return Leaf(depth)
+    end if
+    return Branch(build_tree(depth - 1), build_tree(depth - 1), f"d{to_string(depth)}")
+end func
+
+func probe_repr(n: Int) -> Int
+    example 0 -> 0
+    let tree: Tree = build_tree(5)
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let repr: String = to_string(tree)
+        total = total + length(repr)
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return probe_repr(100000)
+end func

@@ -1,0 +1,23 @@
+# EXPECT: E503
+# Exploit default argument evaluation for hidden work.
+# The function work() has a default parameter that triggers
+# computation on each call when not provided.  Combined
+# with recursion, the default is re-evaluated per frame.
+# Tests that default argument evaluation is step-counted.
+func work(n: Int, base: Int = 100) -> Int
+    example 0 -> 100
+    if n <= 0 then
+        return base
+    end if
+    var sum: Int = 0
+    var i: Int = 0
+    while i < base do
+        sum = sum + 1
+        i = i + 1
+    end while
+    return work(n - 1, sum)
+end func
+
+func main() -> Int
+    return work(10000)
+end func

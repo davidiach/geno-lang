@@ -1,0 +1,31 @@
+// Human-readable report formatting for the node-cli lane.
+
+import Stats
+import Types
+
+func summary_line(events: List[Event]) -> String
+    example [] -> "events=0 ok=0 error=0"
+    example [Event("api", "ok", 120), Event("worker", "error", 310)] -> "events=2 ok=1 error=1"
+
+    return "events=" + to_string(length(events)) + " ok=" + to_string(count_status(events, "ok")) + " error=" + to_string(count_status(events, "error"))
+end func
+
+func latency_line(events: List[Event]) -> String
+    example [] -> "avg_ms=0 max_ms=0"
+    example [Event("api", "ok", 120), Event("db", "ok", 160)] -> "avg_ms=140 max_ms=160"
+
+    return "avg_ms=" + to_string(average_latency(events)) + " max_ms=" + to_string(max_latency(events))
+end func
+
+func health_line(events: List[Event]) -> String
+    example [] -> "health=100"
+    example [Event("api", "ok", 120), Event("worker", "error", 310)] -> "health=50"
+
+    return "health=" + to_string(health_score(events))
+end func
+
+func format_report(events: List[Event]) -> String
+    example [] -> "events=0 ok=0 error=0\navg_ms=0 max_ms=0\nhealth=100"
+
+    return summary_line(events) + "\n" + latency_line(events) + "\n" + health_line(events)
+end func

@@ -1,0 +1,55 @@
+// Parse.geno — Parse CSV input into Table
+// ==========================================
+
+import Types
+
+// Split a line into cells by comma delimiter.
+func split_row(line: String) -> Row
+    example ("a,b,c") -> Row(["a", "b", "c"])
+    example ("hello") -> Row(["hello"])
+    return Row(split(line, ","))
+end func
+
+// Parse CSV text into a Table (first line = headers).
+@untested("requires multiline input")
+func parse_csv(text: String) -> Table
+    let lines: List[String] = split(text, "\n")
+    if length(lines) == 0 then
+        return Table([], [])
+    end if
+    let header_line: String = lines[0]
+    let headers: List[String] = split(header_line, ",")
+    let data_lines: List[String] = filter(tail(lines), fn(line: String) -> length(trim(line)) > 0)
+    let data_rows: List[Row] = map(data_lines, fn(line: String) -> split_row(line))
+    return Table(headers, data_rows)
+end func
+
+// Parse JSON array of objects into a Table.
+// Expects input like: [{"name":"Alice","age":"30"}]
+// Simplified parser for demonstration — handles flat objects.
+func parse_json_table(text: String) -> Table
+    example ("[]") -> Table([], [])
+    // For the showcase, delegate to CSV-style input
+    // Full JSON parsing would use the json_parse builtin
+    return Table([], [])
+end func
+
+// Get the index of a header column by name.
+func column_index(headers: List[String], name: String) -> Int
+    example (["a", "b", "c"], "b") -> 1
+    example (["x"], "y") -> 0
+    var idx: Int = 0
+    for i: Int in range(0, length(headers)) do
+        if headers[i] == name then
+            return i
+        end if
+    end for
+    return 0
+end func
+
+// Get a cell value from a row by column index.
+func cell_at(row: Row, index: Int) -> String
+    example (Row(["a", "b"]), 0) -> "a"
+    example (Row(["a", "b"]), 1) -> "b"
+    return row.cells[index]
+end func

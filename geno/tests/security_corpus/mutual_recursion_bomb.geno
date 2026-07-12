@@ -1,0 +1,22 @@
+# EXPECT: E502
+# Mutual recursion to test recursion depth limit.
+# The interpreter catches the stack overflow and reports E499.
+func even_check(n: Int) -> Bool
+    example 0 -> true
+    if n == 0 then
+        return true
+    end if
+    return odd_check(n - 1)
+end func
+
+func odd_check(n: Int) -> Bool
+    example 1 -> true
+    if n == 0 then
+        return false
+    end if
+    return even_check(n - 1)
+end func
+
+func main() -> Bool
+    return even_check(1000000)
+end func

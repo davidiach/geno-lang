@@ -1,0 +1,59 @@
+// TomlRules.geno — Validation rules for TOML config files
+// =========================================================
+// Validates TOML structure with pipeline-chained rules.
+
+import Violation
+
+// Check that TOML text contains a required section header.
+func has_section(text: String, section: String) -> Bool
+    example ("[server]\nport = 8080", "server") -> true
+    example ("[server]\nport = 8080", "database") -> false
+
+    return contains_substring(text, "[" + section + "]")
+end func
+
+// Check that TOML text contains a required key assignment.
+func has_key(text: String, key: String) -> Bool
+    example ("port = 8080\nhost = \"localhost\"", "port") -> true
+    example ("port = 8080", "host") -> false
+
+    return contains_substring(text, key + " = ") or contains_substring(text, key + "=")
+end func
+
+// Check for a required section, returning violations.
+func check_section(file: String, text: String, section: String) -> List[Violation]
+    example ("f.toml", "[server]\nport = 8080", "server") -> []
+
+    if has_section(text, section) then
+        return []
+    else
+        return [Violation(file, section, "required_section", "section [" + section + "] is required", "present", "missing", Error)]
+    end if
+end func
+
+// Check for a required key, returning violations.
+func check_key(file: String, text: String, key: String) -> List[Violation]
+    example ("f.toml", "port = 8080", "port") -> []
+
+    if has_key(text, key) then
+        return []
+    else
+        return [Violation(file, key, "required_key", "key '" + key + "' is required", "present", "missing", Error)]
+    end if
+end func
+
+// Validate a TOML config file for a web app.
+// Pipeline: check parse, then required sections and keys.
+@untested("uses capability-gated toml_parse")
+func validate_toml(file: String, text: String) -> List[Violation]
+    match toml_parse(text) with
+        | Err(msg) ->
+        return [Violation(file, "<root>", "parse", "invalid TOML: " + msg, "valid TOML", "parse error", Error)]
+        | Ok(_) ->
+        return []
+        |> concat(_, check_section(file: file, text: text, section: "server"))
+        |> concat(_, check_section(file: file, text: text, section: "database"))
+        |> concat(_, check_key(file: file, text: text, key: "port"))
+        |> concat(_, check_key(file: file, text: text, key: "host"))
+    end match
+end func

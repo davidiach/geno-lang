@@ -1,0 +1,71 @@
+problem:
+  id: "PROB-021"
+  name: "Is Palindrome String"
+  difficulty: "easy"
+  domain: "strings"
+  description: |
+    Write a function that checks if a string is a palindrome.
+    A palindrome reads the same forwards and backwards.
+  signature:
+    function_name: "is_palindrome"
+    inputs:
+      - name: "s"
+        type: "String"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: "racecar"
+        output: true
+        description: "Classic palindrome"
+      - input: "hello"
+        output: false
+        description: "Not a palindrome"
+    hidden:
+      - input: ""
+        output: true
+        description: "Empty string"
+      - input: "a"
+        output: true
+        description: "Single character"
+      - input: "aa"
+        output: true
+        description: "Two same chars"
+      - input: "ab"
+        output: false
+        description: "Two different chars"
+      - input: "abcba"
+        output: true
+        description: "Odd length palindrome"
+  constraints:
+    - "Consider empty string as palindrome"
+  canonical_solutions:
+    geno: |
+      func is_palindrome(s: String) -> Bool
+          example "racecar" -> true
+          example "hello" -> false
+
+          let chars: List[String] = to_chars(s)
+          var left: Int = 0
+          var right: Int = length(chars) - 1
+
+          while left < right do
+              if chars[left] != chars[right] then
+                  return false
+              end if
+              left = left + 1
+              right = right - 1
+          end while
+
+          return true
+      end func is_palindrome
+    python: |
+      def is_palindrome(s: str) -> bool:
+          return s == s[::-1]
+  metadata:
+    tags: ["string", "palindrome", "two-pointers"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "if", "string-to-chars"]

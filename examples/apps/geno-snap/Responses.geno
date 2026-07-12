@@ -1,0 +1,57 @@
+// Responses.geno — Mock response builders
+// ==========================================
+
+import Models
+import Validate
+
+// CORS headers for browser dev use.
+@untested("returns constant list")
+func cors_headers() -> List[(String, String)]
+    return [("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+    ("Access-Control-Allow-Headers", "Content-Type"),
+    ("Content-Type", "application/json")]
+end func
+
+// Build a successful JSON response with CORS headers.
+@untested("constructs HttpResponse")
+func ok_response(body: String) -> HttpResponse
+    return HttpResponse(200, Models.json_ok(body), cors_headers())
+end func
+
+// Build a 400 Bad Request response.
+@untested("constructs HttpResponse")
+func bad_request(msg: String) -> HttpResponse
+    return HttpResponse(400, Models.json_error(msg), cors_headers())
+end func
+
+// Build a 404 Not Found response.
+@untested("constructs HttpResponse")
+func not_found() -> HttpResponse
+    return HttpResponse(404, Models.json_error("not found"), cors_headers())
+end func
+
+// Build a mock user list.
+@untested("returns constant data")
+func mock_users() -> String
+    return "[{\"id\":1,\"name\":\"Alice\"},{\"id\":2,\"name\":\"Bob\"}]"
+end func
+
+// Build a mock user by ID.
+func mock_user(id: String) -> String
+    example "1" -> "{\"id\":1,\"name\":\"Alice\"}"
+    example "2" -> "{\"id\":2,\"name\":\"Bob\"}"
+    example "999" -> ""
+
+    match id with
+        | "1" -> return "{\"id\":1,\"name\":\"Alice\"}"
+        | "2" -> return "{\"id\":2,\"name\":\"Bob\"}"
+        | _ -> return ""
+    end match
+end func
+
+// Build a mock item list.
+@untested("returns constant data")
+func mock_items() -> String
+    return "[{\"id\":1,\"name\":\"Widget\",\"price\":9.99},{\"id\":2,\"name\":\"Gadget\",\"price\":24.99}]"
+end func

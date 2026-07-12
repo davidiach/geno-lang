@@ -1,0 +1,22 @@
+# EXPECT: E499
+# Build a recursive ADT structure then convert it to string.
+# The to_string representation of a nested ADT includes all
+# children, so a tree of depth d has O(2^d) nodes, and its
+# string representation grows exponentially.  Tests that
+# collection size limits catch to_string on deep structures.
+type Tree = Leaf(v: Int) | Node(left: Tree, right: Tree)
+
+func build(depth: Int) -> Tree
+    example 0 -> Leaf(0)
+    if depth <= 0 then
+        return Leaf(depth)
+    end if
+    let child: Tree = build(depth - 1)
+    return Node(child, child)
+end func
+
+func main() -> Int
+    let tree: Tree = build(25)
+    let s: String = to_string(tree)
+    return length(s)
+end func

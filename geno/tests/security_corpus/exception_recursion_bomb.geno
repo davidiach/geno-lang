@@ -1,0 +1,17 @@
+# EXPECT: E503
+# Tight computation loop with function calls.
+# Tests step counting through function call overhead.
+func identity(n: Int) -> Int
+    example 0 -> 0
+    return n
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        total = total + identity(i)
+        i = i + 1
+    end while
+    return total
+end func

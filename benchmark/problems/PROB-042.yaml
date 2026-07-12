@@ -1,0 +1,83 @@
+problem:
+  id: "PROB-042"
+  name: "House Robber"
+  difficulty: "medium"
+  domain: "dp"
+  description: |
+    You are a robber planning to rob houses along a street. Each house has a certain
+    amount of money. Adjacent houses have security systems connected, so you cannot
+    rob two adjacent houses. Return the maximum amount you can rob.
+  signature:
+    function_name: "rob"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 1]]
+        output: 4
+        description: "Rob house 1 and 3: 1+3=4"
+      - input: [[2, 7, 9, 3, 1]]
+        output: 12
+        description: "Rob house 1, 3, 5: 2+9+1=12"
+    hidden:
+      - input: [[]]
+        output: 0
+        description: "No houses"
+      - input: [[5]]
+        output: 5
+        description: "One house"
+      - input: [[1, 2]]
+        output: 2
+        description: "Two houses"
+      - input: [[5, 5, 5, 5]]
+        output: 10
+        description: "Alternating"
+      - input: [[10, 1, 1, 10]]
+        output: 20
+        description: "First and last"
+  constraints:
+    - "All values are non-negative"
+  canonical_solutions:
+    geno: |
+      func rob(nums: List[Int]) -> Int
+          example [1, 2, 3, 1] -> 4
+          example [2, 7, 9, 3, 1] -> 12
+
+          if length(nums) == 0 then
+              return 0
+          end if
+          if length(nums) == 1 then
+              return nums[0]
+          end if
+
+          var prev2: Int = 0
+          var prev1: Int = 0
+          var i: Int = 0
+
+          while i < length(nums) do
+              let curr: Int = max(prev1, prev2 + nums[i])
+              prev2 = prev1
+              prev1 = curr
+              i = i + 1
+          end while
+
+          return prev1
+      end func rob
+    python: |
+      def rob(nums: list[int]) -> int:
+          if not nums:
+              return 0
+          prev2, prev1 = 0, 0
+          for num in nums:
+              prev2, prev1 = prev1, max(prev1, prev2 + num)
+          return prev1
+  metadata:
+    tags: ["dynamic-programming"]
+    source: "LeetCode #198"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "max"]

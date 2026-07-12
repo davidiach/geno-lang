@@ -1,0 +1,13 @@
+# EXPECT: E503
+# Repeated constructor invocations in a tight loop.
+type Box = Wrap(value: Int)
+
+func main() -> Int
+    var b: Box = Wrap(0)
+    var i: Int = 0
+    while i < 1000000 do
+        b = Wrap(i)
+        i = i + 1
+    end while
+    return b.value
+end func

@@ -1,0 +1,12 @@
+name = "geno-form"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["browser"]
+files = [
+    "Types.geno",
+    "Fields.geno",
+    "Validate.geno",
+    "Render.geno",
+    "Forms.geno",
+    "Main.geno",
+]

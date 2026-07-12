@@ -1,0 +1,8 @@
+# EXPECT: E503
+# Use a list comprehension to attempt creation of a
+# 10-million-element list in a single expression.
+# Verifies that comprehension evaluation is step-counted.
+func main() -> Int
+    let big: List[Int] = [x * x for x: Int in range(0, 10000000)]
+    return length(big)
+end func

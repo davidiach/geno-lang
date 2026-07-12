@@ -1,0 +1,14 @@
+# EXPECT: E503
+# Mutate array elements in a tight loop 10 million times.
+# Uses modular indexing to stay in bounds while testing
+# that index assignment operations are step-counted and
+# cannot run indefinitely.
+func main() -> Int
+    var arr: Array[Int] = array_new(1000, 0)
+    var i: Int = 0
+    while i < 10000000 do
+        arr[i % 1000] = i
+        i = i + 1
+    end while
+    return arr[0]
+end func

@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling exec without the "process" capability should fail.
+func main() -> Result[ProcessResult, String]
+    return exec(command: "echo hello")
+end func

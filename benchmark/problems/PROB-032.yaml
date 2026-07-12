@@ -1,0 +1,65 @@
+problem:
+  id: "PROB-032"
+  name: "Sum of Squares"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that computes the sum of squares from 1 to n.
+    sum_of_squares(n) = 1^2 + 2^2 + 3^2 + ... + n^2
+  signature:
+    function_name: "sum_of_squares"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 3
+        output: 14
+        description: "1 + 4 + 9 = 14"
+      - input: 5
+        output: 55
+        description: "1 + 4 + 9 + 16 + 25 = 55"
+    hidden:
+      - input: 0
+        output: 0
+        description: "Empty sum"
+      - input: 1
+        output: 1
+        description: "Just 1"
+      - input: 10
+        output: 385
+        description: "Sum to 10"
+      - input: 4
+        output: 30
+        description: "1 + 4 + 9 + 16"
+  constraints:
+    - "n >= 0"
+  canonical_solutions:
+    geno: |
+      func sum_of_squares(n: Int) -> Int
+          requires n >= 0
+          example 3 -> 14
+          example 5 -> 55
+
+          var total: Int = 0
+          var i: Int = 1
+
+          while i <= n do
+              total = total + i * i
+              i = i + 1
+          end while
+
+          return total
+      end func sum_of_squares
+    python: |
+      def sum_of_squares(n: int) -> int:
+          return sum(i * i for i in range(1, n + 1))
+  metadata:
+    tags: ["math", "summation"]
+    source: "Classic"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "arithmetic"]

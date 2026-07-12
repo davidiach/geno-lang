@@ -1,0 +1,16 @@
+# EXPECT: E503
+# Stringify a large list repeatedly and concatenate the
+# results.  to_string on a 1000-element list produces a
+# long string; concatenating it 1000 times is O(n*m)
+# characters of allocation.  Tests that step counting
+# and string size limits catch to_string-driven growth.
+func main() -> Int
+    var lst: List[Int] = range(0, 1000)
+    var s: String = ""
+    var i: Int = 0
+    while i < 1000 do
+        s = s + to_string(lst)
+        i = i + 1
+    end while
+    return length(s)
+end func

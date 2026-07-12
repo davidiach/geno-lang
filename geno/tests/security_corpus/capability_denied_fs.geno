@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling fs_read_text without the "fs" capability should fail.
+func main() -> String
+    return fs_read_text(path: "/etc/passwd")
+end func

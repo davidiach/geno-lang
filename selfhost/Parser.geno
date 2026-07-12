@@ -1,0 +1,947 @@
+// ============================================================================
+// Parser.geno — Recursive descent parser for the Geno language
+// ============================================================================
+
+import Tokens
+import Lexer
+import Ast
+import Types
+
+// ---- Parser state ----
+// tokens: the token list, pos: mutable array holding current index [pos]
+// diagnostics: collected structured diagnostics
+
+type ParserState = ParserState(tokens: List[Token], pos: Array[Int], diagnostics: Vec[Diagnostic], filename: String)
+
+func make_parser(tokens: List[Token], filename: String) -> ParserState
+    example ([Token(TkEof, "", 1, 1)], "Main.geno") -> ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "Main.geno")
+    return ParserState(tokens, array_from_list([0]), vec_new(), filename)
+end func make_parser
+
+func parser_pos(ps: ParserState) -> Int
+    example ParserState([], array_from_list([0]), vec_new(), "<input>") -> 0
+    return array_get(ps.pos, 0)
+end func parser_pos
+
+func current(ps: ParserState) -> Token
+    example ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>") -> Token(TkEof, "", 1, 1)
+    let pos: Int = parser_pos(ps)
+    if pos >= length(ps.tokens) then
+        return ps.tokens[length(ps.tokens) - 1]
+    end if
+    return ps.tokens[pos]
+end func current
+
+func advance(ps: ParserState) -> Token
+    example ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>") -> Token(TkEof, "", 1, 1)
+    let pos: Int = parser_pos(ps)
+    if pos >= length(ps.tokens) then
+        // Already past the end — return last token (should be EOF)
+        return ps.tokens[length(ps.tokens) - 1]
+    end if
+    let tok: Token = ps.tokens[pos]
+    if pos < length(ps.tokens) - 1 then
+        // Only advance if not already at the last token (EOF)
+        array_set(array: ps.pos, index: 0, value: pos + 1)
+    end if
+    return tok
+end func advance
+
+func token_end_col(tok: Token) -> Int
+    example Token(TkIdentifier, "value", 2, 4) -> 8
+    if length(tok.value) <= 1 then
+        return tok.col
+    end if
+    return tok.col + length(tok.value) - 1
+end func token_end_col
+
+func push_parser_error(ps: ParserState, tok: Token, msg: String) -> Unit
+    example (ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "Main.geno"), Token(TkIdentifier, "x", 1, 1), "err") -> ()
+    let span: SourceSpan = SourceSpan(ps.filename, tok.line, tok.col, tok.line, token_end_col(tok))
+    vec_push(ps.diagnostics, Diagnostic(DiagError, msg, span))
+    return ()
+end func push_parser_error
+
+func peek_type(ps: ParserState) -> TokenType
+    example ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>") -> TkEof
+    return current(ps).tt
+end func peek_type
+
+func check_type(ps: ParserState, tt: TokenType) -> Bool
+    example (ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>"), TkEof) -> true
+    return peek_type(ps) == tt
+end func check_type
+
+func match_type(ps: ParserState, tt: TokenType) -> Bool
+    example (ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>"), TkEof) -> true
+    if peek_type(ps) == tt then
+        let dummy: Token = advance(ps)
+        return true
+    end if
+    return false
+end func match_type
+
+func expect(ps: ParserState, tt: TokenType) -> Token
+    example (ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>"), TkEof) -> Token(TkEof, "", 1, 1)
+    let tok: Token = current(ps)
+    if tok.tt == tt then
+        let dummy: Token = advance(ps)
+        return tok
+    end if
+    // Error: unexpected token. Record diagnostic and advance.
+    let msg: String = "expected " + to_string(tt) + " but got " + tok.value
+    push_parser_error(ps: ps, tok: tok, msg: msg)
+    let skip: Token = advance(ps)
+    return tok
+end func expect
+
+// Consume the optional string label that follows ``end while`` /
+// ``end for`` / ``end if`` / ``end match``, matching the Python
+// frontend (see ``parser_statements.py``).  Real shipped examples
+// such as ``examples/fibonacci.geno`` use labeled block ends and
+// previously failed under selfhost — F-0029 in #664.
+func consume_optional_end_label(ps: ParserState) -> Unit
+    example ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>") -> ()
+    if check_type(ps, TkString) then
+        let label_tok: Token = advance(ps)
+    end if
+    return ()
+end func consume_optional_end_label
+
+// ---- Type annotation parsing ----
+
+func parse_type(ps: ParserState) -> TypeAnnot
+    example ParserState([Token(TkTypeIdentifier, "Int", 1, 1), Token(TkEof, "", 1, 4)], array_from_list([0]), vec_new(), "<input>") -> SimpleTypeAnnot("Int", [])
+    // Check for function type or tuple type: (T1, T2) -> RetType  or  (T1, T2)
+    if check_type(ps, TkLParen) then
+        let lp: Token = advance(ps)
+        let inner_types: Vec[TypeAnnot] = vec_new()
+        if not check_type(ps, TkRParen) then
+            vec_push(inner_types, parse_type(ps))
+            while match_type(ps, TkComma) do
+                vec_push(inner_types, parse_type(ps))
+            end while
+        end if
+        let rp: Token = expect(ps, TkRParen)
+        if match_type(ps, TkArrow) then
+            // Function type: (T1, T2) -> RetType
+            let ret: TypeAnnot = parse_type(ps)
+            return FuncTypeAnnot(vec_to_list(inner_types), ret, [])
+        end if
+        // Not a function type
+        let type_list: List[TypeAnnot] = vec_to_list(inner_types)
+        if length(type_list) == 1 then
+            // Grouping: (T) is just T
+            return type_list[0]
+        end if
+        // Tuple type: (T1, T2, ...) — represented as SimpleTypeAnnot("Tuple", [T1, T2])
+        return SimpleTypeAnnot("Tuple", type_list)
+    end if
+    // Simple type: Name or Name[T1, T2]
+    let name_tok: Token = advance(ps)
+    let name: String = name_tok.value
+    if match_type(ps, TkLBracket) then
+        let params: Vec[TypeAnnot] = vec_new()
+        vec_push(params, parse_type(ps))
+        while match_type(ps, TkComma) do
+            vec_push(params, parse_type(ps))
+        end while
+        let rb: Token = expect(ps, TkRBracket)
+        return SimpleTypeAnnot(name, vec_to_list(params))
+    end if
+    return SimpleTypeAnnot(name, [])
+end func parse_type
+
+// ---- Expression parsing (precedence climbing) ----
+
+func parse_expression(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    return parse_pipeline(ps)
+end func parse_expression
+
+func parse_pipeline(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    let left: Expr = parse_or(ps)
+    if check_type(ps, TkPipe) then
+        let stages: Vec[PipeStage] = vec_new()
+        while match_type(ps, TkPipe) do
+            let stage_tok: Token = current(ps)
+            let func_expr: Expr = parse_primary(ps)
+            let args: Vec[Expr] = vec_new()
+            if match_type(ps, TkLParen) then
+                if not check_type(ps, TkRParen) then
+                    vec_push(args, parse_pipeline_arg(ps))
+                    while match_type(ps, TkComma) do
+                        vec_push(args, parse_pipeline_arg(ps))
+                    end while
+                end if
+                let rp: Token = expect(ps, TkRParen)
+            end if
+            vec_push(stages, PipeStage(func_expr, vec_to_list(args), stage_tok.line, stage_tok.col))
+        end while
+        return PipelineExpr(left, vec_to_list(stages))
+    end if
+    return left
+end func parse_pipeline
+
+func parse_pipeline_arg(ps: ParserState) -> Expr
+    example ParserState([Token(TkUnderscore, "_", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> PlaceholderE
+    if check_type(ps, TkUnderscore) then
+        let dummy: Token = advance(ps)
+        return PlaceholderE
+    end if
+    return parse_expression(ps)
+end func parse_pipeline_arg
+
+func parse_or(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    var left: Expr = parse_and(ps)
+    while match_type(ps, TkOr) do
+        let right: Expr = parse_and(ps)
+        left = BinOp("or", left, right)
+    end while
+    return left
+end func parse_or
+
+func parse_and(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    var left: Expr = parse_not(ps)
+    while match_type(ps, TkAnd) do
+        let right: Expr = parse_not(ps)
+        left = BinOp("and", left, right)
+    end while
+    return left
+end func parse_and
+
+func parse_not(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    if match_type(ps, TkNot) then
+        let operand: Expr = parse_not(ps)
+        return UnaryOpExpr("not", operand)
+    end if
+    return parse_comparison(ps)
+end func parse_not
+
+func parse_comparison(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    let left: Expr = parse_additive(ps)
+    let tt: TokenType = peek_type(ps)
+    if tt == TkEq then
+        let dummy: Token = advance(ps)
+        return BinOp("==", left, parse_additive(ps))
+    end if
+    if tt == TkNeq then
+        let dummy: Token = advance(ps)
+        return BinOp("!=", left, parse_additive(ps))
+    end if
+    if tt == TkLt then
+        let dummy: Token = advance(ps)
+        return BinOp("<", left, parse_additive(ps))
+    end if
+    if tt == TkGt then
+        let dummy: Token = advance(ps)
+        return BinOp(">", left, parse_additive(ps))
+    end if
+    if tt == TkLte then
+        let dummy: Token = advance(ps)
+        return BinOp("<=", left, parse_additive(ps))
+    end if
+    if tt == TkGte then
+        let dummy: Token = advance(ps)
+        return BinOp(">=", left, parse_additive(ps))
+    end if
+    return left
+end func parse_comparison
+
+func parse_additive(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    var left: Expr = parse_multiplicative(ps)
+    while check_type(ps, TkPlus) or check_type(ps, TkMinus) do
+        let op_tok: Token = advance(ps)
+        let right: Expr = parse_multiplicative(ps)
+        left = BinOp(op_tok.value, left, right)
+    end while
+    return left
+end func parse_additive
+
+func parse_multiplicative(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    var left: Expr = parse_unary(ps)
+    while check_type(ps, TkStar) or check_type(ps, TkSlash) or check_type(ps, TkPercent) do
+        let op_tok: Token = advance(ps)
+        let right: Expr = parse_unary(ps)
+        left = BinOp(op_tok.value, left, right)
+    end while
+    return left
+end func parse_multiplicative
+
+func parse_unary(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    if match_type(ps, TkMinus) then
+        let operand: Expr = parse_unary(ps)
+        return UnaryOpExpr("-", operand)
+    end if
+    return parse_call(ps)
+end func parse_unary
+
+// ---- Postfix: calls, indexing, field access, with ----
+
+func parse_call(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
+    var expr: Expr = parse_primary(ps)
+    var cont: Bool = true
+    while cont do
+        if match_type(ps, TkLParen) then
+            // Function call
+            let args: Vec[CallArg] = vec_new()
+            if not check_type(ps, TkRParen) then
+                vec_push(args, parse_call_arg(ps))
+                while match_type(ps, TkComma) do
+                    vec_push(args, parse_call_arg(ps))
+                end while
+            end if
+            let rp: Token = expect(ps, TkRParen)
+            expr = CallExpr(expr, vec_to_list(args))
+        else
+            if match_type(ps, TkLBracket) then
+                // Index access
+                let idx: Expr = parse_expression(ps)
+                let rb: Token = expect(ps, TkRBracket)
+                expr = IndexExpr(expr, idx)
+            else
+                if match_type(ps, TkDot) then
+                    // Field access
+                    let field_tok: Token = expect(ps, TkIdentifier)
+                    expr = FieldExpr(expr, field_tok.value)
+                else
+                    cont = false
+                end if
+            end if
+        end if
+    end while
+    // Check for `with` expression: expr with (field: val, ...)
+    // Only if `with` is followed by `(`
+    if check_type(ps, TkWith) then
+        let save: Int = parser_pos(ps)
+        // Peek ahead: is next token after `with` a `(`?
+        let next_idx: Int = parser_pos(ps) + 1
+        if next_idx < length(ps.tokens) then
+            let next_tok: Token = ps.tokens[next_idx]
+            if next_tok.tt == TkLParen then
+                let w: Token = advance(ps)
+                let lp: Token = expect(ps, TkLParen)
+                let updates: Vec[FieldUpdate] = vec_new()
+                if not check_type(ps, TkRParen) then
+                    let fname: Token = expect(ps, TkIdentifier)
+                    let colon: Token = expect(ps, TkColon)
+                    let val: Expr = parse_expression(ps)
+                    vec_push(updates, FieldUpdate(fname.value, val))
+                    while match_type(ps, TkComma) do
+                        let fname2: Token = expect(ps, TkIdentifier)
+                        let colon2: Token = expect(ps, TkColon)
+                        let val2: Expr = parse_expression(ps)
+                        vec_push(updates, FieldUpdate(fname2.value, val2))
+                    end while
+                end if
+                let rp: Token = expect(ps, TkRParen)
+                expr = WithE(expr, vec_to_list(updates))
+            end if
+        end if
+    end if
+    return expr
+end func parse_call
+
+func parse_call_arg(ps: ParserState) -> CallArg
+    example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> CallArg(None, IntLit(1))
+    // Check for named argument: ident : expr
+    if check_type(ps, TkIdentifier) then
+        let next_idx: Int = parser_pos(ps) + 1
+        if next_idx < length(ps.tokens) then
+            let next_tok: Token = ps.tokens[next_idx]
+            if next_tok.tt == TkColon then
+                let name_tok: Token = advance(ps)
+                let colon: Token = advance(ps)
+                let val: Expr = parse_expression(ps)
+                return CallArg(Some(name_tok.value), val)
+            end if
+        end if
+    end if
+    let val: Expr = parse_expression(ps)
+    return CallArg(None, val)
+end func parse_call_arg
+
+// ---- Primary expressions ----
+
+func parse_primary(ps: ParserState) -> Expr
+    example ParserState([Token(TkInteger, "42", 1, 1), Token(TkEof, "", 1, 3)], array_from_list([0]), vec_new(), "<input>") -> IntLit(42)
+    let tt: TokenType = peek_type(ps)
+
+    // Integer literal
+    if tt == TkInteger then
+        let tok: Token = advance(ps)
+        return IntLit(unwrap(parse_int(tok.value)))
+    end if
+
+    // Float literal
+    if tt == TkFloat then
+        let tok: Token = advance(ps)
+        return FloatLit(tok.value)
+    end if
+
+    // String literal
+    if tt == TkString then
+        let tok: Token = advance(ps)
+        return StrLit(tok.value)
+    end if
+
+    // Boolean literals
+    if tt == TkTrue then
+        let tok: Token = advance(ps)
+        return BoolLit(true)
+    end if
+    if tt == TkFalse then
+        let tok: Token = advance(ps)
+        return BoolLit(false)
+    end if
+
+    // List literal
+    if tt == TkLBracket then
+        let lb: Token = advance(ps)
+        let elements: Vec[Expr] = vec_new()
+        if not check_type(ps, TkRBracket) then
+            vec_push(elements, parse_expression(ps))
+            while match_type(ps, TkComma) do
+                vec_push(elements, parse_expression(ps))
+            end while
+        end if
+        let rb: Token = expect(ps, TkRBracket)
+        return ListLitExpr(vec_to_list(elements))
+    end if
+
+    // Lambda: fn(params) -> expr
+    if tt == TkFn then
+        let fn_tok: Token = advance(ps)
+        let lp: Token = expect(ps, TkLParen)
+        let params: Vec[Param] = vec_new()
+        if not check_type(ps, TkRParen) then
+            vec_push(params, parse_param(ps))
+            while match_type(ps, TkComma) do
+                vec_push(params, parse_param(ps))
+            end while
+        end if
+        let rp: Token = expect(ps, TkRParen)
+        let ret: Option[TypeAnnot] = None
+        if not match_type(ps, TkArrow) then
+            let err_tok: Token = current(ps)
+            push_parser_error(ps: ps, tok: err_tok, msg: "Expected '->' after lambda parameter list")
+        end if
+        let body: Expr = parse_expression(ps)
+        return LambdaE(vec_to_list(params), ret, body)
+    end if
+
+    // Match expression: match expr with ... end match
+    if tt == TkMatch then
+        return parse_match_expr(ps)
+    end if
+
+    // Grouping or tuple: (expr) or (expr, expr, ...)
+    if tt == TkLParen then
+        let lp: Token = advance(ps)
+        if check_type(ps, TkRParen) then
+            let rp: Token = advance(ps)
+            return TupleE([])
+        end if
+        let first: Expr = parse_expression(ps)
+        if match_type(ps, TkComma) then
+            let elements: Vec[Expr] = vec_new()
+            vec_push(elements, first)
+            vec_push(elements, parse_expression(ps))
+            while match_type(ps, TkComma) do
+                vec_push(elements, parse_expression(ps))
+            end while
+            let rp: Token = expect(ps, TkRParen)
+            return TupleE(vec_to_list(elements))
+        end if
+        let rp: Token = expect(ps, TkRParen)
+        return first
+    end if
+
+    // Type identifier: constructor call or type reference
+    if tt == TkTypeIdentifier then
+        let name_tok: Token = advance(ps)
+        if name_tok.value == "None" then
+            return ConstructorE("None", [])
+        end if
+        if match_type(ps, TkLParen) then
+            let args: Vec[Expr] = vec_new()
+            if not check_type(ps, TkRParen) then
+                vec_push(args, parse_expression(ps))
+                while match_type(ps, TkComma) do
+                    vec_push(args, parse_expression(ps))
+                end while
+            end if
+            let rp: Token = expect(ps, TkRParen)
+            return ConstructorE(name_tok.value, vec_to_list(args))
+        end if
+        return TypeIdent(name_tok.value)
+    end if
+
+    // Typed hole: ?name: Type
+    if tt == TkQuestion then
+        let q: Token = advance(ps)
+        let name_tok: Token = expect(ps, TkIdentifier)
+        let colon: Token = expect(ps, TkColon)
+        let hole_type: TypeAnnot = parse_type(ps)
+        var constraint: Option[Expr] = None
+        if match_type(ps, TkWhere) then
+            constraint = Some(parse_expression(ps))
+        end if
+        return TypedHoleE(name_tok.value, hole_type, constraint)
+    end if
+
+    // Underscore (placeholder)
+    if tt == TkUnderscore then
+        let tok: Token = advance(ps)
+        return PlaceholderE
+    end if
+
+    // Identifier
+    if tt == TkIdentifier then
+        let tok: Token = advance(ps)
+        return Ident(tok.value)
+    end if
+
+    // Fallback
+    let tok: Token = advance(ps)
+    let msg: String = "unexpected token " + tok.value
+    push_parser_error(ps: ps, tok: tok, msg: msg)
+    return IntLit(0)
+end func parse_primary
+
+// ---- Match expression (inline) ----
+
+func parse_match_expr(ps: ParserState) -> Expr
+    example ParserState([Token(TkMatch, "match", 1, 1), Token(TkIdentifier, "x", 1, 7), Token(TkWith, "with", 1, 9), Token(TkBar, "|", 1, 14), Token(TkUnderscore, "_", 1, 16), Token(TkArrow, "->", 1, 18), Token(TkReturn, "return", 1, 21), Token(TkInteger, "0", 1, 28), Token(TkEnd, "end", 1, 30), Token(TkMatch, "match", 1, 34), Token(TkEof, "", 1, 39)], array_from_list([0]), vec_new(), "<input>") -> MatchE(Ident("x"), [MatchArm(WildcardPat, [ReturnStmt(IntLit(0))], 1, 16)])
+    let m: Token = expect(ps, TkMatch)
+    let scrutinee: Expr = parse_expression(ps)
+    let w: Token = expect(ps, TkWith)
+    let arms: Vec[MatchArm] = vec_new()
+    while match_type(ps, TkBar) do
+        let arm_tok: Token = current(ps)
+        let pat: Pattern = parse_pattern(ps)
+        let arrow: Token = expect(ps, TkArrow)
+        let body: List[Stmt] = parse_match_arm_body(ps)
+        vec_push(arms, MatchArm(pat, body, arm_tok.line, arm_tok.col))
+    end while
+    let e: Token = expect(ps, TkEnd)
+    let m2: Token = expect(ps, TkMatch)
+    // NOTE: Python's inline-match-expression parser (_parse_match_expression
+    // in geno/parser_expressions.py) does NOT accept a trailing string
+    // label after ``end match`` — only the statement-form match does.
+    // Silently consuming one here would let selfhost accept programs
+    // that Python parses as two separate statements (match-expression
+    // followed by a bare string expression), diverging on AST shape.
+    return MatchE(scrutinee, vec_to_list(arms))
+end func parse_match_expr
+
+// ---- Pattern parsing ----
+
+func parse_pattern(ps: ParserState) -> Pattern
+    example ParserState([Token(TkUnderscore, "_", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> WildcardPat
+    let tt: TokenType = peek_type(ps)
+
+    if tt == TkUnderscore then
+        let tok: Token = advance(ps)
+        return WildcardPat
+    end if
+
+    if tt == TkIdentifier then
+        let tok: Token = advance(ps)
+        return VarPat(tok.value)
+    end if
+
+    if tt == TkTypeIdentifier then
+        let tok: Token = advance(ps)
+        if tok.value == "None" then
+            return CtorPat("None", [])
+        end if
+        if match_type(ps, TkLParen) then
+            let sub_pats: Vec[Pattern] = vec_new()
+            if not check_type(ps, TkRParen) then
+                vec_push(sub_pats, parse_pattern(ps))
+                while match_type(ps, TkComma) do
+                    vec_push(sub_pats, parse_pattern(ps))
+                end while
+            end if
+            let rp: Token = expect(ps, TkRParen)
+            return CtorPat(tok.value, vec_to_list(sub_pats))
+        end if
+        return CtorPat(tok.value, [])
+    end if
+
+    if tt == TkLBracket then
+        let lb: Token = advance(ps)
+        let elements: Vec[Pattern] = vec_new()
+        if not check_type(ps, TkRBracket) then
+            vec_push(elements, parse_pattern(ps))
+            while match_type(ps, TkComma) do
+                vec_push(elements, parse_pattern(ps))
+            end while
+        end if
+        let rb: Token = expect(ps, TkRBracket)
+        return ListPat(vec_to_list(elements))
+    end if
+
+    // Literal patterns
+    if tt == TkInteger then
+        let tok: Token = advance(ps)
+        return LitPat(IntLit(unwrap(parse_int(tok.value))))
+    end if
+    if tt == TkString then
+        let tok: Token = advance(ps)
+        return LitPat(StrLit(tok.value))
+    end if
+    if tt == TkTrue then
+        let tok: Token = advance(ps)
+        return LitPat(BoolLit(true))
+    end if
+    if tt == TkFalse then
+        let tok: Token = advance(ps)
+        return LitPat(BoolLit(false))
+    end if
+
+    let tok: Token = advance(ps)
+    let msg: String = "unexpected pattern token " + tok.value
+    push_parser_error(ps: ps, tok: tok, msg: msg)
+    return WildcardPat
+end func parse_pattern
+
+// ---- Statement parsing ----
+
+func parse_match_arm_body(ps: ParserState) -> List[Stmt]
+    example ParserState([Token(TkReturn, "return", 1, 1), Token(TkInteger, "0", 1, 8), Token(TkBar, "|", 2, 1), Token(TkEof, "", 2, 2)], array_from_list([0]), vec_new(), "<input>") -> [ReturnStmt(IntLit(0))]
+    let stmts: Vec[Stmt] = vec_new()
+    while not check_type(ps, TkBar) and not check_type(ps, TkEnd) and not check_type(ps, TkEof) do
+        vec_push(stmts, parse_statement(ps))
+    end while
+    return vec_to_list(stmts)
+end func parse_match_arm_body
+
+func parse_statement_list(ps: ParserState) -> List[Stmt]
+    example ParserState([Token(TkEnd, "end", 1, 1), Token(TkEof, "", 1, 4)], array_from_list([0]), vec_new(), "<input>") -> []
+    let stmts: Vec[Stmt] = vec_new()
+    while not check_type(ps, TkEnd) and not check_type(ps, TkElse) and not check_type(ps, TkEof) do
+        vec_push(stmts, parse_statement(ps))
+    end while
+    return vec_to_list(stmts)
+end func parse_statement_list
+
+func parse_statement(ps: ParserState) -> Stmt
+    example ParserState([Token(TkReturn, "return", 1, 1), Token(TkInteger, "0", 1, 8), Token(TkEof, "", 1, 9)], array_from_list([0]), vec_new(), "<input>") -> ReturnStmt(IntLit(0))
+    let tt: TokenType = peek_type(ps)
+
+    // let binding
+    if tt == TkLet then
+        let l: Token = advance(ps)
+        let name_tok: Token = expect(ps, TkIdentifier)
+        let colon: Token = expect(ps, TkColon)
+        let type_ann: TypeAnnot = parse_type(ps)
+        let eq: Token = expect(ps, TkAssign)
+        let value: Expr = parse_expression(ps)
+        return LetStmt(name_tok.value, type_ann, value)
+    end if
+
+    // var binding
+    if tt == TkVar then
+        let v: Token = advance(ps)
+        let name_tok: Token = expect(ps, TkIdentifier)
+        let colon: Token = expect(ps, TkColon)
+        let type_ann: TypeAnnot = parse_type(ps)
+        let eq: Token = expect(ps, TkAssign)
+        let value: Expr = parse_expression(ps)
+        return VarStmt(name_tok.value, type_ann, value)
+    end if
+
+    // return
+    if tt == TkReturn then
+        let r: Token = advance(ps)
+        let value: Expr = parse_expression(ps)
+        return ReturnStmt(value)
+    end if
+
+    // if statement
+    if tt == TkIf then
+        return parse_if_stmt(ps)
+    end if
+
+    // while loop
+    if tt == TkWhile then
+        let w: Token = advance(ps)
+        let cond: Expr = parse_expression(ps)
+        let d: Token = expect(ps, TkDo)
+        let body: List[Stmt] = parse_statement_list(ps)
+        let e: Token = expect(ps, TkEnd)
+        let w2: Token = expect(ps, TkWhile)
+        consume_optional_end_label(ps)
+        return WhileStmt(cond, body)
+    end if
+
+    // for loop
+    if tt == TkFor then
+        let f: Token = advance(ps)
+        let var_tok: Token = expect(ps, TkIdentifier)
+        let colon: Token = expect(ps, TkColon)
+        let var_type: TypeAnnot = parse_type(ps)
+        let in_tok: Token = expect(ps, TkIn)
+        let iterable: Expr = parse_expression(ps)
+        let d: Token = expect(ps, TkDo)
+        let body: List[Stmt] = parse_statement_list(ps)
+        let e: Token = expect(ps, TkEnd)
+        let f2: Token = expect(ps, TkFor)
+        consume_optional_end_label(ps)
+        return ForStmt(var_tok.value, var_type, iterable, body)
+    end if
+
+    // match statement
+    if tt == TkMatch then
+        let m: Token = advance(ps)
+        let scrutinee: Expr = parse_expression(ps)
+        let w: Token = expect(ps, TkWith)
+        let arms: Vec[MatchArm] = vec_new()
+        while match_type(ps, TkBar) do
+            let arm_tok: Token = current(ps)
+            let pat: Pattern = parse_pattern(ps)
+            let arrow: Token = expect(ps, TkArrow)
+            let body: List[Stmt] = parse_match_arm_body(ps)
+            vec_push(arms, MatchArm(pat, body, arm_tok.line, arm_tok.col))
+        end while
+        let e: Token = expect(ps, TkEnd)
+        let m2: Token = expect(ps, TkMatch)
+        consume_optional_end_label(ps)
+        return MatchStmt(scrutinee, vec_to_list(arms))
+    end if
+
+    // Assignment or expression statement
+    if tt == TkIdentifier then
+        // Check for assignment: ident = expr
+        let next_idx: Int = parser_pos(ps) + 1
+        if next_idx < length(ps.tokens) then
+            let next_tok: Token = ps.tokens[next_idx]
+            if next_tok.tt == TkAssign then
+                let name_tok: Token = advance(ps)
+                let eq: Token = advance(ps)
+                let value: Expr = parse_expression(ps)
+                return AssignStmt(name_tok.value, value)
+            end if
+        end if
+    end if
+
+    // Expression statement
+    let expr: Expr = parse_expression(ps)
+    return ExprStmt(expr)
+end func parse_statement
+
+func parse_if_stmt(ps: ParserState) -> Stmt
+    example ParserState([Token(TkIf, "if", 1, 1), Token(TkTrue, "true", 1, 4), Token(TkThen, "then", 1, 9), Token(TkReturn, "return", 1, 14), Token(TkInteger, "1", 1, 21), Token(TkEnd, "end", 1, 23), Token(TkIf, "if", 1, 27), Token(TkEof, "", 1, 29)], array_from_list([0]), vec_new(), "<input>") -> IfStmt(BoolLit(true), [ReturnStmt(IntLit(1))], [])
+    let i: Token = expect(ps, TkIf)
+    let cond: Expr = parse_expression(ps)
+    let t: Token = expect(ps, TkThen)
+    let then_body: List[Stmt] = parse_statement_list(ps)
+    let else_body: Vec[Stmt] = vec_new()
+    if match_type(ps, TkElse) then
+        // Check for else-if
+        if check_type(ps, TkIf) then
+            vec_push(else_body, parse_if_stmt(ps))
+            return IfStmt(cond, then_body, vec_to_list(else_body))
+        end if
+        let else_stmts: List[Stmt] = parse_statement_list(ps)
+        let e: Token = expect(ps, TkEnd)
+        let i2: Token = expect(ps, TkIf)
+        consume_optional_end_label(ps)
+        return IfStmt(cond, then_body, else_stmts)
+    end if
+    let e: Token = expect(ps, TkEnd)
+    let i2: Token = expect(ps, TkIf)
+    consume_optional_end_label(ps)
+    return IfStmt(cond, then_body, [])
+end func parse_if_stmt
+
+// ---- Parameter parsing ----
+
+func parse_param(ps: ParserState) -> Param
+    example ParserState([Token(TkIdentifier, "x", 1, 1), Token(TkColon, ":", 1, 2), Token(TkTypeIdentifier, "Int", 1, 4), Token(TkEof, "", 1, 7)], array_from_list([0]), vec_new(), "<input>") -> Param("x", SimpleTypeAnnot("Int", []), 1, 1)
+    let name_tok: Token = expect(ps, TkIdentifier)
+    let colon: Token = expect(ps, TkColon)
+    let param_type: TypeAnnot = parse_type(ps)
+    return Param(name_tok.value, param_type, name_tok.line, name_tok.col)
+end func parse_param
+
+// ---- Top-level definition parsing ----
+
+func parse_spec_block(ps: ParserState) -> SpecBlock
+    example ParserState([Token(TkReturn, "return", 1, 1), Token(TkEof, "", 1, 7)], array_from_list([0]), vec_new(), "<input>") -> SpecBlock([], [], [])
+    let reqs: Vec[RequiresClause] = vec_new()
+    let enss: Vec[EnsuresClause] = vec_new()
+    let examples: Vec[ExampleClause] = vec_new()
+    var cont: Bool = true
+    while cont do
+        if match_type(ps, TkRequires) then
+            vec_push(reqs, RequiresClause(parse_expression(ps)))
+        else
+            if match_type(ps, TkEnsures) then
+                vec_push(enss, EnsuresClause(parse_expression(ps)))
+            else
+                if match_type(ps, TkExample) then
+                    let input_expr: Expr = parse_expression(ps)
+                    let arrow: Token = expect(ps, TkArrow)
+                    let output_expr: Expr = parse_expression(ps)
+                    vec_push(examples, ExampleClause(input_expr, output_expr))
+                else
+                    cont = false
+                end if
+            end if
+        end if
+    end while
+    return SpecBlock(vec_to_list(reqs), vec_to_list(enss), vec_to_list(examples))
+end func parse_spec_block
+
+func parse_type_variant(ps: ParserState) -> TypeVariant
+    example ParserState([Token(TkTypeIdentifier, "Foo", 1, 1), Token(TkEof, "", 1, 4)], array_from_list([0]), vec_new(), "<input>") -> TypeVariant("Foo", [], 1, 1)
+    let name_tok: Token = expect(ps, TkTypeIdentifier)
+    let fields: Vec[TypeVariantField] = vec_new()
+    if match_type(ps, TkLParen) then
+        if not check_type(ps, TkRParen) then
+            let fname: Token = expect(ps, TkIdentifier)
+            let colon: Token = expect(ps, TkColon)
+            let ftype: TypeAnnot = parse_type(ps)
+            vec_push(fields, TypeVariantField(fname.value, ftype))
+            while match_type(ps, TkComma) do
+                let fname2: Token = expect(ps, TkIdentifier)
+                let colon2: Token = expect(ps, TkColon)
+                let ftype2: TypeAnnot = parse_type(ps)
+                vec_push(fields, TypeVariantField(fname2.value, ftype2))
+            end while
+        end if
+        let rp: Token = expect(ps, TkRParen)
+    end if
+    return TypeVariant(name_tok.value, vec_to_list(fields), name_tok.line, name_tok.col)
+end func parse_type_variant
+
+func parse_definition(ps: ParserState) -> Def
+    example ParserState([Token(TkImport, "import", 1, 1), Token(TkTypeIdentifier, "Foo", 1, 8), Token(TkEof, "", 1, 11)], array_from_list([0]), vec_new(), "<input>") -> ImportDef("Foo", SourceSpan("<input>", 1, 8, 1, 10))
+    var tt: TokenType = peek_type(ps)
+
+    // import ModuleName
+    if tt == TkImport then
+        let imp: Token = advance(ps)
+        let name_tok: Token = expect(ps, TkTypeIdentifier)
+        return ImportDef(name_tok.value, SourceSpan(ps.filename, name_tok.line, name_tok.col, name_tok.line, token_end_col(name_tok)))
+    end if
+
+    // type Name = Variant1 | Variant2
+    if tt == TkType then
+        let t: Token = advance(ps)
+        let name_tok: Token = expect(ps, TkTypeIdentifier)
+        // Optional type parameters
+        let type_params: Vec[String] = vec_new()
+        if match_type(ps, TkLBracket) then
+            let tp: Token = expect(ps, TkTypeIdentifier)
+            vec_push(type_params, tp.value)
+            while match_type(ps, TkComma) do
+                let tp2: Token = expect(ps, TkTypeIdentifier)
+                vec_push(type_params, tp2.value)
+            end while
+            let rb: Token = expect(ps, TkRBracket)
+        end if
+        let eq: Token = expect(ps, TkAssign)
+        // Parse variants separated by |
+        let variants: Vec[TypeVariant] = vec_new()
+        vec_push(variants, parse_type_variant(ps))
+        while match_type(ps, TkBar) do
+            vec_push(variants, parse_type_variant(ps))
+        end while
+        return TypeDefNode(name_tok.value, vec_to_list(type_params), vec_to_list(variants), SourceSpan(ps.filename, name_tok.line, name_tok.col, name_tok.line, token_end_col(name_tok)))
+    end if
+
+    // @annotation(...) before func
+    let annotations: Vec[Annotation] = vec_new()
+    while tt == TkAt do
+        let at: Token = advance(ps)
+        let ann_name: Token = expect(ps, TkIdentifier)
+        let ann_args: Vec[String] = vec_new()
+        if match_type(ps, TkLParen) then
+            if not check_type(ps, TkRParen) then
+                let arg: Token = expect(ps, TkString)
+                vec_push(ann_args, arg.value)
+                while match_type(ps, TkComma) do
+                    let arg2: Token = expect(ps, TkString)
+                    vec_push(ann_args, arg2.value)
+                end while
+            end if
+            let rp_ann: Token = expect(ps, TkRParen)
+        end if
+        vec_push(annotations, Annotation(ann_name.value, vec_to_list(ann_args)))
+        tt = peek_type(ps)
+    end while
+
+    // func name(params) -> RetType specs body end func name
+    if tt == TkFunc then
+        let f: Token = advance(ps)
+        let name_tok: Token = expect(ps, TkIdentifier)
+        let lp: Token = expect(ps, TkLParen)
+        let params: Vec[Param] = vec_new()
+        if not check_type(ps, TkRParen) then
+            vec_push(params, parse_param(ps))
+            while match_type(ps, TkComma) do
+                vec_push(params, parse_param(ps))
+            end while
+        end if
+        let rp: Token = expect(ps, TkRParen)
+        let arrow: Token = expect(ps, TkArrow)
+        let ret_type: TypeAnnot = parse_type(ps)
+        let specs: SpecBlock = parse_spec_block(ps)
+        let body: List[Stmt] = parse_statement_list(ps)
+        let e: Token = expect(ps, TkEnd)
+        let f2: Token = expect(ps, TkFunc)
+        var closing_name: Option[String] = None
+        if check_type(ps, TkIdentifier) then
+            let cn: Token = advance(ps)
+            closing_name = Some(cn.value)
+            if cn.value != name_tok.value then
+                push_parser_error(ps: ps, tok: cn, msg: "Function closing name '" + cn.value + "' doesn't match '" + name_tok.value + "'")
+            end if
+        end if
+        return FuncDef(name_tok.value, vec_to_list(params), ret_type, specs, body, closing_name, vec_to_list(annotations), [], SourceSpan(ps.filename, name_tok.line, name_tok.col, name_tok.line, token_end_col(name_tok)))
+    end if
+
+    // Unknown definition
+    let tok: Token = advance(ps)
+    let msg: String = "unexpected definition token " + tok.value
+    push_parser_error(ps: ps, tok: tok, msg: msg)
+    return ImportDef("_error_", SourceSpan(ps.filename, tok.line, tok.col, tok.line, token_end_col(tok)))
+end func parse_definition
+
+// ---- Program parsing ----
+
+func parse_program(ps: ParserState) -> Program
+    example ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>") -> Program([])
+    let defs: Vec[Def] = vec_new()
+    while not check_type(ps, TkEof) do
+        vec_push(defs, parse_definition(ps))
+    end while
+    return Program(vec_to_list(defs))
+end func parse_program
+
+// ---- Convenience: tokenize + parse ----
+
+func parse_with_filename(source: String, filename: String) -> Program
+    example ("", "Main.geno") -> Program([])
+    let tokens: List[Token] = tokenize(source)
+    let ps: ParserState = make_parser(tokens, filename)
+    return parse_program(ps)
+end func parse_with_filename
+
+func parse(source: String) -> Program
+    example "" -> Program([])
+    return parse_with_filename(source: source, filename: "<input>")
+end func parse

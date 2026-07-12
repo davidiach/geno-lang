@@ -1,0 +1,56 @@
+problem:
+  id: "PROB-004"
+  name: "Is Even"
+  difficulty: "trivial"
+  domain: "math"
+  description: |
+    Write a function that returns true if a number is even, false otherwise.
+    A number is even if it is divisible by 2 with no remainder.
+  signature:
+    function_name: "is_even"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: 4
+        output: true
+        description: "Even number"
+      - input: 7
+        output: false
+        description: "Odd number"
+    hidden:
+      - input: 0
+        output: true
+        description: "Zero is even"
+      - input: -2
+        output: true
+        description: "Negative even"
+      - input: -3
+        output: false
+        description: "Negative odd"
+      - input: 100
+        output: true
+        description: "Large even"
+  constraints:
+    - "A number is even if n % 2 == 0"
+  canonical_solutions:
+    geno: |
+      func is_even(n: Int) -> Bool
+          example 4 -> true
+          example 7 -> false
+
+          return n % 2 == 0
+      end func is_even
+    python: |
+      def is_even(n: int) -> bool:
+          return n % 2 == 0
+  metadata:
+    tags: ["arithmetic", "modulo", "boolean"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "modulo", "comparison", "boolean"]

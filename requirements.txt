@@ -1,0 +1,18 @@
+# Geno - LLM-Native Programming Language
+# Runtime dependencies only
+
+# YAML parsing for benchmark problems
+pyyaml>=6.0.3,<7
+
+# TOML parsing for Python < 3.11
+tomli>=2.4.1,<3; python_version < "3.11"
+
+# Optional: LLM API clients (uncomment as needed)
+# openai>=1.0
+# anthropic>=0.102.0
+# google-generativeai>=0.8
+
+# Optional: Enhanced analysis (not required - pure Python implementations provided)
+# scipy>=1.10
+# numpy>=1.24
+# matplotlib>=3.7

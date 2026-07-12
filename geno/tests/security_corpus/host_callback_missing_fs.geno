@@ -1,0 +1,6 @@
+# EXPECT: E413
+# fs_read_text with "fs" capability but no host callback should fail.
+# (Run with capabilities={"fs"} but no host_callbacks.)
+func main() -> String
+    return fs_read_text(path: "/tmp/test.txt")
+end func

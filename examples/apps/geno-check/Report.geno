@@ -1,0 +1,26 @@
+// Report.geno — Format and display validation results
+// =====================================================
+
+import Violation
+
+// Format all violations as a multi-line report.
+@untested("depends on violation list from validators")
+func format_report(violations: List[Violation]) -> String
+    let lines: List[String] = map(violations, fn(v: Violation) -> Violation.format_violation(v))
+    let error_count: Int = Violation.count_errors(violations)
+    let warn_count: Int = length(violations) - error_count
+    let summary: String = to_string(error_count) + " error(s), " + to_string(warn_count) + " warning(s)"
+    match length(lines) with
+        | 0 -> return "All checks passed."
+        | _ -> return join(lines, "\n") + "\n\n" + summary
+    end match
+end func
+
+// Determine if validation passed (no errors; warnings are OK).
+func validation_passed(violations: List[Violation]) -> Bool
+    example [] -> true
+    example [Violation("f", "x", "r", "m", "", "", Warning)] -> true
+    example [Violation("f", "x", "r", "m", "", "", Error)] -> false
+
+    return Violation.count_errors(violations) == 0
+end func

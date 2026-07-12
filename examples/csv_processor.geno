@@ -1,0 +1,164 @@
+// CSV Processor — Data pipeline with csv_parse, map, filter, fold
+// =================================================================
+// Demonstrates: csv_parse, List[List[String]], pipelines, string ops, fold
+
+// Check whether a salary string represents a value above the threshold
+func salary_above(salary_str: String, threshold: Int) -> Bool
+    example ("75000", 50000) -> true
+    example ("30000", 50000) -> false
+    example ("abc", 50000) -> false
+
+    let parsed: Option[Int] = parse_int(salary_str)
+    match parsed with
+        | Some(v) -> return v > threshold
+        | None -> return false
+    end match
+end func salary_above
+
+
+// Safely parse a string to Int, returning 0 for non-numeric values
+func safe_parse_int(s: String) -> Int
+    example "42" -> 42
+    example "abc" -> 0
+    example "" -> 0
+
+    let parsed: Option[Int] = parse_int(s)
+    return unwrap_or(parsed, 0)
+end func safe_parse_int
+
+
+// Get a column from a CSV row by index, with a default for out-of-bounds
+func get_col(row: List[String], index: Int, default: String) -> String
+    example (["a", "b", "c"], 1, "?") -> "b"
+    example (["a"], 5, "?") -> "?"
+    example ([], 0, "?") -> "?"
+
+    if index >= 0 and index < length(row) then
+        return row[index]
+    end if
+    return default
+end func get_col
+
+
+// Format a row as "name (dept) - $salary" assuming columns: name, dept, salary
+func format_row(row: List[String]) -> String
+    example ["Alice", "Eng", "90000"] -> "Alice (Eng) - $90000"
+    example ["Bob"] -> "Bob (?) - $?"
+
+    let name: String = get_col(row: row, index: 0, default: "?")
+    let dept: String = get_col(row: row, index: 1, default: "?")
+    let salary: String = get_col(row: row, index: 2, default: "?")
+    return format(template: "{} ({}) - ${}", values: [name, dept, salary])
+end func format_row
+
+
+// Extract salary (column 2) from a row and parse to Int
+func row_salary(row: List[String]) -> Int
+    example ["Alice", "Eng", "90000"] -> 90000
+    example ["Bob", "Sales"] -> 0
+
+    let s: String = get_col(row: row, index: 2, default: "0")
+    return safe_parse_int(s)
+end func row_salary
+
+
+// Check if a row's department (column 1) matches the given value
+func in_dept(row: List[String], dept: String) -> Bool
+    example (["Alice", "Eng", "90000"], "Eng") -> true
+    example (["Bob", "Sales", "72000"], "Eng") -> false
+
+    let row_dept: String = get_col(row: row, index: 1, default: "")
+    return row_dept == dept
+end func in_dept
+
+
+// Sum up all salaries in a list of rows
+func total_salary(rows: List[List[String]]) -> Int
+    example [["A", "X", "100"], ["B", "Y", "200"]] -> 300
+    example [] -> 0
+
+    var total: Int = 0
+    var i: Int = 0
+    while i < length(rows) do
+        total = total + row_salary(rows[i])
+        i = i + 1
+    end while
+    return total
+end func total_salary
+
+
+// Find the row with the highest salary
+func highest_earner(rows: List[List[String]]) -> String
+    example [["Alice", "Eng", "90000"], ["Bob", "Sales", "120000"]] -> "Bob"
+    example [] -> "none"
+
+    if length(rows) == 0 then
+        return "none"
+    end if
+
+    var best_name: String = get_col(row: rows[0], index: 0, default: "?")
+    var best_salary: Int = row_salary(rows[0])
+    var i: Int = 1
+
+    while i < length(rows) do
+        let s: Int = row_salary(rows[i])
+        if s > best_salary then
+            best_salary = s
+            best_name = get_col(row: rows[i], index: 0, default: "?")
+        end if
+        i = i + 1
+    end while
+
+    return best_name
+end func highest_earner
+
+
+func main() -> Int
+    // CSV data: employee records with name, department, salary
+    let csv_data: String = "name,dept,salary\nAlice,Engineering,95000\nBob,Sales,72000\nCarol,Engineering,105000\nDave,Marketing,68000\nEve,Engineering,88000\nFrank,Sales,71000"
+
+    // Parse CSV into rows (first row is headers)
+    let all_rows: List[List[String]] = csv_parse(csv_data)
+    let headers: List[String] = head(all_rows)
+    let data: List[List[String]] = tail(all_rows)
+
+    // Display all employees
+    print("=== All Employees ===")
+    let lines: List[String] = map(data, fn(r: List[String]) -> format_row(r))
+    var i: Int = 0
+    while i < length(lines) do
+        print(lines[i])
+        i = i + 1
+    end while
+
+    // Filter: high earners (salary > 80000)
+    let high_earners: List[List[String]] = filter(data, fn(r: List[String]) -> salary_above(get_col(row: r, index: 2, default: "0"), 80000))
+    print("=== High Earners (>$80k) ===")
+    var j: Int = 0
+    while j < length(high_earners) do
+        print(format_row(high_earners[j]))
+        j = j + 1
+    end while
+
+    // Aggregate: total and average salary
+    let total: Int = total_salary(data)
+    let avg: Int = total / length(data)
+    print(format(template: "Total salary budget: ${}", values: [to_string(total)]))
+    print(format(template: "Average salary:      ${}", values: [to_string(avg)]))
+
+    // Highest earner
+    let top: String = highest_earner(data)
+    print(format(template: "Highest earner:      {}", values: [top]))
+
+    // Count by department
+    let eng: List[List[String]] = filter(data, fn(r: List[String]) -> in_dept(r, "Engineering"))
+    let sales: List[List[String]] = filter(data, fn(r: List[String]) -> in_dept(r, "Sales"))
+    print(format(template: "Engineering: {} employees", values: [to_string(length(eng))]))
+    print(format(template: "Sales:       {} employees", values: [to_string(length(sales))]))
+
+    // Engineering salary subtotal
+    let eng_total: Int = total_salary(eng)
+    print(format(template: "Engineering budget:  ${}", values: [to_string(eng_total)]))
+
+    return 0
+end func main

@@ -1,0 +1,166 @@
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geno-lang"
+dynamic = ["version"]
+description = "A programming language designed for LLM code generation"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.14"
+authors = [
+    {name = "David Iach"}
+]
+keywords = ["programming-language", "llm", "code-generation", "compiler", "type-checker"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Interpreters",
+]
+dependencies = [
+    "pyyaml>=6.0.3,<7",
+    "tomli>=2.4.1,<3; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.2,<10",
+    "pytest-cov>=4.0,<6",
+    "pytest-timeout>=2.4.0,<3",
+    "ruff>=0.15.14,<0.16",
+    "mypy>=2.1.0,<3",
+    "hypothesis>=6.152.9,<7",
+    "pre-commit>=4.5.1,<5",
+    "nox>=2026.4.10,<2027",
+    "packaging>=26.2,<27",
+]
+lsp = [
+    "pygls>=1.0,<2",
+]
+llm = [
+    "openai>=1.0",
+    "anthropic>=0.102.0",
+    "google-generativeai>=0.8",
+]
+
+[project.scripts]
+geno = "geno.__main__:main"
+geno-serve = "geno.server:main"
+
+[project.urls]
+Homepage = "https://github.com/davidiach/geno-lang"
+Documentation = "https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md"
+Repository = "https://github.com/davidiach/geno-lang.git"
+Issues = "https://github.com/davidiach/geno-lang/issues"
+Changelog = "https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md"
+Security = "https://github.com/davidiach/geno-lang/security/policy"
+
+[tool.pytest.ini_options]
+testpaths = ["geno/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "S", "UP", "B", "C4", "SIM", "PT", "RUF"]
+ignore = [
+    "E501",    # line length (handled by formatter where possible)
+    "F401",    # unused imports (many are re-exports or used at runtime)
+    "F841",    # unused variables (some are intentional, e.g. context managers)
+    "S101",    # assert usage (used for internal invariants)
+    "UP006",   # non-pep585-annotation — list[X] vs List[X] breaks on Python 3.9 without __future__
+    "UP007",   # non-pep604-annotation — X | None breaks on Python 3.9 at runtime in dataclasses
+    "UP035",   # deprecated-import — typing re-exports are harmless
+    "B018",    # useless-expression — often intentional (type annotations, docstrings)
+    "B904",    # raise-without-from-inside-except — valid but 22 existing violations need careful review
+    "B024",    # abstract-class-without-abstract-method — mixin pattern is intentional
+    "B027",    # empty method without abstract — visitor/mixin pattern is intentional
+    "B905",    # zip-without-explicit-strict — adding strict= is a behavior change
+    "C416",    # unnecessary-comprehension — often clearer than alternatives
+    "SIM102",  # collapsible-if — nested ifs are often clearer
+    "SIM105",  # suppressible-exception — contextlib.suppress not always clearer
+    "SIM108",  # if-else-block-instead-of-if-exp — ternaries hurt readability in complex cases
+    "SIM117",  # multiple-with — nested withs are clearer for complex setup
+    "PT011",   # pytest-raises-too-broad — many raises checks are intentionally broad
+    "RUF001",  # ambiguous-unicode-character-string — intentional
+    "RUF002",  # ambiguous-unicode-character-docstring — intentional
+    "RUF005",  # collection-literal-concatenation — style preference
+    "RUF012",  # mutable-class-default — dataclass pattern is intentional
+    "RUF015",  # unnecessary-iterable-allocation — style preference
+    "RUF046",  # unnecessary-cast-to-int — explicit casts are clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"geno/__init__.py" = ["F403", "F405"]  # re-exports via import *
+"geno/api.py" = ["F821"]  # forward references for circular import avoidance
+"geno/compiler.py" = ["S102"]  # exec used for compiled code execution
+"geno/_serve.py" = ["S310", "S603"]  # urlopen + subprocess in runtime callbacks
+"geno/sandbox.py" = ["S102", "S108", "S603"]  # exec + /tmp + subprocess by design
+"geno/builtins.py" = ["S311"]  # non-cryptographic random is intentional
+"geno/diagnostics.py" = ["S105"]  # false positive on error code strings
+"geno/interpreter.py" = ["E721"]  # intentional type() equality check
+"geno/typechecker.py" = ["E721", "F405"]  # type() check + import * names
+"geno/parser.py" = ["F811"]  # intentional function redefinition pattern
+"geno/server.py" = ["S608"]  # false positive: f-string builds HTML, not SQL
+"geno/tests/*" = ["S", "E712", "F811", "PT", "B017", "SIM115"]  # security, bool comparisons, redefs, pytest style, broad raises, open()
+"benchmark/runner.py" = ["S102"]  # exec for benchmark execution
+"analysis/demo.py" = ["S311"]  # non-cryptographic random is intentional for demo data
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.coverage.run]
+omit = [
+    # This test file is entirely gated on optional LSP dependencies.
+    "geno/tests/test_lsp.py",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+check_untyped_defs = true
+exclude = [
+    # Tests intentionally exercise runtime type errors with invalid Python calls.
+    "^geno/tests/",
+]
+
+[[tool.mypy.overrides]]
+module = ["tomli", "tomllib", "lsprotocol", "pygls.*"]
+ignore_missing_imports = true
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["geno*"]
+exclude = ["geno.tests*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "geno._version.__version__"}
+
+[tool.setuptools.package-data]
+geno = [
+    "py.typed",
+    "_js_runtime_support.js",
+    "packages.json",
+    "std/*.geno",
+    "targets.toml",
+]

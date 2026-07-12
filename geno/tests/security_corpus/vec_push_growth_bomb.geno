@@ -1,0 +1,13 @@
+# EXPECT: E503
+# Push 20 million elements into a Vec in a tight loop.
+# Verifies that mutable Vec growth operations are
+# step-counted before the Vec exhausts memory.
+func main() -> Int
+    var v: Vec[Int] = vec_new()
+    var i: Int = 0
+    while i < 20000000 do
+        vec_push(v, i)
+        i = i + 1
+    end while
+    return vec_length(v)
+end func

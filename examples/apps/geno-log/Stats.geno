@@ -1,0 +1,61 @@
+// Small data-processing helpers for the node-cli lane.
+
+import Types
+
+func count_status(events: List[Event], status: String) -> Int
+    example [Event("api", "ok", 120)], "ok" -> 1
+    example [Event("api", "error", 240)], "ok" -> 0
+
+    var total: Int = 0
+    for event: Event in events do
+        if event.status == status then
+            total = total + 1
+        end if
+    end for
+    return total
+end func
+
+func total_latency(events: List[Event]) -> Int
+    example [] -> 0
+    example [Event("api", "ok", 120), Event("db", "ok", 160)] -> 280
+
+    var total: Int = 0
+    for event: Event in events do
+        total = total + event.latency
+    end for
+    return total
+end func
+
+func average_latency(events: List[Event]) -> Int
+    example [] -> 0
+    example [Event("api", "ok", 120), Event("db", "ok", 160)] -> 140
+
+    if length(events) == 0 then
+        return 0
+    end if
+    return total_latency(events) / length(events)
+end func
+
+func max_latency(events: List[Event]) -> Int
+    example [] -> 0
+    example [Event("api", "ok", 120), Event("db", "ok", 160)] -> 160
+
+    var slowest: Int = 0
+    for event: Event in events do
+        if event.latency > slowest then
+            slowest = event.latency
+        end if
+    end for
+    return slowest
+end func
+
+func health_score(events: List[Event]) -> Int
+    example [] -> 100
+    example [Event("api", "ok", 120), Event("worker", "error", 310)] -> 50
+
+    if length(events) == 0 then
+        return 100
+    end if
+    let errors: Int = count_status(events, "error")
+    return 100 - ((errors * 100) / length(events))
+end func

@@ -1,0 +1,11 @@
+// Types.geno — Core data types for the pipeline
+// =================================================
+
+// A single row: list of string cells.
+type Row = Row(cells: List[String])
+
+// A table: header row + data rows.
+type Table = Table(headers: List[String], rows: List[Row])
+
+// Supported output formats.
+type OutputFormat = CsvFormat | JsonFormat | TableFormat | MarkdownFormat

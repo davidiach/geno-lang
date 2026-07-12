@@ -1,0 +1,83 @@
+problem:
+  id: "PROB-027"
+  name: "Insertion Sort"
+  difficulty: "medium"
+  domain: "sorting"
+  description: |
+    Implement the insertion sort algorithm to sort a list of integers in ascending order.
+  signature:
+    function_name: "insertion_sort"
+    inputs:
+      - name: "arr"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[12, 11, 13, 5, 6]]
+        output: [5, 6, 11, 12, 13]
+        description: "Sort unsorted list"
+      - input: [[1]]
+        output: [1]
+        description: "Single element"
+    hidden:
+      - input: [[]]
+        output: []
+        description: "Empty list"
+      - input: [[2, 1]]
+        output: [1, 2]
+        description: "Two elements swap"
+      - input: [[1, 2]]
+        output: [1, 2]
+        description: "Two elements no swap"
+      - input: [[3, 3, 3]]
+        output: [3, 3, 3]
+        description: "All same"
+      - input: [[-1, -5, 0, 3]]
+        output: [-5, -1, 0, 3]
+        description: "Mixed signs"
+  constraints:
+    - "Use insertion sort algorithm"
+  canonical_solutions:
+    geno: |
+      func insertion_sort(arr: List[Int]) -> List[Int]
+          example [12, 11, 13, 5, 6] -> [5, 6, 11, 12, 13]
+          example [1] -> [1]
+
+          var result: List[Int] = arr
+          let n: Int = length(result)
+          var i: Int = 1
+
+          while i < n do
+              let key: Int = result[i]
+              var j: Int = i - 1
+
+              while j >= 0 and result[j] > key do
+                  result = set_at(list: result, index: j + 1, value: result[j])
+                  j = j - 1
+              end while
+
+              result = set_at(list: result, index: j + 1, value: key)
+              i = i + 1
+          end while
+
+          return result
+      end func insertion_sort
+    python: |
+      def insertion_sort(arr: list[int]) -> list[int]:
+          result = arr.copy()
+          for i in range(1, len(result)):
+              key = result[i]
+              j = i - 1
+              while j >= 0 and result[j] > key:
+                  result[j + 1] = result[j]
+                  j -= 1
+              result[j + 1] = key
+          return result
+  metadata:
+    tags: ["sorting", "classic"]
+    source: "Classic"
+    time_complexity: "O(n^2)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "nested-while", "and", "list-mutation"]

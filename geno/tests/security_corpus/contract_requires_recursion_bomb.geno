@@ -1,0 +1,25 @@
+# EXPECT: E503
+# Exploit requires (precondition) clauses for hidden computation.
+# Each call to work() evaluates an expensive requires clause
+# that itself calls a function, multiplying the effective step
+# cost.  Tests that contract evaluation is step-counted.
+func expensive(n: Int) -> Bool
+    example 0 -> true
+    if n <= 0 then
+        return true
+    end if
+    return expensive(n - 1)
+end func
+
+func work(n: Int) -> Int
+    requires expensive(50)
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    return work(n - 1) + 1
+end func
+
+func main() -> Int
+    return work(10000)
+end func

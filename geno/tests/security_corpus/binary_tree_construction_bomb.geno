@@ -1,0 +1,19 @@
+# EXPECT: E503
+# Build a complete binary tree of depth 30 (2^30 nodes).
+# Each recursive call creates two children, leading to
+# exponential node count.  Verifies step counting catches
+# exponential construction before memory exhaustion.
+type BinTree = Leaf(v: Int) | Branch(left: BinTree, right: BinTree)
+
+func build(depth: Int) -> BinTree
+    example 0 -> Leaf(0)
+    if depth <= 0 then
+        return Leaf(0)
+    end if
+    return Branch(build(depth - 1), build(depth - 1))
+end func
+
+func main() -> Int
+    let t: BinTree = build(30)
+    return 0
+end func

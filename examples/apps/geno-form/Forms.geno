@@ -1,0 +1,62 @@
+// Forms.geno — Example form definitions
+// =========================================
+// Demonstrates how type annotations map to form fields,
+// requires-style constraints map to validators,
+// and example values map to placeholders.
+
+import Types
+import Fields
+
+// -----------------------------------------------
+// Example 1: User registration form
+// -----------------------------------------------
+
+func registration_fields() -> List[FieldDef]
+    example () -> [FieldDef("username", "Username", TextInput, "john_doe", true, 3, 20, 0, 0), FieldDef("email", "Email", EmailInput, "user@example.com", true, 0, 254, 0, 0), FieldDef("age", "Age", NumberInput, "25", true, 0, 0, 13, 150), FieldDef("role", "Role", SelectInput(["Developer", "Designer", "Manager"]), "", true, 0, 0, 0, 0), FieldDef("agree", "I agree to the terms", BoolInput, "", false, 0, 0, 0, 0)]
+    return [
+    // String field: placeholder from example "john_doe"
+    // requires length(username) >= 3 and length(username) <= 20
+    text_field(name: "username", label: "Username", placeholder: "john_doe", required: true, min_length: 3, max_length: 20),
+
+    // Email field: placeholder from example "user@example.com"
+    email_field(name: "email", label: "Email", placeholder: "user@example.com", required: true),
+
+    // Int field: requires age >= 13 and age <= 150
+    number_field(name: "age", label: "Age", placeholder: "25", required: true, min_value: 13, max_value: 150),
+
+    // Select field: options from type variants
+    select_field(name: "role", label: "Role", options: ["Developer", "Designer", "Manager"], required: true),
+
+    // Bool field: checkbox
+    bool_field(name: "agree", label: "I agree to the terms")
+    ]
+end func
+
+// -----------------------------------------------
+// Example 2: Contact form
+// -----------------------------------------------
+
+func contact_fields() -> List[FieldDef]
+    example () -> [FieldDef("name", "Full Name", TextInput, "Jane Smith", true, 2, 100, 0, 0), FieldDef("email", "Email Address", EmailInput, "jane@example.com", true, 0, 254, 0, 0), FieldDef("subject", "Subject", TextInput, "Question about Geno", true, 5, 200, 0, 0), FieldDef("message", "Message", TextInput, "I would like to know...", true, 10, 2000, 0, 0)]
+    return [
+    text_field(name: "name", label: "Full Name", placeholder: "Jane Smith", required: true, min_length: 2, max_length: 100),
+    email_field(name: "email", label: "Email Address", placeholder: "jane@example.com", required: true),
+    text_field(name: "subject", label: "Subject", placeholder: "Question about Geno", required: true, min_length: 5, max_length: 200),
+    text_field(name: "message", label: "Message", placeholder: "I would like to know...", required: true, min_length: 10, max_length: 2000)
+    ]
+end func
+
+// Available form definitions.
+func form_titles() -> List[String]
+    example () -> ["Registration", "Contact"]
+    return ["Registration", "Contact"]
+end func
+
+// Get fields for a form by index.
+func get_form_fields(index: Int) -> List[FieldDef]
+    example (0) -> [FieldDef("username", "Username", TextInput, "john_doe", true, 3, 20, 0, 0), FieldDef("email", "Email", EmailInput, "user@example.com", true, 0, 254, 0, 0), FieldDef("age", "Age", NumberInput, "25", true, 0, 0, 13, 150), FieldDef("role", "Role", SelectInput(["Developer", "Designer", "Manager"]), "", true, 0, 0, 0, 0), FieldDef("agree", "I agree to the terms", BoolInput, "", false, 0, 0, 0, 0)]
+    if index == 0 then
+        return registration_fields()
+    end if
+    return contact_fields()
+end func

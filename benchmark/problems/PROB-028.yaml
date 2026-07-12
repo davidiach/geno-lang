@@ -1,0 +1,68 @@
+problem:
+  id: "PROB-028"
+  name: "Safe Division"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that safely divides two integers. Return Some(result) if the
+    divisor is non-zero, or None if division by zero would occur.
+  signature:
+    function_name: "safe_divide"
+    inputs:
+      - name: "a"
+        type: "Int"
+      - name: "b"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Option[Int]"
+  examples:
+    visible:
+      - input: [10, 2]
+        output: {"Some": 5}
+        description: "10 / 2 = 5"
+      - input: [10, 0]
+        output: "None"
+        description: "Division by zero"
+    hidden:
+      - input: [0, 5]
+        output: {"Some": 0}
+        description: "0 / 5 = 0"
+      - input: [-10, 2]
+        output: {"Some": -5}
+        description: "Negative dividend"
+      - input: [10, -2]
+        output: {"Some": -5}
+        description: "Negative divisor"
+      - input: [7, 3]
+        output: {"Some": 2}
+        description: "Integer division"
+  constraints:
+    - "Return None for division by zero"
+    - "Use integer division"
+  canonical_solutions:
+    geno: |
+      func safe_divide(a: Int, b: Int) -> Option[Int]
+          example 10, 2 -> Some(5)
+          example 10, 0 -> None
+
+          if b == 0 then
+              return None
+          else
+              return Some(a / b)
+          end if
+      end func safe_divide
+    python: |
+      from typing import Optional
+
+      def safe_divide(a: int, b: int) -> Optional[int]:
+          if b == 0:
+              return None
+          else:
+              return a // b
+  metadata:
+    tags: ["option", "error-handling"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "if-else", "option-type", "pattern"]

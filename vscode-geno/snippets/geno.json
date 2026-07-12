@@ -1,0 +1,228 @@
+{
+  "Function": {
+    "prefix": "func",
+    "body": [
+      "func ${1:name}(${2:params}) -> ${3:ReturnType}",
+      "    example ${4:input} -> ${5:output}",
+      "    ${0}",
+      "end func ${1:name}"
+    ],
+    "description": "Define a function with example clause"
+  },
+  "Function (no spec)": {
+    "prefix": "fn",
+    "body": [
+      "func ${1:name}(${2:params}) -> ${3:ReturnType}",
+      "    ${0}",
+      "end func ${1:name}"
+    ],
+    "description": "Define a function without specification"
+  },
+  "If/Then": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} then",
+      "    ${0}",
+      "end if"
+    ],
+    "description": "If/then block"
+  },
+  "If/Else": {
+    "prefix": "ifelse",
+    "body": [
+      "if ${1:condition} then",
+      "    ${2}",
+      "else",
+      "    ${0}",
+      "end if"
+    ],
+    "description": "If/then/else block"
+  },
+  "If/Else If/Else": {
+    "prefix": "ifelseif",
+    "body": [
+      "if ${1:condition} then",
+      "    ${2}",
+      "else if ${3:condition} then",
+      "    ${4}",
+      "else",
+      "    ${0}",
+      "end if"
+    ],
+    "description": "If/else if/else block"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:expr} with",
+      "    | ${2:pattern} -> ${3}",
+      "    | _ -> ${0}",
+      "end match"
+    ],
+    "description": "Pattern match block"
+  },
+  "Type": {
+    "prefix": "type",
+    "body": [
+      "type ${1:Name}",
+      "    = ${2:Variant1}(${3:field: Type})",
+      "    | ${0:Variant2}"
+    ],
+    "description": "Algebraic data type definition"
+  },
+  "Type (record)": {
+    "prefix": "typerec",
+    "body": [
+      "type ${1:Name} = ${1:Name}(",
+      "    ${2:field}: ${3:Type}",
+      ")"
+    ],
+    "description": "Record type definition"
+  },
+  "Trait": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name}",
+      "    func ${2:method}(self: Self) -> ${3:ReturnType}",
+      "end trait"
+    ],
+    "description": "Trait definition"
+  },
+  "Impl": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Trait} for ${2:Type}",
+      "    func ${3:method}(self: ${2:Type}) -> ${4:ReturnType}",
+      "        ${0}",
+      "    end func ${3:method}",
+      "end impl"
+    ],
+    "description": "Trait implementation"
+  },
+  "For Loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:collection} do",
+      "    ${0}",
+      "end for"
+    ],
+    "description": "For loop"
+  },
+  "While Loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} do",
+      "    ${0}",
+      "end while"
+    ],
+    "description": "While loop"
+  },
+  "Try/Catch": {
+    "prefix": "try",
+    "body": [
+      "try",
+      "    ${1}",
+      "catch ${2:e}: String",
+      "    ${0}",
+      "end try"
+    ],
+    "description": "Try/catch block"
+  },
+  "Let binding": {
+    "prefix": "let",
+    "body": [
+      "let ${1:name}: ${2:Type} = ${0}"
+    ],
+    "description": "Immutable variable binding"
+  },
+  "Var binding": {
+    "prefix": "var",
+    "body": [
+      "var ${1:name}: ${2:Type} = ${0}"
+    ],
+    "description": "Mutable variable binding"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": [
+      "import ${0:Module}"
+    ],
+    "description": "Import a module"
+  },
+  "Example clause": {
+    "prefix": "example",
+    "body": [
+      "example ${1:input} -> ${0:output}"
+    ],
+    "description": "Example specification clause"
+  },
+  "Requires clause": {
+    "prefix": "requires",
+    "body": [
+      "requires ${0:condition}"
+    ],
+    "description": "Precondition specification clause"
+  },
+  "Ensures clause": {
+    "prefix": "ensures",
+    "body": [
+      "ensures ${0:condition}"
+    ],
+    "description": "Postcondition specification clause"
+  },
+  "Export Function": {
+    "prefix": "exportfunc",
+    "body": [
+      "export func ${1:name}(${2:params}) -> ${3:ReturnType}",
+      "    example ${4:input} -> ${5:output}",
+      "    ${0}",
+      "end func ${1:name}"
+    ],
+    "description": "Exported function with example clause"
+  },
+  "Export Type": {
+    "prefix": "exporttype",
+    "body": [
+      "export type ${1:Name}",
+      "    = ${2:Variant1}(${3:field: Type})",
+      "    | ${0:Variant2}"
+    ],
+    "description": "Exported algebraic data type definition"
+  },
+  "Async Function": {
+    "prefix": "asyncfunc",
+    "body": [
+      "async func ${1:name}(${2:params}) -> ${3:ReturnType}",
+      "    ${0}",
+      "end func ${1:name}"
+    ],
+    "description": "Async function"
+  },
+  "Pipeline": {
+    "prefix": "pipe",
+    "body": [
+      "${1:value} |> ${2:func1} |> ${0:func2}"
+    ],
+    "description": "Pipeline expression"
+  },
+  "Match Result": {
+    "prefix": "matchresult",
+    "body": [
+      "match ${1:result} with",
+      "    | Ok(${2:val}) -> ${3}",
+      "    | Err(${4:e}) -> ${0}",
+      "end match"
+    ],
+    "description": "Pattern match on Result type"
+  },
+  "Match Option": {
+    "prefix": "matchoption",
+    "body": [
+      "match ${1:opt} with",
+      "    | Some(${2:val}) -> ${3}",
+      "    | None -> ${0}",
+      "end match"
+    ],
+    "description": "Pattern match on Option type"
+  }
+}

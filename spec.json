@@ -1,0 +1,385 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "Geno",
+  "version": "0.3.1",
+  "description": "Machine-readable specification for the Geno programming language",
+
+  "keywords": [
+    "and", "assert", "async", "await", "break", "catch", "continue",
+    "do", "else", "end", "ensures", "example", "export", "false", "fn",
+    "for", "func", "if", "impl", "import", "in", "let", "match", "not",
+    "or", "ref", "requires", "return", "test", "then", "throw", "trait",
+    "true", "try", "type", "var", "where", "while", "with"
+  ],
+
+  "literals": {
+    "integer": {"pattern": "[0-9]+", "examples": ["0", "42", "1000003"]},
+    "float": {"pattern": "[0-9]+\\.[0-9]+", "examples": ["3.14", "0.0"]},
+    "string": {"delimiters": ["\"", "\"\"\""], "escape": "\\", "examples": ["\"hello\"", "\"\"\"multi\\nline\"\"\""]},
+    "fstring": {"prefix": "f", "interpolation": "{expr}", "examples": ["f\"Hello {name}\""]},
+    "boolean": ["true", "false"]
+  },
+
+  "types": {
+    "primitive": ["Int", "Float", "Bool", "String", "Unit"],
+    "collections": ["List[T]", "Array[T]", "Vec[T]", "Set[T]", "Map[K, V]", "MutableMap[K, V]"],
+    "algebraic": ["Option[T]", "Result[T, E]"],
+    "async": ["Async[T]"],
+    "constructors": {
+      "Option": ["Some(value)", "None"],
+      "Result": ["Ok(value)", "Err(error)"]
+    }
+  },
+
+  "operators": {
+    "precedence_ascending": [
+      {"level": 1, "operators": ["or"], "kind": "logical"},
+      {"level": 2, "operators": ["and"], "kind": "logical"},
+      {"level": 3, "operators": ["not"], "kind": "unary_prefix"},
+      {"level": 4, "operators": ["==", "!=", "<", ">", "<=", ">="], "kind": "comparison"},
+      {"level": 5, "operators": ["^"], "kind": "bitwise"},
+      {"level": 6, "operators": ["&"], "kind": "bitwise"},
+      {"level": 7, "operators": ["<<", ">>"], "kind": "bitwise"},
+      {"level": 8, "operators": ["+", "-"], "kind": "arithmetic"},
+      {"level": 9, "operators": ["*", "/", "%"], "kind": "arithmetic"},
+      {"level": 10, "operators": ["**"], "kind": "arithmetic", "associativity": "right"},
+      {"level": 11, "operators": ["-", "~"], "kind": "unary_prefix"}
+    ],
+    "special": ["|>", "?", ".", "[]", "()"]
+  },
+
+  "syntax": {
+    "function": {
+      "template": "func name(param: Type, ...) -> ReturnType\\n  [requires condition]\\n  [ensures condition]\\n  [example (args) -> result]\\n  body\\nend func",
+      "notes": [
+        "Every function must have at least one example clause (except main, async, app helpers)",
+        "Functions with 3+ parameters require named arguments at call sites",
+        "Zero-arg examples use: example () -> value"
+      ]
+    },
+    "lambda": {
+      "expression": "fn(param: Type) -> expr",
+      "block": "fn(param: Type) do\\n  body\\nend fn"
+    },
+    "let_binding": {
+      "immutable": "let name[: Type] = expr",
+      "mutable": "var name[: Type] = expr",
+      "notes": ["Local let/var type annotations are optional when the initializer type is unambiguous", "var for mutable bindings (NOT let mut)"]
+    },
+    "type_definition": "type Name[T] = Variant1(field: Type) | Variant2(x: Int, y: String)",
+    "trait": "trait Name\\n  func method(self: Self, ...) -> Type\\nend trait",
+    "impl": "impl TraitName for Type\\n  func method(self: Type, ...) -> Type\\n    body\\n  end func\\nend impl",
+    "if_else": "if condition then\\n  body\\nelse\\n  body\\nend if",
+    "match": "match expr with\\n  | Pattern -> result\\n  | Pattern when guard -> result\\n  | _ -> default\\nend match",
+    "for_loop": "for x: Type in iterable do\\n  body\\nend for",
+    "while_loop": "while condition do\\n  body\\nend while",
+    "try_catch": "try\\n  body\\ncatch err: Type\\n  handler\\nend try",
+    "import": "import ModuleName [as Alias]",
+    "list_comprehension": "[expr for var: Type in iterable if condition]",
+    "pipe": "x |> f |> g(_, extra) |> h",
+    "functional_update": "record with (field1: new_val1, field2: new_val2)",
+    "propagation": "value?",
+    "annotation": "@untested(\"reason\")"
+  },
+
+  "patterns": {
+    "wildcard": "_",
+    "variable": "x",
+    "constructor": "Some(x)",
+    "literal": "0, \"hello\", true",
+    "list": "[], [x], [x, y, z]",
+    "rest": "...rest, ..."
+  },
+
+  "naming_conventions": {
+    "variables": "snake_case",
+    "functions": "snake_case",
+    "types": "PascalCase",
+    "constructors": "PascalCase",
+    "modules": "PascalCase"
+  },
+
+  "comments": {
+    "line": "// comment",
+    "block": "/* comment */",
+    "doc": "/// doc comment"
+  },
+
+  "builtins": {
+    "list": [
+      {"name": "length", "signature": "(list: List[T]) -> Int"},
+      {"name": "head", "signature": "(list: List[T]) -> T"},
+      {"name": "tail", "signature": "(list: List[T]) -> List[T]"},
+      {"name": "append", "signature": "(list: List[T], element: T) -> List[T]"},
+      {"name": "concat", "signature": "(list1: List[T], list2: List[T]) -> List[T]"},
+      {"name": "contains", "signature": "(list: List[T], element: T) -> Bool"},
+      {"name": "reverse", "signature": "(list: List[T]) -> List[T]"},
+      {"name": "slice", "signature": "(list: List[T], start: Int, stop: Int) -> List[T]"},
+      {"name": "set_at", "signature": "(list: List[T], index: Int, value: T) -> List[T]"},
+      {"name": "zip", "signature": "(list1: List[T], list2: List[U]) -> List[(T, U)]"},
+      {"name": "enumerate", "signature": "(list: List[T]) -> List[(Int, T)]"},
+      {"name": "flatten", "signature": "(lists: List[List[T]]) -> List[T]"},
+      {"name": "chunk", "signature": "(list: List[T], size: Int) -> List[List[T]]"},
+      {"name": "take", "signature": "(list: List[T], count: Int) -> List[T]"},
+      {"name": "drop", "signature": "(list: List[T], count: Int) -> List[T]"},
+      {"name": "find", "signature": "(list: List[T], predicate: (T) -> Bool) -> Option[T]"},
+      {"name": "find_index", "signature": "(list: List[T], predicate: (T) -> Bool) -> Option[Int]"},
+      {"name": "is_sorted", "signature": "(list: List[Int]) -> Bool"},
+      {"name": "all", "signature": "(list: List[T], predicate: (T) -> Bool) -> Bool"},
+      {"name": "any", "signature": "(list: List[T], predicate: (T) -> Bool) -> Bool"},
+      {"name": "intersperse", "signature": "(list: List[T], separator: T) -> List[T]"},
+      {"name": "group_by", "signature": "(list: List[T], key_fn: (T) -> K) -> List[(K, List[T])]"}
+    ],
+    "higher_order": [
+      {"name": "map", "signature": "(list: List[T], transform: (T) -> U) -> List[U]"},
+      {"name": "filter", "signature": "(list: List[T], predicate: (T) -> Bool) -> List[T]"},
+      {"name": "fold", "signature": "(list: List[T], initial: U, reducer: (U, T) -> U) -> U"},
+      {"name": "flat_map", "signature": "(list: List[T], fn: (T) -> List[U]) -> List[U]"},
+      {"name": "fold_right", "signature": "(list: List[T], init: U, f: (T, U) -> U) -> U"},
+      {"name": "take_while", "signature": "(list: List[T], predicate: (T) -> Bool) -> List[T]"}
+    ],
+    "string": [
+      {"name": "split", "signature": "(text: String, delimiter: String) -> List[String]"},
+      {"name": "join", "signature": "(parts: List[String], separator: String) -> String"},
+      {"name": "trim", "signature": "(text: String) -> String"},
+      {"name": "to_lower", "signature": "(text: String) -> String"},
+      {"name": "to_upper", "signature": "(text: String) -> String"},
+      {"name": "replace", "signature": "(text: String, old: String, new: String) -> String"},
+      {"name": "starts_with", "signature": "(text: String, prefix: String) -> Bool"},
+      {"name": "ends_with", "signature": "(text: String, suffix: String) -> Bool"},
+      {"name": "substring", "signature": "(text: String, start: Int, stop: Int) -> String"},
+      {"name": "contains_substring", "signature": "(text: String, substring: String) -> Bool"},
+      {"name": "char_code", "signature": "(text: String) -> Int"},
+      {"name": "from_char_code", "signature": "(code: Int) -> String"},
+      {"name": "to_chars", "signature": "(text: String) -> List[String]"},
+      {"name": "repeat_string", "signature": "(text: String, count: Int) -> String"},
+      {"name": "trim_start", "signature": "(text: String) -> String"},
+      {"name": "trim_end", "signature": "(text: String) -> String"},
+      {"name": "pad_left", "signature": "(text: String, width: Int, fill_char: String) -> String"},
+      {"name": "pad_right", "signature": "(text: String, width: Int, fill_char: String) -> String"},
+      {"name": "index_of", "signature": "(text: String, substring: String) -> Int"},
+      {"name": "last_index_of", "signature": "(text: String, substring: String) -> Int"},
+      {"name": "string_char_at", "signature": "(text: String, index: Int) -> String"},
+      {"name": "sort_strings", "signature": "(items: List[String]) -> List[String]"},
+      {"name": "split_once", "signature": "(text: String, delimiter: String) -> Option[(String, String)]"}
+    ],
+    "math": [
+      {"name": "abs", "signature": "(value: Num) -> Num"},
+      {"name": "min", "signature": "(a: Num, b: Num) -> Num"},
+      {"name": "max", "signature": "(a: Num, b: Num) -> Num"},
+      {"name": "clamp", "signature": "(value: Num, lo: Num, hi: Num) -> Num"},
+      {"name": "floor", "signature": "(value: Float) -> Int"},
+      {"name": "ceil", "signature": "(value: Float) -> Int"},
+      {"name": "round", "signature": "(value: Float) -> Int"},
+      {"name": "sqrt", "signature": "(value: Float) -> Float"},
+      {"name": "log", "signature": "(value: Float) -> Float"},
+      {"name": "sin", "signature": "(value: Float) -> Float"},
+      {"name": "cos", "signature": "(value: Float) -> Float"},
+      {"name": "pi", "signature": "() -> Float"},
+      {"name": "e", "signature": "() -> Float"},
+      {"name": "random_int", "signature": "(lo: Int, hi: Int) -> Int"},
+      {"name": "random_float", "signature": "() -> Float"},
+      {"name": "divide", "signature": "(a: Num, b: Num) -> Num"},
+      {"name": "range", "signature": "(start: Int, end: Int, step?: Int positional-only) -> List[Int]"}
+    ],
+    "parsing": [
+      {"name": "parse_int", "signature": "(text: String) -> Option[Int]"},
+      {"name": "parse_float", "signature": "(text: String) -> Option[Float]"},
+      {"name": "is_numeric_string", "signature": "(text: String) -> Bool"},
+      {"name": "format", "signature": "(template: String, values: List[String]) -> String"}
+    ],
+    "option_result": [
+      {"name": "is_some", "signature": "(option: Option[T]) -> Bool"},
+      {"name": "is_none", "signature": "(option: Option[T]) -> Bool"},
+      {"name": "unwrap", "signature": "(option: Option[T]) -> T"},
+      {"name": "unwrap_or", "signature": "(option: Option[T], default: T) -> T"},
+      {"name": "result_unwrap_or", "signature": "(result: Result[T, E], default: T) -> T"},
+      {"name": "result_is_ok", "signature": "(result: Result[T, E]) -> Bool"},
+      {"name": "result_is_err", "signature": "(result: Result[T, E]) -> Bool"},
+      {"name": "result_to_option", "signature": "(result: Result[T, E]) -> Option[T]"}
+    ],
+    "map": [
+      {"name": "map_insert", "signature": "(map: Map[K, V], key: K, value: V) -> Map[K, V]"},
+      {"name": "map_get", "signature": "(map: Map[K, V], key: K) -> Option[V]"},
+      {"name": "map_from_list", "signature": "(pairs: List[(K, V)]) -> Map[K, V]"},
+      {"name": "map_merge", "signature": "(map1: Map[K, V], map2: Map[K, V]) -> Map[K, V]"},
+      {"name": "map_entries", "signature": "(map: Map[K, V]) -> List[(K, V)]"},
+      {"name": "map_from_entries", "signature": "(entries: List[(K, V)]) -> Map[K, V]"}
+    ],
+    "array": [
+      {"name": "array_new", "signature": "(size: Int, default: T) -> Array[T]"},
+      {"name": "array_from_list", "signature": "(list: List[T]) -> Array[T]"},
+      {"name": "array_get", "signature": "(array: Array[T], index: Int) -> T"},
+      {"name": "array_set", "signature": "(array: Array[T], index: Int, value: T) -> Unit"},
+      {"name": "array_length", "signature": "(array: Array[T]) -> Int"},
+      {"name": "array_to_list", "signature": "(array: Array[T]) -> List[T]"},
+      {"name": "array_fill", "signature": "(array: Array[T], value: T) -> Unit"},
+      {"name": "array_copy", "signature": "(array: Array[T]) -> Array[T]"}
+    ],
+    "mutable_collections": [
+      {"name": "mutable_map_new", "signature": "() -> MutableMap[K, V]"},
+      {"name": "mutable_map_set", "signature": "(map: MutableMap[K, V], key: K, value: V) -> Unit"},
+      {"name": "mutable_map_get", "signature": "(map: MutableMap[K, V], key: K) -> Option[V]"},
+      {"name": "mutable_map_contains", "signature": "(map: MutableMap[K, V], key: K) -> Bool"},
+      {"name": "mutable_map_delete", "signature": "(map: MutableMap[K, V], key: K) -> Unit"},
+      {"name": "mutable_map_size", "signature": "(map: MutableMap[K, V]) -> Int"},
+      {"name": "mutable_map_keys", "signature": "(map: MutableMap[K, V]) -> List[K]"},
+      {"name": "vec_new", "signature": "() -> Vec[T]"},
+      {"name": "vec_push", "signature": "(vec: Vec[T], item: T) -> Unit"},
+      {"name": "vec_get", "signature": "(vec: Vec[T], index: Int) -> T"},
+      {"name": "vec_set", "signature": "(vec: Vec[T], index: Int, value: T) -> Unit"},
+      {"name": "vec_length", "signature": "(vec: Vec[T]) -> Int"},
+      {"name": "vec_pop", "signature": "(vec: Vec[T]) -> Option[T]"},
+      {"name": "vec_to_list", "signature": "(vec: Vec[T]) -> List[T]"},
+      {"name": "vec_from_list", "signature": "(list: List[T]) -> Vec[T]"},
+      {"name": "set_new", "signature": "() -> Set[T]"},
+      {"name": "set_from_list", "signature": "(list: List[T]) -> Set[T]"},
+      {"name": "set_add", "signature": "(set: Set[T], item: T) -> Unit"},
+      {"name": "set_remove", "signature": "(set: Set[T], item: T) -> Unit"},
+      {"name": "set_contains", "signature": "(set: Set[T], item: T) -> Bool"},
+      {"name": "set_size", "signature": "(set: Set[T]) -> Int"},
+      {"name": "set_to_list", "signature": "(set: Set[T]) -> List[T]"},
+      {"name": "set_union", "signature": "(a: Set[T], b: Set[T]) -> Set[T]"},
+      {"name": "set_intersection", "signature": "(a: Set[T], b: Set[T]) -> Set[T]"}
+    ],
+    "io": [
+      {"name": "print", "signature": "(value: T) -> Unit"}
+    ],
+    "graphics": [
+      {"name": "draw_rect", "signature": "(x: Int, y: Int, width: Int, height: Int, color: String) -> Unit"},
+      {"name": "draw_rect_outline", "signature": "(x: Int, y: Int, width: Int, height: Int, color: String) -> Unit"},
+      {"name": "draw_circle", "signature": "(x: Int, y: Int, radius: Int, color: String) -> Unit"},
+      {"name": "draw_line", "signature": "(x1: Int, y1: Int, x2: Int, y2: Int, color: String) -> Unit"},
+      {"name": "draw_text", "signature": "(text: String, x: Int, y: Int, size: Int, color: String) -> Unit"},
+      {"name": "clear_screen", "signature": "(color: String) -> Unit"},
+      {"name": "screen_width", "signature": "() -> Int"},
+      {"name": "screen_height", "signature": "() -> Int"}
+    ],
+    "input": [
+      {"name": "is_key_down", "signature": "(key: String) -> Bool"},
+      {"name": "is_key_pressed", "signature": "(key: String) -> Bool"},
+      {"name": "is_mouse_down", "signature": "() -> Bool"},
+      {"name": "is_mouse_clicked", "signature": "() -> Bool"},
+      {"name": "mouse_x", "signature": "() -> Int"},
+      {"name": "mouse_y", "signature": "() -> Int"},
+      {"name": "get_text_input", "signature": "() -> String"},
+      {"name": "clear_text_input", "signature": "() -> Unit"}
+    ],
+    "regex": [
+      {"name": "regex_match", "signature": "(pattern: String, text: String) -> Option[String]"},
+      {"name": "regex_find_all", "signature": "(pattern: String, text: String) -> List[String]"},
+      {"name": "regex_replace", "signature": "(pattern: String, replacement: String, text: String) -> String"}
+    ],
+    "serialization": [
+      {"name": "json_parse", "signature": "(text: String) -> Result[JsonValue, String]"},
+      {"name": "json_stringify", "signature": "(value: JsonValue) -> String"},
+      {"name": "json_stringify_pretty", "signature": "(value: JsonValue, indent: Int) -> String"},
+      {"name": "csv_parse", "signature": "(text: String) -> List[List[String]]"},
+      {"name": "csv_parse_with_headers", "signature": "(text: String) -> List[Map[String, String]]"},
+      {"name": "toml_parse", "signature": "(text: String) -> Result[JsonValue, String]"}
+    ],
+    "datetime": [
+      {"name": "clock_now", "signature": "() -> Int"},
+      {"name": "clock_format", "signature": "(timestamp: Float, fmt: String) -> String"},
+      {"name": "clock_elapsed", "signature": "(start: Float, end_time: Float) -> Float"},
+      {"name": "datetime_now", "signature": "() -> Int"},
+      {"name": "datetime_format", "signature": "(timestamp: Int, fmt: String) -> String"},
+      {"name": "datetime_parse", "signature": "(text: String, fmt: String) -> Option[Int]"},
+      {"name": "datetime_elapsed", "signature": "(start: Int, end_time: Int) -> Int"},
+      {"name": "clock_parse", "signature": "(text: String, fmt: String) -> Option[Float]"},
+      {"name": "sleep_ms", "signature": "(ms: Int) -> Unit"}
+    ],
+    "environment": [
+      {"name": "env_get", "signature": "(name: String) -> Option[String]"},
+      {"name": "env_get_or", "signature": "(name: String, default: String) -> String"}
+    ],
+    "path": [
+      {"name": "path_join", "signature": "(base: String, child: String) -> String"},
+      {"name": "path_parent", "signature": "(path: String) -> String"},
+      {"name": "path_filename", "signature": "(path: String) -> String"},
+      {"name": "path_extension", "signature": "(path: String) -> String"},
+      {"name": "path_is_absolute", "signature": "(path: String) -> Bool"}
+    ]
+  },
+
+  "standard_library_modules": [
+    "List", "String", "Math", "Option", "Result", "Map", "DateTime", "Path"
+  ],
+
+  "execution_targets": [
+    "browser", "node-cli", "python-cli", "python-hosted"
+  ],
+
+  "compilation_targets": ["python", "javascript"],
+
+  "async_await": {
+    "description": "Async functions return Async[T] and are defined with 'async func'. Use 'await' to resolve Async[T] values. 'await' is allowed inside 'async func' and inside 'main()'. Async functions are exempt from example clause requirements.",
+    "syntax": {
+      "definition": "async func name(params) -> ReturnType",
+      "usage": "let result: T = await async_expr"
+    }
+  },
+
+  "error_handling": {
+    "try_catch": {
+      "description": "try/catch blocks catch thrown values by type. 'catch e: String' catches runtime errors and 'throw \"string\"'. 'catch e: MyType' catches only 'throw MyType(...)' values.",
+      "syntax": "try\\n  body\\ncatch e: Type\\n  handler\\nend try"
+    },
+    "throw": {
+      "description": "Throws a value (string or user-defined type) that can be caught by a matching catch clause.",
+      "syntax": "throw expr"
+    },
+    "propagation": {
+      "description": "The '?' operator propagates None from Option[T] or Err from Result[T, E]. If the value is None or Err, the enclosing function immediately returns None or Err. Otherwise, the inner value is unwrapped.",
+      "syntax": "value?",
+      "applies_to": ["Option[T]", "Result[T, E]"]
+    }
+  },
+
+  "module_system": {
+    "description": "Modules are PascalCase .geno files. `run(source, modules={...})` resolves imports only from the provided in-memory module sources. File/project execution (`run_path`, `check_path`, and CLI commands) resolves modules from disk via project resolution and package metadata, then applies explicit module overlays for imported modules of the same name.",
+    "syntax": "import ModuleName [as Alias]",
+    "resolution_order": [
+      "Embedding API: imported modules come from the provided modules dict only",
+      "File/project execution: imports resolve from the filesystem and project dependency graph (including geno_modules/ packages)",
+      "run_path()/check_path() module overlays replace imported modules of the same name after disk resolution; the requested entrypoint source still comes from the path argument"
+    ],
+    "circular_imports": "Dependency graph construction rejects general import cycles; typechecking also rejects direct self-imports"
+  },
+
+  "app_lifecycle": {
+    "browser": {
+      "required_functions": ["init", "update", "render"],
+      "description": "Browser apps follow an init/update/render lifecycle compiled to JavaScript + HTML. 'init() -> State' returns initial state, 'update(state: State, dt: Float) -> State' is called each frame, 'render(state: State) -> Unit' draws to canvas."
+    },
+    "cli": {
+      "required_functions": ["main"],
+      "description": "CLI apps define a main function, compiled to Python or JavaScript"
+    },
+    "hosted": {
+      "endpoint": "/run",
+      "description": "HTTP server executing Geno source via POST requests"
+    }
+  },
+
+  "capabilities": {
+    "description": "Builtins in this capability map are gated behind named capabilities. Direct embedding and CLI execution leave gating disabled when capabilities are omitted; explicit capability sets restrict access. Hosted `/run` requests default omitted capabilities to the server's configured allowed set.",
+    "map": {
+      "print": ["print"],
+      "clock": ["datetime_now", "datetime_format", "datetime_parse", "datetime_elapsed", "clock_now", "clock_format", "clock_parse", "clock_elapsed", "sleep_ms"],
+      "random": ["math_random_int", "math_random_float", "random_int", "random_float"],
+      "env": ["env_get", "env_get_or", "cli_args"],
+      "fs": ["fs_read_text", "fs_write_text", "fs_list_dir", "fs_exists"],
+      "http": ["http_fetch", "http_post", "http_request"],
+      "regex": ["regex_match", "regex_find_all", "regex_replace"],
+      "process": ["exec", "exec_with_input", "spawn", "spawn_with_input"],
+      "stdin": ["stdin_read_all"],
+      "serve": ["http_listen", "http_route", "http_respond"]
+    },
+    "surfaces": {
+      "embedding_api": "RunConfig(capabilities=None) leaves capability gating disabled",
+      "cli": "Omitting --cap leaves capability gating disabled",
+      "hosted_server": "Omitting capabilities in /run requests defaults to the server's allowed capability set"
+    }
+  }
+}

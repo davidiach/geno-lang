@@ -1,0 +1,108 @@
+problem:
+  id: "APP-006"
+  name: "Log Summary"
+  difficulty: "hard"
+  domain: "strings"
+  description: |
+    Summarize a list of log lines. Every line starts with a level token
+    ("ERROR", "WARN", or "INFO") followed by a single space and a
+    non-empty message (the message may itself contain spaces).
+
+    Count the lines per level and capture the message of the first
+    ERROR line (the full text after the first space). Return exactly:
+
+    "errors=<E> warnings=<W> infos=<I> first_error=<message>"
+
+    where <message> is the first error's message, or "none" if there
+    were no ERROR lines.
+  signature:
+    function_name: "log_summary"
+    inputs:
+      - name: "lines"
+        type: "List[String]"
+    output:
+      name: "summary"
+      type: "String"
+  examples:
+    visible:
+      - input: [["INFO boot ok", "ERROR disk full", "WARN slow"]]
+        output: "errors=1 warnings=1 infos=1 first_error=disk full"
+        description: "Counts plus first error message"
+      - input: [["INFO a", "INFO b"]]
+        output: "errors=0 warnings=0 infos=2 first_error=none"
+        description: "No errors yields none"
+    hidden:
+      - input: [[]]
+        output: "errors=0 warnings=0 infos=0 first_error=none"
+        description: "Empty log"
+      - input: [["ERROR first issue", "ERROR second issue"]]
+        output: "errors=2 warnings=0 infos=0 first_error=first issue"
+        description: "Only the first error message is kept"
+      - input: [["WARN w1", "WARN w2", "WARN w3"]]
+        output: "errors=0 warnings=3 infos=0 first_error=none"
+        description: "Warning counting"
+      - input: [["ERROR out of memory at stage two"]]
+        output: "errors=1 warnings=0 infos=0 first_error=out of memory at stage two"
+        description: "Messages keep their internal spaces"
+      - input: [["INFO x", "WARN y", "ERROR z", "INFO q", "ERROR r"]]
+        output: "errors=2 warnings=1 infos=2 first_error=z"
+        description: "Mixed levels"
+  constraints:
+    - "Every line is '<LEVEL> <message>' with LEVEL one of ERROR, WARN, INFO"
+    - "Messages are non-empty and may contain spaces"
+    - "Return the exact output format with single spaces between fields"
+  canonical_solutions:
+    geno: |
+      func log_summary(lines: List[String]) -> String
+          example ["INFO a", "INFO b"] -> "errors=0 warnings=0 infos=2 first_error=none"
+          example [] -> "errors=0 warnings=0 infos=0 first_error=none"
+
+          var errors: Int = 0
+          var warnings: Int = 0
+          var infos: Int = 0
+          var first_error: String = "none"
+          var have_error: Bool = false
+          for line: String in lines do
+              let parts: List[String] = split(line, " ")
+              let level: String = parts[0]
+              if level == "ERROR" then
+                  errors = errors + 1
+                  if have_error == false then
+                      let rest: List[String] = slice(list: parts, start: 1, stop: length(parts))
+                      first_error = join(rest, " ")
+                      have_error = true
+                  end if
+              else if level == "WARN" then
+                  warnings = warnings + 1
+              else
+                  infos = infos + 1
+              end if
+          end for
+          return "errors=" + to_string(errors) + " warnings=" + to_string(warnings) + " infos=" + to_string(infos) + " first_error=" + first_error
+      end func log_summary
+    python: |
+      def log_summary(lines: list[str]) -> str:
+          errors = warnings = infos = 0
+          first_error = "none"
+          for line in lines:
+              level, _, message = line.partition(" ")
+              if level == "ERROR":
+                  errors += 1
+                  if first_error == "none" and errors == 1:
+                      first_error = message
+              elif level == "WARN":
+                  warnings += 1
+              else:
+                  infos += 1
+          return (
+              f"errors={errors} warnings={warnings} "
+              f"infos={infos} first_error={first_error}"
+          )
+  metadata:
+    tags: ["app-tier", "strings", "aggregation", "parsing"]
+    source: "Original (benchmark v2 app track)"
+    time_complexity: "O(n)"
+    space_complexity: "O(1)"
+    constructs_tested:
+      ["function", "for", "split", "slice", "join", "to_string",
+       "string-concat", "named-arguments"]

@@ -1,0 +1,36 @@
+# EXPECT: E503
+# Contract ensures clause abuse for information leakage: define
+# functions with postcondition (ensures) clauses that inspect
+# the return value's string representation, searching for
+# sandbox-internal patterns.  If the ensures clause itself throws,
+# test whether the error message leaks postcondition implementation
+# details.  The repeated ensures evaluation with to_string probing
+# should be step-counted.
+type Wrapper = Box(val: Int, tag: String)
+
+func compute(x: Int) -> Wrapper
+    requires x >= 0
+    ensures result.val >= 0
+    example 0 -> Box(0, "zero")
+    if x == 0 then
+        return Box(0, "zero")
+    end if
+    let tag: String = to_string(Box(x, "probe"))
+    return Box(x, tag)
+end func
+
+func chain_compute(n: Int) -> Int
+    example 0 -> 0
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let w: Wrapper = compute(i)
+        total = total + w.val + length(w.tag)
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return chain_compute(200000)
+end func

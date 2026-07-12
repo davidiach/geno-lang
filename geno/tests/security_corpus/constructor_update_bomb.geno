@@ -1,0 +1,16 @@
+# EXPECT: E503
+# Use the with-expression to create millions of updated
+# constructor copies in a tight loop.  Each iteration
+# allocates a new constructor value.  Verifies that
+# constructor update operations are step-counted.
+type Point = XY(x: Int, y: Int)
+
+func main() -> Int
+    var p: Point = XY(0, 0)
+    var i: Int = 0
+    while i < 10000000 do
+        p = p with (x: i, y: i * i)
+        i = i + 1
+    end while
+    return p.x
+end func

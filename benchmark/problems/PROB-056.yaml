@@ -1,0 +1,94 @@
+problem:
+  id: "PROB-056"
+  name: "Shape Area (ADT + Match)"
+  difficulty: "easy"
+  domain: "matching"
+  description: |
+    Write a function that computes the area of a shape. The shape is specified
+    by a kind string ("circle" or "rectangle"), a first dimension, and an
+    optional second dimension (ignored for circles).
+
+    Your solution must define an algebraic data type for shapes and use pattern
+    matching to compute the area.
+  signature:
+    function_name: "shape_area"
+    inputs:
+      - name: "kind"
+        type: "String"
+      - name: "dim1"
+        type: "Float"
+      - name: "dim2"
+        type: "Float"
+    output:
+      name: "result"
+      type: "Float"
+  examples:
+    visible:
+      - input: ["circle", 1.0, 0.0]
+        output: 3.141592653589793
+        description: "Unit circle area"
+      - input: ["rectangle", 3.0, 4.0]
+        output: 12.0
+        description: "3x4 rectangle"
+      - input: ["circle", 5.0, 0.0]
+        output: 78.53981633974483
+        description: "Circle with radius 5"
+    hidden:
+      - input: ["rectangle", 1.0, 1.0]
+        output: 1.0
+        description: "Unit square"
+      - input: ["circle", 0.0, 0.0]
+        output: 0.0
+        description: "Zero radius circle"
+      - input: ["rectangle", 10.0, 0.5]
+        output: 5.0
+        description: "Thin rectangle"
+      - input: ["rectangle", 0.0, 5.0]
+        output: 0.0
+        description: "Zero width rectangle"
+      - input: ["circle", 2.5, 999.0]
+        output: 19.634954084936208
+        description: "Circle ignores dim2"
+  constraints:
+    - "kind is either 'circle' or 'rectangle'"
+    - "Dimensions are non-negative"
+    - "Use pi = 3.141592653589793"
+  canonical_solutions:
+    geno: |
+      type Shape = Circle(radius: Float) | Rectangle(width: Float, height: Float)
+
+      func area(s: Shape) -> Float
+          example Circle(1.0) -> 3.141592653589793
+          example Rectangle(3.0, 4.0) -> 12.0
+
+          match s with
+              | Circle(r) ->
+                  return 3.141592653589793 * r * r
+              | Rectangle(w, h) ->
+                  return w * h
+          end match
+      end func area
+
+      func shape_area(kind: String, dim1: Float, dim2: Float) -> Float
+          example "circle", 1.0, 0.0 -> 3.141592653589793
+          example "rectangle", 3.0, 4.0 -> 12.0
+
+          if kind == "circle" then
+              return area(Circle(dim1))
+          else
+              return area(Rectangle(dim1, dim2))
+          end if
+      end func shape_area
+    python: |
+      def shape_area(kind: str, dim1: float, dim2: float) -> float:
+          pi = 3.141592653589793
+          if kind == "circle":
+              return pi * dim1 * dim1
+          else:
+              return dim1 * dim2
+  metadata:
+    tags: ["adt", "pattern-matching", "geometry"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["type", "match", "constructor", "field-destructuring", "function", "if-else", "named-arguments", "multi-function"]

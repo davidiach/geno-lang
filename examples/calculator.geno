@@ -1,0 +1,185 @@
+// Calculator — Stack-based expression evaluator with ADTs
+// =========================================================
+// Demonstrates: ADTs, pattern matching, Result/Option, fold, recursion
+
+type Op = OpAdd | OpSub | OpMul | OpNeg
+
+
+// Apply a binary operation to two operands
+func apply_binop(op: Op, a: Int, b: Int) -> Result[Int, String]
+    example (OpAdd, 3, 4) -> Ok(7)
+    example (OpSub, 10, 3) -> Ok(7)
+    example (OpMul, 5, 6) -> Ok(30)
+
+    match op with
+        | OpAdd -> return Ok(a + b)
+        | OpSub -> return Ok(a - b)
+        | OpMul -> return Ok(a * b)
+        | OpNeg -> return Err("neg is unary")
+    end match
+end func apply_binop
+
+
+// Apply a unary operation to one operand
+func apply_unary(op: Op, a: Int) -> Result[Int, String]
+    example (OpNeg, 5) -> Ok(-5)
+    example (OpAdd, 5) -> Err("add is binary")
+
+    match op with
+        | OpNeg -> return Ok(0 - a)
+        | OpAdd -> return Err("add is binary")
+        | OpSub -> return Err("sub is binary")
+        | OpMul -> return Err("mul is binary")
+    end match
+end func apply_unary
+
+
+// Get a human-readable name for an operation
+func op_name(op: Op) -> String
+    example OpAdd -> "+"
+    example OpMul -> "*"
+
+    match op with
+        | OpAdd -> return "+"
+        | OpSub -> return "-"
+        | OpMul -> return "*"
+        | OpNeg -> return "neg"
+    end match
+end func op_name
+
+
+// Check if an operation is binary (takes two operands)
+func is_binary(op: Op) -> Bool
+    example OpAdd -> true
+    example OpNeg -> false
+
+    match op with
+        | OpAdd -> return true
+        | OpSub -> return true
+        | OpMul -> return true
+        | OpNeg -> return false
+    end match
+end func is_binary
+
+
+// Evaluate a list of values by applying a binary op across all of them (left fold)
+func eval_chain(op: Op, values: List[Int]) -> Result[Int, String]
+    example (OpAdd, [1, 2, 3]) -> Ok(6)
+    example (OpMul, [2, 3, 4]) -> Ok(24)
+    example (OpAdd, []) -> Err("empty list")
+
+    if length(values) == 0 then
+        return Err("empty list")
+    end if
+
+    var result: Int = head(values)
+    let rest: List[Int] = tail(values)
+    var i: Int = 0
+
+    while i < length(rest) do
+        let r: Result[Int, String] = apply_binop(op: op, a: result, b: rest[i])
+        match r with
+            | Ok(v) -> result = v
+            | Err(e) -> return Err(e)
+        end match
+        i = i + 1
+    end while
+
+    return Ok(result)
+end func eval_chain
+
+
+// Compute factorial recursively
+func factorial(n: Int) -> Int
+    requires n >= 0
+    ensures result >= 1
+    example 0 -> 1
+    example 1 -> 1
+    example 5 -> 120
+
+    if n <= 1 then
+        return 1
+    end if
+    return n * factorial(n - 1)
+end func factorial
+
+
+// Compute power (base^exp) using repeated multiplication
+func power(base: Int, exp: Int) -> Int
+    requires exp >= 0
+    example (2, 0) -> 1
+    example (2, 10) -> 1024
+    example (3, 4) -> 81
+
+    if exp == 0 then
+        return 1
+    end if
+
+    var result: Int = 1
+    var i: Int = 0
+    while i < exp do
+        result = result * base
+        i = i + 1
+    end while
+    return result
+end func power
+
+
+// Format the result of a calculation as a displayable string
+func format_calc(label: String, result: Result[Int, String]) -> String
+    example ("test", Ok(42)) -> "test = 42"
+    example ("test", Err("bad")) -> "test = ERROR: bad"
+
+    match result with
+        | Ok(v) -> return label + " = " + to_string(v)
+        | Err(e) -> return label + " = ERROR: " + e
+    end match
+end func format_calc
+
+
+func main() -> Int
+    print("=== Calculator ===")
+
+    // Basic operations
+    let sum: Result[Int, String] = apply_binop(op: OpAdd, a: 15, b: 27)
+    print(format_calc("15 + 27", sum))
+
+    let diff: Result[Int, String] = apply_binop(op: OpSub, a: 100, b: 37)
+    print(format_calc("100 - 37", diff))
+
+    let prod: Result[Int, String] = apply_binop(op: OpMul, a: 12, b: 8)
+    print(format_calc("12 * 8", prod))
+
+    let neg: Result[Int, String] = apply_unary(OpNeg, 42)
+    print(format_calc("neg(42)", neg))
+
+    // Chain operations: sum and product of a list
+    print("=== Chain Operations ===")
+    let nums: List[Int] = [10, 20, 30, 40]
+    let chain_sum: Result[Int, String] = eval_chain(OpAdd, nums)
+    print(format_calc("10 + 20 + 30 + 40", chain_sum))
+
+    let chain_prod: Result[Int, String] = eval_chain(OpMul, [2, 3, 5, 7])
+    print(format_calc("2 * 3 * 5 * 7", chain_prod))
+
+    // Error case: empty list
+    let empty_result: Result[Int, String] = eval_chain(OpAdd, [])
+    print(format_calc("sum([])", empty_result))
+
+    // Factorial and power
+    print("=== Advanced ===")
+    print(format(template: "5! = {}", values: [to_string(factorial(5))]))
+    print(format(template: "7! = {}", values: [to_string(factorial(7))]))
+    print(format(template: "2^10 = {}", values: [to_string(power(2, 10))]))
+    print(format(template: "3^4 = {}", values: [to_string(power(3, 4))]))
+
+    // Sum of factorials 1! + 2! + 3! + 4! + 5!
+    let facts: List[Int] = map(
+    [1, 2, 3, 4, 5],
+    fn(n: Int) -> factorial(n)
+    )
+    let fact_sum: Int = fold(list: facts, initial: 0, reducer: fn(acc: Int, x: Int) -> acc + x)
+    print(format(template: "1! + 2! + 3! + 4! + 5! = {}", values: [to_string(fact_sum)]))
+
+    return 0
+end func main

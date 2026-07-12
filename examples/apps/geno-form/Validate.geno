@@ -1,0 +1,86 @@
+// Validate.geno — Validation from requires-style constraints
+// ============================================================
+
+import Types
+
+// Validate a single field value against its definition.
+func validate_field(field: FieldDef, value: FieldValue) -> List[FieldError]
+    example (FieldDef("name", "Name", TextInput, "", true, 0, 0, 0, 0), StringVal("")) -> [FieldError("name", "Name is required")]
+    example (FieldDef("x", "X", TextInput, "", false, 0, 0, 0, 0), StringVal("")) -> []
+    var errors: List[FieldError] = []
+
+    // Required check
+    let is_empty: Bool = match value with
+    | StringVal(v) -> length(v) == 0
+    | _ -> false
+end match
+
+if field.required and is_empty then
+    errors = append(errors, FieldError(field.name, field.label + " is required"))
+end if
+
+// Min length check (for strings)
+if field.min_length > 0 then
+    let len: Int = match value with
+    | StringVal(v) -> length(v)
+    | _ -> 0
+end match
+if len > 0 and len < field.min_length then
+    errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_length) + " characters"))
+end if
+end if
+
+// Max length check
+if field.max_length > 0 then
+    let len: Int = match value with
+    | StringVal(v) -> length(v)
+    | _ -> 0
+end match
+if len > field.max_length then
+    errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_length) + " characters"))
+end if
+end if
+
+// Number range checks
+match value with
+    | IntVal(n) ->
+    if field.min_value > 0 and n < field.min_value then
+        errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_value)))
+    end if
+    if field.max_value > 0 and n > field.max_value then
+        errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_value)))
+    end if
+    | _ -> errors
+end match
+
+return errors
+end func
+
+// Validate all fields in a form.
+func validate_all(fields: List[FieldDef], values: List[FieldValue]) -> List[FieldError]
+    example ([], []) -> []
+    var all_errors: List[FieldError] = []
+    for i: Int in range(0, length(fields)) do
+        let errs: List[FieldError] = validate_field(field: fields[i], value: values[i])
+        all_errors = concat(all_errors, errs)
+    end for
+    return all_errors
+end func
+
+// Check if a field has errors.
+func has_error(errors: List[FieldError], field_name: String) -> Bool
+    example ([FieldError("x", "bad")], "x") -> true
+    example ([FieldError("x", "bad")], "y") -> false
+    return list_any(errors, fn(e: FieldError) -> e.field_name == field_name)
+end func
+
+// Get error message for a field.
+func get_error(errors: List[FieldError], field_name: String) -> String
+    example ([FieldError("x", "bad")], "x") -> "bad"
+    example ([], "x") -> ""
+    let found: Option[FieldError] = list_find(errors, fn(e: FieldError) -> e.field_name == field_name)
+    return match found with
+    | Some(e) -> e.message
+    | None -> ""
+end match
+end func

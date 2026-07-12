@@ -1,0 +1,75 @@
+problem:
+  id: "PROB-033"
+  name: "Count Digits"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that counts the number of digits in a non-negative integer.
+  signature:
+    function_name: "count_digits"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: 12345
+        output: 5
+        description: "Five digits"
+      - input: 0
+        output: 1
+        description: "Zero has one digit"
+    hidden:
+      - input: 1
+        output: 1
+        description: "Single digit"
+      - input: 99
+        output: 2
+        description: "Two digits"
+      - input: 100
+        output: 3
+        description: "Three digits"
+      - input: 999999
+        output: 6
+        description: "Six digits"
+  constraints:
+    - "n >= 0"
+    - "0 has 1 digit"
+  canonical_solutions:
+    geno: |
+      func count_digits(n: Int) -> Int
+          requires n >= 0
+          example 12345 -> 5
+          example 0 -> 1
+
+          if n == 0 then
+              return 1
+          end if
+
+          var count: Int = 0
+          var current: Int = n
+
+          while current > 0 do
+              count = count + 1
+              current = current / 10
+          end while
+
+          return count
+      end func count_digits
+    python: |
+      def count_digits(n: int) -> int:
+          if n == 0:
+              return 1
+          count = 0
+          while n > 0:
+              count += 1
+              n //= 10
+          return count
+  metadata:
+    tags: ["math", "digit-manipulation"]
+    source: "Classic"
+    time_complexity: "O(log n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "if", "division"]

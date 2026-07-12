@@ -1,0 +1,28 @@
+# EXPECT: E503
+# Combine map, match, and fold in a tight loop.  Each
+# iteration maps over a list (invoking match per element),
+# then folds the results.  Tests that step counting
+# properly accumulates across map callbacks containing
+# match expressions.
+type Color = Red | Green | Blue
+
+func color_value(c: Color) -> Int
+    example Red -> 0
+    match c with
+    | Red -> return 0
+    | Green -> return 1
+    | Blue -> return 2
+    end match
+end func
+
+func main() -> Int
+    let colors: List[Color] = [Red, Green, Blue]
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        let vals: List[Int] = map(colors, fn(c: Color) -> color_value(c))
+        total = total + fold(list: vals, initial: 0, reducer: fn(a: Int, b: Int) -> a + b)
+        i = i + 1
+    end while
+    return total
+end func

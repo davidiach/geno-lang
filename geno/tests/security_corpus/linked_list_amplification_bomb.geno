@@ -1,0 +1,23 @@
+# EXPECT: E499
+# Build a linked list where each node doubles the data
+# payload from the previous node via concat.  Start near
+# a lowered test cap so the oversized concat is reached
+# deterministically without spending time on large allocation.
+# Tests that collection size limits apply inside recursive
+# constructor arguments.
+type Chain = Link(data: List[Int], next: Chain) | End
+
+func build_chain(n: Int, data: List[Int]) -> Chain
+    example 0, [] -> End
+    if n <= 0 then
+        return End
+    end if
+    let bigger: List[Int] = concat(data, data)
+    return Link(bigger, build_chain(n - 1, bigger))
+end func
+
+func main() -> Int
+    let seed: List[Int] = range(0, 6)
+    let c: Chain = build_chain(1, seed)
+    return 0
+end func

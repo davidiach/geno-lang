@@ -1,0 +1,17 @@
+# EXPECT: E503
+# sort_by calls the key function O(n log n) times.  When
+# the key function is itself recursive, total work is
+# O(n * k * log n) where k is the recursion depth per call.
+# Tests that step counting spans sort_by's key callbacks.
+func add_up_to(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    return n + add_up_to(n - 1)
+end func
+
+func main() -> List[Int]
+    let lst: List[Int] = range(0, 200)
+    return sort_by(list: lst, key_fn: fn(x: Int) -> add_up_to(x))
+end func

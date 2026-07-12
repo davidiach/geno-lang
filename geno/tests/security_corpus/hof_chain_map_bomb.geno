@@ -1,0 +1,14 @@
+# EXPECT: E503
+# Repeatedly map over a list with a lambda, amplifying step
+# cost via higher-order function call overhead.  Each
+# iteration invokes the lambda N times (once per element),
+# so total work is O(iterations * list_length).
+func main() -> Int
+    var lst: List[Int] = range(0, 100)
+    var i: Int = 0
+    while i < 100 do
+        lst = map(lst, fn(x: Int) -> x + 1)
+        i = i + 1
+    end while
+    return fold(list: lst, initial: 0, reducer: fn(acc: Int, x: Int) -> acc + x)
+end func

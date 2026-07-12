@@ -1,0 +1,72 @@
+problem:
+  id: "PROB-016"
+  name: "GCD"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that computes the greatest common divisor (GCD) of two positive integers
+    using the Euclidean algorithm.
+  signature:
+    function_name: "gcd"
+    inputs:
+      - name: "a"
+        type: "Int"
+      - name: "b"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: [48, 18]
+        output: 6
+        description: "GCD of 48 and 18"
+      - input: [17, 5]
+        output: 1
+        description: "Coprime numbers"
+    hidden:
+      - input: [12, 12]
+        output: 12
+        description: "Same numbers"
+      - input: [1, 100]
+        output: 1
+        description: "GCD with 1"
+      - input: [100, 25]
+        output: 25
+        description: "One divides other"
+      - input: [36, 60]
+        output: 12
+        description: "Common factors"
+  constraints:
+    - "a > 0 and b > 0"
+    - "Use Euclidean algorithm"
+  canonical_solutions:
+    geno: |
+      func gcd(a: Int, b: Int) -> Int
+          requires a > 0
+          requires b > 0
+          example 48, 18 -> 6
+          example 17, 5 -> 1
+
+          var x: Int = a
+          var y: Int = b
+
+          while y != 0 do
+              let temp: Int = y
+              y = x % y
+              x = temp
+          end while
+
+          return x
+      end func gcd
+    python: |
+      def gcd(a: int, b: int) -> int:
+          while b != 0:
+              a, b = b, a % b
+          return a
+  metadata:
+    tags: ["math", "euclidean"]
+    source: "Classic"
+    time_complexity: "O(log(min(a,b)))"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "modulo", "variable"]

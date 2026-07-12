@@ -1,0 +1,30 @@
+func join(base: String, child: String) -> String
+    example "/home", "file.txt" -> "/home/file.txt"
+    example "/home/", "file.txt" -> "/home/file.txt"
+    return path_join(base, child)
+end func
+
+func parent(path: String) -> String
+    example "/home/user/file.txt" -> "/home/user"
+    example "/home" -> "/"
+    return path_parent(path)
+end func
+
+func filename(path: String) -> String
+    example "/home/user/file.txt" -> "file.txt"
+    example "readme.md" -> "readme.md"
+    return path_filename(path)
+end func
+
+func extension(path: String) -> String
+    example "/home/user/file.txt" -> ".txt"
+    example "archive.tar.gz" -> ".gz"
+    example "Makefile" -> ""
+    return path_extension(path)
+end func
+
+func is_absolute(path: String) -> Bool
+    example "/home/user" -> true
+    example "relative/path" -> false
+    return path_is_absolute(path)
+end func

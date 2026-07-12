@@ -1,0 +1,17 @@
+# EXPECT: E503
+# Rapidly construct ADT values with multiple fields in a
+# tight loop.  Each iteration creates a new constructor
+# value with three computed fields.  Unlike the simpler
+# type_construction_bomb (single field), this tests that
+# multi-field constructor allocation is step-counted.
+type Point = Pt(x: Int, y: Int, z: Int)
+
+func main() -> Int
+    var p: Point = Pt(0, 0, 0)
+    var i: Int = 0
+    while i < 1000000 do
+        p = Pt(i, i + 1, i + 2)
+        i = i + 1
+    end while
+    return p.x
+end func

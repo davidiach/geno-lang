@@ -1,0 +1,77 @@
+problem:
+  id: "PROB-014"
+  name: "Is Palindrome Number"
+  difficulty: "easy"
+  domain: "math"
+  description: |
+    Write a function that checks if a non-negative integer is a palindrome.
+    A palindrome number reads the same backward as forward.
+  signature:
+    function_name: "is_palindrome_num"
+    inputs:
+      - name: "n"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Bool"
+  examples:
+    visible:
+      - input: 121
+        output: true
+        description: "121 is a palindrome"
+      - input: 123
+        output: false
+        description: "123 is not a palindrome"
+    hidden:
+      - input: 0
+        output: true
+        description: "Single digit"
+      - input: 1
+        output: true
+        description: "Single digit"
+      - input: 12321
+        output: true
+        description: "5-digit palindrome"
+      - input: 10
+        output: false
+        description: "Ends with 0"
+      - input: 1001
+        output: true
+        description: "Palindrome with zeros"
+  constraints:
+    - "n >= 0"
+  canonical_solutions:
+    geno: |
+      func is_palindrome_num(n: Int) -> Bool
+          requires n >= 0
+          example 121 -> true
+          example 123 -> false
+
+          var original: Int = n
+          var reversed: Int = 0
+          var current: Int = n
+
+          while current > 0 do
+              let digit: Int = current % 10
+              reversed = reversed * 10 + digit
+              current = current / 10
+          end while
+
+          return original == reversed
+      end func is_palindrome_num
+    python: |
+      def is_palindrome_num(n: int) -> bool:
+          original = n
+          reversed_num = 0
+          current = n
+          while current > 0:
+              digit = current % 10
+              reversed_num = reversed_num * 10 + digit
+              current = current // 10
+          return original == reversed_num
+  metadata:
+    tags: ["math", "palindrome"]
+    source: "LeetCode #9"
+    time_complexity: "O(log n)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "while", "modulo", "comparison"]

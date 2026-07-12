@@ -1,0 +1,22 @@
+# EXPECT: E502
+# Use higher-order functions and closures to create
+# indirect recursion that might evade the call-depth
+# tracker.  The lambda captures the function reference
+# and calls it, adding an extra level of indirection.
+func apply(f: (Int) -> Int, x: Int) -> Int
+    example fn(n: Int) -> n, 0 -> 0
+    return f(x)
+end func
+
+func countdown(n: Int) -> Int
+    example 0 -> 0
+    if n <= 0 then
+        return 0
+    end if
+    let step: (Int) -> Int = fn(x: Int) -> countdown(x)
+    return apply(step, n - 1)
+end func
+
+func main() -> Int
+    return countdown(100000)
+end func

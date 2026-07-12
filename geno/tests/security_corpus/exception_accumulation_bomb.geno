@@ -1,0 +1,19 @@
+# EXPECT: E503
+# Rapidly throw and catch exceptions in a tight loop,
+# accumulating the caught message strings into a growing
+# list.  Each iteration does: f-string interpolation,
+# throw, catch, and list append.  Tests that step counting
+# covers the full throw/catch/accumulate path.
+func main() -> Int
+    var messages: List[String] = []
+    var i: Int = 0
+    while i < 1000000 do
+        try
+            throw f"error-{to_string(i)}"
+        catch e: String
+            messages = append(messages, e)
+        end try
+        i = i + 1
+    end while
+    return length(messages)
+end func

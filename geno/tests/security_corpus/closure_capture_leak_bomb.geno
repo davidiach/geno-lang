@@ -1,0 +1,27 @@
+# EXPECT: E503
+# Closure variable capture to leak sandbox internals: build a
+# chain of closures where each captures the previous closure and
+# a counter value.  The inner closure invokes the outer, creating
+# a linked list of captured environments.  Each call to the chain
+# triggers n closure invocations.  Running in a loop creates
+# O(n * chain_depth) total calls that should be step-counted.
+@untested("returns closure — cannot compare in example clause")
+func build_chain(depth: Int) -> (Int) -> Int
+    if depth <= 0 then
+        return fn(x: Int) -> x
+    end if
+    let inner: (Int) -> Int = build_chain(depth - 1)
+    let d: Int = depth
+    return fn(x: Int) -> inner(x + d)
+end func
+
+func main() -> Int
+    let chain: (Int) -> Int = build_chain(400)
+    var total: Int = 0
+    var i: Int = 0
+    while i < 10000 do
+        total = total + chain(i)
+        i = i + 1
+    end while
+    return total
+end func

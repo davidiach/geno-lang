@@ -1,0 +1,6 @@
+# EXPECT: E413
+# http_fetch with "http" capability but no host callback should fail.
+# (Run with capabilities={"http"} but no host_callbacks.)
+func main() -> String
+    return http_fetch(url: "https://example.com")
+end func

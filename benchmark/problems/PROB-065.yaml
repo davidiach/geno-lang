@@ -1,0 +1,92 @@
+problem:
+  id: "PROB-065"
+  name: "Safe Division Option Chain"
+  difficulty: "medium"
+  domain: "matching"
+  description: |
+    Write a function that performs two sequential safe divisions:
+    first a / b, then the result / c. If any division would be by zero,
+    return None. Otherwise return Some with the final result.
+
+    Use Option type and pattern matching to propagate None through the chain.
+  signature:
+    function_name: "divide_twice"
+    inputs:
+      - name: "a"
+        type: "Int"
+      - name: "b"
+        type: "Int"
+      - name: "c"
+        type: "Int"
+    output:
+      name: "result"
+      type: "Option[Int]"
+  examples:
+    visible:
+      - input: [100, 5, 2]
+        output: {Some: 10}
+        description: "100 / 5 / 2 = 10"
+      - input: [100, 0, 5]
+        output: "None"
+        description: "First division by zero"
+      - input: [100, 5, 0]
+        output: "None"
+        description: "Second division by zero"
+    hidden:
+      - input: [0, 5, 2]
+        output: {Some: 0}
+        description: "Zero dividend"
+      - input: [7, 2, 1]
+        output: {Some: 3}
+        description: "Integer division truncation"
+      - input: [1000, 10, 10]
+        output: {Some: 10}
+        description: "Clean divisions"
+      - input: [0, 0, 0]
+        output: "None"
+        description: "All zeros"
+      - input: [-20, 4, -1]
+        output: {Some: 5}
+        description: "Negative numbers"
+  constraints:
+    - "Use integer division"
+    - "Return None for any division by zero"
+    - "Use pattern matching on Option to propagate None"
+  canonical_solutions:
+    geno: |
+      func safe_div(a: Int, b: Int) -> Option[Int]
+          example 10, 2 -> Some(5)
+          example 10, 0 -> None
+
+          if b == 0 then
+              return None
+          else
+              return Some(a / b)
+          end if
+      end func safe_div
+
+      func divide_twice(a: Int, b: Int, c: Int) -> Option[Int]
+          example 100, 5, 2 -> Some(10)
+          example 100, 0, 5 -> None
+
+          let first: Option[Int] = safe_div(a, b)
+
+          match first with
+              | None -> return None
+              | Some(v) -> return safe_div(v, c)
+          end match
+      end func divide_twice
+    python: |
+      def divide_twice(a: int, b: int, c: int) -> int:
+          if b == 0:
+              return None
+          mid = a // b
+          if c == 0:
+              return None
+          return mid // c
+  metadata:
+    tags: ["option", "chaining", "pattern-matching", "safety"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "option", "some-none", "match", "if-else", "multi-function", "named-arguments"]

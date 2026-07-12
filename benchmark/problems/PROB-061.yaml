@@ -1,0 +1,88 @@
+problem:
+  id: "PROB-061"
+  name: "Parse CSV Integers"
+  difficulty: "medium"
+  domain: "strings"
+  description: |
+    Write a function that parses a comma-separated string of integers and
+    returns a list of the successfully parsed values. Non-numeric tokens
+    should be silently skipped. Whitespace around tokens should be trimmed.
+
+    For example, "1, 2, abc, 3" returns [1, 2, 3].
+  signature:
+    function_name: "parse_csv_ints"
+    inputs:
+      - name: "row"
+        type: "String"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: "1, 2, 3"
+        output: [1, 2, 3]
+        description: "Simple CSV with spaces"
+      - input: "1, abc, 3"
+        output: [1, 3]
+        description: "Skip non-numeric"
+      - input: ""
+        output: []
+        description: "Empty string"
+    hidden:
+      - input: "42"
+        output: [42]
+        description: "Single number"
+      - input: "hello, world"
+        output: []
+        description: "All non-numeric"
+      - input: " 10 , 20 , 30 "
+        output: [10, 20, 30]
+        description: "Extra whitespace"
+      - input: "-5, 0, 5"
+        output: [-5, 0, 5]
+        description: "Negative numbers"
+      - input: "1,,2"
+        output: [1, 2]
+        description: "Empty token between commas"
+  constraints:
+    - "Split on commas"
+    - "Trim whitespace from each token"
+    - "Skip tokens that cannot be parsed as integers"
+  canonical_solutions:
+    geno: |
+      func parse_csv_ints(row: String) -> List[Int]
+          example "1, 2, 3" -> [1, 2, 3]
+          example "1, abc, 3" -> [1, 3]
+
+          let tokens: List[String] = split(row, ",")
+          var result: List[Int] = []
+          var i: Int = 0
+
+          while i < length(tokens) do
+              let trimmed: String = trim(tokens[i])
+              let parsed: Option[Int] = parse_int(trimmed)
+              match parsed with
+                  | Some(n) -> result = append(result, n)
+                  | None -> let skip: Int = 0
+              end match
+              i = i + 1
+          end while
+
+          return result
+      end func parse_csv_ints
+    python: |
+      def parse_csv_ints(row: str) -> list[int]:
+          result = []
+          for token in row.split(","):
+              stripped = token.strip()
+              try:
+                  result.append(int(stripped))
+              except ValueError:
+                  pass
+          return result
+  metadata:
+    tags: ["parsing", "csv", "string-processing", "option"]
+    source: "Original"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "split", "trim", "parse_int", "match", "option", "some-none", "while", "append"]

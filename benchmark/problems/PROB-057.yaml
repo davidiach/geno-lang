@@ -1,0 +1,68 @@
+problem:
+  id: "PROB-057"
+  name: "Safe List Head"
+  difficulty: "easy"
+  domain: "arrays"
+  description: |
+    Write a function that safely returns the first element of a list.
+    Return Some(first_element) if the list is non-empty, or None if the list
+    is empty. Do not use the head builtin (which throws on empty lists).
+  signature:
+    function_name: "safe_head"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "Option[Int]"
+  examples:
+    visible:
+      - input: [[3, 1, 4]]
+        output: {Some: 3}
+        description: "Non-empty list returns Some"
+      - input: [[]]
+        output: "None"
+        description: "Empty list returns None"
+      - input: [[42]]
+        output: {Some: 42}
+        description: "Single element list"
+    hidden:
+      - input: [[-5, 10, 20]]
+        output: {Some: -5}
+        description: "Negative first element"
+      - input: [[0]]
+        output: {Some: 0}
+        description: "Zero element"
+      - input: [[100, 200, 300, 400, 500]]
+        output: {Some: 100}
+        description: "Longer list"
+      - input: [[1, 1, 1]]
+        output: {Some: 1}
+        description: "Duplicate elements"
+  constraints:
+    - "Do not use the head builtin"
+    - "Return Option[Int]"
+  canonical_solutions:
+    geno: |
+      func safe_head(nums: List[Int]) -> Option[Int]
+          example [3, 1, 4] -> Some(3)
+          example [] -> None
+
+          if length(nums) == 0 then
+              return None
+          else
+              return Some(nums[0])
+          end if
+      end func safe_head
+    python: |
+      from typing import Optional
+      def safe_head(nums: list[int]) -> Optional[int]:
+          if len(nums) == 0:
+              return None
+          return nums[0]
+  metadata:
+    tags: ["option", "safety", "list"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "option", "some-none", "if-else", "return"]

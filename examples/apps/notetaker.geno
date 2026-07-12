@@ -1,0 +1,160 @@
+// Notetaker — Simple note-taking app
+// =====================================
+// Demonstrates: text input, mouse input, format, arrays, app mode
+
+type State = State(
+notes: Array[String],
+note_count: Int,
+max_notes: Int,
+selected: Int
+)
+
+func btn_x() -> Int
+    return 50
+end func btn_x
+
+func list_y() -> Int
+    return 120
+end func list_y
+
+func note_height() -> Int
+    return 35
+end func note_height
+
+func init() -> State
+    let notes: Array[String] = array_new(size: 50, default: "")
+    return State(notes, 0, 50, 0 - 1)
+end func init
+
+func update(state: State, dt: Float) -> State
+    let notes: Array[String] = state.notes
+    var count: Int = state.note_count
+    var selected: Int = state.selected
+
+    if is_mouse_clicked() then
+        let mx: Int = mouse_x()
+        let my: Int = mouse_y()
+
+        // "Add Note" button
+        if mx >= btn_x() then
+            if mx <= btn_x() + 150 then
+                if my >= 50 then
+                    if my <= 85 then
+                        let text: String = get_text_input()
+                        if text != "" then
+                            if count < state.max_notes then
+                                array_set(array: notes, index: count, value: text)
+                                count = count + 1
+                                clear_text_input()
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+        end if
+
+        // "Delete" button
+        if mx >= 220 then
+            if mx <= 370 then
+                if my >= 50 then
+                    if my <= 85 then
+                        if selected >= 0 then
+                            if selected < count then
+                                var i: Int = selected
+                                while i < count - 1 do
+                                    let next_note: String = array_get(array: notes, index: i + 1)
+                                    array_set(array: notes, index: i, value: next_note)
+                                    i = i + 1
+                                end while
+                                array_set(array: notes, index: count - 1, value: "")
+                                count = count - 1
+                                selected = 0 - 1
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+        end if
+
+        // "Clear Input" button
+        if mx >= 390 then
+            if mx <= 540 then
+                if my >= 50 then
+                    if my <= 85 then
+                        clear_text_input()
+                    end if
+                end if
+            end if
+        end if
+
+        // Click on note to select
+        if mx >= btn_x() then
+            if mx <= 700 then
+                if my >= list_y() then
+                    let idx: Int = floor(int_to_float(my - list_y()) / int_to_float(note_height()))
+                    if idx >= 0 then
+                        if idx < count then
+                            selected = idx
+                        end if
+                    end if
+                end if
+            end if
+        end if
+    end if
+
+    return State(notes, count, state.max_notes, selected)
+end func update
+
+func render(state: State) -> Unit
+    clear_screen("#1e1e2e")
+
+    // Title
+    draw_text(text: "Notetaker", x: 50, y: 15, size: 24, color: "#CDD6F4")
+
+    // Current text input display
+    let input_text: String = get_text_input()
+    draw_rect(x: 560, y: 50, width: 200, height: 35, color: "#313244")
+    if input_text == "" then
+        draw_text(text: "Type to add...", x: 570, y: 58, size: 14, color: "#585B70")
+    else
+        draw_text(text: input_text, x: 570, y: 58, size: 14, color: "#CDD6F4")
+    end if
+
+    // Buttons
+    draw_rect(x: btn_x(), y: 50, width: 150, height: 35, color: "#89B4FA")
+    draw_text(text: "Add Note", x: btn_x() + 30, y: 58, size: 16, color: "#1E1E2E")
+
+    var del_color: String = "#45475A"
+    if state.selected >= 0 then
+        del_color = "#F38BA8"
+    end if
+    draw_rect(x: 220, y: 50, width: 150, height: 35, color: del_color)
+    draw_text(text: "Delete", x: 260, y: 58, size: 16, color: "#1E1E2E")
+
+    draw_rect(x: 390, y: 50, width: 150, height: 35, color: "#A6E3A1")
+    draw_text(text: "Clear Input", x: 410, y: 58, size: 16, color: "#1E1E2E")
+
+    // Note list header
+    draw_text(text: format("Notes ({})", [to_string(state.note_count)]), x: btn_x(), y: 102, size: 16, color: "#BAC2DE")
+
+    // Notes
+    var i: Int = 0
+    while i < state.note_count do
+        let ny: Int = list_y() + i * note_height()
+
+        if i == state.selected then
+            draw_rect(x: btn_x(), y: ny, width: 650, height: note_height() - 3, color: "#45475A")
+        else
+            draw_rect(x: btn_x(), y: ny, width: 650, height: note_height() - 3, color: "#313244")
+        end if
+
+        let note_text: String = array_get(array: state.notes, index: i)
+        let label: String = format("{}. {}", [to_string(i + 1), note_text])
+        draw_text(text: label, x: btn_x() + 10, y: ny + 8, size: 14, color: "#CDD6F4")
+        i = i + 1
+    end while
+
+    if state.note_count == 0 then
+        draw_text(text: "No notes yet. Type something and click 'Add Note'.", x: btn_x() + 10, y: list_y() + 15, size: 14, color: "#585B70")
+    end if
+end func render

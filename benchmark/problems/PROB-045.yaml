@@ -1,0 +1,95 @@
+problem:
+  id: "PROB-045"
+  name: "Product Except Self"
+  difficulty: "hard"
+  domain: "arrays"
+  description: |
+    Given an integer array nums, return an array where each element at index i
+    is the product of all elements except nums[i]. Do not use division.
+  signature:
+    function_name: "product_except_self"
+    inputs:
+      - name: "nums"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 2, 3, 4]]
+        output: [24, 12, 8, 6]
+        description: "Standard case"
+      - input: [[-1, 1, 0, -3, 3]]
+        output: [0, 0, 9, 0, 0]
+        description: "Contains zero"
+    hidden:
+      - input: [[2, 3]]
+        output: [3, 2]
+        description: "Two elements"
+      - input: [[1, 1, 1]]
+        output: [1, 1, 1]
+        description: "All ones"
+      - input: [[0, 0]]
+        output: [0, 0]
+        description: "Two zeros"
+      - input: [[5]]
+        output: [1]
+        description: "Single element"
+  constraints:
+    - "Do not use division"
+    - "Array has at least one element"
+  canonical_solutions:
+    geno: |
+      func product_except_self(nums: List[Int]) -> List[Int]
+          example [1, 2, 3, 4] -> [24, 12, 8, 6]
+          example [-1, 1, 0, -3, 3] -> [0, 0, 9, 0, 0]
+
+          let n: Int = length(nums)
+          var result: List[Int] = []
+          var i: Int = 0
+
+          // Initialize result with 1s
+          while i < n do
+              result = append(result, 1)
+              i = i + 1
+          end while
+
+          // Left products
+          var left: Int = 1
+          i = 0
+          while i < n do
+              result = set_at(list: result, index: i, value: result[i] * left)
+              left = left * nums[i]
+              i = i + 1
+          end while
+
+          // Right products
+          var right: Int = 1
+          i = n - 1
+          while i >= 0 do
+              result = set_at(list: result, index: i, value: result[i] * right)
+              right = right * nums[i]
+              i = i - 1
+          end while
+
+          return result
+      end func product_except_self
+    python: |
+      def product_except_self(nums: list[int]) -> list[int]:
+          n = len(nums)
+          result = [1] * n
+          left = 1
+          for i in range(n):
+              result[i] *= left
+              left *= nums[i]
+          right = 1
+          for i in range(n - 1, -1, -1):
+              result[i] *= right
+              right *= nums[i]
+          return result
+  metadata:
+    tags: ["array", "prefix-product"]
+    source: "LeetCode #238"
+    time_complexity: "O(n)"
+    space_complexity: "O(n)"
+    constructs_tested: ["function", "while", "list-mutation", "multiple-passes"]

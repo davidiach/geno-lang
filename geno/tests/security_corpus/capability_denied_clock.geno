@@ -1,0 +1,5 @@
+# EXPECT: E412
+# Calling clock_now without the "clock" capability should fail.
+func main() -> Int
+    return clock_now()
+end func

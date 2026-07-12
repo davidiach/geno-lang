@@ -1,0 +1,96 @@
+problem:
+  id: "PROB-020"
+  name: "Merge Sorted Lists"
+  difficulty: "medium"
+  domain: "arrays"
+  description: |
+    Write a function that merges two sorted lists into one sorted list.
+  signature:
+    function_name: "merge_sorted"
+    inputs:
+      - name: "list1"
+        type: "List[Int]"
+      - name: "list2"
+        type: "List[Int]"
+    output:
+      name: "result"
+      type: "List[Int]"
+  examples:
+    visible:
+      - input: [[1, 3, 5], [2, 4, 6]]
+        output: [1, 2, 3, 4, 5, 6]
+        description: "Interleaved merge"
+      - input: [[1, 2, 3], []]
+        output: [1, 2, 3]
+        description: "One empty list"
+    hidden:
+      - input: [[], []]
+        output: []
+        description: "Both empty"
+      - input: [[1], [2]]
+        output: [1, 2]
+        description: "Single elements"
+      - input: [[1, 1, 1], [1, 1]]
+        output: [1, 1, 1, 1, 1]
+        description: "All same"
+      - input: [[1, 2], [3, 4, 5, 6]]
+        output: [1, 2, 3, 4, 5, 6]
+        description: "Different lengths"
+      - input: [[5, 6, 7], [1, 2, 3]]
+        output: [1, 2, 3, 5, 6, 7]
+        description: "Non-overlapping"
+  constraints:
+    - "Both input lists are sorted"
+    - "Result must be sorted"
+  canonical_solutions:
+    geno: |
+      func merge_sorted(list1: List[Int], list2: List[Int]) -> List[Int]
+          example [1, 3, 5], [2, 4, 6] -> [1, 2, 3, 4, 5, 6]
+          example [1, 2, 3], [] -> [1, 2, 3]
+
+          var result: List[Int] = []
+          var i: Int = 0
+          var j: Int = 0
+
+          while i < length(list1) and j < length(list2) do
+              if list1[i] <= list2[j] then
+                  result = append(result, list1[i])
+                  i = i + 1
+              else
+                  result = append(result, list2[j])
+                  j = j + 1
+              end if
+          end while
+
+          while i < length(list1) do
+              result = append(result, list1[i])
+              i = i + 1
+          end while
+
+          while j < length(list2) do
+              result = append(result, list2[j])
+              j = j + 1
+          end while
+
+          return result
+      end func merge_sorted
+    python: |
+      def merge_sorted(list1: list[int], list2: list[int]) -> list[int]:
+          result = []
+          i, j = 0, 0
+          while i < len(list1) and j < len(list2):
+              if list1[i] <= list2[j]:
+                  result.append(list1[i])
+                  i += 1
+              else:
+                  result.append(list2[j])
+                  j += 1
+          result.extend(list1[i:])
+          result.extend(list2[j:])
+          return result
+  metadata:
+    tags: ["array", "merge", "two-pointers"]
+    source: "Classic"
+    time_complexity: "O(n + m)"
+    space_complexity: "O(n + m)"
+    constructs_tested: ["function", "while", "if-else", "multiple-loops"]

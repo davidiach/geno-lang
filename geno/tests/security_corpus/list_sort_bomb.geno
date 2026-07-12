@@ -1,0 +1,12 @@
+# EXPECT: E503
+# Build a large list in a loop. Step limit should fire
+# during the list construction.
+func main() -> Int
+    var lst: List[Int] = []
+    var i: Int = 0
+    while i < 1000000 do
+        lst = append(lst, 1000000 - i)
+        i = i + 1
+    end while
+    return length(lst)
+end func

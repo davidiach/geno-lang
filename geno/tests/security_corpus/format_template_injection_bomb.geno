@@ -1,0 +1,23 @@
+# EXPECT: E503
+# Format template injection: attempt to use format() with
+# adversarial template strings that contain format spec syntax
+# to probe whether the template engine allows attribute/index
+# traversal (e.g. {0.__class__}).  Geno's format uses simple {}
+# placeholder splitting, but this tests that adversarial templates
+# with Python-style format specs are handled safely and step-counted.
+func probe_format(n: Int) -> Int
+    example 0 -> 0
+    var total: Int = 0
+    var i: Int = 0
+    while i < n do
+        let t1: String = format(template: "value={}", values: [to_string(i)])
+        let t2: String = format(template: "a={}+b={}", values: [to_string(i), to_string(i + 1)])
+        total = total + length(t1) + length(t2)
+        i = i + 1
+    end while
+    return total
+end func
+
+func main() -> Int
+    return probe_format(1000000)
+end func

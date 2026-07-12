@@ -1,0 +1,132 @@
+// Main.geno — Dashboard entry point (init/update/render loop)
+// =============================================================
+// Uses app mode: init/update/render lifecycle.
+
+import Data
+import Widgets
+import Layout
+import Theme
+
+type DashState = DashState(
+cpu: Int,
+memory: Int,
+requests: Int,
+latency: Int,
+cpu_history: List[Int],
+latency_history: List[Int],
+elapsed: Float,
+refresh_timer: Float,
+refresh_interval: Float,
+status: Status,
+error_message: String
+)
+
+// Initial history buffer (20 zeroes).
+@untested("returns constant list")
+func initial_history() -> List[Int]
+    return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+end func
+
+// Default refresh interval in seconds.
+func default_refresh_interval() -> Float
+    example () -> 1.0
+    return 1.0
+end func
+
+func init() -> DashState
+    return DashState(0, 0, 0, 0, initial_history(), initial_history(), 0.0, 0.0, default_refresh_interval(), Healthy, "")
+end func
+
+func update(state: DashState, dt: Float) -> DashState
+    let new_elapsed: Float = state.elapsed + dt
+    let new_timer: Float = state.refresh_timer + dt
+
+    // Wait for refresh interval
+    if new_timer < state.refresh_interval then
+        return DashState(state.cpu, state.memory, state.requests, state.latency, state.cpu_history, state.latency_history, new_elapsed, new_timer, state.refresh_interval, state.status, state.error_message)
+    end if
+
+    // Fetch new metrics using Result pattern
+    let cpu_result: Result[Metric, String] = Data.fetch_metric(name: "CPU", base: 45, variance: 30)
+    let mem_result: Result[Metric, String] = Data.fetch_metric(name: "Memory", base: 62, variance: 15)
+    let req_result: Result[Metric, String] = Data.fetch_metric(name: "Requests", base: 1200, variance: 400)
+    let lat_result: Result[Metric, String] = Data.fetch_metric(name: "Latency", base: 120, variance: 80)
+
+    // Pattern match on results — show errors, keep last-good values
+    let new_cpu: Int = match cpu_result with
+    | Ok(m) -> m.value
+    | Err(_) -> state.cpu
+end match
+
+let new_memory: Int = match mem_result with
+| Ok(m) -> m.value
+| Err(_) -> state.memory
+end match
+
+let new_requests: Int = match req_result with
+| Ok(m) -> m.value
+| Err(_) -> state.requests
+end match
+
+let new_latency: Int = match lat_result with
+| Ok(m) -> m.value
+| Err(_) -> state.latency
+end match
+
+// Detect errors and build error message
+let err_msg: String = match cpu_result with
+| Err(e) -> e
+| Ok(_) -> ""
+end match
+
+let new_cpu_hist: List[Int] = Data.shift_append(state.cpu_history, new_cpu)
+let new_lat_hist: List[Int] = Data.shift_append(state.latency_history, new_latency)
+let new_status: Status = Data.status_from_latency(new_latency)
+
+return DashState(new_cpu, new_memory, new_requests, new_latency, new_cpu_hist, new_lat_hist, new_elapsed, 0.0, state.refresh_interval, new_status, err_msg)
+end func
+
+func render(state: DashState) -> Unit
+    let w: Int = screen_width()
+    let h: Int = screen_height()
+
+    // Background
+    clear_screen(Theme.bg_color())
+
+    // Header
+    draw_rect(x: 0, y: 0, width: w, height: Layout.header_height(), color: Theme.accent_color())
+    draw_text(text: "geno-dash — System Monitor", x: Layout.margin(), y: 32, size: Theme.title_size(), color: Theme.text_color())
+
+    // Status indicator (Widget type 1 variant: color-coded status)
+    let status_color: String = match state.status with
+    | Healthy -> Theme.green_color()
+    | Degraded -> Theme.yellow_color()
+    | Down -> Theme.red_color()
+end match
+draw_text(text: Data.status_label(state.status), x: w - 140, y: 32, size: Theme.label_size(), color: status_color)
+draw_circle(x: w - 155, y: 28, radius: 6, color: status_color)
+
+// Error banner (shown when fetch fails)
+if length(to_chars(state.error_message)) > 0 then
+    draw_rect(x: 0, y: Layout.header_height(), width: w, height: 30, color: Theme.red_color())
+    draw_text(text: "Error: " + state.error_message, x: Layout.margin(), y: Layout.header_height() + 20, size: Theme.label_size(), color: Theme.text_color())
+end if
+
+// Row 1: Stat cards (Widget type 1)
+let cy: Int = Layout.cards_y()
+Widgets.draw_stat_card(x: Layout.card_x(0), y: cy, w: Layout.card_width(), h: Layout.card_height(), label: "CPU %", value: to_string(state.cpu) + "%", color: Theme.blue_color())
+Widgets.draw_stat_card(x: Layout.card_x(1), y: cy, w: Layout.card_width(), h: Layout.card_height(), label: "Memory %", value: to_string(state.memory) + "%", color: Theme.green_color())
+Widgets.draw_stat_card(x: Layout.card_x(2), y: cy, w: Layout.card_width(), h: Layout.card_height(), label: "Requests/s", value: to_string(state.requests), color: Theme.yellow_color())
+Widgets.draw_stat_card(x: Layout.card_x(3), y: cy, w: Layout.card_width(), h: Layout.card_height(), label: "Latency ms", value: to_string(state.latency), color: status_color)
+
+// Row 2: Bar chart (Widget type 2) and Sparklines (Widget type 3)
+let chy: Int = Layout.charts_y()
+let half_w: Int = (w - 3 * Layout.margin()) / 2
+
+Widgets.draw_bar_chart(x: Layout.margin(), y: chy, w: half_w, h: Layout.chart_height(), title: "Resource Usage", labels: ["CPU", "Memory", "Latency", "Req/100"], values: [state.cpu, state.memory, state.latency / 5, state.requests / 100])
+
+// Sparklines
+let spark_y: Int = chy + Layout.chart_height() + Layout.margin()
+Widgets.draw_sparkline(x: Layout.margin(), y: spark_y, w: half_w, h: 120, title: "CPU History", history: state.cpu_history, color: Theme.blue_color())
+Widgets.draw_sparkline(x: Layout.margin() + half_w + Layout.margin(), y: spark_y, w: half_w, h: 120, title: "Latency History", history: state.latency_history, color: Theme.yellow_color())
+end func

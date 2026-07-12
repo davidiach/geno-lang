@@ -1,0 +1,5 @@
+# EXPECT: E412
+# fs_list_dir without the "fs" capability should fail.
+func main() -> Result[List[String], String]
+    return fs_list_dir(path: "/")
+end func

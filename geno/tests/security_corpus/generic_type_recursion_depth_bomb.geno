@@ -1,0 +1,35 @@
+# EXPECT: E503
+# Recursive type construction via deeply nested ADT wrapping:
+# Build a tower of wrapper ADTs where each layer wraps the previous,
+# forcing the runtime to allocate and pattern-match through O(n)
+# nesting depth on every iteration.  Unlike existing nested_adt_depth_bomb
+# which builds once, this repeatedly wraps and unwraps in a loop,
+# creating O(n*m) constructor+match work.
+type Layer = Inner(value: Int) | Outer(child: Layer, tag: Int)
+
+func wrap_n(base: Layer, n: Int) -> Layer
+    example Inner(0), 0 -> Inner(0)
+    if n <= 0 then
+        return base
+    end if
+    return Outer(wrap_n(base, n - 1), n)
+end func
+
+func unwrap_sum(layer: Layer) -> Int
+    example Inner(5) -> 5
+    match layer with
+    | Inner(v) -> return v
+    | Outer(child, tag) -> return tag + unwrap_sum(child)
+    end match
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 10000 do
+        let tower: Layer = wrap_n(Inner(i), 50)
+        total = total + unwrap_sum(tower)
+        i = i + 1
+    end while
+    return total
+end func

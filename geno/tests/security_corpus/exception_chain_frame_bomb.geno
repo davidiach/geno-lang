@@ -1,0 +1,33 @@
+# EXPECT: E503
+# Exception handler manipulation: rapidly throw, catch, transform,
+# and rethrow exceptions in nested try/catch blocks.  Each level
+# catches the exception, wraps its message, and throws a new one.
+# Tests that nested exception handling chains are step-counted and
+# that exception objects don't leak traceback frame information.
+func nested_throw(depth: Int, msg: String) -> String
+    example 0, "base" -> "base"
+    if depth <= 0 then
+        return msg
+    end if
+    var result: String = ""
+    try
+        throw f"level-{to_string(depth)}-{msg}"
+    catch e: String
+        try
+            throw f"caught({e})"
+        catch inner: String
+            result = nested_throw(depth - 1, inner)
+        end try
+    end try
+    return result
+end func
+
+func main() -> String
+    var total: String = ""
+    var i: Int = 0
+    while i < 100000 do
+        total = nested_throw(5, to_string(i))
+        i = i + 1
+    end while
+    return total
+end func

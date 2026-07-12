@@ -1,0 +1,12 @@
+name = "geno-check"
+version = "0.1.0"
+entrypoint = "Main"
+targets = ["python-cli"]
+files = [
+    "Violation.geno",
+    "JsonRules.geno",
+    "CsvRules.geno",
+    "TomlRules.geno",
+    "Report.geno",
+    "Main.geno",
+]

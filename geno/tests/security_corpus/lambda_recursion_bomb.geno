@@ -1,0 +1,13 @@
+# EXPECT: E502
+# Higher-order function recursion to test recursion depth.
+func apply_n(f: (Int) -> Int, n: Int, x: Int) -> Int
+    example fn(a: Int) -> a, 0, 5 -> 5
+    if n <= 0 then
+        return x
+    end if
+    return apply_n(f: f, n: n - 1, x: f(x))
+end func
+
+func main() -> Int
+    return apply_n(f: fn(x: Int) -> x + 1, n: 100000, x: 0)
+end func

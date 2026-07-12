@@ -1,0 +1,58 @@
+problem:
+  id: "PROB-007"
+  name: "String Length"
+  difficulty: "trivial"
+  domain: "strings"
+  description: |
+    Write a function that returns the length of a string.
+  signature:
+    function_name: "str_length"
+    inputs:
+      - name: "s"
+        type: "String"
+    output:
+      name: "result"
+      type: "Int"
+  examples:
+    visible:
+      - input: "hello"
+        output: 5
+        description: "Five characters"
+      - input: ""
+        output: 0
+        description: "Empty string"
+    hidden:
+      - input: "a"
+        output: 1
+        description: "Single character"
+      - input: "hello world"
+        output: 11
+        description: "With space"
+      - input: "12345"
+        output: 5
+        description: "Numeric characters"
+      - input: "  "
+        output: 2
+        description: "Spaces only"
+      - input: "abcdefghij"
+        output: 10
+        description: "Ten characters"
+  constraints:
+    - "Use built-in length function"
+  canonical_solutions:
+    geno: |
+      func str_length(s: String) -> Int
+          example "hello" -> 5
+          example "" -> 0
+
+          return length(s)
+      end func str_length
+    python: |
+      def str_length(s: str) -> int:
+          return len(s)
+  metadata:
+    tags: ["string", "basic"]
+    source: "Original"
+    time_complexity: "O(1)"
+    space_complexity: "O(1)"
+    constructs_tested: ["function", "string", "built-in"]

@@ -1,0 +1,461 @@
+// ============================================================================
+// Lexer.geno — Character-by-character tokenizer for the Geno language
+// ============================================================================
+
+import Tokens
+
+// ---- Character classification helpers ----
+
+func is_digit(c: String) -> Bool
+    example "0" -> true
+    example "9" -> true
+    example "a" -> false
+    let code: Int = char_code(c)
+    return code >= 48 and code <= 57
+end func is_digit
+
+func is_alpha(c: String) -> Bool
+    example "a" -> true
+    example "Z" -> true
+    example "_" -> true
+    example "5" -> false
+    let code: Int = char_code(c)
+    return (code >= 65 and code <= 90) or (code >= 97 and code <= 122) or code == 95
+end func is_alpha
+
+func is_alnum(c: String) -> Bool
+    example "a" -> true
+    example "5" -> true
+    example " " -> false
+    return is_alpha(c) or is_digit(c)
+end func is_alnum
+
+func is_upper(c: String) -> Bool
+    example "A" -> true
+    example "a" -> false
+    let code: Int = char_code(c)
+    return code >= 65 and code <= 90
+end func is_upper
+
+func is_space(c: String) -> Bool
+    example " " -> true
+    example "a" -> false
+    let code: Int = char_code(c)
+    return code == 32 or code == 9 or code == 13
+end func is_space
+
+// ---- Lexer state ----
+// We use a mutable array to hold [pos, line, col] so we can pass state
+// through helper functions without needing a mutable struct.
+
+type LexerState = LexerState(
+source: String,
+pos: Array[Int],
+keywords: MutableMap[String, TokenType]
+)
+
+@untested("lexer internal state")
+func make_lexer(source: String) -> LexerState
+
+    let state: Array[Int] = array_from_list([0, 1, 1])
+    return LexerState(source, state, build_keyword_map())
+end func make_lexer
+
+@untested("lexer internal state")
+func lex_pos(ls: LexerState) -> Int
+
+    return array_get(ls.pos, 0)
+end func lex_pos
+
+@untested("lexer internal state")
+func lex_line(ls: LexerState) -> Int
+
+    return array_get(ls.pos, 1)
+end func lex_line
+
+@untested("lexer internal state")
+func lex_col(ls: LexerState) -> Int
+
+    return array_get(ls.pos, 2)
+end func lex_col
+
+@untested("lexer internal state")
+func lex_at_end(ls: LexerState) -> Bool
+
+    return lex_pos(ls) >= length(ls.source)
+end func lex_at_end
+
+@untested("lexer internal state")
+func lex_peek(ls: LexerState) -> String
+
+    if lex_at_end(ls) then
+        return ""
+    end if
+    return ls.source[lex_pos(ls)]
+end func lex_peek
+
+@untested("lexer internal state")
+func lex_peek_at(ls: LexerState, offset: Int) -> String
+
+    let p: Int = lex_pos(ls) + offset
+    if p >= length(ls.source) then
+        return ""
+    end if
+    return ls.source[p]
+end func lex_peek_at
+
+@untested("lexer internal state")
+func lex_advance(ls: LexerState) -> String
+
+    let c: String = ls.source[lex_pos(ls)]
+    array_set(array: ls.pos, index: 0, value: lex_pos(ls) + 1)
+    if c == from_char_code(10) then
+        array_set(array: ls.pos, index: 1, value: lex_line(ls) + 1)
+        array_set(array: ls.pos, index: 2, value: 1)
+    else
+        array_set(array: ls.pos, index: 2, value: lex_col(ls) + 1)
+    end if
+    return c
+end func lex_advance
+
+func make_token(tt: TokenType, value: String, line: Int, col: Int) -> Token
+    example (TkEof, "", 1, 1) -> Token(TkEof, "", 1, 1)
+    return Token(tt, value, line, col)
+end func make_token
+
+// ---- Skip whitespace and comments ----
+
+@untested("lexer internal state")
+func skip_whitespace_and_comments(ls: LexerState) -> Option[Token]
+
+    while not lex_at_end(ls) do
+        let c: String = lex_peek(ls)
+        if is_space(c) then
+            let dummy: String = lex_advance(ls)
+        else
+            if c == from_char_code(10) then
+                let dummy: String = lex_advance(ls)
+            else
+                if c == "/" and lex_peek_at(ls, 1) == "/" then
+                    // Single-line comment: skip to end of line
+                    let dummy1: String = lex_advance(ls)
+                    let dummy2: String = lex_advance(ls)
+                    while not lex_at_end(ls) and lex_peek(ls) != from_char_code(10) do
+                        let dummy3: String = lex_advance(ls)
+                    end while
+                else
+                    if c == "/" and lex_peek_at(ls, 1) == "*" then
+                        // Block comment: skip to */
+                        let comment_line: Int = lex_line(ls)
+                        let comment_col: Int = lex_col(ls)
+                        let dummy1: String = lex_advance(ls)
+                        let dummy2: String = lex_advance(ls)
+                        var depth: Int = 1
+                        while depth > 0 and not lex_at_end(ls) do
+                            if lex_peek(ls) == "/" and lex_peek_at(ls, 1) == "*" then
+                                let d1: String = lex_advance(ls)
+                                let d2: String = lex_advance(ls)
+                                depth = depth + 1
+                            else
+                                if lex_peek(ls) == "*" and lex_peek_at(ls, 1) == "/" then
+                                    let d1: String = lex_advance(ls)
+                                    let d2: String = lex_advance(ls)
+                                    depth = depth - 1
+                                else
+                                    let d: String = lex_advance(ls)
+                                end if
+                            end if
+                        end while
+                        if depth > 0 then
+                            return Some(make_token(tt: TkError, value: "Unterminated block comment", line: comment_line, col: comment_col))
+                        end if
+                    else
+                        return None
+                    end if
+                end if
+            end if
+        end if
+    end while
+    return None
+end func skip_whitespace_and_comments
+
+// ---- Lex a number (integer or float) ----
+
+@untested("lexer internal state")
+func lex_number(ls: LexerState, start_line: Int, start_col: Int) -> Token
+
+    let buf: Vec[String] = vec_new()
+    while not lex_at_end(ls) and is_digit(lex_peek(ls)) do
+        vec_push(buf, lex_advance(ls))
+    end while
+    // Check for float: digit followed by '.' then another digit
+    if not lex_at_end(ls) and lex_peek(ls) == "." then
+        let next_pos: Int = lex_pos(ls) + 1
+        if next_pos < length(ls.source) and is_digit(ls.source[next_pos]) then
+            vec_push(buf, lex_advance(ls))
+            while not lex_at_end(ls) and is_digit(lex_peek(ls)) do
+                vec_push(buf, lex_advance(ls))
+            end while
+            return make_token(tt: TkFloat, value: join(vec_to_list(buf), ""), line: start_line, col: start_col)
+        end if
+    end if
+    return make_token(tt: TkInteger, value: join(vec_to_list(buf), ""), line: start_line, col: start_col)
+end func lex_number
+
+// ---- Lex a string literal ----
+
+@untested("lexer internal state")
+func lex_string(ls: LexerState, start_line: Int, start_col: Int) -> Token
+    let open: String = lex_advance(ls)
+    // Check for triple-quote
+    if not lex_at_end(ls) and lex_peek(ls) == "\"" then
+        if lex_peek_at(ls, 1) == "\"" then
+            // Triple-quoted string
+            let d1: String = lex_advance(ls)
+            let d2: String = lex_advance(ls)
+            let buf: Vec[String] = vec_new()
+            while not lex_at_end(ls) do
+                if lex_peek(ls) == "\"" and lex_peek_at(ls, 1) == "\"" and lex_peek_at(ls, 2) == "\"" then
+                    let c1: String = lex_advance(ls)
+                    let c2: String = lex_advance(ls)
+                    let c3: String = lex_advance(ls)
+                    return make_token(tt: TkString, value: join(vec_to_list(buf), ""), line: start_line, col: start_col)
+                end if
+                vec_push(buf, lex_advance(ls))
+            end while
+            // Reached EOF without finding the closing """.  Previously
+            // we silently returned a string token and the parser
+            // happily accepted it; F-0030 in #664.  Emit a TkError
+            // sentinel instead so the parser surfaces a diagnostic.
+            return make_token(tt: TkError, value: "Unterminated multi-line string literal", line: start_line, col: start_col)
+        end if
+    end if
+    // Regular string
+    let buf: Vec[String] = vec_new()
+    while not lex_at_end(ls) and lex_peek(ls) != "\"" do
+        let c: String = lex_advance(ls)
+        if c == "\\" then
+            if lex_at_end(ls) then
+                vec_push(buf, "\\")
+            else
+                let esc: String = lex_advance(ls)
+                if esc == "n" then
+                    vec_push(buf, from_char_code(10))
+                else
+                    if esc == "t" then
+                        vec_push(buf, from_char_code(9))
+                    else
+                        if esc == "r" then
+                            vec_push(buf, from_char_code(13))
+                        else
+                            if esc == "\\" then
+                                vec_push(buf, "\\")
+                            else
+                                if esc == "\"" then
+                                    vec_push(buf, "\"")
+                                else
+                                    vec_push(buf, "\\")
+                                    vec_push(buf, esc)
+                                end if
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+        else
+            vec_push(buf, c)
+        end if
+    end while
+    // Consume closing quote if one is actually present.  If the loop
+    // exited because we hit EOF instead of a closing ``"``, the string
+    // was unterminated (F-0030 in #664) — emit a TkError so the
+    // parser surfaces a diagnostic rather than silently accepting a
+    // truncated token.
+    if lex_at_end(ls) then
+        return make_token(tt: TkError, value: "Unterminated string literal", line: start_line, col: start_col)
+    end if
+    let close: String = lex_advance(ls)
+    return make_token(tt: TkString, value: join(vec_to_list(buf), ""), line: start_line, col: start_col)
+end func lex_string
+
+// ---- Lex an identifier or keyword ----
+
+@untested("lexer internal state")
+func lex_identifier(ls: LexerState, start_line: Int, start_col: Int) -> Token
+
+    let buf: Vec[String] = vec_new()
+    while not lex_at_end(ls) and is_alnum(lex_peek(ls)) do
+        vec_push(buf, lex_advance(ls))
+    end while
+    let word: String = join(vec_to_list(buf), "")
+    // Check if it's a keyword
+    let kw: Option[TokenType] = lookup_keyword(ls.keywords, word)
+    match kw with
+        | Some(tt) -> return make_token(tt: tt, value: word, line: start_line, col: start_col)
+        | None ->
+        // Distinguish identifiers (snake_case) from type identifiers (PascalCase)
+        if is_upper(word[0]) then
+            return make_token(tt: TkTypeIdentifier, value: word, line: start_line, col: start_col)
+        else
+            return make_token(tt: TkIdentifier, value: word, line: start_line, col: start_col)
+        end if
+    end match
+end func lex_identifier
+
+// ---- Lex a single token ----
+
+@untested("lexer internal state")
+func lex_token(ls: LexerState) -> Token
+
+    let skip_error: Option[Token] = skip_whitespace_and_comments(ls)
+    match skip_error with
+        | Some(tok) -> return tok
+        | None -> let _unused: Int = 0
+    end match
+    if lex_at_end(ls) then
+        return make_token(tt: TkEof, value: "", line: lex_line(ls), col: lex_col(ls))
+    end if
+    let start_line: Int = lex_line(ls)
+    let start_col: Int = lex_col(ls)
+    let c: String = lex_peek(ls)
+
+    // Numbers
+    if is_digit(c) then
+        return lex_number(ls: ls, start_line: start_line, start_col: start_col)
+    end if
+
+    // Strings
+    if c == "\"" then
+        return lex_string(ls: ls, start_line: start_line, start_col: start_col)
+    end if
+
+    // Identifiers and keywords
+    if is_alpha(c) then
+        return lex_identifier(ls: ls, start_line: start_line, start_col: start_col)
+    end if
+
+    // Two-character operators
+    let next: String = lex_peek_at(ls, 1)
+
+    if c == "-" and next == ">" then
+        let d1: String = lex_advance(ls)
+        let d2: String = lex_advance(ls)
+        return make_token(tt: TkArrow, value: "->", line: start_line, col: start_col)
+    end if
+    if c == "|" and next == ">" then
+        let d1: String = lex_advance(ls)
+        let d2: String = lex_advance(ls)
+        return make_token(tt: TkPipe, value: "|>", line: start_line, col: start_col)
+    end if
+    if c == "=" and next == "=" then
+        let d1: String = lex_advance(ls)
+        let d2: String = lex_advance(ls)
+        return make_token(tt: TkEq, value: "==", line: start_line, col: start_col)
+    end if
+    if c == "!" and next == "=" then
+        let d1: String = lex_advance(ls)
+        let d2: String = lex_advance(ls)
+        return make_token(tt: TkNeq, value: "!=", line: start_line, col: start_col)
+    end if
+    if c == "<" and next == "=" then
+        let d1: String = lex_advance(ls)
+        let d2: String = lex_advance(ls)
+        return make_token(tt: TkLte, value: "<=", line: start_line, col: start_col)
+    end if
+    if c == ">" and next == "=" then
+        let d1: String = lex_advance(ls)
+        let d2: String = lex_advance(ls)
+        return make_token(tt: TkGte, value: ">=", line: start_line, col: start_col)
+    end if
+
+    // Single-character operators and delimiters
+    let d: String = lex_advance(ls)
+
+    if c == "+" then
+        return make_token(tt: TkPlus, value: "+", line: start_line, col: start_col)
+    end if
+    if c == "-" then
+        return make_token(tt: TkMinus, value: "-", line: start_line, col: start_col)
+    end if
+    if c == "*" then
+        return make_token(tt: TkStar, value: "*", line: start_line, col: start_col)
+    end if
+    if c == "/" then
+        return make_token(tt: TkSlash, value: "/", line: start_line, col: start_col)
+    end if
+    if c == "%" then
+        return make_token(tt: TkPercent, value: "%", line: start_line, col: start_col)
+    end if
+    if c == "=" then
+        return make_token(tt: TkAssign, value: "=", line: start_line, col: start_col)
+    end if
+    if c == "<" then
+        return make_token(tt: TkLt, value: "<", line: start_line, col: start_col)
+    end if
+    if c == ">" then
+        return make_token(tt: TkGt, value: ">", line: start_line, col: start_col)
+    end if
+    if c == "|" then
+        return make_token(tt: TkBar, value: "|", line: start_line, col: start_col)
+    end if
+    if c == "(" then
+        return make_token(tt: TkLParen, value: "(", line: start_line, col: start_col)
+    end if
+    if c == ")" then
+        return make_token(tt: TkRParen, value: ")", line: start_line, col: start_col)
+    end if
+    if c == "[" then
+        return make_token(tt: TkLBracket, value: "[", line: start_line, col: start_col)
+    end if
+    if c == "]" then
+        return make_token(tt: TkRBracket, value: "]", line: start_line, col: start_col)
+    end if
+    if c == "{" then
+        return make_token(tt: TkLBrace, value: "{", line: start_line, col: start_col)
+    end if
+    if c == "}" then
+        return make_token(tt: TkRBrace, value: "}", line: start_line, col: start_col)
+    end if
+    if c == "," then
+        return make_token(tt: TkComma, value: ",", line: start_line, col: start_col)
+    end if
+    if c == ":" then
+        return make_token(tt: TkColon, value: ":", line: start_line, col: start_col)
+    end if
+    if c == ";" then
+        return make_token(tt: TkSemicolon, value: ";", line: start_line, col: start_col)
+    end if
+    if c == "." then
+        return make_token(tt: TkDot, value: ".", line: start_line, col: start_col)
+    end if
+    if c == "_" then
+        return make_token(tt: TkUnderscore, value: "_", line: start_line, col: start_col)
+    end if
+    if c == "?" then
+        return make_token(tt: TkQuestion, value: "?", line: start_line, col: start_col)
+    end if
+    if c == "@" then
+        return make_token(tt: TkAt, value: "@", line: start_line, col: start_col)
+    end if
+
+    // Unknown character — return as identifier with the character
+    return make_token(tt: TkIdentifier, value: c, line: start_line, col: start_col)
+end func lex_token
+
+// ---- Main tokenize function ----
+
+func tokenize(source: String) -> List[Token]
+    example "42" -> [Token(TkInteger, "42", 1, 1), Token(TkEof, "", 1, 3)]
+    let ls: LexerState = make_lexer(source)
+    let tokens: Vec[Token] = vec_new()
+    var done: Bool = false
+    while not done do
+        let tok: Token = lex_token(ls)
+        vec_push(tokens, tok)
+        match tok.tt with
+            | TkEof -> done = true
+            | _ -> done = false
+        end match
+    end while
+    return vec_to_list(tokens)
+end func tokenize

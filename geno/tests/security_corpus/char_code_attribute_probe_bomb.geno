@@ -1,0 +1,54 @@
+# EXPECT: E503
+# String-based attribute construction via char_code round-trip:
+# Build blocked attribute names character-by-character using
+# from_char_code, then use char_code to verify each character,
+# creating a feedback loop that tests whether the char_code
+# oracle leaks internal encoding details.  Unlike the existing
+# string_attribute_construction_bomb which just builds names,
+# this also round-trips through char_code to probe for encoding
+# inconsistencies that might indicate sandbox interception.
+func build_and_verify(codes: List[Int]) -> Bool
+    example [65] -> true
+    var built: String = ""
+    var i: Int = 0
+    while i < length(codes) do
+        let ch: String = from_char_code(codes[i])
+        built = built + ch
+        let verified: Int = char_code(text: built)
+        if verified != codes[0] then
+            return false
+        end if
+        i = i + 1
+    end while
+    return true
+end func
+
+func probe_all_blocked(n: Int) -> Int
+    example 0 -> 0
+    let targets: List[List[Int]] = [
+        [95, 95, 99, 108, 97, 115, 115, 95, 95],
+        [95, 95, 98, 97, 115, 101, 115, 95, 95],
+        [95, 95, 103, 108, 111, 98, 97, 108, 115, 95, 95],
+        [95, 95, 99, 111, 100, 101, 95, 95],
+        [95, 95, 100, 105, 99, 116, 95, 95],
+        [95, 95, 109, 114, 111, 95, 95],
+        [95, 95, 115, 117, 98, 99, 108, 97, 115, 115, 101, 115, 95, 95]
+    ]
+    var count: Int = 0
+    var i: Int = 0
+    while i < n do
+        var j: Int = 0
+        while j < length(targets) do
+            if build_and_verify(targets[j]) then
+                count = count + 1
+            end if
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+    return count
+end func
+
+func main() -> Int
+    return probe_all_blocked(100000)
+end func

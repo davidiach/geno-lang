@@ -1,0 +1,5 @@
+# EXPECT: E412
+# http_post without the "http" capability should fail.
+func main() -> String
+    return http_post(url: "http://example.com", body: "data")
+end func

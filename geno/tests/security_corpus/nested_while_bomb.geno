@@ -1,0 +1,15 @@
+# EXPECT: E503
+# Nested while loops with quadratic iteration.
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000 do
+        var j: Int = 0
+        while j < 1000 do
+            total = total + 1
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+    return total
+end func
