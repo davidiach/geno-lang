@@ -8,7 +8,6 @@ definition site, enabling semantic (not text-based) symbol resolution.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .ast_nodes import (
     AssertStatement,
@@ -35,7 +34,6 @@ from .ast_nodes import (
     MatchArm,
     MatchExpr,
     MatchStatement,
-    Parameter,
     Pattern,
     Program,
     RestPattern,

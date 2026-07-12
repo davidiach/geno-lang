@@ -16,7 +16,6 @@ from geno.compiler import Compiler
 from geno.dependency_graph import (
     CircularDependencyError,
     DependencyGraph,
-    NameCollisionError,
 )
 from geno.parser import ParseError, ParseErrors
 from geno.project_graph import ProjectGraph, ProjectGraphError

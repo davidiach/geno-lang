@@ -47,6 +47,12 @@ The runtime files (`_runtime_support.py`, `_js_runtime_support.js`) implement
 ~100 builtins each in their native language. These cannot share code regardless
 of whether an IR exists — they are inherently target-specific.
 
+Both preludes are hand-maintained source files, not generated artifacts. Their
+shared semantic contract is enforced by differential tests that execute the
+same corpus through the interpreter, compiled Python, and compiled JavaScript.
+A backend-specific optimization is acceptable only when those observable
+results remain aligned.
+
 ## Decision
 
 **Skip the shared IR. Extract shared data to a common module instead.**

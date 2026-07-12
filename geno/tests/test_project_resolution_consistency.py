@@ -10,7 +10,6 @@ import pytest
 
 from geno.api import RunConfig, check_path, run_path
 from geno.cli.watch import _resolve_watch_files
-from geno.dependency_graph import NameCollisionError
 from geno.lsp_server import _load_project_module_index, create_server
 from geno.project_graph import ProjectGraphError
 from geno.project_resolution import (

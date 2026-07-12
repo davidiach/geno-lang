@@ -72,6 +72,8 @@ def format_source(source: str) -> str:
                 classification_line = remainder
                 first_token = _first_token(remainder)
 
+        opens_binding_match = _opens_binding_match_expression(classification_line)
+
         # End a multi-line type def when we hit a non-| line
         comment_continues_type_def = (
             in_type_def
@@ -121,6 +123,14 @@ def format_source(source: str) -> str:
             depth += 1
             if first_token == "trait":  # noqa: S105
                 in_trait_body = True
+        elif opens_binding_match and not _has_inline_block_close(
+            classification_line, "match"
+        ):
+            # ``let value = match ... with`` opens a match-expression even
+            # though the line's first token is a binding keyword.  Missing
+            # this increment makes ``end match`` close the surrounding block
+            # and flattens every following line.
+            depth += 1
 
     # Ensure file ends with a single newline
     text = "\n".join(result)
@@ -193,6 +203,19 @@ def _strip_strings_and_line_comments(line: str) -> str:
             chars.append(ch)
         i += 1
     return "".join(chars)
+
+
+def _opens_binding_match_expression(line: str) -> bool:
+    """Return whether a ``let``/``var`` binding opens a match expression."""
+    code = _strip_strings_and_line_comments(line)
+    first_token = _first_token(code.lstrip())
+    if first_token not in {"let", "var"}:
+        return False
+    assignment = code.find("=")
+    if assignment == -1:
+        return False
+    value = code[assignment + 1 :].lstrip()
+    return value == "match" or value.startswith("match ")
 
 
 def _first_token(line: str) -> str:

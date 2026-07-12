@@ -2,15 +2,17 @@
 
 ## Installation
 
+For a published release:
+
 ```bash
 pip install geno-lang
 ```
 
-For development:
+For an unpublished checkout or development:
 
 ```bash
 git clone https://github.com/davidiach/geno-lang.git
-cd geno
+cd geno-lang
 pip install -e ".[dev]"
 ```
 

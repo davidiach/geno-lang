@@ -15,7 +15,7 @@ from collections.abc import Collection, Generator
 from contextlib import contextmanager
 from functools import partial
 from types import MappingProxyType
-from typing import Any, Optional, Union, cast
+from typing import Any, cast
 
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
@@ -29,7 +29,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
-    ExampleClause,
     Expression,
     ExpressionStatement,
     FieldAccess,
@@ -39,7 +38,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     FStringExpr,
     FunctionCall,
     FunctionDef,
-    FunctionType,
     Identifier,
     IfStatement,
     ImplDef,
@@ -53,10 +51,8 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ListLiteral,
     ListPattern,
     LiteralPattern,
-    MatchArm,
     MatchExpr,
     MatchStatement,
-    Parameter,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -65,12 +61,9 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     RestPattern,
     ReturnStatement,
     SimpleType,
-    SpecBlock,
     Statement,
     StringLiteral,
-    TestBlock,
     ThrowExpression,
-    TraitDef,
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
@@ -164,6 +157,23 @@ def _raised_recursion_limit(needed: int) -> Generator[None, None, None]:
 
 # Sentinel for unfilled argument slots (not None — that's Geno's Unit value)
 _UNFILLED = object()
+
+# These builtins mutate a validated reference container in place. Their own
+# implementations enforce top-level growth; the interpreter only needs to
+# inspect the non-target arguments and result for nested resource limits.
+_INCREMENTAL_MUTATION_BUILTINS = frozenset(
+    {
+        "array_set",
+        "array_fill",
+        "mutable_map_set",
+        "mutable_map_delete",
+        "vec_push",
+        "vec_set",
+        "vec_pop",
+        "set_add",
+        "set_remove",
+    }
+)
 _UNSPECIFIED_CAPABILITIES = object()
 
 # Exception types a builtin may raise as an ordinary, user-facing Geno error
@@ -1185,7 +1195,7 @@ class Interpreter:
         themselves.  This avoids duplicate output in ``--unsafe`` mode and
         keeps ``--json`` output clean.
         """
-        output = self._format_value(value) + "\n"
+        output = (value if isinstance(value, str) else self._format_value(value)) + "\n"
 
         # Check output limit
         self._output_length += len(output)
@@ -1508,8 +1518,12 @@ class Interpreter:
             a = ()
         if b is None:
             b = ()
-        if approximate_floats and (type(a) in (int, float) and type(b) in (int, float)):
-            return math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-12)
+        if type(a) in (int, float) and type(b) in (int, float):
+            if approximate_floats:
+                return math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-12)
+            # Int is a subtype of Float in Geno. Equality therefore compares
+            # numeric values rather than host-language storage types.
+            return bool(a == b)
         if type(a) != type(b):
             return False
         if approximate_floats and isinstance(a, float):
@@ -2246,7 +2260,9 @@ class Interpreter:
                     f"Builtin {func.name} expects {func.arity} arguments, got {len(args)}",
                     location,
                 )
-            self._check_collection_limits(args, location)
+            incremental_mutation = func.name in _INCREMENTAL_MUTATION_BUILTINS
+            checked_args = args[1:] if incremental_mutation else args
+            self._check_collection_limits(checked_args, location)
             self._step()
             try:
                 result = func.func(*args)
@@ -2272,7 +2288,8 @@ class Interpreter:
                     e,
                 )
                 raise RuntimeError(str(e), location) from None
-            self._check_collection_limits([result, *args], location)
+            result_roots = [result] if incremental_mutation else [result, *args]
+            self._check_collection_limits(result_roots, location)
             self._check_timeout(location)
             return result
 

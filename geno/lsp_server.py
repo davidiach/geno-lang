@@ -35,7 +35,6 @@ from urllib.parse import unquote, urlparse
 
 if TYPE_CHECKING:
     from geno.symbol_table import SymbolDef, SymbolTable
-    from geno.types import Type
 
 try:
     from lsprotocol import types

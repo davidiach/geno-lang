@@ -22,7 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import AbstractSet, Any, Optional, cast
+from typing import AbstractSet, Any, cast
 from urllib.parse import urlsplit
 
 from .api import RunConfig, constrain_prefix, run
@@ -608,7 +608,7 @@ footer a {{ color: #e94560; text-decoration: none; }}
 </div>
 <footer>
   <span>Geno &mdash; a language for LLM-generated code</span>
-  <span><a href="https://github.com/davidiach/geno" target="_blank">GitHub</a></span>
+  <span><a href="https://github.com/davidiach/geno-lang" target="_blank">GitHub</a></span>
 </footer>
 <script>
 const EXAMPLES = {examples_js};

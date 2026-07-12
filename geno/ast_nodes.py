@@ -8,7 +8,7 @@ Uses dataclasses for clean, immutable node definitions.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 from .tokens import SourceLocation
 
@@ -37,6 +37,12 @@ class Expression(ASTNode):
     _resolved_type: Any | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    _expected_runtime_type: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _resolved_builtin_name: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 @dataclass
@@ -45,6 +51,9 @@ class Statement(ASTNode):
 
     # Set by the typechecker when a runtime boundary needs a known expected type.
     _expected_runtime_type: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _resolved_builtin_name: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
 

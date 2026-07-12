@@ -127,19 +127,19 @@ end func
 @untested("canvas drawing function")
 func render_bool_field(field: FieldDef, value: FieldValue, y: Int) -> Int
     let checked: Bool = match value with
-    | BoolVal(b) -> b
-    | _ -> false
-end match
+        | BoolVal(b) -> b
+        | _ -> false
+    end match
 
-// Checkbox box
-draw_rect_outline(x: 40, y: y, width: 18, height: 18, color: color_border())
-if checked then
-    draw_rect(x: 43, y: y + 3, width: 12, height: 12, color: color_button())
-end if
+    // Checkbox box
+    draw_rect_outline(x: 40, y: y, width: 18, height: 18, color: color_border())
+    if checked then
+        draw_rect(x: 43, y: y + 3, width: 12, height: 12, color: color_button())
+    end if
 
-// Label
-draw_text(text: field.label, x: 65, y: y + 2, size: 14, color: color_label())
-return y + 30
+    // Label
+    draw_text(text: field.label, x: 65, y: y + 2, size: 14, color: color_label())
+    return y + 30
 end func
 
 // Render the submit button.

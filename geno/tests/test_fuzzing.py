@@ -57,7 +57,6 @@ import re
 
 from geno.api import RunConfig, run
 from geno.capabilities import KNOWN_CAPABILITIES
-from geno.diagnostics import ErrorCode
 from geno.formatter import format_source
 from geno.lexer import Lexer, LexerError
 from geno.parser import ParseError, ParseErrors, Parser

@@ -14,7 +14,7 @@ import stat
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 try:
     import tomllib

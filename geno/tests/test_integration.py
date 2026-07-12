@@ -16,10 +16,9 @@ import pytest
 import geno
 from geno.compiler import compile_and_exec, compile_to_python
 from geno.interpreter import interpret
-from geno.lexer import Lexer, LexerError
-from geno.parser import ParseError, Parser
+from geno.lexer import Lexer
+from geno.parser import Parser
 from geno.typechecker import TypeChecker
-from geno.typechecker import TypeError as GenoTypeError
 
 EXAMPLES_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "examples"
 

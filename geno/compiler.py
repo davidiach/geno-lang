@@ -10,7 +10,7 @@ import keyword
 from contextlib import contextmanager
 from functools import lru_cache
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Collection, Iterator, Optional, cast
+from typing import TYPE_CHECKING, Collection, Iterator, Optional, cast
 
 from ._backend_fastpath import (
     APPEND_FAST_PATH_BUILTIN,
@@ -98,7 +98,7 @@ from .builtin_registry import (
     python_backend_builtin_name_map,
 )
 from .runtime_prelude import RUNTIME_PRELUDE
-from .types import FloatType
+from .types import FloatType, UserType
 
 # Names defined in the runtime prelude that must not be shadowed by user code.
 # Shadowing these could disable safety mechanisms (get_field, _safe_div) or
@@ -149,6 +149,7 @@ RESERVED_PRELUDE_NAMES = (
             # Imported modules used by prelude
             "math",
             "deepcopy",
+            "_geno_deepcopy",
             "dataclass",
             "_dataclasses_fields",
             "_dataclasses_replace",
@@ -1270,17 +1271,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
-        if type_name == "List":
-            rhs = f"list({value})"
-        elif type_name == "Map":
-            rhs = f"dict({value})"
-        elif type_name == "Array":
-            # Array is a reference type — no copy
-            rhs = value
-        else:
-            # Primitive values are immutable. User-defined constructors are
-            # reference values, so field assignment preserves aliasing.
-            rhs = value
+        rhs = f"_geno_deepcopy({value})"
         rhs = self._promote_expr_to_expected_float(
             rhs, getattr(stmt, "_expected_runtime_type", type_annot)
         )
@@ -1322,12 +1313,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
-        if type_name == "List":
-            rhs = f"list({value})"
-        elif type_name == "Map":
-            rhs = f"dict({value})"
-        else:
-            rhs = value
+        rhs = f"_geno_deepcopy({value})"
         rhs = self._promote_expr_to_expected_float(rhs, expected_type)
         if type_annot is not None:
             ann = self._compile_type_annotation(type_annot)
@@ -1336,6 +1322,14 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln(f"{name}: '{ann}' = {rhs}")
         else:
             self._writeln(f"{name} = {rhs}")
+
+    @staticmethod
+    def _needs_constructor_copy(value: Expression) -> bool:
+        """Return whether binding *value* must snapshot a user record."""
+        resolved_type = getattr(value, "_resolved_type", None)
+        return isinstance(resolved_type, UserType) and not isinstance(
+            value, (ConstructorCall, TypeIdentifier, WithExpr)
+        )
 
     # ``_compile_tuple_destructure`` lives on ``BaseCompiler``; Python's
     # emission goes through ``_tuple_destructure_stmt`` below.  #622 slice.
@@ -1648,13 +1642,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             index_expr = cast(IndexAccess, expr)
             target = self._compile_expr(index_expr.target)
             index = self._compile_expr(index_expr.index)
-            # When target is List/String and index is Int, use raw Python []
-            # which handles negative indices natively. Out-of-bounds raises
-            # IndexError (Python's native error) instead of RuntimeError.
-            if self._is_indexable_type(index_expr.target) and is_int_type(
-                index_expr.index
-            ):
-                return f"{target}[{index}]"
             return f"_safe_index({target}, {index})"
 
         if expr_type is FieldAccess:
@@ -1799,8 +1786,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         if isinstance(expr, IndexAccess):
             target = self._compile_expr(expr.target)
             index = self._compile_expr(expr.index)
-            if self._is_indexable_type(expr.target) and is_int_type(expr.index):
-                return f"{target}[{index}]"
             return f"_safe_index({target}, {index})"
 
         if isinstance(expr, FieldAccess):
@@ -2991,8 +2976,12 @@ def compile_and_exec(
             # Trusted-caller path: exec in-process with no timeout.
             # Returns the full globals dict so callers can inspect
             # compiled functions by name.
+            import codecs as _runtime_codecs
             import math
+            import posixpath as _runtime_posixpath
+            import random as _runtime_random
             import re as _re
+            import time as _runtime_time
             from copy import deepcopy
             from dataclasses import dataclass
             from dataclasses import fields as _dataclasses_fields
@@ -3030,6 +3019,10 @@ def compile_and_exec(
                     "Union": Union,
                     "deepcopy": deepcopy,
                     "math": math,
+                    "_runtime_codecs": _runtime_codecs,
+                    "_runtime_posixpath": _runtime_posixpath,
+                    "_runtime_random": _runtime_random,
+                    "_runtime_time": _runtime_time,
                     "cmp_to_key": __import__("functools").cmp_to_key,
                     "_dataclasses_fields": _dataclasses_fields,
                     "_dataclasses_replace": _dataclasses_replace,

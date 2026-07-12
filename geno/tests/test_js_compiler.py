@@ -6,7 +6,6 @@ Tests for the Geno JavaScript Compiler
 import json
 import pathlib
 import re
-import subprocess
 from typing import cast
 
 import pytest
@@ -1356,7 +1355,7 @@ class TestJSCompilerTypes:
         """
         assert compile_and_run_js(source) == "5"
 
-    def test_bound_with_result_stays_frozen(self):
+    def test_bound_with_result_remains_mutable(self):
         """Binding a `with` result must preserve frozen ADT semantics."""
         source = """
         type Point = Point(x: Int, y: Int)
@@ -1367,8 +1366,7 @@ class TestJSCompilerTypes:
             return p.x
         end func
         """
-        with pytest.raises(RuntimeError, match="read only"):
-            compile_and_run_js(source)
+        assert compile_and_run_js(source) == "4"
 
 
 # =============================================================================
@@ -1944,7 +1942,7 @@ class TestJSCompilerConversions:
         end func
         """
         assert (
-            compile_and_run_js(source) == "1.0|(1, 2)|Some(value: 1)|Some(value: 'hi')"
+            compile_and_run_js(source) == '1.0|(1, 2)|Some(value: 1)|Some(value: "hi")'
         )
 
     def test_fstring_uses_geno_stringify_format(self):
@@ -1954,7 +1952,7 @@ class TestJSCompilerConversions:
             return f"{1.0}|{(1, 2)}|{Some(msg)}"
         end func
         """
-        assert compile_and_run_js(source) == "1.0|(1, 2)|Some(value: 'hi')"
+        assert compile_and_run_js(source) == '1.0|(1, 2)|Some(value: "hi")'
 
     def test_to_string_resolves_type_aliases_for_formatting(self):
         source = """
@@ -2540,7 +2538,6 @@ console.log(is_some(r1));
 console.log(unwrap(r1));
 console.log(is_none(r2));
 """
-        import subprocess
 
         result = run_node_code(js_code, timeout=10)
         assert result.returncode == 0, result.stderr
@@ -2888,7 +2885,7 @@ class TestJSCompilerOutput:
         assert "function Point(x, y)" in js_code
         assert "Object.freeze" not in js_code.split("function Point")[1].split("}")[0]
 
-    def test_with_expr_frozen(self):
+    def test_with_expr_emits_mutable_copy(self):
         """`with` on user-defined types freezes the updated copy."""
         source = """
         type Point = Point(x: Int, y: Int)
@@ -2903,7 +2900,8 @@ class TestJSCompilerOutput:
         end func
         """
         js_code = compile_to_js(source)
-        assert "Object.freeze({...p, x:" in js_code
+        assert "Object.freeze({...p, x:" not in js_code
+        assert "({...p, x:" in js_code
 
     def test_typed_modulo_simple_operands_use_safe_mod(self):
         source = """

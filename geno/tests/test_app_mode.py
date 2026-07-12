@@ -479,4 +479,4 @@ class TestJSAppMode:
         end func main
         """
         js = compile_to_js(source)
-        assert "Object.freeze({...p, x:" in js
+        assert "Object.freeze({...p, x:" not in js

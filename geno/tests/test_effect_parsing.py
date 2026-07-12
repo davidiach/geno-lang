@@ -2,10 +2,10 @@
 
 import pytest
 
-from geno.ast_nodes import FunctionDef, FunctionType
+from geno.ast_nodes import FunctionDef
 from geno.parser import parse
 from geno.typechecker import TypeChecker
-from geno.types import FuncType, IntType, StringType, UnitType
+from geno.types import FuncType
 
 
 def _parse(source: str):

@@ -4,10 +4,7 @@ Tests for CSV and TOML parsing builtins
 """
 
 import os
-import subprocess
 import sys
-
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 

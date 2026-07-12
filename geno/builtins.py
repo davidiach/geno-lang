@@ -280,7 +280,9 @@ def builtin_ceil(x: int | float) -> int:
 
 
 def builtin_round(x: int | float) -> int:
-    return _require_safe_js_int(int(math.floor(x + 0.5)), "round result")
+    base = math.floor(x)
+    rounded = base + (1 if x - base >= 0.5 else 0)
+    return _require_safe_js_int(rounded, "round result")
 
 
 def builtin_float_to_int(x: int | float) -> int:
@@ -305,18 +307,9 @@ def builtin_is_permutation(lst1: list[Any], lst2: list[Any]) -> bool:
         raise RuntimeError("is_permutation: list too large (max 100,000 elements)")
     if len(lst1) != len(lst2):
         return False
-    try:
-        return sorted(lst1) == sorted(lst2)
-    except TypeError:
-        used = [False] * len(lst2)
-        for left in lst1:
-            for index, right in enumerate(lst2):
-                if not used[index] and left == right:
-                    used[index] = True
-                    break
-            else:
-                return False
-        return True
+    return sorted(_geno_sort_key(item) for item in lst1) == sorted(
+        _geno_sort_key(item) for item in lst2
+    )
 
 
 def builtin_parse_int(s: str) -> ConstructorValue:
@@ -782,6 +775,31 @@ def _geno_sort_key(value: Any, _seen: set[int] | None = None) -> tuple[Any, ...]
     return (99, type(value).__name__, repr(value))
 
 
+def _format_string_literal(value: str) -> str:
+    """Return Geno's canonical double-quoted string representation."""
+    backslash = chr(92)
+    escapes = {
+        backslash: backslash + backslash,
+        '"': backslash + '"',
+        chr(8): backslash + "b",
+        chr(12): backslash + "f",
+        chr(10): backslash + "n",
+        chr(13): backslash + "r",
+        chr(9): backslash + "t",
+    }
+    parts = ['"']
+    for char in value:
+        escaped = escapes.get(char)
+        if escaped is not None:
+            parts.append(escaped)
+        elif ord(char) < 0x20:
+            parts.append(backslash + "u" + f"{ord(char):04x}")
+        else:
+            parts.append(char)
+    parts.append('"')
+    return "".join(parts)
+
+
 def format_value(value: Any, _seen: set[int] | None = None) -> str:
     """Format a value for display.
 
@@ -791,12 +809,18 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
         _seen = set()
 
     obj_id = id(value)
-    if isinstance(value, (list, dict, tuple, ArrayValue, SetValue)):
+    if isinstance(
+        value, (list, dict, tuple, ArrayValue, MutableMapValue, SetValue, VecValue)
+    ):
         if obj_id in _seen:
             if isinstance(value, ArrayValue):
                 return "Array([...])"
+            if isinstance(value, MutableMapValue):
+                return "MutableMap({...})"
             if isinstance(value, SetValue):
                 return "Set({...})"
+            if isinstance(value, VecValue):
+                return "Vec([...])"
             return "[...]" if isinstance(value, list) else "{...}"
         _seen = _seen | {obj_id}
 
@@ -808,14 +832,27 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
     if isinstance(value, ArrayValue):
         elements = ", ".join(format_value(e, _seen) for e in value._elements)
         return f"Array([{elements}])"
+    if isinstance(value, MutableMapValue):
+        items = ", ".join(
+            f"{format_value(k, _seen)}: {format_value(v, _seen)}"
+            for k, v in value._data.items()
+        )
+        return f"MutableMap({{{items}}})"
+    if isinstance(value, VecValue):
+        elements = ", ".join(format_value(e, _seen) for e in value._elements)
+        return f"Vec([{elements}])"
     if isinstance(value, list):
         elements = ", ".join(format_value(e, _seen) for e in value)
         return f"[{elements}]"
     if isinstance(value, tuple):
         elements = ", ".join(format_value(e, _seen) for e in value)
-        return f"({elements})"
+        suffix = "," if len(value) == 1 else ""
+        return f"({elements}{suffix})"
     if isinstance(value, dict):
-        items = ", ".join(f"{k}: {format_value(v, _seen)}" for k, v in value.items())
+        items = ", ".join(
+            f"{format_value(k, _seen)}: {format_value(v, _seen)}"
+            for k, v in value.items()
+        )
         return f"{{{items}}}"
     if isinstance(value, ConstructorValue):
         if not value.fields:
@@ -830,7 +867,7 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
     if isinstance(value, BuiltinFunction):
         return repr(value)
     if isinstance(value, str):
-        return f'"{value}"'
+        return _format_string_literal(value)
     if value is None:
         return "()"
     if isinstance(value, bool):
@@ -903,7 +940,7 @@ def _write_stringify_value(
         seen = seen | {obj_id}
 
     if isinstance(value, str):
-        writer.append(value if top_level else repr(value))
+        writer.append(value if top_level else _format_string_literal(value))
         return
     if value is None:
         writer.append("()")
@@ -1387,6 +1424,8 @@ def _has_nested_quantifier(pattern: str) -> bool:
                         continue
                     if pattern[m] in ("+", "*"):
                         return True
+                    if pattern[m] == "?" and m > group_start and pattern[m - 1] != "(":
+                        return True
                     if pattern[m] == "{" and m + 1 < i and pattern[m + 1].isdigit():
                         return True
                     m += 1
@@ -1395,41 +1434,13 @@ def _has_nested_quantifier(pattern: str) -> bool:
 
 
 def _has_overlapping_alternation(pattern: str) -> bool:
-    """Detect repeated groups with overlapping top-level alternation branches."""
+    """Conservatively reject alternation anywhere inside a repeated group.
 
-    def _split_top_level_alternatives(group_text: str) -> list[str]:
-        branches: list[str] = []
-        depth = 0
-        in_char_class = False
-        start = 0
-        i = 0
-        while i < len(group_text):
-            ch = group_text[i]
-            if ch == "\\":
-                i += 2
-                continue
-            if in_char_class:
-                if ch == "]":
-                    in_char_class = False
-                i += 1
-                continue
-            if ch == "[":
-                in_char_class = True
-            elif ch == "(":
-                depth += 1
-            elif ch == ")" and depth > 0:
-                depth -= 1
-            elif ch == "|" and depth == 0:
-                branches.append(group_text[start:i].strip())
-                start = i + 1
-            i += 1
-        branches.append(group_text[start:].strip())
-        return branches
-
-    def _branches_overlap(left: str, right: str) -> bool:
-        if not left or not right:
-            return True
-        return left == right or left.startswith(right) or right.startswith(left)
+    Source-level branch comparison is not sufficient because equivalent atoms can
+    be spelled differently (for example ``a`` and ``[a]``). Repeated alternation
+    is therefore outside Geno's safe regex subset, even when branches appear
+    distinct.
+    """
 
     n = len(pattern)
     i = 0
@@ -1437,26 +1448,46 @@ def _has_overlapping_alternation(pattern: str) -> bool:
         if pattern[i] == "\\":
             i += 2
             continue
+        if pattern[i] == "[":
+            i += 1
+            while i < n:
+                if pattern[i] == "\\":
+                    i += 2
+                    continue
+                if pattern[i] == "]":
+                    i += 1
+                    break
+                i += 1
+            continue
         if pattern[i] != "(":
             i += 1
             continue
 
         group_start = i
         depth = 1
+        has_alternation = False
+        in_char_class = False
         j = i + 1
-        split_at: int | None = None
         while j < n and depth > 0:
-            if pattern[j] == "\\":
+            ch = pattern[j]
+            if ch == "\\":
                 j += 2
                 continue
-            if pattern[j] == "(":
+            if in_char_class:
+                if ch == "]":
+                    in_char_class = False
+                j += 1
+                continue
+            if ch == "[":
+                in_char_class = True
+            elif ch == "(":
                 depth += 1
-            elif pattern[j] == ")":
+            elif ch == ")":
                 depth -= 1
                 if depth == 0:
                     break
-            elif pattern[j] == "|" and depth == 1 and split_at is None:
-                split_at = j
+            elif ch == "|":
+                has_alternation = True
             j += 1
 
         if depth != 0:
@@ -1465,18 +1496,12 @@ def _has_overlapping_alternation(pattern: str) -> bool:
         quant_idx = j + 1
         while quant_idx < n and pattern[quant_idx] in (" ", "\t"):
             quant_idx += 1
-        if (
-            split_at is not None
-            and quant_idx < n
-            and pattern[quant_idx] in ("+", "*", "{")
-        ):
-            branches = _split_top_level_alternatives(pattern[group_start + 1 : j])
-            for idx, left in enumerate(branches):
-                for right in branches[idx + 1 :]:
-                    if _branches_overlap(left, right):
-                        return True
+        if has_alternation and quant_idx < n and pattern[quant_idx] in ("+", "*", "{"):
+            return True
 
-        i = j + 1
+        # Continue inside this group so a quantified nested group is checked even
+        # when its parent group is not itself repeated.
+        i = group_start + 1
 
     return False
 
@@ -1693,6 +1718,35 @@ def builtin_regex_replace(
 # JSON Builtins
 # =============================================================================
 
+_MAX_JSON_NESTING_DEPTH = 128
+
+
+def _validate_json_nesting(text: str) -> None:
+    """Reject excessive JSON nesting without relying on host recursion limits."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                raise ValueError(
+                    "json_parse: input nested too deeply "
+                    f"(max {_MAX_JSON_NESTING_DEPTH})"
+                )
+        elif char in "]}" and depth:
+            depth -= 1
+
 
 def _python_to_json_value(obj: Any, limit: int | None = None) -> ConstructorValue:
     """Convert a Python object (from json.loads) to a Geno JsonValue."""
@@ -1787,9 +1841,10 @@ def builtin_json_parse(
 
     limit = _effective_max_collection_size(max_collection_size)
     try:
+        _validate_json_nesting(text)
         obj = json.loads(text, parse_constant=_reject_json_constant)
         value = _python_to_json_value(obj, limit)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         return ConstructorValue("Err", {"error": str(e)})
     return ConstructorValue("Ok", {"value": value})
 
@@ -1865,6 +1920,8 @@ def _geno_value_to_python(value: Any, limit: int | None = None) -> Any:
         if limit is not None:
             _check_collection_size("Map", len(result), limit)
         return result
+    if isinstance(value, (ArrayValue, MutableMapValue, VecValue, SetValue)):
+        return format_value(value)
     if isinstance(value, dict):
         if limit is not None:
             _check_collection_size("Map", len(value), limit)
@@ -2627,7 +2684,9 @@ def builtin_math_ceil(x: int | float) -> int:
 
 def builtin_math_round(x: int | float) -> int:
     """Round (stdlib wrapper)."""
-    return _require_safe_js_int(int(math.floor(x + 0.5)), "math_round result")
+    base = math.floor(x)
+    rounded = base + (1 if x - base >= 0.5 else 0)
+    return _require_safe_js_int(rounded, "math_round result")
 
 
 def builtin_math_sqrt(x: int | float) -> float:

@@ -4,10 +4,7 @@ Tests for default parameter values in the Geno language
 """
 
 import os
-import subprocess
 import sys
-
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 

@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable
 
 from ._version import __version__
 from .diagnostics import ErrorCode

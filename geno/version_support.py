@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from typing import Optional
 
 SUPPORTED_MIN_PYTHON = (3, 10)
 SUPPORTED_MAX_PYTHON = (3, 13)

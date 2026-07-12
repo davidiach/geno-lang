@@ -444,9 +444,10 @@ class TestFormatValue:
 
     def test_format_tuple(self):
         assert format_value((1, 2)) == "(1, 2)"
+        assert format_value((1,)) == "(1,)"
 
     def test_format_dict(self):
-        assert format_value({"a": 1}) == "{a: 1}"
+        assert format_value({"a": 1}) == '{"a": 1}'
 
     def test_format_none(self):
         assert format_value(None) == "()"
@@ -503,7 +504,7 @@ class TestFormatValue:
 
     def test_stringify_value_keeps_top_level_string_unquoted(self):
         assert stringify_value("hello") == "hello"
-        assert stringify_value(["hello"]) == "['hello']"
+        assert stringify_value(["hello"]) == '["hello"]'
 
     def test_stringify_value_stops_oversized_adt_output_early(self):
         set_max_collection_size(80)

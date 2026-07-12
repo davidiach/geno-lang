@@ -18,16 +18,23 @@ Usage:
 import argparse
 import math
 import os
-import sys
 from typing import Any
 
 from .capabilities import CapabilityParseError, normalize_capability_values
 from .cli._util import (
     _check_python_version,
-    _emit_unsupported_python_error,
-    _format_source_snippet,
-    _print_error,
-    _print_runtime_error,
+)
+from .cli._util import (
+    _emit_unsupported_python_error as _emit_unsupported_python_error,
+)
+from .cli._util import (
+    _format_source_snippet as _format_source_snippet,
+)
+from .cli._util import (
+    _print_error as _print_error,
+)
+from .cli._util import (
+    _print_runtime_error as _print_runtime_error,
 )
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,

@@ -90,7 +90,7 @@ _TEMPLATES: Dict[str, Dict[str, str]] = {
         "README.md": (
             "# {name}\n"
             "\n"
-            "A CLI application built with [Geno](https://github.com/davidiach/geno).\n"
+            "A CLI application built with [Geno](https://github.com/davidiach/geno-lang).\n"
             "\n"
             "## Run\n"
             "\n"
@@ -170,7 +170,7 @@ _TEMPLATES: Dict[str, Dict[str, str]] = {
         "README.md": (
             "# {name}\n"
             "\n"
-            "A browser app built with [Geno](https://github.com/davidiach/geno).\n"
+            "A browser app built with [Geno](https://github.com/davidiach/geno-lang).\n"
             "\n"
             "## Dev Server\n"
             "\n"
@@ -246,7 +246,7 @@ _TEMPLATES: Dict[str, Dict[str, str]] = {
         "README.md": (
             "# {name}\n"
             "\n"
-            "An API server built with [Geno](https://github.com/davidiach/geno).\n"
+            "An API server built with [Geno](https://github.com/davidiach/geno-lang).\n"
             "\n"
             "## Run\n"
             "\n"
@@ -315,7 +315,7 @@ _TEMPLATES: Dict[str, Dict[str, str]] = {
         "README.md": (
             "# {name}\n"
             "\n"
-            "A library built with [Geno](https://github.com/davidiach/geno).\n"
+            "A library built with [Geno](https://github.com/davidiach/geno-lang).\n"
             "\n"
             "## Test\n"
             "\n"

@@ -17,8 +17,6 @@ from geno.constraints import (
     KEYWORDS,
     TOKEN_TYPE_TO_KEYWORD,
     AllowedNext,
-    ConstraintState,
-    allowed_next,
     allowed_next_for_prefix,
     get_unclosed_blocks,
     start_state,
@@ -382,6 +380,7 @@ func foo() -> Int
         # May still be "valid" as a prefix, but unclosed blocks will show the issue
         unclosed = get_unclosed_blocks(source)
         # The if should still be open because "end while" doesn't close it
+        assert "if" in unclosed
 
     def test_deeply_nested(self):
         """Deeply nested blocks handled."""

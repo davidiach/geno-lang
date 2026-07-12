@@ -1,7 +1,5 @@
 """Tests for the effect typing system — Phase 3: inference and checking."""
 
-import pytest
-
 from geno.parser import parse
 from geno.typechecker import TypeChecker
 from geno.types import FuncType

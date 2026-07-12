@@ -5,18 +5,16 @@ Report Generator
 Generates comprehensive reports from benchmark analysis results.
 """
 
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 # Preserve direct `python analysis/report_generator.py ...` usage.
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from analysis.analyzer import AnalysisResults, ResultsAnalyzer
-from analysis.statistics import StatisticalTests, TestResult
+from analysis.statistics import StatisticalTests
 from analysis.visualizations import Visualizer
 
 

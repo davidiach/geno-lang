@@ -5,8 +5,6 @@ Tests for Geno Runtime Values
 Direct unit tests for geno/values.py.
 """
 
-import pytest
-
 from geno.tokens import SourceLocation
 from geno.values import (
     BuiltinFunction,

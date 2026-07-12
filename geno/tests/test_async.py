@@ -6,12 +6,10 @@ Tests for async/await in the Geno language
 import os
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import geno
-from geno.compiler import compile_and_exec, compile_to_python
+from geno.compiler import compile_to_python
 from geno.js_compiler import compile_to_js
 
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
 ### Added
 
 - **Centralized builtin metadata**: New `geno/builtin_metadata.py` module provides a single source of truth for capability maps, param names, and completion lists — replaces duplicated data across API, server, REPL, LSP, and both compilers (#312, #313)
@@ -31,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Public preview version**: Prepared `geno-lang` 0.4.0 as the first public package version; release metadata is aligned across Python, the language specification, and the VS Code extension
+- **Canonical value semantics**: User-defined constructor values are snapshots when rebound; `with` returns an independent value, while `Array`, `Vec`, `Set`, and `MutableMap` remain explicit reference types
+- **Portable integer contract**: JavaScript targets reject `Int` results outside `-(2^53 - 1)` through `2^53 - 1` instead of silently rounding; Python and interpreter execution retain the configurable `max_integer_bits` limit
+- **Runtime prelude ownership**: Python and JavaScript runtime preludes are documented as hand-maintained, target-specific implementations guarded by differential parity tests
 - **Server process isolation**: `/run` requests now execute in a `multiprocessing.Process` child (spawn context) instead of a thread pool, enabling hard kill on wall-clock timeout (#308)
 - **Python support range**: support metadata and docs now align on `>=3.10,<3.14`; badge and public compatibility docs reflect `3.10-3.13` (#309, #416)
 - **API parameter ordering**: `geno.run()` now standardizes on `filename` before `config` for new call sites while preserving `run(source, RunConfig(...))` backward compatibility (#380)
@@ -45,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cross-backend semantics**: Interpreter, compiled Python, and compiled JavaScript now agree on mixed `Int`/`Float` equality, numeric `divide`, bare-string `print`, map-update insertion order, constructor copy behavior, and mutable `with` results
+- **Example verdict parity**: `geno test` now applies the same mixed-numeric equality semantics as shipped compiled programs
+- **Type soundness**: Required named parameters cannot be skipped, mutable generic record fields are invariant, and calls through indexed expressions propagate their effects
+- **Parser and diagnostics**: Bare `return` no longer consumes the following line, malformed constructor patterns produce a typed diagnostic instead of an internal crash, duplicate top-level functions are rejected, numeric literal adjacency is diagnosed, and unsupported triple-quoted f-strings fail clearly
+- **Runtime hardening**: Overlapping non-capturing regex alternations are rejected, deeply nested JSON returns `Err`, default CLI clock/random capabilities work in process mode, rounding is stable at half boundaries, and structural permutation checks avoid a quadratic fallback
+- **Formatter stability**: Binding-position `match` expressions and their following statements retain canonical indentation
 - **Arithmetic parity**: Integer division and modulo now use truncation-toward-zero semantics across all three backends (interpreter, compiled Python, compiled JS), matching C/JS behavior instead of Python's floor division (#304)
 - **Map pair typing**: `map_from_list`, `map_entries`, and `map_from_entries` now use `List[(K, V)]` tuple pairs instead of `List[List[K]]` for type safety (#305)
 - **Result type annotations**: Compiled Python output now emits `Union[Ok[T], Err[E]]` instead of dropping the generic parameters (#311)

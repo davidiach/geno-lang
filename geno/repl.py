@@ -11,11 +11,10 @@ Features:
 - :type, :load, :ast, :clear commands
 """
 
-import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from . import __version__
 from .ast_nodes import ReturnStatement

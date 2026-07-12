@@ -3,8 +3,6 @@
 import json
 import subprocess
 
-import pytest
-
 from geno.api import RunConfig, run
 from geno.diagnostics import ErrorCode
 

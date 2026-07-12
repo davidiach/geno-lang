@@ -12,16 +12,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from geno.ast_nodes import (
     BinaryOp,
-    BooleanLiteral,
     ConstructorCall,
     ConstructorPattern,
     FieldAccess,
-    FloatLiteral,
     ForStatement,
     FunctionCall,
     FunctionDef,
     FunctionType,
-    Identifier,
     IfStatement,
     ImportStatement,
     IntegerLiteral,
@@ -33,7 +30,6 @@ from geno.ast_nodes import (
     Program,
     ReturnStatement,
     SimpleType,
-    StringLiteral,
     TypeDef,
     TypeIdentifier,
     UnaryOp,
@@ -42,8 +38,7 @@ from geno.ast_nodes import (
     WhileStatement,
     WildcardPattern,
 )
-from geno.lexer import Lexer
-from geno.parser import ParseError, ParseErrors, Parser, parse
+from geno.parser import ParseError, ParseErrors, parse
 
 
 def parse_source(source: str) -> Program:

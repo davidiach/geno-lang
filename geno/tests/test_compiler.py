@@ -3460,7 +3460,7 @@ class TestInterpreterCompilerParity:
         end func
         """
         result = compile_and_run(source)
-        assert result == "Some(value: 'hi')", f"got {result!r}"
+        assert result == 'Some(value: "hi")', f"got {result!r}"
 
     def test_user_type_repr_matches_interpreter(self):
         """User-defined type to_string must match interpreter format."""

@@ -13,9 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
-from .ast_nodes import AssertStatement, FunctionDef, TestBlock
+from .ast_nodes import FunctionDef, TestBlock
 from .execution_limits import (
-    DEFAULT_INTERPRETER_MAX_STEPS,
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
 )

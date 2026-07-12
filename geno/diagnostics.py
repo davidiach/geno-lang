@@ -7,7 +7,6 @@ Structured error codes and diagnostic types for machine-readable error reporting
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional
 
 from .tokens import SourceLocation
 
@@ -24,7 +23,14 @@ class ErrorCode(Enum):
     """
     Canonical error codes for all Geno error types.
 
-    Naming convention: <PHASE>_<CATEGORY>
+    Naming convention: <PHASE>_<CATEGORY>.
+
+    Codes are stable once published. The first code in each phase (E100,
+    E200, E300) and ``RUNTIME_UNKNOWN`` (E499) are intentional fallbacks for
+    errors that do not yet have a more specific category. The other codes are
+    reserved for the named condition and should be attached at the point where
+    that condition is recognized. This lets tools depend on granular codes
+    without requiring every possible error to have its own category.
     """
 
     # Lexer errors (1xx)
@@ -81,6 +87,24 @@ class ErrorCode(Enum):
     SANDBOX_STEP_LIMIT = "E503"
     SANDBOX_RESOURCE_LIMIT = "E504"
     SANDBOX_OUTPUT_LIMIT = "E505"
+
+
+def runtime_error_code_for_message(message: str) -> ErrorCode | None:
+    """Classify standardized interpreter errors that predate structured codes.
+
+    Runtime error sites should pass a code directly when practical. This
+    compatibility classifier keeps common errors stable while those older
+    call sites are migrated; an unrecognized message deliberately returns
+    ``None`` so the API can use ``RUNTIME_UNKNOWN``.
+    """
+
+    if message.startswith("Division by zero"):
+        return ErrorCode.RUNTIME_DIVISION_BY_ZERO
+    if message.startswith("Index ") and " out of bounds " in message:
+        return ErrorCode.RUNTIME_INDEX_OUT_OF_BOUNDS
+    if message.startswith("Key not found:"):
+        return ErrorCode.RUNTIME_KEY_NOT_FOUND
+    return None
 
 
 @dataclass(frozen=True)

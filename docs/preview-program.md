@@ -1,6 +1,6 @@
 # Geno Preview Program
 
-> **Status: Preview (v0.3.1)** — Geno is available for early evaluation, but
+> **Status: Preview (v0.4.0)** — Geno is available for early evaluation, but
 > the structured external beta program has not produced public participant
 > metrics or a retrospective yet.
 
@@ -19,10 +19,15 @@ documentation before v1.0.
 
 ### Setup
 
+For a published release:
+
 ```bash
 pip install geno-lang
 geno --version
 ```
+
+For an unpublished checkout, clone the repository and run
+`pip install -e .` from its root.
 
 ### First Steps
 

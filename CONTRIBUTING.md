@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Geno!
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/davidiach/geno.git
+   git clone https://github.com/davidiach/geno-lang.git
    cd geno
    ```
 

@@ -8,7 +8,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional, cast
+from typing import cast
 
 import pytest
 

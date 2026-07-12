@@ -5,10 +5,7 @@ Tests for Geno Module System
 Tests in-memory module resolution via import statements.
 """
 
-import pytest
-
 from geno.api import RunConfig, check, run
-from geno.diagnostics import ErrorCode
 
 
 class TestModuleBasic:

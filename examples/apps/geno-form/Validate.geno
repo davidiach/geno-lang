@@ -11,49 +11,49 @@ func validate_field(field: FieldDef, value: FieldValue) -> List[FieldError]
 
     // Required check
     let is_empty: Bool = match value with
-    | StringVal(v) -> length(v) == 0
-    | _ -> false
-end match
+        | StringVal(v) -> length(v) == 0
+        | _ -> false
+    end match
 
-if field.required and is_empty then
-    errors = append(errors, FieldError(field.name, field.label + " is required"))
-end if
-
-// Min length check (for strings)
-if field.min_length > 0 then
-    let len: Int = match value with
-    | StringVal(v) -> length(v)
-    | _ -> 0
-end match
-if len > 0 and len < field.min_length then
-    errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_length) + " characters"))
-end if
-end if
-
-// Max length check
-if field.max_length > 0 then
-    let len: Int = match value with
-    | StringVal(v) -> length(v)
-    | _ -> 0
-end match
-if len > field.max_length then
-    errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_length) + " characters"))
-end if
-end if
-
-// Number range checks
-match value with
-    | IntVal(n) ->
-    if field.min_value > 0 and n < field.min_value then
-        errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_value)))
+    if field.required and is_empty then
+        errors = append(errors, FieldError(field.name, field.label + " is required"))
     end if
-    if field.max_value > 0 and n > field.max_value then
-        errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_value)))
-    end if
-    | _ -> errors
-end match
 
-return errors
+    // Min length check (for strings)
+    if field.min_length > 0 then
+        let len: Int = match value with
+            | StringVal(v) -> length(v)
+            | _ -> 0
+        end match
+        if len > 0 and len < field.min_length then
+            errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_length) + " characters"))
+        end if
+    end if
+
+    // Max length check
+    if field.max_length > 0 then
+        let len: Int = match value with
+            | StringVal(v) -> length(v)
+            | _ -> 0
+        end match
+        if len > field.max_length then
+            errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_length) + " characters"))
+        end if
+    end if
+
+    // Number range checks
+    match value with
+        | IntVal(n) ->
+        if field.min_value > 0 and n < field.min_value then
+            errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_value)))
+        end if
+        if field.max_value > 0 and n > field.max_value then
+            errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_value)))
+        end if
+        | _ -> errors
+    end match
+
+    return errors
 end func
 
 // Validate all fields in a form.

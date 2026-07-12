@@ -530,8 +530,9 @@ function _mapGetValue(m, key) {
 
 function _mapSet(m, key, value) {
     const existingKey = _mapFindKey(m, key);
-    if (existingKey !== _MAP_MISSING) m.delete(existingKey);
-    m.set(key, value);
+    // Preserve insertion order and the canonical stored key on updates.
+    if (existingKey !== _MAP_MISSING) m.set(existingKey, value);
+    else m.set(key, value);
     return m;
 }
 
@@ -677,7 +678,7 @@ function _withGenoFormatter(value, formatter) {
 function _formatValue(value) {
     if (value === null || value === undefined) return '()';
     if (typeof value === 'boolean') return _GENO_STRING(value);
-    if (typeof value === 'string') return '"' + value + '"';
+    if (typeof value === 'string') return _reprString(value);
     if (typeof value === 'number') return _GENO_STRING(value);
     if (value instanceof GenoArray) return 'Array([' + value._elements.map(_formatValue).join(', ') + '])';
     if (Array.isArray(value)) return '[' + value.map(_formatValue).join(', ') + ']';
@@ -706,13 +707,7 @@ function _formatValue(value) {
 }
 
 function _reprString(value) {
-    return "'" + value
-        .replaceAll("\\", "\\\\")
-        .replaceAll("'", "\\'")
-        .replaceAll("\n", "\\n")
-        .replaceAll("\r", "\\r")
-        .replaceAll("\t", "\\t")
-        + "'";
+    return _GENO_JSON.stringify(value);
 }
 
 function _stringifyValue(value, seen, topLevel = true) {
@@ -1271,7 +1266,13 @@ function sqrt(x) {
 
 function floor(x) { return _requireSafeJsInt(_GENO_MATH.floor(x), "floor result"); }
 function ceil(x) { return _requireSafeJsInt(_GENO_MATH.ceil(x), "ceil result"); }
-function round_(x) { return _requireSafeJsInt(_GENO_MATH.floor(x + 0.5), "round result"); }
+function _roundNearest(x, context) {
+    const lower = _GENO_MATH.floor(x);
+    const result = x - lower >= 0.5 ? lower + 1 : lower;
+    return _requireSafeJsInt(result, context);
+}
+
+function round_(x) { return _roundNearest(x, "round result"); }
 
 function max_(a, b) { return a >= b ? a : b; }
 function abs_(x) { return _GENO_MATH.abs(x); }
@@ -1441,46 +1442,12 @@ function is_permutation(lst1, lst2) {
     }
     if (lst1.length !== lst2.length) return false;
 
-    const primitiveKey = value => {
-        if (value === null) return 'null:';
-        if (typeof value === 'boolean') return value ? 'boolean:true' : 'boolean:false';
-        if (typeof value === 'string') return `string:${value}`;
-        if (typeof value === 'number' && !Number.isNaN(value)) return `number:${value}`;
-        return null;
-    };
-    const keys1 = [];
-    const keys2 = [];
-    let primitiveOnly = true;
-    for (let i = 0; i < lst1.length; i++) {
-        const leftKey = primitiveKey(lst1[i]);
-        const rightKey = primitiveKey(lst2[i]);
-        if (leftKey === null || rightKey === null) {
-            primitiveOnly = false;
-            break;
-        }
-        keys1.push(leftKey);
-        keys2.push(rightKey);
-    }
-    if (primitiveOnly) {
-        keys1.sort();
-        keys2.sort();
-        for (let i = 0; i < keys1.length; i++) {
-            if (keys1[i] !== keys2[i]) return false;
-        }
-        return true;
-    }
-
-    const used = Array(lst2.length).fill(false);
-    for (const left of lst1) {
-        let matched = false;
-        for (let i = 0; i < lst2.length; i++) {
-            if (!used[i] && _valuesEqual(left, lst2[i])) {
-                used[i] = true;
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) return false;
+    // Canonical structural sort keys turn the previous O(n^2) unmatched scan
+    // into O(n log n), while the final equality check preserves Geno semantics.
+    const left = [...lst1].sort(_compareGenoValues);
+    const right = [...lst2].sort(_compareGenoValues);
+    for (let i = 0; i < left.length; i++) {
+        if (!_valuesEqual(left[i], right[i])) return false;
     }
     return true;
 }
@@ -2256,6 +2223,11 @@ function _hasNestedQuantifier(pattern) {
                 while (m < i) {
                     if (pattern[m] === "\\") { m += 2; continue; }
                     if (pattern[m] === "+" || pattern[m] === "*") return true;
+                    if (
+                        pattern[m] === "?" &&
+                        m > groupStart &&
+                        pattern[m - 1] !== "("
+                    ) return true;
                     if (pattern[m] === "{" && m + 1 < i && /[0-9]/.test(pattern[m + 1])) return true;
                     m++;
                 }
@@ -2268,58 +2240,44 @@ function _hasNestedQuantifier(pattern) {
 
 // Detect repeated groups with overlapping top-level alternation branches.
 // Mirrors Python's `_has_overlapping_alternation`.
+// Repeated alternation is outside Geno's safe regex subset. Equivalent atoms
+// can be spelled differently (for example `a` and `[a]`), so comparing branch
+// source text cannot prove that a backtracking expression is safe.
 function _hasOverlappingAlternation(pattern) {
-    function splitTopLevel(groupText) {
-        const branches = [];
-        let depth = 0;
-        let inCharClass = false;
-        let start = 0;
-        let i = 0;
-        while (i < groupText.length) {
-            const ch = groupText[i];
-            if (ch === "\\") { i += 2; continue; }
-            if (inCharClass) {
-                if (ch === "]") inCharClass = false;
-                i++;
-                continue;
-            }
-            if (ch === "[") inCharClass = true;
-            else if (ch === "(") depth++;
-            else if (ch === ")" && depth > 0) depth--;
-            else if (ch === "|" && depth === 0) {
-                branches.push(groupText.slice(start, i).trim());
-                start = i + 1;
-            }
-            i++;
-        }
-        branches.push(groupText.slice(start).trim());
-        return branches;
-    }
-
-    function overlap(left, right) {
-        if (!left || !right) return true;
-        return left === right || left.startsWith(right) || right.startsWith(left);
-    }
-
     const n = pattern.length;
     let i = 0;
     while (i < n) {
         if (pattern[i] === "\\") { i += 2; continue; }
+        if (pattern[i] === "[") {
+            i++;
+            while (i < n) {
+                if (pattern[i] === "\\") { i += 2; continue; }
+                if (pattern[i] === "]") { i++; break; }
+                i++;
+            }
+            continue;
+        }
         if (pattern[i] !== "(") { i++; continue; }
 
         const groupStart = i;
         let depth = 1;
+        let hasAlternation = false;
+        let inCharClass = false;
         let j = i + 1;
-        let splitAt = null;
         while (j < n && depth > 0) {
-            if (pattern[j] === "\\") { j += 2; continue; }
-            if (pattern[j] === "(") depth++;
-            else if (pattern[j] === ")") {
+            const ch = pattern[j];
+            if (ch === "\\") { j += 2; continue; }
+            if (inCharClass) {
+                if (ch === "]") inCharClass = false;
+                j++;
+                continue;
+            }
+            if (ch === "[") inCharClass = true;
+            else if (ch === "(") depth++;
+            else if (ch === ")") {
                 depth--;
                 if (depth === 0) break;
-            } else if (pattern[j] === "|" && depth === 1 && splitAt === null) {
-                splitAt = j;
-            }
+            } else if (ch === "|") hasAlternation = true;
             j++;
         }
 
@@ -2328,19 +2286,13 @@ function _hasOverlappingAlternation(pattern) {
         let quantIdx = j + 1;
         while (quantIdx < n && (pattern[quantIdx] === " " || pattern[quantIdx] === "\t")) quantIdx++;
         if (
-            splitAt !== null &&
+            hasAlternation &&
             quantIdx < n &&
             (pattern[quantIdx] === "+" || pattern[quantIdx] === "*" || pattern[quantIdx] === "{")
-        ) {
-            const branches = splitTopLevel(pattern.slice(groupStart + 1, j));
-            for (let idx = 0; idx < branches.length; idx++) {
-                for (let k = idx + 1; k < branches.length; k++) {
-                    if (overlap(branches[idx], branches[k])) return true;
-                }
-            }
-        }
+        ) return true;
 
-        i = j + 1;
+        // Continue inside this group so quantified nested groups are checked.
+        i = groupStart + 1;
     }
     return false;
 }
@@ -2750,6 +2702,35 @@ function _jsonParseValue(parser) {
     _jsonParseError(parser, "unexpected token");
 }
 
+const _MAX_JSON_NESTING_DEPTH = 128;
+
+function _ensureJsonNestingLimit(text) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (const ch of text) {
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (ch === "\\") escaped = true;
+            else if (ch === '"') inString = false;
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+        } else if (ch === "[" || ch === "{") {
+            depth += 1;
+            if (depth > _MAX_JSON_NESTING_DEPTH) {
+                throw new Error(
+                    "json_parse: nested too deeply (max "
+                    + _MAX_JSON_NESTING_DEPTH + " levels)",
+                );
+            }
+        } else if ((ch === "]" || ch === "}") && depth > 0) {
+            depth -= 1;
+        }
+    }
+}
+
 function _jsonParseText(text) {
     const parser = { text, index: 0 };
     const value = _jsonParseValue(parser);
@@ -2836,6 +2817,7 @@ function _escapeJsonAscii(text) {
 
 function json_parse(text) {
     try {
+        _ensureJsonNestingLimit(text);
         return _checkCollectionSize({ _tag: "Ok", value: _jsonParseText(text) });
     } catch (e) {
         if (String(e.message).includes("size exceeds limit")) throw e;
@@ -3372,7 +3354,7 @@ function math_max(a, b) { return _GENO_MATH.max(a, b); }
 function math_clamp(v, lo, hi) { return _GENO_MATH.max(lo, _GENO_MATH.min(hi, v)); }
 function math_floor(x) { return _requireSafeJsInt(_GENO_MATH.floor(x), "math_floor result"); }
 function math_ceil(x) { return _requireSafeJsInt(_GENO_MATH.ceil(x), "math_ceil result"); }
-function math_round(x) { return _requireSafeJsInt(_GENO_MATH.floor(x + 0.5), "math_round result"); }
+function math_round(x) { return _roundNearest(x, "math_round result"); }
 function math_sqrt(x) {
     if (typeof x !== 'number') {
         throw new Error("math_sqrt: expected number, got " + typeof x);

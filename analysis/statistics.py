@@ -7,7 +7,7 @@ Implementations of statistical tests for benchmark analysis.
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 
 @dataclass

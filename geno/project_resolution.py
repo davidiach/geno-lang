@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Optional, cast
+from typing import TYPE_CHECKING, Mapping, cast
 
 from .dependency_graph import (
     DependencyGraph,

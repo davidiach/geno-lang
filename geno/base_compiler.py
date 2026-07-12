@@ -14,7 +14,7 @@ from collections.abc import Collection
 from dataclasses import fields, is_dataclass
 from io import StringIO
 
-from ._definition_index import DefinitionIndex, collect_definitions
+from ._definition_index import DefinitionIndex
 from .ast_nodes import (
     AssignStatement,
     CallArg,
@@ -34,9 +34,7 @@ from .ast_nodes import (
     LetStatement,
     ListComprehension,
     ListPattern,
-    LiteralPattern,
     MatchArm,
-    MatchStatement,
     Parameter,
     Pattern,
     Program,
@@ -55,7 +53,6 @@ from .ast_nodes import (
     VariablePattern,
     VarStatement,
     WhileStatement,
-    WildcardPattern,
     WithExpr,
 )
 from .builtin_registry import builtin_param_name_lists

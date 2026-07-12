@@ -7,7 +7,7 @@ Defines all token types and the Token class for lexical analysis.
 
 from dataclasses import FrozenInstanceError
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any
 
 
 class TokenType(Enum):
