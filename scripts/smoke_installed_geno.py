@@ -17,14 +17,15 @@ under ``python -O`` / ``PYTHONOPTIMIZE=1``.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import geno
+import geno.package_index as package_index
 from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
-from geno.package_index import resolve, search
 from geno.target_profile import TargetProfile
 
 
@@ -50,10 +51,21 @@ def _assert_runtime_assets_available() -> None:
         len(JS_RUNTIME_PRELUDE) > 1000,
         f"JS runtime prelude looks empty or truncated ({len(JS_RUNTIME_PRELUDE)} chars)",
     )
-    _check(resolve("geno-json") is not None, "package index missing 'geno-json'")
+    index_path = Path(package_index.__file__).with_name("packages.json")
+    _check(index_path.is_file(), f"package index asset missing: {index_path}")
+    try:
+        index_data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"package index asset is unreadable: {index_path}") from exc
+    _check(isinstance(index_data, dict), "package index root must be an object")
+    _check(index_data.get("version") == 1, "package index version must be 1")
     _check(
-        any(pkg.get("name") == "geno-http" for pkg in search("http")),
-        "package index search('http') missing 'geno-http'",
+        isinstance(index_data.get("packages"), list),
+        "package index packages must be a list",
+    )
+    _check(
+        isinstance(package_index.search(""), list),
+        "package index search is unavailable",
     )
 
 

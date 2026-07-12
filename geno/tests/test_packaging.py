@@ -138,6 +138,12 @@ def test_publish_workflow_publishes_the_smoked_artifacts_without_rebuild():
     assert publish_steps.index("Build package") < publish_steps.index("Publish to PyPI")
 
 
+def test_installed_smoke_accepts_empty_public_catalog():
+    from scripts import smoke_installed_geno
+
+    smoke_installed_geno._assert_runtime_assets_available()
+
+
 def test_setuptools_package_data_includes_runtime_assets():
     pyproject = _pyproject()
 
