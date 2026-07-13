@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1489,7 +1490,15 @@ class TestBenchmarkRunner:
 
         def invoke():
             with monkeypatch.context() as patch:
-                patch.setattr(benchmark_runner.threading, "Thread", DelayedStartThread)
+                patch.setattr(
+                    benchmark_runner,
+                    "threading",
+                    SimpleNamespace(
+                        Thread=DelayedStartThread,
+                        current_thread=threading.current_thread,
+                        main_thread=threading.main_thread,
+                    ),
+                )
                 try:
                     make_python_runner(timeout_seconds=0.05)._call_with_timeout(
                         lambda: time.sleep(0.1)
