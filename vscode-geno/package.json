@@ -97,7 +97,7 @@
     "compile": "tsc -p ./",
     "test": "npm run check:node && npm run compile && node ./out/shellEscape.test.js && node ./out/lspStatus.test.js",
     "watch": "tsc -watch -p ./",
-    "package": "npx @vscode/vsce package"
+    "package": "npx @vscode/vsce package --dependencies"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.0"

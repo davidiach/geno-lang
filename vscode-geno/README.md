@@ -17,12 +17,10 @@ Syntax highlighting and error diagnostics for the [Geno](https://github.com/davi
 
 ## Installation
 
-> **Not yet published.** The extension is an unreleased development preview: it is not on the
-> VS Code Marketplace, and the packaged `.vsix` currently ships without its runtime dependency,
-> so the LSP client cannot start from a packaged install (diagnostics silently fall back to the
-> regex checker). Until packaging is fixed, run the extension from source for full functionality.
+> **Not yet published.** The extension is an unreleased development preview and is not on the
+> VS Code Marketplace. The packaged `.vsix` includes the runtime LSP client.
 
-Package and install a `.vsix` locally (LSP limitation above applies):
+Package and install a `.vsix` locally:
 
 ```bash
 cd vscode-geno
