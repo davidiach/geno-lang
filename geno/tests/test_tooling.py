@@ -11,8 +11,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import benchmark.runner as benchmark_runner
 
 pytest.importorskip("yaml", reason="pyyaml required for experiment tooling tests")
 
@@ -1475,6 +1478,40 @@ class TestBenchmarkRunner:
         assert isinstance(result, EvaluationResult)
         assert result.error_category == ErrorCategory.TIMEOUT
         assert result.test_results[0].error_category == ErrorCategory.TIMEOUT
+
+    def test_python_timeout_includes_delay_before_join(self, monkeypatch):
+        observed: dict[str, object] = {}
+        real_thread = threading.Thread
+
+        class DelayedStartThread(threading.Thread):
+            def start(self) -> None:
+                super().start()
+                self.join(timeout=1.0)
+
+        def invoke():
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    benchmark_runner,
+                    "threading",
+                    SimpleNamespace(
+                        Thread=DelayedStartThread,
+                        current_thread=threading.current_thread,
+                        main_thread=threading.main_thread,
+                    ),
+                )
+                try:
+                    make_python_runner(timeout_seconds=0.05)._call_with_timeout(
+                        lambda: time.sleep(0.1)
+                    )
+                except BenchmarkTimeoutError as exc:
+                    observed["error"] = exc
+
+        worker = real_thread(target=invoke)
+        worker.start()
+        worker.join(timeout=1.0)
+
+        assert not worker.is_alive()
+        assert isinstance(observed.get("error"), BenchmarkTimeoutError)
 
     def test_python_runtime_error_propagates_off_main_thread(self):
         problem = make_problem()

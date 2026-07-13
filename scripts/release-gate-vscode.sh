@@ -32,7 +32,7 @@ VERSION="$(node -p "require('./package.json').version")"
 VSIX_PATH="$OUT_DIR/geno-$VERSION.vsix"
 
 echo "Packaging VS Code extension..."
-npm run package -- --no-dependencies --out "$VSIX_PATH"
+npm run package -- --out "$VSIX_PATH"
 
 if [ ! -f "$VSIX_PATH" ]; then
   echo "ERROR: expected VSIX package was not created: $VSIX_PATH" >&2
@@ -48,6 +48,8 @@ with zipfile.ZipFile(vsix_path) as archive:
     names = set(archive.namelist())
 required = {
     "extension/package.json",
+    "extension/node_modules/vscode-languageclient/package.json",
+    "extension/node_modules/vscode-languageclient/lib/node/main.js",
     "extension/out/extension.js",
     "extension/out/lspStatus.js",
     "extension.vsixmanifest",
@@ -58,6 +60,8 @@ if missing:
         "ERROR: packaged VSIX is missing expected files: " + ", ".join(missing)
     )
 forbidden = {
+    "extension/node_modules/@vscode/vsce/package.json",
+    "extension/node_modules/typescript/package.json",
     "extension/out/lspStatus.test.js",
     "extension/out/shellEscape.test.js",
     "extension/scripts/check-node-version.js",
