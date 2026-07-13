@@ -1839,6 +1839,26 @@ class TestCompilerReservedNameProtection:
         with pytest.raises(CompileError, match="reserved runtime name"):
             compile_to_python(source)
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "_runtime_codecs",
+            "_runtime_posixpath",
+            "_runtime_random",
+            "_runtime_time",
+        ],
+    )
+    def test_function_named_runtime_module_alias_rejected(self, name: str):
+        """User functions cannot replace modules injected into the sandbox."""
+        source = f"""
+        func {name}(x: Int) -> Int
+            example 5 -> 5
+            return x
+        end func
+        """
+        with pytest.raises(CompileError, match="reserved runtime name"):
+            compile_to_python(source)
+
     def test_type_named_constructor_rejected(self):
         """A type named Constructor would shadow the base class."""
         source = """

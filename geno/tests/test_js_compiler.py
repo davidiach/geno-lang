@@ -2312,6 +2312,16 @@ class TestJSCompilerReservedNames:
         with pytest.raises(JSCompileError, match="reserved runtime name"):
             compile_to_js(source)
 
+    def test_round_nearest_name_rejected(self):
+        source = """
+        func _roundNearest(value: Float, context: String) -> Int
+            example 1.0, "test" -> 1
+            return 1
+        end func
+        """
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
     def test_safe_index_set_name_rejected(self):
         source = """
         func _safe_index_set(xs: Array[Int], index: Int, value: Int) -> Unit

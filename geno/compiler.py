@@ -153,6 +153,10 @@ RESERVED_PRELUDE_NAMES = (
             "dataclass",
             "_dataclasses_fields",
             "_dataclasses_replace",
+            "_runtime_codecs",
+            "_runtime_posixpath",
+            "_runtime_random",
+            "_runtime_time",
             # Typed hole helper
             "_typed_hole",
             # Mutable collection types
