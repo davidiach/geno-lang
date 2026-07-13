@@ -1406,7 +1406,7 @@ class TestUserTypeVariance:
         """
         check_program(source)
 
-    def test_recursive_covariant_usertype_stays_covariant(self):
+    def test_recursive_usertype_with_direct_typevar_field_is_invariant(self):
         source = """
         type Node[T] = Node(next: Option[Node[T]], value: T)
 
@@ -1416,7 +1416,8 @@ class TestUserTypeVariance:
             return 0
         end func
         """
-        check_program(source)
+        error = expect_type_error(source)
+        assert "Node" in str(error)
 
     def test_async_field_infers_constructor_type_vars(self):
         source = """

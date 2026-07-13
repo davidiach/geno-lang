@@ -1,16 +1,25 @@
 """
 Geno Runtime Support
 ========================
-Auto-generated Python code from Geno source.
+Hand-maintained runtime prelude for compiled Python output.
+
+Keep observable semantics aligned with builtins.py and
+_js_runtime_support.js; cross-backend parity tests enforce that contract.
 """
 
+import codecs as _runtime_codecs
 import math
+import posixpath as _runtime_posixpath
+import random as _runtime_random
 import re as _re
+import time as _runtime_time
 from dataclasses import dataclass
 from dataclasses import fields as _dataclasses_fields
-from dataclasses import replace as _dataclasses_replace
+from dataclasses import replace as _dataclasses_replace  # noqa: F401
 from functools import cmp_to_key
-from typing import Any, Callable, Generic, Optional, TypeVar, Union
+from typing import Any, Callable, Generic, TypeVar
+from typing import Optional as Optional
+from typing import Union as Union
 
 _builtin_zip = zip
 _builtin_enumerate = enumerate
@@ -152,6 +161,31 @@ def _geno_sort_key(value: Any, _seen: set[int] | None = None) -> tuple[Any, ...]
     return (99, type(value).__name__, repr(value))
 
 
+def _geno_quote_string(value: str) -> str:
+    """Return Geno's canonical double-quoted string representation."""
+    backslash = chr(92)
+    escapes = {
+        backslash: backslash + backslash,
+        '"': backslash + '"',
+        chr(8): backslash + "b",
+        chr(12): backslash + "f",
+        chr(10): backslash + "n",
+        chr(13): backslash + "r",
+        chr(9): backslash + "t",
+    }
+    parts = ['"']
+    for char in value:
+        escaped = escapes.get(char)
+        if escaped is not None:
+            parts += [escaped]
+        elif ord(char) < 0x20:
+            parts += [backslash + "u" + f"{ord(char):04x}"]
+        else:
+            parts += [char]
+    parts += ['"']
+    return "".join(parts)
+
+
 def _geno_format(
     value: Any,
     _seen: set[int] | None = None,
@@ -189,7 +223,7 @@ def _geno_format(
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return value if _top_level else repr(value)
+        return value if _top_level else _geno_quote_string(value)
     if isinstance(value, Constructor):
         fields = _dataclasses_fields(value)
         if not fields:
@@ -266,6 +300,51 @@ class Constructor:
             return type(self).__name__
         field_strs = ", ".join(f"{f.name}: {getattr(self, f.name)!r}" for f in fields)
         return f"{type(self).__name__}({field_strs})"
+
+
+def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any:
+    """Copy Geno value containers while preserving explicit reference types."""
+    if memo is None:
+        memo = []
+
+    if isinstance(value, (_GenoArray, _GenoVec, _GenoMutableMap, _GenoSet)):
+        return value
+
+    for original, copied in memo:
+        if original is value:
+            return copied
+
+    if isinstance(value, list):
+        copied_list: list[Any] = []
+        memo += [(value, copied_list)]
+        copied_list.extend(_geno_deepcopy(item, memo) for item in value)
+        return copied_list
+
+    if isinstance(value, dict):
+        copied_dict: dict[Any, Any] = {}
+        memo += [(value, copied_dict)]
+        for key, nested_value in value.items():
+            copied_dict[key] = _geno_deepcopy(nested_value, memo)
+        return copied_dict
+
+    if isinstance(value, tuple):
+        copied_tuple = tuple(_geno_deepcopy(item, memo) for item in value)
+        memo += [(value, copied_tuple)]
+        return copied_tuple
+
+    if isinstance(value, Constructor):
+        geno_object: Any = _GENO_OBJECT
+        copied_constructor = geno_object.__new__(type(value))
+        memo += [(value, copied_constructor)]
+        for field in _dataclasses_fields(value):
+            _object_setattr(
+                copied_constructor,
+                field.name,
+                _geno_deepcopy(getattr(value, field.name), memo),
+            )
+        return copied_constructor
+
+    return value
 
 
 # =============================================================================
@@ -559,7 +638,9 @@ def ceil_(x: float) -> int:
 
 
 def round_(x: float) -> int:
-    return _require_safe_js_int(int(math.floor(x + 0.5)), "round result")
+    base = math.floor(x)
+    rounded = base + (1 if x - base >= 0.5 else 0)
+    return _require_safe_js_int(rounded, "round result")
 
 
 def max_(a: Any, b: Any) -> Any:
@@ -1665,9 +1746,7 @@ def clear_text_input():
 
 def clock_now():
     _require_cap("clock", "clock_now")
-    import time
-
-    return _require_safe_js_int(int(time.time()), "clock_now result")
+    return _require_safe_js_int(int(_runtime_time.time()), "clock_now result")
 
 
 def sleep_ms(ms):
@@ -1681,27 +1760,22 @@ def sleep_ms(ms):
         raise RuntimeError(f"sleep_ms: negative duration not allowed ({ms})")
     if ms == 0:
         return None
-    import time
-
-    time.sleep(ms / 1000.0)
+    _runtime_time.sleep(ms / 1000.0)
     return None
 
 
 def random_int(lo, hi):
     _require_cap("random", "random_int")
-    import random
 
     lo = _require_safe_js_int(lo, "random_int lower bound")
     hi = _require_safe_js_int(hi, "random_int upper bound")
-    result = random.randint(lo, hi)  # noqa: S311 — non-crypto use, general-purpose RNG
+    result = _runtime_random.randint(lo, hi)  # noqa: S311
     return _require_safe_js_int(result, "random_int result")
 
 
 def random_float():
     _require_cap("random", "random_float")
-    import random
-
-    return random.random()  # noqa: S311 — non-crypto use, general-purpose RNG
+    return _runtime_random.random()  # noqa: S311
 
 
 def _safe_index(target, index):
@@ -2009,6 +2083,8 @@ def _has_nested_quantifier(pattern: str) -> bool:
                         continue
                     if pattern[m] in ("+", "*"):
                         return True
+                    if pattern[m] == "?" and m > group_start and pattern[m - 1] != "(":
+                        return True
                     if pattern[m] == "{" and m + 1 < i and pattern[m + 1].isdigit():
                         return True
                     m += 1
@@ -2017,39 +2093,13 @@ def _has_nested_quantifier(pattern: str) -> bool:
 
 
 def _has_overlapping_alternation(pattern: str) -> bool:
-    def _split_top_level_alternatives(group_text: str) -> list[str]:
-        branches: list[str] = []
-        depth = 0
-        in_char_class = False
-        start = 0
-        i = 0
-        while i < len(group_text):
-            ch = group_text[i]
-            if ch == "\\":
-                i += 2
-                continue
-            if in_char_class:
-                if ch == "]":
-                    in_char_class = False
-                i += 1
-                continue
-            if ch == "[":
-                in_char_class = True
-            elif ch == "(":
-                depth += 1
-            elif ch == ")" and depth > 0:
-                depth -= 1
-            elif ch == "|" and depth == 0:
-                branches.append(group_text[start:i].strip())
-                start = i + 1
-            i += 1
-        branches.append(group_text[start:].strip())
-        return branches
+    """Conservatively reject alternation anywhere inside a repeated group.
 
-    def _branches_overlap(left: str, right: str) -> bool:
-        if not left or not right:
-            return True
-        return left == right or left.startswith(right) or right.startswith(left)
+    Source-level branch comparison is not sufficient because equivalent atoms can
+    be spelled differently (for example ``a`` and ``[a]``). Repeated alternation
+    is therefore outside Geno's safe regex subset, even when branches appear
+    distinct.
+    """
 
     n = len(pattern)
     i = 0
@@ -2057,26 +2107,46 @@ def _has_overlapping_alternation(pattern: str) -> bool:
         if pattern[i] == "\\":
             i += 2
             continue
+        if pattern[i] == "[":
+            i += 1
+            while i < n:
+                if pattern[i] == "\\":
+                    i += 2
+                    continue
+                if pattern[i] == "]":
+                    i += 1
+                    break
+                i += 1
+            continue
         if pattern[i] != "(":
             i += 1
             continue
 
         group_start = i
         depth = 1
+        has_alternation = False
+        in_char_class = False
         j = i + 1
-        split_at: int | None = None
         while j < n and depth > 0:
-            if pattern[j] == "\\":
+            ch = pattern[j]
+            if ch == "\\":
                 j += 2
                 continue
-            if pattern[j] == "(":
+            if in_char_class:
+                if ch == "]":
+                    in_char_class = False
+                j += 1
+                continue
+            if ch == "[":
+                in_char_class = True
+            elif ch == "(":
                 depth += 1
-            elif pattern[j] == ")":
+            elif ch == ")":
                 depth -= 1
                 if depth == 0:
                     break
-            elif pattern[j] == "|" and depth == 1 and split_at is None:
-                split_at = j
+            elif ch == "|":
+                has_alternation = True
             j += 1
 
         if depth != 0:
@@ -2085,18 +2155,12 @@ def _has_overlapping_alternation(pattern: str) -> bool:
         quant_idx = j + 1
         while quant_idx < n and pattern[quant_idx] in (" ", "\t"):
             quant_idx += 1
-        if (
-            split_at is not None
-            and quant_idx < n
-            and pattern[quant_idx] in ("+", "*", "{")
-        ):
-            branches = _split_top_level_alternatives(pattern[group_start + 1 : j])
-            for idx, left in enumerate(branches):
-                for right in branches[idx + 1 :]:
-                    if _branches_overlap(left, right):
-                        return True
+        if has_alternation and quant_idx < n and pattern[quant_idx] in ("+", "*", "{"):
+            return True
 
-        i = j + 1
+        # Continue inside this group so a quantified nested group is checked even
+        # when its parent group is not itself repeated.
+        i = group_start + 1
 
     return False
 
@@ -2306,6 +2370,35 @@ def regex_replace(pattern: str, replacement: str, text: str) -> str:
 # JSON Builtins
 # =============================================================================
 
+_MAX_JSON_NESTING_DEPTH = 128
+
+
+def _validate_json_nesting(text: str) -> None:
+    """Reject excessive JSON nesting without host-recursion dependence."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                raise ValueError(
+                    "json_parse: input nested too deeply "
+                    f"(max {_MAX_JSON_NESTING_DEPTH})"
+                )
+        elif char in "]}" and depth:
+            depth -= 1
+
 
 @dataclass(frozen=True, repr=False)
 class JsonString(Constructor):
@@ -2410,9 +2503,10 @@ def json_parse(text: str):
     import json as _json
 
     try:
+        _validate_json_nesting(text)
         obj = _json.loads(text, parse_constant=_reject_json_constant)
         value = _python_to_json_value(obj)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         return _check_collection_size(Err(str(e)))
     return _check_collection_size(Ok(value))
 
@@ -2760,7 +2854,9 @@ def math_ceil(x):
 
 
 def math_round(x):
-    return _require_safe_js_int(int(math.floor(x + 0.5)), "math_round result")
+    base = math.floor(x)
+    rounded = base + (1 if x - base >= 0.5 else 0)
+    return _require_safe_js_int(rounded, "math_round result")
 
 
 def math_sqrt(x):
@@ -2797,19 +2893,16 @@ def math_e():
 
 def math_random_int(lo, hi):
     _require_cap("random", "math_random_int")
-    import random as _random
 
     lo = _require_safe_js_int(lo, "math_random_int lower bound")
     hi = _require_safe_js_int(hi, "math_random_int upper bound")
-    result = _random.randint(lo, hi)  # noqa: S311
+    result = _runtime_random.randint(lo, hi)  # noqa: S311
     return _require_safe_js_int(result, "math_random_int result")
 
 
 def math_random_float():
     _require_cap("random", "math_random_float")
-    import random as _random
-
-    return _random.random()  # noqa: S311
+    return _runtime_random.random()  # noqa: S311
 
 
 # =============================================================================
@@ -2904,36 +2997,26 @@ def option_to_result(option, err):
 
 
 def path_join(base, child):
-    import posixpath as _pp
-
-    result = _pp.join(base, child)
+    result = _runtime_posixpath.join(base, child)
     _check_string_result_size("path_join", len(result))
     return result
 
 
 def path_parent(path):
-    import posixpath as _pp
-
-    return _pp.dirname(path)
+    return _runtime_posixpath.dirname(path)
 
 
 def path_filename(path):
-    import posixpath as _pp
-
-    return _pp.basename(path)
+    return _runtime_posixpath.basename(path)
 
 
 def path_extension(path):
-    import posixpath as _pp
-
-    _, ext = _pp.splitext(path)
+    _, ext = _runtime_posixpath.splitext(path)
     return ext
 
 
 def path_is_absolute(path):
-    import posixpath as _pp
-
-    return _pp.isabs(path)
+    return _runtime_posixpath.isabs(path)
 
 
 # =============================================================================
@@ -2943,9 +3026,7 @@ def path_is_absolute(path):
 
 def datetime_now():
     _require_cap("clock", "datetime_now")
-    import time as _t
-
-    return _require_safe_js_int(int(_t.time()), "datetime_now result")
+    return _require_safe_js_int(int(_runtime_time.time()), "datetime_now result")
 
 
 def datetime_format(timestamp, fmt):
@@ -3445,9 +3526,7 @@ def _check_limited_text_size(fn_name: str, size: int, limit_error_type) -> None:
 def _read_limited_utf8_stream(
     reader, fn_name: str, *, limit_error_type=RuntimeError
 ) -> str:
-    import codecs as _codecs
-
-    decoder = _codecs.getincrementaldecoder("utf-8")(errors="replace")
+    decoder = _runtime_codecs.getincrementaldecoder("utf-8")(errors="replace")
     parts: list[str] = []
     total = 0
     while True:

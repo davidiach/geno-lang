@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "Geno",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Machine-readable specification for the Geno programming language",
 
   "keywords": [
@@ -29,6 +29,21 @@
       "Option": ["Some(value)", "None"],
       "Result": ["Ok(value)", "Err(error)"]
     }
+  },
+
+  "runtime_semantics": {
+    "numeric_equality": "Int and Float compare by numeric value; structural equality applies this recursively",
+    "integer_division": "truncates toward zero",
+    "portable_javascript_int": {"min": -9007199254740991, "max": 9007199254740991, "behavior_outside_range": "runtime error"},
+    "python_interpreter_integer_limit": "RunConfig.max_integer_bits (default 33219 bits)",
+    "constructor_values": "value semantics; rebinding snapshots and with returns an independent value",
+    "mutable_reference_types": ["Array[T]", "Vec[T]", "Set[T]", "MutableMap[K, V]"],
+    "map_order": "insertion order; updating an existing key preserves its position",
+    "map_index": "partial; a missing key raises a runtime error",
+    "map_get": "total lookup returning Option[V]",
+    "print": "canonical Geno representation plus newline; top-level String values are unquoted",
+    "runtime_preludes": "hand-maintained target-specific implementations guarded by cross-backend parity tests",
+    "embedding_timeout": "cooperative; untrusted code requires process isolation"
   },
 
   "operators": {

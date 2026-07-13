@@ -24,7 +24,6 @@ from typing import (
     Any,
     Callable,
     Mapping,
-    Optional,
     Union,
     cast,
 )

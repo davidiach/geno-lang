@@ -69,6 +69,9 @@ if TYPE_CHECKING:  # static imports for type checkers and IDEs only
     from .values import GenoRuntimeError, value_to_json
 
 __all__ = [  # noqa: RUF022 — grouped by category, not alphabetical
+    # Package metadata
+    "__author__",
+    "__version__",
     # Core types
     "Token",
     "TokenType",

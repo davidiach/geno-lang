@@ -1,7 +1,6 @@
 """Tests for geno init project scaffolding."""
 
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -26,6 +25,7 @@ class TestCreateProject:
         assert (project / "Main.geno").exists()
         toml_content = (project / "geno.toml").read_text()
         assert 'entrypoint = "Main"' in toml_content
+        assert len(files) == 2
 
     def test_lib_template(self, tmp_path):
         project = tmp_path / "mylib"
@@ -87,6 +87,7 @@ class TestCreateProject:
         assert "func init()" in main
         assert "update" in main
         assert "render" in main
+        assert len(files) == 4
 
     def test_api_template(self, tmp_path):
         project = tmp_path / "myapi"

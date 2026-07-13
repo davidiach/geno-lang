@@ -53,6 +53,8 @@ Sandboxed Geno execution blocks ambient access to:
 Additional constraints:
 
 - `RunConfig(timeout=...)` is enforced through the interpreter deadline path
+  cooperatively; a builtin or host callback that holds control cannot be
+  preempted by the in-process interpreter
 - step budgets default to `RunConfig(max_steps=1_000_000)` and apply only to the
   interpreter / thread-sandbox path; the `ProcessSandbox` path bounds
   compiled Python via wall-clock, memory, collection-size,
@@ -120,6 +122,9 @@ The JS backend emits standalone JavaScript that includes the runtime prelude. It
 For untrusted code, use the hosted server boundary or wrap `geno.api.run()` in
 caller-managed process isolation. Do not rely on the in-process embedding API
 alone for killable wall-clock isolation.
+
+Cross-backend numbers, copies, map ordering, lookup, and output are specified in
+[Portable Runtime Semantics](../reference/runtime-semantics.md).
 
 Hosted `/run` and `/constrain` workers use `multiprocessing.get_context("spawn")`
 and fail closed with `WorkerSpawnFailed` if a killable child process cannot be

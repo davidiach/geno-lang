@@ -12,15 +12,13 @@ import sys
 
 import pytest
 
-from geno.compiler import compile_and_exec, compile_to_python
+from geno.compiler import compile_and_exec
 from geno.interpreter import Interpreter
 from geno.sandbox import (
-    RecursionLimitError,
     ResourceLimitExceeded,
     SandboxConfig,
     SandboxError,
     SecurityViolation,
-    TimeoutError,
     check_sandbox_escape,
     run_sandboxed,
     validate_code_safety,
@@ -1897,6 +1895,7 @@ class TestServerEmptyCapabilitiesRegression:
 
         collector = RuntimeMetricsCollector()
         handler = create_handler(collector, allowed_capabilities=set())
+        assert callable(handler)
         # The handler is a closure; verify the bound 'allowed' set is empty
         # by checking the code path through _coerce_capabilities
         from geno.server import _coerce_capabilities

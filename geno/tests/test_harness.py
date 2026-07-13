@@ -12,7 +12,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from geno.ast_nodes import ExampleClause
 from geno.harness import (
     FunctionHarness,
     HarnessResult,

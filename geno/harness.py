@@ -9,9 +9,8 @@ that implementations match their specifications.
 Ported from Stitch's harness system, adapted for Geno.
 """
 
-import traceback
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from .ast_nodes import (
     EnsuresClause,
@@ -440,7 +439,6 @@ def run_harness_from_compiled(source: str) -> HarnessResult:
     from .interpreter import Interpreter
     from .lexer import Lexer
     from .parser import Parser
-    from .typechecker import TypeChecker
 
     # Parse for harness extraction
     lexer = Lexer(source)

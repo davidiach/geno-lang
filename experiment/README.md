@@ -299,8 +299,8 @@ The Python API also supports `problems=[...]` directly on
 To reproduce an experiment from a clean checkout:
 
 ```bash
-git clone https://github.com/davidiach/geno.git
-cd geno
+git clone https://github.com/davidiach/geno-lang.git
+cd geno-lang
 pip install -r requirements.txt
 pip install anthropic   # or openai
 

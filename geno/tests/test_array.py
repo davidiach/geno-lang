@@ -4,10 +4,7 @@ Tests for the Geno Array[T] type
 """
 
 import os
-import subprocess
 import sys
-
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 

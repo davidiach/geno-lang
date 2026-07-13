@@ -886,7 +886,7 @@ class TestStepBudgetEnforcement:
 
     def test_pattern_matching_counts_steps(self):
         """Pattern matching must consume steps per recursive match."""
-        from geno.sandbox import SandboxConfig, StepLimitExceeded
+        from geno.sandbox import SandboxConfig
 
         source = """
         func check(opt: Option[Int]) -> Int

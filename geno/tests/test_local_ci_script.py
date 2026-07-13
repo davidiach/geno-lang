@@ -1,7 +1,6 @@
 """Tests for the local CI workflow helper."""
 
 import sys
-from pathlib import Path
 
 import pytest
 

@@ -6,8 +6,6 @@ Complements the LSP-focused tests in test_lsp.py::TestSymbolTableScoping
 with standalone unit tests for the public API.
 """
 
-import pytest
-
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.symbol_table import (

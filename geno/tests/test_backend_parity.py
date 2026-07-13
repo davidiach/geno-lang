@@ -10,9 +10,9 @@ main-guard return-value printing does not interfere.  We compare the
 interpreter's captured output against subprocess stdout from each compiled
 backend.
 
-Integer print output is consistent across all three backends.  For strings
-passed to print(), the interpreter wraps them in quotes while the compilers
-do not, so we use to_string() conversions or print integers directly.
+The parity corpus compares canonical stdout directly, including nested string
+formatting. Top-level strings print bare; strings nested in values use Geno's
+double-quoted escaped representation on every backend.
 """
 # mypy: disable-error-code="no-redef"
 
@@ -899,11 +899,9 @@ def _assert_expected_backend_outputs(
 # ---------------------------------------------------------------------------
 # Test programs
 #
-# Each program uses print() to produce output and returns Unit.
-# print() of integers is consistent across all three backends.
-# For string output we use to_string() to convert values, then print the
-# string -- the interpreter quotes strings in print() so we instead print
-# length() or use integer sentinels to verify behaviour.
+# Each program uses print() to produce canonical output and returns Unit.
+# Interpreter, compiled Python, and compiled JavaScript are expected to agree
+# for both scalar and composite values.
 # ---------------------------------------------------------------------------
 
 PARITY_PROGRAMS = [
@@ -3098,49 +3096,41 @@ class TestBackendParity:
         source = """
         func main() -> Unit
             let m: Map[String, Int] = map_from_entries([("a", 1)])
-            if to_string(m) == "{'a': 1}" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(to_string(m))
 
             let mm: MutableMap[String, Int] = mutable_map_new()
             mutable_map_set(map: mm, key: "a", value: 1)
-            if to_string(mm) == "MutableMap({'a': 1})" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(to_string(mm))
 
             let v: Vec[Float] = vec_from_list([1.0, 2.5])
-            if to_string(v) == "Vec([1.0, 2.5])" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(to_string(v))
 
             let s: Set[String] = set_from_list(["b", "a"])
-            if to_string(s) == "Set({'a', 'b'})" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(to_string(s))
 
             let vectors: List[Vec[Int]] = [vec_from_list([3])]
             let rendered: List[String] = map(vectors, to_string)
-            if head(rendered) == "Vec([3])" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(head(rendered))
             return ()
         end func
         """
 
+        expected = (
+            '{"a": 1}'
+            + chr(10)
+            + 'MutableMap({"a": 1})'
+            + chr(10)
+            + "Vec([1.0, 2.5])"
+            + chr(10)
+            + 'Set({"a", "b"})'
+            + chr(10)
+            + "Vec([3])"
+            + chr(10)
+        )
         _assert_expected_backend_outputs(
             label="JS to_string wrapper formatting",
             context=source,
-            expected="1\n1\n1\n1\n1\n",
+            expected=expected,
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),
@@ -3454,58 +3444,71 @@ class TestBackendParity:
     def test_json_to_string_runtime_containers_use_display_fallback(self):
         source = """
         func main() -> Unit
-            let a: Array[Int] = array_new(2, 1)
-            if json_to_string(a) == "\\"Array([1, 1])\\"" then
-                print(1)
-            else
-                print(0)
-            end if
+            let ai: Array[Int] = array_new(1, 1)
+            print(json_to_string(ai))
 
             let af: Array[Float] = array_new(1, 1.0)
-            if json_to_string(af) == "\\"Array([1.0])\\"" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(json_to_string(af))
 
             let v: Vec[Int] = vec_new()
             vec_push(v, 1)
-            if json_to_string(v) == "\\"Vec([1])\\"" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(json_to_string(v))
 
             let s: Set[Int] = set_from_list([1, 2])
-            if json_to_string(s) == "\\"Set({1, 2})\\"" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(json_to_string(s))
 
             let m: MutableMap[String, Int] = mutable_map_new()
             mutable_map_set(map: m, key: "a", value: 1)
-            if json_to_string(m) == "\\"MutableMap({'a': 1})\\"" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(json_to_string(m))
 
             let fm: MutableMap[String, Float] = mutable_map_new()
             mutable_map_set(map: fm, key: "a", value: 1.0)
-            if json_to_string(fm) == "\\"MutableMap({'a': 1.0})\\"" then
-                print(1)
-            else
-                print(0)
-            end if
+            print(json_to_string(fm))
             return ()
         end func
         """
 
+        quote = '"'
+        escaped_quote = chr(92) + quote
+        newline = chr(10)
+        expected = (
+            quote
+            + "Array([1])"
+            + quote
+            + newline
+            + quote
+            + "Array([1.0])"
+            + quote
+            + newline
+            + quote
+            + "Vec([1])"
+            + quote
+            + newline
+            + quote
+            + "Set({1, 2})"
+            + quote
+            + newline
+            + quote
+            + "MutableMap({"
+            + escaped_quote
+            + "a"
+            + escaped_quote
+            + ": 1})"
+            + quote
+            + newline
+            + quote
+            + "MutableMap({"
+            + escaped_quote
+            + "a"
+            + escaped_quote
+            + ": 1.0})"
+            + quote
+            + newline
+        )
         _assert_expected_backend_outputs(
             label="json_to_string runtime container display fallback",
             context=source,
-            expected="1\n1\n1\n1\n1\n1\n",
+            expected=expected,
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),

@@ -104,6 +104,7 @@ from .types import (
     AsyncType,
     BoolType,
     FloatType,
+    FuncType,
     IntType,
     ListType,
     MapType,
@@ -155,6 +156,7 @@ _CORE_NAMES = (
             "_valuesEqual",
             "_formatValue",
             "_formatFloat",
+            "_roundNearest",
             "_reprString",
             "_stringifyValue",
             "_withGenoFormatter",
@@ -404,6 +406,7 @@ JS_RESERVED_PRELUDE_NAMES = (
             "_valuesEqual",
             "_formatValue",
             "_formatFloat",
+            "_roundNearest",
             "_reprString",
             "_stringifyValue",
             "_withGenoFormatter",
@@ -1505,7 +1508,7 @@ class JSCompiler(BaseCompiler):
                     field_value = self._compile_formatted_value(
                         f"{value_ref}.{field_name}",
                         field_type,
-                        mode="stringify",
+                        mode=mode,
                         top_level=False,
                         active_user_types=active_user_types,
                         seen_ref=seen_ref,
@@ -2300,6 +2303,24 @@ class JSCompiler(BaseCompiler):
             return "true" if expr.value else "false"
 
         if isinstance(expr, Identifier):
+            expected_type = getattr(expr, "_expected_runtime_type", None)
+            if expr._resolved_builtin_name == "divide" and isinstance(
+                expected_type, FuncType
+            ):
+                params = expected_type.param_types
+                if len(params) == 2 and all(isinstance(p, IntType) for p in params):
+                    return "_safe_div"
+                if len(params) == 2 and all(
+                    isinstance(p, (IntType, FloatType)) for p in params
+                ):
+                    return "_float_div"
+                raise JSCompileError(
+                    "First-class divide requires a concrete Int or Float function type"
+                )
+            if expr._resolved_builtin_name == "divide":
+                raise JSCompileError(
+                    "First-class divide requires a concrete Int or Float function type"
+                )
             return self._mangle_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
@@ -2538,6 +2559,16 @@ class JSCompiler(BaseCompiler):
         if builtin_name == "print" and len(call_args) == 1:
             formatted = self._compile_formatted_expr(call_args[0].value, mode="display")
             return f"print_({formatted})"
+
+        if builtin_name == "divide" and len(call_args) == 2:
+            left_expr = call_args[0].value
+            right_expr = call_args[1].value
+            left = self._compile_expr(left_expr)
+            right = self._compile_expr(right_expr)
+            if is_numeric_type(left_expr) and is_numeric_type(right_expr):
+                if is_int_type(left_expr) and is_int_type(right_expr):
+                    return f"_safe_div({left}, {right})"
+                return f"_float_div({left}, {right})"
 
         if (
             builtin_name in {"map", "list_map"}
@@ -2865,7 +2896,16 @@ class JSCompiler(BaseCompiler):
                 context="in with expression",
             )
         updates_str = ", ".join(f"{name}: {value}" for name, value in updates)
-        return f"Object.freeze({{...{target}, {updates_str}}})"
+        if _re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", target):
+            return (
+                f"_withGenoFormatter(({{...{target}, {updates_str}}}), "
+                f"{target}[_GENO_FORMATTER])"
+            )
+        temp = self._fresh_temp()
+        return (
+            f"(({temp}) => _withGenoFormatter("
+            f"{{...{temp}, {updates_str}}}, {temp}[_GENO_FORMATTER]))({target})"
+        )
 
     def _compile_match_expr(self, expr: MatchExpr) -> str:
         scrutinee = self._compile_expr(expr.scrutinee)

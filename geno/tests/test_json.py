@@ -1,6 +1,5 @@
 """Tests for json_parse and json_stringify builtins."""
 
-import subprocess
 from typing import Callable, cast
 
 import pytest

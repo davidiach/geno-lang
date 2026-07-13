@@ -8,8 +8,9 @@ and the ParseError/ParseErrors exception classes.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
+from .diagnostics import ErrorCode
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 if TYPE_CHECKING:
@@ -219,7 +220,11 @@ class ParserBase:
             return self._advance()
         if message is None:
             message = f"Expected {token_type_to_str(token_type)}, got {token_type_to_str(self._current().type)}"
-        raise ParseError(message, self._current().location)
+        raise ParseError(
+            message,
+            self._current().location,
+            ErrorCode.PARSE_EXPECTED_TOKEN,
+        )
 
     def _error(self, message: str) -> ParseError:
         """Create a parse error at current location."""

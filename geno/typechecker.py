@@ -82,6 +82,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WithExpr,
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
+from .diagnostics import ErrorCode
 from .exhaustiveness import ExhaustivenessMixin
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
@@ -496,9 +497,14 @@ class TypeChecker(ExhaustivenessMixin):
                 },
             )
 
-    def _error(self, message: str, location: SourceLocation) -> TypeError:
+    def _error(
+        self,
+        message: str,
+        location: SourceLocation,
+        error_code: ErrorCode | None = None,
+    ) -> TypeError:
         """Create and record a type error."""
-        error = TypeError(message, location)
+        error = TypeError(message, location, error_code)
         self.errors.append(error)
         return error
 
@@ -538,10 +544,12 @@ class TypeChecker(ExhaustivenessMixin):
                 f"Type '{name}' expects {expected} type parameter(s) "
                 f"but none were provided",
                 location,
+                ErrorCode.TYPE_WRONG_ARITY,
             )
         raise TypeError(
             f"Type '{name}' expects {expected} type parameter(s) but got {actual}",
             location,
+            ErrorCode.TYPE_WRONG_ARITY,
         )
 
     def _validate_type_aliases(self, aliases: Iterable[TypeAlias]) -> None:
@@ -913,9 +921,20 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(defn, TraitDef):
                 self._collect_trait_def(defn)
 
-        # Second pass: collect function signatures and process impl blocks
+        # Second pass: collect function signatures and process impl blocks.
+        # Keep the first signature when a name is repeated so later passes do
+        # not silently type-check calls against whichever definition happened
+        # to appear last.
+        seen_function_names: set[str] = set()
         for defn in program.definitions:
             if isinstance(defn, FunctionDef):
+                if defn.name in seen_function_names:
+                    self._error(
+                        f"Duplicate function definition: '{defn.name}'",
+                        defn.location,
+                    )
+                    continue
+                seen_function_names.add(defn.name)
                 self._collect_function_sig(defn)
         for defn in program.definitions:
             if isinstance(defn, ImplDef):
@@ -1471,15 +1490,17 @@ class TypeChecker(ExhaustivenessMixin):
     ) -> frozenset[int]:
         """Determine which type parameters require invariant checking.
 
-        A parameter is invariant if it appears inside a mutable container
-        (Array, Vec, Set, MutableMap) or in a contravariant position
-        (function parameter) in any variant field.
+        A parameter is invariant if it is stored directly in an assignable
+        user-type field, appears inside a mutable container (Array, Vec, Set,
+        MutableMap), or occurs in a contravariant function-parameter position.
         """
         invariant: set[int] = set()
         for i, param in enumerate(type_params):
             for fields in variants.values():
                 for _fname, ftype in fields:
-                    if TypeChecker._in_noncovariant_position(ftype, param, type_defs):
+                    if (
+                        isinstance(ftype, TypeVar) and ftype.name == param
+                    ) or TypeChecker._in_noncovariant_position(ftype, param, type_defs):
                         invariant.add(i)
                         break
                 else:
@@ -2278,28 +2299,25 @@ class TypeChecker(ExhaustivenessMixin):
             for arg in expr.arguments:
                 effects |= self._infer_expr_effects(arg.value, env)
 
-            # Look up the callee's effects
+            # Calling any expression invokes the effects carried by its
+            # function type. This includes indexed/computed callees, not only
+            # identifiers and inline lambdas.
             callee = expr.function
+            effects |= self._infer_expr_effects(callee, env)
+            callee_type = self._check_expression(callee, env)
+            if isinstance(callee_type, FuncType):
+                effects |= callee_type.effects
+
             if isinstance(callee, Identifier):
                 effects |= self._trait_dispatch_effects(expr, env)
-                callee_type = env.lookup(callee.name)
-                if callee_type is None:
-                    callee_type = self.global_env.lookup(callee.name)
-                if isinstance(callee_type, FuncType):
-                    effects |= callee_type.effects
             elif isinstance(callee, FieldAccess):
                 # Module-qualified call: mod.func(...)
                 if isinstance(callee.target, Identifier):
                     mod_exports = self._module_exports.get(callee.target.name)
                     if mod_exports:
-                        callee_type = mod_exports.get(callee.field_name)
-                        if isinstance(callee_type, FuncType):
-                            effects |= callee_type.effects
-            elif isinstance(callee, LambdaExpr):
-                callee_type = self._check_expression(callee, env)
-                if isinstance(callee_type, FuncType):
-                    effects |= callee_type.effects
-
+                        module_callee_type = mod_exports.get(callee.field_name)
+                        if isinstance(module_callee_type, FuncType):
+                            effects |= module_callee_type.effects
         elif isinstance(expr, ThrowExpression):
             effects.add("throw")
             effects |= self._infer_expr_effects(expr.value, env)
@@ -2467,6 +2485,7 @@ class TypeChecker(ExhaustivenessMixin):
                     self._error(
                         f"Example expects 0 inputs, got {input_type}",
                         ex.input_expr.location,
+                        ErrorCode.TYPE_WRONG_ARITY,
                     )
             elif total_count == 1:
                 if required_count == 0 and (
@@ -2492,6 +2511,7 @@ class TypeChecker(ExhaustivenessMixin):
                             f"Example expects {required_count}..{total_count} "
                             f"inputs, got {arity}",
                             ex.input_expr.location,
+                            ErrorCode.TYPE_WRONG_ARITY,
                         )
                     else:
                         for i, (expected, actual) in enumerate(
@@ -2602,6 +2622,7 @@ class TypeChecker(ExhaustivenessMixin):
         if stmt.type_annotation is not None:
             declared_type = self._resolve_type(stmt.type_annotation)
             stmt._expected_runtime_type = declared_type
+            self._record_expected_runtime_type(stmt.value, declared_type)
             if not self._types_strictly_compatible(declared_type, actual_type):
                 self._error(
                     f"Type mismatch in 'let {stmt.name}': declared type {declared_type}, "
@@ -2629,6 +2650,7 @@ class TypeChecker(ExhaustivenessMixin):
         if stmt.type_annotation is not None:
             declared_type = self._resolve_type(stmt.type_annotation)
             stmt._expected_runtime_type = declared_type
+            self._record_expected_runtime_type(stmt.value, declared_type)
             if not self._types_strictly_compatible(declared_type, actual_type):
                 self._error(
                     f"Type mismatch in 'var {stmt.name}': declared type {declared_type}, "
@@ -2654,6 +2676,7 @@ class TypeChecker(ExhaustivenessMixin):
         """Type check a tuple destructuring statement."""
         declared_type = self._resolve_type(stmt.type_annotation)
         actual_type = self._check_expression(stmt.value, env)
+        self._record_expected_runtime_type(stmt.value, declared_type)
 
         if not self._types_strictly_compatible(declared_type, actual_type):
             self._error(
@@ -2685,7 +2708,11 @@ class TypeChecker(ExhaustivenessMixin):
         var_type = env.lookup(stmt.target)
         if var_type is None:
             hint = _suggest_name(stmt.target, self._env_names(env))
-            self._error(f"Undefined variable: {stmt.target}{hint}", stmt.location)
+            self._error(
+                f"Undefined variable: {stmt.target}{hint}",
+                stmt.location,
+                ErrorCode.TYPE_UNDEFINED_VAR,
+            )
             return
 
         if not env.is_mutable(stmt.target):
@@ -2696,6 +2723,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         value_type = self._check_expression(stmt.value, env)
         stmt._expected_runtime_type = var_type
+        self._record_expected_runtime_type(stmt.value, var_type)
         if not self._types_strictly_compatible(var_type, value_type):
             self._error(
                 f"Type mismatch in assignment: expected {var_type}, got {value_type}",
@@ -2725,6 +2753,7 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(target_type, ArrayType):
             if not isinstance(index_type, IntType):
                 self._error(f"Array index must be Int, got {index_type}", stmt.location)
+            self._record_expected_runtime_type(stmt.value, target_type.element_type)
             if not self._types_strictly_compatible(
                 target_type.element_type, value_type
             ):
@@ -2735,6 +2764,7 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(target_type, VecType):
             if not isinstance(index_type, IntType):
                 self._error(f"Vec index must be Int, got {index_type}", stmt.location)
+            self._record_expected_runtime_type(stmt.value, target_type.element_type)
             if not self._types_strictly_compatible(
                 target_type.element_type, value_type
             ):
@@ -2748,6 +2778,7 @@ class TypeChecker(ExhaustivenessMixin):
                     f"Map key type mismatch: expected {target_type.key_type}, got {index_type}",
                     stmt.location,
                 )
+            self._record_expected_runtime_type(stmt.value, target_type.value_type)
             if not self._types_strictly_compatible(target_type.value_type, value_type):
                 self._error(
                     f"Map value type mismatch: expected {target_type.value_type}, got {value_type}",
@@ -2816,6 +2847,7 @@ class TypeChecker(ExhaustivenessMixin):
         if expected_field_type is None:
             return
 
+        self._record_expected_runtime_type(stmt.value, expected_field_type)
         if not self._types_strictly_compatible(expected_field_type, value_type):
             self._error(
                 f"Type mismatch: field '{stmt.field_name}' expects "
@@ -2920,11 +2952,103 @@ class TypeChecker(ExhaustivenessMixin):
             return
 
         stmt._expected_runtime_type = self.current_return_type
+        self._record_expected_runtime_type(stmt.value, self.current_return_type)
         if not self._types_strictly_compatible(self.current_return_type, value_type):
             self._error(
                 f"Return type mismatch: expected {self.current_return_type}, got {value_type}",
                 stmt.location,
             )
+
+    def _record_expected_runtime_type(self, expr: Expression, expected: Type) -> None:
+        """Attach concrete contextual types used by backend lowering."""
+        expr._expected_runtime_type = expected
+
+        if isinstance(expr, ListLiteral) and isinstance(expected, ListType):
+            for element in expr.elements:
+                self._record_expected_runtime_type(element, expected.element_type)
+            return
+
+        if isinstance(expr, TupleExpr) and isinstance(expected, TupleType):
+            for element, element_type in zip(expr.elements, expected.element_types):
+                self._record_expected_runtime_type(element, element_type)
+            return
+
+        if isinstance(expr, ListComprehension) and isinstance(expected, ListType):
+            self._record_expected_runtime_type(expr.element_expr, expected.element_type)
+            return
+
+        if isinstance(expr, FunctionCall):
+            function_type = getattr(expr.function, "_resolved_type", None)
+            output_type = getattr(expr, "_resolved_type", None)
+            if isinstance(function_type, FuncType) and isinstance(output_type, Type):
+                substitutions: dict[str, Type] = {}
+                if self._types_compatible_with_subs(
+                    output_type, expected, substitutions
+                ):
+                    for call_argument in expr.arguments:
+                        argument_expected = getattr(
+                            call_argument.value, "_expected_runtime_type", None
+                        )
+                        if isinstance(argument_expected, Type):
+                            self._record_expected_runtime_type(
+                                call_argument.value,
+                                self._apply_substitutions(
+                                    argument_expected, substitutions
+                                ),
+                            )
+            return
+        if isinstance(expr, MatchExpr):
+            for arm in expr.arms:
+                if len(arm.body) == 1 and isinstance(arm.body[0], ReturnStatement):
+                    self._record_expected_runtime_type(arm.body[0].value, expected)
+            return
+
+        if isinstance(expr, ConstructorCall):
+            if isinstance(expected, OptionType) and expr.constructor == "Some":
+                if expr.arguments:
+                    self._record_expected_runtime_type(
+                        expr.arguments[0], expected.value_type
+                    )
+                return
+            if isinstance(expected, ResultType) and expr.arguments:
+                if expr.constructor == "Ok":
+                    self._record_expected_runtime_type(
+                        expr.arguments[0], expected.ok_type
+                    )
+                elif expr.constructor == "Err":
+                    self._record_expected_runtime_type(
+                        expr.arguments[0], expected.err_type
+                    )
+                return
+            if isinstance(expected, UserType):
+                type_info = self.type_defs.get(expected.name)
+                if type_info is None:
+                    return
+                fields = type_info.variants.get(expr.constructor)
+                if fields is None:
+                    return
+                substitutions = dict(zip(type_info.type_params, expected.type_args))
+                for argument, (_name, field_type) in zip(expr.arguments, fields):
+                    self._record_expected_runtime_type(
+                        argument,
+                        self._apply_substitutions(field_type, substitutions),
+                    )
+            return
+
+        if isinstance(expr, WithExpr) and isinstance(expected, UserType):
+            type_info = self.type_defs.get(expected.name)
+            if type_info is None:
+                return
+            substitutions = dict(zip(type_info.type_params, expected.type_args))
+            field_types = {
+                name: self._apply_substitutions(field_type, substitutions)
+                for fields in type_info.variants.values()
+                for name, field_type in fields
+            }
+            for field_name, value in expr.updates:
+                update_field_type = field_types.get(field_name)
+                if update_field_type is not None:
+                    self._record_expected_runtime_type(value, update_field_type)
 
     def _check_expression(self, expr: Expression, env: TypeEnv) -> Type:
         """Type check an expression and return its type."""
@@ -3018,8 +3142,14 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(self._target_rejected[expr.name], expr.location)
                 return AnyType()
             hint = _suggest_name(expr.name, self._env_names(env))
-            self._error(f"Undefined variable: {expr.name}{hint}", expr.location)
+            self._error(
+                f"Undefined variable: {expr.name}{hint}",
+                expr.location,
+                ErrorCode.TYPE_UNDEFINED_VAR,
+            )
             return AnyType()
+        if self._identifier_resolves_to_builtin(expr.name, env):
+            expr._resolved_builtin_name = expr.name
         return type_
 
     def _identifier_resolves_to_builtin(self, name: str, env: TypeEnv) -> bool:
@@ -3149,7 +3279,10 @@ class TypeChecker(ExhaustivenessMixin):
 
         # Equality operators
         if expr.operator in ("==", "!="):
-            if not self._types_compatible(left_type, right_type):
+            if not (
+                self._types_compatible(left_type, right_type)
+                or self._types_compatible(right_type, left_type)
+            ):
                 self._error(
                     f"Cannot compare {left_type} with {right_type}", expr.location
                 )
@@ -3323,6 +3456,7 @@ class TypeChecker(ExhaustivenessMixin):
                     self._error(
                         f"'{method_name}' expects {len(impl_func_type.param_types)} argument(s), but {len(arguments)} were provided",
                         expr.location,
+                        ErrorCode.TYPE_WRONG_ARITY,
                     )
                 for i, expected_type in enumerate(impl_func_type.param_types):
                     call_arg: CallArg | None = (
@@ -3332,9 +3466,11 @@ class TypeChecker(ExhaustivenessMixin):
                         self._error(
                             f"Missing argument for parameter '{trait_param_names[i]}'",
                             expr.location,
+                            ErrorCode.TYPE_WRONG_ARITY,
                         )
                         continue
                     arg_type = self._check_expression(call_arg.value, env)
+                    self._record_expected_runtime_type(call_arg.value, expected_type)
                     if not self._types_compatible(expected_type, arg_type):
                         self._error(
                             f"Argument {i + 1} type mismatch: expected {expected_type}, got {arg_type}",
@@ -3370,12 +3506,14 @@ class TypeChecker(ExhaustivenessMixin):
                     f"{callee_desc} expects {max_args} argument(s), "
                     f"but {len(arguments)} were provided",
                     expr.location,
+                    ErrorCode.TYPE_WRONG_ARITY,
                 )
             else:
                 self._error(
                     f"{callee_desc} expects {min_args} to {max_args} arguments, "
                     f"but {len(arguments)} were provided",
                     expr.location,
+                    ErrorCode.TYPE_WRONG_ARITY,
                 )
 
         # Get parameter names if available (for named argument support)
@@ -3422,6 +3560,13 @@ class TypeChecker(ExhaustivenessMixin):
             ordered_args = self._reorder_call_args(
                 arguments, param_names, func_type.param_types, expr.location
             )
+            for i in range(min_args):
+                if ordered_args[i] is None:
+                    self._error(
+                        f"Missing argument for parameter '{param_names[i]}'",
+                        expr.location,
+                        ErrorCode.TYPE_WRONG_ARITY,
+                    )
             for i, (maybe_arg, expected_type) in enumerate(
                 zip(ordered_args, func_type.param_types)
             ):
@@ -3446,6 +3591,10 @@ class TypeChecker(ExhaustivenessMixin):
                                 f"Argument '{param_names[i]}' type mismatch: expected {expected_type}, got {arg_type}",
                                 ca.value.location,
                             )
+                    self._record_expected_runtime_type(
+                        ca.value,
+                        self._apply_substitutions(expected_type, subs),
+                    )
         else:
             # Check argument types positionally
             for i, (arg, expected_type) in enumerate(
@@ -3470,6 +3619,10 @@ class TypeChecker(ExhaustivenessMixin):
                             f"Argument {i + 1} type mismatch: expected {expected_type}, got {arg_type}",
                             arg.value.location,
                         )
+                self._record_expected_runtime_type(
+                    arg.value,
+                    self._apply_substitutions(expected_type, subs),
+                )
 
         if has_never_arg:
             return NeverType()
@@ -3820,6 +3973,7 @@ class TypeChecker(ExhaustivenessMixin):
                 continue
             value_type = self._check_expression(value_expr, env)
             expected_type = all_fields[field_name]
+            self._record_expected_runtime_type(value_expr, expected_type)
             if not self._types_strictly_compatible(expected_type, value_type):
                 self._error(
                     f"Field '{field_name}' expects {expected_type}, got {value_type}",
@@ -3934,6 +4088,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Pipeline stage expects {len(func_type.param_types)} arguments, got {expected_arg_count}",
                     stage.location,
+                    ErrorCode.TYPE_WRONG_ARITY,
                 )
                 current_type = func_type.return_type
                 continue
@@ -4076,6 +4231,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(expr.arguments)}",
                     expr.location,
+                    ErrorCode.TYPE_WRONG_ARITY,
                 )
 
             # Infer type parameters from arguments
@@ -4107,6 +4263,10 @@ class TypeChecker(ExhaustivenessMixin):
                         f"expected {field_type}, got {arg_type}",
                         arg.location,
                     )
+                self._record_expected_runtime_type(
+                    arg,
+                    self._apply_substitutions(field_type, type_param_bindings),
+                )
 
             if has_never_arg:
                 return NeverType()
@@ -4530,6 +4690,7 @@ class TypeChecker(ExhaustivenessMixin):
                                 f"{len(alias_params)} type parameter(s) "
                                 f"but none were provided",
                                 type_annot.location,
+                                ErrorCode.TYPE_WRONG_ARITY,
                             )
                         if len(alias_params) != len(type_annot.type_params):
                             raise TypeError(
@@ -4537,6 +4698,7 @@ class TypeChecker(ExhaustivenessMixin):
                                 f"{len(alias_params)} type parameter(s) "
                                 f"but got {len(type_annot.type_params)}",
                                 type_annot.location,
+                                ErrorCode.TYPE_WRONG_ARITY,
                             )
                         sub_params = list(type_params or [])
                         for ap, _arg in zip(alias_params, type_annot.type_params):
@@ -4849,6 +5011,18 @@ class TypeChecker(ExhaustivenessMixin):
         ``in_recovery`` mirrors the flag on ``_types_structurally_compatible``
         (see that method's docstring).
         """
+        # Numeric generics use their common widened type regardless of
+        # argument order: Num=Int followed by Float must widen to Float just
+        # as Num=Float followed by Int already does.
+        if (
+            isinstance(expected, TypeVar)
+            and expected.name in _NUMERIC_TYPEVAR_NAMES
+            and isinstance(subs.get(expected.name), (IntType, FloatType))
+            and isinstance(actual, (IntType, FloatType))
+        ):
+            if isinstance(actual, FloatType):
+                subs[expected.name] = _FLOAT_TYPE
+            return True
         expected = self._apply_substitutions(expected, subs)
         actual = self._apply_substitutions(actual, subs)
 

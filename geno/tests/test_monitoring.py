@@ -50,9 +50,7 @@ class TestMonitoringHook:
         assert result.ok is False
         assert len(observed) == 1
         assert observed[0].outcome is RunOutcome.SYNTAX_ERROR
-        assert (
-            geno.ErrorCode.PARSE_UNEXPECTED_TOKEN.value in observed[0].diagnostic_codes
-        )
+        assert geno.ErrorCode.PARSE_EXPECTED_TOKEN.value in observed[0].diagnostic_codes
 
     def test_monitoring_hook_receives_capability_denied_metrics(self):
         observed: list[RunMetrics] = []

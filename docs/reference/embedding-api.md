@@ -79,7 +79,7 @@ print(result.unclosed_blocks) # ("func",)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `timeout` | `float \| None` | `5.0` | Wall-clock seconds for execution. `None` = no limit. |
+| `timeout` | `float \| None` | `5.0` | Cooperative execution deadline. `None` = no limit. |
 | `max_steps` | `int \| None` | `1_000_000` | Maximum interpreter steps. Explicit `None` disables the cooperative step limit. |
 | `max_recursion_depth` | `int` | `500` | Maximum call stack depth. |
 | `max_output_length` | `int` | `100_000` | Maximum characters of print output. |
@@ -90,6 +90,14 @@ print(result.unclosed_blocks) # ("func",)
 | `modules` | `dict[str, str] \| None` | `None` | In-memory module sources for `import` resolution. |
 | `check_examples` | `bool` | `True` | Verify example clauses at runtime. |
 | `monitoring_hook` | `Callable \| None` | `None` | Receives `RunMetrics` after every run. |
+
+The JavaScript backend has the tighter portable `Int` range
+`-(2^53 - 1)` through `2^53 - 1`; `max_integer_bits` governs interpreter and
+compiled Python execution. See [Portable Runtime Semantics](runtime-semantics.md).
+
+The timeout, step budget, and deadline checks are cooperative. A long-running
+builtin cannot be forcibly interrupted while it holds control. Never use this
+API as the sole isolation boundary for untrusted code.
 
 `RunConfig` uses the in-process interpreter. OS-backed process limits
 (`max_memory_bytes`, `max_cpu_time`, `max_file_size_bytes`, and

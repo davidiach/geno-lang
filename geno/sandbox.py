@@ -15,15 +15,13 @@ import logging
 import math
 import os
 import platform
-import signal
 import subprocess
 import sys
 import threading
 import types as _types
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
 
@@ -526,6 +524,8 @@ _SAFE_IMPORT_ALLOWLIST = {
     "hashlib",
     "hmac",
     "io",
+    "ipaddress",
+    "json",
     "typing",
     "math",
     "secrets",
@@ -1744,7 +1744,8 @@ def main():
         for module, names in config["module_blocked_attributes"].items()
     }
     _WORKER_SAFE_MODULES = set(config.get("safe_import_allowlist", [
-        'csv', 'dataclasses', 'hashlib', 'hmac', 'io', 'typing', 'math',
+        'csv', 'dataclasses', 'hashlib', 'hmac', 'io',
+        'ipaddress', 'json', 'typing', 'math',
         'secrets', 'copy', 'functools',
         'collections', 'abc', 'itertools', 'typing_extensions',
         'tomllib', 'tomli',
@@ -1892,6 +1893,10 @@ def main():
     import math
     import copy
     import functools
+    import codecs as _runtime_codecs
+    import posixpath as _runtime_posixpath
+    import random as _runtime_random
+    import time as _runtime_time
 
     _IMPORT_PROXY_CACHE = {}
 
@@ -2013,6 +2018,10 @@ def main():
                 'Union': typing.Union,
                 'deepcopy': copy.deepcopy,
                 'math': math,
+                '_runtime_codecs': _runtime_codecs,
+                '_runtime_posixpath': _runtime_posixpath,
+                '_runtime_random': _runtime_random,
+                '_runtime_time': _runtime_time,
                 'cmp_to_key': functools.cmp_to_key,
                 '_re': _re_mod,
                 '_geno_run_async': _geno_run_async,

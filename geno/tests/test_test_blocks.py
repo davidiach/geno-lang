@@ -1,10 +1,7 @@
 """Tests for first-class test blocks (P1-18)."""
 
-import subprocess
 import tempfile
 from pathlib import Path
-
-import pytest
 
 from geno.api import RunConfig, run
 from geno.ast_nodes import AssertStatement, TestBlock

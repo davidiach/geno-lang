@@ -8,10 +8,8 @@ source maps, .d.ts output, and ESM interop (#227).
 
 import base64
 import json
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest

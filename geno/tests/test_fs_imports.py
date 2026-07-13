@@ -1,7 +1,6 @@
 """Tests for filesystem-based module imports."""
 
 import os
-from pathlib import Path
 
 import pytest
 

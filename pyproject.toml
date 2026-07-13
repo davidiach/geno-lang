@@ -82,8 +82,7 @@ target-version = "py310"
 select = ["E", "F", "I", "S", "UP", "B", "C4", "SIM", "PT", "RUF"]
 ignore = [
     "E501",    # line length (handled by formatter where possible)
-    "F401",    # unused imports (many are re-exports or used at runtime)
-    "F841",    # unused variables (some are intentional, e.g. context managers)
+
     "S101",    # assert usage (used for internal invariants)
     "UP006",   # non-pep585-annotation — list[X] vs List[X] breaks on Python 3.9 without __future__
     "UP007",   # non-pep604-annotation — X | None breaks on Python 3.9 at runtime in dataclasses

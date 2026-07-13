@@ -8,8 +8,7 @@ Note: For production use with actual graphics, use matplotlib/seaborn.
 This module provides text-based visualizations that work in any terminal.
 """
 
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 class Visualizer:
@@ -106,8 +105,6 @@ class Visualizer:
         max_value: float = 0
         for group_data in data.values():
             max_value = max(max_value, max(group_data.values(), default=0))
-
-        max_label_len = max(len(str(k)) for k in data)
 
         # Bar characters for different categories
         bar_chars = ["█", "▓", "▒", "░"]

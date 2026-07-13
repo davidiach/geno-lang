@@ -9,7 +9,6 @@ This test acts as a permanent regression gate.
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 

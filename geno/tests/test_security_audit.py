@@ -17,7 +17,6 @@ import yaml  # type: ignore[import-untyped]
 
 from geno.api import RunConfig, run
 from geno.sandbox import (
-    SandboxConfig,
     SecurityViolation,
     run_sandboxed,
 )
@@ -221,7 +220,6 @@ class TestDirectInterpreterCapabilityGating:
         return interp, interp.run(parse(source))
 
     def test_direct_interpreter_defaults_deny_env(self, monkeypatch):
-        from geno.diagnostics import ErrorCode
         from geno.values import RuntimeError as GenoRuntimeError
 
         monkeypatch.setenv("GENO_DIRECT_SECRET", "leak")

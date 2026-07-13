@@ -10,15 +10,13 @@ impl blocks, and /// doc comments.
 import html as _html
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from .ast_nodes import (
-    ExampleClause,
     FunctionDef,
     FunctionType,
     ImplDef,
     Parameter,
-    Program,
     SimpleType,
     TraitDef,
     TraitMethodSig,

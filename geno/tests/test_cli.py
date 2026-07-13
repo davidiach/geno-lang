@@ -464,11 +464,11 @@ end func
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stderr == ""
         stdout_lines = [line.strip() for line in result.stdout.splitlines()]
-        assert '"4.0"' in stdout_lines
-        assert '"3.5"' in stdout_lines
-        assert '"1.5"' in stdout_lines
-        assert '"-1.5"' in stdout_lines
-        assert stdout_lines.count('"true"') == 2
+        assert "4.0" in stdout_lines
+        assert "3.5" in stdout_lines
+        assert "1.5" in stdout_lines
+        assert "-1.5" in stdout_lines
+        assert stdout_lines.count("true") == 2
 
     def test_run_deeply_nested_chain_reports_clean_error(self, tmp_path):
         """H-08: non-JSON `geno run` must use the same clean deep-nesting
@@ -657,7 +657,7 @@ end func main
                     timeout=10,
                 )
                 assert result.returncode == 0
-                assert '"alpha,beta"' in result.stdout
+                assert "alpha,beta" in result.stdout
                 assert result.stderr == ""
             finally:
                 os.unlink(f.name)
@@ -1976,7 +1976,6 @@ class TestGenoBundle:
         """Bundle must reject file paths that escape the project directory."""
         with tempfile.TemporaryDirectory() as tmp:
             # Create a target file outside the project dir
-            import os
             import pathlib
 
             outside = pathlib.Path(tmp) / "outside.txt"

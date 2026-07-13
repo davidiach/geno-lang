@@ -20,7 +20,6 @@ from geno.ast_nodes import (
 )
 from geno.compiler import CompileError, Compiler, compile_and_exec, compile_to_python
 from geno.parser import parse
-from geno.typechecker import TypeChecker
 from geno.typechecker import TypeError as GenoTypeError
 
 
@@ -737,8 +736,8 @@ class TestCompileCodeGenPaths:
         assert "_object_setattr(p, 'x', 10)" in code
         assert compile_and_run(src) == 10
 
-    def test_field_assign_codegen_mutates_aliases(self):
-        """Compiled Python field assignment preserves object mutation semantics."""
+    def test_field_assign_codegen_copies_value_bindings(self):
+        """Compiled Python constructor bindings use Geno value semantics."""
         src = """
         type Point = Point(x: Int, y: Int)
 
@@ -749,7 +748,7 @@ class TestCompileCodeGenPaths:
             return q.x
         end func
         """
-        assert compile_and_run(src) == 10
+        assert compile_and_run(src) == 1
 
     def test_field_assign_codegen_rejects_immutable_binding(self):
         """Compiled Python rejects field mutation through an immutable binding."""

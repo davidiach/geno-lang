@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from geno.api import RunConfig, run
-from geno.js_compiler import compile_to_js
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.typechecker import TypeChecker, TypeError

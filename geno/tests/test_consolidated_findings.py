@@ -34,7 +34,6 @@ from geno.sandbox import (
     SecurityViolation,
     _create_module_proxy,
     _create_safe_import,
-    create_safe_globals,
     run_sandboxed,
 )
 from geno.server import _REQUEST_TIMEOUT_SECONDS, MAX_CONCURRENT_REQUESTS

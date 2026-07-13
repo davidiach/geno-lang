@@ -1394,7 +1394,8 @@ end func
 
         assert status == "result"
         assert payload.ok is True
-        assert len(payload.output) == 80000
+        # Canonical top-level string display is bare: each print emits "x\n".
+        assert len(payload.output) == 40000
 
 
 class TestConstrainWallTimeoutExecution:
@@ -1586,7 +1587,6 @@ def _ok_run_response(*_args, **_kwargs):
 def authed_client():
     """Server with API key authentication enabled."""
     import http.client
-    import threading
 
     server = create_server(
         "127.0.0.1",
@@ -1869,7 +1869,6 @@ class TestAuthentication:
     def test_failed_auth_attempts_are_rate_limited(self):
         """Failed authentication attempts consume per-IP rate limit tokens."""
         import http.client
-        import threading
 
         server = create_server(
             "127.0.0.1",
@@ -1919,7 +1918,6 @@ class TestRateLimiting:
         _skip_if_worker_processes_unavailable()
 
         import http.client
-        import threading
 
         server = create_server(
             "127.0.0.1",
@@ -1980,7 +1978,6 @@ class TestRateLimiting:
         _skip_if_worker_processes_unavailable()
 
         import http.client
-        import threading
 
         server = create_server(
             "127.0.0.1",
@@ -2171,7 +2168,6 @@ class TestRateLimiting:
         _skip_if_worker_processes_unavailable()
 
         import http.client
-        import threading
 
         server = create_server(
             "127.0.0.1",
@@ -2265,7 +2261,6 @@ class TestRateLimiting:
         _skip_if_worker_processes_unavailable()
 
         import http.client
-        import threading
 
         server = create_server(
             "127.0.0.1",
@@ -2312,7 +2307,6 @@ class TestRateLimiting:
         _skip_if_worker_processes_unavailable()
 
         import http.client
-        import threading
 
         server = create_server(
             "127.0.0.1",
@@ -2358,7 +2352,6 @@ class TestRateLimiting:
 class TestConcurrencyRejection:
     def test_concurrency_rejection_updates_metrics(self):
         import http.client
-        import threading
         from unittest.mock import patch
 
         class _RejectingSemaphore:
@@ -2573,7 +2566,6 @@ class TestStartupChecks:
     def test_create_server_health_reports_startup_errors(self, monkeypatch):
         """Manual servers surface startup failures through /healthz."""
         import http.client
-        import threading
 
         import geno.server as srv
 

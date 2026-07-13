@@ -15,8 +15,7 @@ Ported from Stitch's constraint system, adapted for Geno's syntax.
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import List, Optional, Set, Tuple, Union
+from typing import List, Tuple, Union
 
 from .lexer import Lexer, LexerError
 from .tokens import KEYWORDS as LEXER_KEYWORDS

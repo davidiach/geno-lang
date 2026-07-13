@@ -30,7 +30,6 @@ from geno.types import (
     SetType,
     StringType,
     TupleType,
-    Type,
     TypeDefInfo,
     TypeEnv,
     TypeVar,

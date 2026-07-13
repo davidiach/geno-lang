@@ -407,7 +407,16 @@ class ExhaustivenessMixin:
                 isinstance(first, ConstructorPattern)
                 and first.constructor == constructor
             ):
-                specialized.append(list(first.subpatterns) + list(tail))
+                # Pattern checking reports constructor arity errors separately.
+                # Normalize malformed rows here so exhaustiveness analysis can
+                # still produce diagnostics instead of indexing an empty or
+                # otherwise ragged pattern vector.
+                fields = list(first.subpatterns[:arity])
+                fields.extend(
+                    WildcardPattern(location=location)
+                    for _ in range(arity - len(fields))
+                )
+                specialized.append(fields + list(tail))
         return specialized
 
     @staticmethod

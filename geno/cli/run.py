@@ -25,6 +25,7 @@ from .._serve import (
 from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
+from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
 from ._util import (
     _format_source_snippet,
     _print_error,
@@ -260,7 +261,11 @@ def run_file(
                 "max_output_length": max_output_length,
                 "max_collection_size": max_collection_size,
                 "max_integer_bits": max_integer_bits,
-                "capabilities": capabilities,
+                "capabilities": (
+                    capabilities
+                    if capabilities is not None
+                    else set(DEFAULT_ALLOWED_CAPABILITIES)
+                ),
                 "target": target,
                 "check_examples": check_examples,
             }
@@ -292,7 +297,6 @@ def run_file(
         return
 
     from ..ast_nodes import FunctionDef
-    from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
     from ..compiler import (
         Compiler,
         _compiled_main_result_capture,
@@ -305,8 +309,8 @@ def run_file(
         DependencyGraphError,
         NameCollisionError,
     )
-    from ..lexer import Lexer, LexerError
-    from ..parser import ParseError, ParseErrors, Parser
+    from ..lexer import LexerError
+    from ..parser import ParseError, ParseErrors
     from ..project_graph import ProjectGraphError
     from ..project_resolution import ProjectResolutionError
     from ..sandbox import (

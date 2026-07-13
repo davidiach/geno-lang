@@ -20,7 +20,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Set, Tuple
+from typing import Dict, List, Mapping, Set, Tuple
 
 from . import ast_nodes as _ast_nodes
 from . import tokens as _tokens

@@ -10,8 +10,8 @@ import pytest
 
 from geno.lexer import LexerError
 from geno.parser import ParseError, ParseErrors, parse
-from geno.typechecker import TypeChecker, type_check
 from geno.typechecker import TypeError as GenoTypeError
+from geno.typechecker import type_check
 
 
 def _expect_parse_error(source: str) -> Exception:

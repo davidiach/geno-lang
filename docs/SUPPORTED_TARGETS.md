@@ -14,6 +14,11 @@ Geno uses two related but distinct concepts:
 
 The execution target determines builtin availability at typecheck time. The compilation backend determines the output format. For example, `node-cli` uses the `js` backend but has a different set of available builtins than `browser`.
 
+For programs shared with JavaScript, portable `Int` values are limited to
+`-(2^53 - 1)` through `2^53 - 1`. JavaScript rejects results outside that
+range. Python and interpreter execution support the separately configured
+`max_integer_bits` limit. See [Portable Runtime Semantics](reference/runtime-semantics.md).
+
 ### Manifest target
 
 Set `targets` in `geno.toml` to automatically apply the first target profile:

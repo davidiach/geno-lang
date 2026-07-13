@@ -331,6 +331,7 @@ class TestErrorRecovery:
         # Accessing undefined variable triggers a runtime error
         output = repl_execute(repl, "undefined_variable_xyz")
         assert repl.running is True
+        assert "error" in output.lower()
 
     def test_repl_usable_after_error(self):
         repl = make_repl()

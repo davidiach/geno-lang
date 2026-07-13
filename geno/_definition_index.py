@@ -3,7 +3,6 @@ Shared first-pass definition collection for compiler backends.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .ast_nodes import (
     FunctionDef,

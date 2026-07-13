@@ -14,19 +14,17 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import NoReturn
 from urllib.parse import urlsplit
 
 from .lockfile import (
     LockedDependency,
-    Lockfile,
     compute_content_hash,
     parse_lockfile,
     save_lockfile,
 )
 from .manifest import (
     Dependency,
-    Manifest,
     atomic_write_text,
     parse_manifest,
     save_manifest,

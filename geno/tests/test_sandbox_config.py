@@ -15,7 +15,6 @@ import pytest
 import geno.sandbox as sandbox_module
 from geno.execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
 from geno.sandbox import (
-    BLOCKED_BUILTINS,
     SAFE_BUILTINS,
     ProcessSandbox,
     ProcessSandboxConfig,

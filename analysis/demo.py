@@ -45,16 +45,12 @@ def generate_sample_data():
         # Determine problem difficulty
         num = int(problem_id.split("-")[1])
         if num <= 10:
-            difficulty = "trivial"
             g_prob, p_prob = 0.95, 0.90
         elif num <= 25:
-            difficulty = "easy"
             g_prob, p_prob = 0.85, 0.75
         elif num <= 45:
-            difficulty = "medium"
             g_prob, p_prob = 0.65, 0.50
         else:
-            difficulty = "hard"
             g_prob, p_prob = 0.40, 0.25
 
         for language in ["geno", "python"]:

@@ -32,7 +32,7 @@ from .ast_nodes import (
     WhileStatement,
 )
 from .parser_base import ParseError, ParserBase
-from .tokens import SourceLocation, TokenType, token_type_to_str
+from .tokens import SourceLocation, TokenType
 
 
 class StatementParserMixin(ParserBase):
@@ -194,9 +194,15 @@ class StatementParserMixin(ParserBase):
 
         else_body: list[Statement] = []
         if self._check(TokenType.ELSE):
-            else_line = self._current().location.line
-            self._advance()
-            if self._check(TokenType.IF) and self._current().location.line == else_line:
+            else_token = self._advance()
+            # A chain may be written as ``else if`` or wrapped with ``if`` at
+            # the same indentation.  A more-indented ``if`` remains an
+            # ordinary nested statement with its own ``end if``.
+            is_else_if = self._check(TokenType.IF) and (
+                self._current().location.line == else_token.location.line
+                or self._current().location.column <= else_token.location.column
+            )
+            if is_else_if:
                 else_body = [self._parse_if_statement(consume_end=False)]
             else:
                 else_body = self._parse_statement_list()
@@ -337,7 +343,9 @@ class StatementParserMixin(ParserBase):
         location = self._current().location
         self._expect(TokenType.RETURN)
         # Spec grammar: return_stmt = "return" expr?
-        # Bare `return` is equivalent to `return ()`.
+        # Bare `return` is equivalent to `return ()`.  Since Geno does not
+        # emit newline tokens, use source locations to keep a statement on the
+        # following line from being silently consumed as the return value.
         terminators = (
             TokenType.END,
             TokenType.ELSE,
@@ -345,7 +353,7 @@ class StatementParserMixin(ParserBase):
             TokenType.CATCH,
             TokenType.EOF,
         )
-        if self._check(*terminators):
+        if self._check(*terminators) or self._current().location.line > location.line:
             value: Expression = TupleExpr(location=location, elements=[])
         else:
             value = self._parse_expression()

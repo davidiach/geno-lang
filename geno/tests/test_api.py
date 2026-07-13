@@ -14,11 +14,8 @@ import pytest
 
 import geno
 from geno.api import (
-    CheckResult,
     ConstraintResult,
     RunConfig,
-    RunResult,
-    Timing,
     check,
     check_path,
     constrain_prefix,
@@ -28,14 +25,12 @@ from geno.api import (
 )
 from geno.diagnostics import Diagnostic, ErrorCode, Severity
 from geno.execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
-from geno.sandbox import StepLimitExceeded
 from geno.tests.project_resolution_fixture_helpers import (
     write_dependency_private_collision_fixture,
 )
 from geno.values import (
     ArrayValue,
     BuiltinFunction,
-    Closure,
     ConstructorValue,
     value_to_json,
 )
@@ -1025,7 +1020,6 @@ class TestValueToJson:
     def test_float_nan_serialized_as_string(self):
         """NaN must become a JSON-safe string, not invalid JSON token."""
         import json
-        import math
 
         result = value_to_json(float("nan"))
         assert result == "NaN"
@@ -1035,7 +1029,6 @@ class TestValueToJson:
     def test_float_inf_serialized_as_string(self):
         """Infinity must become a JSON-safe string, not invalid JSON token."""
         import json
-        import math
 
         assert value_to_json(float("inf")) == "Infinity"
         assert value_to_json(float("-inf")) == "-Infinity"

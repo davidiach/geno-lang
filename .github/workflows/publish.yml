@@ -98,6 +98,18 @@ jobs:
 
     - name: Verify published package
       run: |
-        sleep 30
-        pip install geno-lang==${{ steps.version.outputs.version }}
+        installed=false
+        for attempt in {1..10}; do
+          if python -m pip install --no-cache-dir "geno-lang==${{ steps.version.outputs.version }}"; then
+            installed=true
+            break
+          fi
+          if [ "$attempt" -lt 10 ]; then
+            sleep 15
+          fi
+        done
+        if [ "$installed" != true ]; then
+          echo "Package did not become available on PyPI after 10 attempts" >&2
+          exit 1
+        fi
         python scripts/smoke_installed_geno.py

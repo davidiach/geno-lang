@@ -11,9 +11,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from .ast_nodes import Parameter, SpecBlock, Statement
+from .diagnostics import runtime_error_code_for_message
 from .tokens import SourceLocation
 
 
@@ -32,7 +33,7 @@ class GenoRuntimeError(Exception):
     ) -> None:
         self.message = message
         self.location = location
-        self.error_code = error_code
+        self.error_code = error_code or runtime_error_code_for_message(message)
         if location:
             super().__init__(f"{location}: Runtime Error: {message}")
         else:

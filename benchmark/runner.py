@@ -5,20 +5,15 @@ Benchmark Runner
 Evaluates LLM-generated solutions against benchmark problems.
 """
 
-import json
 import signal
 import threading
 import time
-import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator
 
 from benchmark.schema import (
-    Difficulty,
-    Domain,
     Problem,
     TestCase,
     _allows_none_payload,
@@ -31,7 +26,6 @@ from benchmark.schema import (
 )
 from geno.sandbox import (
     BLOCKED_BUILTINS,
-    BLOCKED_MODULES,
     SAFE_BUILTINS,
     safe_getattr,
     safe_hasattr,

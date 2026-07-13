@@ -6,9 +6,9 @@ Lexical analyzer that converts source code into a stream of tokens.
 """
 
 import re
-from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterator
 
+from .diagnostics import ErrorCode
 from .tokens import KEYWORDS, SourceLocation, Token, TokenType
 
 _WHITESPACE = " \t\r\n"
@@ -62,6 +62,13 @@ class LexerError(Exception):
     def __init__(self, message: str, location: SourceLocation, error_code=None):
         self.message = message
         self.location = location
+        if error_code is None:
+            if message.startswith("Unterminated block comment"):
+                error_code = ErrorCode.LEX_UNTERMINATED_COMMENT
+            elif message.startswith("Unterminated"):
+                error_code = ErrorCode.LEX_UNTERMINATED_STRING
+            elif message.startswith("Invalid escape sequence"):
+                error_code = ErrorCode.LEX_INVALID_ESCAPE
         self.error_code = error_code
         super().__init__(f"{location}: {message}")
 
@@ -126,7 +133,7 @@ class Lexer:
     def _read_string(self) -> Token:
         """Read a string literal."""
         start_loc = self._current_location()
-        quote = self._advance()  # consume opening quote
+        self._advance()  # consume opening quote
 
         # Check for multi-line string """
         if self._peek() == '"' and self._peek(1) == '"':
@@ -319,8 +326,14 @@ class Lexer:
 
             start_loc = source_location_cls(line, column, filename)
 
-            # F-string literals: f"..."
+            # F-string literals: f"...".  Multiline f-strings are not part of
+            # Geno's grammar; without this guard, f"""...""" was tokenized as
+            # an empty f-string followed by an unrelated string literal.
             if char == "f" and next_char == '"':
+                if source.startswith('f"""', pos):
+                    raise LexerError(
+                        "Triple-quoted f-strings are not supported", start_loc
+                    )
                 self.pos = pos + 1
                 self.line = line
                 self.column = column + 1
@@ -348,6 +361,21 @@ class Lexer:
                 start_pos = pos
                 text = match.group(0)
                 pos = match.end()
+
+                # A numeric literal cannot run directly into an identifier.
+                # Treating ``123abc`` as two independent tokens lets the
+                # parser silently reinterpret a typo as a different program.
+                # Keep malformed import names tokenized separately so the
+                # parser can synchronize and report later definitions too.
+                adjacent_identifier = pos < source_len and (
+                    _is_ascii_alpha(source[pos]) or source[pos] == "_"
+                )
+                follows_import = bool(tokens) and tokens[-1].type is TokenType.IMPORT
+                if adjacent_identifier and not follows_import:
+                    raise LexerError(
+                        "Expected a separator between numeric literal and identifier",
+                        source_location_cls(line, column + pos - start_pos, filename),
+                    )
 
                 int_part_end = text.find(".")
                 if int_part_end == -1:
