@@ -11,7 +11,7 @@
     "directory": "vscode-geno"
   },
   "engines": {
-    "vscode": "^1.80.0",
+    "vscode": "^1.91.0",
     "node": ">=20 <25"
   },
   "categories": [
@@ -104,7 +104,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.80.0",
+    "@types/vscode": "^1.91.0",
     "typescript": "^6.0.3",
     "@vscode/vsce": "^3.9.1"
   }

@@ -211,17 +211,22 @@ class BenchmarkRunner:
 
         result: dict[str, Any] = {}
         error: dict[str, BaseException] = {}
+        finished_at: dict[str, float] = {}
+        deadline = time.monotonic() + self.timeout_seconds
 
         def target() -> None:
             try:
                 result["value"] = func()
             except BaseException as exc:
                 error["value"] = exc
+            finally:
+                finished_at["value"] = time.monotonic()
 
         thread = threading.Thread(target=target, daemon=True)
         thread.start()
-        thread.join(self.timeout_seconds)
-        if thread.is_alive():
+        thread.join(max(0.0, deadline - time.monotonic()))
+        completed_at = finished_at.get("value")
+        if thread.is_alive() or completed_at is None or completed_at >= deadline:
             raise BenchmarkTimeoutError(
                 f"Execution timed out after {self.timeout_seconds} seconds"
             )
