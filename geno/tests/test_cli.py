@@ -2351,6 +2351,37 @@ class TestGenoDevServerBuild:
         assert _dev_request_header_error(headers, 3210) is None
 
     @pytest.mark.parametrize(
+        ("host", "origin"),
+        [
+            ("localhost", None),
+            ("127.0.0.1", None),
+            ("localhost", "http://localhost"),
+            ("127.0.0.1", "http://127.0.0.1"),
+        ],
+    )
+    def test_dev_header_policy_accepts_implicit_default_http_port(self, host, origin):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        headers = Message()
+        headers.add_header("Host", host)
+        if origin is not None:
+            headers.add_header("Origin", origin)
+
+        assert _dev_request_header_error(headers, 80) is None
+
+    def test_dev_header_policy_rejects_explicit_empty_default_port(self):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        headers = Message()
+        headers.add_header("Host", "localhost:")
+
+        assert _dev_request_header_error(headers, 80) == 421
+
+    @pytest.mark.parametrize(
         "host",
         [
             "attacker.test:3210",
@@ -2394,6 +2425,7 @@ class TestGenoDevServerBuild:
             "http://127.0.0.1:3210",
             "http://localhost:3211",
             "http://user@localhost:3210",
+            "http://localhost:",
             "http://localhost:3210/path",
         ],
     )
@@ -2420,6 +2452,54 @@ class TestGenoDevServerBuild:
 
         assert _dev_request_header_error(headers, 3210) == 403
 
+    def test_dev_header_completion_and_expiry_have_single_winner(self):
+        import socket
+        import threading
+
+        from geno.cli.serve import (
+            _DEV_WRITE_TIMEOUT_SECONDS,
+            _BoundedDevHTTPServer,
+        )
+
+        class FakeRequest:
+            def __init__(self):
+                self.closed = False
+                self.shutdown_calls = []
+                self.timeouts = []
+
+            def shutdown(self, how):
+                self.shutdown_calls.append(how)
+
+            def close(self):
+                self.closed = True
+
+            def settimeout(self, timeout):
+                self.timeouts.append(timeout)
+
+        def server_with_deadline():
+            server = object.__new__(_BoundedDevHTTPServer)
+            server._header_timer_lock = threading.Lock()
+            request = FakeRequest()
+            timer = threading.Timer(60, lambda: None)
+            server._header_timers = {request: timer}
+            return server, request, timer
+
+        server, request, timer = server_with_deadline()
+        server.complete_request_headers(request)
+        server._expire_headers(request)
+        assert timer.finished.is_set() is True
+        assert request.timeouts == [_DEV_WRITE_TIMEOUT_SECONDS]
+        assert request.shutdown_calls == []
+        assert request.closed is False
+
+        server, request, timer = server_with_deadline()
+        server._expire_headers(request)
+        server.complete_request_headers(request)
+        assert timer.finished.is_set() is False
+        assert request.timeouts == []
+        assert request.shutdown_calls == [socket.SHUT_RDWR]
+        assert request.closed is True
+
     def test_dev_server_bounds_connections_and_releases_timed_out_slot(self):
         import http.client
         import http.server
@@ -2431,12 +2511,17 @@ class TestGenoDevServerBuild:
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                self.server.complete_request_headers(self.connection)
+                active_server = self.server
+                assert isinstance(active_server, _BoundedDevHTTPServer)
+                active_server.complete_request_headers(self.connection)
                 self.close_connection = True
                 self.send_response(200)
                 self.send_header("Content-Length", "2")
                 self.end_headers()
-                self.wfile.write(b"ok")
+                try:
+                    self.wfile.write(b"ok")
+                except OSError:
+                    pass
 
             def log_message(self, _format, *_args):
                 pass
@@ -2445,7 +2530,7 @@ class TestGenoDevServerBuild:
             ("127.0.0.1", 0),
             Handler,
             max_connections=1,
-            header_timeout=5.0,
+            header_timeout=2.0,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -2460,14 +2545,11 @@ class TestGenoDevServerBuild:
 
             overflow = socket.create_connection(("127.0.0.1", port), timeout=2)
             try:
-                overflow.sendall(
-                    f"GET / HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n".encode()
-                )
                 assert b"503 Service Unavailable" in overflow.recv(4096)
             finally:
                 overflow.close()
 
-            deadline = time.monotonic() + 7
+            deadline = time.monotonic() + 4
             while server._connection_slots._value != 1 and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert server._connection_slots._value == 1

@@ -358,6 +358,10 @@ The repeatable `--allow-capability` CLI flag controls which capabilities
   (default: `GENO_MAX_WALL_CLOCK_SECONDS`), `GENO_WORKER_MAX_FILE_SIZE_BYTES`
   (default: 0, meaning no file writes), and `GENO_WORKER_MAX_PROCESSES`
   (default: 1). Set memory or CPU limits to 0 to disable that specific cap.
+  On Darwin, the memory value is a VM address-space growth budget above the
+  already-spawned trusted worker bootstrap, because XNU rejects an absolute
+  limit below the existing VM map. Any stricter inherited hard limit remains
+  authoritative.
 - **Bounded concurrency**: Limits simultaneous executions via
   `GENO_MAX_CONCURRENT_REQUESTS` (default: 16)
 

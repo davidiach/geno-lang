@@ -33,6 +33,10 @@ def _normalize_dev_authority(value: str, expected_port: int) -> tuple[str, int] 
         port = parsed.port
     except ValueError:
         return None
+    if port is None:
+        if ":" in parsed.netloc:
+            return None
+        port = 80
     if (
         parsed.scheme
         or parsed.path
@@ -65,7 +69,10 @@ def _dev_request_header_error(headers: Any, expected_port: int) -> int | None:
         return 403
     try:
         parsed = urlsplit(origin)
-        origin_port = parsed.port if parsed.port is not None else 80
+        origin_port = parsed.port
+        if origin_port is None and ":" in parsed.netloc:
+            return 403
+        origin_port = origin_port if origin_port is not None else 80
     except ValueError:
         return 403
     if (
@@ -121,24 +128,35 @@ class _BoundedDevHTTPServer(http.server.ThreadingHTTPServer):
         except OSError:
             pass
 
-    def _expire_headers(self, request: Any) -> None:
-        with self._header_timer_lock:
-            if request not in self._header_timers:
-                return
+    @staticmethod
+    def _terminate_request_socket(request: Any) -> None:
         try:
             request.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
+        try:
+            request.close()
+        except OSError:
+            pass
 
-    def _cancel_header_deadline(self, request: Any) -> None:
+    def _expire_headers(self, request: Any) -> None:
         with self._header_timer_lock:
             timer = self._header_timers.pop(request, None)
-        if timer is not None:
-            timer.cancel()
+        if timer is None:
+            return
+        self._terminate_request_socket(request)
+
+    def _cancel_header_deadline(self, request: Any) -> bool:
+        with self._header_timer_lock:
+            timer = self._header_timers.pop(request, None)
+        if timer is None:
+            return False
+        timer.cancel()
+        return True
 
     def complete_request_headers(self, request: Any) -> None:
-        self._cancel_header_deadline(request)
-        request.settimeout(_DEV_WRITE_TIMEOUT_SECONDS)
+        if self._cancel_header_deadline(request):
+            request.settimeout(_DEV_WRITE_TIMEOUT_SECONDS)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._connection_slots.acquire(blocking=False):
@@ -193,10 +211,7 @@ class _BoundedDevHTTPServer(http.server.ThreadingHTTPServer):
             self._header_timers.clear()
         for request, timer in pending:
             timer.cancel()
-            try:
-                request.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            self._terminate_request_socket(request)
 
     def server_close(self) -> None:
         self.stop()

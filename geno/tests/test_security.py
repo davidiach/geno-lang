@@ -5,6 +5,7 @@ Security Tests for Geno
 Tests that the sandbox properly restricts dangerous operations.
 """
 
+import ctypes
 import errno
 import importlib
 import io
@@ -29,6 +30,140 @@ from geno.sandbox import (
 )
 
 _has_typing_extensions = importlib.util.find_spec("typing_extensions") is not None  # type: ignore[attr-defined]
+
+
+class TestDarwinResourceLimits:
+    """Test Darwin's baseline-aware address-space limit calculation."""
+
+    def test_proc_pidinfo_reads_complete_virtual_size_record(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __call__(self, pid, flavor, argument, buffer, size):
+                assert pid == os.getpid()
+                assert flavor == 4
+                assert argument == 0
+                assert size == 96
+                assert size == ctypes.sizeof(_darwin_resource._ProcTaskInfo)
+                info = ctypes.cast(
+                    buffer, ctypes.POINTER(_darwin_resource._ProcTaskInfo)
+                ).contents
+                info.pti_virtual_size = 900_000_000
+                return size
+
+        fake_proc_pidinfo = FakeProcPidinfo()
+
+        class FakeLibproc:
+            proc_pidinfo = fake_proc_pidinfo
+
+        def fake_cdll(name, *, use_errno):
+            assert name == "/usr/lib/libproc.dylib"
+            assert use_errno is True
+            return FakeLibproc()
+
+        monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
+
+        assert _darwin_resource._read_darwin_virtual_size_bytes() == 900_000_000
+        assert fake_proc_pidinfo.restype is ctypes.c_int
+        assert fake_proc_pidinfo.argtypes == [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+
+    def test_proc_pidinfo_short_read_fails_closed(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __call__(self, _pid, _flavor, _argument, _buffer, size):
+                ctypes.set_errno(errno.EPERM)
+                return size - 1
+
+        class FakeLibproc:
+            proc_pidinfo = FakeProcPidinfo()
+
+        def fake_cdll(_name, *, use_errno):
+            assert use_errno is True
+            return FakeLibproc()
+
+        monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
+
+        with pytest.raises(OSError) as exc_info:
+            _darwin_resource._read_darwin_virtual_size_bytes()
+        assert exc_info.value.errno == errno.EPERM
+
+    def test_darwin_ceiling_adds_budget_and_preserves_hard_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 5
+            RLIM_INFINITY = -1
+
+            def __init__(self, hard_limit):
+                self.hard_limit = hard_limit
+
+            def getrlimit(self, which):
+                assert which == self.RLIMIT_AS
+                return (self.RLIM_INFINITY, self.hard_limit)
+
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "darwin")
+        baseline = 900_000_000
+        budget = 256_000_000
+
+        def reader():
+            return baseline
+
+        assert (
+            _darwin_resource.rlimit_as_ceiling(
+                budget,
+                FakeResource(-1),
+                virtual_size_reader=reader,
+            )
+            == baseline + budget
+        )
+        assert (
+            _darwin_resource.rlimit_as_ceiling(
+                budget,
+                FakeResource(1_000_000_000),
+                virtual_size_reader=reader,
+            )
+            == 1_000_000_000
+        )
+
+    def test_darwin_ceiling_rejects_exhausted_inherited_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 5
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(_which):
+                return (-1, 900_000_000)
+
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "darwin")
+
+        with pytest.raises(OSError, match="no address-space growth budget"):
+            _darwin_resource.rlimit_as_ceiling(
+                256_000_000,
+                FakeResource(),
+                virtual_size_reader=lambda: 900_000_000,
+            )
+
+    def test_non_darwin_ceiling_is_the_requested_absolute_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "linux")
+
+        assert _darwin_resource.rlimit_as_ceiling(123, object()) == 123
 
 
 class TestSandboxBasics:
@@ -1646,7 +1781,23 @@ class TestProcessSandbox:
         from geno.sandbox import ProcessSandbox
 
         script = ProcessSandbox._WORKER_SCRIPT
-        assert script.index("code = sys.stdin.read()") < script.index("RLIMIT_AS")
+        assert script.index("code = sys.stdin.read()") < script.index(
+            "_benchmark_resource.setrlimit("
+        )
+
+    def test_worker_freezes_darwin_memory_ceiling_before_untrusted_input(self):
+        """The Darwin baseline must never include attacker-controlled stdin."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        prepare = script.index("memory_ceiling = (")
+        read_input = script.index("code = sys.stdin.read()")
+        assert prepare < read_input
+        assert script.count("_worker_rlimit_as_ceiling(") == 2
+        assert script.count("(memory_ceiling, memory_ceiling)") == 3
+        assert "_benchmark_resource.setrlimit(" in script
+        assert "_frontend_resource.setrlimit(" in script
+        assert "_resource.setrlimit(" in script
 
     def test_geno_frontend_applies_memory_limit_before_compiler_import(self):
         """Geno source processing starts only after the early RLIMIT_AS gate."""

@@ -67,6 +67,10 @@ Additional constraints:
 - OS-backed process limits (`max_memory_bytes`, `max_cpu_time`,
   `max_file_size_bytes`, and `max_processes`) are not available through
   `RunConfig` because `geno.run()` is an in-process embedding API
+- on Darwin, `max_memory_bytes` is an address-space growth budget above the
+  trusted Python worker's pre-input bootstrap VM map; later request parsing and
+  trusted setup consume that budget before untrusted code runs. XNU rejects
+  limits below current usage, and any stricter inherited hard limit still wins
 - `SandboxConfig` can express every `ProcessSandboxConfig` resource limit
   for callers that use `run_sandboxed()` / compiled process execution:
   timeout, memory bytes, CPU time, file size, process count, output length,

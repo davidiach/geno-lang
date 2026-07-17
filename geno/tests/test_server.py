@@ -1809,7 +1809,9 @@ def test_apply_worker_resource_limits_sets_configured_rlimits(monkeypatch):
         def setrlimit(self, which, limits):
             calls.append((which, limits))
 
-    monkeypatch.setitem(sys.modules, "resource", FakeResource())
+    fake_resource = FakeResource()
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+    monkeypatch.setattr(server_mod, "rlimit_as_ceiling", lambda value, _resource: value)
     monkeypatch.setattr(server_mod, "WORKER_MAX_CPU_TIME", 1.2)
     monkeypatch.setattr(server_mod, "WORKER_MAX_FILE_SIZE_BYTES", 0)
     monkeypatch.setattr(server_mod, "WORKER_MAX_PROCESSES", 3)
@@ -1824,6 +1826,43 @@ def test_apply_worker_resource_limits_sets_configured_rlimits(monkeypatch):
         ("nproc", (3, 3)),
         ("as", (4096, 4096)),
     ]
+
+
+def test_hosted_worker_uses_baseline_aware_memory_ceiling(monkeypatch):
+    import geno.server as server_mod
+
+    calls = []
+    ceiling_calls = []
+
+    class FakeResource:
+        RLIMIT_AS = "as"
+
+        def setrlimit(self, which, limits):
+            calls.append((which, limits))
+
+    fake_resource = FakeResource()
+
+    def fake_ceiling(requested_bytes, resource_module):
+        ceiling_calls.append((requested_bytes, resource_module))
+        return 900_000_000
+
+    class FakeOS:
+        name = "posix"
+
+    monkeypatch.setattr(server_mod, "os", FakeOS())
+
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+    monkeypatch.setattr(server_mod, "rlimit_as_ceiling", fake_ceiling)
+    monkeypatch.setattr(server_mod, "WORKER_MAX_CPU_TIME", 0)
+    monkeypatch.setattr(server_mod, "WORKER_MAX_FILE_SIZE_BYTES", -1)
+    monkeypatch.setattr(server_mod, "WORKER_MAX_PROCESSES", 0)
+    monkeypatch.setattr(server_mod, "WORKER_MAX_MEMORY_BYTES", 4096)
+
+    applied = _apply_worker_resource_limits()
+
+    assert applied == ("RLIMIT_AS",)
+    assert ceiling_calls == [(4096, fake_resource)]
+    assert calls == [("as", (900_000_000, 900_000_000))]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object test")

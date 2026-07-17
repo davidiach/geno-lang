@@ -28,6 +28,7 @@ from multiprocessing.process import BaseProcess
 from typing import AbstractSet, Any, Iterator, cast
 from urllib.parse import urlsplit
 
+from ._darwin_resource import rlimit_as_ceiling
 from .api import RunConfig, constrain_prefix, run
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES
 from .capabilities import CapabilityParseError, normalize_capability_values
@@ -1579,8 +1580,17 @@ def _apply_worker_resource_limits() -> tuple[str, ...]:
         if name is not None:
             applied.append(name)
     if WORKER_MAX_MEMORY_BYTES > 0:
+        try:
+            memory_ceiling = rlimit_as_ceiling(
+                WORKER_MAX_MEMORY_BYTES,
+                resource,
+            )
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(
+                f"failed to prepare required worker RLIMIT_AS: {exc}"
+            ) from exc
         name = _try_set_worker_rlimit(
-            resource, "RLIMIT_AS", WORKER_MAX_MEMORY_BYTES, WORKER_MAX_MEMORY_BYTES
+            resource, "RLIMIT_AS", memory_ceiling, memory_ceiling
         )
         if name is not None:
             applied.append(name)

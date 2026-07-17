@@ -124,7 +124,9 @@ class SandboxConfig:
     # Time limit in seconds (None = no limit)
     timeout: float | None = 5.0
 
-    # ProcessSandbox-only address-space limit in bytes (None = no limit)
+    # ProcessSandbox-only address-space limit in bytes (None = no limit).
+    # On Darwin this is a growth budget above the trusted worker's pre-input
+    # bootstrap baseline.
     max_memory_bytes: int | None = 256 * 1024 * 1024
 
     # ProcessSandbox-only CPU time limit in seconds (None = no limit)
@@ -1115,7 +1117,9 @@ class ProcessSandboxConfig:
     # Time limit in seconds (None = no limit)
     timeout: float | None = 5.0
 
-    # Memory limit in bytes (POSIX rlimit / Windows Job, None = no limit)
+    # Memory limit in bytes (POSIX rlimit / Windows Job, None = no limit).
+    # On Darwin this is a growth budget above the trusted worker's pre-input
+    # bootstrap baseline.
     max_memory_bytes: int | None = 256 * 1024 * 1024  # 256 MB default
 
     # Maximum CPU time (POSIX rlimit / Windows Job, None = no limit)
@@ -2227,15 +2231,41 @@ def _emit_worker_error(error, error_type):
         "error_type": error_type,
     }) + '\n')
 
+def _worker_rlimit_as_ceiling(requested_bytes):
+    if sys.platform != "darwin":
+        return requested_bytes
+    if _GENO_TRUSTED_ROOT not in sys.path:
+        sys.path.insert(0, _GENO_TRUSTED_ROOT)
+    import resource as resource_module
+
+    from geno._darwin_resource import rlimit_as_ceiling
+
+    return rlimit_as_ceiling(requested_bytes, resource_module)
+
 def main():
     # Load configuration from environment variable
     config = json.loads(os.environ["GENO_SANDBOX_CONFIG"])
     max_result_error = int(config.get("max_output_length", 100000))
 
-    # Read the code from stdin before tightening address-space limits.
-    # Python 3.13 can need additional allocator headroom while reading stdin
-    # and importing the worker support modules; the memory cap is applied
-    # immediately before user code executes.
+    # Freeze Darwin's trusted bootstrap baseline before reading attacker-
+    # controlled stdin. The ceiling is applied later because Python 3.13 needs
+    # allocator headroom while reading and validating the bounded request.
+    memory_limit = config.get("max_memory_bytes", 0)
+    try:
+        memory_ceiling = (
+            _worker_rlimit_as_ceiling(memory_limit) if memory_limit > 0 else 0
+        )
+    except (ImportError, ValueError, OSError) as exc:
+        _emit_worker_error(
+            f"startup_error: failed to prepare RLIMIT_AS: {exc}",
+            "startup_error",
+        )
+        return
+
+    # Read the code from stdin before tightening address-space limits. On
+    # Darwin, any memory consumed from this point onward counts against the
+    # already-frozen ceiling, so oversized pre-limit setup fails closed when
+    # setrlimit runs.
     try:
         code = sys.stdin.read()
     except MemoryError:
@@ -2345,12 +2375,11 @@ def main():
         try:
             import resource as _benchmark_resource
 
-            _benchmark_memory = config.get("max_memory_bytes", 0)
-            if _benchmark_memory > 0:
+            if memory_ceiling > 0:
                 try:
                     _benchmark_resource.setrlimit(
                         _benchmark_resource.RLIMIT_AS,
-                        (_benchmark_memory, _benchmark_memory),
+                        (memory_ceiling, memory_ceiling),
                     )
                 except (ValueError, OSError) as exc:
                     _emit_worker_error(
@@ -2469,12 +2498,11 @@ def main():
         try:
             import resource as _frontend_resource
 
-            _frontend_memory = config.get("max_memory_bytes", 0)
-            if _frontend_memory > 0:
+            if memory_ceiling > 0:
                 try:
                     _frontend_resource.setrlimit(
                         _frontend_resource.RLIMIT_AS,
-                        (_frontend_memory, _frontend_memory),
+                        (memory_ceiling, memory_ceiling),
                     )
                 except (ValueError, OSError) as exc:
                     _emit_worker_error(
@@ -3043,10 +3071,12 @@ def main():
     try:
         import resource as _resource
 
-        mem_limit = config.get("max_memory_bytes", 0)
-        if mem_limit > 0:
+        if memory_ceiling > 0:
             try:
-                _resource.setrlimit(_resource.RLIMIT_AS, (mem_limit, mem_limit))
+                _resource.setrlimit(
+                    _resource.RLIMIT_AS,
+                    (memory_ceiling, memory_ceiling),
+                )
             except (ValueError, OSError) as exc:
                 _emit_worker_error(
                     f"startup_error: failed to set RLIMIT_AS: {exc}",
