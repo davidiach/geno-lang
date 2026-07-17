@@ -1256,36 +1256,40 @@ class TestProcessSandbox:
         assert killed is True
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
-    def test_worker_descendants_are_killed_after_normal_exit(self):
+    def test_worker_descendants_are_killed_after_normal_exit(self, tmp_path):
         """A child inheriting worker pipes must not survive a normal worker exit."""
-        import errno
-
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
-        child_script = "import time; time.sleep(30)"
+        marker = tmp_path / "descendant-survived-normal-exit"
+        ready = tmp_path / "descendant-started-normal-exit"
+        child_script = (
+            "import pathlib, time; "
+            f"pathlib.Path({str(ready)!r}).write_text('ready'); "
+            "time.sleep(0.5); "
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
         worker_script = (
-            "import subprocess, sys; "
-            f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}]); "
-            "print(child.pid, flush=True)"
+            "import pathlib, subprocess, sys, time\n"
+            f"ready = pathlib.Path({str(ready)!r})\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}])\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "if not ready.exists():\n"
+            "    raise RuntimeError('descendant did not start')\n"
         )
         sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
-        returncode, stdout, _stderr, _truncated = sandbox._run_worker(
+        returncode, _stdout, _stderr, _truncated = sandbox._run_worker(
             [sys.executable, "-c", worker_script], ""
         )
 
         assert returncode == 0
-        child_pid = int(stdout.strip())
-        deadline = time.monotonic() + 2.0
-        while True:
-            try:
-                os.kill(child_pid, 0)
-            except OSError as exc:
-                if exc.errno == errno.ESRCH:
-                    break
-                raise
-            if time.monotonic() >= deadline:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if marker.exists():
                 pytest.fail("sandbox worker descendant survived normal exit")
-            time.sleep(0.01)
+            time.sleep(0.05)
+        assert not marker.exists(), "sandbox worker descendant survived normal exit"
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
     def test_worker_descendants_are_killed_after_timeout(self, tmp_path):

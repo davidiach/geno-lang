@@ -2239,16 +2239,19 @@ function _portableRegexQuantifierEnd(pattern, start) {
     while (i < pattern.length && _isAsciiRegexDigit(pattern[i])) i++;
     if (i === lowerStart) return null;
     const lowerText = pattern.slice(lowerStart, i);
-    if (lowerText.length > 5) return null;
-    const lower = Number(lowerText);
+    const lowerSignificant = lowerText.replace(/^0+/, "");
+    if (lowerSignificant.length > 5) return null;
+    const lower = lowerSignificant === "" ? 0 : Number(lowerSignificant);
     let upper = lower;
     if (i < pattern.length && pattern[i] === ",") {
         i++;
         const upperStart = i;
         while (i < pattern.length && _isAsciiRegexDigit(pattern[i])) i++;
         const upperText = pattern.slice(upperStart, i);
-        if (upperText.length > 5) return null;
-        upper = upperText === "" ? null : Number(upperText);
+        const upperSignificant = upperText.replace(/^0+/, "");
+        if (upperSignificant.length > 5) return null;
+        upper = upperText === ""
+            ? null : (upperSignificant === "" ? 0 : Number(upperSignificant));
     }
     if (i >= pattern.length || pattern[i] !== "}") return null;
     if (

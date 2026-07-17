@@ -2656,6 +2656,11 @@ class TestCompiledJSRegexValidation:
         _, out = self._run_js_expect_error(f'regex_match("a{{{escape}}}", "a")')
         assert "advanced or encoded" in out
 
+    @pytest.mark.parametrize("pattern", ["a{000001}", "a{000001,000002}"])
+    def test_js_regex_allows_zero_padded_bounded_quantifiers(self, pattern):
+        _, out = self._run_js_expect_error(f'regex_match("{pattern}", "aa")')
+        assert out == "NO_ERROR"
+
     def test_js_regex_group_nesting_limit(self):
         _, maximum = self._run_js_expect_error(
             'regex_match("(".repeat(128) + "a" + ")".repeat(128), "a")'
