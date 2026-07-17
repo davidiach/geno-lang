@@ -788,7 +788,9 @@ class TestLockfileContentHash:
     )
     def test_compute_content_hash_rejects_unsupported_filesystem_entry(self, tmp_path):
         fifo = tmp_path / "FutureModule.geno"
-        os.mkfifo(fifo)
+        mkfifo = getattr(os, "mkfifo", None)
+        assert callable(mkfifo)
+        mkfifo(fifo)
 
         with pytest.raises(RuntimeError, match="Unsupported filesystem entry"):
             compute_content_hash(tmp_path)
@@ -1283,6 +1285,73 @@ git = "https://example.com/utils.git"
             cmd = call[0][0]
             assert "clone" not in cmd, "should not clone already-installed dep"
             assert "fetch" not in cmd, "should not fetch already-installed dep"
+
+    @pytest.mark.parametrize("installed_head", ["different", "unverifiable"])
+    def test_install_restages_matching_tree_without_verified_commit(
+        self, tmp_path, installed_head
+    ):
+        """A matching tree must still have a verified, exactly pinned HEAD."""
+        locked_commit = "a" * 40
+        installed_commit = "b" * 40
+        source = "func x() -> Int\n  return 1\nend func\n"
+        (tmp_path / "geno.toml").write_text(
+            """
+[dependencies.utils]
+git = "https://example.com/utils.git"
+"""
+        )
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        dep_dir.mkdir(parents=True)
+        (dep_dir / "Utils.geno").write_text(source)
+        save_lockfile(
+            Lockfile(
+                dependencies={
+                    "utils": LockedDependency(
+                        name="utils",
+                        git="https://example.com/utils.git",
+                        commit=locked_commit,
+                        content_hash=compute_content_hash(dep_dir),
+                    )
+                }
+            ),
+            tmp_path / "geno.lock",
+        )
+
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            commands.append(cmd)
+            if cmd[:2] == ["git", "clone"]:
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True, exist_ok=True)
+                (staged / "Utils.geno").write_text(source)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        def fake_head(repo):
+            if Path(repo) != dep_dir:
+                return locked_commit
+            if installed_head == "unverifiable":
+                raise RuntimeError("not a Git checkout")
+            return installed_commit
+
+        with (
+            mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run),
+            mock.patch("geno.package_manager._git_head_commit", side_effect=fake_head),
+        ):
+            installed = install(tmp_path)
+
+        assert installed == ["utils"]
+        assert [
+            "git",
+            "-C",
+            mock.ANY,
+            "checkout",
+            "--force",
+            locked_commit,
+        ] in commands
+        assert parse_lockfile(tmp_path / "geno.lock").dependencies["utils"].commit == (
+            locked_commit
+        )
 
     def test_install_detects_dirty_working_tree(self, tmp_path):
         """If HEAD matches but content_hash drifts, install should not skip."""

@@ -908,12 +908,28 @@ def _install_locked(root: Path) -> list[str]:
                         locked.content_hash_version == 2
                         and _locked_content_hash_matches(dep_dir, locked)
                     ):
-                        continue
-                    _LOGGER.warning(
-                        "Dependency '%s' has been modified locally "
-                        "(content hash mismatch). Replacing it.",
-                        name,
-                    )
+                        try:
+                            installed_commit = _git_head_commit(dep_dir)
+                        except RuntimeError:
+                            _LOGGER.warning(
+                                "Dependency '%s' has unverifiable Git metadata. "
+                                "Replacing it.",
+                                name,
+                            )
+                        else:
+                            if installed_commit.casefold() == locked.commit.casefold():
+                                continue
+                            _LOGGER.warning(
+                                "Dependency '%s' is not at the locked commit. "
+                                "Replacing it.",
+                                name,
+                            )
+                    else:
+                        _LOGGER.warning(
+                            "Dependency '%s' has an outdated or mismatched "
+                            "content hash. Replacing it.",
+                            name,
+                        )
                 elif dep_dir.exists():
                     _LOGGER.warning(
                         "Dependency '%s' is from an old lockfile without "
