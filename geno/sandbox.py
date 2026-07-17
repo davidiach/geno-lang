@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import platform
+import select
 import signal
 import subprocess
 import sys
@@ -1491,13 +1492,77 @@ class ProcessSandbox:
             raise ctypes_api.WinError(ctypes_api.get_last_error())
 
     @staticmethod
-    def _require_posix_worker_supervision() -> None:
-        """Fail closed when safe wait-without-reap supervision is unavailable."""
+    def _waitid_supervision_available() -> bool:
+        """Return whether POSIX wait-without-reap primitives are available."""
+        required = ("waitid", "P_PID", "WEXITED", "WNOWAIT", "WNOHANG")
+        return all(getattr(os, name, None) is not None for name in required)
+
+    @staticmethod
+    def _kqueue_supervision_available() -> bool:
+        """Return whether BSD process-exit observation is available."""
+        required = (
+            "kqueue",
+            "kevent",
+            "KQ_FILTER_PROC",
+            "KQ_EV_ADD",
+            "KQ_EV_ENABLE",
+            "KQ_NOTE_EXIT",
+        )
+        return all(getattr(select, name, None) is not None for name in required)
+
+    @classmethod
+    def _require_posix_worker_supervision(cls) -> None:
+        """Fail closed when safe unreaped-exit supervision is unavailable."""
         if os.name != "posix":
             return
-        required = ("waitid", "P_PID", "WEXITED", "WNOWAIT", "WNOHANG")
-        if any(getattr(os, name, None) is None for name in required):
+        if not callable(os.__dict__.get("killpg")) or not (
+            cls._waitid_supervision_available() or cls._kqueue_supervision_available()
+        ):
             raise SandboxError("Secure POSIX process-group supervision is unavailable")
+
+    @classmethod
+    def _create_posix_exit_observer(cls, process: subprocess.Popen[str]) -> Any | None:
+        """Create a BSD kqueue observer when waitid(WNOWAIT) is unavailable."""
+        if os.name != "posix" or cls._waitid_supervision_available():
+            return None
+
+        kqueue_factory = getattr(select, "kqueue", None)
+        kevent_factory = getattr(select, "kevent", None)
+        if not callable(kqueue_factory) or not callable(kevent_factory):
+            raise SandboxError("Secure POSIX process-group supervision is unavailable")
+
+        observer: Any | None = None
+        select_api: Any = select
+        try:
+            observer = kqueue_factory()
+            event = kevent_factory(
+                process.pid,
+                filter=select_api.KQ_FILTER_PROC,
+                flags=(select_api.KQ_EV_ADD | select_api.KQ_EV_ENABLE),
+                fflags=select_api.KQ_NOTE_EXIT,
+            )
+            observer.control([event], 0, 0)
+        except (OSError, ValueError) as exc:
+            try:
+                if observer is not None:
+                    observer.close()
+            finally:
+                raise SandboxError(
+                    "Failed to initialize POSIX sandbox worker exit supervision"
+                ) from exc
+        except BaseException:
+            try:
+                if observer is not None:
+                    observer.close()
+            finally:
+                raise
+        return observer
+
+    @staticmethod
+    def _close_posix_exit_observer(observer: Any | None) -> None:
+        """Close a platform-specific process-exit observer."""
+        if observer is not None:
+            observer.close()
 
     @staticmethod
     def _kill_posix_process_group(process: subprocess.Popen[str]) -> None:
@@ -1528,31 +1593,33 @@ class ProcessSandbox:
             ) from group_error
 
     @staticmethod
-    def _posix_worker_exit_observable(process: subprocess.Popen[str]) -> bool:
+    def _posix_worker_exit_observable(
+        process: subprocess.Popen[str], observer: Any | None = None
+    ) -> bool:
         """Return whether a POSIX leader exited without reaping its PID."""
-        waitid = getattr(os, "waitid", None)
-        p_pid = getattr(os, "P_PID", None)
-        wexited = getattr(os, "WEXITED", None)
-        wnowait = getattr(os, "WNOWAIT", None)
-        wnohang = getattr(os, "WNOHANG", None)
-        assert waitid is not None
-        assert p_pid is not None
-        assert wexited is not None
-        assert wnowait is not None
-        assert wnohang is not None
+        if ProcessSandbox._waitid_supervision_available():
+            os_api: Any = os
+            waitid = os_api.waitid
+            p_pid = os_api.P_PID
+            options = os_api.WEXITED | os_api.WNOWAIT | os_api.WNOHANG
+            while True:
+                try:
+                    return waitid(p_pid, process.pid, options) is not None
+                except InterruptedError:
+                    continue
+                except ChildProcessError as exc:
+                    raise SandboxError(
+                        "Lost POSIX sandbox worker state before timeout supervision"
+                    ) from exc
+
+        if observer is None:
+            raise SandboxError("POSIX sandbox worker exit observer is unavailable")
         while True:
             try:
-                return (
-                    waitid(
-                        p_pid,
-                        process.pid,
-                        wexited | wnowait | wnohang,
-                    )
-                    is not None
-                )
+                return bool(observer.control(None, 1, 0))
             except InterruptedError:
                 continue
-            except ChildProcessError as exc:
+            except (OSError, ValueError) as exc:
                 raise SandboxError(
                     "Lost POSIX sandbox worker state before timeout supervision"
                 ) from exc
@@ -1563,6 +1630,7 @@ class ProcessSandbox:
         lifecycle_lock: Any,
         exit_observed: threading.Event,
         finished: threading.Event,
+        posix_exit_observer: Any | None = None,
     ) -> int:
         """Wait for the worker while ensuring descendants cannot outlive it."""
         if os.name != "posix":
@@ -1575,24 +1643,34 @@ class ProcessSandbox:
         # Keep the exited leader as a zombie until its process group has been
         # killed. This prevents its PID/process-group ID from being reused in
         # the interval between observing exit and terminating descendants.
-        waitid = getattr(os, "waitid", None)
-        p_pid = getattr(os, "P_PID", None)
-        wexited = getattr(os, "WEXITED", None)
-        wnowait = getattr(os, "WNOWAIT", None)
-        assert waitid is not None
-        assert p_pid is not None
-        assert wexited is not None
-        assert wnowait is not None
-        while True:
-            try:
-                waitid(p_pid, process.pid, wexited | wnowait)
-                break
-            except InterruptedError:
-                continue
-            except ChildProcessError as exc:
-                raise SandboxError(
-                    "Lost POSIX sandbox worker state before process-group cleanup"
-                ) from exc
+        if self._waitid_supervision_available():
+            os_api: Any = os
+            waitid = os_api.waitid
+            p_pid = os_api.P_PID
+            options = os_api.WEXITED | os_api.WNOWAIT
+            while True:
+                try:
+                    waitid(p_pid, process.pid, options)
+                    break
+                except InterruptedError:
+                    continue
+                except ChildProcessError as exc:
+                    raise SandboxError(
+                        "Lost POSIX sandbox worker state before process-group cleanup"
+                    ) from exc
+        else:
+            if posix_exit_observer is None:
+                raise SandboxError("POSIX sandbox worker exit observer is unavailable")
+            while True:
+                try:
+                    if posix_exit_observer.control(None, 1, None):
+                        break
+                except InterruptedError:
+                    continue
+                except (OSError, ValueError) as exc:
+                    raise SandboxError(
+                        "Lost POSIX sandbox worker state before process-group cleanup"
+                    ) from exc
 
         # The watchdog uses the same lock. Marking exit while the leader is
         # still unreaped closes the late-timer/reused-PGID race completely.
@@ -1619,12 +1697,35 @@ class ProcessSandbox:
         finished: threading.Event,
         timed_out: threading.Event,
         termination_errors: list[SandboxError],
+        posix_exit_observer: Any | None = None,
     ) -> None:
         """Terminate a live worker at its deadline without racing normal exit."""
         with lifecycle_lock:
             if exit_observed.is_set() or finished.is_set():
                 return
-            if os.name == "posix" and self._posix_worker_exit_observable(process):
+            posix_exit_observable = False
+            if os.name == "posix":
+                try:
+                    if posix_exit_observer is None:
+                        posix_exit_observable = self._posix_worker_exit_observable(
+                            process
+                        )
+                    else:
+                        posix_exit_observable = self._posix_worker_exit_observable(
+                            process, posix_exit_observer
+                        )
+                except SandboxError as exc:
+                    # A broken exit observer must not disable the hard timeout.
+                    # Record the infrastructure failure and kill fail-closed so
+                    # the blocking waiter always wakes.
+                    termination_errors.append(exc)
+                    timed_out.set()
+                    try:
+                        self._kill_posix_process_group(process)
+                    except SandboxError as termination_error:
+                        termination_errors.append(termination_error)
+                    return
+            if posix_exit_observable:
                 # The blocking waiter may have observed the leader but not yet
                 # acquired this lock. Leave the zombie unreaped so its PGID
                 # cannot be reused, clean descendants, and let that waiter reap.
@@ -1667,6 +1768,8 @@ class ProcessSandbox:
         stdout_thread: threading.Thread | None = None
         stderr_thread: threading.Thread | None = None
         watchdog: threading.Timer | None = None
+        posix_wait_observer: Any | None = None
+        posix_timeout_observer: Any | None = None
         lifecycle_lock = threading.Lock()
         exit_observed = threading.Event()
         finished = threading.Event()
@@ -1687,6 +1790,10 @@ class ProcessSandbox:
         )
 
         try:
+            if os.name == "posix":
+                posix_wait_observer = self._create_posix_exit_observer(process)
+                if self.config.timeout is not None:
+                    posix_timeout_observer = self._create_posix_exit_observer(process)
             try:
                 job_handle = self._create_windows_job(process)
             except OSError as exc:
@@ -1762,6 +1869,7 @@ class ProcessSandbox:
                         finished,
                         timed_out,
                         termination_errors,
+                        posix_timeout_observer,
                     ),
                 )
                 watchdog.daemon = True
@@ -1775,7 +1883,11 @@ class ProcessSandbox:
                     pass
 
             returncode = self._wait_for_worker_tree(
-                process, lifecycle_lock, exit_observed, finished
+                process,
+                lifecycle_lock,
+                exit_observed,
+                finished,
+                posix_wait_observer,
             )
             # On Windows, descendants can keep the inherited stdout/stderr
             # handles open after the leader exits. Close the kill-on-close Job
@@ -1859,6 +1971,8 @@ class ProcessSandbox:
         finally:
             if watchdog is not None:
                 watchdog.cancel()
+            self._close_posix_exit_observer(posix_wait_observer)
+            self._close_posix_exit_observer(posix_timeout_observer)
             self._close_windows_job(job_handle)
 
     def _format_truncated_stderr(self, stderr: str) -> str:

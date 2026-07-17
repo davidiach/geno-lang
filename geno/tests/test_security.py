@@ -1129,6 +1129,210 @@ class TestProcessSandbox:
         assert error.endswith("tail")
         assert len(error) <= sandbox._stderr_capture_limit() + 80
 
+    def test_kqueue_fallback_observes_exit_without_reaping(self, monkeypatch):
+        """BSD kqueue should supervise workers when waitid(WNOWAIT) is absent."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        registrations = []
+
+        class FakeObserver:
+            def __init__(self):
+                self.closed = False
+                self.controls = []
+
+            def control(self, changes, max_events, timeout):
+                self.controls.append((changes, max_events, timeout))
+                if changes is not None:
+                    registrations.extend(changes)
+                    return []
+                return [object()]
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            pid = 123
+
+        observers = []
+
+        def fake_kqueue():
+            observer = FakeObserver()
+            observers.append(observer)
+            return observer
+
+        def fake_kevent(ident, **kwargs):
+            return ident, kwargs
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", lambda *_args: None)
+        monkeypatch.setattr(
+            ProcessSandbox, "_waitid_supervision_available", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(sandbox_module.select, "kqueue", fake_kqueue, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "kevent", fake_kevent, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_FILTER_PROC", 1, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ADD", 2, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ENABLE", 4, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_NOTE_EXIT", 8, raising=False)
+
+        sandbox._require_posix_worker_supervision()
+        observer = sandbox._create_posix_exit_observer(
+            cast(subprocess.Popen[str], FakeProcess())
+        )
+
+        assert observer is observers[0]
+        assert registrations == [
+            (
+                123,
+                {
+                    "filter": 1,
+                    "flags": 6,
+                    "fflags": 8,
+                },
+            )
+        ]
+        assert sandbox._posix_worker_exit_observable(
+            cast(subprocess.Popen[str], FakeProcess()), observer
+        )
+        sandbox._close_posix_exit_observer(observer)
+        assert observers[0].closed is True
+
+    def test_kqueue_registration_interrupt_closes_and_propagates(self, monkeypatch):
+        """Cancellation during BSD observer setup must retain its original type."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+
+        class InterruptingObserver:
+            def __init__(self):
+                self.closed = False
+
+            def control(self, _changes, _max_events, _timeout):
+                raise KeyboardInterrupt
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            pid = 123
+
+        observer = InterruptingObserver()
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(
+            ProcessSandbox, "_waitid_supervision_available", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(
+            sandbox_module.select, "kqueue", lambda: observer, raising=False
+        )
+        monkeypatch.setattr(
+            sandbox_module.select,
+            "kevent",
+            lambda *_args, **_kwargs: object(),
+            raising=False,
+        )
+        monkeypatch.setattr(sandbox_module.select, "KQ_FILTER_PROC", 1, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ADD", 2, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ENABLE", 4, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_NOTE_EXIT", 8, raising=False)
+
+        with pytest.raises(KeyboardInterrupt):
+            sandbox._create_posix_exit_observer(
+                cast(subprocess.Popen[str], FakeProcess())
+            )
+
+        assert observer.closed is True
+
+    def test_kqueue_fallback_kills_group_before_reaping(self, monkeypatch):
+        """A BSD exit event must leave the leader waitable through group cleanup."""
+        import threading
+
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        lifecycle = []
+
+        class FakeObserver:
+            def control(self, changes, max_events, timeout):
+                assert changes is None
+                assert max_events == 1
+                assert timeout is None
+                lifecycle.append("exit-observed")
+                return [object()]
+
+        class FakeProcess:
+            pid = 123
+
+            def wait(self):
+                lifecycle.append("leader-reaped")
+                return 0
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox, "_waitid_supervision_available", lambda: False)
+        monkeypatch.setattr(
+            sandbox,
+            "_kill_posix_process_group",
+            lambda _process: lifecycle.append("group-killed"),
+        )
+
+        returncode = sandbox._wait_for_worker_tree(
+            cast(subprocess.Popen[str], FakeProcess()),
+            threading.Lock(),
+            threading.Event(),
+            threading.Event(),
+            FakeObserver(),
+        )
+
+        assert returncode == 0
+        assert lifecycle == ["exit-observed", "group-killed", "leader-reaped"]
+
+    def test_timeout_observer_failure_kills_worker_group_fail_closed(self, monkeypatch):
+        """A failed BSD exit query must not disable hard timeout enforcement."""
+        import threading
+
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        killed = False
+
+        class FailingObserver:
+            def control(self, _changes, _max_events, _timeout):
+                raise OSError("kqueue failed")
+
+        class FakeProcess:
+            pid = 123
+
+        def record_kill(_process):
+            nonlocal killed
+            killed = True
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(
+            ProcessSandbox, "_waitid_supervision_available", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", record_kill)
+        timed_out = threading.Event()
+        termination_errors: list[SandboxError] = []
+
+        sandbox._terminate_worker_on_timeout(
+            cast(subprocess.Popen[str], FakeProcess()),
+            threading.Lock(),
+            threading.Event(),
+            threading.Event(),
+            timed_out,
+            termination_errors,
+            FailingObserver(),
+        )
+
+        assert killed is True
+        assert timed_out.is_set() is True
+        assert len(termination_errors) == 1
+        assert "Lost POSIX sandbox worker state" in str(termination_errors[0])
+
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
     def test_late_timeout_callback_does_not_kill_exited_worker(self, monkeypatch):
         import threading
