@@ -2959,19 +2959,19 @@ class TestBackendParity:
         source = """
         func main() -> Unit
             let smile: String = from_char_code(128512)
-            match regex_match(pattern: ".", text: smile) with
+            match regex_match(pattern: smile, text: smile) with
                 | Some(value) -> print(char_code(value))
                 | None -> print(-1)
             end match
 
-            let dots: List[String] = regex_find_all(pattern: ".", text: smile)
+            let dots: List[String] = regex_find_all(pattern: smile, text: smile)
             print(length(dots))
             print(char_code(dots[0]))
 
             let empties: List[String] = regex_find_all(pattern: "", text: smile)
             print(length(empties))
 
-            let replaced_dot: String = regex_replace(pattern: ".", replacement: "X", text: smile)
+            let replaced_dot: String = regex_replace(pattern: smile, replacement: "X", text: smile)
             print(length(replaced_dot))
             print(char_code(replaced_dot[0]))
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 import warnings
 from dataclasses import asdict, dataclass, field, replace
@@ -49,6 +50,7 @@ from .values import value_to_json
 logger = logging.getLogger(__name__)
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "std"
+_MODULE_NAME_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
 
 _SENSITIVE_ENV_NAMES = frozenset(
     {
@@ -396,7 +398,13 @@ def _prefix_diagnostics_for_target(
 
 
 def _module_filename(name: str, source: str) -> str:
-    stdlib_path = _STDLIB_DIR / f"{name}.geno"
+    if not _MODULE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid module name {name!r}: expected a simple PascalCase identifier"
+        )
+    stdlib_path = (_STDLIB_DIR / f"{name}.geno").resolve()
+    if not stdlib_path.is_relative_to(_STDLIB_DIR):
+        raise ValueError(f"Invalid module name {name!r}")
     try:
         if stdlib_path.is_file() and stdlib_path.read_text(encoding="utf-8") == source:
             return str(stdlib_path)
@@ -644,6 +652,13 @@ def run(
     if cfg.modules is not None:
         try:
             parsed_modules = _parse_modules(cfg.modules)
+        except ValueError as e:
+            _finalize_timing(timing, "parse_ms", t_parse, t0)
+            diagnostics.append(_make_config_diagnostic(str(e)))
+            return _emit_monitoring_hook(
+                cfg,
+                RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            )
         except (ParseErrors, ParseError, LexerError) as e:
             _finalize_timing(timing, "parse_ms", t_parse, t0)
             if isinstance(e, ParseErrors):
@@ -998,6 +1013,10 @@ def check(
     if modules is not None:
         try:
             parsed_modules = _parse_modules(modules)
+        except ValueError as e:
+            _finalize_timing(timing, "parse_ms", t_parse, t0)
+            diagnostics.append(_make_config_diagnostic(str(e)))
+            return CheckResult(ok=False, diagnostics=diagnostics, timing=timing)
         except (ParseErrors, ParseError, LexerError) as e:
             _finalize_timing(timing, "parse_ms", t_parse, t0)
             if isinstance(e, ParseErrors):

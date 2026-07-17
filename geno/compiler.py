@@ -76,7 +76,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
-    TypeAlias,
     TypeAnnotation,
     TypeDef,
     TypedHole,
@@ -94,16 +93,75 @@ if TYPE_CHECKING:
     from .target_profile import TargetProfile
 from .base_compiler import BaseCompiler
 from .builtin_registry import (
+    all_builtin_names,
     python_backend_builtin_helper_names,
     python_backend_builtin_name_map,
 )
 from .runtime_prelude import RUNTIME_PRELUDE
 from .types import FloatType, UserType
 
+
 # Names defined in the runtime prelude that must not be shadowed by user code.
+def _python_prelude_binding_names(source: str) -> frozenset[str]:
+    """Return every module-scope name bound by the generated Python prelude."""
+    names: set[str] = set()
+
+    def add_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                add_target(element)
+
+    def visit_statements(statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            if isinstance(
+                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                names.add(statement.name)
+            elif isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    add_target(target)
+            elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+                for alias in statement.names:
+                    names.add(alias.asname or alias.name.split(".", 1)[0])
+            elif isinstance(statement, (ast.For, ast.AsyncFor)):
+                add_target(statement.target)
+                visit_statements(statement.body)
+                visit_statements(statement.orelse)
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                for item in statement.items:
+                    if item.optional_vars is not None:
+                        add_target(item.optional_vars)
+                visit_statements(statement.body)
+            elif isinstance(statement, ast.If):
+                visit_statements(statement.body)
+                visit_statements(statement.orelse)
+            elif isinstance(statement, (ast.While, ast.Try)):
+                visit_statements(statement.body)
+                visit_statements(statement.orelse)
+                if isinstance(statement, ast.Try):
+                    visit_statements(statement.finalbody)
+                    for handler in statement.handlers:
+                        if handler.name:
+                            names.add(handler.name)
+                        visit_statements(handler.body)
+            elif isinstance(statement, ast.Match):
+                for case in statement.cases:
+                    visit_statements(case.body)
+
+    visit_statements(ast.parse(source).body)
+    return frozenset(names)
+
+
 # Shadowing these could disable safety mechanisms (get_field, _safe_div) or
 # corrupt core type definitions (Constructor, Some, Ok, Err).
-RESERVED_PRELUDE_NAMES = (
+_PYTHON_LOCAL_RESERVED_NAMES = (
     frozenset(
         {
             # Security-critical functions
@@ -174,6 +232,10 @@ RESERVED_PRELUDE_NAMES = (
     | python_backend_builtin_helper_names()
 )
 
+
+RESERVED_PRELUDE_NAMES = (
+    _python_prelude_binding_names(RUNTIME_PRELUDE) - frozenset(all_builtin_names())
+) | _PYTHON_LOCAL_RESERVED_NAMES
 # Python keywords that are valid Geno identifiers but would produce invalid
 # Python if emitted verbatim.  We mangle them by appending "_kw".
 _PYTHON_KEYWORDS: frozenset[str] = frozenset(keyword.kwlist) | frozenset(
@@ -556,28 +618,11 @@ class Compiler(BaseCompiler, ASTVisitor):
         # First pass: collect type, function, trait, and impl definitions
         collect_definitions(program, into=self._definition_index)
 
-        # Validate no user names shadow security-critical prelude names
-        for defn in program.definitions:
-            if isinstance(defn, FunctionDef) and defn.name in RESERVED_PRELUDE_NAMES:
-                raise CompileError(
-                    f"'{defn.name}' is a reserved runtime name and cannot be "
-                    f"used as a function name"
-                )
-            if isinstance(defn, (TypeDef, TypeAlias)):
-                if defn.name in RESERVED_PRELUDE_NAMES:
-                    raise CompileError(
-                        f"'{defn.name}' is a reserved runtime name and cannot be "
-                        f"used as a type name"
-                    )
-                if isinstance(defn, TypeDef):
-                    for variant in defn.variants:
-                        if variant.name in RESERVED_PRELUDE_NAMES:
-                            raise CompileError(
-                                f"'{variant.name}' is a reserved runtime name and "
-                                f"cannot be used as a constructor name"
-                            )
-        self._validate_reserved_local_names(
-            program, RESERVED_PRELUDE_NAMES, CompileError
+        self._validate_runtime_name_collisions(
+            program,
+            RESERVED_PRELUDE_NAMES,
+            _PYTHON_LOCAL_RESERVED_NAMES,
+            CompileError,
         )
 
         # Compile all definitions
@@ -643,6 +688,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         for program in dep_graph.parsed.values():
             self._reserve_user_temp_names(program)
 
+            self._validate_runtime_name_collisions(
+                program,
+                RESERVED_PRELUDE_NAMES,
+                _PYTHON_LOCAL_RESERVED_NAMES,
+                CompileError,
+            )
+        for mod_name in dep_graph.sorted_modules:
+            if mod_name in RESERVED_PRELUDE_NAMES:
+                raise CompileError(f"'{mod_name}' is a reserved runtime module name")
         # Write runtime prelude once
         self.output.write(RUNTIME_PRELUDE)
 

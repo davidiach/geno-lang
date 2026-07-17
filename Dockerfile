@@ -1,4 +1,18 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:baf89808ec37adeaab83cec287adb4a2afa4a11c1d51e961c7ec737877e61af6 AS builder
+
+WORKDIR /src
+
+# Build with the same hash-locked toolchain used by the PyPI workflow. The
+# final image receives only the checked wheel, not the source tree or build
+# tools.
+COPY requirements-release.lock /src/requirements-release.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements-release.lock
+COPY pyproject.toml README.md LICENSE /src/
+COPY geno /src/geno
+RUN python -m build --wheel --no-isolation \
+    && python -m twine check --strict dist/*
+
+FROM python:3.11-slim@sha256:baf89808ec37adeaab83cec287adb4a2afa4a11c1d51e961c7ec737877e61af6 AS runtime
 
 # Run as non-root user
 RUN useradd --create-home --shell /bin/bash geno
@@ -10,15 +24,13 @@ ENV PATH="/home/geno/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
 # Install pinned, hash-verified runtime dependencies first so builds of the
-# same commit are reproducible (M-01); then install the package itself without
+# same commit are reproducible (M-01); then install the checked wheel without
 # re-resolving its dependencies.
 COPY --chown=geno:geno requirements.lock /app/requirements.lock
 RUN pip install --no-cache-dir --user --require-hashes -r requirements.lock
-
-# Copy package (README.md is kept in the build context so the wheel ships a
-# non-empty long description — see .dockerignore).
-COPY --chown=geno:geno . /app
-RUN pip install --no-cache-dir --user --no-deps .
+COPY --from=builder --chown=geno:geno /src/dist/*.whl /tmp/geno-wheel/
+RUN pip install --no-cache-dir --user --no-deps /tmp/geno-wheel/*.whl \
+    && rm -rf /tmp/geno-wheel
 
 EXPOSE 8000
 

@@ -3,7 +3,9 @@ Tests for the package manager (manifest, lockfile, install/add/update)
 ======================================================================
 """
 
+import contextlib
 import os
+import shutil
 import sys
 from pathlib import Path
 from unittest import mock
@@ -16,6 +18,7 @@ from geno.lockfile import (
     LockedDependency,
     Lockfile,
     compute_content_hash,
+    compute_legacy_content_hash,
     parse_lockfile,
     save_lockfile,
 )
@@ -45,6 +48,24 @@ from geno.package_manager import (
 
 
 class TestManifestParse:
+    def test_manifest_rejects_symlink(self, tmp_path):
+        target = tmp_path / "target.toml"
+        target.write_text('name = "outside"\n')
+        manifest = tmp_path / "geno.toml"
+        try:
+            manifest.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        with pytest.raises(ValueError, match="must not be a symbolic link"):
+            parse_manifest(manifest)
+
+    def test_manifest_rejects_oversized_file(self, tmp_path):
+        manifest = tmp_path / "geno.toml"
+        manifest.write_bytes(b"#" * (1024 * 1024 + 1))
+        with pytest.raises(ValueError, match="too large"):
+            parse_manifest(manifest)
+
     def test_basic_manifest(self, tmp_path):
         (tmp_path / "geno.toml").write_text(
             'entrypoint = "Main"\nfiles = ["Main.geno"]\n'
@@ -455,6 +476,24 @@ class TestManifestPreserveUnknownKeys:
 
 
 class TestLockfileParse:
+    def test_lockfile_rejects_symlink(self, tmp_path):
+        target = tmp_path / "target.lock"
+        target.write_text("[dependencies]\n")
+        lockfile = tmp_path / "geno.lock"
+        try:
+            lockfile.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        with pytest.raises(ValueError, match="must not be a symbolic link"):
+            parse_lockfile(lockfile)
+
+    def test_lockfile_rejects_oversized_file(self, tmp_path):
+        lockfile = tmp_path / "geno.lock"
+        lockfile.write_bytes(b"#" * (1024 * 1024 + 1))
+        with pytest.raises(ValueError, match="too large"):
+            parse_lockfile(lockfile)
+
     def test_missing_file_returns_empty(self, tmp_path):
         lf = parse_lockfile(tmp_path / "geno.lock")
         assert lf.dependencies == {}
@@ -464,13 +503,16 @@ class TestLockfileParse:
             """
 [dependencies.utils]
 git = "https://example.com/utils.git"
-commit = "abc123def456"
+commit = "abcdef1234567890abcdef1234567890abcdef12"
 branch = "main"
 """
         )
         lf = parse_lockfile(tmp_path / "geno.lock")
         assert "utils" in lf.dependencies
-        assert lf.dependencies["utils"].commit == "abc123def456"
+        assert (
+            lf.dependencies["utils"].commit
+            == "abcdef1234567890abcdef1234567890abcdef12"
+        )
 
     def test_lockfile_allows_sha256_object_id(self, tmp_path):
         commit = "a" * 64
@@ -491,10 +533,13 @@ branch = "main"
         ("contents", "message"),
         [
             ("dependencies = []\n", "dependencies.*table"),
-            ('[dependencies.bad]\ngit = 42\ncommit = "abc123"\n', "git.*string"),
+            (
+                '[dependencies.bad]\ngit = 42\ncommit = "abcdef1234567890abcdef1234567890abcdef12"\n',
+                "git.*string",
+            ),
             ('[dependencies.bad]\ngit = "https://x/y.git"\n', "commit"),
             (
-                '[dependencies."../bad"]\ngit = "https://x/y.git"\ncommit = "abc123"\n',
+                '[dependencies."../bad"]\ngit = "https://x/y.git"\ncommit = "abcdef1234567890abcdef1234567890abcdef12"\n',
                 "Invalid dependency name",
             ),
             (
@@ -506,15 +551,15 @@ branch = "main"
             (
                 "[dependencies.bad]\n"
                 'git = "https://x/y.git"\n'
-                'commit = "abc123"\n'
+                'commit = "abcdef1234567890abcdef1234567890abcdef12"\n'
                 'branch = "../main"\n',
                 "git ref.*unsafe",
             ),
             (
                 "[dependencies.bad]\n"
                 'git = "https://x/y.git"\n'
-                'commit = "abc123"\n'
-                'content_hash = "deadbeef"\n',
+                'commit = "abcdef1234567890abcdef1234567890abcdef12"\n'
+                'content_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"\n',
                 "content_hash.*SHA-256",
             ),
         ],
@@ -535,14 +580,17 @@ class TestLockfileSave:
                 "foo": LockedDependency(
                     name="foo",
                     git="https://example.com/foo.git",
-                    commit="deadbeef",
+                    commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
                     branch="main",
                 )
             }
         )
         save_lockfile(lockfile, tmp_path / "geno.lock")
         reloaded = parse_lockfile(tmp_path / "geno.lock")
-        assert reloaded.dependencies["foo"].commit == "deadbeef"
+        assert (
+            reloaded.dependencies["foo"].commit
+            == "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        )
         assert reloaded.dependencies["foo"].git == "https://example.com/foo.git"
 
     def test_save_quotes_dependency_table_keys_when_needed(self, tmp_path):
@@ -551,7 +599,7 @@ class TestLockfileSave:
                 "my lib": LockedDependency(
                     name="my lib",
                     git="https://example.com/my-lib.git",
-                    commit="deadbeef",
+                    commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
                 )
             }
         )
@@ -571,7 +619,7 @@ class TestLockfileContentHash:
                 "foo": LockedDependency(
                     name="foo",
                     git="https://example.com/foo.git",
-                    commit="abc123",
+                    commit="abcdef1234567890abcdef1234567890abcdef12",
                     content_hash="a" * 64,
                 )
             }
@@ -579,6 +627,7 @@ class TestLockfileContentHash:
         save_lockfile(lockfile, tmp_path / "geno.lock")
         reloaded = parse_lockfile(tmp_path / "geno.lock")
         assert reloaded.dependencies["foo"].content_hash == "a" * 64
+        assert reloaded.dependencies["foo"].content_hash_version == 2
 
     def test_content_hash_omitted_when_empty(self, tmp_path):
         lockfile = Lockfile(
@@ -586,13 +635,40 @@ class TestLockfileContentHash:
                 "foo": LockedDependency(
                     name="foo",
                     git="https://example.com/foo.git",
-                    commit="abc123",
+                    commit="abcdef1234567890abcdef1234567890abcdef12",
                 )
             }
         )
         save_lockfile(lockfile, tmp_path / "geno.lock")
         text = (tmp_path / "geno.lock").read_text()
         assert "content_hash" not in text
+
+    def test_pre_v2_content_hash_parses_as_legacy(self, tmp_path):
+        path = tmp_path / "geno.lock"
+        path.write_text(
+            "[dependencies.foo]\n"
+            'git = "https://example.com/foo.git"\n'
+            f'commit = "{"a" * 40}"\n'
+            'branch = "main"\n'
+            f'content_hash = "{"B" * 64}"\n'
+        )
+
+        locked = parse_lockfile(path).dependencies["foo"]
+
+        assert locked.content_hash_version == 1
+        assert locked.content_hash == "b" * 64
+
+    @pytest.mark.parametrize("toml_value", ["true", "0", "3", '"2"'])
+    def test_invalid_content_hash_version_is_rejected(self, tmp_path, toml_value):
+        path = tmp_path / "geno.lock"
+        path.write_text(
+            "[dependencies.foo]\n"
+            'git = "https://example.com/foo.git"\n'
+            f'commit = "{"a" * 40}"\nbranch = "main"\ncontent_hash = "{"b" * 64}"\n'
+            f"content_hash_version = {toml_value}\n"
+        )
+        with pytest.raises(ValueError, match="content_hash_version"):
+            parse_lockfile(path)
 
     def test_compute_content_hash(self, tmp_path):
         (tmp_path / "Lib.geno").write_text("func foo() -> Int\n  return 1\nend func\n")
@@ -623,6 +699,21 @@ class TestLockfileContentHash:
         h4 = compute_content_hash(tmp_path)
         assert h4 != h3
 
+    def test_compute_content_hash_frames_binary_records_unambiguously(self, tmp_path):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+
+        # These trees collided when raw content and metadata were separated only
+        # by NUL bytes because file content can contain the delimiter itself.
+        (first / "a").write_bytes(b"X\0b\0file\0executable=0\0Y")
+        (second / "a").write_bytes(b"X")
+        (second / "b").write_bytes(b"Y")
+
+        assert compute_content_hash(first) != compute_content_hash(second)
+        assert compute_legacy_content_hash(first) == compute_legacy_content_hash(second)
+
     def test_compute_content_hash_ignores_git_metadata(self, tmp_path):
         (tmp_path / "Lib.geno").write_text("func foo() -> Int\n  return 1\nend func\n")
         h1 = compute_content_hash(tmp_path)
@@ -645,24 +736,62 @@ class TestLockfileContentHash:
         not hasattr(os, "symlink"),
         reason="symlink support is unavailable on this platform",
     )
-    def test_compute_content_hash_records_symlink_target_without_following(
-        self, tmp_path
-    ):
+    def test_compute_content_hash_records_internal_symlink_and_target(self, tmp_path):
         (tmp_path / "Lib.geno").write_text("func foo() -> Int\n  return 1\nend func\n")
-        outside = tmp_path.parent / "outside.txt"
-        outside.write_text("first")
+        targets = tmp_path / "targets"
+        targets.mkdir()
+        first = targets / "first.txt"
+        first.write_text("first")
         link = tmp_path / "linked.txt"
-        os.symlink(outside, link)
+        try:
+            os.symlink(str(Path("targets") / "first.txt"), link)
+        except OSError as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
         h1 = compute_content_hash(tmp_path)
 
-        outside.write_text("second")
+        first.write_text("second")
         h2 = compute_content_hash(tmp_path)
-        assert h2 == h1
+        assert h2 != h1
 
+        second = targets / "second.txt"
+        second.write_text("second")
         link.unlink()
-        os.symlink("different-target.txt", link)
+        os.symlink(str(Path("targets") / "second.txt"), link)
         h3 = compute_content_hash(tmp_path)
         assert h3 != h2
+
+    @pytest.mark.skipif(
+        not hasattr(os, "symlink"),
+        reason="symlink support is unavailable on this platform",
+    )
+    def test_compute_content_hash_rejects_escaping_and_dangling_symlinks(
+        self, tmp_path
+    ):
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+        outside.write_text("outside")
+        link = tmp_path / "linked.txt"
+        try:
+            os.symlink(outside, link)
+        except OSError as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        with pytest.raises(RuntimeError, match="escapes its checkout or is dangling"):
+            compute_content_hash(tmp_path)
+
+        link.unlink()
+        os.symlink("missing.txt", link)
+        with pytest.raises(RuntimeError, match="escapes its checkout or is dangling"):
+            compute_content_hash(tmp_path)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "mkfifo"), reason="FIFO creation is unavailable"
+    )
+    def test_compute_content_hash_rejects_unsupported_filesystem_entry(self, tmp_path):
+        fifo = tmp_path / "FutureModule.geno"
+        os.mkfifo(fifo)
+
+        with pytest.raises(RuntimeError, match="Unsupported filesystem entry"):
+            compute_content_hash(tmp_path)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits only")
     def test_compute_content_hash_records_executable_bit(self, tmp_path):
@@ -711,7 +840,9 @@ class TestDependencyCommands:
         from geno import package_manager
 
         with mock.patch.object(
-            package_manager, "install", side_effect=lambda root: installed.append(root)
+            package_manager,
+            "_install_locked",
+            side_effect=lambda root: installed.append(root),
         ):
             package_manager.add(
                 "my lib",
@@ -732,7 +863,9 @@ class TestDependencyCommands:
         from geno import package_manager
 
         with mock.patch.object(
-            package_manager, "install", side_effect=lambda root: installed.append(root)
+            package_manager,
+            "_install_locked",
+            side_effect=lambda root: installed.append(root),
         ):
             package_manager.add(
                 "utils",
@@ -866,6 +999,95 @@ end func
         assert "MyLib" in modules
         assert "helper" in modules["MyLib"]
 
+    @pytest.mark.skipif(
+        not hasattr(os, "symlink"),
+        reason="symlink support is unavailable on this platform",
+    )
+    def test_module_resolver_rejects_escaping_dependency_manifest(self, tmp_path):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main.geno"]\n'
+        )
+        main_path = tmp_path / "Main.geno"
+        main_path.write_text("import MyLib\n")
+        lib_dir = tmp_path / "geno_modules" / "MyLib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "Lib.geno").write_text(
+            "func helper() -> Int\n  return 1\nend func\n"
+        )
+        outside_manifest = tmp_path / "outside-geno.toml"
+        outside_manifest.write_text('entrypoint = "Lib"\n')
+        try:
+            os.symlink(outside_manifest, lib_dir / "geno.toml")
+        except OSError as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        from geno.lexer import Lexer
+        from geno.parser import Parser
+
+        program = Parser(
+            Lexer(main_path.read_text(), str(main_path)).tokenize()
+        ).parse_program()
+        with pytest.raises(ModuleResolutionError, match="Module 'MyLib' not found"):
+            resolve_modules(main_path, program)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "symlink"),
+        reason="symlink support is unavailable on this platform",
+    )
+    def test_project_graph_rejects_escaping_dependency_manifest(self, tmp_path):
+        from geno.project_graph import ProjectGraph, ProjectGraphError
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main.geno"]\n'
+            '[dependencies.my-lib]\ngit = "https://example.com/my-lib.git"\n'
+        )
+        main_path = tmp_path / "Main.geno"
+        main_path.write_text("func main() -> Int\n  return 0\nend func\n")
+        lib_dir = tmp_path / "geno_modules" / "my-lib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "Lib.geno").write_text(
+            "func helper() -> Int\n  return 1\nend func\n"
+        )
+        outside_manifest = tmp_path / "outside-graph-geno.toml"
+        outside_manifest.write_text('entrypoint = "Lib"\n')
+        try:
+            os.symlink(outside_manifest, lib_dir / "geno.toml")
+        except OSError as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        with pytest.raises(ProjectGraphError, match="manifest escapes package root"):
+            ProjectGraph.discover(main_path)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "symlink"),
+        reason="symlink support is unavailable on this platform",
+    )
+    def test_project_graph_accepts_internal_dependency_manifest_symlink(self, tmp_path):
+        from geno.project_graph import ProjectGraph
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main.geno"]\n'
+            '[dependencies.my-lib]\ngit = "https://example.com/my-lib.git"\n'
+        )
+        main_path = tmp_path / "Main.geno"
+        main_path.write_text("func main() -> Int\n  return 0\nend func\n")
+        lib_dir = tmp_path / "geno_modules" / "my-lib"
+        metadata = lib_dir / "metadata"
+        metadata.mkdir(parents=True)
+        (metadata / "manifest.toml").write_text('entrypoint = "Lib"\n')
+        (lib_dir / "Lib.geno").write_text(
+            "func helper() -> Int\n  return 1\nend func\n"
+        )
+        try:
+            os.symlink(str(Path("metadata") / "manifest.toml"), lib_dir / "geno.toml")
+        except OSError as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        graph = ProjectGraph.discover(main_path)
+        assert any(
+            file.path == (lib_dir / "Lib.geno").resolve() for file in graph.files
+        )
+
     def test_rejects_dependency_entrypoint_sibling_traversal(self, tmp_path):
         """A dependency manifest cannot redirect imports into a sibling package."""
         (tmp_path / "geno.toml").write_text(
@@ -936,14 +1158,21 @@ tag = "v0.3.0"
                 )
                 return mock.Mock(returncode=0, stdout="", stderr="")
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
             installed = install(tmp_path)
 
         assert installed == ["utils"]
-        assert [
+        clone_cmd = next(
+            command for command in commands if command[:2] == ["git", "clone"]
+        )
+        assert clone_cmd[:-1] == [
             "git",
             "clone",
             "--branch",
@@ -952,13 +1181,14 @@ tag = "v0.3.0"
             "--depth",
             "1",
             "https://example.com/utils.git",
-            str(tmp_path / "geno_modules" / "utils"),
-        ] in commands
+        ]
+        assert Path(clone_cmd[-1]).name == "utils"
+        assert Path(clone_cmd[-1]).parent.name == "staged"
         lf = parse_lockfile(tmp_path / "geno.lock")
         locked = lf.dependencies["utils"]
         assert locked.tag == "v0.3.0"
         assert locked.branch == "main"
-        assert locked.commit == "abc123"
+        assert locked.commit == "abcdef1234567890abcdef1234567890abcdef12"
         assert len(locked.content_hash) == 64
 
     def test_install_clones_dependency(self, tmp_path):
@@ -985,7 +1215,11 @@ branch = "main"
                 return mock.Mock(returncode=0, stdout="", stderr="")
             # Simulate git rev-parse HEAD
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
@@ -994,7 +1228,10 @@ branch = "main"
         assert installed == ["utils"]
         assert (tmp_path / "geno.lock").exists()
         lf = parse_lockfile(tmp_path / "geno.lock")
-        assert lf.dependencies["utils"].commit == "abc123"
+        assert (
+            lf.dependencies["utils"].commit
+            == "abcdef1234567890abcdef1234567890abcdef12"
+        )
         # Content hash should be populated
         assert lf.dependencies["utils"].content_hash != ""
         assert len(lf.dependencies["utils"].content_hash) == 64
@@ -1018,7 +1255,7 @@ git = "https://example.com/utils.git"
                     "utils": LockedDependency(
                         name="utils",
                         git="https://example.com/utils.git",
-                        commit="abc123",
+                        commit="abcdef1234567890abcdef1234567890abcdef12",
                         content_hash=actual_hash,
                     )
                 }
@@ -1028,7 +1265,11 @@ git = "https://example.com/utils.git"
 
         def fake_run(cmd, **kwargs):
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch(
@@ -1053,15 +1294,19 @@ git = "https://example.com/utils.git"
         )
         dep_dir = tmp_path / "geno_modules" / "utils"
         dep_dir.mkdir(parents=True)
-        (dep_dir / "Utils.geno").write_text("func x() -> Int\n  return 1\nend func\n")
+        source_file = dep_dir / "Utils.geno"
+        clean_source = "func x() -> Int\n  return 1\nend func\n"
+        source_file.write_text(clean_source)
+        clean_hash = compute_content_hash(dep_dir)
+        source_file.write_text("locally modified\n")
         save_lockfile(
             Lockfile(
                 dependencies={
                     "utils": LockedDependency(
                         name="utils",
                         git="https://example.com/utils.git",
-                        commit="abc123",
-                        content_hash="b" * 64,
+                        commit="abcdef1234567890abcdef1234567890abcdef12",
+                        content_hash=clean_hash,
                     )
                 }
             ),
@@ -1069,8 +1314,16 @@ git = "https://example.com/utils.git"
         )
 
         def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "clone"]:
+                dest = Path(cmd[-1])
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "Utils.geno").write_text(clean_source)
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch(
@@ -1104,7 +1357,7 @@ git = "https://example.com/utils.git"
                     "utils": LockedDependency(
                         name="utils",
                         git="https://example.com/utils.git",
-                        commit="abc123",
+                        commit="abcdef1234567890abcdef1234567890abcdef12",
                         content_hash=clean_hash,
                     )
                 }
@@ -1120,14 +1373,18 @@ git = "https://example.com/utils.git"
 
         def fake_run(cmd, **kwargs):
             commands.append(cmd)
+            if len(cmd) > 1 and cmd[1] == "clone":
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True)
+                (staged / "Utils.geno").write_text(clean_source)
             if "rev-parse" in cmd:
                 if "--is-shallow-repository" in cmd:
                     return mock.Mock(returncode=0, stdout="false\n", stderr="")
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
-            if cmd[-3:] == ["checkout", "--force", "abc123"]:
-                source_file.write_text(clean_source)
-            if cmd[-2:] == ["clean", "-ffdx"]:
-                extra_file.unlink(missing_ok=True)
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
@@ -1138,8 +1395,16 @@ git = "https://example.com/utils.git"
         assert not extra_file.exists()
         lf = parse_lockfile(tmp_path / "geno.lock")
         assert lf.dependencies["utils"].content_hash == clean_hash
-        assert ["git", "-C", str(dep_dir), "checkout", "--force", "abc123"] in commands
-        assert ["git", "-C", str(dep_dir), "clean", "-ffdx"] in commands
+        staged = Path(next(cmd for cmd in commands if cmd[:2] == ["git", "clone"])[-1])
+        assert [
+            "git",
+            "-C",
+            str(staged),
+            "checkout",
+            "--force",
+            "abcdef1234567890abcdef1234567890abcdef12",
+        ] in commands
+        assert ["git", "-C", str(staged), "clean", "-ffdx"] in commands
 
     def test_install_backfills_missing_content_hash(self, tmp_path):
         """Old lockfiles without content_hash are checked out before backfill."""
@@ -1158,7 +1423,7 @@ git = "https://example.com/utils.git"
                     "utils": LockedDependency(
                         name="utils",
                         git="https://example.com/utils.git",
-                        commit="abc123",
+                        commit="abcdef1234567890abcdef1234567890abcdef12",
                     )
                 }
             ),
@@ -1169,8 +1434,18 @@ git = "https://example.com/utils.git"
 
         def fake_run(cmd, **kwargs):
             commands.append(cmd)
+            if cmd[:2] == ["git", "clone"]:
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True)
+                (staged / "Utils.geno").write_text(
+                    "func x() -> Int\n  return 1\nend func\n"
+                )
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
@@ -1179,8 +1454,16 @@ git = "https://example.com/utils.git"
         assert installed == ["utils"]
         lf = parse_lockfile(tmp_path / "geno.lock")
         assert len(lf.dependencies["utils"].content_hash) == 64
-        assert ["git", "-C", str(dep_dir), "checkout", "--force", "abc123"] in commands
-        assert ["git", "-C", str(dep_dir), "clean", "-ffdx"] in commands
+        staged = Path(next(cmd for cmd in commands if cmd[:2] == ["git", "clone"])[-1])
+        assert [
+            "git",
+            "-C",
+            str(staged),
+            "checkout",
+            "--force",
+            "abcdef1234567890abcdef1234567890abcdef12",
+        ] in commands
+        assert ["git", "-C", str(staged), "clean", "-ffdx"] in commands
 
     def test_install_restores_dirty_old_lockfile_before_backfill(self, tmp_path):
         """Missing content_hash must not cause dirty contents to become trusted."""
@@ -1204,7 +1487,7 @@ git = "https://example.com/utils.git"
                     "utils": LockedDependency(
                         name="utils",
                         git="https://example.com/utils.git",
-                        commit="abc123",
+                        commit="abcdef1234567890abcdef1234567890abcdef12",
                     )
                 }
             ),
@@ -1212,10 +1495,16 @@ git = "https://example.com/utils.git"
         )
 
         def fake_run(cmd, **kwargs):
+            if len(cmd) > 1 and cmd[1] == "clone":
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True)
+                (staged / "Utils.geno").write_text(clean_source)
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
-            if cmd[-3:] == ["checkout", "--force", "abc123"]:
-                source_file.write_text(clean_source)
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
@@ -1274,14 +1563,14 @@ branch = "main"
         assert installed == ["utils"]
         clone_cmd = next(cmd for cmd in commands if cmd[:2] == ["git", "clone"])
         assert "--depth" not in clone_cmd
-        assert clone_cmd[-2:] == [
-            "https://example.com/utils.git",
-            str(tmp_path / "geno_modules" / "utils"),
-        ]
+        assert clone_cmd[-2] == "https://example.com/utils.git"
+        staged = Path(clone_cmd[-1])
+        assert staged.name == "utils"
+        assert staged.parent.name == "staged"
         assert [
             "git",
             "-C",
-            str(tmp_path / "geno_modules" / "utils"),
+            str(staged),
             "checkout",
             "--force",
             "abcdef1234567890abcdef1234567890abcdef12",
@@ -1291,6 +1580,89 @@ branch = "main"
             lf.dependencies["utils"].commit
             == "abcdef1234567890abcdef1234567890abcdef12"
         )
+
+    def test_install_fresh_clone_verifies_locked_content_hash(self, tmp_path):
+        commit = "abcdef1234567890abcdef1234567890abcdef12"
+        locked_hash = "0" * 64
+        (tmp_path / "geno.toml").write_text(
+            '[dependencies.utils]\ngit = "https://example.com/utils.git"\n'
+        )
+        save_lockfile(
+            Lockfile(
+                dependencies={
+                    "utils": LockedDependency(
+                        name="utils",
+                        git="https://example.com/utils.git",
+                        commit=commit,
+                        content_hash=locked_hash,
+                    )
+                }
+            ),
+            tmp_path / "geno.lock",
+        )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "clone"]:
+                dest = Path(cmd[-1])
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "Utils.geno").write_text(
+                    "func foo() -> Int\n  return 1\nend func\n"
+                )
+            if "rev-parse" in cmd:
+                return mock.Mock(returncode=0, stdout=f"{commit}\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match=r"does not match geno.lock"):
+                install(tmp_path)
+
+        reloaded = parse_lockfile(tmp_path / "geno.lock")
+        assert reloaded.dependencies["utils"].content_hash == locked_hash
+        assert not (tmp_path / "geno_modules" / "utils").exists()
+        assert not list((tmp_path / "geno_modules").glob(".geno-package-txn-*"))
+
+    def test_install_migrates_matching_pre_v2_content_hash(self, tmp_path):
+        commit = "abcdef1234567890abcdef1234567890abcdef12"
+        source = tmp_path / "legacy-source"
+        source.mkdir()
+        source_text = "func foo() -> Int\n  return 1\nend func\n"
+        (source / "Utils.geno").write_text(source_text)
+        legacy_hash = compute_legacy_content_hash(source)
+        (tmp_path / "geno.toml").write_text(
+            '[dependencies.utils]\ngit = "https://example.com/utils.git"\n'
+        )
+        (tmp_path / "geno.lock").write_text(
+            "[dependencies.utils]\n"
+            'git = "https://example.com/utils.git"\n'
+            f'commit = "{commit}"\n'
+            'branch = "main"\n'
+            f'content_hash = "{legacy_hash}"\n'
+        )
+
+        installed_checkout = tmp_path / "geno_modules" / "utils"
+        installed_checkout.mkdir(parents=True)
+        (installed_checkout / "Utils.geno").write_text(source_text)
+        clone_calls = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal clone_calls
+            if cmd[:2] == ["git", "clone"]:
+                clone_calls += 1
+                destination = Path(cmd[-1])
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / "Utils.geno").write_text(source_text)
+            if "rev-parse" in cmd:
+                return mock.Mock(returncode=0, stdout=f"{commit}\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
+            assert install(tmp_path) == ["utils"]
+
+        published = tmp_path / "geno_modules" / "utils"
+        migrated = parse_lockfile(tmp_path / "geno.lock").dependencies["utils"]
+        assert migrated.content_hash_version == 2
+        assert migrated.content_hash == compute_content_hash(published)
+        assert clone_calls == 1
 
     def test_install_existing_dependency_reconciles_to_locked_commit(self, tmp_path):
         """Existing checkouts should be moved back to the locked commit when they drift."""
@@ -1322,22 +1694,13 @@ branch = "main"
 
         def fake_run(cmd, **kwargs):
             commands.append(cmd)
+            if cmd[:2] == ["git", "clone"]:
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True)
+                (staged / "Utils.geno").write_text(
+                    "func foo() -> Int\n  return 1\nend func\n"
+                )
             if "rev-parse" in cmd:
-                if "--is-shallow-repository" in cmd:
-                    return mock.Mock(returncode=0, stdout="false\n", stderr="")
-                if cmd[-1] == "HEAD":
-                    if (
-                        sum(
-                            1 for seen in commands if seen[-2:] == ["rev-parse", "HEAD"]
-                        )
-                        == 1
-                    ):
-                        return mock.Mock(returncode=0, stdout="drifted\n", stderr="")
-                    return mock.Mock(
-                        returncode=0,
-                        stdout="abcdef1234567890abcdef1234567890abcdef12\n",
-                        stderr="",
-                    )
                 return mock.Mock(
                     returncode=0,
                     stdout="abcdef1234567890abcdef1234567890abcdef12\n",
@@ -1349,11 +1712,22 @@ branch = "main"
             installed = install(tmp_path)
 
         assert installed == ["utils"]
-        assert ["git", "-C", str(dep_dir), "fetch", "origin", "main"] in commands
+        clone_cmd = commands[0]
+        assert clone_cmd[:-1] == [
+            "git",
+            "clone",
+            "--branch",
+            "main",
+            "--single-branch",
+            "https://example.com/utils.git",
+        ]
+        staged = Path(clone_cmd[-1])
+        assert staged.parent.name == "staged"
+        assert not any("fetch" in command for command in commands)
         assert [
             "git",
             "-C",
-            str(dep_dir),
+            str(staged),
             "checkout",
             "--force",
             "abcdef1234567890abcdef1234567890abcdef12",
@@ -1362,7 +1736,7 @@ branch = "main"
     def test_install_existing_shallow_dependency_unshallows_before_checkout(
         self, tmp_path
     ):
-        """Locked installs should unshallow old depth-1 checkouts before checkout."""
+        """Locked installs replace old shallow metadata with a full staged clone."""
         (tmp_path / "geno.toml").write_text(
             """
 [dependencies.utils]
@@ -1391,22 +1765,13 @@ branch = "main"
 
         def fake_run(cmd, **kwargs):
             commands.append(cmd)
+            if cmd[:2] == ["git", "clone"]:
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True)
+                (staged / "Utils.geno").write_text(
+                    "func foo() -> Int\n  return 1\nend func\n"
+                )
             if "rev-parse" in cmd:
-                if "--is-shallow-repository" in cmd:
-                    return mock.Mock(returncode=0, stdout="true\n", stderr="")
-                if cmd[-1] == "HEAD":
-                    if (
-                        sum(
-                            1 for seen in commands if seen[-2:] == ["rev-parse", "HEAD"]
-                        )
-                        == 1
-                    ):
-                        return mock.Mock(returncode=0, stdout="drifted\n", stderr="")
-                    return mock.Mock(
-                        returncode=0,
-                        stdout="abcdef1234567890abcdef1234567890abcdef12\n",
-                        stderr="",
-                    )
                 return mock.Mock(
                     returncode=0,
                     stdout="abcdef1234567890abcdef1234567890abcdef12\n",
@@ -1418,26 +1783,862 @@ branch = "main"
             installed = install(tmp_path)
 
         assert installed == ["utils"]
-        assert [
+        clone_cmd = commands[0]
+        assert clone_cmd[:-1] == [
             "git",
-            "-C",
-            str(dep_dir),
-            "fetch",
-            "--unshallow",
-            "origin",
+            "clone",
+            "--branch",
             "main",
-        ] in commands
+            "--single-branch",
+            "https://example.com/utils.git",
+        ]
+        staged = Path(clone_cmd[-1])
+        assert staged.parent.name == "staged"
+        assert not any("fetch" in command for command in commands)
         assert [
             "git",
             "-C",
-            str(dep_dir),
+            str(staged),
             "checkout",
             "--force",
             "abcdef1234567890abcdef1234567890abcdef12",
         ] in commands
 
 
+class TestPackageTransactions:
+    COMMIT = "abcdef1234567890abcdef1234567890abcdef12"
+
+    @staticmethod
+    def _write_manifest(root: Path, *names: str) -> None:
+        entries = "\n".join(
+            f'[dependencies.{name}]\ngit = "https://example.com/{name}.git"'
+            for name in names
+        )
+        (root / "geno.toml").write_text(entries + "\n")
+
+    @staticmethod
+    def _clone_with_source(_url, destination, _ref, depth=1) -> None:
+        destination.mkdir(parents=True)
+        (destination / "Dependency.geno").write_text(
+            "func value() -> Int\n  return 2\nend func\n"
+        )
+
+    @staticmethod
+    def _transaction_dirs(root: Path) -> list[Path]:
+        modules = root / "geno_modules"
+        return list(modules.glob(".geno-package-txn-*")) if modules.exists() else []
+
+    def _crashed_publication(self, root: Path, *, same_lockfile: bool = False):
+        from geno.package_manager import (
+            _begin_transaction_journal,
+            _create_transaction_root,
+            _PreparedCheckout,
+        )
+
+        modules_dir = root / "geno_modules"
+        destination = modules_dir / "utils"
+        destination.mkdir(parents=True)
+        old_source = "func value() -> Int\n  return 1\nend func\n"
+        new_source = "func value() -> Int\n  return 2\nend func\n"
+        (destination / "Dependency.geno").write_text(old_source)
+
+        transaction_root = _create_transaction_root(modules_dir)
+        staged = transaction_root / "staged" / "utils"
+        staged.mkdir(parents=True)
+        (staged / "Dependency.geno").write_text(new_source)
+        new_locked = LockedDependency(
+            name="utils",
+            git="https://example.com/utils.git",
+            commit=self.COMMIT,
+            content_hash=compute_content_hash(staged),
+        )
+        old_locked = (
+            new_locked
+            if same_lockfile
+            else LockedDependency(
+                name="utils",
+                git="https://example.com/utils.git",
+                commit="1" * 40,
+                content_hash=compute_content_hash(destination),
+            )
+        )
+        save_lockfile(
+            Lockfile(dependencies={"utils": old_locked}),
+            root / "geno.lock",
+        )
+        prepared = _PreparedCheckout(
+            name="utils",
+            destination=destination,
+            staged=staged,
+            locked=new_locked,
+        )
+        (transaction_root / "backups").mkdir()
+        journal_path, next_lockfile = _begin_transaction_journal(
+            [prepared],
+            Lockfile(dependencies={"utils": new_locked}),
+            root / "geno.lock",
+            transaction_root,
+        )
+        assert prepared.backup is not None
+        destination.rename(prepared.backup)
+        staged.rename(destination)
+        return (
+            transaction_root,
+            journal_path,
+            next_lockfile,
+            old_source,
+            new_source,
+        )
+
+    def test_project_lock_scavenges_prejournal_crash_orphans(self, tmp_path):
+        from geno.package_manager import _project_transaction_lock
+
+        modules = tmp_path / "geno_modules"
+        transaction = modules / ".geno-package-txn-orphan123"
+        (transaction / "staged").mkdir(parents=True)
+        (transaction / "staged" / "payload").write_text("orphan")
+        marker = tmp_path / ".geno-package-txn-orphan123.lock.next"
+        marker.write_text("orphan")
+
+        with _project_transaction_lock(tmp_path, timeout=1):
+            assert not transaction.exists()
+            assert not marker.exists()
+
+        assert not transaction.exists()
+        assert not marker.exists()
+
+    def test_bad_staged_hash_preserves_existing_checkout(self, tmp_path):
+        self._write_manifest(tmp_path, "utils")
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        dep_dir.mkdir(parents=True)
+        sentinel = dep_dir / "sentinel.txt"
+        sentinel.write_text("trusted previous checkout")
+        save_lockfile(
+            Lockfile(
+                dependencies={
+                    "utils": LockedDependency(
+                        name="utils",
+                        git="https://example.com/utils.git",
+                        commit=self.COMMIT,
+                        content_hash="0" * 64,
+                    )
+                }
+            ),
+            tmp_path / "geno.lock",
+        )
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch("geno.package_manager._git_checkout_commit"),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+        ):
+            with pytest.raises(RuntimeError, match=r"does not match geno.lock"):
+                install(tmp_path)
+
+        assert sentinel.read_text() == "trusted previous checkout"
+        assert not (dep_dir / "Dependency.geno").exists()
+        assert self._transaction_dirs(tmp_path) == []
+
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_lockfile_save_failure_rolls_back_every_published_checkout(
+        self, tmp_path, existing
+    ):
+        self._write_manifest(tmp_path, "utils")
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        if existing:
+            dep_dir.mkdir(parents=True)
+            (dep_dir / "sentinel.txt").write_text("old")
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch(
+                "geno.package_manager.save_lockfile",
+                side_effect=OSError("lock write failed"),
+            ),
+        ):
+            with pytest.raises(OSError, match="lock write failed"):
+                install(tmp_path)
+
+        if existing:
+            assert (dep_dir / "sentinel.txt").read_text() == "old"
+            assert not (dep_dir / "Dependency.geno").exists()
+        else:
+            assert not dep_dir.exists()
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_old_checkout_remains_visible_while_clone_is_paused(self, tmp_path):
+        import threading
+
+        self._write_manifest(tmp_path, "utils")
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        dep_dir.mkdir(parents=True)
+        sentinel = dep_dir / "sentinel.txt"
+        sentinel.write_text("old")
+        clone_started = threading.Event()
+        release_clone = threading.Event()
+        errors = []
+
+        def paused_clone(url, destination, ref, depth=1):
+            clone_started.set()
+            if not release_clone.wait(2):
+                raise TimeoutError("test did not release clone")
+            self._clone_with_source(url, destination, ref, depth)
+
+        def run_install():
+            try:
+                install(tmp_path)
+            except BaseException as exc:
+                errors.append(exc)
+
+        with (
+            mock.patch("geno.package_manager._git_clone", side_effect=paused_clone),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+        ):
+            thread = threading.Thread(target=run_install)
+            thread.start()
+            assert clone_started.wait(1)
+            assert sentinel.read_text() == "old"
+            assert not (dep_dir / "Dependency.geno").exists()
+            release_clone.set()
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert errors == []
+        assert not sentinel.exists()
+        assert (dep_dir / "Dependency.geno").exists()
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_publish_rename_failure_restores_backup(self, tmp_path):
+        self._write_manifest(tmp_path, "utils")
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        dep_dir.mkdir(parents=True)
+        sentinel = dep_dir / "sentinel.txt"
+        sentinel.write_text("old")
+        original_rename = Path.rename
+
+        def fail_staged_publish(path, target):
+            if path.parent.name == "staged" and Path(target) == dep_dir:
+                raise OSError("publish rename failed")
+            return original_rename(path, target)
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch.object(Path, "rename", fail_staged_publish),
+        ):
+            with pytest.raises(OSError, match="publish rename failed"):
+                install(tmp_path)
+
+        assert sentinel.read_text() == "old"
+        assert not (dep_dir / "Dependency.geno").exists()
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_backup_rename_failure_preserves_existing_checkout(self, tmp_path):
+        self._write_manifest(tmp_path, "utils")
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        dep_dir.mkdir(parents=True)
+        sentinel = dep_dir / "sentinel.txt"
+        sentinel.write_text("old")
+        original_rename = Path.rename
+
+        def fail_backup_move(path, target):
+            if Path(path) == dep_dir and Path(target).parent.name == "backups":
+                raise OSError("backup rename failed")
+            return original_rename(path, target)
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch.object(Path, "rename", fail_backup_move),
+        ):
+            with pytest.raises(OSError, match="backup rename failed"):
+                install(tmp_path)
+
+        assert sentinel.read_text() == "old"
+        assert not (dep_dir / "Dependency.geno").exists()
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_later_prepare_failure_does_not_publish_earlier_dependency(self, tmp_path):
+
+        self._write_manifest(tmp_path, "alpha", "beta")
+        modules = tmp_path / "geno_modules"
+        for name in ("alpha", "beta"):
+            dep_dir = modules / name
+            dep_dir.mkdir(parents=True)
+            (dep_dir / "sentinel.txt").write_text(name)
+
+        def clone_then_fail(_url, destination, _ref, depth=1):
+            destination.mkdir(parents=True)
+            (destination / "partial.txt").write_text("unverified")
+            if destination.name == "beta":
+                raise RuntimeError("second clone failed")
+
+        with (
+            mock.patch("geno.package_manager._git_clone", side_effect=clone_then_fail),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="second clone failed"):
+                install(tmp_path)
+
+        assert (modules / "alpha" / "sentinel.txt").read_text() == "alpha"
+        assert (modules / "beta" / "sentinel.txt").read_text() == "beta"
+        assert not (modules / "alpha" / "partial.txt").exists()
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_module_reader_waits_for_checkout_publication(self, tmp_path):
+        import threading
+
+        self._write_manifest(tmp_path, "utils")
+        main_path = tmp_path / "Main.geno"
+        main_path.write_text("import Utils\n")
+        program = _parse_file(main_path)
+        dep_dir = tmp_path / "geno_modules" / "utils"
+        dep_dir.mkdir(parents=True)
+        (dep_dir / "Utils.geno").write_text(
+            "func value() -> Int\n  return 1\nend func\n"
+        )
+        original_rename = Path.rename
+        publication_gap = threading.Event()
+        release_publication = threading.Event()
+        reader_finished = threading.Event()
+        install_errors: list[BaseException] = []
+        reader_errors: list[BaseException] = []
+        resolved_modules: dict[str, str] = {}
+
+        def clone_new_source(_url, destination, _ref, depth=1):
+            destination.mkdir(parents=True)
+            (destination / "Utils.geno").write_text(
+                "func value() -> Int\n  return 2\nend func\n"
+            )
+
+        def pause_after_backup(path, target):
+            result = original_rename(path, target)
+            if Path(path) == dep_dir and Path(target).parent.name == "backups":
+                publication_gap.set()
+                if not release_publication.wait(3):
+                    raise TimeoutError("test did not release publication")
+            return result
+
+        def run_install():
+            try:
+                install(tmp_path)
+            except BaseException as exc:
+                install_errors.append(exc)
+
+        def run_reader():
+            try:
+                resolved_modules.update(resolve_modules(main_path, program))
+            except BaseException as exc:
+                reader_errors.append(exc)
+            finally:
+                reader_finished.set()
+
+        with (
+            mock.patch("geno.package_manager._git_clone", side_effect=clone_new_source),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch.object(Path, "rename", pause_after_backup),
+        ):
+            install_thread = threading.Thread(target=run_install)
+            install_thread.start()
+            assert publication_gap.wait(1)
+            reader_thread = threading.Thread(target=run_reader)
+            reader_thread.start()
+            assert not reader_finished.wait(0.1)
+            release_publication.set()
+            install_thread.join(timeout=3)
+            reader_thread.join(timeout=3)
+
+        assert not install_thread.is_alive()
+        assert not reader_thread.is_alive()
+        assert install_errors == []
+        assert reader_errors == []
+        assert "return 2" in resolved_modules["Utils"]
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_same_project_thread_lock_serializes_callers(self, tmp_path):
+        import threading
+
+        from geno.package_manager import _project_transaction_lock
+
+        entered = threading.Event()
+
+        def contender():
+            with _project_transaction_lock(tmp_path, timeout=2):
+                entered.set()
+
+        with _project_transaction_lock(tmp_path, timeout=2):
+            thread = threading.Thread(target=contender)
+            thread.start()
+            assert not entered.wait(0.1)
+        assert entered.wait(1)
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+    @pytest.mark.parametrize("same_lockfile", [False, True])
+    def test_project_lock_recovers_uncommitted_publication(
+        self, tmp_path, same_lockfile
+    ):
+        from geno.package_manager import _project_transaction_lock
+
+        transaction_root, journal_path, next_lockfile, old_source, _new_source = (
+            self._crashed_publication(tmp_path, same_lockfile=same_lockfile)
+        )
+        assert next_lockfile.is_file()
+
+        with _project_transaction_lock(tmp_path, timeout=1):
+            pass
+
+        restored = tmp_path / "geno_modules" / "utils" / "Dependency.geno"
+        assert restored.read_text() == old_source
+        assert not transaction_root.exists()
+        assert not journal_path.exists()
+        if not same_lockfile:
+            assert parse_lockfile(tmp_path / "geno.lock").dependencies[
+                "utils"
+            ].commit == ("1" * 40)
+
+    @pytest.mark.parametrize("transaction_cleaned", [False, True])
+    def test_project_lock_finalizes_committed_publication(
+        self, tmp_path, transaction_cleaned
+    ):
+        from geno.package_manager import _project_transaction_lock
+
+        transaction_root, journal_path, next_lockfile, _old_source, new_source = (
+            self._crashed_publication(tmp_path)
+        )
+        os.replace(next_lockfile, tmp_path / "geno.lock")
+        if transaction_cleaned:
+            shutil.rmtree(transaction_root)
+
+        with _project_transaction_lock(tmp_path, timeout=1):
+            pass
+
+        published = tmp_path / "geno_modules" / "utils" / "Dependency.geno"
+        assert published.read_text() == new_source
+        assert not transaction_root.exists()
+        assert not journal_path.exists()
+        locked = parse_lockfile(tmp_path / "geno.lock").dependencies["utils"]
+        assert locked.commit == self.COMMIT
+        assert locked.content_hash == compute_content_hash(published.parent)
+
+    def test_post_commit_interrupt_finalizes_new_checkout(self, tmp_path):
+        self._write_manifest(tmp_path, "utils")
+        dependency = tmp_path / "geno_modules" / "utils"
+        dependency.mkdir(parents=True)
+        (dependency / "Dependency.geno").write_text(
+            "func value() -> Int\n  return 1\nend func\n"
+        )
+        original_replace = os.replace
+
+        def interrupt_after_commit(source, destination):
+            result = original_replace(source, destination)
+            if str(source).endswith(".lock.next") and Path(destination) == (
+                tmp_path / "geno.lock"
+            ):
+                raise KeyboardInterrupt
+            return result
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch("geno.package_manager.os.replace", interrupt_after_commit),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                install(tmp_path)
+
+        assert "return 2" in (dependency / "Dependency.geno").read_text()
+        assert (
+            parse_lockfile(tmp_path / "geno.lock").dependencies["utils"].commit
+            == self.COMMIT
+        )
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_add_post_commit_interrupt_keeps_committed_manifest(self, tmp_path):
+        (tmp_path / "geno.toml").write_text("[dependencies]\n")
+        original_replace = os.replace
+
+        def interrupt_after_commit(source, destination):
+            result = original_replace(source, destination)
+            if str(source).endswith(".lock.next") and Path(destination) == (
+                tmp_path / "geno.lock"
+            ):
+                raise KeyboardInterrupt
+            return result
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch("geno.package_manager.os.replace", interrupt_after_commit),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                add(
+                    "utils",
+                    "https://example.com/utils.git",
+                    project_root=tmp_path,
+                )
+
+        manifest = parse_manifest(tmp_path / "geno.toml")
+        assert manifest.dependencies["utils"].git == ("https://example.com/utils.git")
+        locked = parse_lockfile(tmp_path / "geno.lock").dependencies["utils"]
+        assert locked.commit == self.COMMIT
+        dependency = tmp_path / "geno_modules" / "utils" / "Dependency.geno"
+        assert "return 2" in dependency.read_text()
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_pre_journal_failure_removes_root_commit_marker(self, tmp_path):
+        self._write_manifest(tmp_path, "utils")
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone", side_effect=self._clone_with_source
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch(
+                "geno.package_manager._write_transaction_journal",
+                side_effect=OSError("journal write failed"),
+            ),
+        ):
+            with pytest.raises(OSError, match="journal write failed"):
+                install(tmp_path)
+
+        assert list(tmp_path.glob(".geno-package-txn-*.lock.next")) == []
+        assert self._transaction_dirs(tmp_path) == []
+
+    def test_interrupted_rollback_is_idempotent(self, tmp_path):
+        from geno.package_manager import (
+            _project_transaction_lock,
+            _recover_project_transaction,
+        )
+
+        transaction_root, journal_path, _next_lockfile, old_source, _new_source = (
+            self._crashed_publication(tmp_path)
+        )
+        original_rename = Path.rename
+
+        def interrupt_after_restore(path, target):
+            result = original_rename(path, target)
+            if Path(path).parent.name == "backups":
+                raise KeyboardInterrupt
+            return result
+
+        with mock.patch.object(Path, "rename", interrupt_after_restore):
+            with pytest.raises(KeyboardInterrupt):
+                _recover_project_transaction(tmp_path, journal_path)
+
+        assert journal_path.is_file()
+        with _project_transaction_lock(tmp_path, timeout=1):
+            pass
+
+        restored = tmp_path / "geno_modules" / "utils" / "Dependency.geno"
+        assert restored.read_text() == old_source
+        assert not transaction_root.exists()
+        assert not journal_path.exists()
+
+    def test_staged_tree_is_fsynced_before_journal_creation(self, tmp_path):
+        from geno.package_manager import (
+            _begin_transaction_journal,
+            _create_transaction_root,
+            _fsync_tree,
+            _PreparedCheckout,
+            _write_transaction_journal,
+        )
+
+        modules = tmp_path / "geno_modules"
+        transaction_root = _create_transaction_root(modules)
+        staged = transaction_root / "staged" / "utils"
+        staged.mkdir(parents=True)
+        (staged / "Dependency.geno").write_text("new")
+        locked = LockedDependency(
+            name="utils",
+            git="https://example.com/utils.git",
+            commit=self.COMMIT,
+            content_hash=compute_content_hash(staged),
+        )
+        prepared = _PreparedCheckout(
+            name="utils",
+            destination=modules / "utils",
+            staged=staged,
+            locked=locked,
+        )
+        events: list[str] = []
+
+        def record_fsync(path):
+            events.append("fsync")
+            return _fsync_tree(path)
+
+        def record_journal(path, payload):
+            events.append("journal")
+            return _write_transaction_journal(path, payload)
+
+        with (
+            mock.patch("geno.package_manager._fsync_tree", side_effect=record_fsync),
+            mock.patch(
+                "geno.package_manager._write_transaction_journal",
+                side_effect=record_journal,
+            ),
+        ):
+            _begin_transaction_journal(
+                [prepared],
+                Lockfile(dependencies={"utils": locked}),
+                tmp_path / "geno.lock",
+                transaction_root,
+            )
+
+        assert events == ["fsync", "journal"]
+
+    def test_package_owner_root_prefers_containing_project(self, tmp_path):
+        from geno.package_manager import find_package_owner_root
+
+        (tmp_path / "geno.toml").write_text("[dependencies]\n")
+        dependency_root = tmp_path / "geno_modules" / "utils"
+        dependency_root.mkdir(parents=True)
+        (dependency_root / "geno.toml").write_text('entrypoint = "Main"\n')
+        source = dependency_root / "Main.geno"
+        source.write_text("func main() -> Int\n  return 0\nend func\n")
+
+        assert find_package_owner_root(source) == tmp_path.resolve()
+
+    def test_nested_package_owner_chain_is_acquired_outermost_first(self, tmp_path):
+        from geno.package_manager import (
+            _package_transaction_locks,
+            find_package_lock_roots,
+        )
+
+        outer = tmp_path
+        first = outer / "geno_modules" / "first"
+        second = first / "geno_modules" / "second"
+        second.mkdir(parents=True)
+        for root in (outer, first, second):
+            (root / "geno.toml").write_text("[dependencies]\n")
+        source = second / "Main.geno"
+        source.write_text("func main() -> Int\n  return 0\nend func\n")
+        expected = tuple(root.resolve() for root in (outer, first, second))
+        acquired: list[Path] = []
+
+        @contextlib.contextmanager
+        def record_lock(root, timeout):
+            acquired.append(root)
+            yield
+
+        assert find_package_lock_roots(source) == expected
+        with mock.patch(
+            "geno.package_manager._project_transaction_lock", side_effect=record_lock
+        ):
+            with _package_transaction_locks(source, timeout=1):
+                pass
+
+        assert acquired == list(expected)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX state directory policy")
+    def test_project_lock_never_uses_predictable_global_tmp(
+        self, tmp_path, monkeypatch
+    ):
+        import stat
+
+        from geno.package_manager import _secure_lock_directory
+
+        runtime = tmp_path / "runtime"
+        runtime.mkdir(mode=0o700)
+        runtime.chmod(0o700)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+        monkeypatch.setattr(
+            "geno.package_manager.tempfile.gettempdir",
+            lambda: (_ for _ in ()).throw(AssertionError("global temp used")),
+        )
+
+        directory = _secure_lock_directory()
+
+        assert directory.is_relative_to(runtime)
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+    def test_project_lock_is_reentrant_for_nested_resolvers(self, tmp_path):
+        from geno.package_manager import _project_state_paths, _project_transaction_lock
+
+        with _project_transaction_lock(tmp_path, timeout=1):
+            with _project_transaction_lock(tmp_path, timeout=0):
+                pass
+
+        lock_path, _journal_path = _project_state_paths(tmp_path)
+        assert lock_path.is_file()
+        assert not (tmp_path / ".geno-package.lock").exists()
+
+    def test_different_project_locks_are_independent(self, tmp_path):
+        import threading
+
+        from geno.package_manager import _project_transaction_lock
+
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        entered = threading.Event()
+
+        def contender():
+            with _project_transaction_lock(second, timeout=1):
+                entered.set()
+
+        with _project_transaction_lock(first, timeout=1):
+            thread = threading.Thread(target=contender)
+            thread.start()
+            assert entered.wait(0.5)
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+    def test_project_lock_excludes_other_processes(self, tmp_path):
+        import subprocess
+
+        from geno.package_manager import _project_transaction_lock
+
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from geno.package_manager import _project_transaction_lock\n"
+            "try:\n"
+            "    with _project_transaction_lock(Path(sys.argv[1]), timeout=0.2):\n"
+            "        print('acquired')\n"
+            "except TimeoutError:\n"
+            "    print('blocked')\n"
+            "    raise SystemExit(3)\n"
+        )
+        command = [sys.executable, "-c", script, str(tmp_path)]
+
+        with _project_transaction_lock(tmp_path, timeout=1):
+            blocked = subprocess.run(
+                command, capture_output=True, text=True, timeout=5, check=False
+            )
+        acquired = subprocess.run(
+            command, capture_output=True, text=True, timeout=5, check=False
+        )
+
+        assert blocked.returncode == 3, blocked.stderr
+        assert blocked.stdout.strip() == "blocked"
+        assert acquired.returncode == 0, acquired.stderr
+        assert acquired.stdout.strip() == "acquired"
+
+    def test_project_lock_rejects_symlink(self, tmp_path):
+        from geno.package_manager import _project_state_paths, _project_transaction_lock
+
+        lock_path, _journal_path = _project_state_paths(tmp_path)
+        lock_path.unlink(missing_ok=True)
+        target = lock_path.with_suffix(".target")
+        target.write_bytes(b"\0")
+        try:
+            lock_path.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            target.unlink(missing_ok=True)
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        try:
+            with pytest.raises(RuntimeError, match="not a regular file"):
+                with _project_transaction_lock(tmp_path, timeout=0.1):
+                    pass
+        finally:
+            lock_path.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+
+    def test_project_lock_rejects_hardlink(self, tmp_path):
+        from geno.package_manager import _project_state_paths, _project_transaction_lock
+
+        lock_path, _journal_path = _project_state_paths(tmp_path)
+        lock_path.unlink(missing_ok=True)
+        target = lock_path.with_suffix(".target")
+        target.write_bytes(b"\0")
+        try:
+            os.link(target, lock_path)
+        except (OSError, NotImplementedError) as exc:
+            target.unlink(missing_ok=True)
+            pytest.skip(f"hard links are unavailable: {exc}")
+
+        try:
+            with pytest.raises(RuntimeError, match="not a regular file"):
+                with _project_transaction_lock(tmp_path, timeout=0.1):
+                    pass
+        finally:
+            lock_path.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+
+    @pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf")])
+    def test_project_lock_rejects_unbounded_timeout(self, tmp_path, timeout):
+        from geno.package_manager import _project_transaction_lock
+
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            with _project_transaction_lock(tmp_path, timeout=timeout):
+                pass
+
+
 class TestPackageManagerSecurity:
+    def test_project_graph_rejects_symlinked_modules_dir(self, tmp_path):
+        from geno.project_graph import ProjectGraph, ProjectGraphError
+
+        (tmp_path / "geno.toml").write_text(
+            '[dependencies.utils]\ngit = "https://example.com/utils.git"\n'
+        )
+        (tmp_path / "Main.geno").write_text(
+            "func main() -> Int\n  return 0\nend func\n"
+        )
+        external = tmp_path / "outside"
+        (external / "utils").mkdir(parents=True)
+        modules = tmp_path / "geno_modules"
+        try:
+            modules.symlink_to(external, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        with pytest.raises(ProjectGraphError, match="must not be a symbolic link"):
+            ProjectGraph.discover(tmp_path)
+
+    def test_module_resolver_rejects_symlinked_modules_dir(self, tmp_path):
+        (tmp_path / "geno.toml").write_text("[dependencies]\n")
+        main = tmp_path / "Main.geno"
+        main.write_text("import Utils\nfunc main() -> Int\n  return 0\nend func\n")
+        external = tmp_path / "outside"
+        dependency = external / "utils"
+        dependency.mkdir(parents=True)
+        (dependency / "Utils.geno").write_text(
+            "func value() -> Int\n  return 1\nend func\n"
+        )
+        modules = tmp_path / "geno_modules"
+        try:
+            modules.symlink_to(external, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        with pytest.raises((ModuleResolutionError, RuntimeError), match="symlink"):
+            resolve_modules(main, _parse_file(main))
+
     def test_install_rejects_symlinked_modules_dir(self, tmp_path):
         (tmp_path / "geno.toml").write_text(
             """
@@ -1516,11 +2717,24 @@ git = "https://example.com/utils.git"
             "git@host:repo\n.git",
             "https://example.com",
             "https://example.com/repo.git?upload-pack=evil",
+            "https://user@example.com/repo.git",
+            "https://user:secret@example.com/repo.git",
+            "ssh://user:secret@example.com/repo.git",
         ],
     )
     def test_git_url_validation_rejects_unsafe_remotes(self, url):
         with pytest.raises(ValueError, match="Invalid git URL"):
             _validate_git_url(url)
+
+    def test_git_url_validation_redacts_embedded_secret(self):
+        secret = "do-not-log-this"
+        url = f"https://user:{secret}@example.com/repo.git"
+
+        with pytest.raises(ValueError) as raised:
+            _validate_git_url(url)
+
+        assert secret not in str(raised.value)
+        assert url not in str(raised.value)
 
     @pytest.mark.parametrize(
         "ref",
@@ -1546,12 +2760,22 @@ git = "https://example.com/utils.git"
     def test_git_ref_validation_allows_common_refs(self, ref):
         _validate_git_ref(ref, "git ref")
 
-    @pytest.mark.parametrize("commit", ["deadbee", "deadbeef", "a" * 40, "a" * 64])
+    @pytest.mark.parametrize("commit", ["a" * 40, "a" * 64])
     def test_git_commit_validation_allows_hex_object_ids(self, commit):
         _validate_git_commit(commit)
 
     @pytest.mark.parametrize(
-        "commit", ["", "lockedsha", "-deadbee", "g" * 40, "g" * 64]
+        "commit",
+        [
+            "",
+            "deadbee",
+            "deadbeef",
+            "a" * 39,
+            "lockedsha",
+            "-deadbee",
+            "g" * 40,
+            "g" * 64,
+        ],
     )
     def test_git_commit_validation_rejects_invalid_object_ids(self, commit):
         with pytest.raises(ValueError, match="Invalid git commit"):
@@ -1603,7 +2827,7 @@ branch = "-main"
         )
 
         with mock.patch("geno.package_manager.subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="Invalid git ref"):
+            with pytest.raises(ValueError, match="Invalid git branch"):
                 install(tmp_path)
 
         mock_run.assert_not_called()
@@ -1669,30 +2893,34 @@ tag = "v0.3.0"
 
         def fake_run(cmd, **kwargs):
             commands.append(cmd)
+            if cmd[:2] == ["git", "clone"]:
+                staged = Path(cmd[-1])
+                staged.mkdir(parents=True)
+                (staged / "Utils.geno").write_text(
+                    "func foo() -> Int\n  return 2\nend func\n"
+                )
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="tagsha\n", stderr="")
+                return mock.Mock(returncode=0, stdout=f"{'a' * 40}\n", stderr="")
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):
             updated = update(project_root=tmp_path)
 
         assert updated == ["utils"]
-        assert [
+        clone_cmd = commands[0]
+        assert clone_cmd[:-1] == [
             "git",
-            "-C",
-            str(dep_dir),
-            "fetch",
-            "origin",
-            "tag",
+            "clone",
+            "--branch",
             "v0.3.0",
-        ] in commands
-        assert [
-            "git",
-            "-C",
-            str(dep_dir),
-            "checkout",
-            "refs/tags/v0.3.0",
-        ] in commands
+            "--single-branch",
+            "--depth",
+            "1",
+            "https://example.com/utils.git",
+        ]
+        assert Path(clone_cmd[-1]).name == "utils"
+        assert Path(clone_cmd[-1]).parent.name == "staged"
+        assert not any("fetch" in command for command in commands)
 
 
 # =========================================================================
@@ -1960,7 +3188,11 @@ class TestAddRollback:
                 )
                 return mock.Mock(returncode=0, stdout="", stderr="")
             if "rev-parse" in cmd:
-                return mock.Mock(returncode=0, stdout="abc123\n", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout="abcdef1234567890abcdef1234567890abcdef12\n",
+                    stderr="",
+                )
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("geno.package_manager.subprocess.run", side_effect=fake_run):

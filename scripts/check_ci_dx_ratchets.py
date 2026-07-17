@@ -252,10 +252,28 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "--require-hashes -r requirements.lock": "runtime lockfile audit",
         "--require-hashes -r requirements-dev.lock": "dev lockfile audit",
         "--strict --progress-spinner off": "strict dependency audit mode",
+        "scripts/audit_release_lock.py": "platform-aware release lockfile audit",
     }
     for snippet, label in required_makefile_snippets.items():
         if snippet not in makefile:
             errors.append(f"Makefile dependency-audit target missing {label}")
+
+    release_audit_path = root / "scripts" / "audit_release_lock.py"
+    release_audit = (
+        release_audit_path.read_text(encoding="utf-8")
+        if release_audit_path.exists()
+        else ""
+    )
+    for snippet in (
+        "--require-hashes",
+        "requirements-release.lock",
+        'platform.startswith("linux")',
+    ):
+        if snippet not in release_audit:
+            errors.append(
+                "scripts/audit_release_lock.py missing Linux release-lock audit "
+                f"guard: {snippet}"
+            )
     return errors
 
 

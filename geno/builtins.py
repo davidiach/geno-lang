@@ -1385,7 +1385,201 @@ def builtin_clear_text_input() -> None:
 
 _MAX_REGEX_PATTERN_LEN = 1000
 _MAX_REGEX_TEXT_LEN = 10_000
-_BACKREF_RE = re.compile(r"\\[1-9]")
+_MAX_REGEX_REPEAT = _MAX_REGEX_TEXT_LEN
+_MAX_REGEX_GROUP_DEPTH = 128
+_BACKREF_RE = re.compile(r"\\[1-9]|\(\?P=[A-Za-z_][A-Za-z0-9_]*\)")
+
+_PORTABLE_REGEX_LITERAL_ESCAPES = frozenset(r"\.^$|?*+()[]{}")
+_PORTABLE_REGEX_CLASS_ESCAPES = frozenset(r"\^-]")
+
+
+def _is_ascii_regex_digit(character: str) -> bool:
+    return "0" <= character <= "9"
+
+
+def _regex_group_depth_exceeds_limit(pattern: str) -> bool:
+    """Check nesting iteratively before recursive regex safety scans."""
+    depth = 0
+    in_class = False
+    i = 0
+    while i < len(pattern):
+        character = pattern[i]
+        if character == "\\":
+            i += 2
+            continue
+        if character == "[" and not in_class:
+            in_class = True
+        elif character == "]" and in_class:
+            in_class = False
+        elif not in_class and character == "(":
+            depth += 1
+            if depth > _MAX_REGEX_GROUP_DEPTH:
+                return True
+        elif not in_class and character == ")" and depth:
+            depth -= 1
+        i += 1
+    return False
+
+
+def _portable_regex_quantifier_end(pattern: str, start: int) -> int | None:
+    """Return the end of a bounded portable quantifier, or ``None``."""
+    i = start + 1
+    lower_start = i
+    while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
+        i += 1
+    if i == lower_start:
+        return None
+    lower = int(pattern[lower_start:i])
+    upper: int | None = lower
+    if i < len(pattern) and pattern[i] == ",":
+        i += 1
+        upper_start = i
+        while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
+            i += 1
+        upper = int(pattern[upper_start:i]) if i > upper_start else None
+    if i >= len(pattern) or pattern[i] != "}":
+        return None
+    if lower > _MAX_REGEX_REPEAT or (
+        upper is not None and (upper > _MAX_REGEX_REPEAT or lower > upper)
+    ):
+        return None
+    end = i + 1
+    if end < len(pattern) and pattern[end] == "?":
+        end += 1
+    return end
+
+
+def _has_unsupported_regex_construct(pattern: str) -> bool:
+    """Reject syntax whose meaning differs across the Python and JS engines."""
+    i = 0
+    in_class = False
+    has_alternation = False
+    has_quantifier = False
+    has_start_anchor = False
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            if i + 1 >= len(pattern):
+                return True
+            escaped = pattern[i + 1]
+            allowed = (
+                _PORTABLE_REGEX_CLASS_ESCAPES
+                if in_class
+                else _PORTABLE_REGEX_LITERAL_ESCAPES
+            )
+            if escaped not in allowed:
+                return True
+            i += 2
+            continue
+        if ch == "[" and not in_class:
+            member = i + 1
+            if member < len(pattern) and pattern[member] == "^":
+                member += 1
+            if member < len(pattern) and pattern[member] == "]":
+                return True
+            in_class = True
+            i += 1
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            i += 1
+            continue
+        if not in_class and ch == "$":
+            return True
+        if not in_class and ch == "^":
+            has_start_anchor = True
+        if not in_class and ch == "|":
+            if i == 0 or i + 1 == len(pattern):
+                return True
+            if pattern[i - 1] in "(|" or pattern[i + 1] in ")|":
+                return True
+            has_alternation = True
+        if not in_class and ch == "{":
+            end = _portable_regex_quantifier_end(pattern, i)
+            if end is None:
+                return True
+            has_quantifier = True
+            i = end
+            continue
+        if not in_class and ch == "}":
+            return True
+        if ch == "." and not in_class:
+            return True
+        if ch == "(" and not in_class:
+            if i + 1 < len(pattern) and pattern[i + 1] in ("?", ")"):
+                return True
+        if not in_class and ch in ("*", "+", "?"):
+            has_quantifier = True
+            if i + 1 < len(pattern) and pattern[i + 1] == "+":
+                return True
+        i += 1
+    return in_class or (has_alternation and (has_quantifier or has_start_anchor))
+
+
+def _count_variable_regex_quantifiers(pattern: str) -> int:
+    """Count variable quantifiers without interpreting escaped/class text."""
+    count = 0
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            class_end = _regex_char_class_end(pattern, i)
+            if class_end is None:
+                return count
+            i = class_end + 1
+            continue
+        if ch in ("*", "+", "?"):
+            count += 1
+            i += 1
+            if i < len(pattern) and pattern[i] == "?":
+                i += 1
+            continue
+        if ch == "{" and i + 1 < len(pattern) and _is_ascii_regex_digit(pattern[i + 1]):
+            end = i + 2
+            while end < len(pattern) and _is_ascii_regex_digit(pattern[end]):
+                end += 1
+            if end < len(pattern) and pattern[end] == ",":
+                end += 1
+                while end < len(pattern) and _is_ascii_regex_digit(pattern[end]):
+                    end += 1
+                if end < len(pattern) and pattern[end] == "}":
+                    count += 1
+                    i = end + 1
+                    if i < len(pattern) and pattern[i] == "?":
+                        i += 1
+                    continue
+        i += 1
+    return count
+
+
+def _count_regex_alternation_sites(pattern: str) -> int:
+    """Count distinct nesting levels that contain alternation."""
+    sites: set[int] = set()
+    stack = [0]
+    next_group = 1
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "[":
+            class_end = _regex_char_class_end(pattern, i)
+            if class_end is None:
+                return len(sites)
+            i = class_end + 1
+            continue
+        if pattern[i] == "(":
+            stack.append(next_group)
+            next_group += 1
+        elif pattern[i] == ")" and len(stack) > 1:
+            stack.pop()
+        elif pattern[i] == "|":
+            sites.add(stack[-1])
+        i += 1
+    return len(sites)
 
 
 def _has_nested_quantifier(pattern: str) -> bool:
@@ -1405,7 +1599,7 @@ def _has_nested_quantifier(pattern: str) -> bool:
             j = i + 1
             while j < n and pattern[j] in (" ", "\t"):
                 j += 1
-            if j < n and pattern[j] in ("+", "*", "{"):
+            if j < n and pattern[j] in ("+", "*", "?", "{"):
                 # Walk backwards to find the matching '('
                 depth = 1
                 k = i - 1
@@ -1426,7 +1620,11 @@ def _has_nested_quantifier(pattern: str) -> bool:
                         return True
                     if pattern[m] == "?" and m > group_start and pattern[m - 1] != "(":
                         return True
-                    if pattern[m] == "{" and m + 1 < i and pattern[m + 1].isdigit():
+                    if (
+                        pattern[m] == "{"
+                        and m + 1 < i
+                        and _is_ascii_regex_digit(pattern[m + 1])
+                    ):
                         return True
                     m += 1
         i += 1
@@ -1496,7 +1694,11 @@ def _has_overlapping_alternation(pattern: str) -> bool:
         quant_idx = j + 1
         while quant_idx < n and pattern[quant_idx] in (" ", "\t"):
             quant_idx += 1
-        if has_alternation and quant_idx < n and pattern[quant_idx] in ("+", "*", "{"):
+        if (
+            has_alternation
+            and quant_idx < n
+            and pattern[quant_idx] in ("+", "*", "?", "{")
+        ):
             return True
 
         # Continue inside this group so a quantified nested group is checked even
@@ -1541,31 +1743,40 @@ def _regex_group_end(pattern: str, start: int) -> int | None:
     return None
 
 
-def _regex_quantifier_end(pattern: str, start: int) -> tuple[int, bool] | None:
+def _regex_quantifier_end(
+    pattern: str, start: int
+) -> tuple[int, bool, bool, bool] | None:
     if start >= len(pattern):
         return None
-    if pattern[start] in ("*", "+"):
+    if pattern[start] in ("*", "+", "?"):
+        marker = pattern[start]
         end = start + 1
         if end < len(pattern) and pattern[end] == "?":
             end += 1
-        return end, True
+        return end, True, True, marker == "+"
     if pattern[start] != "{" or start + 1 >= len(pattern):
         return None
 
     i = start + 1
-    while i < len(pattern) and pattern[i].isdigit():
+    while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
         i += 1
     has_comma = i < len(pattern) and pattern[i] == ","
+    minimum_text = pattern[start + 1 : i].lstrip("0")
+    maximum_text = minimum_text
     if has_comma:
         i += 1
-        while i < len(pattern) and pattern[i].isdigit():
+        maximum_start = i
+        while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
             i += 1
+        maximum_text = pattern[maximum_start:i].lstrip("0")
     if i >= len(pattern) or pattern[i] != "}":
         return None
     end = i + 1
     if end < len(pattern) and pattern[end] == "?":
         end += 1
-    return end, has_comma
+    required = minimum_text not in ("", "0")
+    can_consume = required or (has_comma and maximum_text != "0")
+    return end, has_comma, can_consume, required
 
 
 def _regex_char_class_key(pattern: str, start: int, end: int) -> tuple[str, str]:
@@ -1577,8 +1788,21 @@ def _regex_char_class_key(pattern: str, start: int, end: int) -> tuple[str, str]
     return ("class", content)
 
 
+def _regex_quantified_atoms_overlap(
+    left: tuple[str, str], right: tuple[str, str]
+) -> bool:
+    if left == right:
+        return True
+    if left == ("literal", ".") or right == ("literal", "."):
+        return True
+    return left[0] != "literal" or right[0] != "literal"
+
+
 def _has_sequential_quantified_atoms(pattern: str) -> bool:
-    """Detect adjacent ambiguous repetitions over the same atom (ReDoS risk)."""
+    """Detect a variable repetition followed by a potentially overlapping atom.
+
+    Even an unquantified or exact-count suffix can multiply backtracking work.
+    """
     previous_key: tuple[str, str] | None = None
     i = 0
     while i < len(pattern):
@@ -1615,17 +1839,22 @@ def _has_sequential_quantified_atoms(pattern: str) -> bool:
 
         quantifier = _regex_quantifier_end(pattern, atom_end)
         if quantifier is None:
-            previous_key = None
-            i = atom_end
-            continue
-
-        quantifier_end, is_ambiguous = quantifier
-        if is_ambiguous:
-            if previous_key == key:
-                return True
-            previous_key = key
+            quantifier_end = atom_end
+            is_ambiguous = False
+            can_consume = True
+            required = True
         else:
+            quantifier_end, is_ambiguous, can_consume, required = quantifier
+        if (
+            previous_key is not None
+            and can_consume
+            and _regex_quantified_atoms_overlap(previous_key, key)
+        ):
+            return True
+        if previous_key is not None and required:
             previous_key = None
+        if is_ambiguous and can_consume:
+            previous_key = key
         i = quantifier_end
 
     return False
@@ -1640,6 +1869,10 @@ def _validate_regex_pattern(pattern: str, func_name: str) -> None:
         )
     if _BACKREF_RE.search(pattern):
         raise RuntimeError(f"{func_name}: backreferences are not supported for safety")
+    if _regex_group_depth_exceeds_limit(pattern):
+        raise RuntimeError(
+            f"{func_name}: group nesting too deep (max {_MAX_REGEX_GROUP_DEPTH})"
+        )
     if _has_nested_quantifier(pattern):
         raise RuntimeError(
             f"{func_name}: nested quantifiers are not supported for safety"
@@ -1651,6 +1884,19 @@ def _validate_regex_pattern(pattern: str, func_name: str) -> None:
     if _has_sequential_quantified_atoms(pattern):
         raise RuntimeError(
             f"{func_name}: adjacent repeated atoms are not supported for safety"
+        )
+    if _count_variable_regex_quantifiers(pattern) > 1:
+        raise RuntimeError(
+            f"{func_name}: multiple variable quantifiers are not supported for safety"
+        )
+    if _count_regex_alternation_sites(pattern) > 1:
+        raise RuntimeError(
+            f"{func_name}: multiple alternation sites are not supported for safety"
+        )
+    if _has_unsupported_regex_construct(pattern):
+        raise RuntimeError(
+            f"{func_name}: advanced or encoded regex constructs are not supported "
+            "for safety"
         )
 
 
@@ -1669,7 +1915,7 @@ def builtin_regex_match(pattern: str, text: str) -> ConstructorValue:
     _validate_regex_text(text, "regex_match")
     try:
         m = re.search(pattern, text)
-    except re.error as e:
+    except (re.error, OverflowError) as e:
         raise RuntimeError(f"regex_match: invalid pattern: {e}")
     if m is None:
         return ConstructorValue("None", {})
@@ -1691,8 +1937,92 @@ def builtin_regex_find_all(
             _check_collection_size("List", len(result) + 1, limit)
             result.append(value)
         return result
-    except re.error as e:
+    except (re.error, OverflowError) as e:
         raise RuntimeError(f"regex_find_all: invalid pattern: {e}")
+
+
+def _expand_regex_replacement(
+    replacement: str,
+    match: Any,
+    total_before: int,
+    max_collection_size: int,
+) -> tuple[str, int]:
+    pieces: list[str] = []
+    literal: list[str] = []
+    added = 0
+
+    def flush_literal() -> None:
+        nonlocal added
+        if not literal:
+            return
+        value = "".join(literal)
+        _check_result_string_size(
+            "regex_replace", total_before + added + len(value), max_collection_size
+        )
+        pieces.append(value)
+        added += len(value)
+        literal.clear()
+
+    i = 0
+    while i < len(replacement):
+        if (
+            replacement[i] == "\\"
+            and i + 1 < len(replacement)
+            and replacement[i + 1] in "123456789"
+        ):
+            flush_literal()
+            end = i + 2
+            while end < len(replacement) and _is_ascii_regex_digit(replacement[end]):
+                end += 1
+            group_index = int(replacement[i + 1 : end])
+            try:
+                value = match.group(group_index) or ""
+            except IndexError as exc:
+                raise RuntimeError(
+                    "regex_replace: invalid replacement group reference"
+                ) from exc
+            _check_result_string_size(
+                "regex_replace", total_before + added + len(value), max_collection_size
+            )
+            pieces.append(value)
+            added += len(value)
+            i = end
+            continue
+        literal.append(replacement[i])
+        i += 1
+    flush_literal()
+    return "".join(pieces), added
+
+
+def _bounded_regex_replace(
+    pattern: str,
+    replacement: str,
+    text: str,
+    max_collection_size: int,
+) -> str:
+    compiled = re.compile(pattern)
+    pieces: list[str] = []
+    total = 0
+    last_end = 0
+    for match in compiled.finditer(text):
+        prefix_size = match.start() - last_end
+        _check_result_string_size(
+            "regex_replace", total + prefix_size, max_collection_size
+        )
+        expanded, expanded_size = _expand_regex_replacement(
+            replacement,
+            match,
+            total + prefix_size,
+            max_collection_size,
+        )
+        total += prefix_size + expanded_size
+        pieces.append(text[last_end : match.start()])
+        pieces.append(expanded)
+        last_end = match.end()
+    tail_size = len(text) - last_end
+    _check_result_string_size("regex_replace", total + tail_size, max_collection_size)
+    pieces.append(text[last_end:])
+    return "".join(pieces)
 
 
 def builtin_regex_replace(
@@ -1707,10 +2037,9 @@ def builtin_regex_replace(
     _validate_regex_text(replacement, "regex_replace", "replacement")
     _validate_regex_text(text, "regex_replace")
     try:
-        result = re.sub(pattern, replacement, text)
-        _check_result_string_size("regex_replace", len(result), max_collection_size)
-        return result
-    except re.error as e:
+        limit = _effective_max_collection_size(max_collection_size)
+        return _bounded_regex_replace(pattern, replacement, text, limit)
+    except (re.error, OverflowError) as e:
         raise RuntimeError(f"regex_replace: invalid pattern: {e}")
 
 

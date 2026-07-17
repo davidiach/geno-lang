@@ -44,6 +44,54 @@ def _marker_server() -> Iterator[tuple[str, list[str]]]:
         thread.join(timeout=1)
 
 
+@contextlib.contextmanager
+def _redirect_header_servers() -> Iterator[tuple[str, list[dict[str, str | None]]]]:
+    received: list[dict[str, str | None]] = []
+
+    class TargetHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            received.append(
+                {
+                    "authorization": self.headers.get("Authorization"),
+                    "cookie": self.headers.get("Cookie"),
+                    "x-api-key": self.headers.get("X-API-Key"),
+                }
+            )
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    target = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+    target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+    target_thread.start()
+    target_url = f"http://127.0.0.1:{target.server_address[1]}/target"
+
+    class RedirectHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    redirect = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    try:
+        yield f"http://127.0.0.1:{redirect.server_address[1]}/start", received
+    finally:
+        redirect.shutdown()
+        target.shutdown()
+        redirect.server_close()
+        target.server_close()
+        redirect_thread.join(timeout=1)
+        target_thread.join(timeout=1)
+
+
 def _dns_rebind_getaddrinfo(
     real_getaddrinfo: Callable[..., object],
 ) -> tuple[Callable[..., object], dict[str, int]]:
@@ -106,7 +154,97 @@ def test_fs_callbacks_reject_symlink_escape(tmp_path):
         _callback(interpreter, "fs_read_text")("link/secret.txt")
 
 
-def test_http_callbacks_reject_private_targets(monkeypatch):
+def test_http_callbacks_strip_headers_on_cross_origin_redirect():
+    from geno._serve import install_http_callbacks
+
+    interpreter = Interpreter()
+    install_http_callbacks(interpreter, allow_private_networks=True)
+
+    with _redirect_header_servers() as (url, received):
+        result = _callback(interpreter, "http_request")(
+            "GET",
+            url,
+            [
+                ("Authorization", "Bearer secret"),
+                ("Cookie", "session=secret"),
+                ("X-API-Key", "secret"),
+            ],
+            None,
+        )
+
+    assert result.constructor == "Ok"
+    assert received == [{"authorization": None, "cookie": None, "x-api-key": None}]
+
+
+@pytest.mark.parametrize("module_name", ["geno._serve", "geno._runtime_support"])
+def test_redirect_header_policy_uses_normalized_origin(module_name):
+    import importlib
+    from urllib.request import Request
+
+    module = importlib.import_module(module_name)
+    headers = {
+        "Authorization": "Bearer secret",
+        "Cookie": "session=secret",
+        "X-API-Key": "secret",
+    }
+
+    same_origin = Request("https://example.test:443/next", headers=headers)
+    module._strip_cross_origin_redirect_headers(
+        "https://EXAMPLE.test/start",
+        "https://example.test:443/next",
+        same_origin,
+    )
+    assert dict(same_origin.header_items())
+
+    downgrade = Request("http://example.test/next", headers=headers)
+    module._strip_cross_origin_redirect_headers(
+        "https://example.test/start",
+        "http://example.test/next",
+        downgrade,
+    )
+    assert dict(downgrade.header_items()) == {}
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "8.8.8.8",
+        "2001:4860:4860::8888",
+        "64:ff9b::808:808",
+        "2002:0808:0808::",
+    ],
+)
+def test_http_policies_allow_public_native_and_transition_targets(monkeypatch, address):
+    from geno import _runtime_support as runtime_support
+    from geno import _serve
+
+    monkeypatch.delenv("GENO_HTTP_ALLOW_PRIVATE", raising=False)
+
+    _serve._validate_http_address(
+        address,
+        "http_request",
+        allow_private_networks=False,
+    )
+    runtime_support._validate_http_address(address, "http_request")
+
+
+@pytest.mark.parametrize(
+    "resolved_address",
+    [
+        "169.254.169.254",
+        "100.64.0.1",
+        "192.0.0.8",
+        "224.0.0.1",
+        "::ffff:100.64.0.1",
+        "::127.0.0.1",
+        "64:ff9b::127.0.0.1",
+        "64:ff9b:1::1",
+        "2002:7f00:1::",
+        "2001:0000:4136:e378:8000:63bf:3fff:fdd2",
+        "2001:db8::1",
+    ],
+)
+def test_http_callbacks_reject_non_public_targets(monkeypatch, resolved_address):
     from geno._serve import install_http_callbacks
 
     def fake_getaddrinfo(*args, **kwargs):
@@ -116,7 +254,7 @@ def test_http_callbacks_reject_private_targets(monkeypatch):
                 socket.SOCK_STREAM,
                 6,
                 "",
-                ("169.254.169.254", 80),
+                (resolved_address, 80),
             )
         ]
 
@@ -124,7 +262,7 @@ def test_http_callbacks_reject_private_targets(monkeypatch):
     interpreter = Interpreter()
     install_http_callbacks(interpreter)
 
-    with pytest.raises(RuntimeError, match="private, local, or reserved"):
+    with pytest.raises(RuntimeError, match="non-public network targets"):
         _callback(interpreter, "http_fetch")("http://metadata.local/latest")
 
 
@@ -138,7 +276,7 @@ def test_http_callbacks_recheck_address_used_for_connection(monkeypatch) -> None
     install_http_callbacks(interpreter)
 
     with _marker_server() as (url, hits):
-        with pytest.raises(RuntimeError, match="private, local, or reserved"):
+        with pytest.raises(RuntimeError, match="non-public network targets"):
             _callback(interpreter, "http_fetch")(url)
 
     assert state["calls"] == 2
@@ -196,7 +334,25 @@ def test_compiled_runtime_fs_policy_can_be_read_only(monkeypatch, tmp_path):
     assert not (tmp_path / "out.txt").exists()
 
 
-def test_compiled_runtime_http_policy_rejects_private_target(monkeypatch):
+@pytest.mark.parametrize(
+    "resolved_address",
+    [
+        "127.0.0.1",
+        "100.64.0.1",
+        "192.0.0.8",
+        "224.0.0.1",
+        "::ffff:100.64.0.1",
+        "::127.0.0.1",
+        "64:ff9b::127.0.0.1",
+        "64:ff9b:1::1",
+        "2002:7f00:1::",
+        "2001:0000:4136:e378:8000:63bf:3fff:fdd2",
+        "2001:db8::1",
+    ],
+)
+def test_compiled_runtime_http_policy_rejects_non_public_target(
+    monkeypatch, resolved_address
+):
     from geno import _runtime_support as rs
 
     def fake_getaddrinfo(*args, **kwargs):
@@ -206,14 +362,14 @@ def test_compiled_runtime_http_policy_rejects_private_target(monkeypatch):
                 socket.SOCK_STREAM,
                 6,
                 "",
-                ("127.0.0.1", 80),
+                (resolved_address, 80),
             )
         ]
 
     monkeypatch.setattr(rs, "_GENO_CAPS", {"http"})
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
-    with pytest.raises(RuntimeError, match="private, local, or reserved"):
+    with pytest.raises(RuntimeError, match="non-public network targets"):
         rs.http_fetch("http://localhost/")
 
 
@@ -226,7 +382,7 @@ def test_compiled_runtime_http_policy_rechecks_connected_address(monkeypatch) ->
     monkeypatch.delenv("GENO_HTTP_ALLOW_PRIVATE", raising=False)
 
     with _marker_server() as (url, hits):
-        with pytest.raises(RuntimeError, match="private, local, or reserved"):
+        with pytest.raises(RuntimeError, match="non-public network targets"):
             rs.http_fetch(url)
 
     assert state["calls"] == 2

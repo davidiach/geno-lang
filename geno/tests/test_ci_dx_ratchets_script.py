@@ -91,6 +91,8 @@ def test_workflow_surface_reports_missing_required_snippet(tmp_path: Path) -> No
     assert any("hosted security corpus and bounty job" in error for error in errors)
     assert any("hosted Python dependency audit job" in error for error in errors)
     assert any("dependency-audit local target" in error for error in errors)
+    assert any("release lockfile audit" in error for error in errors)
+    assert any("Linux release-lock audit guard" in error for error in errors)
     assert any("exact pip-audit CI install pin" in error for error in errors)
 
 

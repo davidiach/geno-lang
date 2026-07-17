@@ -2197,7 +2197,189 @@ function http_request(method, url, headers, body) {
 
 const _MAX_REGEX_PATTERN_LEN = 1000;
 const _MAX_REGEX_TEXT_LEN = 10000;
-const _BACKREF_RE = /\\[1-9]/;
+const _MAX_REGEX_REPEAT = _MAX_REGEX_TEXT_LEN;
+const _MAX_REGEX_GROUP_DEPTH = 128;
+const _BACKREF_RE = /\\[1-9]|\(\?P=[A-Za-z_][A-Za-z0-9_]*\)|\\k<[A-Za-z_][A-Za-z0-9_]*>/;
+
+const _PORTABLE_REGEX_LITERAL_ESCAPES = new _GENO_SET("\\.^$|?*+()[]{}");
+const _PORTABLE_REGEX_CLASS_ESCAPES = new _GENO_SET("\\^-]");
+
+function _isAsciiRegexDigit(character) {
+    return character >= "0" && character <= "9";
+}
+
+function _regexGroupDepthExceedsLimit(pattern) {
+    let depth = 0;
+    let inClass = false;
+    let i = 0;
+    while (i < pattern.length) {
+        const character = pattern[i];
+        if (character === "\\") {
+            i += 2;
+            continue;
+        }
+        if (character === "[" && !inClass) {
+            inClass = true;
+        } else if (character === "]" && inClass) {
+            inClass = false;
+        } else if (!inClass && character === "(") {
+            depth++;
+            if (depth > _MAX_REGEX_GROUP_DEPTH) return true;
+        } else if (!inClass && character === ")" && depth > 0) {
+            depth--;
+        }
+        i++;
+    }
+    return false;
+}
+
+function _portableRegexQuantifierEnd(pattern, start) {
+    let i = start + 1;
+    const lowerStart = i;
+    while (i < pattern.length && _isAsciiRegexDigit(pattern[i])) i++;
+    if (i === lowerStart) return null;
+    const lowerText = pattern.slice(lowerStart, i);
+    if (lowerText.length > 5) return null;
+    const lower = Number(lowerText);
+    let upper = lower;
+    if (i < pattern.length && pattern[i] === ",") {
+        i++;
+        const upperStart = i;
+        while (i < pattern.length && _isAsciiRegexDigit(pattern[i])) i++;
+        const upperText = pattern.slice(upperStart, i);
+        if (upperText.length > 5) return null;
+        upper = upperText === "" ? null : Number(upperText);
+    }
+    if (i >= pattern.length || pattern[i] !== "}") return null;
+    if (
+        lower > _MAX_REGEX_REPEAT ||
+        (upper !== null && (upper > _MAX_REGEX_REPEAT || lower > upper))
+    ) return null;
+    let end = i + 1;
+    if (end < pattern.length && pattern[end] === "?") end++;
+    return end;
+}
+
+function _hasUnsupportedRegexConstruct(pattern) {
+    let i = 0;
+    let inClass = false;
+    let hasAlternation = false;
+    let hasQuantifier = false;
+    let hasStartAnchor = false;
+    while (i < pattern.length) {
+        const ch = pattern[i];
+        if (ch === "\\") {
+            if (i + 1 >= pattern.length) return true;
+            const escaped = pattern[i + 1];
+            const allowed = inClass
+                ? _PORTABLE_REGEX_CLASS_ESCAPES
+                : _PORTABLE_REGEX_LITERAL_ESCAPES;
+            if (!allowed.has(escaped)) return true;
+            i += 2;
+            continue;
+        }
+        if (ch === "[" && !inClass) {
+            let member = i + 1;
+            if (member < pattern.length && pattern[member] === "^") member++;
+            if (member < pattern.length && pattern[member] === "]") return true;
+            inClass = true;
+            i++;
+            continue;
+        }
+        if (ch === "]" && inClass) {
+            inClass = false;
+            i++;
+            continue;
+        }
+        if (!inClass && ch === "$") return true;
+        if (!inClass && ch === "^") hasStartAnchor = true;
+        if (!inClass && ch === "|") {
+            if (i === 0 || i + 1 === pattern.length) return true;
+            if ("(|".includes(pattern[i - 1]) || ")|".includes(pattern[i + 1])) return true;
+            hasAlternation = true;
+        }
+        if (!inClass && ch === "{") {
+            const end = _portableRegexQuantifierEnd(pattern, i);
+            if (end === null) return true;
+            hasQuantifier = true;
+            i = end;
+            continue;
+        }
+        if (!inClass && ch === "}") return true;
+        if (ch === "." && !inClass) return true;
+        if (ch === "(" && !inClass && i + 1 < pattern.length) {
+            if (pattern[i + 1] === "?" || pattern[i + 1] === ")") return true;
+        }
+        if (!inClass && (ch === "*" || ch === "+" || ch === "?")) {
+            hasQuantifier = true;
+            if (i + 1 < pattern.length && pattern[i + 1] === "+") return true;
+        }
+        i++;
+    }
+    return inClass || (hasAlternation && (hasQuantifier || hasStartAnchor));
+}
+
+function _countVariableRegexQuantifiers(pattern) {
+    let count = 0;
+    let i = 0;
+    while (i < pattern.length) {
+        const ch = pattern[i];
+        if (ch === "\\") { i += 2; continue; }
+        if (ch === "[") {
+            const classEnd = _regexCharClassEnd(pattern, i);
+            if (classEnd === null) return count;
+            i = classEnd + 1;
+            continue;
+        }
+        if (ch === "*" || ch === "+" || ch === "?") {
+            count++;
+            i++;
+            if (i < pattern.length && pattern[i] === "?") i++;
+            continue;
+        }
+        if (ch === "{" && i + 1 < pattern.length && _isAsciiRegexDigit(pattern[i + 1])) {
+            let end = i + 2;
+            while (end < pattern.length && _isAsciiRegexDigit(pattern[end])) end++;
+            if (end < pattern.length && pattern[end] === ",") {
+                end++;
+                while (end < pattern.length && _isAsciiRegexDigit(pattern[end])) end++;
+                if (end < pattern.length && pattern[end] === "}") {
+                    count++;
+                    i = end + 1;
+                    if (i < pattern.length && pattern[i] === "?") i++;
+                    continue;
+                }
+            }
+        }
+        i++;
+    }
+    return count;
+}
+
+function _countRegexAlternationSites(pattern) {
+    const sites = new _GENO_SET();
+    const stack = [0];
+    let nextGroup = 1;
+    let i = 0;
+    while (i < pattern.length) {
+        if (pattern[i] === "\\") { i += 2; continue; }
+        if (pattern[i] === "[") {
+            const classEnd = _regexCharClassEnd(pattern, i);
+            if (classEnd === null) return sites.size;
+            i = classEnd + 1;
+            continue;
+        }
+        if (pattern[i] === "(") {
+            stack.push(nextGroup++);
+        } else if (pattern[i] === ")" && stack.length > 1) {
+            stack.pop();
+        } else if (pattern[i] === "|") {
+            sites.add(stack[stack.length - 1]);
+        }
+        i++;
+    }
+    return sites.size;
+}
 
 // Detect quantified groups that contain inner quantifiers (ReDoS risk).
 // Mirrors Python's `_has_nested_quantifier` in geno/_runtime_support.py.
@@ -2209,7 +2391,7 @@ function _hasNestedQuantifier(pattern) {
         if (pattern[i] === ")") {
             let j = i + 1;
             while (j < n && (pattern[j] === " " || pattern[j] === "\t")) j++;
-            if (j < n && (pattern[j] === "+" || pattern[j] === "*" || pattern[j] === "{")) {
+            if (j < n && (pattern[j] === "+" || pattern[j] === "*" || pattern[j] === "?" || pattern[j] === "{")) {
                 // Walk backwards to find the matching '('
                 let depth = 1;
                 let k = i - 1;
@@ -2228,7 +2410,7 @@ function _hasNestedQuantifier(pattern) {
                         m > groupStart &&
                         pattern[m - 1] !== "("
                     ) return true;
-                    if (pattern[m] === "{" && m + 1 < i && /[0-9]/.test(pattern[m + 1])) return true;
+                    if (pattern[m] === "{" && m + 1 < i && _isAsciiRegexDigit(pattern[m + 1])) return true;
                     m++;
                 }
             }
@@ -2288,7 +2470,8 @@ function _hasOverlappingAlternation(pattern) {
         if (
             hasAlternation &&
             quantIdx < n &&
-            (pattern[quantIdx] === "+" || pattern[quantIdx] === "*" || pattern[quantIdx] === "{")
+            (pattern[quantIdx] === "+" || pattern[quantIdx] === "*" ||
+                pattern[quantIdx] === "?" || pattern[quantIdx] === "{")
         ) return true;
 
         // Continue inside this group so quantified nested groups are checked.
@@ -2330,24 +2513,31 @@ function _regexGroupEnd(pattern, start) {
 
 function _regexQuantifierEnd(pattern, start) {
     if (start >= pattern.length) return null;
-    if (pattern[start] === "*" || pattern[start] === "+") {
+    if (pattern[start] === "*" || pattern[start] === "+" || pattern[start] === "?") {
+        const marker = pattern[start];
         let end = start + 1;
         if (end < pattern.length && pattern[end] === "?") end++;
-        return { end, ambiguous: true };
+        return { end, ambiguous: true, canConsume: true, required: marker === "+" };
     }
     if (pattern[start] !== "{" || start + 1 >= pattern.length) return null;
 
     let i = start + 1;
-    while (i < pattern.length && /[0-9]/.test(pattern[i])) i++;
+    while (i < pattern.length && _isAsciiRegexDigit(pattern[i])) i++;
     const hasComma = i < pattern.length && pattern[i] === ",";
+    const minimumText = pattern.slice(start + 1, i).replace(/^0+/, "");
+    let maximumText = minimumText;
     if (hasComma) {
         i++;
-        while (i < pattern.length && /[0-9]/.test(pattern[i])) i++;
+        const maximumStart = i;
+        while (i < pattern.length && _isAsciiRegexDigit(pattern[i])) i++;
+        maximumText = pattern.slice(maximumStart, i).replace(/^0+/, "");
     }
     if (i >= pattern.length || pattern[i] !== "}") return null;
     let end = i + 1;
     if (end < pattern.length && pattern[end] === "?") end++;
-    return { end, ambiguous: hasComma };
+    const required = minimumText !== "" && minimumText !== "0";
+    const canConsume = required || (hasComma && maximumText !== "0");
+    return { end, ambiguous: hasComma, canConsume, required };
 }
 
 function _regexCharClassKey(pattern, start, end) {
@@ -2356,6 +2546,13 @@ function _regexCharClassKey(pattern, start, end) {
     if (content.length === 2 && content[0] === "\\") return "literal:" + content[1];
     return "class:" + content;
 }
+
+function _regexQuantifiedAtomsOverlap(left, right) {
+    if (left === right) return true;
+    if (left === "literal:." || right === "literal:.") return true;
+    return !left.startsWith("literal:") || !right.startsWith("literal:");
+}
+
 
 function _hasSequentialQuantifiedAtoms(pattern) {
     let previousKey = null;
@@ -2391,24 +2588,38 @@ function _hasSequentialQuantifiedAtoms(pattern) {
             i++;
             continue;
         } else {
-            key = "literal:" + ch;
-            atomEnd = i + 1;
+            const codePoint = pattern.codePointAt(i);
+            const literal = String.fromCodePoint(codePoint);
+            key = "literal:" + literal;
+            atomEnd = i + literal.length;
         }
 
         const quantifier = _regexQuantifierEnd(pattern, atomEnd);
+        let quantifierEnd;
+        let ambiguous;
+        let canConsume;
+        let required;
         if (quantifier === null) {
-            previousKey = null;
-            i = atomEnd;
-            continue;
+            quantifierEnd = atomEnd;
+            ambiguous = false;
+            canConsume = true;
+            required = true;
+        } else {
+            ({ end: quantifierEnd, ambiguous, canConsume, required } = quantifier);
         }
 
-        if (quantifier.ambiguous) {
-            if (previousKey === key) return true;
-            previousKey = key;
-        } else {
-            previousKey = null;
+        if (
+            previousKey !== null
+            && canConsume
+            && _regexQuantifiedAtomsOverlap(previousKey, key)
+        ) {
+            return true;
         }
-        i = quantifier.end;
+        if (previousKey !== null && required) previousKey = null;
+        if (ambiguous && canConsume) {
+            previousKey = key;
+        }
+        i = quantifierEnd;
     }
     return false;
 }
@@ -2425,6 +2636,11 @@ function _validateRegexPattern(pattern, funcName) {
     if (_BACKREF_RE.test(pattern)) {
         throw new Error(funcName + ": backreferences are not supported for safety");
     }
+    if (_regexGroupDepthExceedsLimit(pattern)) {
+        throw new Error(
+            funcName + ": group nesting too deep (max " + _MAX_REGEX_GROUP_DEPTH + ")"
+        );
+    }
     if (_hasNestedQuantifier(pattern)) {
         throw new Error(funcName + ": nested quantifiers are not supported for safety");
     }
@@ -2436,6 +2652,21 @@ function _validateRegexPattern(pattern, funcName) {
     if (_hasSequentialQuantifiedAtoms(pattern)) {
         throw new Error(
             funcName + ": adjacent repeated atoms are not supported for safety"
+        );
+    }
+    if (_countVariableRegexQuantifiers(pattern) > 1) {
+        throw new Error(
+            funcName + ": multiple variable quantifiers are not supported for safety"
+        );
+    }
+    if (_countRegexAlternationSites(pattern) > 1) {
+        throw new Error(
+            funcName + ": multiple alternation sites are not supported for safety"
+        );
+    }
+    if (_hasUnsupportedRegexConstruct(pattern)) {
+        throw new Error(
+            funcName + ": advanced or encoded regex constructs are not supported for safety"
         );
     }
 }
@@ -2452,23 +2683,47 @@ function _validateRegexText(text, funcName, argName) {
     }
 }
 
-// Translate Python-style backreferences (\1) to JS-style ($1) in replacements
-function _translateBackrefs(replacement) {
-    let result = "";
-    for (let i = 0; i < replacement.length; i += 1) {
-        const ch = replacement[i];
-        if (ch === "\\" && i + 1 < replacement.length && /[0-9]/.test(replacement[i + 1])) {
+function _expandRegexReplacement(replacement, match, totalBefore) {
+    const pieces = [];
+    let literal = "";
+    let added = 0;
+
+    function flushLiteral() {
+        if (literal === "") return;
+        const size = _stringLength(literal);
+        _checkStringResultSize("regex_replace", totalBefore + added + size);
+        pieces.push(literal);
+        added += size;
+        literal = "";
+    }
+
+    for (let i = 0; i < replacement.length; i++) {
+        if (
+            replacement[i] === "\\" &&
+            i + 1 < replacement.length &&
+            replacement[i + 1] !== "0" && _isAsciiRegexDigit(replacement[i + 1])
+        ) {
+            flushLiteral();
             let end = i + 1;
-            while (end < replacement.length && /[0-9]/.test(replacement[end])) end += 1;
-            result += "$" + replacement.slice(i + 1, end);
+            while (end < replacement.length && _isAsciiRegexDigit(replacement[end])) end += 1;
+            const groupIndex = Number(replacement.slice(i + 1, end));
+            if (!Number.isSafeInteger(groupIndex) || groupIndex >= match.length) {
+                throw new Error("regex_replace: invalid replacement group reference");
+            }
+            const value = match[groupIndex] === undefined ? "" : match[groupIndex];
+            const size = _stringLength(value);
+            _checkStringResultSize("regex_replace", totalBefore + added + size);
+            pieces.push(value);
+            added += size;
             i = end - 1;
-        } else if (ch === "$") {
-            result += "$$";
         } else {
-            result += ch;
+            // Dollar signs and non-reference backslashes are literals in the
+            // portable Geno replacement dialect.
+            literal += replacement[i];
         }
     }
-    return result;
+    flushLiteral();
+    return { text: pieces.join(""), size: added };
 }
 
 function _advanceRegexEmptyMatchIndex(text, index) {
@@ -2524,9 +2779,30 @@ function regex_replace(pattern, replacement, text) {
     } catch (e) {
         throw new Error("regex_replace: invalid pattern: " + e.message);
     }
-    const result = text.replace(re, _translateBackrefs(replacement));
-    _checkStringResultSize("regex_replace", _stringLength(result));
-    return result;
+    const pieces = [];
+    let total = 0;
+    let lastEnd = 0;
+    let match;
+    while ((match = re.exec(text)) !== null) {
+        const prefix = text.slice(lastEnd, match.index);
+        const prefixSize = _stringLength(prefix);
+        _checkStringResultSize("regex_replace", total + prefixSize);
+        const expanded = _expandRegexReplacement(
+            replacement, match, total + prefixSize
+        );
+        pieces.push(prefix);
+        pieces.push(expanded.text);
+        total += prefixSize + expanded.size;
+        lastEnd = match.index + match[0].length;
+        if (match[0] === "") {
+            re.lastIndex = _advanceRegexEmptyMatchIndex(text, re.lastIndex);
+        }
+    }
+    const tail = text.slice(lastEnd);
+    const tailSize = _stringLength(tail);
+    _checkStringResultSize("regex_replace", total + tailSize);
+    pieces.push(tail);
+    return pieces.join("");
 }
 
 // =============================================================================

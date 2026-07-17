@@ -100,12 +100,7 @@ def build_app(
                 for mod_name in dg.sorted_modules:
                     rf = dg.file_map.get(mod_name)
                     if rf:
-                        try:
-                            sources_content[str(rf.path)] = rf.path.read_text(
-                                encoding="utf-8"
-                            )
-                        except OSError:
-                            pass
+                        sources_content[str(rf.path)] = dg.original_sources[mod_name]
 
             # Write app.js, optionally with source map reference
             browser_bootstrap = _browser_capability_bootstrap()

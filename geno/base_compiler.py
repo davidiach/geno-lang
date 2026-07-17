@@ -232,6 +232,55 @@ class BaseCompiler(ABC):
 
         visit(node)
 
+    def _validate_runtime_name_collisions(
+        self,
+        program: Program,
+        global_reserved_names: Collection[str],
+        local_reserved_names: Collection[str],
+        error_type: type[Exception],
+    ) -> None:
+        """Reject every user binding that can overwrite emitted runtime state."""
+
+        def reject(name: str | None, kind: str) -> None:
+            if name is not None and name in global_reserved_names:
+                raise error_type(
+                    f"'{name}' is a reserved runtime name and cannot be used "
+                    f"as a {kind} name"
+                )
+
+        for defn in program.definitions:
+            if isinstance(defn, FunctionDef):
+                reject(defn.name, "function")
+            elif isinstance(defn, TypeAlias):
+                reject(defn.name, "type")
+            elif isinstance(defn, TypeDef):
+                reject(defn.name, "type")
+                for variant in defn.variants:
+                    reject(variant.name, "constructor")
+            elif isinstance(defn, TraitDef):
+                reject(defn.name, "trait")
+                # Trait dispatchers are emitted as top-level functions named
+                # after the method, so their names are global bindings too.
+                for trait_method in defn.methods:
+                    reject(trait_method.name, "trait method")
+            elif isinstance(defn, ImplDef):
+                for impl_method in defn.methods:
+                    reject(
+                        f"{defn.trait_name}_{impl_method.name}_{defn.target_type}",
+                        "implementation helper",
+                    )
+            elif isinstance(defn, ImportStatement) and defn.alias:
+                reject(defn.alias, "import alias")
+
+        # Only helpers emitted directly inside user scopes need local-name
+        # protection. Global prelude functions resolve their dependencies in
+        # the module/global scope and do not justify banning ordinary locals.
+        self._validate_reserved_local_names(
+            program,
+            local_reserved_names,
+            error_type,
+        )
+
     def _validate_reserved_local_names(
         self,
         program: Program,

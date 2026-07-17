@@ -5,6 +5,7 @@ Benchmark Runner
 Evaluates LLM-generated solutions against benchmark problems.
 """
 
+import math
 import signal
 import threading
 import time
@@ -27,9 +28,16 @@ from benchmark.schema import (
 from geno.sandbox import (
     BLOCKED_BUILTINS,
     SAFE_BUILTINS,
+    ProcessSandbox,
+    ProcessSandboxConfig,
+    SandboxError,
+    _create_module_proxy,
     safe_getattr,
     safe_hasattr,
     validate_code_safety,
+)
+from geno.sandbox import (
+    TimeoutError as ProcessSandboxTimeoutError,
 )
 from geno.values import ConstructorValue
 
@@ -141,6 +149,152 @@ class EvaluationResult:
         }
 
 
+_WORKER_RESULT_VERSION = 1
+_MAX_WIRE_ITEMS = 1_000
+_MAX_WIRE_DEPTH = 20
+_MAX_WIRE_STRING_CHARS = 10_000
+
+
+def _bounded_worker_text(value: Any) -> str:
+    """Render diagnostic-only values without allowing unbounded IPC."""
+    text = repr(value)
+    if len(text) > _MAX_WIRE_STRING_CHARS:
+        return text[: _MAX_WIRE_STRING_CHARS - 16] + "... [truncated]"
+    return text
+
+
+def _worker_json_value(value: Any, depth: int = 0) -> Any:
+    """Convert an actual test output to bounded, non-executable JSON data."""
+    if depth >= _MAX_WIRE_DEPTH:
+        return "<maximum result depth exceeded>"
+    if value is None or isinstance(value, bool | int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else repr(value)
+    if isinstance(value, str):
+        if len(value) <= _MAX_WIRE_STRING_CHARS:
+            return value
+        return value[: _MAX_WIRE_STRING_CHARS - 16] + "... [truncated]"
+    if isinstance(value, list | tuple):
+        items = [
+            _worker_json_value(item, depth + 1) for item in value[:_MAX_WIRE_ITEMS]
+        ]
+        if len(value) > _MAX_WIRE_ITEMS:
+            items.append("<additional items truncated>")
+        return items
+    if isinstance(value, dict):
+        items: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _MAX_WIRE_ITEMS:
+                items["<truncated>"] = "<additional items truncated>"
+                break
+            wire_key = key if isinstance(key, str) else _bounded_worker_text(key)
+            if len(wire_key) > _MAX_WIRE_STRING_CHARS:
+                wire_key = wire_key[: _MAX_WIRE_STRING_CHARS - 16] + "... [truncated]"
+            items[wire_key] = _worker_json_value(item, depth + 1)
+        return items
+    return _bounded_worker_text(value)
+
+
+def _evaluation_result_to_worker_payload(result: EvaluationResult) -> dict[str, Any]:
+    """Serialize an evaluation result for bounded JSON IPC."""
+    return {
+        "version": _WORKER_RESULT_VERSION,
+        "problem_id": result.problem_id,
+        "language": result.language,
+        "parsed": result.parsed,
+        "type_checked": result.type_checked,
+        "visible_passed": result.visible_passed,
+        "visible_total": result.visible_total,
+        "hidden_passed": result.hidden_passed,
+        "hidden_total": result.hidden_total,
+        "error_category": result.error_category.value,
+        "error_message": result.error_message[:_MAX_WIRE_STRING_CHARS],
+        "parse_time_ms": result.parse_time_ms,
+        "typecheck_time_ms": result.typecheck_time_ms,
+        "total_execution_time_ms": result.total_execution_time_ms,
+        "solution_tokens": result.solution_tokens,
+        "test_results": [
+            {
+                "passed": item.passed,
+                "actual_output": _worker_json_value(item.actual_output),
+                "error_category": item.error_category.value,
+                "error_message": item.error_message[:_MAX_WIRE_STRING_CHARS],
+                "execution_time_ms": item.execution_time_ms,
+            }
+            for item in result.test_results[:_MAX_WIRE_ITEMS]
+        ],
+    }
+
+
+def _evaluation_result_from_worker_payload(
+    problem: Problem,
+    solution_code: str,
+    payload: Any,
+) -> EvaluationResult:
+    """Reconstruct trusted dataclasses from a validated JSON-only result."""
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != _WORKER_RESULT_VERSION
+    ):
+        raise ValueError("unsupported worker result version")
+    expected_tests = [*problem.visible_examples, *problem.hidden_tests]
+    wire_tests = payload.get("test_results")
+    if not isinstance(wire_tests, list) or len(wire_tests) > len(expected_tests):
+        raise ValueError("invalid worker test result count")
+
+    result = EvaluationResult(
+        problem_id=str(payload["problem_id"]),
+        language=str(payload["language"]),
+        solution_code=solution_code,
+        parsed=bool(payload["parsed"]),
+        type_checked=bool(payload["type_checked"]),
+        visible_passed=int(payload["visible_passed"]),
+        visible_total=int(payload["visible_total"]),
+        hidden_passed=int(payload["hidden_passed"]),
+        hidden_total=int(payload["hidden_total"]),
+        error_category=ErrorCategory(str(payload["error_category"])),
+        error_message=str(payload["error_message"]),
+        parse_time_ms=float(payload["parse_time_ms"]),
+        typecheck_time_ms=float(payload["typecheck_time_ms"]),
+        total_execution_time_ms=float(payload["total_execution_time_ms"]),
+        solution_tokens=int(payload["solution_tokens"]),
+    )
+    for test_case, wire_test in zip(expected_tests, wire_tests):
+        if not isinstance(wire_test, dict):
+            raise TypeError("worker test result must be an object")
+        result.test_results.append(
+            TestResult(
+                test_case=test_case,
+                passed=bool(wire_test["passed"]),
+                actual_output=wire_test.get("actual_output"),
+                error_category=ErrorCategory(str(wire_test["error_category"])),
+                error_message=str(wire_test["error_message"]),
+                execution_time_ms=float(wire_test["execution_time_ms"]),
+            )
+        )
+    return result
+
+
+def _python_process_error_result(
+    problem: Problem,
+    solution_code: str,
+    category: ErrorCategory,
+    message: str,
+) -> EvaluationResult:
+    """Build a fail-closed result when the isolated evaluator cannot answer."""
+    return EvaluationResult(
+        problem_id=problem.id,
+        language="python",
+        solution_code=solution_code,
+        visible_total=len(problem.visible_examples),
+        hidden_total=len(problem.hidden_tests),
+        error_category=category,
+        error_message=message[:_MAX_WIRE_STRING_CHARS],
+        solution_tokens=len(solution_code.split()),
+    )
+
+
 class BenchmarkRunner:
     """
     Runs benchmark evaluations for Geno and Python solutions.
@@ -160,7 +314,7 @@ class BenchmarkRunner:
 
     @classmethod
     def for_research(cls, timeout_seconds: float = 5.0) -> "BenchmarkRunner":
-        """Create a runner that explicitly opts into raw Python benchmark execution."""
+        """Opt into Python evaluation with process isolation enabled."""
         return cls(
             timeout_seconds=timeout_seconds,
             allow_unsafe_python_execution=True,
@@ -547,17 +701,107 @@ class BenchmarkRunner:
     def evaluate_python(
         self, problem: Problem, solution_code: str, sandboxed: bool = True
     ) -> EvaluationResult:
-        """Evaluate a Python solution.
+        """Evaluate a Python solution in a resource-limited child by default.
 
         Args:
             problem: The problem to evaluate against
             solution_code: Python solution code
             sandboxed: Whether to run in the restricted benchmark namespace.
-                This path is a developer convenience, not a production
-                isolation boundary for untrusted Python.
+                Passing False is an explicit in-process escape hatch for
+                trusted debugging only.
         """
         self._require_python_execution_opt_in()
 
+        if sandboxed:
+            return self._evaluate_python_isolated(problem, solution_code)
+        return self._evaluate_python_in_process(
+            problem,
+            solution_code,
+            sandboxed=sandboxed,
+        )
+
+    def _evaluate_python_isolated(
+        self,
+        problem: Problem,
+        solution_code: str,
+    ) -> EvaluationResult:
+        """Evaluate generated Python without sharing parent memory or secrets."""
+        test_count = len(problem.visible_examples) + len(problem.hidden_tests)
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, int | float)
+            or self.timeout_seconds <= 0
+        ):
+            return _python_process_error_result(
+                problem,
+                solution_code,
+                ErrorCategory.RUNTIME,
+                "Isolated Python evaluation requires a positive timeout",
+            )
+        else:
+            # Preserve the existing per-phase/per-test timeout semantics while
+            # also bounding interpreter startup and the complete child lifetime.
+            process_timeout = 2.0 + self.timeout_seconds * (test_count + 1)
+
+        config = ProcessSandboxConfig(
+            timeout=process_timeout,
+            max_cpu_time=process_timeout,
+            strict=False,
+            allow_print=False,
+            max_output_length=100_000,
+        )
+        try:
+            payload, _output, error = ProcessSandbox(config).execute_python_benchmark(
+                {
+                    "problem": problem.to_dict(),
+                    "solution_code": solution_code,
+                    "timeout_seconds": self.timeout_seconds,
+                }
+            )
+        except ProcessSandboxTimeoutError as exc:
+            return _python_process_error_result(
+                problem,
+                solution_code,
+                ErrorCategory.TIMEOUT,
+                str(exc),
+            )
+        except SandboxError as exc:
+            return _python_process_error_result(
+                problem,
+                solution_code,
+                ErrorCategory.RUNTIME,
+                f"Isolated Python worker failed: {exc}",
+            )
+
+        if error is not None:
+            return _python_process_error_result(
+                problem,
+                solution_code,
+                ErrorCategory.RUNTIME,
+                f"Isolated Python worker failed: {error}",
+            )
+        try:
+            return _evaluation_result_from_worker_payload(
+                problem,
+                solution_code,
+                payload,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return _python_process_error_result(
+                problem,
+                solution_code,
+                ErrorCategory.RUNTIME,
+                f"Isolated Python worker returned an invalid result: {exc}",
+            )
+
+    def _evaluate_python_in_process(
+        self,
+        problem: Problem,
+        solution_code: str,
+        *,
+        sandboxed: bool,
+    ) -> EvaluationResult:
+        """Child-only implementation, plus the explicit unsafe debug path."""
         result = EvaluationResult(
             problem_id=problem.id,
             language="python",
@@ -643,9 +887,11 @@ class BenchmarkRunner:
         import builtins
         import typing
 
-        # Start from the canonical SAFE_BUILTINS names, plus benchmark extras
-        safe_builtins = {}
-        safe_builtin_names = set(SAFE_BUILTINS.keys()) | {
+        typing_proxy = _create_module_proxy(typing)
+
+        # Preserve canonical safe values such as the restricted type() wrapper.
+        safe_builtins = dict(SAFE_BUILTINS)
+        benchmark_builtin_names = {
             "property",
             "staticmethod",
             "classmethod",
@@ -659,7 +905,7 @@ class BenchmarkRunner:
             "object",
         }
 
-        for name in safe_builtin_names:
+        for name in benchmark_builtin_names:
             if hasattr(builtins, name):
                 safe_builtins[name] = getattr(builtins, name)
 
@@ -688,7 +934,7 @@ class BenchmarkRunner:
                     "Relative imports are not allowed in sandboxed Python code"
                 )
             if name == "typing":
-                return typing
+                return typing_proxy
             raise RuntimeError(
                 f"Blocked operation: __import__({name!r}) is not allowed in sandboxed Python code"
             )

@@ -181,6 +181,19 @@ class TestRunErrors:
         assert isinstance(diag, Diagnostic)
         assert diag.severity == Severity.ERROR
 
+    def test_invalid_module_name_returns_configuration_diagnostic(self):
+        source = "func main() -> Int\n    return 0\nend func"
+
+        result = run(
+            source,
+            RunConfig(modules={"../../examples/fibonacci": source}),
+        )
+
+        assert result.ok is False
+        assert result.diagnostics[0].code == ErrorCode.PROJECT_RESOLUTION_ERROR
+        assert "Invalid module name" in result.diagnostics[0].message
+        assert result.timing.total_ms > 0
+
     def test_parse_error(self):
         source = "func -> end"
         result = run(source)
@@ -749,6 +762,18 @@ class TestCheck:
         result = check(source)
         assert result.ok is False
         assert len(result.diagnostics) > 0
+
+    def test_invalid_module_name_returns_configuration_diagnostic(self):
+        source = "func main() -> Int\n    return 0\nend func"
+
+        result = check(
+            source,
+            modules={"../../examples/fibonacci": source},
+        )
+
+        assert result.ok is False
+        assert result.diagnostics[0].code == ErrorCode.PROJECT_RESOLUTION_ERROR
+        assert "Invalid module name" in result.diagnostics[0].message
 
     def test_check_parse_error(self):
         source = "func {{{ end"

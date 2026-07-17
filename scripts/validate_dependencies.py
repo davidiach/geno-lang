@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence, cast
+from typing import Any, Sequence, cast
 
 try:
     import tomllib
@@ -457,18 +457,28 @@ def validate_dependabot_coverage(root: Path = ROOT) -> list[str]:
     if not path.exists():
         return [".github/dependabot.yml: missing dependency automation config"]
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    updates = data.get("updates", [])
-    has_vscode_npm = any(
+    raw_updates = data.get("updates", [])
+    updates = [update for update in raw_updates if isinstance(update, dict)]
+    errors: list[str] = []
+    if not any(
         update.get("package-ecosystem") == "npm"
         and str(update.get("directory", "")).strip("/") == "vscode-geno"
         for update in updates
-    )
-    if has_vscode_npm:
-        return []
-    return [
-        ".github/dependabot.yml: missing npm update entry for /vscode-geno "
-        "to keep vscode-geno/package-lock.json fresh"
-    ]
+    ):
+        errors.append(
+            ".github/dependabot.yml: missing npm update entry for /vscode-geno "
+            "to keep vscode-geno/package-lock.json fresh"
+        )
+    if not any(
+        update.get("package-ecosystem") == "docker"
+        and str(update.get("directory", "")).strip("/") == ""
+        for update in updates
+    ):
+        errors.append(
+            ".github/dependabot.yml: missing Docker update entry for / "
+            "to keep digest-pinned base images fresh"
+        )
+    return errors
 
 
 def _step_runs_strict_twine_check(step: dict[str, Any]) -> bool:
@@ -476,36 +486,406 @@ def _step_runs_strict_twine_check(step: dict[str, Any]) -> bool:
     return "twine check" in run and "--strict" in run and "dist/" in run
 
 
+def _step_uses_action(step: dict[str, Any], action: str) -> bool:
+    uses = str(step.get("uses", ""))
+    return uses.partition("@")[0] == action
+
+
+def _step_uses_pinned_action(step: dict[str, Any], action: str) -> bool:
+    uses = str(step.get("uses", ""))
+    name, separator, ref = uses.partition("@")
+    return (
+        name == action
+        and separator == "@"
+        and len(ref) == 40
+        and all(char in "0123456789abcdefABCDEF" for char in ref)
+    )
+
+
 def _step_publishes_to_pypi(step: dict[str, Any]) -> bool:
-    return "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
+    return _step_uses_action(step, "pypa/gh-action-pypi-publish")
+
+
+def _job_needs(job: dict[str, Any]) -> tuple[str, ...]:
+    needs = job.get("needs", ())
+    if isinstance(needs, str):
+        return (needs,)
+    if isinstance(needs, list):
+        return tuple(str(item) for item in needs)
+    return ()
+
+
+def _permissions_grant_oidc_write(permissions: Any) -> bool:
+    return permissions == "write-all" or (
+        isinstance(permissions, dict) and permissions.get("id-token") == "write"
+    )
+
+
+def _job_has_oidc_write(job: dict[str, Any]) -> bool:
+    return _permissions_grant_oidc_write(job.get("permissions", {}))
+
+
+def _job_environment_name(job: dict[str, Any]) -> str:
+    environment = job.get("environment", "")
+    if isinstance(environment, dict):
+        environment = environment.get("name", "")
+    return str(environment)
+
+
+def _step_installs_release_lock(step: dict[str, Any]) -> bool:
+    run = str(step.get("run", ""))
+    return (
+        "pip install" in run
+        and "--require-hashes" in run
+        and "-r requirements-release.lock" in run
+    )
+
+
+def _step_runs_release_gate(step: dict[str, Any]) -> bool:
+    return "make release-check" in str(step.get("run", ""))
+
+
+def _step_installs_dev_lock(step: dict[str, Any]) -> bool:
+    run = str(step.get("run", ""))
+    return (
+        "pip install" in run
+        and "--require-hashes" in run
+        and "-r requirements-dev.lock" in run
+    )
+
+
+def _step_installs_project_without_dependencies(step: dict[str, Any]) -> bool:
+    run = str(step.get("run", ""))
+    return (
+        "pip install" in run
+        and "--no-deps" in run
+        and "--no-build-isolation" in run
+        and "-e ." in run
+    )
+
+
+def _unsafe_release_gate_install_lines(step: dict[str, Any]) -> tuple[str, ...]:
+    unsafe: list[str] = []
+    for raw_line in str(step.get("run", "")).splitlines():
+        line = " ".join(raw_line.split())
+        if "pip install" not in line:
+            continue
+        dev_lock = "--require-hashes" in line and "-r requirements-dev.lock" in line
+        release_lock = (
+            "--require-hashes" in line and "-r requirements-release.lock" in line
+        )
+        project = "--no-deps" in line and "--no-build-isolation" in line and "-e ." in line
+        if not (dev_lock or release_lock or project):
+            unsafe.append(line)
+    return tuple(unsafe)
+
+
+def _step_builds_without_isolation(step: dict[str, Any]) -> bool:
+    run = str(step.get("run", ""))
+    return "python -m build" in run and "--no-isolation" in run
+
+
+def _artifact_options(step: dict[str, Any]) -> dict[str, Any]:
+    options = step.get("with", {})
+    return options if isinstance(options, dict) else {}
+
+
+def _artifact_name(step: dict[str, Any]) -> str:
+    return str(_artifact_options(step).get("name", ""))
+
+
+def _artifact_path(step: dict[str, Any]) -> str:
+    return str(_artifact_options(step).get("path", ""))
+
+
+def _artifact_provenance_overrides(step: dict[str, Any]) -> tuple[str, ...]:
+    options = _artifact_options(step)
+    forbidden = ("github-token", "repository", "run-id")
+    return tuple(name for name in forbidden if name in options)
+
+
+def _validate_release_lock(root: Path) -> list[str]:
+    lock_path = root / "requirements-release.lock"
+    if not lock_path.exists():
+        return ["requirements-release.lock: missing hash-locked release dependencies"]
+
+    errors = _validate_lockfile_hashes(root, lock_path)
+    requirements = _load_requirements_file(root, lock_path)
+    release_tools = ("build", "setuptools", "twine", "wheel")
+    for package in release_tools:
+        parsed = requirements.get(package)
+        specs = list(parsed.requirement.specifier) if parsed is not None else []
+        if (
+            parsed is None
+            or len(specs) != 1
+            or specs[0].operator != "=="
+            or specs[0].version.endswith(".*")
+        ):
+            errors.append(
+                "requirements-release.lock: release tool "
+                f"{package!r} must have one exact pin"
+            )
+
+    input_path = root / "requirements-release.in"
+    if not input_path.exists():
+        errors.append(
+            "requirements-release.in: missing direct release-tool requirements"
+        )
+        return errors
+
+    direct_requirements = _load_requirements_file(root, input_path)
+    for package in release_tools:
+        if package not in direct_requirements:
+            errors.append(
+                "requirements-release.in: release tool "
+                f"{package!r} must be directly pinned"
+            )
+
+    for name, direct in direct_requirements.items():
+        direct_specs = list(direct.requirement.specifier)
+        if (
+            len(direct_specs) != 1
+            or direct_specs[0].operator != "=="
+            or direct_specs[0].version.endswith(".*")
+        ):
+            errors.append(
+                f"{direct.source}: direct release dependency {name!r} "
+                "must have one exact pin"
+            )
+            continue
+
+        locked = requirements.get(name)
+        if locked is None:
+            errors.append(
+                f"requirements-release.lock: missing direct release dependency {name!r}"
+            )
+            continue
+        if _normalize_specifier(locked.requirement.specifier) != _normalize_specifier(
+            direct.requirement.specifier
+        ) or _normalize_marker(locked.requirement) != _normalize_marker(
+            direct.requirement
+        ):
+            errors.append(
+                f"requirements-release.lock: direct pin drift for {name!r}: "
+                f"requirements-release.in has {_constraint_text(direct.requirement)!r}, "
+                f"lock has {_constraint_text(locked.requirement)!r}"
+            )
+    return errors
 
 
 def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
-    """Return errors when PyPI publish lacks a strict metadata check first."""
+    """Return errors when the PyPI OIDC boundary or artifact gate is unsafe."""
+    errors = _validate_release_lock(root)
     path = root / ".github" / "workflows" / "publish.yml"
     if not path.exists():
-        return [".github/workflows/publish.yml: missing PyPI publish workflow"]
+        return [*errors, ".github/workflows/publish.yml: missing PyPI publish workflow"]
 
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if _permissions_grant_oidc_write(data.get("permissions", {})):
+        errors.append(
+            ".github/workflows/publish.yml: workflow-level permissions must not "
+            "grant id-token: write or write-all"
+        )
     jobs = data.get("jobs", {})
-    publish_jobs = 0
-    errors: list[str] = []
-    for job_name, job in jobs.items():
-        steps = job.get("steps", []) if isinstance(job, dict) else []
-        for index, step in enumerate(steps):
-            if not isinstance(step, dict) or not _step_publishes_to_pypi(step):
+    if not isinstance(jobs, dict):
+        return [*errors, ".github/workflows/publish.yml: jobs must be a mapping"]
+
+    release_gate_jobs: set[str] = set()
+    for job_name, raw_job in jobs.items():
+        if not isinstance(raw_job, dict):
+            continue
+        steps = [step for step in raw_job.get("steps", []) if isinstance(step, dict)]
+        for gate_index, gate_step in enumerate(steps):
+            if not _step_runs_release_gate(gate_step):
                 continue
-            publish_jobs += 1
-            prior_steps = [s for s in steps[:index] if isinstance(s, dict)]
-            if not any(_step_runs_strict_twine_check(s) for s in prior_steps):
+            release_gate_jobs.add(str(job_name))
+            prior_steps = steps[:gate_index]
+            if not any(_step_installs_dev_lock(step) for step in prior_steps):
                 errors.append(
-                    ".github/workflows/publish.yml: job "
-                    f"{job_name!r} publishes to PyPI before running "
-                    "`twine check --strict` on dist artifacts"
+                    ".github/workflows/publish.yml: release-check dependencies must "
+                    "be installed from requirements-dev.lock with --require-hashes"
                 )
+            if not any(_step_installs_release_lock(step) for step in prior_steps):
+                errors.append(
+                    ".github/workflows/publish.yml: release-check build dependencies "
+                    "must be installed from requirements-release.lock with "
+                    "--require-hashes"
+                )
+            if not any(
+                _step_installs_project_without_dependencies(step)
+                for step in prior_steps
+            ):
+                errors.append(
+                    ".github/workflows/publish.yml: release-check must install the "
+                    "project editable with --no-deps and --no-build-isolation"
+                )
+            unsafe_installs = tuple(
+                line
+                for step in prior_steps
+                for line in _unsafe_release_gate_install_lines(step)
+            )
+            if unsafe_installs:
+                errors.append(
+                    ".github/workflows/publish.yml: release-check has unhashed dependency "
+                    "install commands: " + "; ".join(unsafe_installs)
+                )
+    if not release_gate_jobs:
+        errors.append(
+            ".github/workflows/publish.yml: missing required release-check gate"
+        )
+
+    publish_jobs = 0
+    for job_name, raw_job in jobs.items():
+        if not isinstance(raw_job, dict):
+            continue
+        job = raw_job
+        steps = [step for step in job.get("steps", []) if isinstance(step, dict)]
+        publish_indexes = [
+            index for index, step in enumerate(steps) if _step_publishes_to_pypi(step)
+        ]
+        if not publish_indexes:
+            if _job_has_oidc_write(job):
+                errors.append(
+                    ".github/workflows/publish.yml: only the PyPI publish job "
+                    f"may receive id-token: write (found on {job_name!r})"
+                )
+            continue
+
+        publish_jobs += len(publish_indexes)
+        permissions = job.get("permissions", {})
+        if not (
+            isinstance(permissions, dict) and permissions.get("id-token") == "write"
+        ):
+            errors.append(
+                f".github/workflows/publish.yml: publish job {job_name!r} "
+                "must receive an explicit id-token: write permission"
+            )
+        elif any(
+            value == "write" and name != "id-token"
+            for name, value in permissions.items()
+        ):
+            errors.append(
+                f".github/workflows/publish.yml: publish job {job_name!r} "
+                "must not receive additional write permissions"
+            )
+        if _job_environment_name(job) != "pypi":
+            errors.append(
+                f".github/workflows/publish.yml: publish job {job_name!r} "
+                "must use the protected 'pypi' environment"
+            )
+        if any("run" in step for step in steps):
+            errors.append(
+                f".github/workflows/publish.yml: OIDC publish job {job_name!r} "
+                "must not execute run steps"
+            )
+        if len(steps) != 2 or not all(
+            _step_uses_action(step, "actions/download-artifact")
+            or _step_publishes_to_pypi(step)
+            for step in steps
+        ):
+            errors.append(
+                f".github/workflows/publish.yml: OIDC publish job {job_name!r} "
+                "must contain only artifact download and PyPI publish actions"
+            )
+
+        for publish_index in publish_indexes:
+            publish_step = steps[publish_index]
+            if not _step_uses_pinned_action(
+                publish_step, "pypa/gh-action-pypi-publish"
+            ):
+                errors.append(
+                    ".github/workflows/publish.yml: PyPI publish action must be "
+                    "pinned to a full commit SHA"
+                )
+            pinned_downloads = [
+                step
+                for step in steps[:publish_index]
+                if _step_uses_pinned_action(step, "actions/download-artifact")
+            ]
+            for download in pinned_downloads:
+                overrides = _artifact_provenance_overrides(download)
+                if overrides:
+                    errors.append(
+                        ".github/workflows/publish.yml: artifact download must use "
+                        "same-run provenance; forbidden options: "
+                        + ", ".join(overrides)
+                    )
+            prior_downloads = [
+                step
+                for step in pinned_downloads
+                if not _artifact_provenance_overrides(step)
+                and _artifact_name(step)
+                and _artifact_path(step)
+            ]
+            if not prior_downloads:
+                errors.append(
+                    f".github/workflows/publish.yml: publish job {job_name!r} "
+                    "must download tested artifacts by name to an explicit path "
+                    "with a commit-pinned action"
+                )
+                continue
+
+            dependencies = _job_needs(job)
+            build_jobs = [
+                (name, jobs[name])
+                for name in dependencies
+                if name in jobs and isinstance(jobs[name], dict)
+            ]
+            download_artifacts = {
+                (_artifact_name(step), _artifact_path(step)) for step in prior_downloads
+            }
+            artifact_gate_found = False
+            for _build_job_name, build_job in build_jobs:
+                build_steps = [
+                    step
+                    for step in build_job.get("steps", [])
+                    if isinstance(step, dict)
+                ]
+                upload_indexes = [
+                    index
+                    for index, step in enumerate(build_steps)
+                    if _step_uses_pinned_action(step, "actions/upload-artifact")
+                    and (_artifact_name(step), _artifact_path(step))
+                    in download_artifacts
+                ]
+                for upload_index in upload_indexes:
+                    prior_build_steps = build_steps[:upload_index]
+                    if (
+                        any(
+                            _step_runs_strict_twine_check(step)
+                            for step in prior_build_steps
+                        )
+                        and any(
+                            _step_installs_release_lock(step)
+                            for step in prior_build_steps
+                        )
+                        and any(
+                            _step_builds_without_isolation(step)
+                            for step in prior_build_steps
+                        )
+                        and bool(release_gate_jobs.intersection(_job_needs(build_job)))
+                    ):
+                        artifact_gate_found = True
+                        break
+                if artifact_gate_found:
+                    break
+            if not artifact_gate_found:
+                errors.append(
+                    ".github/workflows/publish.yml: publish job must depend "
+                    "directly on a build job that hash-installs "
+                    "requirements-release.lock, builds with `--no-isolation`, "
+                    "depends on the hash-locked release-check gate, "
+                    "runs `twine check --strict`, and uploads the same artifact "
+                    "with a commit-pinned action"
+                )
+
     if publish_jobs == 0:
         errors.append(
             ".github/workflows/publish.yml: no pypa/gh-action-pypi-publish step found"
+        )
+    elif publish_jobs != 1:
+        errors.append(
+            ".github/workflows/publish.yml: exactly one PyPI publish step is required"
         )
     return errors
 
@@ -533,15 +913,25 @@ def _run(command: Sequence[str], root: Path) -> int:
 
 
 def check_python_lock_installs(root: Path = ROOT) -> list[str]:
-    """Install hash locks in a throwaway venv and return errors."""
-    with tempfile.TemporaryDirectory(prefix="geno-dependency-lock-") as raw_tmp:
-        venv = Path(raw_tmp) / "venv"
-        create_code = _run((sys.executable, "-m", "venv", str(venv)), root)
-        if create_code != 0:
-            return ["python lock install check: failed to create temporary venv"]
-        python = _venv_python(venv)
-        errors: list[str] = []
-        for lockfile in ("requirements.lock", "requirements-dev.lock"):
+    """Install each applicable hash lock in its own throwaway virtualenv."""
+    lockfiles = ["requirements.lock", "requirements-dev.lock"]
+    if sys.platform.startswith("linux"):
+        # requirements-release.lock is generated for the Linux/Python 3.11
+        # publishing environment. Static pin/hash validation still runs on
+        # every platform.
+        lockfiles.append("requirements-release.lock")
+
+    errors: list[str] = []
+    for lockfile in lockfiles:
+        with tempfile.TemporaryDirectory(prefix="geno-dependency-lock-") as raw_tmp:
+            venv = Path(raw_tmp) / "venv"
+            create_code = _run((sys.executable, "-m", "venv", str(venv)), root)
+            if create_code != 0:
+                errors.append(
+                    f"{lockfile}: failed to create isolated temporary virtualenv"
+                )
+                continue
+            python = _venv_python(venv)
             code = _run(
                 (
                     str(python),
@@ -558,7 +948,7 @@ def check_python_lock_installs(root: Path = ROOT) -> list[str]:
                 errors.append(
                     f"{lockfile}: lockfile install failed with exit code {code}"
                 )
-        return errors
+    return errors
 
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:

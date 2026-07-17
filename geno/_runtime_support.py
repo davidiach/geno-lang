@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from dataclasses import fields as _dataclasses_fields
 from dataclasses import replace as _dataclasses_replace  # noqa: F401
 from functools import cmp_to_key
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, cast
 from typing import Optional as Optional
 from typing import Union as Union
 
@@ -2052,7 +2052,196 @@ def clock_elapsed(start: float, end_time: float) -> float:
 
 _MAX_REGEX_PATTERN_LEN = 1000
 _MAX_REGEX_TEXT_LEN = 10_000
-_BACKREF_RE = _re.compile(r"\\[1-9]")
+_MAX_REGEX_REPEAT = _MAX_REGEX_TEXT_LEN
+_MAX_REGEX_GROUP_DEPTH = 128
+_BACKREF_RE = _re.compile(r"\\[1-9]|\(\?P=[A-Za-z_][A-Za-z0-9_]*\)")
+
+_PORTABLE_REGEX_LITERAL_ESCAPES = frozenset(r"\.^$|?*+()[]{}")
+_PORTABLE_REGEX_CLASS_ESCAPES = frozenset(r"\^-]")
+
+
+def _is_ascii_regex_digit(character: str) -> bool:
+    return "0" <= character <= "9"
+
+
+def _regex_group_depth_exceeds_limit(pattern: str) -> bool:
+    depth = 0
+    in_class = False
+    i = 0
+    while i < len(pattern):
+        character = pattern[i]
+        if character == "\\":
+            i += 2
+            continue
+        if character == "[" and not in_class:
+            in_class = True
+        elif character == "]" and in_class:
+            in_class = False
+        elif not in_class and character == "(":
+            depth += 1
+            if depth > _MAX_REGEX_GROUP_DEPTH:
+                return True
+        elif not in_class and character == ")" and depth:
+            depth -= 1
+        i += 1
+    return False
+
+
+def _portable_regex_quantifier_end(pattern: str, start: int) -> int | None:
+    i = start + 1
+    lower_start = i
+    while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
+        i += 1
+    if i == lower_start:
+        return None
+    lower = int(pattern[lower_start:i])
+    upper: int | None = lower
+    if i < len(pattern) and pattern[i] == ",":
+        i += 1
+        upper_start = i
+        while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
+            i += 1
+        upper = int(pattern[upper_start:i]) if i > upper_start else None
+    if i >= len(pattern) or pattern[i] != "}":
+        return None
+    if lower > _MAX_REGEX_REPEAT or (
+        upper is not None and (upper > _MAX_REGEX_REPEAT or lower > upper)
+    ):
+        return None
+    end = i + 1
+    if end < len(pattern) and pattern[end] == "?":
+        end += 1
+    return end
+
+
+def _has_unsupported_regex_construct(pattern: str) -> bool:
+    i = 0
+    in_class = False
+    has_alternation = False
+    has_quantifier = False
+    has_start_anchor = False
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            if i + 1 >= len(pattern):
+                return True
+            escaped = pattern[i + 1]
+            allowed = (
+                _PORTABLE_REGEX_CLASS_ESCAPES
+                if in_class
+                else _PORTABLE_REGEX_LITERAL_ESCAPES
+            )
+            if escaped not in allowed:
+                return True
+            i += 2
+            continue
+        if ch == "[" and not in_class:
+            member = i + 1
+            if member < len(pattern) and pattern[member] == "^":
+                member += 1
+            if member < len(pattern) and pattern[member] == "]":
+                return True
+            in_class = True
+            i += 1
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            i += 1
+            continue
+        if not in_class and ch == "$":
+            return True
+        if not in_class and ch == "^":
+            has_start_anchor = True
+        if not in_class and ch == "|":
+            if i == 0 or i + 1 == len(pattern):
+                return True
+            if pattern[i - 1] in "(|" or pattern[i + 1] in ")|":
+                return True
+            has_alternation = True
+        if not in_class and ch == "{":
+            end = _portable_regex_quantifier_end(pattern, i)
+            if end is None:
+                return True
+            has_quantifier = True
+            i = end
+            continue
+        if not in_class and ch == "}":
+            return True
+        if ch == "." and not in_class:
+            return True
+        if ch == "(" and not in_class:
+            if i + 1 < len(pattern) and pattern[i + 1] in ("?", ")"):
+                return True
+        if not in_class and ch in ("*", "+", "?"):
+            has_quantifier = True
+            if i + 1 < len(pattern) and pattern[i + 1] == "+":
+                return True
+        i += 1
+    return in_class or (has_alternation and (has_quantifier or has_start_anchor))
+
+
+def _count_variable_regex_quantifiers(pattern: str) -> int:
+    count = 0
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            class_end = _regex_char_class_end(pattern, i)
+            if class_end is None:
+                return count
+            i = class_end + 1
+            continue
+        if ch in ("*", "+", "?"):
+            count += 1
+            i += 1
+            if i < len(pattern) and pattern[i] == "?":
+                i += 1
+            continue
+        if ch == "{" and i + 1 < len(pattern) and _is_ascii_regex_digit(pattern[i + 1]):
+            end = i + 2
+            while end < len(pattern) and _is_ascii_regex_digit(pattern[end]):
+                end += 1
+            if end < len(pattern) and pattern[end] == ",":
+                end += 1
+                while end < len(pattern) and _is_ascii_regex_digit(pattern[end]):
+                    end += 1
+                if end < len(pattern) and pattern[end] == "}":
+                    count += 1
+                    i = end + 1
+                    if i < len(pattern) and pattern[i] == "?":
+                        i += 1
+                    continue
+        i += 1
+    return count
+
+
+def _count_regex_alternation_sites(pattern: str) -> int:
+    sites: set[int] = set()
+    stack = [0]
+    next_group = 1
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "[":
+            class_end = _regex_char_class_end(pattern, i)
+            if class_end is None:
+                return len(sites)
+            i = class_end + 1
+            continue
+        if pattern[i] == "(":
+            stack.append(next_group)
+            next_group += 1
+        elif pattern[i] == ")" and len(stack) > 1:
+            stack.pop()
+        elif pattern[i] == "|":
+            sites.add(stack[-1])
+        i += 1
+    return len(sites)
 
 
 def _has_nested_quantifier(pattern: str) -> bool:
@@ -2066,7 +2255,7 @@ def _has_nested_quantifier(pattern: str) -> bool:
             j = i + 1
             while j < n and pattern[j] in (" ", "\t"):
                 j += 1
-            if j < n and pattern[j] in ("+", "*", "{"):
+            if j < n and pattern[j] in ("+", "*", "?", "{"):
                 depth = 1
                 k = i - 1
                 while k >= 0 and depth > 0:
@@ -2085,7 +2274,11 @@ def _has_nested_quantifier(pattern: str) -> bool:
                         return True
                     if pattern[m] == "?" and m > group_start and pattern[m - 1] != "(":
                         return True
-                    if pattern[m] == "{" and m + 1 < i and pattern[m + 1].isdigit():
+                    if (
+                        pattern[m] == "{"
+                        and m + 1 < i
+                        and _is_ascii_regex_digit(pattern[m + 1])
+                    ):
                         return True
                     m += 1
         i += 1
@@ -2155,7 +2348,11 @@ def _has_overlapping_alternation(pattern: str) -> bool:
         quant_idx = j + 1
         while quant_idx < n and pattern[quant_idx] in (" ", "\t"):
             quant_idx += 1
-        if has_alternation and quant_idx < n and pattern[quant_idx] in ("+", "*", "{"):
+        if (
+            has_alternation
+            and quant_idx < n
+            and pattern[quant_idx] in ("+", "*", "?", "{")
+        ):
             return True
 
         # Continue inside this group so a quantified nested group is checked even
@@ -2200,31 +2397,40 @@ def _regex_group_end(pattern: str, start: int) -> int | None:
     return None
 
 
-def _regex_quantifier_end(pattern: str, start: int) -> tuple[int, bool] | None:
+def _regex_quantifier_end(
+    pattern: str, start: int
+) -> tuple[int, bool, bool, bool] | None:
     if start >= len(pattern):
         return None
-    if pattern[start] in ("*", "+"):
+    if pattern[start] in ("*", "+", "?"):
+        marker = pattern[start]
         end = start + 1
         if end < len(pattern) and pattern[end] == "?":
             end += 1
-        return end, True
+        return end, True, True, marker == "+"
     if pattern[start] != "{" or start + 1 >= len(pattern):
         return None
 
     i = start + 1
-    while i < len(pattern) and pattern[i].isdigit():
+    while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
         i += 1
     has_comma = i < len(pattern) and pattern[i] == ","
+    minimum_text = pattern[start + 1 : i].lstrip("0")
+    maximum_text = minimum_text
     if has_comma:
         i += 1
-        while i < len(pattern) and pattern[i].isdigit():
+        maximum_start = i
+        while i < len(pattern) and _is_ascii_regex_digit(pattern[i]):
             i += 1
+        maximum_text = pattern[maximum_start:i].lstrip("0")
     if i >= len(pattern) or pattern[i] != "}":
         return None
     end = i + 1
     if end < len(pattern) and pattern[end] == "?":
         end += 1
-    return end, has_comma
+    required = minimum_text not in ("", "0")
+    can_consume = required or (has_comma and maximum_text != "0")
+    return end, has_comma, can_consume, required
 
 
 def _regex_char_class_key(pattern: str, start: int, end: int) -> tuple[str, str]:
@@ -2234,6 +2440,16 @@ def _regex_char_class_key(pattern: str, start: int, end: int) -> tuple[str, str]
     if len(content) == 2 and content[0] == "\\":
         return ("literal", content[1])
     return ("class", content)
+
+
+def _regex_quantified_atoms_overlap(
+    left: tuple[str, str], right: tuple[str, str]
+) -> bool:
+    if left == right:
+        return True
+    if left == ("literal", ".") or right == ("literal", "."):
+        return True
+    return left[0] != "literal" or right[0] != "literal"
 
 
 def _has_sequential_quantified_atoms(pattern: str) -> bool:
@@ -2273,17 +2489,22 @@ def _has_sequential_quantified_atoms(pattern: str) -> bool:
 
         quantifier = _regex_quantifier_end(pattern, atom_end)
         if quantifier is None:
-            previous_key = None
-            i = atom_end
-            continue
-
-        quantifier_end, is_ambiguous = quantifier
-        if is_ambiguous:
-            if previous_key == key:
-                return True
-            previous_key = key
+            quantifier_end = atom_end
+            is_ambiguous = False
+            can_consume = True
+            required = True
         else:
+            quantifier_end, is_ambiguous, can_consume, required = quantifier
+        if (
+            previous_key is not None
+            and can_consume
+            and _regex_quantified_atoms_overlap(previous_key, key)
+        ):
+            return True
+        if previous_key is not None and required:
             previous_key = None
+        if is_ambiguous and can_consume:
+            previous_key = key
         i = quantifier_end
 
     return False
@@ -2298,6 +2519,10 @@ def _validate_regex_pattern(pattern: str, func_name: str) -> None:
         )
     if _BACKREF_RE.search(pattern):
         raise RuntimeError(f"{func_name}: backreferences are not supported for safety")
+    if _regex_group_depth_exceeds_limit(pattern):
+        raise RuntimeError(
+            f"{func_name}: group nesting too deep (max {_MAX_REGEX_GROUP_DEPTH})"
+        )
     if _has_nested_quantifier(pattern):
         raise RuntimeError(
             f"{func_name}: nested quantifiers are not supported for safety"
@@ -2309,6 +2534,19 @@ def _validate_regex_pattern(pattern: str, func_name: str) -> None:
     if _has_sequential_quantified_atoms(pattern):
         raise RuntimeError(
             f"{func_name}: adjacent repeated atoms are not supported for safety"
+        )
+    if _count_variable_regex_quantifiers(pattern) > 1:
+        raise RuntimeError(
+            f"{func_name}: multiple variable quantifiers are not supported for safety"
+        )
+    if _count_regex_alternation_sites(pattern) > 1:
+        raise RuntimeError(
+            f"{func_name}: multiple alternation sites are not supported for safety"
+        )
+    if _has_unsupported_regex_construct(pattern):
+        raise RuntimeError(
+            f"{func_name}: advanced or encoded regex constructs are not supported "
+            "for safety"
         )
 
 
@@ -2328,7 +2566,7 @@ def regex_match(pattern: str, text: str):
     _validate_regex_text(text, "regex_match")
     try:
         m = _re.search(pattern, text)
-    except _re.error as e:
+    except (_re.error, OverflowError) as e:
         raise RuntimeError(f"regex_match: invalid pattern: {e}")
     if m is None:
         return None_
@@ -2348,8 +2586,77 @@ def regex_find_all(pattern: str, text: str) -> list:
             _check_collection_kind("List", len(result) + 1)
             result.append(value)
         return result
-    except _re.error as e:
+    except (_re.error, OverflowError) as e:
         raise RuntimeError(f"regex_find_all: invalid pattern: {e}")
+
+
+def _expand_regex_replacement(
+    replacement: str, match: Any, total_before: int
+) -> tuple[str, int]:
+    pieces: list[str] = []
+    literal: list[str] = []
+    added = 0
+
+    def flush_literal() -> None:
+        nonlocal added
+        if not literal:
+            return
+        value = "".join(literal)
+        _check_string_result_size("regex_replace", total_before + added + len(value))
+        pieces.append(value)
+        added += len(value)
+        literal.clear()
+
+    i = 0
+    while i < len(replacement):
+        if (
+            replacement[i] == "\\"
+            and i + 1 < len(replacement)
+            and replacement[i + 1] in "123456789"
+        ):
+            flush_literal()
+            end = i + 2
+            while end < len(replacement) and _is_ascii_regex_digit(replacement[end]):
+                end += 1
+            group_index = int(replacement[i + 1 : end])
+            try:
+                value = match.group(group_index) or ""
+            except IndexError as exc:
+                raise RuntimeError(
+                    "regex_replace: invalid replacement group reference"
+                ) from exc
+            _check_string_result_size(
+                "regex_replace", total_before + added + len(value)
+            )
+            pieces.append(value)
+            added += len(value)
+            i = end
+            continue
+        literal.append(replacement[i])
+        i += 1
+    flush_literal()
+    return "".join(pieces), added
+
+
+def _bounded_regex_replace(pattern: str, replacement: str, text: str) -> str:
+    compiled = _re.compile(pattern)
+    pieces: list[str] = []
+    total = 0
+    last_end = 0
+    for match in compiled.finditer(text):
+        prefix_size = match.start() - last_end
+        _check_string_result_size("regex_replace", total + prefix_size)
+        expanded, expanded_size = _expand_regex_replacement(
+            replacement, match, total + prefix_size
+        )
+        total += prefix_size + expanded_size
+        pieces.append(text[last_end : match.start()])
+        pieces.append(expanded)
+        last_end = match.end()
+    tail_size = len(text) - last_end
+    _check_string_result_size("regex_replace", total + tail_size)
+    pieces.append(text[last_end:])
+    return "".join(pieces)
 
 
 def regex_replace(pattern: str, replacement: str, text: str) -> str:
@@ -2359,10 +2666,8 @@ def regex_replace(pattern: str, replacement: str, text: str) -> str:
     _validate_regex_text(replacement, "regex_replace", "replacement")
     _validate_regex_text(text, "regex_replace")
     try:
-        result = _re.sub(pattern, replacement, text)
-        _check_string_result_size("regex_replace", len(result))
-        return result
-    except _re.error as e:
+        return _bounded_regex_replace(pattern, replacement, text)
+    except (_re.error, OverflowError) as e:
         raise RuntimeError(f"regex_replace: invalid pattern: {e}")
 
 
@@ -3068,6 +3373,73 @@ def http_respond(status, headers, body):
 _HTTP_HEADER_NAME_RE = _re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
+_HTTP_LISTEN_REQUEST_DEADLINE_SECONDS = 30.0
+_HTTP_LISTEN_MAX_BODY_BYTES = 1_048_576
+_HTTP_FORBIDDEN_RESPONSE_HEADERS = frozenset(
+    {
+        "connection",
+        "content-length",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+
+def _http_request_header_values(headers: Any, name: str) -> tuple[str, ...]:
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        return tuple(get_all(name) or ())
+    items = getattr(headers, "items", None)
+    if callable(items):
+        normalized = name.casefold()
+        return tuple(
+            value
+            for key, value in items()
+            if isinstance(key, str) and key.casefold() == normalized
+        )
+    value = headers.get(name)
+    return () if value is None else (value,)
+
+
+def _validated_http_request_content_length(headers: Any) -> int:
+    if _http_request_header_values(headers, "Transfer-Encoding"):
+        raise ValueError("Transfer-Encoding is not supported")
+    values = _http_request_header_values(headers, "Content-Length")
+    if not values:
+        return 0
+    if len(values) != 1 or "," in values[0]:
+        raise ValueError("Ambiguous Content-Length header")
+    raw = values[0]
+    if raw.startswith("-"):
+        raise ValueError("Invalid Content-Length: must not be negative")
+    if raw != "0" and (
+        not raw
+        or raw[0] not in "123456789"
+        or any(character not in "0123456789" for character in raw[1:])
+    ):
+        raise ValueError("Invalid Content-Length header")
+    limit_text = str(_HTTP_LISTEN_MAX_BODY_BYTES)
+    if len(raw) > len(limit_text) or (len(raw) == len(limit_text) and raw > limit_text):
+        raise OverflowError("Request body too large")
+    length = int(raw)
+    if length > _HTTP_LISTEN_MAX_BODY_BYTES:  # defensive if the limit changes
+        raise OverflowError("Request body too large")
+    return length
+
+
+def _read_exact_http_request_body(reader: Any, length: int) -> bytes:
+    body = reader.read(length)
+    if not isinstance(body, bytes):
+        raise ValueError("Invalid request body stream")
+    if len(body) != length:
+        raise ValueError("Incomplete request body")
+    return body
+
+
 def _validate_http_response_headers(headers: Any) -> list:
     """Reject header names/values that could inject extra response headers.
 
@@ -3085,10 +3457,32 @@ def _validate_http_response_headers(headers: Any) -> list:
             raise RuntimeError("Invalid response header entry") from exc
         if not isinstance(name, str) or not _HTTP_HEADER_NAME_RE.fullmatch(name):
             raise RuntimeError(f"Invalid response header name: {name!r}")
-        if not isinstance(value, str) or "\r" in value or "\n" in value:
+        if not isinstance(value, str) or any(
+            (ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value
+        ):
             raise RuntimeError(f"Invalid response header value for {name!r}")
+        try:
+            value.encode("latin-1", errors="strict")
+        except UnicodeEncodeError as exc:
+            raise RuntimeError(f"Invalid response header value for {name!r}") from exc
+        if name.casefold() in _HTTP_FORBIDDEN_RESPONSE_HEADERS:
+            raise RuntimeError(f"Response header is managed by the server: {name!r}")
         validated.append((name, value))
     return validated
+
+
+def _validate_http_response_status(status: Any, response_body: bytes) -> bool:
+    """Validate final response status and return whether it forbids a body."""
+    if (
+        not isinstance(status, int)
+        or isinstance(status, bool)
+        or not 200 <= status <= 599
+    ):
+        raise RuntimeError("Invalid response status")
+    bodyless = status in {204, 205, 304}
+    if bodyless and response_body:
+        raise RuntimeError(f"HTTP status {status} must not include a response body")
+    return bodyless
 
 
 def http_route(method, path, handler):
@@ -3101,7 +3495,9 @@ def http_route(method, path, handler):
 
 def http_listen(port):
     _require_cap("serve", "http_listen")
+    import socket
     import sys
+    import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     def _plain(handler: Any, status: int, body: str) -> None:
@@ -3109,6 +3505,8 @@ def http_listen(port):
         handler.send_response(status)
         handler.send_header("Content-Type", "text/plain; charset=utf-8")
         handler.send_header("Content-Length", str(len(encoded)))
+        handler.send_header("Connection", "close")
+        handler.close_connection = True
         handler.end_headers()
         handler.wfile.write(encoded)
 
@@ -3118,26 +3516,62 @@ def http_listen(port):
         # the single-threaded server indefinitely.
         timeout = 30
 
-        def _handle(self):
-            raw = self.headers.get("Content-Length", "0")
+        def setup(self) -> None:
+            super().setup()
+            self.request.settimeout(self.timeout)
+            self._absolute_request_deadline = threading.Timer(
+                _HTTP_LISTEN_REQUEST_DEADLINE_SECONDS,
+                self._expire_request,
+            )
+            self._absolute_request_deadline.daemon = True
+            self._absolute_request_deadline.start()
+
+        def _expire_request(self) -> None:
             try:
-                content_length = int(raw)
-            except ValueError:
-                _plain(self, 400, "Invalid Content-Length header")
+                self.request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        def finish(self) -> None:
+            try:
+                super().finish()
+            finally:
+                deadline = getattr(self, "_absolute_request_deadline", None)
+                if deadline is not None:
+                    deadline.cancel()
+
+        def _handle(self):
+            host_values = self.headers.get_all("Host", failobj=[]) or []
+            bound_port = int(cast(Any, self.server).server_port)
+            allowed_hosts = {
+                f"127.0.0.1:{bound_port}",
+                f"localhost:{bound_port}",
+            }
+            if bound_port == 80:
+                allowed_hosts.update({"127.0.0.1", "localhost"})
+            if len(host_values) != 1 or host_values[0].casefold() not in allowed_hosts:
+                _plain(self, 421, "Misdirected Request")
                 return
-            if content_length < 0:
-                _plain(self, 400, "Invalid Content-Length: must not be negative")
+            try:
+                content_length = _validated_http_request_content_length(self.headers)
+            except OverflowError as exc:
+                _plain(self, 413, str(exc))
                 return
-            if content_length > 1_048_576:
-                _plain(self, 413, "Request body too large")
+            except ValueError as exc:
+                _plain(self, 400, str(exc))
                 return
             if content_length:
                 # Invalid UTF-8 in the body must be a 400, not an uncaught
                 # UnicodeDecodeError that drops the connection.
                 try:
-                    body = self.rfile.read(content_length).decode("utf-8")
+                    body = _read_exact_http_request_body(
+                        self.rfile, content_length
+                    ).decode("utf-8")
                 except UnicodeDecodeError:
                     _plain(self, 400, "Request body must be valid UTF-8")
+                    return
+                except ValueError as exc:
+                    _plain(self, 400, str(exc))
                     return
             else:
                 body = ""
@@ -3148,6 +3582,11 @@ def http_listen(port):
             request = HttpRequest(
                 method=self.command, path=path, query=query, headers=headers, body=body
             )
+            try:
+                _check_collection_size(request)
+            except RuntimeError as exc:
+                _plain(self, 413, str(exc))
+                return
             for r_method, r_path, handler in _http_routes:
                 if r_method == self.command and r_path == path:
                     # A handler exception (or malformed response) must not drop
@@ -3156,16 +3595,11 @@ def http_listen(port):
                     try:
                         response = handler(request)
                         status = response.status
-                        # Validate the status inside the guard (parity with
-                        # _serve.py): send_response runs outside the try, so a
-                        # non-int status would otherwise drop the connection
-                        # with an uncaught traceback.
-                        if not isinstance(status, int) or isinstance(status, bool):
-                            raise RuntimeError("Invalid response status")
                         response_headers = _validate_http_response_headers(
                             response.headers
                         )
                         response_body = response.body.encode("utf-8")
+                        bodyless = _validate_http_response_status(status, response_body)
                     except Exception:
                         import traceback
 
@@ -3175,8 +3609,13 @@ def http_listen(port):
                     self.send_response(status)
                     for hk, hv in response_headers:
                         self.send_header(hk, hv)
+                    if not bodyless:
+                        self.send_header("Content-Length", str(len(response_body)))
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
                     self.end_headers()
-                    self.wfile.write(response_body)
+                    if not bodyless:
+                        self.wfile.write(response_body)
                     return
             _plain(self, 404, "Not Found")
 
@@ -3583,6 +4022,50 @@ def _validate_http_target(url: str, fn_name: str) -> None:
     )
 
 
+def _is_public_http_ipv4(address: Any) -> bool:
+    import ipaddress as _ipaddress
+
+    denied = (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+    )
+    return not any(address in _ipaddress.IPv4Network(network) for network in denied)
+
+
+def _is_public_native_http_ipv6(address: Any) -> bool:
+    import ipaddress as _ipaddress
+
+    denied = (
+        "::/128",
+        "::1/128",
+        "100::/64",
+        "5f00::/16",
+        "2001::/23",
+        "2001:20::/28",
+        "2001:30::/28",
+        "2001:db8::/32",
+        "3fff::/20",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+    )
+    return not any(address in _ipaddress.IPv6Network(network) for network in denied)
+
+
 def _validate_http_address(host: str, fn_name: str) -> None:
     if _geno_env_truthy("GENO_HTTP_ALLOW_PRIVATE"):
         return
@@ -3594,17 +4077,55 @@ def _validate_http_address(host: str, fn_name: str) -> None:
         raise RuntimeError(
             f"{fn_name}: cannot validate resolved host {host!r}"
         ) from exc
-    if (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    ):
-        raise RuntimeError(
-            f"{fn_name}: private, local, or reserved network targets are not allowed"
-        )
+
+    embedded_ipv4: list[Any] = []
+    if isinstance(address, _ipaddress.IPv6Address):
+        local_nat64 = _ipaddress.IPv6Network("64:ff9b:1::/48")
+        well_known_nat64 = _ipaddress.IPv6Network("64:ff9b::/96")
+        if address in local_nat64 or address.teredo is not None:
+            raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
+        if address.ipv4_mapped is not None:
+            embedded_ipv4.append(address.ipv4_mapped)
+        if address.packed[:12] == bytes(12):
+            embedded_ipv4.append(_ipaddress.IPv4Address(address.packed[-4:]))
+        if address.sixtofour is not None:
+            embedded_ipv4.append(address.sixtofour)
+        if address in well_known_nat64:
+            embedded_ipv4.append(_ipaddress.IPv4Address(address.packed[-4:]))
+
+    if embedded_ipv4:
+        if any(not _is_public_http_ipv4(item) for item in embedded_ipv4):
+            raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
+        return
+
+    if isinstance(address, _ipaddress.IPv4Address):
+        public = _is_public_http_ipv4(address)
+    else:
+        public = _is_public_native_http_ipv6(address)
+    if not public:
+        raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
+
+
+def _http_origin(url: str) -> tuple[str, str, int | None]:
+    from urllib.parse import urlparse as _urlparse
+
+    parsed = _urlparse(url)
+    scheme = parsed.scheme.lower()
+    default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return (
+        scheme,
+        (parsed.hostname or "").lower().rstrip("."),
+        parsed.port or default_port,
+    )
+
+
+def _strip_cross_origin_redirect_headers(
+    source_url: str, target_url: str, redirected_request: Any
+) -> None:
+    if _http_origin(source_url) == _http_origin(target_url):
+        return
+    redirected_request.headers.clear()
+    redirected_request.unredirected_hdrs.clear()
 
 
 def _resolve_validated_http_addresses(
@@ -3838,8 +4359,14 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
             headers: Any,
             newurl: str,
         ) -> Any:
-            _validate_http_scheme(urljoin(req.full_url, newurl), fn_name)
-            return super().redirect_request(req, fp, code, msg, headers, newurl)
+            target_url = urljoin(req.full_url, newurl)
+            _validate_http_scheme(target_url, fn_name)
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if redirected is not None:
+                _strip_cross_origin_redirect_headers(
+                    req.full_url, target_url, redirected
+                )
+            return redirected
 
     return build_opener(
         ProxyHandler({}),

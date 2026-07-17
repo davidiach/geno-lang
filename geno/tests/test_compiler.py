@@ -1817,6 +1817,36 @@ class TestCompilerReservedNameProtection:
         with pytest.raises(CompileError, match="reserved runtime name"):
             compile_to_python(source)
 
+    @pytest.mark.parametrize("name", ["_require_cap", "_validate_regex_pattern"])
+    def test_all_runtime_prelude_functions_are_reserved(self, name):
+        source = f"""
+        func {name}(value: String, context: String) -> Unit
+            example "x", "y" -> ()
+            return ()
+        end func
+        """
+        with pytest.raises(CompileError, match="reserved runtime name"):
+            compile_to_python(source)
+
+    def test_runtime_name_rejected_as_import_alias(self):
+        source = """
+        import Utils as Constructor
+        func main() -> Int
+            return 1
+        end func
+        """
+        with pytest.raises(CompileError, match="reserved runtime name"):
+            compile_to_python(source)
+
+    def test_runtime_name_rejected_as_trait_dispatcher(self):
+        source = """
+        trait Unsafe
+            func _require_cap(self: Self) -> Unit
+        end trait
+        """
+        with pytest.raises(CompileError, match="reserved runtime name"):
+            compile_to_python(source)
+
     def test_function_named_safe_div_rejected(self):
         """A function named _safe_div would shadow safe division."""
         source = """

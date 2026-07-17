@@ -7,8 +7,10 @@ Tests that the sandbox properly restricts dangerous operations.
 
 import importlib
 import io
+import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -813,6 +815,85 @@ class TestProcessSandbox:
         result, _output = run_in_process("__result__ = 42", config)
         assert result == 42
 
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows venv redirector topology",
+    )
+    def test_windows_worker_command_uses_base_interpreter(self):
+        """The Job must be assigned to the actual worker, not a venv shim."""
+        from pathlib import Path
+
+        from geno.sandbox import ProcessSandbox
+
+        base_executable = getattr(sys, "_base_executable", None)
+        assert isinstance(base_executable, str) and base_executable
+        command = ProcessSandbox._create_worker_command()
+        assert Path(command[0]).resolve() == Path(base_executable).resolve()
+        if sys.prefix != sys.base_prefix:
+            assert Path(command[0]).resolve() != Path(sys.executable).resolve()
+
+    def test_worker_resource_limit_failure_fails_closed(self, monkeypatch):
+        """A failed POSIX setrlimit must abort before user code executes."""
+        if sys.platform == "win32":
+            pytest.skip("Windows uses parent-installed Job Object limits")
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        needle = "resource.setrlimit(which, (soft, hard))"
+        worker_script = ProcessSandbox._WORKER_SCRIPT
+        assert worker_script.count(needle) == 1
+        monkeypatch.setattr(
+            ProcessSandbox,
+            "_WORKER_SCRIPT",
+            worker_script.replace(
+                needle,
+                "raise OSError('forced setrlimit failure')",
+                1,
+            ),
+        )
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0))
+        result, output, error = sandbox.execute("__result__ = 42")
+
+        assert result is None
+        assert output == ""
+        assert error is not None
+        assert "startup_error: failed to set RLIMIT_FSIZE" in error
+
+    def test_resource_setup_failure_kills_worker_and_fails_closed(self, monkeypatch):
+        """Parent-side resource setup errors must never run attacker code."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0))
+
+        def fail_job_setup(_process):
+            raise OSError("forced job setup failure")
+
+        monkeypatch.setattr(sandbox, "_create_windows_job", fail_job_setup)
+        with pytest.raises(SandboxError, match="resource limits"):
+            sandbox.execute("__result__ = 42")
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows Job Object enforcement",
+    )
+    def test_windows_job_enforces_memory_limit(self):
+        """Raw Python allocations must honor max_memory_bytes on Windows."""
+        from geno.sandbox import ProcessSandboxConfig, run_in_process
+
+        config = ProcessSandboxConfig(
+            timeout=5.0,
+            max_memory_bytes=64 * 1024 * 1024,
+        )
+        result, _output = run_in_process("__result__ = 42", config)
+        assert result == 42
+
+        with pytest.raises(RuntimeError):
+            run_in_process(
+                "payload = 'x' * 80_000_000\n__result__ = len(payload)",
+                config,
+            )
+
     def test_process_sandbox_forwards_max_integer_bits(self):
         """MED-04: SandboxConfig.max_integer_bits is forwarded through the
         GENO_MAX_INTEGER_BITS env var and injected into the worker as the
@@ -970,6 +1051,7 @@ class TestProcessSandbox:
 
         sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
         monkeypatch.setattr(threading, "Timer", capturing_timer)
 
         result, output, error = sandbox.execute("__result__ = 42")
@@ -977,14 +1059,17 @@ class TestProcessSandbox:
         assert result == 42
         assert output == ""
         assert error is None
-        assert captured["cmd"] == [
-            sys.executable,
-            "-c",
+        assert captured["cmd"] == sandbox._create_worker_command()
+        assert captured["cmd"][1] == "-I"
+        assert len(captured["cmd"][3]) < 256
+        assert captured["input"] == sandbox._frame_worker_input(
             sandbox._create_worker_script(),
-        ]
-        assert captured["input"] == "__result__ = 42"
+            "__result__ = 42",
+        )
+        assert captured["input"].endswith("__result__ = 42")
         assert captured["stdin_closed"] is True
-        assert captured["timeout"] == 5.0
+        assert 0.0 < captured["timeout"] <= 5.0
+        assert captured["popen_kwargs"]["start_new_session"] is (os.name == "posix")
 
     def test_process_sandbox_bounds_unstructured_stderr(self, monkeypatch):
         """Malformed worker stderr should be retained only up to a fixed bound."""
@@ -1023,6 +1108,7 @@ class TestProcessSandbox:
             )
         )
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
 
         _result, output, error = sandbox.execute("__result__ = 42")
 
@@ -1031,6 +1117,219 @@ class TestProcessSandbox:
         assert "stderr truncated by ProcessSandbox" in error
         assert error.endswith("tail")
         assert len(error) <= sandbox._stderr_capture_limit() + 80
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_late_timeout_callback_does_not_kill_exited_worker(self, monkeypatch):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        killed = False
+
+        class FakeProcess:
+            def poll(self):
+                raise AssertionError("an exited POSIX leader must not be polled")
+
+        def unexpected_kill(_process):
+            nonlocal killed
+            killed = True
+
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", unexpected_kill)
+        lifecycle_lock = threading.Lock()
+        exit_observed = threading.Event()
+        exit_observed.set()
+        timed_out = threading.Event()
+        sandbox._terminate_worker_on_timeout(
+            FakeProcess(),
+            lifecycle_lock,
+            exit_observed,
+            threading.Event(),
+            timed_out,
+            [],
+        )
+
+        assert killed is False
+        assert timed_out.is_set() is False
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_timeout_observes_exited_leader_before_marking_timeout(self, monkeypatch):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        killed = False
+
+        class FakeProcess:
+            pid = 123
+
+        monkeypatch.setattr(
+            sandbox, "_posix_worker_exit_observable", lambda _process: True
+        )
+
+        def record_kill(_process):
+            nonlocal killed
+            killed = True
+
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", record_kill)
+        exit_observed = threading.Event()
+        timed_out = threading.Event()
+        sandbox._terminate_worker_on_timeout(
+            FakeProcess(),
+            threading.Lock(),
+            exit_observed,
+            threading.Event(),
+            timed_out,
+            [],
+        )
+
+        assert killed is True
+        assert exit_observed.is_set() is True
+        assert timed_out.is_set() is False
+
+    def test_setup_interrupt_kills_and_reaps_worker(self, monkeypatch):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        real_popen = subprocess.Popen
+        processes = []
+
+        def capture_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        def interrupt_thread_start(_thread):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(subprocess, "Popen", capture_popen)
+        monkeypatch.setattr(threading.Thread, "start", interrupt_thread_start)
+
+        with pytest.raises(KeyboardInterrupt):
+            sandbox._run_worker(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                "",
+            )
+
+        assert len(processes) == 1
+        assert processes[0].returncode is not None
+        assert processes[0].stdin is not None and processes[0].stdin.closed
+        assert processes[0].stdout is not None and processes[0].stdout.closed
+        assert processes[0].stderr is not None and processes[0].stderr.closed
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_interrupted_wait_kills_worker_group(self, monkeypatch):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        real_kill = sandbox._kill_posix_process_group
+        killed = False
+
+        def interrupt_wait(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        def record_kill(process):
+            nonlocal killed
+            killed = True
+            real_kill(process)
+
+        monkeypatch.setattr(sandbox, "_wait_for_worker_tree", interrupt_wait)
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", record_kill)
+        with pytest.raises(KeyboardInterrupt):
+            sandbox._run_worker(
+                [sys.executable, "-c", "import time; time.sleep(30)"], ""
+            )
+        assert killed is True
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_worker_descendants_are_killed_after_normal_exit(self):
+        """A child inheriting worker pipes must not survive a normal worker exit."""
+        import errno
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        child_script = "import time; time.sleep(30)"
+        worker_script = (
+            "import subprocess, sys; "
+            f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}]); "
+            "print(child.pid, flush=True)"
+        )
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        returncode, stdout, _stderr, _truncated = sandbox._run_worker(
+            [sys.executable, "-c", worker_script], ""
+        )
+
+        assert returncode == 0
+        child_pid = int(stdout.strip())
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                os.kill(child_pid, 0)
+            except OSError as exc:
+                if exc.errno == errno.ESRCH:
+                    break
+                raise
+            if time.monotonic() >= deadline:
+                pytest.fail("sandbox worker descendant survived normal exit")
+            time.sleep(0.01)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_worker_descendants_are_killed_after_timeout(self, tmp_path):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "descendant-survived"
+        child_script = (
+            "import pathlib, time; "
+            "time.sleep(1); "
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
+        worker_script = (
+            "import subprocess, sys, time; "
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}]); "
+            "time.sleep(30)"
+        )
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=0.2, strict=False))
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            sandbox._run_worker([sys.executable, "-c", worker_script], "")
+
+        time.sleep(1.1)
+        assert not marker.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects only")
+    def test_windows_worker_descendants_end_with_normal_leader(self, tmp_path):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "windows-descendant-survived"
+        child_script = (
+            "import pathlib, time; "
+            "time.sleep(2); "
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
+        worker_script = (
+            "import subprocess, sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}])"
+        )
+        sandbox = ProcessSandbox(
+            ProcessSandboxConfig(
+                timeout=1.0,
+                strict=False,
+                max_memory_bytes=None,
+                max_processes=3,
+            )
+        )
+
+        started_at = time.monotonic()
+        returncode, _stdout, _stderr, _truncated = sandbox._run_worker(
+            [sys.executable, "-c", worker_script], ""
+        )
+        assert returncode == 0, _stderr
+        assert time.monotonic() - started_at < 1.5
+        time.sleep(2.1)
+        assert not marker.exists()
 
     def test_process_sandbox_bounds_worker_exception_messages(self):
         """Worker JSON errors should not serialize unbounded exception text."""
@@ -1057,6 +1356,68 @@ class TestProcessSandbox:
 
         script = ProcessSandbox._WORKER_SCRIPT
         assert script.index("code = sys.stdin.read()") < script.index("RLIMIT_AS")
+
+    def test_geno_frontend_applies_memory_limit_before_compiler_import(self):
+        """Geno source processing starts only after the early RLIMIT_AS gate."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        frontend = script[
+            script.index('if config.get("worker_mode") == "geno_cli"') : script.index(
+                "# ---- Worker-side AST validation"
+            )
+        ]
+        assert frontend.index("setrlimit(") < frontend.index("from geno.cli.run import")
+
+    def test_geno_worker_requires_compiled_runtime_mode(self):
+        """The special request path cannot run without generated-code guards."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig, SandboxError
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(compiled_runtime_prelude=False))
+
+        with pytest.raises(SandboxError, match="compiled_runtime_prelude"):
+            sandbox.execute_geno_request({})
+
+    def test_geno_worker_ignores_cwd_package_shadow(self, tmp_path, monkeypatch):
+        """The isolated frontend must import Geno only from its trusted root."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "shadow-imported"
+        package = tmp_path / "geno"
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            f"open({str(marker)!r}, 'w').close()\n",
+            encoding="utf-8",
+        )
+        source = tmp_path / "main.geno"
+        source.write_text(
+            "func main() -> Int\n    return 1\nend func main\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        config = ProcessSandboxConfig(
+            timeout=15.0,
+            strict=False,
+            compiled_runtime_prelude=True,
+        )
+        request = {
+            "filename": str(source),
+            "target": None,
+            "check_examples": False,
+            "timeout": config.timeout,
+            "max_recursion_depth": config.max_recursion_depth,
+            "max_output_length": config.max_output_length,
+            "max_collection_size": config.max_collection_size,
+            "max_integer_bits": config.max_integer_bits,
+        }
+
+        result, output, error = ProcessSandbox(config).execute_geno_request(request)
+
+        assert error is None
+        assert output == ""
+        assert result == 1
+        assert not marker.exists()
 
     def test_process_sandbox_worker_has_structured_startup_error_envelope(self):
         """Pre-exec worker failures should be reported as JSON categories."""
@@ -1493,6 +1854,7 @@ class TestProcessSandboxResultChannel:
         monkeypatch.setattr(
             subprocess, "Popen", self._fake_popen_for("just some text\n", 0)
         )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
 
         with caplog.at_level("ERROR", logger="geno.sandbox"):
             with pytest.raises(SandboxError, match="wrote no result JSON"):
@@ -1507,6 +1869,7 @@ class TestProcessSandboxResultChannel:
         monkeypatch.setattr(
             subprocess, "Popen", self._fake_popen_for('{"result": 42, "succ\n', 0)
         )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
 
         with pytest.raises(SandboxError, match="unparseable result JSON"):
             sandbox.execute("__result__ = 42")
@@ -1521,6 +1884,7 @@ class TestProcessSandboxResultChannel:
         )
         huge_stderr = "x" * 50_000  # no JSON line survives, forces truncation
         monkeypatch.setattr(subprocess, "Popen", self._fake_popen_for(huge_stderr, 0))
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
 
         with pytest.raises(SandboxError, match="capture limit"):
             sandbox.execute("__result__ = 42")
@@ -1533,11 +1897,30 @@ class TestProcessSandboxResultChannel:
         monkeypatch.setattr(
             subprocess, "Popen", self._fake_popen_for("boom without json\n", 1)
         )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
 
         result, _output, error = sandbox.execute("__result__ = 42")
         assert result is None
         assert error is not None
         assert "boom without json" in error
+
+    def test_nonzero_exit_rejects_success_envelope(self, monkeypatch):
+        """A crash or resource-limit kill after result output cannot report success."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        success = '{"result": 42, "success": true, "error": null}\n'
+        monkeypatch.setattr(
+            subprocess,
+            "Popen",
+            self._fake_popen_for(success, 1),
+        )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+
+        result, _output, error = sandbox.execute("__result__ = 42")
+        assert result is None
+        assert error is not None
+        assert "success" in error
 
     def test_oversized_result_reports_explicit_error(self):
         """A result too large for the stderr capture window must surface as an
@@ -1771,6 +2154,137 @@ class TestModuleProxyLeakRegression:
         code = "import math\n__result__ = math.e"
         result, _ = run_sandboxed(code, config, use_process=False)
         assert isinstance(result, float)
+
+    @pytest.mark.parametrize(
+        ("module_name", "attribute"),
+        [
+            ("dataclasses", "make_dataclass"),
+            ("dataclasses", "replace"),
+            ("functools", "update_wrapper"),
+            ("functools", "wraps"),
+        ],
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_hidden_attribute_helpers_are_blocked(
+        self, module_name, attribute, use_process
+    ):
+        """Trusted helpers that perform hidden traversal must not be exposed."""
+        code = f"import {module_name}\n__result__ = {module_name}.{attribute}\n"
+        with pytest.raises((SecurityViolation, RuntimeError)):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=False),
+                use_process=use_process,
+            )
+
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_callable_gadgets_cannot_leak_function_globals(self, use_process):
+        """Composable stdlib helpers must not expose raw function globals."""
+        code = """
+import dataclasses
+import functools
+name = ''.join(['__glo', 'bals__'])
+def init(self, **changes):
+    self.public = changes[next(iter(changes))]
+Leak = dataclasses.make_dataclass(
+    'Leak',
+    [name],
+    namespace={'__init__': init},
+)
+value = Leak(**{name: None})
+functools.update_wrapper(
+    value,
+    dataclasses.dataclass,
+    assigned=(name,),
+    updated=(),
+)
+leaked = dataclasses.replace(value).public
+__result__ = leaked['sys'].modules['builtins'].open('pyproject.toml').read(1)
+"""
+
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError)):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
+
+    @pytest.mark.parametrize(
+        "constructor",
+        ["abc.ABCMeta", "typing.ABCMeta", "typing.NamedTupleMeta"],
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_metaclass_constructors_are_blocked(self, constructor, use_process):
+        module = constructor.partition(".")[0]
+        code = (
+            f"import {module}\n"
+            "name = ''.join(['__get', 'attribute__'])\n"
+            f"C = {constructor}('C', (dict,), {{name: dict.__getitem__}})\n"
+            "__result__ = C(public='escaped').public\n"
+        )
+
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError), match="metaclass"):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "name = ''.join(['__get', 'attribute__'])\n"
+                "T = type(type(0))\n"
+                "C = T('C', (dict,), {name: dict.__getitem__})\n"
+                "__result__ = C(public='escaped').public\n"
+            ),
+            (
+                "import typing\n"
+                "name = ''.join(['__get', 'attribute__'])\n"
+                "T = typing.get_origin(typing.Type[int])\n"
+                "C = T('C', (dict,), {name: dict.__getitem__})\n"
+                "__result__ = C(public='escaped').public\n"
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_metaclass_results_are_blocked(self, code, use_process):
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError), match="metaclass"):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
+
+    @pytest.mark.skipif(
+        not _has_typing_extensions,
+        reason="typing_extensions not installed",
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_typing_extensions_metaclass_alias_is_blocked(self, use_process):
+        import typing_extensions
+
+        if not hasattr(typing_extensions, "GenericMeta"):
+            pytest.skip("typing_extensions.GenericMeta is unavailable")
+        code = (
+            "import typing_extensions\n"
+            "name = ''.join(['__get', 'attribute__'])\n"
+            "C = typing_extensions.GenericMeta("
+            "'C', (dict,), {name: dict.__getitem__})\n"
+            "__result__ = C(public='escaped').public\n"
+        )
+
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError), match="metaclass"):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
 
 
 class TestForwardRefEvalRegression:

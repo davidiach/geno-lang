@@ -5,7 +5,6 @@ Tests for benchmark, experiment, and script tooling.
 import builtins
 import hashlib
 import json
-import signal
 import subprocess
 import sys
 import threading
@@ -901,10 +900,6 @@ class TestBenchmarkRunner:
         assert result.error_category == ErrorCategory.NONE
         assert result.all_passed
 
-    @pytest.mark.skipif(
-        not hasattr(signal, "setitimer"),
-        reason="Timeout enforcement requires setitimer support",
-    )
     def test_python_timeout_is_reported(self):
         problem = make_problem()
         result = make_python_runner(timeout_seconds=0.05).evaluate_python(
@@ -914,6 +909,43 @@ class TestBenchmarkRunner:
 
         assert result.error_category == ErrorCategory.TIMEOUT
         assert result.test_results[0].error_category == ErrorCategory.TIMEOUT
+
+    def test_python_process_watchdog_survives_caught_timeout(self):
+        problem = make_problem()
+        source = """
+while True:
+    try:
+        while True:
+            pass
+    except Exception:
+        pass
+
+def identity(x):
+    return x
+"""
+
+        result = make_python_runner(timeout_seconds=0.05).evaluate_python(
+            problem,
+            source,
+        )
+
+        assert result.error_category == ErrorCategory.TIMEOUT
+
+    def test_python_allocation_bomb_is_contained_by_worker(self):
+        problem = make_problem()
+        source = """
+values = [0] * 100_000_000
+
+def identity(x):
+    return x
+"""
+
+        result = make_python_runner(timeout_seconds=1.0).evaluate_python(
+            problem,
+            source,
+        )
+
+        assert result.error_category in {ErrorCategory.RUNTIME, ErrorCategory.TIMEOUT}
 
     def test_python_evaluation_is_disabled_by_default(self):
         problem = make_problem()
@@ -949,6 +981,149 @@ class TestBenchmarkRunner:
 
         assert result.error_category == ErrorCategory.NONE
         assert result.all_passed
+
+    def test_python_evaluation_runs_in_fresh_worker(self, monkeypatch):
+        problem = make_problem()
+
+        def fail_if_parent_executes(*args, **kwargs):
+            raise AssertionError("generated Python executed in the parent")
+
+        monkeypatch.setattr(
+            BenchmarkRunner,
+            "_evaluate_python_in_process",
+            fail_if_parent_executes,
+        )
+
+        result = make_python_runner().evaluate_python(
+            problem,
+            "def identity(x):\n    return x\n",
+        )
+
+        assert result.error_category == ErrorCategory.NONE
+        assert result.all_passed
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            (
+                "import typing\n\n"
+                "def identity(x):\n"
+                "    return typing.sys.modules['os'].environ.get("
+                "'GENO_BENCHMARK_PARENT_SECRET')\n"
+            ),
+            (
+                "import typing\n\n"
+                "def identity(x):\n"
+                "    n = ''.join(['__buil', 'tins__'])\n"
+                "    get_builtins = typing.operator.attrgetter(n)\n"
+                "    real = get_builtins(typing.cast)\n"
+                "    os = real['__import__']('os')\n"
+                "    return os.environ.get('GENO_BENCHMARK_PARENT_SECRET')\n"
+            ),
+            ("import typing\ntyping.Any = 123\n\ndef identity(x):\n    return x\n"),
+        ],
+    )
+    def test_python_typing_module_cannot_escape_or_mutate_parent(
+        self, monkeypatch, source
+    ):
+        sentinel = "parent-provider-secret-7f6a"
+        monkeypatch.setenv("GENO_BENCHMARK_PARENT_SECRET", sentinel)
+
+        result = make_python_runner().evaluate_python(make_problem(), source)
+
+        assert not result.all_passed
+        assert sentinel not in result.error_message
+        assert all(item.actual_output != sentinel for item in result.test_results)
+
+    def test_python_three_argument_type_cannot_create_dynamic_class(self):
+        source = (
+            "def identity(x):\n"
+            "    name = ''.join(['__get', 'attribute__'])\n"
+            "    cls = type('C', (dict,), {name: dict.__getitem__})\n"
+            "    return cls(public=x).public\n"
+        )
+
+        result = make_python_runner().evaluate_python(make_problem(), source)
+
+        assert result.error_category == ErrorCategory.RUNTIME
+        assert not result.all_passed
+        assert "multiple arguments" in result.error_message
+
+    @pytest.mark.parametrize(
+        "constructor",
+        ["typing.ABCMeta", "typing.NamedTupleMeta"],
+    )
+    def test_python_module_metaclass_constructors_are_blocked(self, constructor):
+        module = constructor.partition(".")[0]
+        source = (
+            f"import {module}\n\n"
+            "def identity(x):\n"
+            "    name = ''.join(['__get', 'attribute__'])\n"
+            f"    cls = {constructor}('C', (dict,), {{name: dict.__getitem__}})\n"
+            "    return cls(public=x).public\n"
+        )
+
+        result = make_python_runner().evaluate_python(make_problem(), source)
+
+        assert result.error_category == ErrorCategory.RUNTIME
+        assert not result.all_passed
+        assert "metaclass constructor" in result.error_message
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            (
+                "def identity(x):\n"
+                "    name = ''.join(['__get', 'attribute__'])\n"
+                "    meta = type(type(0))\n"
+                "    cls = meta('C', (dict,), {name: dict.__getitem__})\n"
+                "    return cls(public=x).public\n"
+            ),
+            (
+                "import typing\n\n"
+                "def identity(x):\n"
+                "    name = ''.join(['__get', 'attribute__'])\n"
+                "    meta = typing.get_origin(typing.Type[int])\n"
+                "    cls = meta('C', (dict,), {name: dict.__getitem__})\n"
+                "    return cls(public=x).public\n"
+            ),
+        ],
+    )
+    def test_python_metaclass_results_are_blocked(self, source):
+        result = make_python_runner().evaluate_python(make_problem(), source)
+
+        assert result.error_category == ErrorCategory.RUNTIME
+        assert not result.all_passed
+        assert "metaclass" in result.error_message
+
+    def test_python_worker_ignores_cwd_module_shadows(self, tmp_path, monkeypatch):
+        marker = tmp_path / "shadow-imported"
+        marker_write = f"open({str(marker)!r}, 'w').close()\n"
+        (tmp_path / "base64.py").write_text(marker_write)
+        package = tmp_path / "benchmark"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        (package / "runner.py").write_text(marker_write)
+        monkeypatch.chdir(tmp_path)
+
+        result = make_python_runner().evaluate_python(
+            make_problem(), "def identity(x):\n    return x\n"
+        )
+
+        assert result.all_passed
+        assert not marker.exists()
+
+    def test_python_wrong_answer_details_survive_worker_json_round_trip(self):
+        problem = make_problem()
+
+        result = make_python_runner().evaluate_python(
+            problem,
+            "def identity(x):\n    return 0\n",
+        )
+
+        assert result.error_category == ErrorCategory.WRONG_ANSWER
+        assert result.test_results[0].test_case is problem.visible_examples[0]
+        assert result.test_results[0].actual_output == 0
 
     @pytest.mark.parametrize(
         ("source", "expected_message"),

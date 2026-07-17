@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from geno.compiler import Compiler
+from geno.compiler import CompileError, Compiler
 from geno.dependency_graph import DependencyGraph
-from geno.js_compiler import JSCompiler, compile_project_to_html
+from geno.js_compiler import JSCompileError, JSCompiler, compile_project_to_html
 from geno.project_graph import ProjectGraph
 from geno.tests._script_runner import run_node_code, run_python_code
 
@@ -23,6 +23,49 @@ from geno.tests._script_runner import run_node_code, run_python_code
 
 
 class TestPythonMultiModule:
+    @pytest.mark.parametrize(
+        ("compiler", "error_type", "helper"),
+        [
+            (Compiler, CompileError, "_require_cap"),
+            (JSCompiler, JSCompileError, "_requireCap"),
+        ],
+    )
+    def test_project_rejects_entrypoint_runtime_helper_export(
+        self, tmp_path, compiler, error_type, helper
+    ):
+        (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
+        (tmp_path / "Main.geno").write_text(
+            f"func {helper}(value: String, context: String) -> Unit\n"
+            '  example "x", "y" -> ()\n'
+            "  return ()\n"
+            "end func\n"
+            "func main() -> Int\n"
+            "  return 1\n"
+            "end func\n"
+        )
+
+        graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
+        with pytest.raises(error_type, match="reserved runtime name"):
+            compiler().compile_project(graph)
+
+    @pytest.mark.parametrize(
+        ("compiler", "error_type", "module_name"),
+        [
+            (Compiler, CompileError, "_require_cap"),
+            (JSCompiler, JSCompileError, "_requireCap"),
+        ],
+    )
+    def test_project_rejects_runtime_helper_module_name(
+        self, tmp_path, compiler, error_type, module_name
+    ):
+        (tmp_path / "geno.toml").write_text(f'files = ["{module_name}"]\n')
+        (tmp_path / f"{module_name}.geno").write_text(
+            "func main() -> Int\n  return 1\nend func\n"
+        )
+        graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
+        with pytest.raises(error_type, match="reserved runtime module name"):
+            compiler().compile_project(graph)
+
     def test_two_module_project(self, tmp_path):
         """Two-module project compiles and runs correctly."""
         (tmp_path / "geno.toml").write_text(

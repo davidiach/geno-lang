@@ -772,6 +772,67 @@ class TestGenoRunResourceLimits:
             finally:
                 os.unlink(f.name)
 
+    def test_default_mode_does_not_resolve_source_in_parent(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import geno.cli.run as run_command
+
+        app = tmp_path / "App.geno"
+        app.write_text("func main() -> Int\n    return 7\nend func\n")
+
+        def fail_if_parent_resolves(*_args, **_kwargs):
+            raise AssertionError("parent attempted to resolve untrusted source")
+
+        monkeypatch.setattr(
+            run_command,
+            "_resolve_run_program",
+            fail_if_parent_resolves,
+        )
+
+        run_command.run_file(str(app), check_examples=False)
+
+        assert "=> 7" in capsys.readouterr().out
+
+    def test_timeout_covers_frontend_startup(self, tmp_path):
+        app = tmp_path / "App.geno"
+        app.write_text("func main() -> Int\n    return 7\nend func\n")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                "--no-check-examples",
+                "--timeout",
+                "0.001",
+                str(app),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert "Limit Error:" in result.stderr
+        assert "timed out" in result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_frontend_diagnostics_do_not_leak_worker_tracebacks(self, tmp_path):
+        app = tmp_path / "Broken.geno"
+        app.write_text("func broken -> Int\n    return 1\nend func\n")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "run", str(app)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert "Parse" in result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
+
 
 class TestGenoRunJson:
     """Test the 'geno run --json' command."""
@@ -2267,6 +2328,231 @@ class TestGenoDevServerBuild:
         assert build_error is not None
         assert "Return type mismatch" in build_error
         assert "Build Error" in html
+
+    @pytest.mark.parametrize(
+        ("host", "origin"),
+        [
+            ("localhost:3210", None),
+            ("127.0.0.1:3210", None),
+            ("localhost:3210", "http://localhost:3210"),
+            ("127.0.0.1:3210", "http://127.0.0.1:3210"),
+        ],
+    )
+    def test_dev_header_policy_accepts_exact_loopback_authority(self, host, origin):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        headers = Message()
+        headers.add_header("Host", host)
+        if origin is not None:
+            headers.add_header("Origin", origin)
+
+        assert _dev_request_header_error(headers, 3210) is None
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "attacker.test:3210",
+            "localhost",
+            "localhost:3211",
+            "user@localhost:3210",
+            "localhost:3210/path",
+            "localhost:not-a-port",
+            "[::1]:3210",
+        ],
+    )
+    def test_dev_header_policy_rejects_dns_rebinding_hosts(self, host):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        headers = Message()
+        headers.add_header("Host", host)
+
+        assert _dev_request_header_error(headers, 3210) == 421
+
+    def test_dev_header_policy_rejects_missing_and_duplicate_host(self):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        missing = Message()
+        duplicate = Message()
+        duplicate.add_header("Host", "localhost:3210")
+        duplicate.add_header("Host", "localhost:3210")
+
+        assert _dev_request_header_error(missing, 3210) == 421
+        assert _dev_request_header_error(duplicate, 3210) == 421
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "null",
+            "https://localhost:3210",
+            "http://attacker.test:3210",
+            "http://127.0.0.1:3210",
+            "http://localhost:3211",
+            "http://user@localhost:3210",
+            "http://localhost:3210/path",
+        ],
+    )
+    def test_dev_header_policy_rejects_cross_origin_requests(self, origin):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        headers = Message()
+        headers.add_header("Host", "localhost:3210")
+        headers.add_header("Origin", origin)
+
+        assert _dev_request_header_error(headers, 3210) == 403
+
+    def test_dev_header_policy_rejects_duplicate_origin(self):
+        from email.message import Message
+
+        from geno.cli.serve import _dev_request_header_error
+
+        headers = Message()
+        headers.add_header("Host", "localhost:3210")
+        headers.add_header("Origin", "http://localhost:3210")
+        headers.add_header("Origin", "http://localhost:3210")
+
+        assert _dev_request_header_error(headers, 3210) == 403
+
+    def test_dev_server_bounds_connections_and_releases_timed_out_slot(self):
+        import http.client
+        import http.server
+        import socket
+        import threading
+        import time
+
+        from geno.cli.serve import _BoundedDevHTTPServer
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.server.complete_request_headers(self.connection)
+                self.close_connection = True
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = _BoundedDevHTTPServer(
+            ("127.0.0.1", 0),
+            Handler,
+            max_connections=1,
+            header_timeout=5.0,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = int(server.server_address[1])
+        slow = socket.create_connection(("127.0.0.1", port), timeout=2)
+        try:
+            slow.sendall(b"GET / HTTP/1.1\r\n")
+            deadline = time.monotonic() + 2
+            while server._connection_slots._value != 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert server._connection_slots._value == 0
+
+            overflow = socket.create_connection(("127.0.0.1", port), timeout=2)
+            try:
+                overflow.sendall(
+                    f"GET / HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n".encode()
+                )
+                assert b"503 Service Unavailable" in overflow.recv(4096)
+            finally:
+                overflow.close()
+
+            deadline = time.monotonic() + 7
+            while server._connection_slots._value != 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert server._connection_slots._value == 1
+
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            client.request("GET", "/", headers={"Host": f"localhost:{port}"})
+            response = client.getresponse()
+            assert response.status == 200
+            assert response.read() == b"ok"
+            client.close()
+        finally:
+            slow.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_dev_sse_heartbeat_releases_client_slot(self):
+        import http.server
+
+        from geno.cli.serve import _BoundedDevHTTPServer, _serve_dev_sse
+
+        server = _BoundedDevHTTPServer(
+            ("127.0.0.1", 0), http.server.BaseHTTPRequestHandler, max_sse_clients=1
+        )
+        writes = []
+
+        class Writer:
+            def write(self, value):
+                writes.append(value)
+                server.stop_event.set()
+
+            def flush(self):
+                pass
+
+        class Handler:
+            wfile = Writer()
+
+            def send_response(self, _status):
+                pass
+
+            def send_header(self, _name, _value):
+                pass
+
+            def end_headers(self):
+                pass
+
+            def send_error(self, _status, _message):
+                raise AssertionError("SSE slot unexpectedly unavailable")
+
+        try:
+            _serve_dev_sse(Handler(), server)
+            assert writes == [b": keepalive\n\n"]
+            assert server._sse_slots._value == 1
+        finally:
+            server.server_close()
+
+    def test_dev_sse_limit_preserves_capacity_for_normal_requests(self):
+        import http.server
+        import threading
+
+        from geno.cli.serve import _BoundedDevHTTPServer, _serve_dev_sse
+
+        server = _BoundedDevHTTPServer(
+            ("127.0.0.1", 0), http.server.BaseHTTPRequestHandler, max_sse_clients=1
+        )
+        occupied = threading.Event()
+        assert server.register_sse(occupied)
+        errors = []
+
+        class Handler:
+            close_connection = False
+
+            def send_error(self, status, message):
+                errors.append((status, message))
+
+        handler = Handler()
+        try:
+            _serve_dev_sse(handler, server)
+            assert errors == [(503, "Too many live-reload clients")]
+            assert handler.close_connection is True
+            server.unregister_sse(occupied)
+            assert server._sse_slots._value == 1
+            assert server._connection_slots._value == 64
+        finally:
+            server.server_close()
 
 
 class TestCliWatchResolution:

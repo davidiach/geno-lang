@@ -311,6 +311,50 @@ class TestProjectIndexing:
         assert "Main" in dg.sorted_modules
         assert "Utils" in dg.sorted_modules
 
+    def test_project_reads_use_package_publication_lock(self, tmp_path, monkeypatch):
+        """LSP project views, validation, and direct reads share one lock."""
+        from contextlib import nullcontext
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils"]\n'
+        )
+        main_path = tmp_path / "Main.geno"
+        utils_path = tmp_path / "Utils.geno"
+        main_source = "import Utils\nfunc main() -> Int\n  return helper(1)\nend func\n"
+        utils_source = (
+            "export func helper(x: Int) -> Int\n"
+            "  example 1 -> 2\n"
+            "  return x + 1\n"
+            "end func\n"
+        )
+        main_path.write_text(main_source)
+        utils_path.write_text(utils_source)
+        locked_roots = []
+
+        def record_lock(root, *args, **kwargs):
+            locked_roots.append(root.resolve())
+            return nullcontext()
+
+        monkeypatch.setattr(
+            "geno.package_manager._project_transaction_lock",
+            record_lock,
+        )
+
+        view = lsp_server._load_project_view(
+            main_path,
+            source_override=main_source,
+        )
+        project, _overrides, dependency_graph = lsp_server._load_validation_project(
+            main_path, main_source, {}
+        )
+        direct_source = lsp_server._read_package_source(utils_path)
+
+        assert view.project_paths
+        assert project.root == tmp_path.resolve()
+        assert dependency_graph is not None
+        assert direct_source == utils_source
+        assert locked_roots == [tmp_path.resolve()] * 3
+
     def test_cross_module_definition_search(self, tmp_path):
         """Go-to-definition regex finds definitions across module files."""
         import re

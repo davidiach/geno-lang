@@ -186,6 +186,10 @@ class ProjectGraph:
         # Resolve dependencies from geno_modules/
         resolved_deps: Dict[str, Path] = {}
         geno_modules_dir = root / "geno_modules"
+        if geno_modules_dir.is_symlink():
+            raise ProjectGraphError(
+                f"Dependency directory must not be a symbolic link: {geno_modules_dir}"
+            )
         geno_modules_root = geno_modules_dir.resolve()
 
         for dep_name, _dep_info in manifest.dependencies.items():
@@ -316,10 +320,22 @@ def _parse_dependency_manifest(dep_dir: Path) -> Manifest | None:
     dep_manifest = dep_dir / "geno.toml"
     if not dep_manifest.exists():
         return None
+    if dep_manifest.is_symlink():
+        try:
+            resolved_manifest = dep_manifest.resolve(strict=True)
+            relative_manifest = resolved_manifest.relative_to(dep_dir.resolve())
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ProjectGraphError(
+                f"Dependency manifest escapes package root: {dep_manifest}"
+            ) from exc
+        if ".git" in relative_manifest.parts or not resolved_manifest.is_file():
+            raise ProjectGraphError(
+                f"Dependency manifest is unsafe or unhashed: {dep_manifest}"
+            )
     try:
         from .manifest import parse_manifest
 
-        return parse_manifest(dep_manifest)
+        return parse_manifest(dep_manifest, allow_symlink=True)
     except (OSError, ValueError, RuntimeError):
         # A corrupt dependency manifest otherwise surfaces as a misleading
         # 'module not found'; WARNING is visible via Python's default handler

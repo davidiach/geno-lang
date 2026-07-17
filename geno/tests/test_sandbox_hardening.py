@@ -461,14 +461,14 @@ class TestPreludeBlobFraming:
         from geno.sandbox import _PRELUDE_BLOB_HEADER, ProcessSandbox
 
         sent = {}
-        orig = ProcessSandbox._run_worker
+        orig = ProcessSandbox._execute_worker_payload
 
-        def spy(self, cmd, code, config_overrides=None):
-            sent["payload"] = code
+        def spy(self, payload, config_overrides=None):
+            sent["payload"] = payload
             sent["overrides"] = config_overrides
-            return orig(self, cmd, code, config_overrides)
+            return orig(self, payload, config_overrides)
 
-        monkeypatch.setattr(ProcessSandbox, "_run_worker", spy)
+        monkeypatch.setattr(ProcessSandbox, "_execute_worker_payload", spy)
         sandbox = self._sandbox()
         code = self._canonical_prelude() + "\n__result__ = _int_div(84, 2)\n"
 
@@ -484,16 +484,16 @@ class TestPreludeBlobFraming:
         """A blob that fails SHA-256 verification aborts before any exec."""
         from geno.sandbox import _PRELUDE_BLOB_HEADER, ProcessSandbox
 
-        orig = ProcessSandbox._run_worker
+        orig = ProcessSandbox._execute_worker_payload
 
-        def corrupt(self, cmd, code, config_overrides=None):
-            assert code.startswith(_PRELUDE_BLOB_HEADER + " ")
-            header, rest = code.split("\n", 1)
+        def corrupt(self, payload, config_overrides=None):
+            assert payload.startswith(_PRELUDE_BLOB_HEADER + " ")
+            header, rest = payload.split("\n", 1)
             # Flip one base64 character of the blob payload
             flipped = ("B" if rest[0] != "B" else "C") + rest[1:]
-            return orig(self, cmd, header + "\n" + flipped, config_overrides)
+            return orig(self, header + "\n" + flipped, config_overrides)
 
-        monkeypatch.setattr(ProcessSandbox, "_run_worker", corrupt)
+        monkeypatch.setattr(ProcessSandbox, "_execute_worker_payload", corrupt)
         sandbox = self._sandbox()
         code = self._canonical_prelude() + "\n__result__ = 42\n"
 
@@ -554,14 +554,14 @@ class TestPreludeBlobFraming:
         from geno.sandbox import _PRELUDE_BLOB_HEADER, ProcessSandbox
 
         sent = {}
-        orig = ProcessSandbox._run_worker
+        orig = ProcessSandbox._execute_worker_payload
 
-        def spy(self, cmd, code, config_overrides=None):
-            sent["payload"] = code
+        def spy(self, payload, config_overrides=None):
+            sent["payload"] = payload
             sent["overrides"] = config_overrides
-            return orig(self, cmd, code, config_overrides)
+            return orig(self, payload, config_overrides)
 
-        monkeypatch.setattr(ProcessSandbox, "_run_worker", spy)
+        monkeypatch.setattr(ProcessSandbox, "_execute_worker_payload", spy)
         sandbox = self._sandbox()
 
         result, _output, error = sandbox.execute("__result__ = 5\n")

@@ -66,20 +66,17 @@ def compile_file(
                     for mod_name in dg.sorted_modules:
                         rf = dg.file_map.get(mod_name)
                         if rf:
-                            try:
-                                sources_content[str(rf.path)] = rf.path.read_text(
-                                    encoding="utf-8"
-                                )
-                            except OSError:
-                                pass
+                            sources_content[str(rf.path)] = dg.original_sources[
+                                mod_name
+                            ]
             else:
                 program = dg.parsed[dg.sorted_modules[0]]
                 code = compiler.compile(program)
                 if emit_source_map:
                     source_path = pg.files[0].path
-                    sources_content[str(source_path)] = source_path.read_text(
-                        encoding="utf-8"
-                    )
+                    sources_content[str(source_path)] = dg.original_sources[
+                        dg.sorted_modules[0]
+                    ]
 
             if esm:
                 from ..js_compiler import _to_esm

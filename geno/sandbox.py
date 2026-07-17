@@ -15,12 +15,16 @@ import logging
 import math
 import os
 import platform
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import types as _types
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable
 
 from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
@@ -210,14 +214,14 @@ class SandboxConfig:
 
 
 def _safe_type(*args):
-    """Restricted type() that only allows single-argument (type query) form.
-
-    The three-argument form ``type(name, bases, namespace)`` creates a new
-    class.  A class with a custom ``__getattribute__`` would bypass the
-    sandbox's ``safe_getattr`` wrapper at the C level, enabling full escape.
-    """
+    """Restricted type() that cannot return or invoke a metaclass."""
     if len(args) == 1:
-        return type(args[0])
+        result = type(args[0])
+        if isinstance(result, type) and issubclass(result, type):
+            raise SecurityViolation(
+                "type() cannot expose a metaclass constructor in sandbox"
+            )
+        return result
     raise SecurityViolation(
         "type() with multiple arguments is not allowed in sandbox "
         "(class creation could bypass attribute access controls)"
@@ -554,6 +558,11 @@ _SAFE_IMPORT_ALLOWLIST = {
 # Functions on specific modules that are blocked due to denial-of-service
 # risk (e.g. math.factorial on huge inputs runs at C level indefinitely).
 _MODULE_BLOCKED_FUNCTIONS: dict[str, frozenset[str]] = {
+    # These helpers perform caller-controlled class creation or real
+    # getattr/setattr operations inside trusted stdlib code. In combination,
+    # they can expose a function's globals through a public attribute.
+    "dataclasses": frozenset({"make_dataclass", "replace"}),
+    "functools": frozenset({"update_wrapper", "wraps"}),
     "math": frozenset({"factorial", "comb", "perm"}),
     "hashlib": frozenset({"scrypt", "pbkdf2_hmac"}),
     "io": frozenset(
@@ -663,6 +672,31 @@ def _create_module_proxy(mod: Any, max_collection_size: int = 10_000_000) -> Any
 
         return _ShakeProxy()
 
+    def _sanitize_module_result(result: Any, seen: set[int] | None = None) -> Any:
+        try:
+            is_metaclass = isinstance(result, type) and issubclass(result, type)
+        except TypeError:
+            is_metaclass = False
+        if is_metaclass:
+            raise SecurityViolation("Module callable returned a metaclass constructor")
+        if isinstance(result, _types.ModuleType):
+            raise SecurityViolation("Module callable returned a raw module")
+
+        containers = (dict, list, tuple, set, frozenset)
+        if not isinstance(result, containers):
+            return result
+        seen = set() if seen is None else seen
+        marker = id(result)
+        if marker in seen:
+            return result
+        seen.add(marker)
+        items = (
+            (*result.keys(), *result.values()) if isinstance(result, dict) else result
+        )
+        for item in items:
+            _sanitize_module_result(item, seen)
+        return result
+
     def _wrap_module_callable(mod_name: str, attr_name: str, value: Any) -> Any:
         if mod_name == "secrets" and callable(value):
             if attr_name == "token_bytes":
@@ -729,7 +763,19 @@ def _create_module_proxy(mod: Any, max_collection_size: int = 10_000_000) -> Any
                     return result
 
                 return guarded_new
-        return value
+        callable_types = (
+            _types.FunctionType,
+            _types.BuiltinFunctionType,
+            _types.MethodType,
+            _types.BuiltinMethodType,
+        )
+        if isinstance(value, callable_types):
+
+            def guarded_module_callable(*args: Any, **kwargs: Any) -> Any:
+                return _sanitize_module_result(value(*args, **kwargs))
+
+            return guarded_module_callable
+        return _sanitize_module_result(value)
 
     class _ModuleProxy:
         __slots__ = ()
@@ -760,6 +806,16 @@ def _create_module_proxy(mod: Any, max_collection_size: int = 10_000_000) -> Any
                     f"Access to '{mod_name}.{name}' is not allowed in sandbox"
                 )
             value = getattr(mod, name)
+            try:
+                is_metaclass_constructor = isinstance(value, type) and issubclass(
+                    value, type
+                )
+            except TypeError:
+                is_metaclass_constructor = False
+            if is_metaclass_constructor:
+                raise SecurityViolation(
+                    f"Access to metaclass constructor '{mod_name}.{name}' is not allowed"
+                )
             # Block module-type attributes whose top-level package is not
             # in the import allowlist.  This prevents leaking raw modules
             # through attribute chains (e.g. typing.sys → raw sys).
@@ -1057,16 +1113,16 @@ class ProcessSandboxConfig:
     # Time limit in seconds (None = no limit)
     timeout: float | None = 5.0
 
-    # Memory limit in bytes (Linux only, None = no limit)
+    # Memory limit in bytes (POSIX rlimit / Windows Job, None = no limit)
     max_memory_bytes: int | None = 256 * 1024 * 1024  # 256 MB default
 
-    # Maximum CPU time in seconds (Linux only, None = no limit)
+    # Maximum CPU time (POSIX rlimit / Windows Job, None = no limit)
     max_cpu_time: float | None = None
 
-    # Maximum file size in bytes (Linux only)
+    # Maximum file size in bytes (POSIX only)
     max_file_size_bytes: int = 0  # 0 = no file writing
 
-    # Maximum number of processes/threads (Linux only)
+    # Maximum number of processes/threads (POSIX rlimit / Windows Job)
     max_processes: int = 1  # Only the main process
 
     # Strict mode: validate code statically before execution
@@ -1171,8 +1227,8 @@ class ProcessSandbox:
 
     This provides stronger isolation than thread-based execution:
     - True timeout enforcement via process.kill()
-    - Memory limits (on Linux)
-    - CPU time limits (on Linux)
+    - Memory limits (POSIX rlimit / Windows Job)
+    - CPU time limits (POSIX rlimit / Windows Job)
     - No shared state with parent process
 
     The tradeoff is higher overhead and serialization costs.
@@ -1230,12 +1286,390 @@ class ProcessSandbox:
     def _stderr_capture_limit(self) -> int:
         return self.config.max_output_length + self._STDERR_RESULT_OVERHEAD
 
+    @staticmethod
+    def _worker_python_executable() -> str:
+        """Return the real interpreter, never a Windows venv redirector."""
+        if os.name != "nt":
+            return sys.executable
+        candidate = getattr(sys, "_base_executable", None)
+        if not isinstance(candidate, str) or not candidate:
+            raise SandboxError("Windows sandbox base interpreter is unavailable")
+        try:
+            resolved = Path(candidate).resolve(strict=True)
+            base_root = Path(sys.base_prefix).resolve(strict=True)
+            resolved.relative_to(base_root)
+        except (OSError, ValueError) as exc:
+            raise SandboxError("Windows sandbox base interpreter is untrusted") from exc
+        if not resolved.is_file():
+            raise SandboxError("Windows sandbox base interpreter is not a file")
+        return str(resolved)
+
+    @staticmethod
+    def _worker_import_paths() -> tuple[str, ...]:
+        """Return trusted venv package paths needed by the base interpreter."""
+        if os.name != "nt" or sys.prefix == sys.base_prefix:
+            return ()
+        try:
+            import site
+
+            prefix = Path(sys.prefix).resolve(strict=True)
+            candidates = site.getsitepackages()
+        except (AttributeError, OSError):
+            return ()
+
+        trusted: list[str] = []
+        for candidate in candidates:
+            candidate_path = Path(candidate)
+            try:
+                resolved = candidate_path.resolve(strict=True)
+                resolved.relative_to(prefix)
+            except (OSError, ValueError):
+                continue
+            if candidate_path.is_symlink() or not resolved.is_dir():
+                continue
+            trusted.append(str(resolved))
+        return tuple(dict.fromkeys(trusted))
+
+    @staticmethod
+    def _create_worker_command() -> list[str]:
+        """Return a short bootstrap that reads the trusted worker from stdin."""
+        bootstrap = (
+            "import sys,base64,zlib;"
+            "exec(zlib.decompress(base64.b85decode("
+            "sys.stdin.buffer.readline().strip())))"
+        )
+        return [ProcessSandbox._worker_python_executable(), "-I", "-c", bootstrap]
+
+    @staticmethod
+    def _frame_worker_input(worker_script: str, code: str) -> str:
+        """Put the compressed trusted worker before the untrusted stdin payload."""
+        import base64
+        import zlib
+
+        encoded = base64.b85encode(
+            zlib.compress(worker_script.encode("utf-8"), level=9)
+        ).decode("ascii")
+        return f"{encoded}\n{code}"
+
+    def _create_windows_job(
+        self,
+        process: Any,
+        *,
+        redirector_overhead: int | None = None,
+    ) -> Any | None:
+        """Assign the blocked worker to a resource-limited Windows Job Object."""
+        if self.system != "Windows":
+            return None
+
+        import ctypes
+        from ctypes import wintypes
+
+        class _LargeInteger(ctypes.Structure):
+            _fields_ = [("QuadPart", ctypes.c_longlong)]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", _LargeInteger),
+                ("PerJobUserTimeLimit", _LargeInteger),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimitInformation),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        job_object_extended_limit_information = 9
+        job_object_limit_process_time = 0x00000002
+        job_object_limit_active_process = 0x00000008
+        job_object_limit_job_memory = 0x00000200
+        job_object_limit_kill_on_job_close = 0x00002000
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        ]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        job_handle = None
+        try:
+            job_handle = kernel32.CreateJobObjectW(None, None)
+            if not job_handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+
+            info = _ExtendedLimitInformation()
+            limit_flags = (
+                job_object_limit_active_process | job_object_limit_kill_on_job_close
+            )
+            if redirector_overhead is None:
+                # The base interpreter is the actual Job-assigned worker.
+                redirector_overhead = 0
+            info.BasicLimitInformation.ActiveProcessLimit = (
+                self.config.max_processes + redirector_overhead
+            )
+
+            if self.config.max_memory_bytes is not None:
+                limit_flags |= job_object_limit_job_memory
+                info.JobMemoryLimit = self.config.max_memory_bytes
+
+            if self.config.max_cpu_time is not None:
+                limit_flags |= job_object_limit_process_time
+                info.BasicLimitInformation.PerProcessUserTimeLimit.QuadPart = max(
+                    1,
+                    math.ceil(self.config.max_cpu_time * 10_000_000),
+                )
+
+            info.BasicLimitInformation.LimitFlags = limit_flags
+            if not kernel32.SetInformationJobObject(
+                job_handle,
+                job_object_extended_limit_information,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+            process_handle = wintypes.HANDLE(int(process._handle))
+            if not kernel32.AssignProcessToJobObject(job_handle, process_handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+            # Returning from inside the ownership try ensures an asynchronous
+            # exception before RETURN_VALUE still closes the configured Job.
+            return job_handle
+        except BaseException:
+            if job_handle:
+                kernel32.CloseHandle(job_handle)
+            raise
+
+    def _close_windows_job(self, job_handle: Any | None) -> None:
+        """Close the Job Object and terminate any surviving descendants."""
+        if job_handle is None:
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        if not kernel32.CloseHandle(job_handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    @staticmethod
+    def _require_posix_worker_supervision() -> None:
+        """Fail closed when safe wait-without-reap supervision is unavailable."""
+        if os.name != "posix":
+            return
+        required = ("waitid", "P_PID", "WEXITED", "WNOWAIT", "WNOHANG")
+        if any(getattr(os, name, None) is None for name in required):
+            raise SandboxError("Secure POSIX process-group supervision is unavailable")
+
+    @staticmethod
+    def _kill_posix_process_group(process: subprocess.Popen[str]) -> None:
+        """Terminate the worker's isolated POSIX process group."""
+        if os.name != "posix":
+            return
+        try:
+            killpg = os.__dict__.get("killpg")
+            if not callable(killpg):
+                raise OSError("POSIX process-group termination is unavailable")
+            killpg(process.pid, signal.__dict__["SIGKILL"])
+        except ProcessLookupError:
+            return
+        except OSError as group_error:
+            # Killing the leader is not equivalent to killing the group, but it
+            # guarantees a failed group kill cannot leave the synchronous wait
+            # blocked forever. Surface the infrastructure failure either way.
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except OSError as leader_error:
+                raise SandboxError(
+                    "Failed to terminate POSIX sandbox worker process group or leader"
+                ) from leader_error
+            raise SandboxError(
+                "Failed to terminate POSIX sandbox worker process group"
+            ) from group_error
+
+    @staticmethod
+    def _posix_worker_exit_observable(process: subprocess.Popen[str]) -> bool:
+        """Return whether a POSIX leader exited without reaping its PID."""
+        waitid = getattr(os, "waitid", None)
+        p_pid = getattr(os, "P_PID", None)
+        wexited = getattr(os, "WEXITED", None)
+        wnowait = getattr(os, "WNOWAIT", None)
+        wnohang = getattr(os, "WNOHANG", None)
+        assert waitid is not None
+        assert p_pid is not None
+        assert wexited is not None
+        assert wnowait is not None
+        assert wnohang is not None
+        while True:
+            try:
+                return (
+                    waitid(
+                        p_pid,
+                        process.pid,
+                        wexited | wnowait | wnohang,
+                    )
+                    is not None
+                )
+            except InterruptedError:
+                continue
+            except ChildProcessError as exc:
+                raise SandboxError(
+                    "Lost POSIX sandbox worker state before timeout supervision"
+                ) from exc
+
+    def _wait_for_worker_tree(
+        self,
+        process: subprocess.Popen[str],
+        lifecycle_lock: Any,
+        exit_observed: threading.Event,
+        finished: threading.Event,
+    ) -> int:
+        """Wait for the worker while ensuring descendants cannot outlive it."""
+        if os.name != "posix":
+            returncode = process.wait()
+            with lifecycle_lock:
+                exit_observed.set()
+                finished.set()
+            return returncode
+
+        # Keep the exited leader as a zombie until its process group has been
+        # killed. This prevents its PID/process-group ID from being reused in
+        # the interval between observing exit and terminating descendants.
+        waitid = getattr(os, "waitid", None)
+        p_pid = getattr(os, "P_PID", None)
+        wexited = getattr(os, "WEXITED", None)
+        wnowait = getattr(os, "WNOWAIT", None)
+        assert waitid is not None
+        assert p_pid is not None
+        assert wexited is not None
+        assert wnowait is not None
+        while True:
+            try:
+                waitid(p_pid, process.pid, wexited | wnowait)
+                break
+            except InterruptedError:
+                continue
+            except ChildProcessError as exc:
+                raise SandboxError(
+                    "Lost POSIX sandbox worker state before process-group cleanup"
+                ) from exc
+
+        # The watchdog uses the same lock. Marking exit while the leader is
+        # still unreaped closes the late-timer/reused-PGID race completely.
+        termination_error: SandboxError | None = None
+        with lifecycle_lock:
+            exit_observed.set()
+            try:
+                self._kill_posix_process_group(process)
+            except SandboxError as exc:
+                termination_error = exc
+            try:
+                returncode = process.wait()
+            finally:
+                finished.set()
+        if termination_error is not None:
+            raise termination_error
+        return returncode
+
+    def _terminate_worker_on_timeout(
+        self,
+        process: subprocess.Popen[str],
+        lifecycle_lock: Any,
+        exit_observed: threading.Event,
+        finished: threading.Event,
+        timed_out: threading.Event,
+        termination_errors: list[SandboxError],
+    ) -> None:
+        """Terminate a live worker at its deadline without racing normal exit."""
+        with lifecycle_lock:
+            if exit_observed.is_set() or finished.is_set():
+                return
+            if os.name == "posix" and self._posix_worker_exit_observable(process):
+                # The blocking waiter may have observed the leader but not yet
+                # acquired this lock. Leave the zombie unreaped so its PGID
+                # cannot be reused, clean descendants, and let that waiter reap.
+                exit_observed.set()
+                try:
+                    self._kill_posix_process_group(process)
+                except SandboxError as exc:
+                    termination_errors.append(exc)
+                return
+            if os.name != "posix" and process.poll() is not None:
+                exit_observed.set()
+                finished.set()
+                return
+            timed_out.set()
+            try:
+                if os.name == "posix":
+                    self._kill_posix_process_group(process)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                if os.name != "posix" and process.poll() is not None:
+                    timed_out.clear()
+                    exit_observed.set()
+                    finished.set()
+            except OSError as exc:
+                termination_errors.append(
+                    SandboxError("Failed to terminate sandbox worker at timeout")
+                )
+                termination_errors[-1].__cause__ = exc
+            except SandboxError as exc:
+                termination_errors.append(exc)
+
     def _run_worker(
         self,
         cmd: list[str],
         code: str,
         config_overrides: dict[str, Any] | None = None,
     ) -> tuple[int, str, str, bool]:
+        job_handle: Any | None = None
+        stdout_thread: threading.Thread | None = None
+        stderr_thread: threading.Thread | None = None
+        watchdog: threading.Timer | None = None
+        lifecycle_lock = threading.Lock()
+        exit_observed = threading.Event()
+        finished = threading.Event()
+        timed_out = threading.Event()
+        termination_errors: list[SandboxError] = []
+        self._require_posix_worker_supervision()
+        started_at = time.monotonic()
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -1245,61 +1679,90 @@ class ProcessSandbox:
             encoding="utf-8",
             errors="replace",
             env=self._create_restricted_env(config_overrides),
+            start_new_session=os.name == "posix",
         )
 
-        stdout_result: dict[str, str | bool] = {"text": "", "truncated": False}
-        stderr_result: dict[str, str | bool] = {"text": "", "truncated": False}
-
-        def reader(
-            pipe: Any,
-            limit: int,
-            keep_tail: bool,
-            target: dict[str, str | bool],
-        ) -> None:
-            try:
-                text, truncated = self._read_stream_bounded(
-                    pipe, limit, keep_tail=keep_tail
-                )
-                target["text"] = text
-                target["truncated"] = truncated
-            finally:
-                pipe.close()
-
-        stdout_thread = threading.Thread(
-            target=reader,
-            args=(process.stdout, self.config.max_output_length, False, stdout_result),
-            daemon=True,
-        )
-        stderr_thread = threading.Thread(
-            target=reader,
-            args=(process.stderr, self._stderr_capture_limit(), True, stderr_result),
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-
-        # Popen.wait(timeout=...) polls with exponentially growing sleeps
-        # (capped at 50 ms), adding up to ~50 ms of latency past the worker's
-        # actual exit. A blocking wait wakes immediately; a watchdog timer
-        # enforces the same hard timeout by killing the worker. A None
-        # timeout means wait indefinitely, matching Popen.wait(timeout=None).
-        timeout = self.config.timeout
-        timed_out = threading.Event()
-
-        def _kill_on_timeout() -> None:
-            timed_out.set()
-            try:
-                process.kill()
-            except (ProcessLookupError, OSError):
-                pass
-
-        watchdog = (
-            threading.Timer(timeout, _kill_on_timeout) if timeout is not None else None
-        )
-        if watchdog is not None:
-            watchdog.daemon = True
-            watchdog.start()
         try:
+            try:
+                job_handle = self._create_windows_job(process)
+            except OSError as exc:
+                raise SandboxError(
+                    "Failed to enforce Windows sandbox resource limits"
+                ) from exc
+
+            stdout_result: dict[str, str | bool] = {
+                "text": "",
+                "truncated": False,
+            }
+            stderr_result: dict[str, str | bool] = {
+                "text": "",
+                "truncated": False,
+            }
+
+            def reader(
+                pipe: Any,
+                limit: int,
+                keep_tail: bool,
+                target: dict[str, str | bool],
+            ) -> None:
+                try:
+                    text, truncated = self._read_stream_bounded(
+                        pipe, limit, keep_tail=keep_tail
+                    )
+                    target["text"] = text
+                    target["truncated"] = truncated
+                finally:
+                    pipe.close()
+
+            stdout_thread = threading.Thread(
+                target=reader,
+                args=(
+                    process.stdout,
+                    self.config.max_output_length,
+                    False,
+                    stdout_result,
+                ),
+                daemon=True,
+            )
+            stderr_thread = threading.Thread(
+                target=reader,
+                args=(
+                    process.stderr,
+                    self._stderr_capture_limit(),
+                    True,
+                    stderr_result,
+                ),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # Popen.wait(timeout=...) polls with exponentially growing sleeps
+            # (capped at 50 ms), adding up to ~50 ms of latency past the
+            # worker's actual exit. A blocking wait wakes immediately; a
+            # watchdog timer enforces the same hard timeout by killing the
+            # worker. A None timeout means wait indefinitely.
+            timeout = self.config.timeout
+            if timeout is not None:
+                remaining_timeout = max(
+                    0.0,
+                    timeout - (time.monotonic() - started_at),
+                )
+                watchdog = threading.Timer(
+                    remaining_timeout,
+                    self._terminate_worker_on_timeout,
+                    args=(
+                        process,
+                        lifecycle_lock,
+                        exit_observed,
+                        finished,
+                        timed_out,
+                        termination_errors,
+                    ),
+                )
+                watchdog.daemon = True
+                watchdog.start()
+
             if process.stdin is not None:
                 try:
                     process.stdin.write(code)
@@ -1307,25 +1770,92 @@ class ProcessSandbox:
                 except BrokenPipeError:
                     pass
 
-            returncode = process.wait()
+            returncode = self._wait_for_worker_tree(
+                process, lifecycle_lock, exit_observed, finished
+            )
+            # On Windows, descendants can keep the inherited stdout/stderr
+            # handles open after the leader exits. Close the kill-on-close Job
+            # before joining readers so those descendants cannot outlive the
+            # leader or defeat the wall-clock bound.
+            self._close_windows_job(job_handle)
+            job_handle = None
+
+            if termination_errors:
+                raise termination_errors[0]
+            if timeout is not None and timed_out.is_set():
+                raise subprocess.TimeoutExpired(cmd, timeout)
+
+            stdout_thread.join()
+            stderr_thread.join()
+            return (
+                returncode,
+                str(stdout_result["text"]),
+                str(stderr_result["text"]),
+                bool(stderr_result["truncated"]),
+            )
+        except BaseException:
+            if watchdog is not None:
+                watchdog.cancel()
+            cleanup_error: BaseException | None = None
+            with lifecycle_lock:
+                if not finished.is_set():
+                    try:
+                        if os.name == "posix":
+                            self._kill_posix_process_group(process)
+                        else:
+                            process.kill()
+                    except (OSError, SandboxError) as exc:
+                        cleanup_error = exc
+                    try:
+                        process.wait()
+                    except BaseException as exc:
+                        if cleanup_error is None:
+                            cleanup_error = exc
+                    finally:
+                        exit_observed.set()
+                        finished.set()
+            if job_handle is not None:
+                try:
+                    self._close_windows_job(job_handle)
+                    job_handle = None
+                except OSError as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+
+            if process.stdin is not None and not process.stdin.closed:
+                try:
+                    process.stdin.close()
+                except OSError as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+
+            for thread, pipe in (
+                (stdout_thread, process.stdout),
+                (stderr_thread, process.stderr),
+            ):
+                started_thread = (
+                    thread if thread is not None and thread.ident is not None else None
+                )
+                if started_thread is not None:
+                    started_thread.join(timeout=1.0)
+                if pipe is not None and not pipe.closed:
+                    try:
+                        pipe.close()
+                    except OSError as exc:
+                        if cleanup_error is None:
+                            cleanup_error = exc
+                if started_thread is not None and started_thread.is_alive():
+                    started_thread.join(timeout=1.0)
+
+            if cleanup_error is not None:
+                raise SandboxError(
+                    "Failed to terminate sandbox worker after interrupted execution"
+                ) from cleanup_error
+            raise
         finally:
             if watchdog is not None:
                 watchdog.cancel()
-
-        if timeout is not None and timed_out.is_set():
-            stdout_thread.join(timeout=1.0)
-            stderr_thread.join(timeout=1.0)
-            raise subprocess.TimeoutExpired(cmd, timeout)
-
-        stdout_thread.join()
-        stderr_thread.join()
-
-        return (
-            returncode,
-            str(stdout_result["text"]),
-            str(stderr_result["text"]),
-            bool(stderr_result["truncated"]),
-        )
+            self._close_windows_job(job_handle)
 
     def _format_truncated_stderr(self, stderr: str) -> str:
         limit = self._stderr_capture_limit()
@@ -1368,22 +1898,68 @@ class ProcessSandbox:
         if self.config.compiled_runtime_prelude:
             payload, config_overrides = self._frame_prelude_blob(code)
 
-        # Create the subprocess execution script
+        return self._execute_worker_payload(payload, config_overrides)
+
+    def execute_geno_request(
+        self, request: dict[str, Any]
+    ) -> tuple[Any, str, str | None]:
+        """Compile and execute one Geno CLI request in the supervised worker."""
+        if not self.config.compiled_runtime_prelude:
+            raise SandboxError(
+                "Geno worker mode requires compiled_runtime_prelude=True"
+            )
+        try:
+            payload = json.dumps(request, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise SandboxError("Geno worker request is not JSON serializable") from exc
+        return self._execute_worker_payload(
+            payload,
+            {
+                "worker_mode": "geno_cli",
+                "prelude_blob_sha256": None,
+                "trusted_prelude_line_count": 0,
+            },
+        )
+
+    def execute_python_benchmark(
+        self, request: dict[str, Any]
+    ) -> tuple[Any, str, str | None]:
+        """Evaluate a generated Python benchmark in the supervised worker."""
+        try:
+            payload = json.dumps(request, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise SandboxError(
+                "Python benchmark request is not JSON serializable"
+            ) from exc
+        if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
+            raise SandboxError("Python benchmark request exceeds the 4 MiB limit")
+        return self._execute_worker_payload(
+            payload,
+            {
+                "worker_mode": "python_benchmark",
+                "prelude_blob_sha256": None,
+                "trusted_prelude_line_count": 0,
+            },
+        )
+
+    def _execute_worker_payload(
+        self,
+        payload: str,
+        config_overrides: dict[str, Any] | None,
+    ) -> tuple[Any, str, str | None]:
+        """Run and parse a framed worker payload under hard resource limits."""
+        # Keep the command line tiny on Windows. The trusted worker and payload
+        # are framed separately on stdin; no untrusted text is persisted.
         worker_script = self._create_worker_script()
+        cmd = self._create_worker_command()
+        worker_input = self._frame_worker_input(worker_script, payload)
 
-        # Stream code over stdin instead of writing it to disk. This avoids
-        # leaving user code behind if the parent process dies before cleanup.
-        cmd = [sys.executable, "-c", worker_script]
-
-        # Execute with timeout
         try:
             returncode, stdout, stderr, stderr_truncated = self._run_worker(
-                cmd, payload, config_overrides
+                cmd, worker_input, config_overrides
             )
 
-            # Parse the result
-            # Result JSON is written to stderr to prevent
-            # user output on stdout from spoofing results.
+            # Result JSON is written to stderr so program output cannot spoof it.
             stderr_lines = stderr.strip().split("\n") if stderr.strip() else []
             result_json = None
             for line in reversed(stderr_lines):
@@ -1400,12 +1976,18 @@ class ProcessSandbox:
 
             if parsed is not None:
                 success = parsed.get("success", parsed.get("error") is None)
+                if success and returncode != 0:
+                    exit_error = (
+                        stderr
+                        or f"Sandbox worker exited with status {returncode} after writing a success envelope"
+                    )
+                    logger.error(
+                        "Rejecting worker success after nonzero exit: %s", exit_error
+                    )
+                    return (None, stdout, exit_error)
                 error = parsed.get("error")
                 if not success and not error:
                     error = "Execution failed"
-                # When the worker was run with GENO_SANDBOX_DEBUG it attaches
-                # its traceback; surface it in the parent log so a compiler-bug
-                # report from the process-isolated path is diagnosable.
                 worker_traceback = parsed.get("traceback")
                 if not success and worker_traceback:
                     logger.error(
@@ -1417,19 +1999,12 @@ class ProcessSandbox:
                     error if not success else None,
                 )
 
-            # No parseable result JSON. A non-zero exit is an ordinary worker
-            # failure: report the captured stderr as the error.
             if returncode != 0:
                 error = stderr or "Execution failed"
                 if stderr_truncated:
                     error = self._format_truncated_stderr(error)
                 return (None, stdout, error)
 
-            # Exit code 0 with a missing/corrupt result channel. The worker
-            # writes exactly one result JSON line before every clean exit, so
-            # this state means the result was lost (e.g. truncated at the
-            # stderr capture bound, or the worker was bypassed). Fail closed
-            # instead of silently reporting success-with-None (H-09).
             detail = (
                 "wrote no result JSON"
                 if result_json is None
@@ -1446,10 +2021,10 @@ class ProcessSandbox:
             logger.error("%s; stderr tail: %r", message, stderr[-500:])
             raise SandboxError(message)
 
-        except subprocess.TimeoutExpired as e:
+        except subprocess.TimeoutExpired as exc:
             raise TimeoutError(
                 f"Execution timed out after {self.config.timeout} seconds"
-            ) from e
+            ) from exc
 
     def _frame_prelude_blob(self, code: str) -> tuple[str, dict[str, Any] | None]:
         """Replace a canonical runtime-prelude prefix with a marshal blob.
@@ -1484,6 +2059,13 @@ class ProcessSandbox:
 import json
 import os
 import sys
+
+# A Windows venv uses a redirector executable that can escape a Job Object
+# before assignment. The parent launches the real base interpreter instead,
+# then appends only validated venv package roots after the standard library.
+for _trusted_import_path in _GENO_TRUSTED_IMPORT_PATHS:
+    if _trusted_import_path not in sys.path:
+        sys.path.append(_trusted_import_path)
 
 def _truncate_worker_text(value, max_chars):
     text = str(value)
@@ -1569,32 +2151,257 @@ def main():
         import resource
 
         def _try_setrlimit(which, soft, hard, name):
-            # Apply a resource limit; return True on success.
+            # Resource limits are security boundaries. Never continue after a
+            # requested limit fails to apply.
             try:
                 resource.setrlimit(which, (soft, hard))
                 return True
             except (ValueError, OSError) as exc:
-                sys.stderr.write(
-                    f"Warning: failed to set {name}: {exc}\n"
+                _emit_worker_error(
+                    f"startup_error: failed to set {name}: {exc}",
+                    "startup_error",
                 )
                 return False
 
         # CPU time limit
         cpu_limit = config.get("max_cpu_time", 0)
-        if cpu_limit > 0:
-            _try_setrlimit(resource.RLIMIT_CPU, cpu_limit, cpu_limit, "RLIMIT_CPU")
+        if cpu_limit > 0 and not _try_setrlimit(
+            resource.RLIMIT_CPU, cpu_limit, cpu_limit, "RLIMIT_CPU"
+        ):
+            sys.exit(1)
 
         # File size limit (prevent file creation)
         file_limit = config.get("max_file_size_bytes", 0)
-        _try_setrlimit(resource.RLIMIT_FSIZE, file_limit, file_limit, "RLIMIT_FSIZE")
+        if not _try_setrlimit(
+            resource.RLIMIT_FSIZE, file_limit, file_limit, "RLIMIT_FSIZE"
+        ):
+            sys.exit(1)
 
-        # Process limit — critical for preventing fork bombs.
-        # NPROC failure is higher risk but os/subprocess imports are
-        # still blocked at the Python level.
+        # Process limit - critical for preventing fork bombs.
         proc_limit = config.get("max_processes", 1)
-        _try_setrlimit(resource.RLIMIT_NPROC, proc_limit, proc_limit, "RLIMIT_NPROC")
-    except ImportError:
-        pass  # resource module not available (Windows)
+        if not _try_setrlimit(
+            resource.RLIMIT_NPROC, proc_limit, proc_limit, "RLIMIT_NPROC"
+        ):
+            sys.exit(1)
+    except ImportError as exc:
+        # Windows limits are installed by the parent before stdin is written.
+        # Any other platform without resource support must fail closed.
+        if os.name != "nt":
+            _emit_worker_error(
+                f"startup_error: resource module unavailable: {exc}",
+                "startup_error",
+            )
+            sys.exit(1)
+
+    # Generated Python benchmarks run in their own fresh interpreter. This
+    # separates provider clients and API keys held by the experiment parent;
+    # JSON is the only request/result channel.
+    if config.get("worker_mode") == "python_benchmark":
+        sys.dont_write_bytecode = True
+
+        # Apply memory limits before importing benchmark code. Windows is
+        # already covered by the Job Object assigned before stdin was written.
+        try:
+            import resource as _benchmark_resource
+
+            _benchmark_memory = config.get("max_memory_bytes", 0)
+            if _benchmark_memory > 0:
+                try:
+                    _benchmark_resource.setrlimit(
+                        _benchmark_resource.RLIMIT_AS,
+                        (_benchmark_memory, _benchmark_memory),
+                    )
+                except (ValueError, OSError) as exc:
+                    _emit_worker_error(
+                        f"startup_error: failed to set benchmark RLIMIT_AS: {exc}",
+                        "startup_error",
+                    )
+                    return
+        except ImportError as exc:
+            if os.name != "nt":
+                _emit_worker_error(
+                    f"startup_error: resource module unavailable: {exc}",
+                    "startup_error",
+                )
+                return
+
+        try:
+            _benchmark_request = json.loads(code)
+            if not isinstance(_benchmark_request, dict):
+                raise ValueError("request must be a JSON object")
+            if set(_benchmark_request) != {
+                "problem",
+                "solution_code",
+                "timeout_seconds",
+            }:
+                raise ValueError("request fields are invalid")
+            if not isinstance(_benchmark_request["problem"], dict):
+                raise ValueError("problem must be a JSON object")
+            if not isinstance(_benchmark_request["solution_code"], str):
+                raise ValueError("solution_code must be a string")
+            _benchmark_timeout = _benchmark_request["timeout_seconds"]
+            if (
+                isinstance(_benchmark_timeout, bool)
+                or not isinstance(_benchmark_timeout, (int, float))
+                or _benchmark_timeout <= 0
+            ):
+                raise ValueError("timeout_seconds must be a positive number")
+        except (json.JSONDecodeError, ValueError) as exc:
+            _emit_worker_error(
+                "startup_error: invalid Python benchmark request: " + str(exc),
+                "startup_error",
+            )
+            return
+
+        try:
+            if _GENO_TRUSTED_ROOT not in sys.path:
+                sys.path.insert(0, _GENO_TRUSTED_ROOT)
+            from benchmark.runner import (
+                BenchmarkRunner as _BenchmarkRunner,
+                _evaluation_result_to_worker_payload,
+            )
+            from benchmark.schema import Problem as _BenchmarkProblem
+
+            _benchmark_problem = _BenchmarkProblem.from_dict(
+                _benchmark_request["problem"]
+            )
+            _benchmark_runner = _BenchmarkRunner(
+                timeout_seconds=float(_benchmark_timeout),
+                allow_unsafe_python_execution=True,
+            )
+            _benchmark_result = _benchmark_runner._evaluate_python_in_process(
+                _benchmark_problem,
+                _benchmark_request["solution_code"],
+                sandboxed=True,
+            )
+            _benchmark_payload = _evaluation_result_to_worker_payload(
+                _benchmark_result
+            )
+            _benchmark_json = json.dumps(
+                {
+                    "result": _benchmark_payload,
+                    "success": True,
+                    "error": None,
+                },
+                allow_nan=False,
+            )
+            _benchmark_result_limit = int(
+                config.get("stderr_result_limit", 0)
+            )
+            if (
+                _benchmark_result_limit
+                and len(_benchmark_json) + 1 > _benchmark_result_limit
+            ):
+                _emit_worker_error(
+                    "result_too_large: serialized benchmark result exceeds "
+                    "the sandbox result limit",
+                    "result_too_large",
+                )
+                return
+            sys.stderr.write(_benchmark_json + "\n")
+            return
+        except MemoryError:
+            _emit_worker_error(
+                "resource_limit: memory limit exceeded during Python benchmark",
+                "resource_limit",
+            )
+            return
+        except BaseException as exc:
+            _detail = str(exc) or type(exc).__name__
+            _emit_worker_error(
+                "python_benchmark_error: "
+                + type(exc).__name__
+                + ": "
+                + _truncate_worker_text(_detail, max_result_error),
+                "python_benchmark_error",
+            )
+            return
+
+    # Default Geno CLI mode performs every source-controlled phase in this
+    # same supervised child. The parent sends only a bounded JSON request.
+    if config.get("worker_mode") == "geno_cli":
+        sys.dont_write_bytecode = True
+
+        # Apply the address-space limit before importing the compiler or reading
+        # any project source. Windows is already covered by the Job Object that
+        # the parent assigned before it wrote this request to stdin.
+        try:
+            import resource as _frontend_resource
+
+            _frontend_memory = config.get("max_memory_bytes", 0)
+            if _frontend_memory > 0:
+                try:
+                    _frontend_resource.setrlimit(
+                        _frontend_resource.RLIMIT_AS,
+                        (_frontend_memory, _frontend_memory),
+                    )
+                except (ValueError, OSError) as exc:
+                    _emit_worker_error(
+                        f"startup_error: failed to set frontend RLIMIT_AS: {exc}",
+                        "startup_error",
+                    )
+                    sys.exit(1)
+        except ImportError as exc:
+            if os.name != "nt":
+                _emit_worker_error(
+                    f"startup_error: resource module unavailable: {exc}",
+                    "startup_error",
+                )
+                sys.exit(1)
+
+        try:
+            _geno_request = json.loads(code)
+            if not isinstance(_geno_request, dict):
+                raise ValueError("request must be a JSON object")
+        except (json.JSONDecodeError, ValueError) as exc:
+            _emit_worker_error(
+                "startup_error: invalid Geno worker request: " + str(exc),
+                "startup_error",
+            )
+            sys.exit(1)
+
+        try:
+            if _GENO_TRUSTED_ROOT not in sys.path:
+                sys.path.insert(0, _GENO_TRUSTED_ROOT)
+            from geno.cli.run import (
+                _format_process_frontend_error,
+                _prepare_process_run,
+            )
+
+            _prepared = _prepare_process_run(_geno_request)
+        except MemoryError:
+            raise
+        except BaseException as exc:
+            try:
+                _filename = _geno_request.get("filename", "<input>")
+                _formatted = _format_process_frontend_error(_filename, exc)
+            except BaseException:
+                _formatted = (
+                    "Compiler Error: the isolated frontend failed safely "
+                    f"({type(exc).__name__})"
+                )
+            _emit_worker_error(
+                "\x1eGENO_FRONTEND\x1e"
+                + _truncate_worker_text(_formatted, max_result_error),
+                "geno_frontend",
+            )
+            sys.exit(1)
+
+        if (
+            not isinstance(_prepared, dict)
+            or not isinstance(_prepared.get("python_code"), str)
+            or not isinstance(_prepared.get("trusted_prelude_line_count"), int)
+            or _prepared["trusted_prelude_line_count"] <= 0
+        ):
+            _emit_worker_error(
+                "startup_error: isolated frontend returned an invalid payload",
+                "startup_error",
+            )
+            sys.exit(1)
+        code = _prepared["python_code"]
+        config["trusted_prelude_line_count"] = _prepared[
+            "trusted_prelude_line_count"
+        ]
 
     # ---- Worker-side AST validation (runs unconditionally) ----
     # This runs even when strict=False in the parent process, closing the
@@ -1723,7 +2530,12 @@ def main():
     # that bypass safe_getattr at the C level.
     def safe_type(*args):
         if len(args) == 1:
-            return type(args[0])
+            result = type(args[0])
+            if isinstance(result, type) and issubclass(result, type):
+                raise RuntimeError(
+                    "type() cannot expose a metaclass constructor in sandbox"
+                )
+            return result
         raise RuntimeError(
             "type() with multiple arguments is not allowed in sandbox"
         )
@@ -1752,6 +2564,32 @@ def main():
     ]))
     def _estimate_urlsafe_len(nbytes):
         return ((nbytes + 2) // 3) * 4
+
+    def _sanitize_module_result(result, seen=None):
+        import types as _types
+        try:
+            is_metaclass = isinstance(result, type) and issubclass(result, type)
+        except TypeError:
+            is_metaclass = False
+        if is_metaclass:
+            raise RuntimeError("Module callable returned a metaclass constructor")
+        if isinstance(result, _types.ModuleType):
+            raise RuntimeError("Module callable returned a raw module")
+        if not isinstance(result, (dict, list, tuple, set, frozenset)):
+            return result
+        seen = set() if seen is None else seen
+        marker = id(result)
+        if marker in seen:
+            return result
+        seen.add(marker)
+        items = (
+            tuple(result.keys()) + tuple(result.values())
+            if isinstance(result, dict)
+            else result
+        )
+        for item in items:
+            _sanitize_module_result(item, seen)
+        return result
 
     def _wrap_shake_xof(obj):
         class _ShakeProxy:
@@ -1849,7 +2687,18 @@ def main():
                         return _wrap_shake_xof(result)
                     return result
                 return guarded_new
-        return value
+        import types as _types
+        callable_types = (
+            _types.FunctionType,
+            _types.BuiltinFunctionType,
+            _types.MethodType,
+            _types.BuiltinMethodType,
+        )
+        if isinstance(value, callable_types):
+            def guarded_module_callable(*args, **kwargs):
+                return _sanitize_module_result(value(*args, **kwargs))
+            return guarded_module_callable
+        return _sanitize_module_result(value)
 
     def _make_module_proxy(mod):
         class _Proxy:
@@ -1871,6 +2720,16 @@ def main():
                     raise RuntimeError(f"Access to '{mod_name}.{name}' not allowed")
                 import types as _types
                 value = getattr(mod, name)
+                try:
+                    is_metaclass_constructor = (
+                        isinstance(value, type) and issubclass(value, type)
+                    )
+                except TypeError:
+                    is_metaclass_constructor = False
+                if is_metaclass_constructor:
+                    raise RuntimeError(
+                        f"Access to metaclass constructor '{mod_name}.{name}' not allowed"
+                    )
                 if isinstance(value, _types.ModuleType):
                     top = getattr(value, '__name__', '').split('.')[0]
                     if top not in _WORKER_SAFE_MODULES:
@@ -2048,11 +2907,18 @@ def main():
             try:
                 _resource.setrlimit(_resource.RLIMIT_AS, (mem_limit, mem_limit))
             except (ValueError, OSError) as exc:
-                sys.stderr.write(
-                    f"Warning: failed to set RLIMIT_AS: {exc}\n"
+                _emit_worker_error(
+                    f"startup_error: failed to set RLIMIT_AS: {exc}",
+                    "startup_error",
                 )
-    except ImportError:
-        pass
+                sys.exit(1)
+    except ImportError as exc:
+        if os.name != "nt":
+            _emit_worker_error(
+                f"startup_error: resource module unavailable: {exc}",
+                "startup_error",
+            )
+            sys.exit(1)
 
     try:
         if _prelude_blob_code is not None:
@@ -2134,24 +3000,42 @@ if __name__ == "__main__":
 
     def _create_worker_script(self) -> str:
         """Create the worker script that runs in the subprocess."""
-        return self._WORKER_SCRIPT
+        trusted_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), os.pardir)
+        )
+        trusted_import_paths = self._worker_import_paths()
+        return (
+            f"_GENO_TRUSTED_ROOT = {trusted_root!r}\n"
+            f"_GENO_TRUSTED_IMPORT_PATHS = {trusted_import_paths!r}\n"
+            + self._WORKER_SCRIPT
+        )
 
     def _create_restricted_env(
         self, config_overrides: dict[str, Any] | None = None
     ) -> dict:
         """Create a restricted environment for the subprocess."""
         # Start with a minimal environment
+        sandbox_home = os.path.realpath(tempfile.gettempdir())
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": os.environ.get("HOME", "/tmp"),  # nosec B108
+            "HOME": sandbox_home,
+            "PYTHONDONTWRITEBYTECODE": "1",
             "LANG": os.environ.get("LANG", "C.UTF-8"),
         }
 
         if self.system == "Windows":
-            for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"):
+            for name in (
+                "SystemRoot",
+                "WINDIR",
+                "COMSPEC",
+                "PATHEXT",
+                "TEMP",
+                "TMP",
+            ):
                 value = os.environ.get(name)
                 if value:
                     env[name] = value
+            env["USERPROFILE"] = sandbox_home
 
         # On macOS, we might need TMPDIR
         if self.system == "Darwin":
@@ -2214,7 +3098,10 @@ if __name__ == "__main__":
         env["GENO_RECURSION_LIMIT"] = str(self.config.max_recursion_depth * 6 + 100)
 
         # Forward program args for cli_args() builtin
-        if "GENO_CLI_ARGS" in os.environ:
+        if (
+            "GENO_CLI_ARGS" in os.environ
+            and (config_overrides or {}).get("worker_mode") != "python_benchmark"
+        ):
             env["GENO_CLI_ARGS"] = os.environ["GENO_CLI_ARGS"]
 
         return env
@@ -2228,7 +3115,7 @@ def run_in_process(
 
     This is more secure than run_sandboxed() as it provides:
     - True timeout enforcement (process can be killed)
-    - Memory limits (on Linux)
+    - Memory limits (POSIX rlimit / Windows Job)
     - Process isolation
 
     Args:

@@ -2292,6 +2292,26 @@ class TestJSCompilerReservedNames:
         assert "class_kw" in js_code
         assert compile_and_run_js(source) == "42"
 
+    @pytest.mark.parametrize("name", ["_requireCap", "_validateRegexPattern"])
+    def test_all_runtime_prelude_functions_are_reserved(self, name):
+        source = f"""
+        func {name}(value: String, context: String) -> Unit
+            example "x", "y" -> ()
+            return ()
+        end func
+        """
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
+    def test_runtime_name_rejected_as_trait_dispatcher(self):
+        source = """
+        trait Unsafe
+            func _requireCap(self: Self) -> Unit
+        end trait
+        """
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
     def test_prelude_name_rejected(self):
         source = """
         func _safe_div(a: Int, b: Int) -> Int

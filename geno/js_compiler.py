@@ -74,7 +74,6 @@ from .ast_nodes import (
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
-    TypeAlias,
     TypeDef,
     TypedHole,
     TypeIdentifier,
@@ -94,6 +93,7 @@ from .ast_nodes import (
 )
 from .base_compiler import BaseCompiler
 from .builtin_registry import (
+    all_builtin_names,
     js_backend_builtin_helper_names,
     js_backend_builtin_name_map,
 )
@@ -373,7 +373,7 @@ _JS_RECORD_FORBIDDEN_FIELD_NAMES = frozenset(
     }
 )
 
-JS_RESERVED_PRELUDE_NAMES = (
+_JS_LOCAL_RESERVED_NAMES = (
     frozenset(
         {
             "isConstructor",
@@ -438,6 +438,20 @@ JS_RESERVED_PRELUDE_NAMES = (
     )
     | js_backend_builtin_helper_names()
 )
+
+_JS_PRELUDE_BINDING_RE = _re.compile(
+    r"^(?:(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+    r"|class\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+    r"|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*))\b",
+    _re.MULTILINE,
+)
+JS_RESERVED_PRELUDE_NAMES = (
+    frozenset(
+        next(name for name in match.groups() if name is not None)
+        for match in _JS_PRELUDE_BINDING_RE.finditer(JS_RUNTIME_PRELUDE)
+    )
+    - frozenset(all_builtin_names())
+) | _JS_LOCAL_RESERVED_NAMES
 
 
 class JSCompileError(Exception):
@@ -527,27 +541,11 @@ class JSCompiler(BaseCompiler):
         collect_definitions(program, into=self._definition_index)
 
         # Validate no user names shadow prelude names
-        for defn in program.definitions:
-            if isinstance(defn, FunctionDef) and defn.name in JS_RESERVED_PRELUDE_NAMES:
-                raise JSCompileError(
-                    f"'{defn.name}' is a reserved runtime name and cannot be "
-                    f"used as a function name"
-                )
-            if isinstance(defn, (TypeDef, TypeAlias)):
-                if defn.name in JS_RESERVED_PRELUDE_NAMES:
-                    raise JSCompileError(
-                        f"'{defn.name}' is a reserved runtime name and cannot be "
-                        f"used as a type name"
-                    )
-                if isinstance(defn, TypeDef):
-                    for variant in defn.variants:
-                        if variant.name in JS_RESERVED_PRELUDE_NAMES:
-                            raise JSCompileError(
-                                f"'{variant.name}' is a reserved runtime name and "
-                                f"cannot be used as a constructor name"
-                            )
-        self._validate_reserved_local_names(
-            program, JS_RESERVED_PRELUDE_NAMES, JSCompileError
+        self._validate_runtime_name_collisions(
+            program,
+            JS_RESERVED_PRELUDE_NAMES,
+            _JS_LOCAL_RESERVED_NAMES,
+            JSCompileError,
         )
 
         # Compile all definitions
@@ -696,6 +694,15 @@ class JSCompiler(BaseCompiler):
         self._reset_definition_state()
         for program in dep_graph.parsed.values():
             self._reserve_user_temp_names(program)
+            self._validate_runtime_name_collisions(
+                program,
+                JS_RESERVED_PRELUDE_NAMES,
+                _JS_LOCAL_RESERVED_NAMES,
+                JSCompileError,
+            )
+        for mod_name in dep_graph.sorted_modules:
+            if mod_name in JS_RESERVED_PRELUDE_NAMES:
+                raise JSCompileError(f"'{mod_name}' is a reserved runtime module name")
         self._out_line = 0
         self._source_files = []
         self._source_index = {}
@@ -3260,10 +3267,7 @@ def compile_project_to_html(
         for mod_name in dep_graph.sorted_modules:
             rf = dep_graph.file_map.get(mod_name)
             if rf:
-                try:
-                    sources_content[str(rf.path)] = rf.path.read_text(encoding="utf-8")
-                except OSError:
-                    pass
+                sources_content[str(rf.path)] = dep_graph.original_sources[mod_name]
 
     sm_json = None
     if source_map:
