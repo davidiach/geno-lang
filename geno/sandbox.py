@@ -9,6 +9,7 @@ and system commands.
 
 import ast
 import base64
+import errno
 import hashlib
 import json
 import logging
@@ -1565,8 +1566,16 @@ class ProcessSandbox:
             observer.close()
 
     @staticmethod
-    def _kill_posix_process_group(process: subprocess.Popen[str]) -> None:
-        """Terminate the worker's isolated POSIX process group."""
+    def _kill_posix_process_group(
+        process: subprocess.Popen[str], *, leader_exit_observed: bool = False
+    ) -> None:
+        """Terminate the worker's isolated POSIX process group.
+
+        Darwin reports ``EPERM`` when a process group contains only zombies.
+        Accept that result only after an exit observer has confirmed the leader
+        exited and a signal-0 probe confirms its unreaped zombie still owns the
+        PID/PGID. All other group-termination failures remain fatal.
+        """
         if os.name != "posix":
             return
         try:
@@ -1577,6 +1586,20 @@ class ProcessSandbox:
         except ProcessLookupError:
             return
         except OSError as group_error:
+            if (
+                leader_exit_observed
+                and platform.system() == "Darwin"
+                and group_error.errno == errno.EPERM
+            ):
+                try:
+                    # XNU deliberately reports success when signaling a zombie.
+                    # Together with the exit event, this confirms the leader is
+                    # still unreaped and its process-group ID cannot be reused.
+                    os.kill(process.pid, 0)
+                except OSError:
+                    pass
+                else:
+                    return
             # Killing the leader is not equivalent to killing the group, but it
             # guarantees a failed group kill cannot leave the synchronous wait
             # blocked forever. Surface the infrastructure failure either way.
@@ -1678,7 +1701,7 @@ class ProcessSandbox:
         with lifecycle_lock:
             exit_observed.set()
             try:
-                self._kill_posix_process_group(process)
+                self._kill_posix_process_group(process, leader_exit_observed=True)
             except SandboxError as exc:
                 termination_error = exc
             try:
@@ -1731,7 +1754,7 @@ class ProcessSandbox:
                 # cannot be reused, clean descendants, and let that waiter reap.
                 exit_observed.set()
                 try:
-                    self._kill_posix_process_group(process)
+                    self._kill_posix_process_group(process, leader_exit_observed=True)
                 except SandboxError as exc:
                     termination_errors.append(exc)
                 return

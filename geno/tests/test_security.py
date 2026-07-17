@@ -5,6 +5,7 @@ Security Tests for Geno
 Tests that the sandbox properly restricts dangerous operations.
 """
 
+import errno
 import importlib
 import io
 import os
@@ -1275,7 +1276,7 @@ class TestProcessSandbox:
         monkeypatch.setattr(
             sandbox,
             "_kill_posix_process_group",
-            lambda _process: lifecycle.append("group-killed"),
+            lambda _process, **_kwargs: lifecycle.append("group-killed"),
         )
 
         returncode = sandbox._wait_for_worker_tree(
@@ -1333,6 +1334,77 @@ class TestProcessSandbox:
         assert len(termination_errors) == 1
         assert "Lost POSIX sandbox worker state" in str(termination_errors[0])
 
+    def test_darwin_zombie_only_group_error_is_benign_after_exit(self, monkeypatch):
+        """Darwin's zombie-only EPERM must not fail completed worker cleanup."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+
+        class FakeProcess:
+            pid = 123
+
+        def zombie_only_group(_pid, _signal):
+            raise PermissionError(errno.EPERM, "zombie-only process group")
+
+        leader_probed = False
+
+        def signalable_zombie(pid, sig):
+            nonlocal leader_probed
+            assert (pid, sig) == (123, 0)
+            leader_probed = True
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setitem(sandbox_module.signal.__dict__, "SIGKILL", 9)
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", zombie_only_group)
+        monkeypatch.setattr(sandbox_module.os, "kill", signalable_zombie)
+
+        sandbox._kill_posix_process_group(
+            cast(subprocess.Popen[str], FakeProcess()), leader_exit_observed=True
+        )
+
+        assert leader_probed is True
+
+    @pytest.mark.parametrize("leader_exit_observed", [False, True])
+    def test_darwin_group_error_remains_fatal_without_unreaped_leader(
+        self, monkeypatch, leader_exit_observed
+    ):
+        """Darwin EPERM stays fail-closed before exit or without its zombie."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        leader_killed = False
+
+        class FakeProcess:
+            pid = 123
+
+            def kill(self):
+                nonlocal leader_killed
+                leader_killed = True
+
+        def denied_group(_pid, _signal):
+            raise PermissionError(errno.EPERM, "group denied")
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setitem(sandbox_module.signal.__dict__, "SIGKILL", 9)
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", denied_group)
+
+        def missing_leader(_pid, _signal):
+            raise ProcessLookupError(errno.ESRCH, "leader already reaped")
+
+        monkeypatch.setattr(sandbox_module.os, "kill", missing_leader)
+
+        with pytest.raises(SandboxError, match="process group"):
+            sandbox._kill_posix_process_group(
+                cast(subprocess.Popen[str], FakeProcess()),
+                leader_exit_observed=leader_exit_observed,
+            )
+
+        assert leader_killed is True
+
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
     def test_late_timeout_callback_does_not_kill_exited_worker(self, monkeypatch):
         import threading
@@ -1383,7 +1455,7 @@ class TestProcessSandbox:
             sandbox, "_posix_worker_exit_observable", lambda _process: True
         )
 
-        def record_kill(_process):
+        def record_kill(_process, **_kwargs):
             nonlocal killed
             killed = True
 
