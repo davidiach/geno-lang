@@ -481,9 +481,99 @@ class TestRequestBoundaryHardening:
         class Handler:
             headers = {"Host": "api.example.com", "Origin": origin}
             connection = object()
-            _cors_allowed_origins = frozenset()
+            _cors_allowed_origins: frozenset[str] = frozenset()
 
-        assert _request_origin_allowed(Handler()) is False
+        assert _request_origin_allowed(cast(Any, Handler())) is False
+
+    def test_same_origin_honors_forwarded_proto_from_trusted_proxy(self):
+        class Handler:
+            headers = {
+                "Host": "api.example.com",
+                "Origin": "https://api.example.com",
+                "X-Forwarded-Proto": "https",
+            }
+            connection = object()
+            client_address = ("127.0.0.1", 12345)
+            _trusted_proxy = "127.0.0.1"
+            _cors_allowed_origins: frozenset[str] = frozenset()
+
+        assert _request_origin_allowed(cast(Any, Handler())) is True
+
+    @pytest.mark.parametrize(
+        ("host", "origin"),
+        [
+            ("api.example.com", "https://api.example.com:0"),
+            ("api.example.com:0", "https://api.example.com"),
+        ],
+    )
+    def test_forwarded_proto_does_not_treat_port_zero_as_default(self, host, origin):
+        class Handler:
+            headers = {
+                "Host": host,
+                "Origin": origin,
+                "X-Forwarded-Proto": "https",
+            }
+            connection = object()
+            client_address = ("127.0.0.1", 12345)
+            _trusted_proxy = "127.0.0.1"
+            _cors_allowed_origins: frozenset[str] = frozenset()
+
+        assert _request_origin_allowed(cast(Any, Handler())) is False
+
+    def test_untrusted_peer_cannot_spoof_forwarded_proto(self):
+        class Handler:
+            headers = {
+                "Host": "api.example.com",
+                "Origin": "https://api.example.com",
+                "X-Forwarded-Proto": "https",
+            }
+            connection = object()
+            client_address = ("203.0.113.10", 12345)
+            _trusted_proxy = "127.0.0.1"
+            _cors_allowed_origins: frozenset[str] = frozenset()
+
+        assert _request_origin_allowed(cast(Any, Handler())) is False
+
+    @pytest.mark.parametrize(
+        "forwarded_proto",
+        ["", "javascript", "https,http"],
+    )
+    def test_trusted_proxy_forwarded_proto_is_strict(self, forwarded_proto):
+        class Handler:
+            headers = {
+                "Host": "api.example.com",
+                "Origin": "https://api.example.com",
+                "X-Forwarded-Proto": forwarded_proto,
+            }
+            connection = object()
+            client_address = ("127.0.0.1", 12345)
+            _trusted_proxy = "127.0.0.1"
+            _cors_allowed_origins: frozenset[str] = frozenset()
+
+        assert _request_origin_allowed(cast(Any, Handler())) is False
+
+    def test_trusted_proxy_rejects_duplicate_forwarded_proto_headers(self):
+        class DuplicateHeaders(dict[str, str]):
+            def get_all(self, name: str, default: list[str]) -> list[str]:
+                if name.lower() == "x-forwarded-proto":
+                    return ["https", "http"]
+                value = self.get(name)
+                return [value] if value is not None else default
+
+        class Handler:
+            headers = DuplicateHeaders(
+                {
+                    "Host": "api.example.com",
+                    "Origin": "https://api.example.com",
+                    "X-Forwarded-Proto": "https",
+                }
+            )
+            connection = object()
+            client_address = ("127.0.0.1", 12345)
+            _trusted_proxy = "127.0.0.1"
+            _cors_allowed_origins: frozenset[str] = frozenset()
+
+        assert _request_origin_allowed(cast(Any, Handler())) is False
 
     def test_slow_request_body_hits_absolute_deadline(self):
         import socket

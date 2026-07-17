@@ -321,6 +321,12 @@ rate limiting keys on the proxy IP (one shared bucket for all clients). Only
 set it when a trusted proxy actually fronts the server — trusting
 `X-Forwarded-For` from an untrusted peer lets clients spoof their IP.
 
+`GENO_TRUSTED_PROXY` also enables the public scheme from
+`X-Forwarded-Proto` for same-origin browser checks. The immediate proxy must
+overwrite that header with exactly `http` or `https`; duplicate or malformed
+values fail closed. Without a matching trusted immediate peer, forwarded scheme
+headers do not affect security decisions.
+
 ### Operator environment variables
 
 Beyond the request-facing variables listed under [Options](#options), the
@@ -328,7 +334,7 @@ server reads these operator knobs (all optional; defaults in parentheses):
 
 | Variable | Purpose |
 | --- | --- |
-| `GENO_TRUSTED_PROXY` | Immediate upstream proxy address; enables `X-Forwarded-For` client-IP trust for rate limiting (unset — peer IP used) |
+| `GENO_TRUSTED_PROXY` | Immediate upstream proxy address; enables strict `X-Forwarded-For` client-IP trust and `X-Forwarded-Proto` scheme trust (unset — peer IP and connection scheme used) |
 | `GENO_ALLOWED_ENV_NAMES` / `GENO_ALLOWED_ENV_PREFIXES` | Allowlist for the `env` capability; without one, granting `env` on `/run` is rejected |
 | `GENO_SKIP_STARTUP_CHECKS` | Skip fail-closed startup checks (`/healthz` then reports checks as skipped) |
 | `GENO_MAX_REQUEST_BODY_BYTES` | Cap on `/run` and `/constrain` request body size |

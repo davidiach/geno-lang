@@ -903,7 +903,7 @@ def _request_origin_allowed(handler: BaseHTTPRequestHandler) -> bool:
     origin_host = (
         parsed.scheme,
         parsed.hostname.rstrip(".").lower(),
-        origin_port or origin_default_port,
+        origin_port if origin_port is not None else origin_default_port,
     )
     hosts = _header_values(handler, "Host")
     if len(hosts) != 1:
@@ -917,12 +917,25 @@ def _request_origin_allowed(handler: BaseHTTPRequestHandler) -> bool:
         if isinstance(getattr(handler, "connection", None), ssl.SSLSocket)
         else "http"
     )
+    trusted_proxy = getattr(handler, "_trusted_proxy", None)
+    if (
+        trusted_proxy is not None
+        and getattr(handler, "client_address", (None,))[0] == trusted_proxy
+    ):
+        forwarded_proto_values = _header_values(handler, "X-Forwarded-Proto")
+        if forwarded_proto_values:
+            if len(forwarded_proto_values) != 1:
+                return False
+            forwarded_proto = forwarded_proto_values[0].strip().lower()
+            if forwarded_proto not in {"http", "https"}:
+                return False
+            request_scheme = forwarded_proto
 
     request_default_port = 443 if request_scheme == "https" else 80
     request_origin = (
         request_scheme,
         request_name,
-        request_port or request_default_port,
+        request_port if request_port is not None else request_default_port,
     )
     return request_origin == origin_host
 
@@ -1835,10 +1848,13 @@ def create_handler(
         TCP peer address of a trusted reverse proxy (e.g. ``"127.0.0.1"``).
         When the connection comes from this address, the real client IP is
         read from the rightmost syntactically valid, non-proxy
-        ``X-Forwarded-For`` entry. Invalid entries are ignored. When ``None``
-        (default), the TCP peer address is always used directly. Only set
-        this when you control the proxy; untrusted X-Forwarded-For headers can
-        be spoofed by clients.
+        ``X-Forwarded-For`` entry and a single exact ``X-Forwarded-Proto``
+        value of ``http`` or ``https`` defines the public scheme for
+        same-origin checks. Invalid client-IP entries are ignored; duplicate
+        or malformed forwarded-scheme values fail closed. When ``None``
+        (default), the TCP peer address and connection scheme are used
+        directly. Only set this when you control the proxy and it overwrites
+        both headers; forwarded headers can otherwise be spoofed by clients.
 
     Production deployments should place a reverse proxy (nginx, Caddy)
     in front of this server for TLS termination and connection management.
@@ -2006,6 +2022,7 @@ def create_handler(
             # client from retaining a thread while dribbling headers or a body.
             self.request.settimeout(_REQUEST_TIMEOUT_SECONDS)
             self._cors_allowed_origins = _CORS_ALLOWED_ORIGINS
+            self._trusted_proxy = trusted_proxy
             self._request_deadline = threading.Timer(
                 _REQUEST_TIMEOUT_SECONDS, self._expire_request_read
             )
