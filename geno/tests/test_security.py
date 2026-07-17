@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import Any, cast
 
 import pytest
 
@@ -1002,7 +1003,7 @@ class TestProcessSandbox:
         """The process sandbox should avoid persisting user code on disk."""
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
-        captured: dict[str, object] = {}
+        captured: dict[str, Any] = {}
 
         class CapturingStdin:
             def __init__(self):
@@ -1052,6 +1053,11 @@ class TestProcessSandbox:
         sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda process, *_args: process.wait(),
+        )
         monkeypatch.setattr(threading, "Timer", capturing_timer)
 
         result, output, error = sandbox.execute("__result__ = 42")
@@ -1109,6 +1115,11 @@ class TestProcessSandbox:
         )
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda process, *_args: process.wait(),
+        )
 
         _result, output, error = sandbox.execute("__result__ = 42")
 
@@ -1141,7 +1152,7 @@ class TestProcessSandbox:
         exit_observed.set()
         timed_out = threading.Event()
         sandbox._terminate_worker_on_timeout(
-            FakeProcess(),
+            cast(subprocess.Popen[str], FakeProcess()),
             lifecycle_lock,
             exit_observed,
             threading.Event(),
@@ -1176,7 +1187,7 @@ class TestProcessSandbox:
         exit_observed = threading.Event()
         timed_out = threading.Event()
         sandbox._terminate_worker_on_timeout(
-            FakeProcess(),
+            cast(subprocess.Popen[str], FakeProcess()),
             threading.Lock(),
             exit_observed,
             threading.Event(),
@@ -1846,6 +1857,14 @@ class TestProcessSandboxResultChannel:
 
         return lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)
 
+    @staticmethod
+    def _isolate_result_channel_from_process_supervision(sandbox, monkeypatch):
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda process, *_args: process.wait(),
+        )
+
     def test_exit_zero_without_result_json_raises(self, monkeypatch, caplog):
         """Worker exits 0 with no result line: SandboxError, logged at ERROR."""
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
@@ -1855,6 +1874,7 @@ class TestProcessSandboxResultChannel:
             subprocess, "Popen", self._fake_popen_for("just some text\n", 0)
         )
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         with caplog.at_level("ERROR", logger="geno.sandbox"):
             with pytest.raises(SandboxError, match="wrote no result JSON"):
@@ -1870,6 +1890,7 @@ class TestProcessSandboxResultChannel:
             subprocess, "Popen", self._fake_popen_for('{"result": 42, "succ\n', 0)
         )
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         with pytest.raises(SandboxError, match="unparseable result JSON"):
             sandbox.execute("__result__ = 42")
@@ -1885,6 +1906,7 @@ class TestProcessSandboxResultChannel:
         huge_stderr = "x" * 50_000  # no JSON line survives, forces truncation
         monkeypatch.setattr(subprocess, "Popen", self._fake_popen_for(huge_stderr, 0))
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         with pytest.raises(SandboxError, match="capture limit"):
             sandbox.execute("__result__ = 42")
@@ -1898,6 +1920,7 @@ class TestProcessSandboxResultChannel:
             subprocess, "Popen", self._fake_popen_for("boom without json\n", 1)
         )
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         result, _output, error = sandbox.execute("__result__ = 42")
         assert result is None
@@ -1916,6 +1939,7 @@ class TestProcessSandboxResultChannel:
             self._fake_popen_for(success, 1),
         )
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         result, _output, error = sandbox.execute("__result__ = 42")
         assert result is None

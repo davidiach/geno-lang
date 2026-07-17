@@ -1364,6 +1364,8 @@ class ProcessSandbox:
         import ctypes
         from ctypes import wintypes
 
+        ctypes_api: Any = ctypes
+
         class _LargeInteger(ctypes.Structure):
             _fields_ = [("QuadPart", ctypes.c_longlong)]
 
@@ -1406,7 +1408,7 @@ class ProcessSandbox:
         job_object_limit_job_memory = 0x00000200
         job_object_limit_kill_on_job_close = 0x00002000
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
         kernel32.CreateJobObjectW.restype = wintypes.HANDLE
         kernel32.SetInformationJobObject.argtypes = [
@@ -1428,7 +1430,7 @@ class ProcessSandbox:
         try:
             job_handle = kernel32.CreateJobObjectW(None, None)
             if not job_handle:
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise ctypes_api.WinError(ctypes_api.get_last_error())
 
             info = _ExtendedLimitInformation()
             limit_flags = (
@@ -1459,11 +1461,11 @@ class ProcessSandbox:
                 ctypes.byref(info),
                 ctypes.sizeof(info),
             ):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise ctypes_api.WinError(ctypes_api.get_last_error())
 
             process_handle = wintypes.HANDLE(int(process._handle))
             if not kernel32.AssignProcessToJobObject(job_handle, process_handle):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise ctypes_api.WinError(ctypes_api.get_last_error())
             # Returning from inside the ownership try ensures an asynchronous
             # exception before RETURN_VALUE still closes the configured Job.
             return job_handle
@@ -1480,11 +1482,13 @@ class ProcessSandbox:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ctypes_api: Any = ctypes
+
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
         if not kernel32.CloseHandle(job_handle):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise ctypes_api.WinError(ctypes_api.get_last_error())
 
     @staticmethod
     def _require_posix_worker_supervision() -> None:

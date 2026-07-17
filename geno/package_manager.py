@@ -215,7 +215,8 @@ def _try_lock_project_file(fd: int) -> None:
     if os.name == "nt":
         import msvcrt
 
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        msvcrt_api = cast(Any, msvcrt)
+        msvcrt_api.locking(fd, msvcrt_api.LK_NBLCK, 1)
     else:
         import fcntl
 
@@ -228,7 +229,8 @@ def _unlock_project_file(fd: int) -> None:
     if os.name == "nt":
         import msvcrt
 
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        msvcrt_api = cast(Any, msvcrt)
+        msvcrt_api.locking(fd, msvcrt_api.LK_UNLCK, 1)
     else:
         import fcntl
 
@@ -1247,8 +1249,8 @@ def _lock_matches_manifest(dep: Dependency, locked: LockedDependency | None) -> 
 
 def _locked_content_hash_matches(directory: Path, locked: LockedDependency) -> bool:
     if locked.content_hash_version == 1:
-        return compute_legacy_content_hash(directory) == locked.content_hash
-    return compute_content_hash(directory) == locked.content_hash
+        return bool(compute_legacy_content_hash(directory) == locked.content_hash)
+    return bool(compute_content_hash(directory) == locked.content_hash)
 
 
 def _locked_ref(locked: LockedDependency) -> str:

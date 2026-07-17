@@ -1496,7 +1496,8 @@ def _apply_windows_worker_resource_limits() -> tuple[str, ...]:
         strict=False,
     )
     limiter = ProcessSandbox(config)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ctypes_api = cast(Any, ctypes)
+    kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
     kernel32.GetCurrentProcess.argtypes = []
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     raw_handle = kernel32.GetCurrentProcess()
