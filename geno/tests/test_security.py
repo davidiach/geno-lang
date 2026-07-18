@@ -1190,6 +1190,9 @@ class TestProcessSandbox:
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
         monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(
             sandbox,
             "_wait_for_worker_tree",
             lambda process, *_args: process.wait(),
@@ -1251,6 +1254,9 @@ class TestProcessSandbox:
         )
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
         monkeypatch.setattr(
             sandbox,
             "_wait_for_worker_tree",
@@ -2294,6 +2300,9 @@ class TestProcessSandboxResultChannel:
     @staticmethod
     def _isolate_result_channel_from_process_supervision(sandbox, monkeypatch):
         monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(
             sandbox,
             "_wait_for_worker_tree",
             lambda process, *_args: process.wait(),
@@ -2308,6 +2317,9 @@ class TestProcessSandboxResultChannel:
         )
         job_handle = object()
         monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: job_handle)
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
         monkeypatch.setattr(
             sandbox,
             "_wait_for_worker_tree",
