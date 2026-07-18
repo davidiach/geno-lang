@@ -55,23 +55,25 @@ def find_project_root(start: Path | None = None) -> Path:
 
 def find_package_lock_roots(start: Path) -> tuple[Path, ...]:
     """Return every project lock that can publish content containing *start*."""
-    current = Path(os.path.abspath(start))
-    nearest: Path | None = None
+    lexical = Path(os.path.abspath(start))
+    candidates = tuple(dict.fromkeys((lexical, lexical.resolve())))
     owners: set[Path] = set()
-    for parent in [current, *current.parents]:
-        if not (parent / "geno.toml").exists():
-            continue
-        resolved_parent = parent.resolve()
-        if nearest is None:
-            nearest = resolved_parent
-        modules_root = Path(os.path.abspath(parent / "geno_modules"))
-        try:
-            current.relative_to(modules_root)
-        except ValueError:
-            continue
-        owners.add(resolved_parent)
-    if nearest is not None:
-        owners.add(nearest)
+    for current in candidates:
+        nearest: Path | None = None
+        for parent in [current, *current.parents]:
+            if not (parent / "geno.toml").exists():
+                continue
+            resolved_parent = parent.resolve()
+            if nearest is None:
+                nearest = resolved_parent
+            modules_root = Path(os.path.abspath(parent / "geno_modules"))
+            try:
+                current.relative_to(modules_root)
+            except ValueError:
+                continue
+            owners.add(resolved_parent)
+        if nearest is not None:
+            owners.add(nearest)
     return tuple(
         sorted(owners, key=lambda path: (len(path.parts), os.path.normcase(str(path))))
     )
@@ -456,6 +458,11 @@ def _begin_transaction_journal(
         )
         old_content_hash = None
         if checkout.had_destination:
+            _ensure_dependency_dir_contained(
+                checkout.destination,
+                checkout.destination.parent,
+                checkout.name,
+            )
             old_content_hash = compute_content_hash(checkout.destination)
         checkout.backup = (
             transaction_root / "backups" / f"{index}-{checkout.name}"
@@ -1126,6 +1133,8 @@ def _ensure_dependency_dir_contained(
         raise RuntimeError(
             f"Dependency '{name}' path escapes geno_modules or is a symlink: {dep_dir}"
         )
+    if dep_dir.exists() and not dep_dir.is_dir():
+        raise RuntimeError(f"Dependency '{name}' path is not a directory: {dep_dir}")
 
 
 def _validate_git_url(url: str) -> None:

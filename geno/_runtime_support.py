@@ -4093,6 +4093,7 @@ def _validate_http_address(host: str, fn_name: str) -> None:
     embedded_ipv4: list[Any] = []
     if isinstance(address, _ipaddress.IPv6Address):
         local_nat64 = _ipaddress.IPv6Network("64:ff9b:1::/48")
+        ipv4_translated = _ipaddress.IPv6Network("::ffff:0:0:0/96")
         well_known_nat64 = _ipaddress.IPv6Network("64:ff9b::/96")
         if address in local_nat64 or address.teredo is not None:
             raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
@@ -4103,6 +4104,8 @@ def _validate_http_address(host: str, fn_name: str) -> None:
         if address.sixtofour is not None:
             embedded_ipv4.append(address.sixtofour)
         if address in well_known_nat64:
+            embedded_ipv4.append(_ipaddress.IPv4Address(address.packed[-4:]))
+        if address in ipv4_translated:
             embedded_ipv4.append(_ipaddress.IPv4Address(address.packed[-4:]))
 
     if embedded_ipv4:

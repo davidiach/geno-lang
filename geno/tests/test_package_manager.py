@@ -1979,6 +1979,50 @@ class TestPackageTransactions:
         assert not transaction.exists()
         assert not marker.exists()
 
+    def test_journal_rejects_destination_replaced_with_regular_file(self, tmp_path):
+        from geno.package_manager import (
+            _begin_transaction_journal,
+            _create_transaction_root,
+            _PreparedCheckout,
+        )
+
+        modules = tmp_path / "geno_modules"
+        transaction = _create_transaction_root(modules)
+        staged = transaction / "staged" / "utils"
+        staged.mkdir(parents=True)
+        (staged / "Dependency.geno").write_text(
+            "func value() -> Int\n  return 2\nend func\n"
+        )
+        destination = modules / "utils"
+        destination.write_text("preserve me")
+        locked = LockedDependency(
+            name="utils",
+            git="https://example.com/utils.git",
+            commit=self.COMMIT,
+            content_hash=compute_content_hash(staged),
+        )
+        prepared = _PreparedCheckout(
+            name="utils",
+            destination=destination,
+            staged=staged,
+            locked=locked,
+        )
+
+        with mock.patch(
+            "geno.package_manager._write_transaction_journal"
+        ) as write_journal:
+            with pytest.raises(RuntimeError, match="not a directory"):
+                _begin_transaction_journal(
+                    [prepared],
+                    Lockfile(dependencies={"utils": locked}),
+                    tmp_path / "geno.lock",
+                    transaction,
+                )
+
+        write_journal.assert_not_called()
+        assert destination.read_text() == "preserve me"
+        assert not (tmp_path / f"{transaction.name}.lock.next").exists()
+
     def test_bad_staged_hash_preserves_existing_checkout(self, tmp_path):
         self._write_manifest(tmp_path, "utils")
         dep_dir = tmp_path / "geno_modules" / "utils"
@@ -2503,6 +2547,22 @@ class TestPackageTransactions:
 
         assert find_package_owner_root(source) == tmp_path.resolve()
 
+    def test_package_lock_roots_include_resolved_symlink_owner(self, tmp_path):
+        from geno.package_manager import find_package_lock_roots
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "geno.toml").write_text("[dependencies]\n")
+        source = project / "Main.geno"
+        source.write_text("func main() -> Int\n  return 0\nend func\n")
+        link = tmp_path / "linked-main.geno"
+        try:
+            link.symlink_to(source)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"file symlinks are unavailable: {exc}")
+
+        assert find_package_lock_roots(link) == (project.resolve(),)
+
     def test_nested_package_owner_chain_is_acquired_outermost_first(self, tmp_path):
         from geno.package_manager import (
             _package_transaction_locks,
@@ -2779,6 +2839,26 @@ git = "https://example.com/utils.git"
                 install(tmp_path)
 
         mock_run.assert_not_called()
+
+    def test_install_rejects_non_directory_dependency_path(self, tmp_path):
+        (tmp_path / "geno.toml").write_text(
+            """
+[dependencies.utils]
+git = "https://example.com/utils.git"
+"""
+        )
+        modules_dir = tmp_path / "geno_modules"
+        modules_dir.mkdir()
+        dependency_file = modules_dir / "utils"
+        dependency_file.write_text("preserve me")
+
+        with mock.patch("geno.package_manager.subprocess.run") as mock_run:
+            with pytest.raises(RuntimeError, match="not a directory"):
+                install(tmp_path)
+
+        mock_run.assert_not_called()
+        assert dependency_file.read_text() == "preserve me"
+        assert not list(modules_dir.glob(".geno-package-txn-*"))
 
     def test_git_protocol_is_rejected(self):
         with pytest.raises(ValueError, match="Invalid git URL"):

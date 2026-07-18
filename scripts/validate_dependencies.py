@@ -576,14 +576,14 @@ def _step_runs_strict_twine_check(step: dict[str, Any]) -> bool:
 
 def _step_uses_action(step: dict[str, Any], action: str) -> bool:
     uses = str(step.get("uses", ""))
-    return uses.partition("@")[0] == action
+    return uses.partition("@")[0].casefold() == action.casefold()
 
 
 def _step_uses_pinned_action(step: dict[str, Any], action: str) -> bool:
     uses = str(step.get("uses", ""))
     name, separator, ref = uses.partition("@")
     return (
-        name == action
+        name.casefold() == action.casefold()
         and separator == "@"
         and len(ref) == 40
         and all(char in "0123456789abcdefABCDEF" for char in ref)
@@ -1160,6 +1160,19 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
                     f"(job {job_name!r}, step {step_index + 1})"
                 )
 
+    artifact_upload_count = sum(
+        1
+        for raw_job in jobs.values()
+        if isinstance(raw_job, dict)
+        for step in raw_job.get("steps", [])
+        if isinstance(step, dict) and _step_uses_action(step, "actions/upload-artifact")
+    )
+    if artifact_upload_count != 1:
+        errors.append(
+            ".github/workflows/publish.yml: release workflow must contain exactly "
+            "one artifact upload step"
+        )
+
     release_gate_jobs: set[str] = set()
     for job_name, raw_job in jobs.items():
         if not isinstance(raw_job, dict):
@@ -1347,6 +1360,7 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
                     prior_build_steps = build_steps[:upload_index]
                     if (
                         _steps_form_strict_artifact_build_pipeline(prior_build_steps)
+                        and upload_index == len(build_steps) - 1
                         and _job_has_default_command_context(build_job)
                         and _job_has_minimal_authority(build_job)
                         and bool(release_gate_jobs.intersection(_job_needs(build_job)))

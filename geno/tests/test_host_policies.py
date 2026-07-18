@@ -212,6 +212,7 @@ def test_redirect_header_policy_uses_normalized_origin(module_name):
         "2001:4860:4860::8888",
         "64:ff9b::808:808",
         "2002:0808:0808::",
+        "::ffff:0:8.8.8.8",
     ],
 )
 def test_http_policies_allow_public_native_and_transition_targets(monkeypatch, address):
@@ -236,6 +237,7 @@ def test_http_policies_allow_public_native_and_transition_targets(monkeypatch, a
         "192.0.0.8",
         "224.0.0.1",
         "::ffff:100.64.0.1",
+        "::ffff:0:169.254.169.254",
         "::127.0.0.1",
         "64:ff9b::127.0.0.1",
         "64:ff9b:1::1",
@@ -342,6 +344,7 @@ def test_compiled_runtime_fs_policy_can_be_read_only(monkeypatch, tmp_path):
         "192.0.0.8",
         "224.0.0.1",
         "::ffff:100.64.0.1",
+        "::ffff:0:169.254.169.254",
         "::127.0.0.1",
         "64:ff9b::127.0.0.1",
         "64:ff9b:1::1",

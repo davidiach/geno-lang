@@ -514,6 +514,65 @@ def test_publish_rejects_post_twine_artifact_tampering(
     assert any("uploads the same artifact" in error for error in errors)
 
 
+def test_publish_rejects_later_artifact_overwrite_in_build_job(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "          path: dist/\n  publish:\n",
+            "          path: dist/\n"
+            "      - name: Replace tested distributions\n"
+            "        uses: actions/upload-artifact@cccccccccccccccccccccccccccccccccccccccc\n"
+            "        with:\n"
+            "          name: python-distributions\n"
+            "          path: attacker/\n"
+            "          overwrite: true\n"
+            "  publish:\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("exactly one artifact upload step" in error for error in errors)
+    assert any("uploads the same artifact" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "action_name",
+    ["actions/upload-artifact", "Actions/Upload-Artifact"],
+)
+def test_publish_rejects_cross_job_artifact_overwrite(tmp_path: Path, action_name: str):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "  publish:\n    needs: build\n",
+            "  overwrite:\n"
+            "    needs: build\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - name: Replace tested distributions\n"
+            f"        uses: {action_name}@cccccccccccccccccccccccccccccccccccccccc\n"
+            "        with:\n"
+            "          name: python-distributions\n"
+            "          path: attacker/\n"
+            "          overwrite: true\n"
+            "  publish:\n"
+            "    needs: [build, overwrite]\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("exactly one artifact upload step" in error for error in errors)
+
+
 @pytest.mark.parametrize(
     ("needle", "replacement", "error_fragment"),
     [

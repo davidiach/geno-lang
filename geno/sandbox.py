@@ -1344,7 +1344,7 @@ class ProcessSandbox:
             "exec(zlib.decompress(base64.b85decode("
             "sys.stdin.buffer.readline().strip())))"
         )
-        return [ProcessSandbox._worker_python_executable(), "-I", "-c", bootstrap]
+        return [ProcessSandbox._worker_python_executable(), "-I", "-B", "-c", bootstrap]
 
     @staticmethod
     def _frame_worker_input(worker_script: str, code: str) -> str:
@@ -2281,7 +2281,6 @@ def main():
     # the configured address-space growth budget below.
     _worker_mode = config.get("worker_mode")
     if _worker_mode in {"python_benchmark", "geno_cli"}:
-        sys.dont_writebytecode = True
         if _GENO_TRUSTED_ROOT not in sys.path:
             sys.path.insert(0, _GENO_TRUSTED_ROOT)
     try:

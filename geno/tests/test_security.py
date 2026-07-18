@@ -966,6 +966,7 @@ class TestProcessSandbox:
         assert isinstance(base_executable, str) and base_executable
         command = ProcessSandbox._create_worker_command()
         assert Path(command[0]).resolve() == Path(base_executable).resolve()
+        assert command[1:4] == ["-I", "-B", "-c"]
         if sys.prefix != sys.base_prefix:
             assert Path(command[0]).resolve() != Path(sys.executable).resolve()
 
@@ -1205,8 +1206,8 @@ class TestProcessSandbox:
         assert output == ""
         assert error is None
         assert captured["cmd"] == sandbox._create_worker_command()
-        assert captured["cmd"][1] == "-I"
-        assert len(captured["cmd"][3]) < 256
+        assert captured["cmd"][1:4] == ["-I", "-B", "-c"]
+        assert len(captured["cmd"][4]) < 256
         assert captured["input"] == sandbox._frame_worker_input(
             sandbox._create_worker_script(),
             "__result__ = 42",
@@ -1797,6 +1798,9 @@ class TestProcessSandbox:
 
         script = ProcessSandbox._WORKER_SCRIPT
         prepare = script.index("memory_ceiling = (")
+        command = ProcessSandbox._create_worker_command()
+        assert command[1:4] == ["-I", "-B", "-c"]
+        assert "dont_writebytecode" not in script
         read_input = script.index("code = sys.stdin.read()")
         benchmark_preload = script.index("from benchmark.runner import")
         frontend_preload = script.index("from geno.cli.run import")
