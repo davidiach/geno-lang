@@ -269,10 +269,10 @@ def _project_transaction_lock(
         return
 
     depths[root] = 1
-    lock_path, journal_path = _project_state_paths(root)
     fd: int | None = None
     file_locked = False
     try:
+        lock_path, journal_path = _project_state_paths(root)
         fd = _open_project_lock(lock_path)
         deadline = time.monotonic() + timeout
         while True:

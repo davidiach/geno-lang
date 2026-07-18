@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts import validate_dependencies
 from scripts.validate_dependencies import validate_dependency_surfaces
 
@@ -240,6 +242,72 @@ def test_publish_workflow_requires_hash_locked_release_gate_dependencies(
         and ("requirements-dev.lock" in error or "unhashed" in error)
         for error in errors
     )
+
+
+@pytest.mark.parametrize(
+    ("unsafe_install", "pip_invocation"),
+    [
+        (
+            "python -m pip --disable-pip-version-check install attacker",
+            "pip --disable-pip-version-check install attacker",
+        ),
+        ("pip3 install attacker", "pip3 install attacker"),
+        (
+            "pip3 install attacker # --require-hashes -r requirements-dev.lock",
+            "pip3 install attacker",
+        ),
+        (
+            "python -m pip \\\n          install attacker",
+            "pip install attacker",
+        ),
+        (
+            "pip3 install attacker # ignored\n          echo --require-hashes -r requirements-dev.lock",
+            "pip3 install attacker",
+        ),
+        (
+            "pip install --no-deps --no-build-isolation -e . attacker",
+            "pip install --no-deps --no-build-isolation -e . attacker",
+        ),
+        (
+            "pip install --no-deps --no-build-isolation -e . -- attacker",
+            "pip install --no-deps --no-build-isolation -e . -- attacker",
+        ),
+        ("/usr/bin/pip3 install attacker", "/usr/bin/pip3 install attacker"),
+        (
+            "pip install --no-deps --no-build-isolation -e . pip attacker",
+            "pip install --no-deps --no-build-isolation -e . pip attacker",
+        ),
+    ],
+)
+def test_publish_workflow_rejects_unhashed_install_chained_after_locked_install(
+    tmp_path: Path,
+    unsafe_install: str,
+    pip_invocation: str,
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "          python -m pip install --require-hashes -r requirements-dev.lock\n",
+            "          python -m pip install --require-hashes -r requirements-dev.lock "
+            f"&& {unsafe_install}\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert pip_invocation
+    assert any("unhashed" in error and pip_invocation in error for error in errors)
+
+
+def test_release_gate_install_scan_rejects_backtick_command_substitution():
+    unsafe = validate_dependencies._unsafe_release_gate_install_lines(
+        {"run": "echo `pip install attacker >/dev/null`"}
+    )
+
+    assert any("backtick command substitution" in invocation for invocation in unsafe)
 
 
 def test_python_requirement_drift_is_reported(tmp_path: Path):

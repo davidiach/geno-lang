@@ -1974,7 +1974,13 @@ def _expand_regex_replacement(
             end = i + 2
             while end < len(replacement) and _is_ascii_regex_digit(replacement[end]):
                 end += 1
-            group_index = int(replacement[i + 1 : end])
+            group_text = replacement[i + 1 : end]
+            max_group_text = str(len(match.groups()))
+            if len(group_text) > len(max_group_text) or (
+                len(group_text) == len(max_group_text) and group_text > max_group_text
+            ):
+                raise RuntimeError("regex_replace: invalid replacement group reference")
+            group_index = int(group_text)
             try:
                 value = match.group(group_index) or ""
             except IndexError as exc:

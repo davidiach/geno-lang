@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -44,6 +46,10 @@ PYTHON_REQUIREMENT_SURFACES = (
     ("requirements.lock", ("runtime",), True),
     ("requirements-dev.lock", ("runtime", "dev", "lsp"), True),
 )
+_PIP_EXECUTABLE_RE = re.compile(
+    r"pip(?:\d+(?:\.\d+)*)?(?:\.exe)?",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -55,7 +61,7 @@ class ParsedRequirement:
 
     @property
     def name(self) -> str:
-        return canonicalize_name(self.requirement.name)
+        return cast(str, canonicalize_name(self.requirement.name))
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
@@ -564,19 +570,79 @@ def _step_installs_project_without_dependencies(step: dict[str, Any]) -> bool:
     )
 
 
-def _unsafe_release_gate_install_lines(step: dict[str, Any]) -> tuple[str, ...]:
-    unsafe: list[str] = []
-    for raw_line in str(step.get("run", "")).splitlines():
-        line = " ".join(raw_line.split())
-        if "pip install" not in line:
-            continue
-        dev_lock = "--require-hashes" in line and "-r requirements-dev.lock" in line
-        release_lock = (
-            "--require-hashes" in line and "-r requirements-release.lock" in line
+def _shell_command_groups(run: str) -> tuple[tuple[str, ...], ...]:
+    normalized = re.sub(r"\\\r?\n", " ", run)
+    if "`" in normalized:
+        raise ValueError("backtick command substitution is not allowed")
+    groups: list[tuple[str, ...]] = []
+    for raw_line in normalized.splitlines():
+        lexer = shlex.shlex(
+            raw_line,
+            posix=True,
+            punctuation_chars=";&|()",
         )
-        project = "--no-deps" in line and "--no-build-isolation" in line and "-e ." in line
-        if not (dev_lock or release_lock or project):
-            unsafe.append(line)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+
+        current: list[str] = []
+        for token in lexer:
+            if token and all(char in ";&|()" for char in token):
+                if current:
+                    groups.append(tuple(current))
+                    current = []
+            else:
+                current.append(token)
+        if current:
+            groups.append(tuple(current))
+    return tuple(groups)
+
+
+def _is_pip_executable(token: str) -> bool:
+    basename = re.split(r"[\\/]", token)[-1]
+    return _PIP_EXECUTABLE_RE.fullmatch(basename) is not None
+
+
+def _unsafe_release_gate_install_lines(step: dict[str, Any]) -> tuple[str, ...]:
+    run = str(step.get("run", ""))
+    try:
+        command_groups = _shell_command_groups(run)
+    except ValueError as exc:
+        return (f"unparseable release-check shell command: {exc}",)
+
+    unsafe: list[str] = []
+    for command in command_groups:
+        pip_index = next(
+            (index for index, token in enumerate(command) if _is_pip_executable(token)),
+            None,
+        )
+        if pip_index is None:
+            continue
+        invocation_tokens = command[pip_index:]
+        try:
+            install_offset = invocation_tokens.index("install", 1)
+        except ValueError:
+            continue
+        arguments = invocation_tokens[install_offset + 1 :]
+        allowed_arguments = (
+            (
+                "--require-hashes",
+                "-r",
+                "requirements-dev.lock",
+            ),
+            (
+                "--require-hashes",
+                "-r",
+                "requirements-release.lock",
+            ),
+            (
+                "--no-deps",
+                "--no-build-isolation",
+                "-e",
+                ".",
+            ),
+        )
+        if arguments not in allowed_arguments:
+            unsafe.append(" ".join(invocation_tokens))
     return tuple(unsafe)
 
 

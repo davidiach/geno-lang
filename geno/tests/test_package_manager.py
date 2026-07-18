@@ -2564,6 +2564,31 @@ class TestPackageTransactions:
         assert lock_path.is_file()
         assert not (tmp_path / ".geno-package.lock").exists()
 
+    def test_project_lock_releases_thread_state_when_path_setup_fails(
+        self, tmp_path, monkeypatch
+    ):
+        from geno import package_manager
+
+        original_state_paths = package_manager._project_state_paths
+        calls = 0
+
+        def flaky_state_paths(root):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient state setup failure")
+            return original_state_paths(root)
+
+        monkeypatch.setattr(package_manager, "_project_state_paths", flaky_state_paths)
+
+        with pytest.raises(RuntimeError, match="transient state setup failure"):
+            with package_manager._project_transaction_lock(tmp_path, timeout=1):
+                pass
+        with package_manager._project_transaction_lock(tmp_path, timeout=1):
+            pass
+
+        assert calls == 2
+
     def test_different_project_locks_are_independent(self, tmp_path):
         import threading
 

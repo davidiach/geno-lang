@@ -2385,6 +2385,16 @@ class TestRegexBuiltins:
         ):
             assert builtins_module.builtin_regex_replace("(a)", r"X\1", "a") == "Xa"
 
+    def test_regex_replace_rejects_oversized_group_reference(self):
+        from geno import builtins as builtins_module
+        from geno.values import RuntimeError as GenoRuntimeError
+
+        replacement = "\\" + "1" * 5000
+        with pytest.raises(
+            GenoRuntimeError, match="invalid replacement group reference"
+        ):
+            builtins_module.builtin_regex_replace("(a)", replacement, "a")
+
     def test_regex_match_interpreter(self):
         source = """
         func main() -> Option[String]
@@ -2564,6 +2574,13 @@ class TestCompiledRegexValidation:
             side_effect=AssertionError("re.sub"),
         ):
             assert compiled_runtime.regex_replace("(a)", r"X\1", "a") == "Xa"
+
+    def test_compiled_regex_replace_rejects_oversized_group_reference(self):
+        from geno._runtime_support import regex_replace as compiled_regex_replace
+
+        replacement = "\\" + "1" * 5000
+        with pytest.raises(RuntimeError, match="invalid replacement group reference"):
+            compiled_regex_replace("(a)", replacement, "a")
 
     def test_compiled_regex_rejects_identical_alternation_with_quantifier(self):
         from geno._runtime_support import regex_replace as compiled_regex_replace
