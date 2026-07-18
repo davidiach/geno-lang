@@ -310,6 +310,33 @@ def test_release_gate_install_scan_rejects_backtick_command_substitution():
     assert any("backtick command substitution" in invocation for invocation in unsafe)
 
 
+def test_release_gate_install_scan_rejects_quoted_command_substitution():
+    unsafe = validate_dependencies._unsafe_release_gate_install_lines(
+        {"run": 'echo "$(pip install attacker)"'}
+    )
+
+    assert any("command or process substitution" in invocation for invocation in unsafe)
+
+
+def test_release_gate_install_scan_rejects_continued_command_substitution():
+    run = 'echo "$' + "\\" + "\n" + '(pip install attacker >/dev/null)"'
+    unsafe = validate_dependencies._unsafe_release_gate_install_lines({"run": run})
+
+    assert any("command or process substitution" in invocation for invocation in unsafe)
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        'echo "${ pip install attacker >/dev/null; }"',
+        'echo "${|pip install attacker >/dev/null;}"',
+    ],
+)
+def test_release_gate_install_scan_rejects_bash_53_command_substitution(run: str):
+    unsafe = validate_dependencies._unsafe_release_gate_install_lines({"run": run})
+    assert any("command or process substitution" in invocation for invocation in unsafe)
+
+
 def test_python_requirement_drift_is_reported(tmp_path: Path):
     _write_valid_dependency_fixture(tmp_path)
     (tmp_path / "requirements.txt").write_text(

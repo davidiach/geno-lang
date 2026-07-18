@@ -571,9 +571,13 @@ def _step_installs_project_without_dependencies(step: dict[str, Any]) -> bool:
 
 
 def _shell_command_groups(run: str) -> tuple[tuple[str, ...], ...]:
-    normalized = re.sub(r"\\\r?\n", " ", run)
+    normalized = re.sub(r"\\\r?\n", "", run)
     if "`" in normalized:
         raise ValueError("backtick command substitution is not allowed")
+    if any(marker in normalized for marker in ("$(", "<(", ">(")) or re.search(
+        r"\$\{[ \t\r\n|]", normalized
+    ):
+        raise ValueError("shell command or process substitution is not allowed")
     groups: list[tuple[str, ...]] = []
     for raw_line in normalized.splitlines():
         lexer = shlex.shlex(
