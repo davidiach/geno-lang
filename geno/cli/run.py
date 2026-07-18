@@ -168,6 +168,45 @@ def _explicit_fs_roots_for_run(
 _GENO_FRONTEND_ERROR_PREFIX = "\x1eGENO_FRONTEND\x1e"
 
 
+_PROCESS_RUN_SUPPORT_MODULES = (
+    "geno.api",
+    "geno.ast_nodes",
+    "geno.builtin_registry",
+    "geno.compiler",
+    "geno.constraints",
+    "geno.dependency_graph",
+    "geno.diagnostics",
+    "geno.interpreter",
+    "geno.lexer",
+    "geno.manifest",
+    "geno.module_resolver",
+    "geno.monitoring",
+    "geno.package_manager",
+    "geno.parser",
+    "geno.project_graph",
+    "geno.project_resolution",
+    "geno.sandbox",
+    "geno.target_profile",
+    "geno.typechecker",
+    "geno.types",
+    "geno.values",
+)
+
+
+def _preload_process_run_support() -> None:
+    """Load trusted frontend modules before Darwin freezes its VM baseline.
+
+    The default-run path intentionally uses lazy imports during normal CLI
+    startup. The isolated worker calls this before reading its parent-framed
+    request so only repository-controlled modules become part of the trusted
+    bootstrap footprint; source resolution and compilation remain limited.
+    """
+    import importlib
+
+    for module_name in _PROCESS_RUN_SUPPORT_MODULES:
+        importlib.import_module(module_name)
+
+
 def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     """Compile a validated default-run request inside the sandbox worker."""
     expected_keys = {

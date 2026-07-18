@@ -26,6 +26,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
+from socketserver import TCPServer
 from typing import AbstractSet, Any, Iterator, cast
 from urllib.parse import urlsplit
 
@@ -2519,6 +2520,16 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     ) -> None:
         self._connection_slots = _CONNECTION_SEMAPHORE_FACTORY(max_connections)
         super().__init__(*args, **kwargs)
+
+    def server_bind(self) -> None:
+        """Bind without HTTPServer's blocking reverse-DNS lookup."""
+        TCPServer.server_bind(self)
+        bound_host, bound_port = self.server_address[:2]
+        # HTTPServer normally populates these after socket.getfqdn(). Geno has
+        # no hostname-dependent behavior, so the numeric bind address is both
+        # deterministic and sufficient.
+        self.server_name = str(bound_host)
+        self.server_port = int(bound_port)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._connection_slots.acquire(blocking=False):

@@ -1798,6 +1798,12 @@ class TestProcessSandbox:
         script = ProcessSandbox._WORKER_SCRIPT
         prepare = script.index("memory_ceiling = (")
         read_input = script.index("code = sys.stdin.read()")
+        benchmark_preload = script.index("from benchmark.runner import")
+        frontend_preload = script.index("from geno.cli.run import")
+        frontend_graph_preload = script.index("_preload_process_run_support()")
+        assert benchmark_preload < prepare
+        assert frontend_preload < prepare
+        assert frontend_graph_preload < prepare
         assert prepare < read_input
         assert script.count("_worker_rlimit_as_ceiling(") == 2
         assert script.count("(memory_ceiling, memory_ceiling)") == 3
@@ -1805,17 +1811,46 @@ class TestProcessSandbox:
         assert "_frontend_resource.setrlimit(" in script
         assert "_resource.setrlimit(" in script
 
-    def test_geno_frontend_applies_memory_limit_before_compiler_import(self):
-        """Geno source processing starts only after the early RLIMIT_AS gate."""
+    def test_mode_workers_apply_memory_limit_before_untrusted_work(self):
+        """Trusted imports precede the baseline; requests remain limited."""
         from geno.sandbox import ProcessSandbox
 
         script = ProcessSandbox._WORKER_SCRIPT
+        benchmark = script[
+            script.rindex('if _worker_mode == "python_benchmark"') : script.index(
+                "# Default Geno CLI mode"
+            )
+        ]
+        assert benchmark.index("setrlimit(") < benchmark.index("json.loads(code)")
+        assert benchmark.index("setrlimit(") < benchmark.index(
+            "_evaluate_python_in_process("
+        )
+
         frontend = script[
-            script.index('if config.get("worker_mode") == "geno_cli"') : script.index(
+            script.rindex('if _worker_mode == "geno_cli"') : script.index(
                 "# ---- Worker-side AST validation"
             )
         ]
-        assert frontend.index("setrlimit(") < frontend.index("from geno.cli.run import")
+        assert frontend.index("setrlimit(") < frontend.index("json.loads(code)")
+        assert frontend.index("setrlimit(") < frontend.index("_prepare_process_run(")
+
+    def test_cli_preloader_covers_lazy_frontend_modules(self, monkeypatch):
+        """Darwin baseline preloading includes every default-run subsystem."""
+        from geno.cli import run as run_module
+
+        imported: list[str] = []
+        monkeypatch.setattr(importlib, "import_module", imported.append)
+
+        run_module._preload_process_run_support()
+
+        assert tuple(imported) == run_module._PROCESS_RUN_SUPPORT_MODULES
+        assert {
+            "geno.compiler",
+            "geno.interpreter",
+            "geno.package_manager",
+            "geno.project_resolution",
+            "geno.typechecker",
+        } <= set(imported)
 
     def test_geno_worker_requires_compiled_runtime_mode(self):
         """The special request path cannot run without generated-code guards."""

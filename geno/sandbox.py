@@ -2274,6 +2274,41 @@ def main():
     config = json.loads(os.environ["GENO_SANDBOX_CONFIG"])
     max_result_error = int(config.get("max_output_length", 100000))
 
+    # Load only parent-selected, trusted worker support before freezing the
+    # Darwin VM baseline. Native/stdlib import mappings are not attacker
+    # memory and vary substantially across macOS/Python builds. Request
+    # parsing, source compilation, validation, and execution remain behind
+    # the configured address-space growth budget below.
+    _worker_mode = config.get("worker_mode")
+    if _worker_mode in {"python_benchmark", "geno_cli"}:
+        sys.dont_writebytecode = True
+        if _GENO_TRUSTED_ROOT not in sys.path:
+            sys.path.insert(0, _GENO_TRUSTED_ROOT)
+    try:
+        if _worker_mode == "python_benchmark":
+            from benchmark.runner import (
+                BenchmarkRunner as _BenchmarkRunner,
+                _evaluation_result_to_worker_payload,
+            )
+            from benchmark.schema import Problem as _BenchmarkProblem
+        elif _worker_mode == "geno_cli":
+            from geno.cli.run import (
+                _format_process_frontend_error,
+                _preload_process_run_support,
+                _prepare_process_run,
+            )
+            _preload_process_run_support()
+    except BaseException as exc:
+        _detail = str(exc) or type(exc).__name__
+        _emit_worker_error(
+            "startup_error: failed to load trusted worker support: "
+            + type(exc).__name__
+            + ": "
+            + _truncate_worker_text(_detail, max_result_error),
+            "startup_error",
+        )
+        return
+
     # Freeze Darwin's trusted bootstrap baseline before reading attacker-
     # controlled stdin. The ceiling is applied later because Python 3.13 needs
     # allocator headroom while reading and validating the bounded request.
@@ -2394,11 +2429,10 @@ def main():
     # Generated Python benchmarks run in their own fresh interpreter. This
     # separates provider clients and API keys held by the experiment parent;
     # JSON is the only request/result channel.
-    if config.get("worker_mode") == "python_benchmark":
-        sys.dont_write_bytecode = True
-
-        # Apply memory limits before importing benchmark code. Windows is
-        # already covered by the Job Object assigned before stdin was written.
+    if _worker_mode == "python_benchmark":
+        # Apply memory limits after trusted support import and before parsing
+        # or evaluating benchmark code. Windows is already covered by the Job
+        # Object assigned before stdin was written.
         try:
             import resource as _benchmark_resource
 
@@ -2451,14 +2485,6 @@ def main():
             return
 
         try:
-            if _GENO_TRUSTED_ROOT not in sys.path:
-                sys.path.insert(0, _GENO_TRUSTED_ROOT)
-            from benchmark.runner import (
-                BenchmarkRunner as _BenchmarkRunner,
-                _evaluation_result_to_worker_payload,
-            )
-            from benchmark.schema import Problem as _BenchmarkProblem
-
             _benchmark_problem = _BenchmarkProblem.from_dict(
                 _benchmark_request["problem"]
             )
@@ -2516,12 +2542,10 @@ def main():
 
     # Default Geno CLI mode performs every source-controlled phase in this
     # same supervised child. The parent sends only a bounded JSON request.
-    if config.get("worker_mode") == "geno_cli":
-        sys.dont_write_bytecode = True
-
-        # Apply the address-space limit before importing the compiler or reading
-        # any project source. Windows is already covered by the Job Object that
-        # the parent assigned before it wrote this request to stdin.
+    if _worker_mode == "geno_cli":
+        # Apply the address-space limit after trusted frontend import and
+        # before parsing the request or reading project source. Windows is
+        # already covered by the Job Object assigned before stdin was written.
         try:
             import resource as _frontend_resource
 
@@ -2557,13 +2581,6 @@ def main():
             sys.exit(1)
 
         try:
-            if _GENO_TRUSTED_ROOT not in sys.path:
-                sys.path.insert(0, _GENO_TRUSTED_ROOT)
-            from geno.cli.run import (
-                _format_process_frontend_error,
-                _prepare_process_run,
-            )
-
             _prepared = _prepare_process_run(_geno_request)
         except MemoryError:
             raise

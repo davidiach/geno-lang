@@ -721,6 +721,27 @@ class TestHostValidation:
             server.shutdown()
             server.server_close()
 
+    def test_server_bind_does_not_perform_reverse_dns(self, monkeypatch):
+        import socket
+
+        def fail_getfqdn(_host):
+            raise AssertionError("server bind must not perform reverse DNS")
+
+        monkeypatch.setattr(socket, "getfqdn", fail_getfqdn)
+        server = create_server(
+            "0.0.0.0",
+            0,
+            allowed_hosts={"api.example.com"},
+            allow_insecure=True,
+            startup_errors=[],
+        )
+        try:
+            bound_host, bound_port = server.server_address[:2]
+            assert server.server_name == bound_host
+            assert server.server_port == bound_port
+        finally:
+            server.server_close()
+
     def test_loopback_host_is_only_exempt_for_health_endpoint(self):
         # Exercise the actual request policy on a public bind. A local container
         # probe may use a loopback Host for /healthz, but the same untrusted Host
