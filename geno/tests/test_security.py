@@ -2313,6 +2313,11 @@ class TestProcessSandboxResultChannel:
             "_wait_for_worker_tree",
             lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt("interrupted")),
         )
+        monkeypatch.setattr(
+            sandbox,
+            "_kill_posix_process_group",
+            lambda process: process.kill(),
+        )
         close_calls = []
 
         def fail_close(handle):
