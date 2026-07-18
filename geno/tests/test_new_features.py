@@ -2312,6 +2312,9 @@ _REGEX_NONPORTABLE_PATTERNS = [
     "a{b",
     "a{10001}",
     "a{2,1}",
+    "]",
+    "a]",
+    "(])",
 ]
 
 
@@ -2725,6 +2728,12 @@ class TestCompiledJSRegexValidation:
     def test_js_regex_rejects_wildcard_overlap(self):
         _, out = self._run_js_expect_error('regex_match("a*.*X", "aaaaaaaa!")')
         assert "adjacent repeated atoms" in out or "advanced or encoded" in out
+
+    def test_js_regex_allows_astral_literal_character_class(self):
+        _, out = self._run_js_expect_error(
+            'regex_match("[\\u{1F600}]*x", "\\u{1F600}x")'
+        )
+        assert out == "NO_ERROR"
 
     def test_js_regex_rejects_named_backreference(self):
         _, out = self._run_js_expect_error(

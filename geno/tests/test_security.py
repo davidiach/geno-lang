@@ -2267,11 +2267,14 @@ class TestProcessSandboxResultChannel:
     @staticmethod
     def _fake_popen_for(stderr_text: str, returncode: int):
         class FakeStdin:
+            def __init__(self):
+                self.closed = False
+
             def write(self, _data):
                 pass
 
             def close(self):
-                pass
+                self.closed = True
 
         class FakeProcess:
             def __init__(self, _cmd, **_kwargs):
@@ -2295,6 +2298,38 @@ class TestProcessSandboxResultChannel:
             "_wait_for_worker_tree",
             lambda process, *_args: process.wait(),
         )
+
+    def test_windows_job_close_failure_does_not_mask_cleanup_error(self, monkeypatch):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=None, strict=False))
+        monkeypatch.setattr(
+            subprocess, "Popen", self._fake_popen_for("worker stderr\n", 1)
+        )
+        job_handle = object()
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: job_handle)
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt("interrupted")),
+        )
+        close_calls = []
+
+        def fail_close(handle):
+            if handle is None:
+                return
+            close_calls.append(handle)
+            raise OSError("forced CloseHandle failure")
+
+        monkeypatch.setattr(sandbox, "_close_windows_job", fail_close)
+
+        with pytest.raises(
+            SandboxError, match="Failed to terminate sandbox worker"
+        ) as exc_info:
+            sandbox._run_worker(["python"], "")
+
+        assert isinstance(exc_info.value.__cause__, OSError)
+        assert close_calls == [job_handle]
 
     def test_exit_zero_without_result_json_raises(self, monkeypatch, caplog):
         """Worker exits 0 with no result line: SandboxError, logged at ERROR."""

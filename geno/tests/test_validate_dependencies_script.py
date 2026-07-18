@@ -548,6 +548,11 @@ def test_publish_rejects_post_twine_artifact_tampering(
             "    needs: release-check\n",
             "uploads the same artifact",
         ),
+        (
+            "        run: python -m build --no-isolation\n",
+            '        run: echo "${{ github.ref_name }}"\n',
+            "must not interpolate GitHub expressions",
+        ),
     ],
 )
 def test_publish_rejects_command_context_overrides(

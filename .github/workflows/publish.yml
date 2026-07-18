@@ -118,10 +118,12 @@ jobs:
         python-version: '3.11'
 
     - name: Verify published package
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
       run: |
         installed=false
         for attempt in {1..10}; do
-          if python -m pip install --no-cache-dir "geno-lang==${{ steps.version.outputs.version }}"; then
+          if python -m pip install --no-cache-dir "geno-lang==${VERSION}"; then
             installed=true
             break
           fi

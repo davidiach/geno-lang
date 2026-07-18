@@ -1146,6 +1146,20 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
     if not isinstance(jobs, dict):
         return [*errors, ".github/workflows/publish.yml: jobs must be a mapping"]
 
+    for job_name, raw_job in jobs.items():
+        if not isinstance(raw_job, dict):
+            continue
+        for step_index, step in enumerate(raw_job.get("steps", [])):
+            if not isinstance(step, dict):
+                continue
+            run = step.get("run")
+            if isinstance(run, str) and "${{" in run:
+                errors.append(
+                    ".github/workflows/publish.yml: run steps must not interpolate "
+                    "GitHub expressions directly; pass values through step env "
+                    f"(job {job_name!r}, step {step_index + 1})"
+                )
+
     release_gate_jobs: set[str] = set()
     for job_name, raw_job in jobs.items():
         if not isinstance(raw_job, dict):

@@ -1484,6 +1484,8 @@ def _has_unsupported_regex_construct(pattern: str) -> bool:
             in_class = False
             i += 1
             continue
+        if ch == "]":
+            return True
         if not in_class and ch == "$":
             return True
         if not in_class and ch == "^":

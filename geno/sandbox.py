@@ -1920,8 +1920,9 @@ class ProcessSandbox:
             # handles open after the leader exits. Close the kill-on-close Job
             # before joining readers so those descendants cannot outlive the
             # leader or defeat the wall-clock bound.
-            self._close_windows_job(job_handle)
+            windows_job_to_close = job_handle
             job_handle = None
+            self._close_windows_job(windows_job_to_close)
 
             if termination_errors:
                 raise termination_errors[0]
@@ -1958,9 +1959,10 @@ class ProcessSandbox:
                         exit_observed.set()
                         finished.set()
             if job_handle is not None:
+                windows_job_to_close = job_handle
+                job_handle = None
                 try:
-                    self._close_windows_job(job_handle)
-                    job_handle = None
+                    self._close_windows_job(windows_job_to_close)
                 except OSError as exc:
                     if cleanup_error is None:
                         cleanup_error = exc

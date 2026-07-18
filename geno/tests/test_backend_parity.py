@@ -2959,6 +2959,17 @@ class TestBackendParity:
         source = """
         func main() -> Unit
             let smile: String = from_char_code(128512)
+            let astral_class: String = "[" + smile + "]*x"
+            match regex_match(pattern: astral_class, text: smile + "x") with
+                | Some(value) -> print(length(value))
+                | None -> print(-1)
+            end match
+
+            match regex_match(pattern: "\\\\]", text: "]") with
+                | Some(value) -> print(char_code(value))
+                | None -> print(-1)
+            end match
+
             match regex_match(pattern: smile, text: smile) with
                 | Some(value) -> print(char_code(value))
                 | None -> print(-1)
@@ -2995,7 +3006,7 @@ class TestBackendParity:
         _assert_expected_backend_outputs(
             label="regex astral code point handling",
             context=source,
-            expected="128512\n1\n128512\n2\n1\n88\n3\n45\n128512\n45\n",
+            expected="2\n93\n128512\n1\n128512\n2\n1\n88\n3\n45\n128512\n45\n",
             interp_out=cast(str, result.output),
             py_out=_compiled_python_output(source, capabilities={"print", "regex"}),
             js_out=_compiled_js_output(source, capabilities={"print", "regex"}),

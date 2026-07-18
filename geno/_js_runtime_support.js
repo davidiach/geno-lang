@@ -2294,6 +2294,7 @@ function _hasUnsupportedRegexConstruct(pattern) {
             i++;
             continue;
         }
+        if (ch === "]") return true;
         if (!inClass && ch === "$") return true;
         if (!inClass && ch === "^") hasStartAnchor = true;
         if (!inClass && ch === "|") {
@@ -2545,8 +2546,9 @@ function _regexQuantifierEnd(pattern, start) {
 
 function _regexCharClassKey(pattern, start, end) {
     const content = pattern.slice(start + 1, end);
-    if (content.length === 1) return "literal:" + content;
-    if (content.length === 2 && content[0] === "\\") return "literal:" + content[1];
+    const codePoints = Array.from(content);
+    if (codePoints.length === 1) return "literal:" + content;
+    if (codePoints.length === 2 && codePoints[0] === "\\") return "literal:" + codePoints[1];
     return "class:" + content;
 }
 
