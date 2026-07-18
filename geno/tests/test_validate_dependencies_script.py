@@ -325,6 +325,24 @@ def test_release_gate_install_scan_rejects_continued_command_substitution():
     assert any("command or process substitution" in invocation for invocation in unsafe)
 
 
+def test_release_gate_install_scan_keeps_hash_inside_word():
+    unsafe = validate_dependencies._unsafe_release_gate_install_lines(
+        {"run": "echo x#not-a-comment ; pip install attacker"}
+    )
+
+    assert "pip install attacker" in unsafe
+
+
+def test_release_install_evidence_rejects_single_quoted_continuation():
+    run = (
+        "python -m pip install --require-hashes -r 'requirements-release."
+        + "\\"
+        + "\nlock'"
+    )
+
+    assert not validate_dependencies._step_installs_release_lock({"run": run})
+
+
 @pytest.mark.parametrize(
     "run",
     [
@@ -335,6 +353,38 @@ def test_release_gate_install_scan_rejects_continued_command_substitution():
 def test_release_gate_install_scan_rejects_bash_53_command_substitution(run: str):
     unsafe = validate_dependencies._unsafe_release_gate_install_lines({"run": run})
     assert any("command or process substitution" in invocation for invocation in unsafe)
+
+
+@pytest.mark.parametrize(
+    "unsafe_command",
+    [
+        "python -m pip install -r requirements-release.lock # --require-hashes",
+        "python -m pip --help install --require-hashes -r requirements-release.lock",
+        'echo ";" python -m pip install --require-hashes -r requirements-release.lock',
+        "echo \\; python -m pip install --require-hashes -r requirements-release.lock",
+        "dummy=(python -m pip install --require-hashes -r requirements-release.lock)",
+    ],
+)
+def test_publish_build_tools_require_active_hash_flag(
+    tmp_path: Path, unsafe_command: str
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "        run: python -m pip install --require-hashes -r requirements-release.lock\n",
+            f"        run: {unsafe_command}\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any(
+        "hash-installs" in error and "requirements-release.lock" in error
+        for error in errors
+    )
 
 
 def test_python_requirement_drift_is_reported(tmp_path: Path):

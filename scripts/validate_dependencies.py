@@ -539,11 +539,9 @@ def _job_environment_name(job: dict[str, Any]) -> str:
 
 
 def _step_installs_release_lock(step: dict[str, Any]) -> bool:
-    run = str(step.get("run", ""))
-    return (
-        "pip install" in run
-        and "--require-hashes" in run
-        and "-r requirements-release.lock" in run
+    return _step_has_exact_pip_install(
+        step,
+        ("--require-hashes", "-r", "requirements-release.lock"),
     )
 
 
@@ -552,26 +550,112 @@ def _step_runs_release_gate(step: dict[str, Any]) -> bool:
 
 
 def _step_installs_dev_lock(step: dict[str, Any]) -> bool:
-    run = str(step.get("run", ""))
-    return (
-        "pip install" in run
-        and "--require-hashes" in run
-        and "-r requirements-dev.lock" in run
+    return _step_has_exact_pip_install(
+        step,
+        ("--require-hashes", "-r", "requirements-dev.lock"),
     )
 
 
 def _step_installs_project_without_dependencies(step: dict[str, Any]) -> bool:
-    run = str(step.get("run", ""))
-    return (
-        "pip install" in run
-        and "--no-deps" in run
-        and "--no-build-isolation" in run
-        and "-e ." in run
+    return _step_has_exact_pip_install(
+        step,
+        ("--no-deps", "--no-build-isolation", "-e", "."),
     )
 
 
+def _remove_shell_line_continuations(run: str) -> str:
+    normalized: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+
+    while index < len(run):
+        char = run[index]
+        if escaped:
+            normalized.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            if run.startswith("\r\n", index + 1):
+                index += 3
+                continue
+            if index + 1 < len(run) and run[index + 1] == "\n":
+                index += 2
+                continue
+            normalized.append(char)
+            escaped = True
+            index += 1
+            continue
+        if (
+            char == "\\"
+            and quote == "'"
+            and (
+                run.startswith("\r\n", index + 1)
+                or (index + 1 < len(run) and run[index + 1] == "\n")
+            )
+        ):
+            raise ValueError("backslash-newline inside single quotes is not allowed")
+        if char in ("'", '"'):
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        normalized.append(char)
+        index += 1
+
+    return "".join(normalized)
+
+
+def _split_unquoted_shell_controls(raw_line: str) -> tuple[str, ...]:
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    at_word_start = True
+
+    for char in raw_line:
+        if escaped:
+            current.append(char)
+            escaped = False
+            at_word_start = False
+            continue
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            current.append(char)
+            at_word_start = False
+            continue
+        if char == "#" and at_word_start:
+            break
+        if char in "()":
+            raise ValueError("unquoted shell parentheses are not allowed")
+        if char in ";&|":
+            segment = "".join(current).strip()
+            if segment:
+                segments.append(segment)
+            current.clear()
+            at_word_start = True
+            continue
+        current.append(char)
+        at_word_start = char.isspace()
+
+    segment = "".join(current).strip()
+    if segment:
+        segments.append(segment)
+    return tuple(segments)
+
+
 def _shell_command_groups(run: str) -> tuple[tuple[str, ...], ...]:
-    normalized = re.sub(r"\\\r?\n", "", run)
+    normalized = _remove_shell_line_continuations(run)
     if "`" in normalized:
         raise ValueError("backtick command substitution is not allowed")
     if any(marker in normalized for marker in ("$(", "<(", ">(")) or re.search(
@@ -580,30 +664,61 @@ def _shell_command_groups(run: str) -> tuple[tuple[str, ...], ...]:
         raise ValueError("shell command or process substitution is not allowed")
     groups: list[tuple[str, ...]] = []
     for raw_line in normalized.splitlines():
-        lexer = shlex.shlex(
-            raw_line,
-            posix=True,
-            punctuation_chars=";&|()",
-        )
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-
-        current: list[str] = []
-        for token in lexer:
-            if token and all(char in ";&|()" for char in token):
-                if current:
-                    groups.append(tuple(current))
-                    current = []
-            else:
-                current.append(token)
-        if current:
-            groups.append(tuple(current))
+        for segment in _split_unquoted_shell_controls(raw_line):
+            lexer = shlex.shlex(segment, posix=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = tuple(lexer)
+            if tokens:
+                groups.append(tokens)
     return tuple(groups)
 
 
 def _is_pip_executable(token: str) -> bool:
     basename = re.split(r"[\\/]", token)[-1]
     return _PIP_EXECUTABLE_RE.fullmatch(basename) is not None
+
+
+def _is_python_executable(token: str) -> bool:
+    basename = re.split(r"[\\/]", token)[-1]
+    return (
+        re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", basename, re.IGNORECASE)
+        is not None
+    )
+
+
+def _pip_install_arguments(command: tuple[str, ...]) -> tuple[str, ...] | None:
+    if not command:
+        return None
+    if _is_pip_executable(command[0]):
+        pip_index = 0
+    elif (
+        len(command) >= 3
+        and command[1] == "-m"
+        and _is_python_executable(command[0])
+        and _is_pip_executable(command[2])
+    ):
+        pip_index = 2
+    else:
+        return None
+    invocation_tokens = command[pip_index:]
+    if len(invocation_tokens) < 2 or invocation_tokens[1] != "install":
+        return None
+    return invocation_tokens[2:]
+
+
+def _step_has_exact_pip_install(
+    step: dict[str, Any],
+    expected_arguments: tuple[str, ...],
+) -> bool:
+    try:
+        command_groups = _shell_command_groups(str(step.get("run", "")))
+    except ValueError:
+        return False
+    return any(
+        _pip_install_arguments(command) == expected_arguments
+        for command in command_groups
+    )
 
 
 def _unsafe_release_gate_install_lines(step: dict[str, Any]) -> tuple[str, ...]:
