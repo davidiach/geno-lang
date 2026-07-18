@@ -205,6 +205,7 @@ def test_docker_build_context_and_copy_are_allowlisted():
         "!requirements.lock",
         "!requirements-release.lock",
         "!geno/server.py",
+        "!geno/_darwin_resource.py",
         "!geno/cli/run.py",
         "!geno/std/List.geno",
     } <= ignore_lines

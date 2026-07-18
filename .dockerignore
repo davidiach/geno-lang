@@ -14,6 +14,7 @@
 !geno/__main__.py
 !geno/_backend_fastpath.py
 !geno/_cli_format.py
+!geno/_darwin_resource.py
 !geno/_definition_index.py
 !geno/_js_runtime_support.js
 !geno/_runtime_support.py
