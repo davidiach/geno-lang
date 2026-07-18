@@ -194,6 +194,7 @@ def save_lockfile(lockfile: Lockfile, path: Path) -> None:
     lines: list[str] = []
 
     for name, dep in lockfile.dependencies.items():
+        validate_dependency_name(name)
         lines.append(f"[dependencies.{_serialize_toml_key(name)}]")
         lines.append(f'git = "{_toml_escape(dep.git)}"')
         lines.append(f'commit = "{_toml_escape(dep.commit)}"')

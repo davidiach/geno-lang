@@ -55,6 +55,21 @@ class TestSingleFile:
         pg = ProjectGraph.discover(geno_file)
         assert pg.dependencies == {}
 
+    def test_lowercase_single_file_module_remains_supported(self, tmp_path):
+        geno_file = tmp_path / "fibonacci.geno"
+        geno_file.write_text("func main() -> Int\n  return 1\nend func\n")
+
+        pg = ProjectGraph.discover(geno_file)
+
+        assert pg.module_names == ["fibonacci"]
+
+    def test_single_file_rejects_codegen_punctuation(self, tmp_path):
+        geno_file = tmp_path / "Evil;Pwn.geno"
+        geno_file.write_text("func main() -> Int\n  return 1\nend func\n")
+
+        with pytest.raises(ProjectGraphError, match="Invalid module name"):
+            ProjectGraph.discover(geno_file)
+
 
 class TestMultiFileWithManifest:
     """Project with geno.toml declaring files."""
@@ -108,6 +123,15 @@ class TestMultiFileWithManifest:
     def test_missing_declared_file_raises(self, tmp_path):
         (tmp_path / "geno.toml").write_text('files = ["Missing.geno"]\n')
         with pytest.raises(ProjectGraphError, match="not found"):
+            ProjectGraph.discover(tmp_path)
+
+    def test_manifest_file_rejects_codegen_punctuation(self, tmp_path):
+        (tmp_path / "geno.toml").write_text('files = ["Evil;Pwn.geno"]\n')
+        (tmp_path / "Evil;Pwn.geno").write_text(
+            "func main() -> Int\n  return 1\nend func\n"
+        )
+
+        with pytest.raises(ProjectGraphError, match="Invalid module name"):
             ProjectGraph.discover(tmp_path)
 
 

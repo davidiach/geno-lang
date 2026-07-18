@@ -26,6 +26,7 @@ from geno.server import (
     MAX_MODULE_SOURCE_BYTES,
     MAX_MODULES,
     MAX_REQUEST_BODY_BYTES,
+    MAX_REQUEST_HEADER_BYTES,
     MAX_STEPS,
     MAX_TIMEOUT_SECONDS,
     RequestError,
@@ -434,6 +435,31 @@ class TestPlayground:
 
 
 class TestRequestBoundaryHardening:
+    @pytest.mark.parametrize(
+        ("header_count", "expected_status"),
+        [(64, 200), (65, 431)],
+    )
+    def test_aggregate_request_headers_are_bounded(self, header_count, expected_status):
+        server = create_server("127.0.0.1", 0, bind_and_activate=True)
+        host, port = server.server_address
+        _start_test_server(server)
+        try:
+            prefix = (
+                f"GET /healthz HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n"
+            ).encode("ascii")
+            padding = b"".join(
+                f"X-Fill-{index}: ".encode("ascii") + b"a" * 1000 + b"\r\n"
+                for index in range(header_count)
+            )
+            request = prefix + padding + b"\r\n"
+            assert (len(request) <= MAX_REQUEST_HEADER_BYTES) is (header_count == 64)
+
+            status, _response = _raw_http_exchange(server, request)
+            assert status == expected_status
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_cross_origin_simple_post_is_rejected(self, client):
         status, body = client.post(
             "/run",
@@ -3520,6 +3546,7 @@ class TestEnvConfig:
         ("env_name", "value", "message"),
         [
             ("GENO_MAX_REQUEST_BODY_BYTES", "0", "must be positive"),
+            ("GENO_MAX_REQUEST_HEADER_BYTES", "0", "must be positive"),
             ("GENO_MAX_RESPONSE_BODY_BYTES", "0", "must be positive"),
             ("GENO_MAX_JSON_NESTING_DEPTH", "0", "must be positive"),
             ("GENO_MAX_MODULE_SOURCE_BYTES", "-1", "must be non-negative"),

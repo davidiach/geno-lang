@@ -6,6 +6,7 @@ Compiles Geno source code to Python.
 """
 
 import ast
+import builtins as _python_builtins
 import keyword
 from contextlib import contextmanager
 from functools import lru_cache
@@ -97,6 +98,7 @@ from .builtin_registry import (
     python_backend_builtin_helper_names,
     python_backend_builtin_name_map,
 )
+from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
 from .types import FloatType, UserType
 
@@ -157,6 +159,33 @@ def _python_prelude_binding_names(source: str) -> frozenset[str]:
 
     visit_statements(ast.parse(source).body)
     return frozenset(names)
+
+
+_PYTHON_EMITTED_LOCAL_HELPER_NAMES = frozenset(
+    {
+        "_builtin_max",
+        "_builtin_min",
+        "_geno_format",
+        "_object_setattr",
+        "_promote_int_to_float",
+    }
+)
+_PYTHON_EMITTED_HOST_INTRINSIC_NAMES = frozenset(
+    {
+        "IndexError",
+        "RuntimeError",
+        "bool",
+        "getattr",
+        "isinstance",
+        "len",
+        "list",
+        "print",
+        "str",
+        "type",
+    }
+)
+_PYTHON_HOST_INTRINSIC_NAMES = frozenset(dir(_python_builtins))
+_PYTHON_FIXED_GLOBAL_NAMES = frozenset({"__name__", "asyncio", "_geno_entry_main"})
 
 
 # Shadowing these could disable safety mechanisms (get_field, _safe_div) or
@@ -229,13 +258,25 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_geno_throw",
         }
     )
+    | _PYTHON_EMITTED_LOCAL_HELPER_NAMES
+    | _PYTHON_EMITTED_HOST_INTRINSIC_NAMES
     | python_backend_builtin_helper_names()
 )
 
 
 RESERVED_PRELUDE_NAMES = (
-    _python_prelude_binding_names(RUNTIME_PRELUDE) - frozenset(all_builtin_names())
-) | _PYTHON_LOCAL_RESERVED_NAMES
+    (_python_prelude_binding_names(RUNTIME_PRELUDE) - frozenset(all_builtin_names()))
+    | _PYTHON_LOCAL_RESERVED_NAMES
+    | _PYTHON_FIXED_GLOBAL_NAMES
+    | _PYTHON_HOST_INTRINSIC_NAMES
+)
+_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES = (
+    RESERVED_PRELUDE_NAMES - _PYTHON_HOST_INTRINSIC_NAMES
+)
+_PYTHON_PROJECT_RESERVED_NAMES = (
+    RESERVED_PRELUDE_NAMES - _PYTHON_HOST_INTRINSIC_NAMES
+) | _PYTHON_EMITTED_HOST_INTRINSIC_NAMES
+
 # Python keywords that are valid Geno identifiers but would produce invalid
 # Python if emitted verbatim.  We mangle them by appending "_kw".
 _PYTHON_KEYWORDS: frozenset[str] = frozenset(keyword.kwlist) | frozenset(
@@ -296,6 +337,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         super().__init__()
         self._active_loop_vars: list[str] = []
         self._name_overrides: list[dict[str, str]] = []
+        self._active_module_bindings: dict[str, str] = {}
         # Depth counter: >0 while compiling a comprehension's iterable
         # expression, where Python forbids assignment expressions, so the
         # inline integer guard must fall back to its call form.
@@ -312,6 +354,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             resolved = overrides.get(name)
             if resolved is not None:
                 return resolved
+        module_binding = self._active_module_bindings.get(name)
+        if module_binding is not None:
+            return module_binding
         return self._mangle_name(name)
 
     @contextmanager
@@ -610,6 +655,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._active_module_bindings = {}
         self._reserve_user_temp_names(program)
 
         # Write runtime prelude
@@ -623,6 +669,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             RESERVED_PRELUDE_NAMES,
             _PYTHON_LOCAL_RESERVED_NAMES,
             CompileError,
+            direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
         )
 
         # Compile all definitions
@@ -685,25 +732,41 @@ class Compiler(BaseCompiler, ASTVisitor):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._active_module_bindings = {}
         for program in dep_graph.parsed.values():
             self._reserve_user_temp_names(program)
 
             self._validate_runtime_name_collisions(
                 program,
-                RESERVED_PRELUDE_NAMES,
+                _PYTHON_PROJECT_RESERVED_NAMES,
                 _PYTHON_LOCAL_RESERVED_NAMES,
                 CompileError,
+                top_level_dispatchers_share_scope=False,
+                direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
             )
         for mod_name in dep_graph.sorted_modules:
-            if mod_name in RESERVED_PRELUDE_NAMES:
+            try:
+                validate_module_name(mod_name)
+            except ValueError as exc:
+                raise CompileError(str(exc)) from exc
+            if mod_name in _PYTHON_KEYWORDS:
+                raise CompileError(
+                    f"Invalid Python module name '{mod_name}': reserved keyword"
+                )
+            if (
+                mod_name in RESERVED_PRELUDE_NAMES
+                and mod_name not in _PYTHON_HOST_INTRINSIC_NAMES
+            ):
                 raise CompileError(f"'{mod_name}' is a reserved runtime module name")
+        module_bindings = {
+            mod_name: self._fresh_temp() for mod_name in dep_graph.sorted_modules
+        }
         # Write runtime prelude once
         self.output.write(RUNTIME_PRELUDE)
 
         # Find the entrypoint module (last in topo order, typically has main())
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
         main_defn = None
-        module_public_exports: dict[str, list[str]] = {}
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
 
@@ -711,7 +774,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             program = dep_graph.parsed[mod_name]
             self._register_module_param_names(mod_name, program)
             public_exports, impl_exports = self._module_runtime_exports(program)
-            module_public_exports[mod_name] = public_exports
             module_impl_exports[mod_name] = impl_exports
             module_runtime_exports[mod_name] = public_exports + impl_exports
 
@@ -722,9 +784,27 @@ class Compiler(BaseCompiler, ASTVisitor):
             own_export_names = set(runtime_exports)
             imported_runtime_names: dict[str, str] = {}
             ambiguous_imported_names: set[str] = set()
+            active_module_bindings = {
+                (defn.alias or defn.module_name): module_bindings[defn.module_name]
+                for defn in program.definitions
+                if isinstance(defn, ImportStatement)
+                and defn.module_name in module_bindings
+            }
+            export_collisions = own_export_names & active_module_bindings.keys()
+            if export_collisions:
+                collision = min(export_collisions)
+                raise CompileError(
+                    f"Imported module '{collision}' conflicts with a local export"
+                )
+            self._validate_reserved_local_names(
+                program,
+                active_module_bindings.keys(),
+                CompileError,
+            )
+            self._active_module_bindings = active_module_bindings
 
             for defn in program.definitions:
-                if not isinstance(defn, ImportStatement):
+                if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
                 for export_name in module_runtime_exports.get(defn.module_name, []):
                     if export_name in own_export_names:
@@ -742,16 +822,10 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln(f"def {factory_name}():")
             self._indent()
 
-            for defn in program.definitions:
-                if isinstance(defn, ImportStatement) and defn.alias:
-                    self._writeln(
-                        f"{self._mangle_name(defn.alias)} = {defn.module_name}"
-                    )
-
             for export_name, imported_module in sorted(imported_runtime_names.items()):
                 self._writeln(
                     f"{self._mangle_name(export_name)} = "
-                    f"getattr({imported_module}, {export_name!r})"
+                    f"getattr({module_bindings[imported_module]}, {export_name!r})"
                 )
 
             # First pass: collect definitions
@@ -778,17 +852,19 @@ class Compiler(BaseCompiler, ASTVisitor):
                 else "return _SimpleNamespace()"
             )
             self._dedent()
-            self._writeln(f"{mod_name} = {factory_name}()")
+            self._writeln(f"{module_bindings[mod_name]} = {factory_name}()")
+            self._active_module_bindings = {}
 
         for mod_name in dep_graph.sorted_modules:
             for impl_name in module_impl_exports[mod_name]:
                 self._writeln(
-                    f"{self._mangle_name(impl_name)} = getattr({mod_name}, {impl_name!r})"
+                    f"{self._mangle_name(impl_name)} = "
+                    f"getattr({module_bindings[mod_name]}, {impl_name!r})"
                 )
 
-        for export_name in module_public_exports.get(entrypoint, []):
+        if main_defn is not None:
             self._writeln(
-                f"{self._mangle_name(export_name)} = getattr({entrypoint}, {export_name!r})"
+                f"_geno_entry_main = get_field({module_bindings[entrypoint]}, 'main')"
             )
 
         # Emit trait dispatchers
@@ -799,9 +875,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             self.output.write("\n\nif __name__ == '__main__':\n")
             if main_defn.is_async:
                 self.output.write("    import asyncio\n")
-                self.output.write("    result = asyncio.run(main())\n")
+                self.output.write("    result = asyncio.run(_geno_entry_main())\n")
             else:
-                self.output.write("    result = main()\n")
+                self.output.write("    result = _geno_entry_main()\n")
             self.output.write("    if result is not None:\n")
             self.output.write("        print(result)\n")
 
@@ -866,6 +942,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         self, type_name: str, type_params: list[str], variant: TypeVariant
     ) -> None:
         """Compile a type variant to a Python dataclass with __slots__."""
+        for field_name, _field_type in variant.fields:
+            if field_name in _PYTHON_KEYWORDS or (
+                field_name.startswith("__") and field_name.endswith("__")
+            ):
+                raise CompileError(
+                    f"Record field '{field_name}' cannot be represented safely "
+                    "by the Python backend"
+                )
+
         # repr=False so Constructor.__repr__ (matching interpreter format) is used
         self._writeln("@dataclass(frozen=True, repr=False)")
         self._writeln(f"class {variant.name}(Constructor):")
@@ -1068,6 +1153,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             not isinstance(ens.condition, BooleanLiteral) or not ens.condition.value
             for ens in defn.specs.ensures
         )
+        body_helper = self._fresh_temp() if has_ensures else ""
 
         if has_ensures:
             # Use a helper function to capture result and check ensures.
@@ -1075,7 +1161,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             # async — otherwise an `await` inside the body compiles to
             # invalid Python (issue #666).
             helper_prefix = "async " if defn.is_async else ""
-            self._writeln(f"{helper_prefix}def _body_{defn.name}():")
+            self._writeln(f"{helper_prefix}def {body_helper}():")
             self._indent()
 
         # Only wrap in try/except for ? operator propagation when the
@@ -1105,7 +1191,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             # Call the body and capture result. For async enclosing
             # functions the helper is async too, so the call must be awaited.
             call_prefix = "await " if defn.is_async else ""
-            self._writeln(f"result = {call_prefix}_body_{defn.name}()")
+            self._writeln(f"result = {call_prefix}{body_helper}()")
             if self._expected_runtime_type_is_float(defn.return_type):
                 self._writeln("result = _promote_int_to_float(result)")
             # Check ensures clauses
@@ -1674,6 +1760,9 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         if expr_type is TypeIdentifier:
             type_identifier = cast(TypeIdentifier, expr)
+            module_binding = self._active_module_bindings.get(type_identifier.name)
+            if module_binding is not None:
+                return module_binding
             if type_identifier.name == "None":
                 return "None_"
             # Check if this is a nullary constructor (type variant with no fields)
@@ -1818,9 +1907,13 @@ class Compiler(BaseCompiler, ASTVisitor):
             return "True" if expr.value else "False"
 
         if isinstance(expr, Identifier):
+            if expr.name in self._active_module_bindings:
+                return self._active_module_bindings[expr.name]
             return self._mangle_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
+            if expr.name in self._active_module_bindings:
+                return self._active_module_bindings[expr.name]
             if expr.name == "None":
                 return "None_"
             variant = self._constructor_to_variant.get(expr.name)
@@ -2415,7 +2508,10 @@ class Compiler(BaseCompiler, ASTVisitor):
                 start = self._compile_expr(start_expr)
                 stop = self._compile_expr(stop_expr)
                 if all_simple:
-                    return f"{text}[max(0, {start}):min(len({text}), {stop})]"
+                    return (
+                        f"{text}[_builtin_max(0, {start}):"
+                        f"_builtin_min(len({text}), {stop})]"
+                    )
                 text_temp = self._fresh_temp()
                 start_temp = self._fresh_temp()
                 stop_temp = self._fresh_temp()
@@ -2423,7 +2519,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                     f"(((({text_temp} := {text}) or True)"
                     f" and (({start_temp} := {start}) or True)"
                     f" and (({stop_temp} := {stop}) or True)"
-                    f" and {text_temp}[max(0, {start_temp}):min(len({text_temp}), {stop_temp})])"
+                    f" and {text_temp}[_builtin_max(0, {start_temp}):"
+                    f"_builtin_min(len({text_temp}), {stop_temp})])"
                     f' or "")'
                 )
 
@@ -2921,8 +3018,9 @@ def _compiled_main_result_capture(
     is_async: bool,
     *,
     catch_name_error: bool = False,
+    main_name: str = "main",
 ) -> str:
-    call = "_geno_run_async(main())" if is_async else "main()"
+    call = f"_geno_run_async({main_name}())" if is_async else f"{main_name}()"
     assignment = f"__result__ = {call}"
     if catch_name_error:
         return f"\n\ntry:\n    {assignment}\nexcept NameError:\n    pass\n"
@@ -2988,9 +3086,6 @@ def compile_and_exec(
 
             exec_code = _strip_runtime_prelude_imports(python_code)
             trusted_prelude_line_count = _trusted_runtime_prelude_line_count(exec_code)
-            exec_code = _insert_compiled_runtime_capability_assignment(
-                exec_code, capabilities
-            )
             # Replace the __name__ guard with a direct __result__
             # assignment so the process sandbox captures the return value.
             _MAIN_GUARD = (
@@ -3024,7 +3119,9 @@ def compile_and_exec(
                 trusted_prelude_line_count=trusted_prelude_line_count,
             )
             sandbox = ProcessSandbox(process_config)
-            result, output, error = sandbox.execute(exec_code)
+            result, output, error = sandbox._execute_compiler_output(
+                exec_code, capabilities=capabilities
+            )
 
             if error is not None:
                 raise RuntimeError(error)

@@ -55,7 +55,7 @@ from .ast_nodes import (
     WhileStatement,
     WithExpr,
 )
-from .builtin_registry import builtin_param_name_lists
+from .builtin_registry import all_builtin_names, builtin_param_name_lists
 from .tokens import SourceLocation
 
 # Built-in type variants that must be registered for dynamic field lookup.
@@ -238,6 +238,8 @@ class BaseCompiler(ABC):
         global_reserved_names: Collection[str],
         local_reserved_names: Collection[str],
         error_type: type[Exception],
+        top_level_dispatchers_share_scope: bool = True,
+        direct_reference_reserved_names: Collection[str] | None = None,
     ) -> None:
         """Reject every user binding that can overwrite emitted runtime state."""
 
@@ -271,6 +273,57 @@ class BaseCompiler(ABC):
                     )
             elif isinstance(defn, ImportStatement) and defn.alias:
                 reject(defn.alias, "import alias")
+
+        reference_reserved_names = (
+            global_reserved_names
+            if direct_reference_reserved_names is None
+            else direct_reference_reserved_names
+        )
+        seen_references: set[int] = set()
+        if top_level_dispatchers_share_scope:
+            function_names = {
+                defn.name
+                for defn in program.definitions
+                if isinstance(defn, FunctionDef)
+            }
+            if collisions := function_names & self.trait_dispatch.keys():
+                name = min(collisions)
+                raise error_type(f"Function '{name}' conflicts with a trait dispatcher")
+
+        def validate_reference(value: object) -> None:
+            if isinstance(value, Identifier):
+                if (
+                    value.name in reference_reserved_names
+                    and value._resolved_builtin_name is None
+                    and value.name not in all_builtin_names()
+                ):
+                    raise error_type(
+                        f"'{value.name}' is a reserved runtime name and cannot "
+                        "be referenced directly"
+                    )
+                return
+            if value is None or isinstance(value, (str, bool, int, float, bytes)):
+                return
+            value_id = id(value)
+            if value_id in seen_references:
+                return
+            if isinstance(value, (list, tuple, set, frozenset)):
+                seen_references.add(value_id)
+                for item in value:
+                    validate_reference(item)
+                return
+            if isinstance(value, dict):
+                seen_references.add(value_id)
+                for key, item in value.items():
+                    validate_reference(key)
+                    validate_reference(item)
+                return
+            if is_dataclass(value) and not isinstance(value, type):
+                seen_references.add(value_id)
+                for field_info in fields(value):
+                    validate_reference(getattr(value, field_info.name))
+
+        validate_reference(program)
 
         # Only helpers emitted directly inside user scopes need local-name
         # protection. Global prelude functions resolve their dependencies in

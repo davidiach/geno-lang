@@ -50,6 +50,87 @@ _PIP_EXECUTABLE_RE = re.compile(
     r"pip(?:\d+(?:\.\d+)*)?(?:\.exe)?",
     re.IGNORECASE,
 )
+_ALLOWED_RELEASE_PIP_ARGUMENTS = (
+    (
+        "--require-hashes",
+        "-r",
+        "requirements-dev.lock",
+    ),
+    (
+        "--require-hashes",
+        "-r",
+        "requirements-release.lock",
+    ),
+    (
+        "--no-deps",
+        "--no-build-isolation",
+        "-e",
+        ".",
+    ),
+)
+_ARTIFACT_WHEEL_SMOKE_COMMAND_GROUPS = (
+    ("python", "-m", "venv", ".venv-wheel"),
+    (".", ".venv-wheel/bin/activate"),
+    (
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--require-hashes",
+        "-r",
+        "requirements.lock",
+    ),
+    ("python", "-m", "pip", "install", "--no-deps", "dist/*.whl"),
+    ("python", "scripts/smoke_installed_geno.py"),
+)
+_ARTIFACT_SDIST_SMOKE_COMMAND_GROUPS = (
+    ("python", "-m", "venv", ".venv-sdist"),
+    (".", ".venv-sdist/bin/activate"),
+    (
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--require-hashes",
+        "-r",
+        "requirements.lock",
+    ),
+    (
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--require-hashes",
+        "-r",
+        "requirements-release.lock",
+    ),
+    (
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--no-deps",
+        "--no-build-isolation",
+        "dist/*.tar.gz",
+    ),
+    ("python", "scripts/smoke_installed_geno.py"),
+)
+_STEP_COMMAND_OVERRIDE_KEYS = (
+    "continue-on-error",
+    "env",
+    "if",
+    "shell",
+    "working-directory",
+)
+_JOB_COMMAND_OVERRIDE_KEYS = (
+    "container",
+    "continue-on-error",
+    "defaults",
+    "env",
+    "if",
+    "services",
+)
+_WORKFLOW_COMMAND_OVERRIDE_KEYS = ("defaults", "env")
 
 
 @dataclass(frozen=True)
@@ -488,8 +569,9 @@ def validate_dependabot_coverage(root: Path = ROOT) -> list[str]:
 
 
 def _step_runs_strict_twine_check(step: dict[str, Any]) -> bool:
-    run = str(step.get("run", ""))
-    return "twine check" in run and "--strict" in run and "dist/" in run
+    return _step_has_exact_python_module_command(
+        step, "twine", ("check", "--strict", "dist/*")
+    )
 
 
 def _step_uses_action(step: dict[str, Any], action: str) -> bool:
@@ -521,14 +603,12 @@ def _job_needs(job: dict[str, Any]) -> tuple[str, ...]:
     return ()
 
 
-def _permissions_grant_oidc_write(permissions: Any) -> bool:
-    return permissions == "write-all" or (
-        isinstance(permissions, dict) and permissions.get("id-token") == "write"
-    )
-
-
-def _job_has_oidc_write(job: dict[str, Any]) -> bool:
-    return _permissions_grant_oidc_write(job.get("permissions", {}))
+def _permissions_are_read_only(permissions: Any) -> bool:
+    if permissions in ({}, "read-all"):
+        return True
+    if not isinstance(permissions, dict):
+        return False
+    return all(value in ("read", "none") for value in permissions.values())
 
 
 def _job_environment_name(job: dict[str, Any]) -> str:
@@ -536,6 +616,12 @@ def _job_environment_name(job: dict[str, Any]) -> str:
     if isinstance(environment, dict):
         environment = environment.get("name", "")
     return str(environment)
+
+
+def _job_has_minimal_authority(job: dict[str, Any]) -> bool:
+    return _permissions_are_read_only(job.get("permissions", {})) and (
+        "environment" not in job
+    )
 
 
 def _step_installs_release_lock(step: dict[str, Any]) -> bool:
@@ -546,7 +632,9 @@ def _step_installs_release_lock(step: dict[str, Any]) -> bool:
 
 
 def _step_runs_release_gate(step: dict[str, Any]) -> bool:
-    return "make release-check" in str(step.get("run", ""))
+    return _step_has_exact_command_groups(
+        step, (("make", "release-check", "PYTHON=python"),)
+    )
 
 
 def _step_installs_dev_lock(step: dict[str, Any]) -> bool:
@@ -707,17 +795,75 @@ def _pip_install_arguments(command: tuple[str, ...]) -> tuple[str, ...] | None:
     return invocation_tokens[2:]
 
 
-def _step_has_exact_pip_install(
+def _step_has_default_command_context(step: dict[str, Any]) -> bool:
+    return not any(key in step for key in _STEP_COMMAND_OVERRIDE_KEYS)
+
+
+def _job_has_default_command_context(job: dict[str, Any]) -> bool:
+    return job.get("runs-on") == "ubuntu-latest" and not any(
+        key in job for key in _JOB_COMMAND_OVERRIDE_KEYS
+    )
+
+
+def _step_has_exact_command_groups(
     step: dict[str, Any],
-    expected_arguments: tuple[str, ...],
+    expected_groups: tuple[tuple[str, ...], ...],
 ) -> bool:
+    if not _step_has_default_command_context(step):
+        return False
     try:
         command_groups = _shell_command_groups(str(step.get("run", "")))
     except ValueError:
         return False
-    return any(
-        _pip_install_arguments(command) == expected_arguments
-        for command in command_groups
+    return command_groups == expected_groups
+
+
+def _python_module_arguments(
+    command: tuple[str, ...],
+    module: str,
+) -> tuple[str, ...] | None:
+    if (
+        len(command) < 3
+        or not _is_python_executable(command[0])
+        or command[1] != "-m"
+        or command[2] != module
+    ):
+        return None
+    return command[3:]
+
+
+def _step_has_exact_python_module_command(
+    step: dict[str, Any],
+    module: str,
+    expected_arguments: tuple[str, ...],
+) -> bool:
+    if not _step_has_default_command_context(step):
+        return False
+    try:
+        command_groups = _shell_command_groups(str(step.get("run", "")))
+    except ValueError:
+        return False
+    return (
+        len(command_groups) == 1
+        and _python_module_arguments(command_groups[0], module) == expected_arguments
+    )
+
+
+def _step_has_exact_pip_install(
+    step: dict[str, Any],
+    expected_arguments: tuple[str, ...],
+) -> bool:
+    if not _step_has_default_command_context(step):
+        return False
+    try:
+        command_groups = _shell_command_groups(str(step.get("run", "")))
+    except ValueError:
+        return False
+    install_arguments = tuple(
+        _pip_install_arguments(command) for command in command_groups
+    )
+    return expected_arguments in install_arguments and all(
+        arguments in _ALLOWED_RELEASE_PIP_ARGUMENTS for arguments in install_arguments
     )
 
 
@@ -742,37 +888,155 @@ def _unsafe_release_gate_install_lines(step: dict[str, Any]) -> tuple[str, ...]:
         except ValueError:
             continue
         arguments = invocation_tokens[install_offset + 1 :]
-        allowed_arguments = (
-            (
-                "--require-hashes",
-                "-r",
-                "requirements-dev.lock",
-            ),
-            (
-                "--require-hashes",
-                "-r",
-                "requirements-release.lock",
-            ),
-            (
-                "--no-deps",
-                "--no-build-isolation",
-                "-e",
-                ".",
-            ),
-        )
-        if arguments not in allowed_arguments:
+        if arguments not in _ALLOWED_RELEASE_PIP_ARGUMENTS:
             unsafe.append(" ".join(invocation_tokens))
     return tuple(unsafe)
 
 
 def _step_builds_without_isolation(step: dict[str, Any]) -> bool:
-    run = str(step.get("run", ""))
-    return "python -m build" in run and "--no-isolation" in run
+    return _step_has_exact_python_module_command(step, "build", ("--no-isolation",))
+
+
+def _step_is_strict_pinned_action(
+    step: dict[str, Any],
+    action: str,
+    expected_options: dict[str, Any] | None,
+) -> bool:
+    allowed_keys = {"name", "uses"}
+    if expected_options is not None:
+        allowed_keys.add("with")
+    return (
+        set(step).issubset(allowed_keys)
+        and _step_uses_pinned_action(step, action)
+        and (
+            ("with" not in step)
+            if expected_options is None
+            else step.get("with") == expected_options
+        )
+    )
+
+
+def _steps_form_strict_artifact_build_pipeline(
+    steps: list[dict[str, Any]],
+) -> bool:
+    run_indexes = [
+        index for index, step in enumerate(steps) if str(step.get("run", "")).strip()
+    ]
+    if not run_indexes:
+        return False
+    action_prefix = steps[: run_indexes[0]]
+    if action_prefix and not (
+        len(action_prefix) == 2
+        and _step_is_strict_pinned_action(action_prefix[0], "actions/checkout", None)
+        and _step_is_strict_pinned_action(
+            action_prefix[1], "actions/setup-python", {"python-version": "3.11"}
+        )
+    ):
+        return False
+    pipeline_steps = steps[run_indexes[0] :]
+    if len(pipeline_steps) not in (3, 5):
+        return False
+    if not (
+        _step_installs_release_lock(pipeline_steps[0])
+        and _step_builds_without_isolation(pipeline_steps[1])
+        and _step_runs_strict_twine_check(pipeline_steps[2])
+    ):
+        return False
+    if len(pipeline_steps) == 3:
+        return True
+    return _step_has_exact_command_groups(
+        pipeline_steps[3],
+        _ARTIFACT_WHEEL_SMOKE_COMMAND_GROUPS,
+    ) and _step_has_exact_command_groups(
+        pipeline_steps[4],
+        _ARTIFACT_SDIST_SMOKE_COMMAND_GROUPS,
+    )
+
+
+def _step_installs_exact_release_dependencies(step: dict[str, Any]) -> bool:
+    return (
+        _step_installs_dev_lock(step)
+        and _step_installs_release_lock(step)
+        and _step_installs_project_without_dependencies(step)
+    )
+
+
+def _steps_form_strict_release_gate_pipeline(
+    steps: list[dict[str, Any]],
+    gate_index: int,
+) -> bool:
+    proof_steps = steps[: gate_index + 1]
+    if len(proof_steps) == 2:
+        return _step_installs_exact_release_dependencies(
+            proof_steps[0]
+        ) and _step_runs_release_gate(proof_steps[1])
+    if len(proof_steps) != 6:
+        return False
+    return (
+        _step_is_strict_pinned_action(proof_steps[0], "actions/checkout", None)
+        and _step_is_strict_pinned_action(
+            proof_steps[1],
+            "actions/setup-python",
+            {"python-version": "3.11"},
+        )
+        and _step_is_strict_pinned_action(
+            proof_steps[2],
+            "actions/setup-node",
+            {"node-version": "20"},
+        )
+        and _step_installs_exact_release_dependencies(proof_steps[3])
+        and _step_has_exact_command_groups(
+            proof_steps[4],
+            (
+                (
+                    "python",
+                    "scripts/check_version_alignment.py",
+                    "--tag",
+                    "${GITHUB_REF_NAME}",
+                ),
+            ),
+        )
+        and _step_runs_release_gate(proof_steps[5])
+    )
 
 
 def _artifact_options(step: dict[str, Any]) -> dict[str, Any]:
     options = step.get("with", {})
     return options if isinstance(options, dict) else {}
+
+
+def _step_downloads_expected_artifact(step: dict[str, Any]) -> bool:
+    return _step_is_strict_pinned_action(
+        step,
+        "actions/download-artifact",
+        {"name": "python-distributions", "path": "dist/"},
+    )
+
+
+def _step_uploads_expected_artifact(step: dict[str, Any]) -> bool:
+    options = _artifact_options(step)
+    if not (
+        set(step).issubset({"name", "uses", "with"})
+        and _step_uses_pinned_action(step, "actions/upload-artifact")
+        and options.get("name") == "python-distributions"
+        and options.get("path") == "dist/"
+        and set(options).issubset(
+            {"name", "path", "if-no-files-found", "retention-days"}
+        )
+    ):
+        return False
+    return bool(
+        options.get("if-no-files-found", "error") == "error"
+        and options.get("retention-days", 1) == 1
+    )
+
+
+def _step_is_strict_pypi_publish_action(step: dict[str, Any]) -> bool:
+    return _step_is_strict_pinned_action(
+        step,
+        "pypa/gh-action-pypi-publish",
+        None,
+    )
 
 
 def _artifact_name(step: dict[str, Any]) -> str:
@@ -866,10 +1130,17 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
         return [*errors, ".github/workflows/publish.yml: missing PyPI publish workflow"]
 
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if _permissions_grant_oidc_write(data.get("permissions", {})):
+    workflow_command_overrides = any(
+        key in data for key in _WORKFLOW_COMMAND_OVERRIDE_KEYS
+    )
+    if workflow_command_overrides:
         errors.append(
-            ".github/workflows/publish.yml: workflow-level permissions must not "
-            "grant id-token: write or write-all"
+            ".github/workflows/publish.yml: workflow command defaults and environment overrides are not allowed"
+        )
+    if "permissions" not in data or not _permissions_are_read_only(data["permissions"]):
+        errors.append(
+            ".github/workflows/publish.yml: workflow permissions must be explicit "
+            "and read-only"
         )
     jobs = data.get("jobs", {})
     if not isinstance(jobs, dict):
@@ -883,7 +1154,20 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
         for gate_index, gate_step in enumerate(steps):
             if not _step_runs_release_gate(gate_step):
                 continue
-            release_gate_jobs.add(str(job_name))
+            if workflow_command_overrides:
+                continue
+            if not _job_has_default_command_context(raw_job):
+                errors.append(
+                    ".github/workflows/publish.yml: release-check job command defaults, environment, conditions, and continue-on-error are not allowed"
+                )
+                continue
+            if not _job_has_minimal_authority(raw_job):
+                errors.append(
+                    ".github/workflows/publish.yml: release-check job permissions "
+                    "must be absent or read-only and the job must not use a "
+                    "protected environment"
+                )
+                continue
             prior_steps = steps[:gate_index]
             if not any(_step_installs_dev_lock(step) for step in prior_steps):
                 errors.append(
@@ -914,6 +1198,13 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
                     ".github/workflows/publish.yml: release-check has unhashed dependency "
                     "install commands: " + "; ".join(unsafe_installs)
                 )
+            if _steps_form_strict_release_gate_pipeline(steps, gate_index):
+                release_gate_jobs.add(str(job_name))
+            else:
+                errors.append(
+                    ".github/workflows/publish.yml: release-check job must use the exact "
+                    "commit-pinned setup, locked install, tag check, and release gate sequence"
+                )
     if not release_gate_jobs:
         errors.append(
             ".github/workflows/publish.yml: missing required release-check gate"
@@ -929,14 +1220,20 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
             index for index, step in enumerate(steps) if _step_publishes_to_pypi(step)
         ]
         if not publish_indexes:
-            if _job_has_oidc_write(job):
+            if not _job_has_minimal_authority(job):
                 errors.append(
-                    ".github/workflows/publish.yml: only the PyPI publish job "
-                    f"may receive id-token: write (found on {job_name!r})"
+                    f".github/workflows/publish.yml: non-publish job {job_name!r} "
+                    "permissions must be absent or read-only and the job must not "
+                    "use a protected environment"
                 )
             continue
 
         publish_jobs += len(publish_indexes)
+        if not _job_has_default_command_context(job):
+            errors.append(
+                f".github/workflows/publish.yml: publish job {job_name!r} "
+                "must run on ubuntu-latest without container, services, command defaults, environment, conditions, or continue-on-error"
+            )
         permissions = job.get("permissions", {})
         if not (
             isinstance(permissions, dict) and permissions.get("id-token") == "write"
@@ -975,12 +1272,11 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
 
         for publish_index in publish_indexes:
             publish_step = steps[publish_index]
-            if not _step_uses_pinned_action(
-                publish_step, "pypa/gh-action-pypi-publish"
-            ):
+            if not _step_is_strict_pypi_publish_action(publish_step):
                 errors.append(
                     ".github/workflows/publish.yml: PyPI publish action must be "
-                    "pinned to a full commit SHA"
+                    "pinned to a full commit SHA and use the default dist/ package path "
+                    "without step overrides"
                 )
             pinned_downloads = [
                 step
@@ -998,14 +1294,12 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
             prior_downloads = [
                 step
                 for step in pinned_downloads
-                if not _artifact_provenance_overrides(step)
-                and _artifact_name(step)
-                and _artifact_path(step)
+                if _step_downloads_expected_artifact(step)
             ]
             if not prior_downloads:
                 errors.append(
                     f".github/workflows/publish.yml: publish job {job_name!r} "
-                    "must download tested artifacts by name to an explicit path "
+                    "must download the tested python-distributions artifact to dist/ "
                     "with a commit-pinned action"
                 )
                 continue
@@ -1016,11 +1310,15 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
                 for name in dependencies
                 if name in jobs and isinstance(jobs[name], dict)
             ]
-            download_artifacts = {
-                (_artifact_name(step), _artifact_path(step)) for step in prior_downloads
-            }
             artifact_gate_found = False
             for _build_job_name, build_job in build_jobs:
+                if not _job_has_minimal_authority(build_job):
+                    errors.append(
+                        ".github/workflows/publish.yml: build job "
+                        f"{_build_job_name!r} permissions must be absent or "
+                        "read-only and the job must not use a protected environment"
+                    )
+                    continue
                 build_steps = [
                     step
                     for step in build_job.get("steps", [])
@@ -1029,25 +1327,14 @@ def validate_publish_metadata_gate(root: Path = ROOT) -> list[str]:
                 upload_indexes = [
                     index
                     for index, step in enumerate(build_steps)
-                    if _step_uses_pinned_action(step, "actions/upload-artifact")
-                    and (_artifact_name(step), _artifact_path(step))
-                    in download_artifacts
+                    if _step_uploads_expected_artifact(step)
                 ]
                 for upload_index in upload_indexes:
                     prior_build_steps = build_steps[:upload_index]
                     if (
-                        any(
-                            _step_runs_strict_twine_check(step)
-                            for step in prior_build_steps
-                        )
-                        and any(
-                            _step_installs_release_lock(step)
-                            for step in prior_build_steps
-                        )
-                        and any(
-                            _step_builds_without_isolation(step)
-                            for step in prior_build_steps
-                        )
+                        _steps_form_strict_artifact_build_pipeline(prior_build_steps)
+                        and _job_has_default_command_context(build_job)
+                        and _job_has_minimal_authority(build_job)
                         and bool(release_gate_jobs.intersection(_job_needs(build_job)))
                     ):
                         artifact_gate_found = True

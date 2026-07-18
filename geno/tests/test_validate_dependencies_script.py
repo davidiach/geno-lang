@@ -165,8 +165,12 @@ updates:
     (root / ".github" / "workflows" / "publish.yml").write_text(
         """
 name: Publish to PyPI
+permissions:
+  contents: read
+
 jobs:
   release-check:
+    runs-on: ubuntu-latest
     steps:
       - name: Install dependencies
         run: |
@@ -177,6 +181,7 @@ jobs:
         run: make release-check PYTHON=python
   build:
     needs: release-check
+    runs-on: ubuntu-latest
     steps:
       - name: Install build tools
         run: python -m pip install --require-hashes -r requirements-release.lock
@@ -191,6 +196,7 @@ jobs:
           path: dist/
   publish:
     needs: build
+    runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
@@ -385,6 +391,293 @@ def test_publish_build_tools_require_active_hash_flag(
         "hash-installs" in error and "requirements-release.lock" in error
         for error in errors
     )
+
+
+def test_publish_build_tools_reject_mixed_unpinned_install(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "        run: python -m pip install --require-hashes -r requirements-release.lock\n",
+            "        run: |\n"
+            "          python -m pip install --require-hashes -r requirements-release.lock\n"
+            "          python -m pip install attacker\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any(
+        "hash-installs" in error and "requirements-release.lock" in error
+        for error in errors
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_build_step",
+    [
+        (
+            "        run: |\n"
+            '          echo "python -m build --no-isolation"\n'
+            "          python -m build\n"
+        ),
+        (
+            "        run: python -m build --no-isolation\n"
+            "      - name: Rebuild package with isolation\n"
+            "        run: python -m build\n"
+        ),
+    ],
+)
+def test_publish_build_evidence_requires_exact_pipeline(
+    tmp_path: Path, unsafe_build_step: str
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "        run: python -m build --no-isolation\n",
+            unsafe_build_step,
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("builds with `--no-isolation`" in error for error in errors)
+
+
+def test_publish_twine_evidence_requires_exact_command(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "        run: python -m twine check --strict dist/*\n",
+            "        run: |\n"
+            '          echo "python -m twine check --strict dist/*"\n'
+            "          python -m twine check dist/*\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("twine check --strict" in error for error in errors)
+
+
+def test_publish_release_gate_evidence_requires_exact_command(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "        run: make release-check PYTHON=python\n",
+            '        run: echo "make release-check PYTHON=python"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("missing required release-check gate" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "tamper_step",
+    [
+        (
+            "      - name: Tamper with checked artifact\n"
+            "        run: printf attacker > dist/geno.whl\n"
+        ),
+        ("      - name: Tamper with checked artifact\n        uses: ./tamper\n"),
+    ],
+)
+def test_publish_rejects_post_twine_artifact_tampering(
+    tmp_path: Path, tamper_step: str
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "      - name: Upload tested distributions\n",
+            tamper_step + "      - name: Upload tested distributions\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("uploads the same artifact" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement", "error_fragment"),
+    [
+        (
+            "        run: make release-check PYTHON=python\n",
+            "        run: make release-check PYTHON=python\n        shell: true {0}\n",
+            "missing required release-check gate",
+        ),
+        (
+            "        run: python -m pip install --require-hashes -r requirements-release.lock\n",
+            "        if: false\n"
+            "        run: python -m pip install --require-hashes -r requirements-release.lock\n",
+            "hash-installs",
+        ),
+        (
+            "        run: python -m build --no-isolation\n",
+            "        continue-on-error: true\n"
+            "        run: python -m build --no-isolation\n",
+            "builds with `--no-isolation`",
+        ),
+        (
+            "name: Publish to PyPI\n",
+            "name: Publish to PyPI\nenv:\n  BASH_ENV: tamper\n",
+            "workflow command defaults",
+        ),
+        (
+            "  build:\n    needs: release-check\n",
+            "  build:\n"
+            "    defaults:\n"
+            "      run:\n"
+            "        shell: true {0}\n"
+            "    needs: release-check\n",
+            "uploads the same artifact",
+        ),
+    ],
+)
+def test_publish_rejects_command_context_overrides(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+    error_fragment: str,
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(needle, replacement, 1),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any(error_fragment in error for error in errors)
+
+
+def test_publish_rejects_prebuild_local_action(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "      - name: Install build tools\n",
+            "      - name: Tamper source\n"
+            "        uses: ./tamper\n"
+            "      - name: Install build tools\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("uploads the same artifact" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "release_job_header",
+    [
+        (
+            "  release-check:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    container: attacker/image:latest\n"
+        ),
+        (
+            "  release-check:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    services:\n"
+            "      attacker:\n"
+            "        image: attacker/image:latest\n"
+        ),
+        ("  release-check:\n    runs-on: self-hosted\n"),
+    ],
+)
+def test_publish_rejects_untrusted_release_job_runtime(
+    tmp_path: Path, release_job_header: str
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "  release-check:\n    runs-on: ubuntu-latest\n",
+            release_job_header,
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("missing required release-check gate" in error for error in errors)
+
+
+def test_publish_rejects_unchecked_artifact_paths(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace("          path: dist/\n", "          path: attacker/\n"),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any(
+        "download the tested python-distributions artifact to dist/" in error
+        for error in errors
+    )
+
+
+def test_publish_rejects_packages_dir_override(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e\n",
+            "        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e\n"
+            "        with:\n"
+            "          packages-dir: attacker/\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("default dist/ package path" in error for error in errors)
+
+
+def test_publish_rejects_release_gate_tampering_step(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(
+            "      - name: Run release gate\n",
+            "      - name: Tamper with release gate\n"
+            "        run: printf 'release-check:\\n\\t@true\\n' > Makefile\n"
+            "      - name: Run release gate\n",
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any("exact commit-pinned setup" in error for error in errors)
 
 
 def test_python_requirement_drift_is_reported(tmp_path: Path):
@@ -621,9 +914,11 @@ def test_publish_workflow_rejects_run_steps_in_oidc_job(tmp_path: Path):
     workflow = publish_path.read_text(encoding="utf-8")
     publish_path.write_text(
         workflow.replace(
-            "  publish:\n    needs: build\n    environment: pypi\n"
+            "  publish:\n    needs: build\n    runs-on: ubuntu-latest\n"
+            "    environment: pypi\n"
             "    permissions:\n      id-token: write\n    steps:\n",
-            "  publish:\n    needs: build\n    environment: pypi\n"
+            "  publish:\n    needs: build\n    runs-on: ubuntu-latest\n"
+            "    environment: pypi\n"
             "    permissions:\n      id-token: write\n    steps:\n"
             "      - name: Unsafe install\n        run: pip install attacker\n",
         ),
@@ -650,7 +945,7 @@ def test_publish_workflow_requires_pinned_artifact_actions(tmp_path: Path):
     errors = validate_dependency_surfaces(tmp_path)
 
     assert any(
-        "commit-pinned action" in error and "download tested artifacts" in error
+        "commit-pinned action" in error and "download the tested" in error
         for error in errors
     )
 
@@ -661,8 +956,10 @@ def test_publish_workflow_rejects_oidc_on_build_job(tmp_path: Path):
     workflow = publish_path.read_text(encoding="utf-8")
     publish_path.write_text(
         workflow.replace(
-            "  build:\n    needs: release-check\n    steps:\n",
-            "  build:\n    needs: release-check\n    permissions:\n      id-token: write\n    steps:\n",
+            "  build:\n    needs: release-check\n    runs-on: ubuntu-latest\n"
+            "    steps:\n",
+            "  build:\n    needs: release-check\n    runs-on: ubuntu-latest\n"
+            "    permissions:\n      id-token: write\n    steps:\n",
         ),
         encoding="utf-8",
     )
@@ -670,7 +967,9 @@ def test_publish_workflow_rejects_oidc_on_build_job(tmp_path: Path):
     errors = validate_dependency_surfaces(tmp_path)
 
     assert any(
-        "only the PyPI publish job" in error and "'build'" in error for error in errors
+        "non-publish job 'build'" in error
+        and "permissions must be absent or read-only" in error
+        for error in errors
     )
 
 
@@ -738,26 +1037,102 @@ def test_release_lock_rejects_direct_input_pin_drift(tmp_path: Path):
     )
 
 
-def test_publish_workflow_rejects_workflow_level_oidc_grants(tmp_path: Path):
+def test_publish_workflow_rejects_workflow_level_write_grants(tmp_path: Path):
     _write_valid_dependency_fixture(tmp_path)
     publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
     workflow = publish_path.read_text(encoding="utf-8")
 
     for permissions in (
         "permissions:\n  id-token: write\n",
+        "permissions:\n  contents: write\n",
         "permissions: write-all\n",
     ):
         publish_path.write_text(
-            workflow.replace("jobs:\n", permissions + "jobs:\n"),
+            workflow.replace("permissions:\n  contents: read\n", permissions),
             encoding="utf-8",
         )
 
         errors = validate_dependency_surfaces(tmp_path)
 
         assert any(
-            "workflow-level permissions" in error and "id-token" in error
+            "workflow permissions must be explicit and read-only" in error
             for error in errors
         )
+
+
+def test_publish_workflow_requires_explicit_read_only_permissions(tmp_path: Path):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace("permissions:\n  contents: read\n\n", ""),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any(
+        "workflow permissions must be explicit and read-only" in error
+        for error in errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement", "job_name"),
+    [
+        (
+            "  release-check:\n    runs-on: ubuntu-latest\n",
+            "  release-check:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    permissions:\n"
+            "      contents: write\n",
+            "release-check",
+        ),
+        (
+            "  release-check:\n    runs-on: ubuntu-latest\n",
+            "  release-check:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    environment: production\n",
+            "release-check",
+        ),
+        (
+            "  build:\n    needs: release-check\n    runs-on: ubuntu-latest\n",
+            "  build:\n"
+            "    needs: release-check\n"
+            "    runs-on: ubuntu-latest\n"
+            "    permissions:\n"
+            "      contents: write\n",
+            "build",
+        ),
+        (
+            "  build:\n    needs: release-check\n    runs-on: ubuntu-latest\n",
+            "  build:\n"
+            "    needs: release-check\n"
+            "    runs-on: ubuntu-latest\n"
+            "    environment: production\n",
+            "build",
+        ),
+    ],
+)
+def test_publish_rejects_release_and_build_job_authority(
+    tmp_path: Path, needle: str, replacement: str, job_name: str
+):
+    _write_valid_dependency_fixture(tmp_path)
+    publish_path = tmp_path / ".github" / "workflows" / "publish.yml"
+    workflow = publish_path.read_text(encoding="utf-8")
+    publish_path.write_text(
+        workflow.replace(needle, replacement, 1),
+        encoding="utf-8",
+    )
+
+    errors = validate_dependency_surfaces(tmp_path)
+
+    assert any(
+        f"{job_name} job" in error
+        and "permissions must be absent or read-only" in error
+        and "protected environment" in error
+        for error in errors
+    )
 
 
 def test_publish_release_gate_requires_release_lock(tmp_path: Path):
@@ -889,4 +1264,7 @@ def test_publish_workflow_requires_matching_artifact_path(tmp_path: Path):
 
     errors = validate_dependency_surfaces(tmp_path)
 
-    assert any("uploads the same artifact" in error for error in errors)
+    assert any(
+        "download the tested python-distributions artifact to dist/" in error
+        for error in errors
+    )

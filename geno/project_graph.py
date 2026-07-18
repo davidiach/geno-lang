@@ -36,6 +36,17 @@ def _resolve_contained_path(path: Path, root: Path) -> Path | None:
     return None
 
 
+def _validated_module_name(name: str, *, source: str) -> str:
+    """Return an identifier-safe module name or raise a graph error."""
+    from .manifest import validate_module_name
+
+    try:
+        validate_module_name(name)
+    except ValueError as exc:
+        raise ProjectGraphError(f"{exc} (from {source})") from exc
+    return name
+
+
 def _file_entry_to_path(root: Path, file_name: str) -> Path:
     """Resolve a manifest file entry to its candidate ``.geno`` path."""
     if not file_name.endswith(".geno"):
@@ -110,7 +121,9 @@ class ProjectGraph:
         if root is None:
             # Single-file fallback
             if start_path.is_file() and start_path.suffix == ".geno":
-                module_name = start_path.stem
+                module_name = _validated_module_name(
+                    start_path.stem, source=str(start_path)
+                )
                 return cls(
                     root=None,
                     entrypoint=module_name,
@@ -129,7 +142,12 @@ class ProjectGraph:
                                 f"File '{geno_file.name}' escapes the project root"
                             )
                         files.append(
-                            ResolvedFile(module_name=geno_file.stem, path=resolved)
+                            ResolvedFile(
+                                module_name=_validated_module_name(
+                                    geno_file.stem, source=str(geno_file)
+                                ),
+                                path=resolved,
+                            )
                         )
                     return cls(
                         root=start_path,
@@ -167,7 +185,9 @@ class ProjectGraph:
                         f"File '{file_name}' declared in geno.toml not found "
                         f"at {file_path}"
                     )
-                module_name = Path(file_name).stem
+                module_name = _validated_module_name(
+                    Path(file_name).stem, source=f"geno.toml file '{file_name}'"
+                )
                 resolved_files.append(
                     ResolvedFile(module_name=module_name, path=resolved)
                 )
@@ -180,7 +200,12 @@ class ProjectGraph:
                         f"File '{geno_file.name}' escapes the project root"
                     )
                 resolved_files.append(
-                    ResolvedFile(module_name=geno_file.stem, path=resolved)
+                    ResolvedFile(
+                        module_name=_validated_module_name(
+                            geno_file.stem, source=str(geno_file)
+                        ),
+                        path=resolved,
+                    )
                 )
 
         # Resolve dependencies from geno_modules/
@@ -216,6 +241,9 @@ class ProjectGraph:
                 entry_mod_name = (
                     pascal_name if pascal_name != dep_name else dep_entry.stem
                 )
+                entry_mod_name = _validated_module_name(
+                    entry_mod_name, source=str(dep_entry)
+                )
                 resolved_files.append(
                     ResolvedFile(
                         module_name=entry_mod_name,
@@ -243,14 +271,17 @@ class ProjectGraph:
                         )
                     if resolved_file in registered_paths:
                         continue
+                    module_name = _validated_module_name(
+                        file_path.stem, source=str(file_path)
+                    )
                     resolved_files.append(
                         ResolvedFile(
-                            module_name=file_path.stem,
+                            module_name=module_name,
                             path=resolved_file,
                             is_dependency=True,
                             package_name=dep_name,
                             graph_name=dependency_private_graph_name(
-                                dep_name, file_path.stem
+                                dep_name, module_name
                             ),
                         )
                     )
@@ -270,14 +301,17 @@ class ProjectGraph:
                             sibling.name,
                         )
                         continue
+                    module_name = _validated_module_name(
+                        sibling.stem, source=str(sibling)
+                    )
                     resolved_files.append(
                         ResolvedFile(
-                            module_name=sibling.stem,
+                            module_name=module_name,
                             path=resolved_sibling,
                             is_dependency=True,
                             package_name=dep_name,
                             graph_name=dependency_private_graph_name(
-                                dep_name, sibling.stem
+                                dep_name, module_name
                             ),
                         )
                     )

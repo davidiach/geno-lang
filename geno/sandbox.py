@@ -27,7 +27,7 @@ import types as _types
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
 
@@ -2035,14 +2035,37 @@ class ProcessSandbox:
                     f"Code failed safety validation: {'; '.join(warnings)}"
                 )
 
-        # Swap a canonical runtime-prelude prefix for a precompiled blob so
-        # the worker skips re-parsing/re-compiling ~4k lines per run. Falls
-        # back to the fully validated text path on any mismatch.
-        payload = code
-        config_overrides: dict[str, Any] | None = None
-        if self.config.compiled_runtime_prelude:
-            payload, config_overrides = self._frame_prelude_blob(code)
+        # Raw Python submitted through the public API never receives compiler
+        # runtime globals or trusted text lines. Compiler output uses the
+        # private, provenance-specific path below.
+        config_overrides = {
+            "compiled_runtime_prelude": False,
+            "prelude_blob_sha256": None,
+            "trusted_prelude_line_count": 0,
+        }
+        return self._execute_worker_payload(code, config_overrides)
 
+    def _execute_compiler_output(
+        self,
+        code: str,
+        capabilities: Collection[str] | None = None,
+    ) -> tuple[Any, str, str | None]:
+        """Execute code emitted by Geno's compiler.
+
+        This internal path is deliberately separate from the public execute
+        path: compiler runtime globals expose trusted implementation objects
+        and must never be injected merely because a caller toggled a config
+        flag. The exact canonical prelude is replaced by a hash-verified blob,
+        and the worker validates every line of the generated program tail.
+        """
+        if not self.config.compiled_runtime_prelude:
+            raise SandboxError("Compiler output requires compiled_runtime_prelude=True")
+        payload, config_overrides = self._frame_prelude_blob(code)
+        if config_overrides is None:
+            raise SecurityViolation(
+                "Compiler output does not start with the canonical runtime prelude"
+            )
+        config_overrides["runtime_capabilities"] = sorted(set(capabilities or ()))
         return self._execute_worker_payload(payload, config_overrides)
 
     def execute_geno_request(
@@ -2082,6 +2105,7 @@ class ProcessSandbox:
             payload,
             {
                 "worker_mode": "python_benchmark",
+                "compiled_runtime_prelude": False,
                 "prelude_blob_sha256": None,
                 "trusted_prelude_line_count": 0,
             },
@@ -2180,8 +2204,9 @@ class ProcessSandbox:
         validation. On substitution the worker receives only the program
         tail as text and validates ALL of it (trusted prefix count 0); the
         blob's SHA-256 travels in the parent-set config and is re-verified
-        by the worker before unmarshalling. Any mismatch falls back to the
-        unchanged fully validated text path.
+        by the worker before unmarshalling. The internal compiler-output
+        caller rejects any mismatch; the public raw-Python path never calls
+        this method.
         """
         from .compiler import _stripped_runtime_prelude
 
@@ -2560,6 +2585,11 @@ def main():
             not isinstance(_prepared, dict)
             or not isinstance(_prepared.get("python_code"), str)
             or not isinstance(_prepared.get("trusted_prelude_line_count"), int)
+            or not isinstance(_prepared.get("runtime_capabilities"), list)
+            or any(
+                not isinstance(_capability, str)
+                for _capability in _prepared.get("runtime_capabilities", [])
+            )
             or _prepared["trusted_prelude_line_count"] <= 0
         ):
             _emit_worker_error(
@@ -2571,6 +2601,8 @@ def main():
         config["trusted_prelude_line_count"] = _prepared[
             "trusted_prelude_line_count"
         ]
+
+        config["runtime_capabilities"] = _prepared["runtime_capabilities"]
 
     # ---- Worker-side AST validation (runs unconditionally) ----
     # This runs even when strict=False in the parent process, closing the
@@ -2586,9 +2618,14 @@ def main():
     )
     _WORKER_FORMAT_METHODS = set(config.get("format_methods", []))
     _WORKER_SAFE_DUNDERS = set(config.get("safe_dunders", []))
+    _WORKER_COMPILED_INTERNAL_NAMES = (
+        set(config.get("worker_compiled_internal_names", []))
+        if config.get("compiled_runtime_prelude", False)
+        else set()
+    )
     _TRUSTED_PRELUDE_LINE_COUNT = (
         int(config.get("trusted_prelude_line_count", 0))
-        if config.get("compiled_runtime_prelude", False)
+        if config.get("worker_mode") == "geno_cli"
         else 0
     )
 
@@ -2637,6 +2674,14 @@ def main():
             # prefix.  Compiled program-body code is validated even when
             # runtime-prelude globals are injected.
             if not _worker_in_trusted_prelude(_node):
+                # Raw host dependencies are available only so canonical
+                # prelude functions can use them. Generated program tails
+                # must call guarded prelude helpers, never these bindings.
+                if (
+                    isinstance(_node, _ast.Name)
+                    and _node.id in _WORKER_COMPILED_INTERNAL_NAMES
+                ):
+                    _worker_fail(f"Access to compiler runtime internal '{_node.id}' is not allowed")
                 # 2. Direct attribute access to blocked names (. operator)
                 if isinstance(_node, _ast.Attribute):
                     if _node.attr in _WORKER_BLOCKED_ATTRS:
@@ -3018,6 +3063,7 @@ def main():
     globals_dict = {
         '__builtins__': safe_builtins,
         '__name__': '__sandbox__',
+        '_GENO_CAPS': frozenset(config.get('runtime_capabilities', [])),
         '_GENO_MAX_COLLECTION_SIZE': max_coll,
         '_GENO_MAX_INTEGER_BITS': max_int_bits,
     }
@@ -3234,7 +3280,9 @@ if __name__ == "__main__":
             "format_methods": sorted(_FORMAT_METHODS),
             "safe_dunders": sorted(SAFE_DUNDERS),
             "worker_ast_blocked_builtins": sorted(_WORKER_AST_BLOCKED_BUILTINS),
-            "trusted_prelude_line_count": self.config.trusted_prelude_line_count,
+            "worker_compiled_internal_names": sorted(_WORKER_COMPILED_INTERNAL_NAMES),
+            # Text trust is derived only inside the Geno frontend worker.
+            "trusted_prelude_line_count": 0,
             # __build_class__ is needed by the worker for compiled Geno
             # code (runtime prelude classes, @dataclass definitions).
             # The worker's __getattribute__ check prevents abuse.
@@ -3355,6 +3403,24 @@ _FORMAT_METHODS = frozenset({"format", "format_map"})
 # Informational/REPL helpers like help() and quit() are blocked as
 # builtins in the thread sandbox, but they should still be legal local
 # function names in non-strict process execution.
+_WORKER_COMPILED_INTERNAL_NAMES = frozenset(
+    {
+        "_GENO_CAPS",
+        "_bounded_regex_replace",
+        "_dataclasses_fields",
+        "_object_getattribute",
+        "_re",
+        "_runtime_codecs",
+        "_runtime_posixpath",
+        "_runtime_random",
+        "_runtime_time",
+        "cmp_to_key",
+        "deepcopy",
+        "math",
+    }
+)
+
+
 _WORKER_AST_BLOCKED_BUILTINS = frozenset(
     {
         "eval",

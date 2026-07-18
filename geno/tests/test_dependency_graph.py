@@ -242,7 +242,7 @@ class TestNameCollision:
         compiled = Compiler().compile_project(dg)
         namespace: dict[str, Any] = {}
         exec(compiled, namespace)
-        assert namespace["main"]() == 12
+        assert namespace["_geno_entry_main"]() == 12
 
     def test_original_sources_keep_pre_rewrite_text_per_graph_key(self, tmp_path):
         app_file, alpha_utils_file, _ = write_dependency_private_collision_fixture(
@@ -294,7 +294,7 @@ class TestNameCollision:
         compiled = Compiler().compile_project(dg)
         namespace: dict[str, Any] = {}
         exec(compiled, namespace)
-        assert namespace["main"]() == 12
+        assert namespace["_geno_entry_main"]() == 12
 
 
 class TestDependencyManifestResolution:

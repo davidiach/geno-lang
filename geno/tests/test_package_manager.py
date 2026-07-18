@@ -119,6 +119,18 @@ git = "https://example.com/evil.git"
         with pytest.raises(ValueError, match="Invalid dependency name"):
             parse_manifest(tmp_path / "geno.toml")
 
+    @pytest.mark.parametrize("name", ["bad;name", "foo-", "a--b", "lib-2"])
+    def test_manifest_codegen_unsafe_dependency_name_raises(self, tmp_path, name):
+        (tmp_path / "geno.toml").write_text(
+            f"""
+[dependencies."{name}"]
+git = "https://example.com/evil.git"
+"""
+        )
+
+        with pytest.raises(ValueError, match="Invalid dependency name"):
+            parse_manifest(tmp_path / "geno.toml")
+
     def test_manifest_dotted_dependency_name_raises(self, tmp_path):
         (tmp_path / "geno.toml").write_text(
             """
@@ -248,7 +260,7 @@ class TestManifestSave:
         text = (tmp_path / "geno.toml").read_text()
         assert "branch" not in text
 
-    def test_save_quotes_dependency_table_keys_when_needed(self, tmp_path):
+    def test_save_rejects_unsafe_dependency_table_keys(self, tmp_path):
         manifest = Manifest(
             dependencies={
                 "my lib": Dependency(
@@ -259,12 +271,8 @@ class TestManifestSave:
             }
         )
 
-        save_manifest(manifest, tmp_path / "geno.toml")
-
-        text = (tmp_path / "geno.toml").read_text()
-        reloaded = parse_manifest(tmp_path / "geno.toml")
-        assert '[dependencies."my lib"]' in text
-        assert reloaded.dependencies["my lib"].git == "https://example.com/my-lib.git"
+        with pytest.raises(ValueError, match="Invalid dependency name"):
+            save_manifest(manifest, tmp_path / "geno.toml")
 
 
 class TestManifestNewFields:
@@ -593,7 +601,7 @@ class TestLockfileSave:
         )
         assert reloaded.dependencies["foo"].git == "https://example.com/foo.git"
 
-    def test_save_quotes_dependency_table_keys_when_needed(self, tmp_path):
+    def test_save_rejects_unsafe_dependency_table_keys(self, tmp_path):
         lockfile = Lockfile(
             dependencies={
                 "my lib": LockedDependency(
@@ -604,12 +612,8 @@ class TestLockfileSave:
             }
         )
 
-        save_lockfile(lockfile, tmp_path / "geno.lock")
-
-        text = (tmp_path / "geno.lock").read_text()
-        reloaded = parse_lockfile(tmp_path / "geno.lock")
-        assert '[dependencies."my lib"]' in text
-        assert reloaded.dependencies["my lib"].git == "https://example.com/my-lib.git"
+        with pytest.raises(ValueError, match="Invalid dependency name"):
+            save_lockfile(lockfile, tmp_path / "geno.lock")
 
 
 class TestLockfileContentHash:
@@ -835,8 +839,9 @@ class TestFindProjectRoot:
 
 
 class TestDependencyCommands:
-    def test_add_quotes_dependency_table_keys_when_needed(self, tmp_path):
-        (tmp_path / "geno.toml").write_text('entrypoint = "Main"\n')
+    def test_add_rejects_unsafe_dependency_table_keys(self, tmp_path):
+        original = 'entrypoint = "Main"\n'
+        (tmp_path / "geno.toml").write_text(original)
         installed: list[Path] = []
 
         from geno import package_manager
@@ -846,17 +851,15 @@ class TestDependencyCommands:
             "_install_locked",
             side_effect=lambda root: installed.append(root),
         ):
-            package_manager.add(
-                "my lib",
-                "https://example.com/my-lib.git",
-                project_root=tmp_path,
-            )
+            with pytest.raises(ValueError, match="Invalid dependency name"):
+                package_manager.add(
+                    "my lib",
+                    "https://example.com/my-lib.git",
+                    project_root=tmp_path,
+                )
 
-        text = (tmp_path / "geno.toml").read_text()
-        reloaded = parse_manifest(tmp_path / "geno.toml")
-        assert installed == [tmp_path.resolve()]
-        assert '[dependencies."my lib"]' in text
-        assert reloaded.dependencies["my lib"].git == "https://example.com/my-lib.git"
+        assert installed == []
+        assert (tmp_path / "geno.toml").read_text() == original
 
     def test_add_tag_dependency_writes_tag(self, tmp_path):
         (tmp_path / "geno.toml").write_text('entrypoint = "Main"\n')

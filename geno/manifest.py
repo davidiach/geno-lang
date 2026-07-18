@@ -76,6 +76,10 @@ _WINDOWS_RESERVED_DEPENDENCY_NAMES = frozenset(
     }
 )
 _MANIFEST_ENTRYPOINT_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+_DEPENDENCY_NAME_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z]+(?:-[A-Za-z]+)*)$"
+)
+_MODULE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_PROJECT_CONFIG_BYTES = 1024 * 1024
 
 
@@ -117,7 +121,8 @@ def validate_dependency_name(name: str) -> None:
     path_name = Path(name)
     windows_stem = name.rstrip(" .").split(".", 1)[0].upper()
     if (
-        not name
+        not _DEPENDENCY_NAME_RE.fullmatch(name)
+        or not name
         or "\x00" in name
         or ":" in name
         or path_name.is_absolute()
@@ -129,6 +134,14 @@ def validate_dependency_name(name: str) -> None:
     ):
         raise ValueError(
             f"Invalid dependency name '{name}': must be a simple module name"
+        )
+
+
+def validate_module_name(name: str) -> None:
+    """Validate a module name before a backend emits it as an identifier."""
+    if not _MODULE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid module name '{name}': must be a single ASCII identifier"
         )
 
 
@@ -367,6 +380,11 @@ def save_manifest(manifest: Manifest, path: Path) -> None:
 
     Unknown top-level keys from the original file are preserved.
     """
+    if manifest.entrypoint is not None:
+        validate_manifest_entrypoint(manifest.entrypoint)
+    for dep_name in manifest.dependencies:
+        validate_dependency_name(dep_name)
+
     lines: list[str] = []
 
     if manifest.name:

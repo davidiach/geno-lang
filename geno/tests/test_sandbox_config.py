@@ -236,7 +236,7 @@ class TestProcessSandboxConfigValidation:
         worker_config = json.loads(env["GENO_SANDBOX_CONFIG"])
         assert worker_config["max_cpu_time"] == 1
 
-    def test_trusted_prelude_line_count_forwarded_to_worker_env(self):
+    def test_caller_trusted_prelude_line_count_not_forwarded_to_worker_env(self):
         env = ProcessSandbox(
             ProcessSandboxConfig(
                 compiled_runtime_prelude=True,
@@ -244,7 +244,7 @@ class TestProcessSandboxConfigValidation:
             )
         )._create_restricted_env()
         worker_config = json.loads(env["GENO_SANDBOX_CONFIG"])
-        assert worker_config["trusted_prelude_line_count"] == 7
+        assert worker_config["trusted_prelude_line_count"] == 0
 
     def test_windows_worker_env_preserves_python_startup_vars(self, monkeypatch):
         required = {

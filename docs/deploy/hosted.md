@@ -338,6 +338,7 @@ server reads these operator knobs (all optional; defaults in parentheses):
 | `GENO_ALLOWED_ENV_NAMES` / `GENO_ALLOWED_ENV_PREFIXES` | Allowlist for the `env` capability; without one, granting `env` on `/run` is rejected |
 | `GENO_SKIP_STARTUP_CHECKS` | Skip fail-closed startup checks (`/healthz` then reports checks as skipped) |
 | `GENO_MAX_REQUEST_BODY_BYTES` | Cap on `/run` and `/constrain` request body size |
+| `GENO_MAX_REQUEST_HEADER_BYTES` | Aggregate request-line and header size cap before request dispatch (64 KiB) |
 | `GENO_MAX_RESPONSE_BODY_BYTES` | Maximum serialized JSON response body (8 MiB); oversized results receive a fixed `413` response |
 | `GENO_MAX_JSON_NESTING_DEPTH` | Maximum object/array nesting depth accepted in JSON request bodies (128) |
 | `GENO_REQUEST_TIMEOUT_SECONDS` | Per-request wall-clock ceiling |

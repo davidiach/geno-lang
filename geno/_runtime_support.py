@@ -21,8 +21,8 @@ from typing import Any, Callable, Generic, TypeVar, cast
 from typing import Optional as Optional
 from typing import Union as Union
 
-_builtin_zip = zip
-_builtin_enumerate = enumerate
+_builtin_zip: Callable[..., Any] = zip
+_builtin_enumerate: Callable[..., Any] = enumerate
 _builtin_min = min
 _builtin_max = max
 _GENO_OBJECT = ().__class__.__mro__[-1]
@@ -3830,7 +3830,11 @@ def _geno_parse_caps():
     return caps
 
 
-_GENO_CAPS = _geno_parse_caps()
+_GENO_CAPS: frozenset[str]
+try:
+    _GENO_CAPS = frozenset(_GENO_CAPS)
+except NameError:
+    _GENO_CAPS = frozenset(_geno_parse_caps())
 
 
 def _require_cap(cap_name: str, builtin_name: str) -> None:

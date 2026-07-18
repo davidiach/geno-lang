@@ -197,7 +197,6 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     from ..compiler import (
         Compiler,
         _compiled_main_result_capture,
-        _insert_compiled_runtime_capability_assignment,
         _strip_runtime_prelude_imports,
         _trusted_runtime_prelude_line_count,
     )
@@ -237,11 +236,6 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         python_code = compiler.compile(program)
     python_code = _strip_runtime_prelude_imports(python_code)
     trusted_prelude_line_count = _trusted_runtime_prelude_line_count(python_code)
-    python_code = _insert_compiled_runtime_capability_assignment(
-        python_code,
-        DEFAULT_ALLOWED_CAPABILITIES,
-    )
-
     main_defn = next(
         (
             definition
@@ -252,10 +246,12 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     )
     python_code += _compiled_main_result_capture(
         bool(main_defn and main_defn.is_async),
+        main_name="_geno_entry_main" if parsed_modules else "main",
         catch_name_error=True,
     )
     return {
         "python_code": python_code,
+        "runtime_capabilities": sorted(DEFAULT_ALLOWED_CAPABILITIES),
         "trusted_prelude_line_count": trusted_prelude_line_count,
     }
 

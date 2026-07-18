@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import http.client
 import ipaddress
 import json
 import logging
@@ -129,6 +130,9 @@ def _env_optional_bool(key: str) -> bool | None:
 MAX_REQUEST_BODY_BYTES: int = _env_positive_int(
     "GENO_MAX_REQUEST_BODY_BYTES", 1_048_576
 )  # 1 MB
+MAX_REQUEST_HEADER_BYTES: int = _env_positive_int(
+    "GENO_MAX_REQUEST_HEADER_BYTES", 65_536
+)  # 64 KiB, including the request line
 MAX_RESPONSE_BODY_BYTES: int = _env_positive_int(
     "GENO_MAX_RESPONSE_BODY_BYTES", 8_388_608
 )  # 8 MB
@@ -215,6 +219,34 @@ class RequestError(ValueError):
 
 class ResponseTooLarge(RuntimeError):
     """Raised before headers are sent when a JSON response exceeds its bound."""
+
+
+class _HeaderBudgetReader:
+    """Delegate reads while enforcing an aggregate request-header byte budget."""
+
+    def __init__(self, stream: Any, *, initial_bytes: int, limit: int) -> None:
+        self._stream = stream
+        self._bytes_read = initial_bytes
+        self._limit = limit
+
+    def readline(self, size: int = -1) -> bytes:
+        remaining = self._limit - self._bytes_read
+        if remaining < 0:
+            raise http.client.LineTooLong("aggregate request headers")
+
+        # Read one byte beyond the remaining budget so an oversized request is
+        # rejected immediately rather than retained until a per-line limit fires.
+        bounded_size = remaining + 1
+        if size < 0 or size > bounded_size:
+            size = bounded_size
+        line = self._stream.readline(size)
+        self._bytes_read += len(line)
+        if self._bytes_read > self._limit:
+            raise http.client.LineTooLong("aggregate request headers")
+        return cast(bytes, line)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 @dataclass(frozen=True)
@@ -2039,6 +2071,21 @@ def create_handler(
             self._request_deadline.daemon = True
             self._request_deadline.start()
 
+        def parse_request(self) -> bool:
+            original_rfile = self.rfile
+            self.rfile = cast(
+                Any,
+                _HeaderBudgetReader(
+                    original_rfile,
+                    initial_bytes=len(getattr(self, "raw_requestline", b"")),
+                    limit=MAX_REQUEST_HEADER_BYTES,
+                ),
+            )
+            try:
+                return super().parse_request()
+            finally:
+                self.rfile = original_rfile
+
         def _expire_request_read(self) -> None:
             try:
                 self.request.shutdown(socket.SHUT_RDWR)
@@ -2773,6 +2820,7 @@ __all__ = [
     "MAX_MODULES",
     "MAX_MODULE_SOURCE_BYTES",
     "MAX_REQUEST_BODY_BYTES",
+    "MAX_REQUEST_HEADER_BYTES",
     "MAX_RESPONSE_BODY_BYTES",
     "MAX_STEPS",
     "MAX_TIMEOUT_SECONDS",

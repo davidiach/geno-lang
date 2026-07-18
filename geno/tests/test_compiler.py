@@ -7,6 +7,7 @@ import io
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, cast
 
 import pytest
@@ -66,10 +67,37 @@ def _compiled_python_process_result(source: str, max_collection_size: int = 10):
             trusted_prelude_line_count=trusted_prelude_line_count,
         )
     )
-    result, _output, error = sandbox.execute(python_code)
+    result, _output, error = sandbox._execute_compiler_output(python_code)
     if error is not None:
         raise RuntimeError(error)
     return result
+
+
+def test_compiled_process_record_update_uses_runtime_replace():
+    source = """
+type Point = Point(x: Int, y: Int)
+
+func main() -> Int
+    let p: Point = Point(1, 2)
+    let q: Point = p with (x: 10)
+    return q.x
+end func
+"""
+
+    assert _compiled_python_process_result(source) == 10
+
+
+@pytest.mark.parametrize("module_name", ["Evil = 1; pwn", "class"])
+def test_compile_project_rejects_unsafe_module_name(module_name):
+    program = parse("")
+    graph = SimpleNamespace(
+        parsed={module_name: program},
+        sorted_modules=[module_name],
+        project=SimpleNamespace(entrypoint=module_name),
+    )
+
+    with pytest.raises(CompileError, match=r"module name|reserved keyword"):
+        Compiler().compile_project(graph)
 
 
 class TestCompilerBasics:
@@ -788,7 +816,7 @@ class TestCompilerLambdas:
     def test_for_loop_lambda_captures_iteration_value_inside_call_args(self):
         """Loop capture should also work when the variable is nested in call args."""
         source = """
-        func id(x: Int) -> Int
+        func identity(x: Int) -> Int
             example 1 -> 1
             return x
         end func
@@ -796,7 +824,7 @@ class TestCompilerLambdas:
         func main() -> Int
             var fs: List[() -> Int] = []
             for x: Int in [1, 2, 3] do
-                fs = append(fs, fn() -> id(x))
+                fs = append(fs, fn() -> identity(x))
             end for
             return fs[0]() * 100 + fs[1]() * 10 + fs[2]()
         end func
@@ -1977,6 +2005,52 @@ class TestCompilerReservedNameProtection:
         with pytest.raises(CompileError, match="reserved runtime name"):
             compile_to_python(source)
 
+    @pytest.mark.parametrize(
+        "name",
+        sorted(compiler_module._PYTHON_EMITTED_LOCAL_HELPER_NAMES),
+    )
+    def test_all_emitted_local_helpers_are_reserved(self, name: str):
+        source = f"""
+        func main() -> Int
+            let {name}: Int = 1
+            return {name}
+        end func
+        """
+
+        with pytest.raises(CompileError, match="reserved runtime name"):
+            compile_to_python(source)
+
+    @pytest.mark.parametrize("name", sorted(compiler_module._PYTHON_FIXED_GLOBAL_NAMES))
+    def test_fixed_generated_globals_are_reserved(self, name: str):
+        source = f"""
+        func {name}() -> Int
+            example () -> 1
+            return 1
+        end func
+
+        async func main() -> Int
+            return {name}()
+        end func
+        """
+
+        with pytest.raises(CompileError, match="reserved runtime name"):
+            compile_to_python(source)
+
+    def test_ensures_body_helper_is_hygienic(self):
+        source = """
+        func f(_body_f: Int) -> Int
+            ensures result == _body_f
+            example 2 -> 2
+            return _body_f
+        end func
+
+        func main() -> Int
+            return f(2)
+        end func
+        """
+
+        assert compile_and_run(source) == 2
+
     def test_normal_names_allowed(self):
         """Normal function and type names should compile fine."""
         source = """
@@ -2167,7 +2241,7 @@ class TestCompilerCollectionSizeLimits:
     def test_runtime_string_list_helpers_precheck_configured_limit(self):
         """Compiled runtime string/list helpers must precheck the configured cap."""
         env = _compiled_runtime_env(5)
-        env["_GENO_CAPS"].add("regex")
+        env["_GENO_CAPS"] = frozenset({"regex"})
 
         cases = [
             (lambda: env["split"]("a,a,a,a,a,a", ","), "List size exceeds limit"),
@@ -2309,7 +2383,7 @@ class TestCompilerCollectionSizeLimits:
             python_code = compile_to_python(source)
             env = {"_GENO_MAX_COLLECTION_SIZE": 2, "__name__": "__test__"}
             exec(python_code, env)
-            cast(set[str], env["_GENO_CAPS"]).add("clock")
+            env["_GENO_CAPS"] = frozenset({"clock"})
             main = cast(Callable[[], object], env["main"])
 
             with pytest.raises(RuntimeError, match="String size exceeds limit"):
@@ -2354,7 +2428,9 @@ class TestCompilerCollectionSizeLimits:
     ):
         """Compiled runtime capability helpers must enforce collection caps."""
         env = _compiled_runtime_env(2)
-        env["_GENO_CAPS"].update({"clock", "env", "fs", "http", "process", "stdin"})
+        env["_GENO_CAPS"] = frozenset(
+            {"clock", "env", "fs", "http", "process", "stdin"}
+        )
 
         with pytest.raises(RuntimeError, match="String size exceeds limit"):
             env["clock_format"](0, "%Y")
@@ -2785,7 +2861,7 @@ class TestCompilerCollectionSizeLimits:
     def test_runtime_host_integer_helpers_honor_integer_bit_limit(self):
         """Host-derived integer results must honor configured bit limits."""
         env = _compiled_runtime_env(max_collection_size=100, max_integer_bits=1)
-        env["_GENO_CAPS"].update({"clock", "random"})
+        env["_GENO_CAPS"] = frozenset({"clock", "random"})
 
         arr = env["array_from_list"]([0, 0, 0])  # type: ignore[operator]
         mutable = env["mutable_map_new"]()  # type: ignore[operator]
@@ -3728,3 +3804,87 @@ class TestLiteralPatternStringEscape:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["_GENO_CAPS", '_bounded_regex_replace("a", "b", "a")'],
+)
+def test_python_compiler_rejects_direct_runtime_internal_reference_without_typecheck(
+    expression,
+):
+    source = f"func main() -> Any\n    return {expression}\nend func\n"
+
+    with pytest.raises(CompileError, match="reserved runtime name"):
+        compile_to_python(source, typecheck=False)
+
+
+def test_python_compiler_allows_declared_builtin_without_typecheck():
+    source = "func main() -> Int\n    return array_get(array_new(1, 7), 0)\nend func\n"
+
+    assert "def main" in compile_to_python(source, typecheck=False)
+
+
+@pytest.mark.parametrize(
+    "field_name", ["class", "__slots__", "__annotations__", "__module__"]
+)
+def test_python_compiler_rejects_unsafe_record_field(field_name):
+    source = (
+        f"type Wrapper = Wrapper({field_name}: Int)\n"
+        "func main() -> Int\n"
+        "    return 1\n"
+        "end func\n"
+    )
+
+    with pytest.raises(CompileError, match="cannot be represented safely"):
+        compile_to_python(source, typecheck=False)
+
+
+@pytest.mark.parametrize(
+    "name", ["IndexError", "RuntimeError", "__name__", "bool", "len", "list", "set"]
+)
+def test_python_compiler_rejects_emitted_host_intrinsic_binding(name):
+    binding = (
+        f"type Host = {name}(value: Int)\n"
+        if name[0].isupper()
+        else f"func {name}() -> Int\n    return 1\nend func\n"
+    )
+    source = binding + "func main() -> Int\n    return 1\nend func\n"
+
+    with pytest.raises(CompileError, match="reserved runtime name"):
+        compile_to_python(source, typecheck=False)
+
+
+def test_python_single_program_rejects_function_trait_dispatcher_collision():
+    source = (
+        "type ThingType = Thing(value: Int)\n"
+        "trait Runnable\n"
+        "    func main(self: Self) -> Int\n"
+        "end trait\n"
+        "impl Runnable for ThingType\n"
+        "    func main(self: ThingType) -> Int\n"
+        "        return 1\n"
+        "    end func\n"
+        "end impl\n"
+        "func main() -> Int\n"
+        "    return 7\n"
+        "end func\n"
+    )
+
+    with pytest.raises(CompileError, match="conflicts with a trait dispatcher"):
+        compile_to_python(source, typecheck=False)
+
+
+def test_python_standalone_rejects_runtime_prelude_builtin_shadow():
+    source = """
+func set() -> Int
+    example () -> 1
+    return 1
+end func
+func main() -> Int
+    return set_size(set_from_list([1, 2]))
+end func
+"""
+
+    with pytest.raises(CompileError, match="reserved runtime name"):
+        compile_to_python(source)
