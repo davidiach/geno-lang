@@ -44,6 +44,6 @@ def _resolve_doc_modules(path: str):
     resolved = resolve_project_context(path)
     modules = []
     for rf in resolved.project.files:
-        source = rf.path.read_text(encoding="utf-8")
+        source = resolved.dependency_graph.original_sources[rf.graph_key]
         modules.append(parse_module(source, str(rf.path)))
     return modules

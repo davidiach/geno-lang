@@ -239,7 +239,7 @@ end func
     def test_compiled_python_re_evaluates_mutable_default_each_call(self):
         """Compiled Python should not share mutable defaults across calls."""
         source = """
-func next(counter: Array[Int] = array_new(size: 1, default: 0)) -> Int
+func advance_counter(counter: Array[Int] = array_new(size: 1, default: 0)) -> Int
   example () -> 1
   let current: Int = array_get(counter, 0)
   array_set(array: counter, index: 0, value: current + 1)
@@ -247,7 +247,7 @@ func next(counter: Array[Int] = array_new(size: 1, default: 0)) -> Int
 end func
 
 func main() -> Int
-  return next() * 10 + next()
+  return advance_counter() * 10 + advance_counter()
 end func
 """
         assert _compile_py_and_run(source) == 11

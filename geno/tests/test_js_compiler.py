@@ -6,6 +6,7 @@ Tests for the Geno JavaScript Compiler
 import json
 import pathlib
 import re
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -35,6 +36,19 @@ def compile_and_run_js(source: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
     return cast(str, result.stdout).strip()
+
+
+@pytest.mark.parametrize("module_name", ["X = 1; console.log('PWNED')", "default"])
+def test_compile_project_rejects_unsafe_module_name(module_name):
+    program = parse("")
+    graph = SimpleNamespace(
+        parsed={module_name: program},
+        sorted_modules=[module_name],
+        project=SimpleNamespace(entrypoint=module_name),
+    )
+
+    with pytest.raises(JSCompileError, match=r"module name|reserved keyword"):
+        JSCompiler().compile_project(graph)
 
 
 def _limit_globals(
@@ -2185,8 +2199,9 @@ class TestJSCompilerSpecs:
         end func
         """
         js_code = compile_to_js(source)
-        assert "async function _body_main()" in js_code
-        assert "const result = await _body_main();" in js_code
+        helper_match = re.search(r"async function (_temp_\d+)\(\)", js_code)
+        assert helper_match is not None
+        assert f"const result = await {helper_match.group(1)}();" in js_code
         assert compile_and_run_js(source) == "1"
 
 
@@ -2291,6 +2306,26 @@ class TestJSCompilerReservedNames:
         js_code = compile_to_js(source)
         assert "class_kw" in js_code
         assert compile_and_run_js(source) == "42"
+
+    @pytest.mark.parametrize("name", ["_requireCap", "_validateRegexPattern"])
+    def test_all_runtime_prelude_functions_are_reserved(self, name):
+        source = f"""
+        func {name}(value: String, context: String) -> Unit
+            example "x", "y" -> ()
+            return ()
+        end func
+        """
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
+    def test_runtime_name_rejected_as_trait_dispatcher(self):
+        source = """
+        trait Unsafe
+            func _requireCap(self: Self) -> Unit
+        end trait
+        """
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
 
     def test_prelude_name_rejected(self):
         source = """
@@ -2413,6 +2448,52 @@ class TestJSCompilerReservedNames:
     def test_reserved_names_rejected_in_local_scopes(self, source):
         with pytest.raises(JSCompileError, match="reserved runtime name"):
             compile_to_js(source)
+
+    @pytest.mark.parametrize(
+        "name",
+        sorted(js_compiler._JS_EMITTED_LOCAL_HELPER_NAMES),
+    )
+    def test_all_emitted_local_helpers_are_reserved(self, name: str):
+        source = f"""
+        func main() -> Int
+            let {name}: Int = 1
+            return {name}
+        end func
+        """
+
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
+    @pytest.mark.parametrize("name", sorted(js_compiler._JS_FIXED_GLOBAL_NAMES))
+    def test_fixed_generated_globals_are_reserved(self, name: str):
+        source = f"""
+        func {name}() -> Int
+            example () -> 1
+            return 1
+        end func
+
+        func main() -> Int
+            return {name}()
+        end func
+        """
+
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
+    def test_ensures_body_helper_is_hygienic(self):
+        source = """
+        func f(_body_f: Int) -> Int
+            ensures result == _body_f
+            example 2 -> 2
+            return _body_f
+        end func
+
+        func main() -> Int
+            return f(2)
+        end func
+        """
+
+        assert compile_and_run_js(source) == "2"
 
 
 # =============================================================================
@@ -3771,3 +3852,134 @@ class TestJSDeepCopyOptimization:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["_GENO_CAPS", '_validateRegexPattern("a", "test")'],
+)
+def test_js_compiler_rejects_direct_runtime_internal_reference_without_typecheck(
+    expression,
+):
+    source = f"func main() -> Any\n    return {expression}\nend func\n"
+
+    with pytest.raises(JSCompileError, match="reserved runtime name"):
+        compile_to_js(source, typecheck=False)
+
+
+def test_js_compiler_allows_declared_builtin_without_typecheck():
+    source = "func main() -> Int\n    return array_get(array_new(1, 7), 0)\nend func\n"
+
+    assert "function main" in compile_to_js(source, typecheck=False)
+
+
+@pytest.mark.parametrize("field_name", ["default", "_withGenoFormatter"])
+def test_js_compiler_rejects_unsafe_record_field(field_name):
+    source = (
+        f"type Wrapper = Wrapper({field_name}: Int)\n"
+        "func main() -> Int\n"
+        "    return 1\n"
+        "end func\n"
+    )
+
+    with pytest.raises(JSCompileError, match="cannot be represented safely"):
+        compile_to_js(source, typecheck=False)
+
+
+def test_js_compiler_allows_non_constructor_helper_record_field():
+    source = (
+        "type Wrapper = Wrapper(array_new: Int)\n"
+        "func main() -> Int\n"
+        "    return Wrapper(7).array_new\n"
+        "end func\n"
+    )
+
+    assert "function Wrapper(array_new)" in compile_to_js(source)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Array",
+        "Error",
+        "String",
+        "_geno_canvas",
+        "document",
+        "fetch",
+        "parseFloat",
+        "parseInt",
+        "require",
+        "undefined",
+    ],
+)
+def test_js_compiler_rejects_emitted_host_intrinsic_binding(name):
+    binding = (
+        f"type Host = {name}(value: Int)\n"
+        if name[0].isupper()
+        else f"func {name}() -> Int\n    return 1\nend func\n"
+    )
+    source = binding + "func main() -> Int\n    return 1\nend func\n"
+
+    with pytest.raises(JSCompileError, match="reserved runtime name"):
+        compile_to_js(source, typecheck=False)
+
+
+def test_js_single_program_rejects_function_trait_dispatcher_collision():
+    source = (
+        "type ThingType = Thing(value: Int)\n"
+        "trait Runnable\n"
+        "    func main(self: Self) -> Int\n"
+        "end trait\n"
+        "impl Runnable for ThingType\n"
+        "    func main(self: ThingType) -> Int\n"
+        "        return 1\n"
+        "    end func\n"
+        "end impl\n"
+        "func main() -> Int\n"
+        "    return 7\n"
+        "end func\n"
+    )
+
+    with pytest.raises(JSCompileError, match="conflicts with a trait dispatcher"):
+        compile_to_js(source, typecheck=False)
+
+
+def test_js_single_app_rejects_lifecycle_trait_dispatcher_collision():
+    source = (
+        "type Model = Model(value: Int)\n"
+        "trait Initializable\n"
+        "    func init(self: Self) -> Int\n"
+        "end trait\n"
+        "impl Initializable for Model\n"
+        "    func init(self: Model) -> Int\n"
+        "        return self.value\n"
+        "    end func\n"
+        "end impl\n"
+        "func init() -> Int\n"
+        "    return 0\n"
+        "end func\n"
+        "func update(model: Int, dt: Float) -> Int\n"
+        "    return model\n"
+        "end func\n"
+        "func render(model: Int) -> Unit\n"
+        "    return ()\n"
+        "end func\n"
+    )
+
+    with pytest.raises(JSCompileError, match="conflicts with a trait dispatcher"):
+        compile_to_js(source, typecheck=False)
+
+
+def test_js_standalone_rejects_runtime_host_parse_float_shadow():
+    source = """
+func parseFloat(value: String) -> Float
+    example "2.5" -> 1.0
+    return 1.0
+end func
+func main() -> Float
+    return 1.0
+end func
+"""
+
+    with pytest.raises(JSCompileError, match="reserved runtime name"):
+        compile_to_js(source)

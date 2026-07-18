@@ -228,8 +228,8 @@ class TestDangerousDunderRejection:
         assert error is not None
         assert "__reduce_ex__" in error
 
-    def test_compiled_runtime_prelude_only_trusts_prefix_lines(self):
-        """Trusted prelude lines may use support internals; following code may not."""
+    def test_compiled_runtime_prelude_ignores_caller_trusted_prefix(self):
+        """A caller-supplied prefix count never exempts raw Python text."""
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
         sandbox = ProcessSandbox(
@@ -242,15 +242,14 @@ class TestDangerousDunderRejection:
         )
 
         _result, _output, error = sandbox.execute(
-            "_GENO_OBJECT = ().__class__.__mro__[-1]\n"
-            "__result__ = (()).__reduce_ex__(2)\n"
+            "_GENO_OBJECT = 1\n__result__ = (()).__reduce_ex__(2)\n"
         )
 
         assert error is not None
         assert "__reduce_ex__" in error
 
-    def test_compiled_runtime_prelude_trusted_prefix_still_runs(self):
-        """Trusted prelude prefix keeps the generated runtime support usable."""
+    def test_noncanonical_prefix_cannot_read_runtime_function_globals(self):
+        """A trusted-line count cannot expose injected function globals."""
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
         sandbox = ProcessSandbox(
@@ -262,13 +261,14 @@ class TestDangerousDunderRejection:
             )
         )
 
-        result, output, error = sandbox.execute(
-            "_GENO_OBJECT = ().__class__.__mro__[-1]\n__result__ = 42\n"
+        result, _output, error = sandbox.execute(
+            "__result__ = dataclass.__globals__['sys'].modules['builtins']"
+            ".open('pyproject.toml').read(80)\n"
         )
 
-        assert error is None
-        assert output == ""
-        assert result == 42
+        assert result is None
+        assert error is not None
+        assert "__globals__" in error
 
     def test_compiled_runtime_prelude_blocks_format_after_prefix(self):
         """str.format traversal remains blocked outside the trusted prefix."""
@@ -284,8 +284,7 @@ class TestDangerousDunderRejection:
         )
 
         _result, _output, error = sandbox.execute(
-            "_GENO_OBJECT = ().__class__.__mro__[-1]\n"
-            '__result__ = "{x.__class__}".format(x=())\n'
+            '_GENO_OBJECT = 1\n__result__ = "{x.__class__}".format(x=())\n'
         )
 
         assert error is not None
@@ -461,43 +460,44 @@ class TestPreludeBlobFraming:
         from geno.sandbox import _PRELUDE_BLOB_HEADER, ProcessSandbox
 
         sent = {}
-        orig = ProcessSandbox._run_worker
+        orig = ProcessSandbox._execute_worker_payload
 
-        def spy(self, cmd, code, config_overrides=None):
-            sent["payload"] = code
+        def spy(self, payload, config_overrides=None):
+            sent["payload"] = payload
             sent["overrides"] = config_overrides
-            return orig(self, cmd, code, config_overrides)
+            return orig(self, payload, config_overrides)
 
-        monkeypatch.setattr(ProcessSandbox, "_run_worker", spy)
+        monkeypatch.setattr(ProcessSandbox, "_execute_worker_payload", spy)
         sandbox = self._sandbox()
         code = self._canonical_prelude() + "\n__result__ = _int_div(84, 2)\n"
 
-        result, _output, error = sandbox.execute(code)
+        result, _output, error = sandbox._execute_compiler_output(code)
 
         assert error is None
         assert result == 42
         assert sent["payload"].startswith(_PRELUDE_BLOB_HEADER + " ")
         assert sent["overrides"]["trusted_prelude_line_count"] == 0
         assert sent["overrides"]["prelude_blob_sha256"]
+        assert sent["overrides"]["runtime_capabilities"] == []
 
     def test_tampered_blob_is_fatal(self, monkeypatch):
         """A blob that fails SHA-256 verification aborts before any exec."""
         from geno.sandbox import _PRELUDE_BLOB_HEADER, ProcessSandbox
 
-        orig = ProcessSandbox._run_worker
+        orig = ProcessSandbox._execute_worker_payload
 
-        def corrupt(self, cmd, code, config_overrides=None):
-            assert code.startswith(_PRELUDE_BLOB_HEADER + " ")
-            header, rest = code.split("\n", 1)
+        def corrupt(self, payload, config_overrides=None):
+            assert payload.startswith(_PRELUDE_BLOB_HEADER + " ")
+            header, rest = payload.split("\n", 1)
             # Flip one base64 character of the blob payload
             flipped = ("B" if rest[0] != "B" else "C") + rest[1:]
-            return orig(self, cmd, header + "\n" + flipped, config_overrides)
+            return orig(self, header + "\n" + flipped, config_overrides)
 
-        monkeypatch.setattr(ProcessSandbox, "_run_worker", corrupt)
+        monkeypatch.setattr(ProcessSandbox, "_execute_worker_payload", corrupt)
         sandbox = self._sandbox()
         code = self._canonical_prelude() + "\n__result__ = 42\n"
 
-        result, _output, error = sandbox.execute(code)
+        result, _output, error = sandbox._execute_compiler_output(code)
 
         assert result is None
         assert error is not None
@@ -524,7 +524,7 @@ class TestPreludeBlobFraming:
             "__result__ = 1\n"
         )
 
-        result, _output, error = sandbox.execute(code)
+        result, _output, error = sandbox._execute_compiler_output(code)
 
         assert result is None
         assert error is not None
@@ -533,35 +533,35 @@ class TestPreludeBlobFraming:
     def test_blob_mode_zeroes_trusted_prefix_for_tail(self):
         """Blob mode validates the whole tail even with a huge trusted count.
 
-        In text mode a caller-supplied trusted_prelude_line_count exempts
-        prefix lines from the non-dunder checks; in blob mode the worker's
-        text input is only the tail, so the count is forced to zero and a
-        blocked attribute access on the first tail line is still rejected.
+        Caller-supplied text trust is never forwarded. In blob mode the
+        worker's text input is only the compiler-produced tail, so the count
+        is also forced to zero and a blocked attribute access on the first
+        tail line is rejected.
         """
         prelude = self._canonical_prelude()
         huge = len(prelude.splitlines()) + 100
         sandbox = self._sandbox(trusted_prelude_line_count=huge)
         code = prelude + "\n__result__ = (()).__reduce_ex__(2)\n"
 
-        result, _output, error = sandbox.execute(code)
+        result, _output, error = sandbox._execute_compiler_output(code)
 
         assert result is None
         assert error is not None
         assert "__reduce_ex__" in error
 
-    def test_non_canonical_prefix_falls_back_to_text(self, monkeypatch):
-        """Anything but an exact prelude prefix takes the validated text path."""
+    def test_public_execute_never_enables_compiler_runtime(self, monkeypatch):
+        """Public raw-Python execution always disables compiler runtime globals."""
         from geno.sandbox import _PRELUDE_BLOB_HEADER, ProcessSandbox
 
         sent = {}
-        orig = ProcessSandbox._run_worker
+        orig = ProcessSandbox._execute_worker_payload
 
-        def spy(self, cmd, code, config_overrides=None):
-            sent["payload"] = code
+        def spy(self, payload, config_overrides=None):
+            sent["payload"] = payload
             sent["overrides"] = config_overrides
-            return orig(self, cmd, code, config_overrides)
+            return orig(self, payload, config_overrides)
 
-        monkeypatch.setattr(ProcessSandbox, "_run_worker", spy)
+        monkeypatch.setattr(ProcessSandbox, "_execute_worker_payload", spy)
         sandbox = self._sandbox()
 
         result, _output, error = sandbox.execute("__result__ = 5\n")
@@ -569,4 +569,84 @@ class TestPreludeBlobFraming:
         assert error is None
         assert result == 5
         assert not sent["payload"].startswith(_PRELUDE_BLOB_HEADER)
-        assert sent["overrides"] is None
+        assert sent["overrides"] == {
+            "compiled_runtime_prelude": False,
+            "prelude_blob_sha256": None,
+            "trusted_prelude_line_count": 0,
+        }
+
+    def test_internal_compiler_path_rejects_noncanonical_prefix(self):
+        """Only exact canonical compiler output may use the internal path."""
+        from geno.sandbox import SecurityViolation
+
+        sandbox = self._sandbox(trusted_prelude_line_count=100)
+
+        with pytest.raises(SecurityViolation, match="canonical runtime prelude"):
+            sandbox._execute_compiler_output("__result__ = 5\n")
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "_runtime_codecs.open('pyproject.toml').read(80)",
+            "_runtime_posixpath.os.listdir('.')",
+            "_object_getattribute(dataclass, '__globals__')"
+            "['sys'].modules['builtins']"
+            ".open('pyproject.toml', encoding='utf-8').read(80)",
+            "math.factorial(100)",
+            "_re.search('a', 'a')",
+        ],
+    )
+    def test_compiler_tail_cannot_access_runtime_host_bindings(self, expression: str):
+        """Program tails cannot call raw host dependencies injected for prelude code."""
+        sandbox = self._sandbox()
+        code = self._canonical_prelude() + f"\n__result__ = {expression}\n"
+
+        result, _output, error = sandbox._execute_compiler_output(code)
+
+        assert result is None
+        assert error is not None
+        assert "compiler runtime internal" in error
+
+    def test_public_exact_prelude_text_does_not_enable_compiler_runtime(self):
+        """An exact prefix is not provenance on the public raw-Python path."""
+        sandbox = self._sandbox()
+        code = self._canonical_prelude() + "\n__result__ = 42\n"
+
+        result, _output, error = sandbox.execute(code)
+
+        assert result is None
+        assert error is not None
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "_GENO_CAPS = {'clock'}\n__result__ = clock_now()\n",
+            "__result__ = _bounded_regex_replace('a', 'b', 'a')\n",
+        ],
+    )
+    def test_compiler_tail_cannot_modify_or_bypass_capability_authority(self, tail):
+        sandbox = self._sandbox()
+        code = self._canonical_prelude() + "\n" + tail
+
+        result, _output, error = sandbox._execute_compiler_output(code)
+
+        assert result is None
+        assert error is not None
+        assert "compiler runtime internal" in error
+
+    def test_compiler_capabilities_are_injected_by_worker_configuration(self):
+        sandbox = self._sandbox()
+        code = self._canonical_prelude() + "\n__result__ = clock_now()\n"
+
+        denied_result, _denied_output, denied_error = sandbox._execute_compiler_output(
+            code
+        )
+        allowed_result, _allowed_output, allowed_error = (
+            sandbox._execute_compiler_output(code, capabilities={"clock"})
+        )
+
+        assert denied_result is None
+        assert denied_error is not None
+        assert "requires '--cap clock'" in denied_error
+        assert allowed_error is None
+        assert isinstance(allowed_result, (int, float))

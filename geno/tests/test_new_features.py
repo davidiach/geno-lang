@@ -3,6 +3,7 @@ Tests for new language features: break/continue, mouse input, text input,
 format builtin, floor/ceil/round, and recursion limit increase.
 """
 
+import re
 from contextlib import contextmanager
 from typing import Any, cast
 
@@ -2275,6 +2276,47 @@ class TestPropagateOperator:
 # Regex Builtins
 # =============================================================================
 
+_REGEX_REDOS_BYPASSES = [
+    "a?" * 22 + "a" * 22 + "X",
+    r"a+a{5000}b",
+    "😀+😀{5000}b",
+    r"a+aa{4999}b",
+    "a+" + "a" * 997 + "b",
+    r"a*\x61*X",
+    r"a*(?:)a*X",
+    r"a*()a*X",
+    r"a*(a*)X",
+    r"a*b*a*X",
+    r"a*b?a*X",
+    r"\u0061*a*X",
+    r"a*(?=a*)a*X",
+    r"(?i)a*A*X",
+    r"[]a]*a*X",
+    r"[^]]*a*X",
+    r"\N{LATIN SMALL LETTER A}*a*X",
+]
+_REGEX_SAFETY_ERROR = (
+    "advanced or encoded|nested quantifiers|adjacent repeated atoms|"
+    "multiple variable quantifiers"
+)
+_REGEX_NONPORTABLE_PATTERNS = [
+    r"\w+",
+    r"\d+",
+    r"\s+",
+    r"\bword",
+    ".",
+    r"\_",
+    "$",
+    "a*|b",
+    "{",
+    "a{b",
+    "a{10001}",
+    "a{2,1}",
+    "]",
+    "a]",
+    "(])",
+]
+
 
 class TestRegexBuiltins:
     """Tests for regex_match, regex_find_all, regex_replace builtins."""
@@ -2336,6 +2378,26 @@ class TestRegexBuiltins:
         globals_dict = compile_and_exec(source, timeout=None, capabilities={"regex"})
         assert globals_dict["main"]() == "abc"
 
+    def test_regex_replace_does_not_use_unbounded_re_sub(self):
+        from unittest import mock
+
+        from geno import builtins as builtins_module
+
+        with mock.patch.object(
+            builtins_module.re, "sub", side_effect=AssertionError("re.sub")
+        ):
+            assert builtins_module.builtin_regex_replace("(a)", r"X\1", "a") == "Xa"
+
+    def test_regex_replace_rejects_oversized_group_reference(self):
+        from geno import builtins as builtins_module
+        from geno.values import RuntimeError as GenoRuntimeError
+
+        replacement = "\\" + "1" * 5000
+        with pytest.raises(
+            GenoRuntimeError, match="invalid replacement group reference"
+        ):
+            builtins_module.builtin_regex_replace("(a)", replacement, "a")
+
     def test_regex_match_interpreter(self):
         source = """
         func main() -> Option[String]
@@ -2391,7 +2453,7 @@ class TestRegexBuiltins:
     def test_regex_find_all_with_capture_groups(self):
         source = """
         func main() -> List[String]
-            return regex_find_all("([a-z]+)[0-9]+", "abc123def456")
+            return regex_find_all("([a-z]+)[0-9][0-9][0-9]", "abc123def456")
         end func main
         """
         globals_dict = compile_and_exec(source, timeout=None, capabilities={"regex"})
@@ -2415,6 +2477,15 @@ class TestRegexBuiltins:
         with pytest.raises(Exception, match="overlapping alternation"):
             builtin_regex_match("(a|aa)+$", "a" * 24 + "!")
 
+    @pytest.mark.parametrize("pattern", ["(a|[a])+$", "(?:a|aa)+$"])
+    def test_regex_match_rejects_semantically_overlapping_alternation(self, pattern):
+        from geno.builtins import builtin_regex_match
+
+        with pytest.raises(
+            Exception, match=r"overlapping alternation|advanced or encoded"
+        ):
+            builtin_regex_match(pattern, "a" * 24 + "!")
+
     def test_regex_match_rejects_sequential_quantified_literals(self):
         from geno.builtins import builtin_regex_match
 
@@ -2427,12 +2498,38 @@ class TestRegexBuiltins:
         with pytest.raises(Exception, match="adjacent repeated atoms"):
             builtin_regex_match("[a]*[a]*b", "aaaa!")
 
-    def test_regex_match_allows_distinct_quantified_atoms(self):
+    @pytest.mark.parametrize(
+        "pattern",
+        ["a*.*X", "(?P<x>a+)(?P=x)+X"],
+    )
+    def test_regex_match_rejects_remaining_redos_patterns(self, pattern):
         from geno.builtins import builtin_regex_match
 
-        result = builtin_regex_match("a*b*c", "aaabbbc")
-        assert result.constructor == "Some"
-        assert result.fields["value"] == "aaabbbc"
+        with pytest.raises(
+            Exception,
+            match=r"backreferences|adjacent repeated atoms|advanced or encoded",
+        ):
+            builtin_regex_match(pattern, "a" * 100 + "!")
+
+    def test_regex_match_rejects_multiple_variable_quantifiers(self):
+        from geno.builtins import builtin_regex_match
+
+        with pytest.raises(Exception, match="multiple variable quantifiers"):
+            builtin_regex_match("a*b*c", "aaabbbc")
+
+    @pytest.mark.parametrize("pattern", _REGEX_REDOS_BYPASSES)
+    def test_regex_match_rejects_portable_subset_bypasses(self, pattern):
+        from geno.builtins import builtin_regex_match
+
+        with pytest.raises(Exception, match=_REGEX_SAFETY_ERROR):
+            builtin_regex_match(pattern, "a" * 100 + "!")
+
+    @pytest.mark.parametrize("pattern", _REGEX_NONPORTABLE_PATTERNS)
+    def test_regex_match_rejects_cross_backend_semantic_differences(self, pattern):
+        from geno.builtins import builtin_regex_match
+
+        with pytest.raises(Exception, match="advanced or encoded"):
+            builtin_regex_match(pattern, "é١\r_word")
 
     def test_regex_match_allows_escaped_literal_group_text(self):
         from geno.builtins import builtin_regex_match
@@ -2469,17 +2566,72 @@ class TestCompiledRegexValidation:
         with pytest.raises(Exception, match="backreferences"):
             compiled_regex_find_all(r"(a)\1", "aa")
 
+    def test_compiled_regex_replace_does_not_use_unbounded_re_sub(self):
+        from unittest import mock
+
+        from geno import _runtime_support as compiled_runtime
+
+        with mock.patch.object(
+            compiled_runtime._re,
+            "sub",
+            side_effect=AssertionError("re.sub"),
+        ):
+            assert compiled_runtime.regex_replace("(a)", r"X\1", "a") == "Xa"
+
+    def test_compiled_regex_replace_rejects_oversized_group_reference(self):
+        from geno._runtime_support import regex_replace as compiled_regex_replace
+
+        replacement = "\\" + "1" * 5000
+        with pytest.raises(RuntimeError, match="invalid replacement group reference"):
+            compiled_regex_replace("(a)", replacement, "a")
+
     def test_compiled_regex_rejects_identical_alternation_with_quantifier(self):
         from geno._runtime_support import regex_replace as compiled_regex_replace
 
         with pytest.raises(Exception, match="overlapping alternation"):
             compiled_regex_replace("(a|a)+", "x", "aaaa")
 
+    @pytest.mark.parametrize("pattern", ["(a|[a])+$", "(?:a|aa)+$"])
+    def test_compiled_regex_rejects_semantically_overlapping_alternation(self, pattern):
+        from geno._runtime_support import regex_match as compiled_regex_match
+
+        with pytest.raises(
+            Exception, match=r"overlapping alternation|advanced or encoded"
+        ):
+            compiled_regex_match(pattern, "a" * 24 + "!")
+
     def test_compiled_regex_rejects_sequential_quantified_atoms(self):
         from geno._runtime_support import regex_match as compiled_regex_match
 
         with pytest.raises(Exception, match="adjacent repeated atoms"):
             compiled_regex_match("a*a*a*a*b", "aaaa!")
+
+    @pytest.mark.parametrize(
+        "pattern",
+        ["a*.*X", "(?P<x>a+)(?P=x)+X"],
+    )
+    def test_compiled_regex_rejects_remaining_redos_patterns(self, pattern):
+        from geno._runtime_support import regex_match as compiled_regex_match
+
+        with pytest.raises(
+            Exception,
+            match=r"backreferences|adjacent repeated atoms|advanced or encoded",
+        ):
+            compiled_regex_match(pattern, "a" * 100 + "!")
+
+    @pytest.mark.parametrize("pattern", _REGEX_REDOS_BYPASSES)
+    def test_compiled_regex_rejects_portable_subset_bypasses(self, pattern):
+        from geno._runtime_support import regex_match as compiled_regex_match
+
+        with pytest.raises(Exception, match=_REGEX_SAFETY_ERROR):
+            compiled_regex_match(pattern, "a" * 100 + "!")
+
+    @pytest.mark.parametrize("pattern", _REGEX_NONPORTABLE_PATTERNS)
+    def test_compiled_regex_rejects_cross_backend_semantic_differences(self, pattern):
+        from geno._runtime_support import regex_match as compiled_regex_match
+
+        with pytest.raises(Exception, match="advanced or encoded"):
+            compiled_regex_match(pattern, "é١\r_word")
 
     def test_compiled_regex_rejects_oversize_text(self):
         from geno._runtime_support import regex_match as compiled_regex_match
@@ -2519,6 +2671,27 @@ class TestCompiledJSRegexValidation:
         _, out = self._run_js_expect_error('regex_match("(a+)+$", "aaaa!")')
         assert "nested quantifiers" in out
 
+    @pytest.mark.parametrize("escape", ["\\u0661", "\\u00b2"])
+    def test_js_regex_rejects_non_ascii_quantifier_digits(self, escape):
+        _, out = self._run_js_expect_error(f'regex_match("a{{{escape}}}", "a")')
+        assert "advanced or encoded" in out
+
+    @pytest.mark.parametrize("pattern", ["a{000001}", "a{000001,000002}"])
+    def test_js_regex_allows_zero_padded_bounded_quantifiers(self, pattern):
+        _, out = self._run_js_expect_error(f'regex_match("{pattern}", "aa")')
+        assert out == "NO_ERROR"
+
+    def test_js_regex_group_nesting_limit(self):
+        _, maximum = self._run_js_expect_error(
+            'regex_match("(".repeat(128) + "a" + ")".repeat(128), "a")'
+        )
+        assert maximum == "NO_ERROR"
+
+        _, excessive = self._run_js_expect_error(
+            'regex_match("(".repeat(129) + "a" + ")".repeat(129), "a")'
+        )
+        assert "group nesting too deep" in excessive
+
     def test_js_regex_rejects_overlapping_alternation_identical(self):
         _, out = self._run_js_expect_error('regex_match("(a|a)+$", "aaaa")')
         assert "overlapping alternation" in out
@@ -2527,9 +2700,46 @@ class TestCompiledJSRegexValidation:
         _, out = self._run_js_expect_error('regex_match("(a|aa)+$", "aaaa")')
         assert "overlapping alternation" in out
 
+    @pytest.mark.parametrize("pattern", ["(a|[a])+$", "(?:a|aa)+$"])
+    def test_js_regex_rejects_semantically_overlapping_alternation(self, pattern):
+        _, out = self._run_js_expect_error(
+            f'regex_match("{pattern}", "aaaaaaaaaaaaaaaaaaaaaaaa!")'
+        )
+        assert "overlapping alternation" in out or "advanced or encoded" in out
+
+    @pytest.mark.parametrize("pattern", _REGEX_REDOS_BYPASSES[:9])
+    def test_js_regex_rejects_portable_subset_bypasses(self, pattern):
+        escaped = pattern.replace("\\", "\\\\").replace('"', '\\"')
+        _, out = self._run_js_expect_error(
+            f'regex_match("{escaped}", "aaaaaaaaaaaaaaaaaaaaaaaa!")'
+        )
+        assert re.search(_REGEX_SAFETY_ERROR, out)
+
+    @pytest.mark.parametrize("pattern", _REGEX_NONPORTABLE_PATTERNS)
+    def test_js_regex_rejects_cross_backend_semantic_differences(self, pattern):
+        escaped = pattern.replace("\\", "\\\\").replace('"', '\\"')
+        _, out = self._run_js_expect_error(f'regex_match("{escaped}", "é١\\r_word")')
+        assert "advanced or encoded" in out
+
     def test_js_regex_rejects_sequential_quantified_atoms(self):
         _, out = self._run_js_expect_error('regex_match("a*a*a*a*b", "aaaa!")')
         assert "adjacent repeated atoms" in out
+
+    def test_js_regex_rejects_wildcard_overlap(self):
+        _, out = self._run_js_expect_error('regex_match("a*.*X", "aaaaaaaa!")')
+        assert "adjacent repeated atoms" in out or "advanced or encoded" in out
+
+    def test_js_regex_allows_astral_literal_character_class(self):
+        _, out = self._run_js_expect_error(
+            'regex_match("[\\u{1F600}]*x", "\\u{1F600}x")'
+        )
+        assert out == "NO_ERROR"
+
+    def test_js_regex_rejects_named_backreference(self):
+        _, out = self._run_js_expect_error(
+            'regex_match("(?<x>a+)\\\\k<x>+X", "aaaaaaaa!")'
+        )
+        assert "backreferences" in out
 
     def test_js_regex_rejects_oversize_text(self):
         _, out = self._run_js_expect_error('regex_match("a", "a".repeat(10001))')
@@ -2540,6 +2750,16 @@ class TestCompiledJSRegexValidation:
             'regex_replace("a", "b".repeat(10001), "aaaa")'
         )
         assert "too long" in out
+
+    def test_js_regex_replace_does_not_use_unbounded_native_replace(self):
+        script = (
+            _js_runtime_prelude_with_caps("regex")
+            + "\nString.prototype.replace = function() { throw new Error('native replace'); };\n"
+            + 'console.log(regex_replace("(a)", "X\\\\1", "a"));\n'
+        )
+        result = run_node_code(script, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "Xa"
 
     def test_js_regex_allows_escaped_literal_group_text(self):
         # Positive case: escaped metacharacters inside a group should still match.

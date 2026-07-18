@@ -854,8 +854,12 @@ class TestServeHeaderValidation:
         handler = captured["handler_cls"].__new__(captured["handler_cls"])
         handler.command = "GET"
         handler.path = "/"
+        handler.server = SimpleNamespace(server_port=0)
         handler.headers = SimpleNamespace(
             get=lambda _name, _default=None: "0",
+            get_all=lambda name, failobj=None: (
+                ["127.0.0.1:0"] if name == "Host" else failobj
+            ),
             items=lambda: [],
         )
         handler.rfile = io.BytesIO(b"")

@@ -63,7 +63,7 @@ sandbox-regression:
 dependency-audit:
 	$(PYTHON) -m pip_audit --require-hashes -r requirements.lock --strict --progress-spinner off
 	$(PYTHON) -m pip_audit --require-hashes -r requirements-dev.lock --strict --progress-spinner off
-
+	$(PYTHON) scripts/audit_release_lock.py
 # Validate init templates (scaffold + check + test)
 release-gate-templates:
 	PYTHON=$(PYTHON) bash scripts/release-gate-templates.sh

@@ -76,6 +76,44 @@ _WINDOWS_RESERVED_DEPENDENCY_NAMES = frozenset(
     }
 )
 _MANIFEST_ENTRYPOINT_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+_DEPENDENCY_NAME_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z]+(?:-[A-Za-z]+)*)$"
+)
+_MODULE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MAX_PROJECT_CONFIG_BYTES = 1024 * 1024
+
+
+def _read_bounded_regular_text(
+    path: Path,
+    *,
+    label: str,
+    allow_symlink: bool = False,
+) -> str:
+    """Read a small UTF-8 config from a regular file without unsafe following."""
+    if path.is_symlink() and not allow_symlink:
+        raise ValueError(f"{label} must not be a symbolic link: {path}")
+    flags = os.O_RDONLY
+    if not allow_symlink and hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"Could not safely open {label}: {path}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{label} must be a regular file: {path}")
+        if info.st_size > _MAX_PROJECT_CONFIG_BYTES:
+            raise ValueError(f"{label} is too large: {path}")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read(_MAX_PROJECT_CONFIG_BYTES + 1)
+        if len(data) > _MAX_PROJECT_CONFIG_BYTES:
+            raise ValueError(f"{label} is too large: {path}")
+        return data.decode("utf-8")
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def validate_dependency_name(name: str) -> None:
@@ -83,7 +121,8 @@ def validate_dependency_name(name: str) -> None:
     path_name = Path(name)
     windows_stem = name.rstrip(" .").split(".", 1)[0].upper()
     if (
-        not name
+        not _DEPENDENCY_NAME_RE.fullmatch(name)
+        or not name
         or "\x00" in name
         or ":" in name
         or path_name.is_absolute()
@@ -95,6 +134,14 @@ def validate_dependency_name(name: str) -> None:
     ):
         raise ValueError(
             f"Invalid dependency name '{name}': must be a simple module name"
+        )
+
+
+def validate_module_name(name: str) -> None:
+    """Validate a module name before a backend emits it as an identifier."""
+    if not _MODULE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid module name '{name}': must be a single ASCII identifier"
         )
 
 
@@ -150,13 +197,15 @@ class Manifest:
     _raw: dict = field(default_factory=dict, repr=False)
 
 
-def parse_manifest(path: Path) -> Manifest:
+def parse_manifest(path: Path, *, allow_symlink: bool = False) -> Manifest:
     """Parse a geno.toml file into a Manifest."""
     if tomllib is None:
         raise RuntimeError(
             "TOML parsing not available. Install tomli for Python < 3.11."
         )
-    text = path.read_text(encoding="utf-8")
+    text = _read_bounded_regular_text(
+        path, label="Geno manifest", allow_symlink=allow_symlink
+    )
     raw = tomllib.loads(text)
 
     files = _string_list(raw, "files")
@@ -331,6 +380,11 @@ def save_manifest(manifest: Manifest, path: Path) -> None:
 
     Unknown top-level keys from the original file are preserved.
     """
+    if manifest.entrypoint is not None:
+        validate_manifest_entrypoint(manifest.entrypoint)
+    for dep_name in manifest.dependencies:
+        validate_dependency_name(dep_name)
+
     lines: list[str] = []
 
     if manifest.name:

@@ -162,8 +162,207 @@ def _explicit_fs_roots_for_run(
         roots.append(
             candidate if os.path.isdir(candidate) else os.path.dirname(candidate)
         )
-
     return roots
+
+
+_GENO_FRONTEND_ERROR_PREFIX = "\x1eGENO_FRONTEND\x1e"
+
+
+_PROCESS_RUN_SUPPORT_MODULES = (
+    "geno.api",
+    "geno.ast_nodes",
+    "geno.builtin_registry",
+    "geno.compiler",
+    "geno.constraints",
+    "geno.dependency_graph",
+    "geno.diagnostics",
+    "geno.interpreter",
+    "geno.lexer",
+    "geno.manifest",
+    "geno.module_resolver",
+    "geno.monitoring",
+    "geno.package_manager",
+    "geno.parser",
+    "geno.project_graph",
+    "geno.project_resolution",
+    "geno.sandbox",
+    "geno.target_profile",
+    "geno.typechecker",
+    "geno.types",
+    "geno.values",
+)
+
+
+def _preload_process_run_support() -> None:
+    """Load trusted frontend modules before Darwin freezes its VM baseline.
+
+    The default-run path intentionally uses lazy imports during normal CLI
+    startup. The isolated worker calls this before reading its parent-framed
+    request so only repository-controlled modules become part of the trusted
+    bootstrap footprint; source resolution and compilation remain limited.
+    """
+    import importlib
+
+    for module_name in _PROCESS_RUN_SUPPORT_MODULES:
+        importlib.import_module(module_name)
+
+
+def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
+    """Compile a validated default-run request inside the sandbox worker."""
+    expected_keys = {
+        "filename",
+        "target",
+        "check_examples",
+        "timeout",
+        "max_recursion_depth",
+        "max_output_length",
+        "max_collection_size",
+        "max_integer_bits",
+    }
+    if set(request) != expected_keys:
+        raise ValueError("invalid process-run request fields")
+
+    filename = request["filename"]
+    target = request["target"]
+    check_examples = request["check_examples"]
+    if not isinstance(filename, str) or not filename or "\x00" in filename:
+        raise ValueError("invalid process-run filename")
+    if target is not None and not isinstance(target, str):
+        raise ValueError("invalid process-run target")
+    if not isinstance(check_examples, bool):
+        raise ValueError("invalid process-run example setting")
+
+    from ..ast_nodes import FunctionDef
+    from ..compiler import (
+        Compiler,
+        _compiled_main_result_capture,
+        _strip_runtime_prelude_imports,
+        _trusted_runtime_prelude_line_count,
+    )
+    from ..sandbox import SandboxConfig
+
+    resolved_run = _resolve_run_program(filename, target)
+    dependency_graph = resolved_run.dependency_graph
+    program = resolved_run.program
+    parsed_modules = resolved_run.parsed_modules
+    _typecheck_run_graph(dependency_graph, resolved_run.check_targets)
+
+    if check_examples and _program_has_example_clauses(program, parsed_modules):
+        from ..api import _apply_capabilities as _apply_example_capabilities
+        from ..interpreter import Interpreter
+
+        example_config = SandboxConfig(
+            timeout=request["timeout"],
+            max_recursion_depth=request["max_recursion_depth"],
+            max_output_length=request["max_output_length"],
+            max_collection_size=request["max_collection_size"],
+            max_integer_bits=request["max_integer_bits"],
+        )
+        interpreter = Interpreter(
+            check_examples=True,
+            sandbox_config=example_config,
+        )
+        _apply_example_capabilities(
+            interpreter,
+            set(DEFAULT_ALLOWED_CAPABILITIES),
+        )
+        interpreter.run(program, modules=parsed_modules, execute_main=False)
+
+    compiler = Compiler()
+    if parsed_modules:
+        python_code = compiler.compile_project(dependency_graph)
+    else:
+        python_code = compiler.compile(program)
+    python_code = _strip_runtime_prelude_imports(python_code)
+    trusted_prelude_line_count = _trusted_runtime_prelude_line_count(python_code)
+    main_defn = next(
+        (
+            definition
+            for definition in program.definitions
+            if isinstance(definition, FunctionDef) and definition.name == "main"
+        ),
+        None,
+    )
+    python_code += _compiled_main_result_capture(
+        bool(main_defn and main_defn.is_async),
+        main_name="_geno_entry_main" if parsed_modules else "main",
+        catch_name_error=True,
+    )
+    return {
+        "python_code": python_code,
+        "runtime_capabilities": sorted(DEFAULT_ALLOWED_CAPABILITIES),
+        "trusted_prelude_line_count": trusted_prelude_line_count,
+    }
+
+
+def _format_process_frontend_error(filename: str, error: BaseException) -> str:
+    """Format a frontend failure without leaking a worker traceback."""
+    from io import StringIO
+
+    from ..dependency_graph import (
+        CircularDependencyError,
+        DependencyGraphError,
+        NameCollisionError,
+    )
+    from ..lexer import LexerError
+    from ..parser import ParseError, ParseErrors
+    from ..project_graph import ProjectGraphError
+    from ..project_resolution import ProjectResolutionError
+    from ..sandbox import (
+        SandboxError,
+        SecurityViolation,
+        StepLimitExceeded,
+        TimeoutError,
+    )
+    from ..typechecker import TypeError as GenoTypeError
+    from ..values import RuntimeError as GenoRuntimeError
+
+    if isinstance(error, FileNotFoundError):
+        return f"Error: File not found: {filename}"
+    if isinstance(error, ProjectResolutionError):
+        return f"Error: {error}"
+    if isinstance(error, ProjectGraphError):
+        return f"Project Error: {error}"
+    if isinstance(error, CircularDependencyError):
+        return f"Circular Import: {error}"
+    if isinstance(error, NameCollisionError):
+        return f"Name Collision: {error}"
+    if isinstance(error, DependencyGraphError):
+        return f"Dependency Error: {error}"
+    if isinstance(error, ValueError):
+        return f"Manifest Error: {error}"
+    if isinstance(error, LexerError):
+        return f"Lexer Error: {error}{_format_source_snippet(error.location)}"
+    if isinstance(error, ParseErrors):
+        lines = [f"Parse Errors ({len(error.errors)} errors):"]
+        lines.extend(
+            f"  {item}{_format_source_snippet(getattr(item, 'location', None))}"
+            for item in error.errors
+        )
+        return "\n".join(lines)
+    if isinstance(error, ParseError):
+        return f"Parse Error: {error}{_format_source_snippet(error.location)}"
+    if isinstance(error, GenoTypeError):
+        return f"Type Error: {error}{_format_source_snippet(error.location)}"
+    if isinstance(error, SecurityViolation):
+        return f"Security Error: {error}"
+    if isinstance(error, (TimeoutError, StepLimitExceeded)):
+        return f"Limit Error: {error}"
+    if isinstance(error, SandboxError):
+        return f"Sandbox Error: {error}"
+    if isinstance(error, RecursionError):
+        return (
+            f"Error: expression nesting is too deep to process in {filename} "
+            "(exceeded the interpreter's recursion limit). Simplify deeply "
+            "nested expressions such as very long operator chains."
+        )
+    if isinstance(error, (GenoRuntimeError, RuntimeError)):
+        buffer = StringIO()
+        _print_runtime_error(error, file=buffer)
+        return buffer.getvalue().rstrip()
+    return (
+        f"Compiler Error: the isolated frontend failed safely ({type(error).__name__})"
+    )
 
 
 def run_file(
@@ -296,14 +495,6 @@ def run_file(
             sys.exit(1)
         return
 
-    from ..ast_nodes import FunctionDef
-    from ..compiler import (
-        Compiler,
-        _compiled_main_result_capture,
-        _insert_compiled_runtime_capability_assignment,
-        _strip_runtime_prelude_imports,
-        _trusted_runtime_prelude_line_count,
-    )
     from ..dependency_graph import (
         CircularDependencyError,
         DependencyGraphError,
@@ -314,17 +505,66 @@ def run_file(
     from ..project_graph import ProjectGraphError
     from ..project_resolution import ProjectResolutionError
     from ..sandbox import (
+        ProcessSandbox,
+        ProcessSandboxConfig,
         SandboxConfig,
         SandboxError,
         SecurityViolation,
         StepLimitExceeded,
         TimeoutError,
-        run_sandboxed,
     )
     from ..typechecker import TypeError
     from ..values import RuntimeError as GenoRuntimeError
 
     try:
+        if run_mode == "process":
+            request = {
+                "filename": filename,
+                "target": target,
+                "check_examples": check_examples,
+                "timeout": timeout,
+                "max_recursion_depth": max_recursion_depth,
+                "max_output_length": max_output_length,
+                "max_collection_size": max_collection_size,
+                "max_integer_bits": max_integer_bits,
+            }
+            process_config = ProcessSandboxConfig(
+                timeout=timeout,
+                max_memory_bytes=max_memory_bytes,
+                max_cpu_time=max_cpu_time,
+                max_file_size_bytes=max_file_size_bytes,
+                max_processes=max_processes,
+                max_recursion_depth=max_recursion_depth,
+                max_output_length=max_output_length,
+                max_collection_size=max_collection_size,
+                max_integer_bits=max_integer_bits,
+                strict=False,
+                compiled_runtime_prelude=True,
+                trusted_prelude_line_count=0,
+            )
+            _set_cli_args_env()
+            try:
+                result, run_output, error = ProcessSandbox(
+                    process_config
+                ).execute_geno_request(request)
+            finally:
+                _restore_cli_args_env()
+
+            if error is not None:
+                if error.startswith(_GENO_FRONTEND_ERROR_PREFIX):
+                    print(
+                        error.removeprefix(_GENO_FRONTEND_ERROR_PREFIX),
+                        file=sys.stderr,
+                    )
+                else:
+                    _print_runtime_error(RuntimeError(error))
+                sys.exit(1)
+            if run_output:
+                print(run_output, end="")
+            if result is not None:
+                print(f"=> {result}")
+            return
+
         resolved_run = _resolve_run_program(filename, target)
         dg = resolved_run.dependency_graph
         program = resolved_run.program
@@ -394,103 +634,6 @@ def run_file(
                 print(run_output, end="")
             if result is not None:
                 print(f"=> {interpreter._format_value(result)}")
-        else:
-            # Verify examples via the interpreter before compiling.
-            # The compiler only preserves examples as docstrings; it does
-            # not execute them.  Running the interpreter in check-only mode
-            # ensures parity with --unsafe and --json. Skipped entirely
-            # when there is nothing to verify, which also keeps the
-            # interpreter import off the example-free fast path.
-            if check_examples and _program_has_example_clauses(program, parsed_modules):
-                from ..api import _apply_capabilities as _apply_example_capabilities
-                from ..interpreter import Interpreter as _ExInterp
-
-                _ex_interp = _ExInterp(
-                    check_examples=True,
-                    sandbox_config=SandboxConfig(
-                        timeout=timeout,
-                        max_recursion_depth=max_recursion_depth,
-                        max_output_length=max_output_length,
-                        max_collection_size=max_collection_size,
-                        max_integer_bits=max_integer_bits,
-                    ),
-                )
-                _apply_example_capabilities(
-                    _ex_interp, set(DEFAULT_ALLOWED_CAPABILITIES)
-                )
-                # Verify example clauses only: the compiled sandbox run below
-                # is the authoritative execution of main. Interpreting main
-                # here too would run the whole program twice (the tree-walker
-                # is orders of magnitude slower) and double any side effects.
-                _ex_interp.run(program, modules=parsed_modules, execute_main=False)
-
-            # Compile and run in ProcessSandbox (default - secure)
-            compiler = Compiler()
-            if parsed_modules:
-                python_code = compiler.compile_project(dg)
-            else:
-                python_code = compiler.compile(program)
-            python_code = _strip_runtime_prelude_imports(python_code)
-            trusted_prelude_line_count = _trusted_runtime_prelude_line_count(
-                python_code
-            )
-            python_code = _insert_compiled_runtime_capability_assignment(
-                python_code, DEFAULT_ALLOWED_CAPABILITIES
-            )
-
-            # Add code to call main() if it exists and capture result
-            # Use try/except instead of dir() which is blocked
-            main_defn = next(
-                (
-                    defn
-                    for defn in program.definitions
-                    if isinstance(defn, FunctionDef) and defn.name == "main"
-                ),
-                None,
-            )
-            python_code += _compiled_main_result_capture(
-                bool(main_defn and main_defn.is_async),
-                catch_name_error=True,
-            )
-
-            # Use strict=False because:
-            # 1. Geno source was already type-checked above
-            # 2. Compiled code has trusted runtime prelude symbols pre-injected
-            # 3. Static validation would flag our own generated runtime support
-            # Security is still enforced at runtime by:
-            # - ProcessSandbox with hard timeouts
-            # - safe_getattr/safe_hasattr blocking dunder access
-            # - Whitelisted imports only
-            # - Output limits
-            # Forward program args to the sandbox subprocess via env var
-            if program_args:
-                os.environ["GENO_CLI_ARGS"] = json_mod.dumps(program_args)
-            config = SandboxConfig(
-                timeout=timeout,
-                max_memory_bytes=max_memory_bytes,
-                max_cpu_time=max_cpu_time,
-                max_file_size_bytes=max_file_size_bytes,
-                max_processes=max_processes,
-                max_recursion_depth=max_recursion_depth,
-                max_output_length=max_output_length,
-                max_collection_size=max_collection_size,
-                max_integer_bits=max_integer_bits,
-                strict=False,
-                compiled_runtime_prelude=True,
-                trusted_prelude_line_count=trusted_prelude_line_count,
-            )
-            _set_cli_args_env()
-            try:
-                result, run_output = run_sandboxed(
-                    python_code, config, use_process=True
-                )
-            finally:
-                _restore_cli_args_env()
-
-            if run_output:
-                print(run_output, end="")
-            if result is not None:
-                print(f"=> {result}")
 
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)

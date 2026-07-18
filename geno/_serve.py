@@ -12,7 +12,7 @@ argument parsing and dispatch.
 import logging
 import re
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,52 @@ def _validate_http_target(
     )
 
 
+def _is_public_http_ipv4(address: Any) -> bool:
+    """Use a version-stable denylist for IANA special-purpose IPv4 space."""
+    import ipaddress
+
+    denied = (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+    )
+    return not any(address in ipaddress.IPv4Network(network) for network in denied)
+
+
+def _is_public_native_http_ipv6(address: Any) -> bool:
+    """Reject native IPv6 special-use space consistently on Python 3.10-3.13."""
+    import ipaddress
+
+    denied = (
+        "::/128",
+        "::1/128",
+        "100::/64",
+        "5f00::/16",
+        "2001::/23",
+        "2001:20::/28",
+        "2001:30::/28",
+        "2001:db8::/32",
+        "3fff::/20",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+    )
+    return not any(address in ipaddress.IPv6Network(network) for network in denied)
+
+
 def _validate_http_address(
     host: str,
     fn_name: str,
@@ -161,17 +207,58 @@ def _validate_http_address(
         raise RuntimeError(
             f"{fn_name}: cannot validate resolved host {host!r}"
         ) from exc
-    if (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    ):
-        raise RuntimeError(
-            f"{fn_name}: private, local, or reserved network targets are not allowed"
-        )
+
+    embedded_ipv4: list[Any] = []
+    if isinstance(address, ipaddress.IPv6Address):
+        local_nat64 = ipaddress.IPv6Network("64:ff9b:1::/48")
+        ipv4_translated = ipaddress.IPv6Network("::ffff:0:0:0/96")
+        well_known_nat64 = ipaddress.IPv6Network("64:ff9b::/96")
+        if address in local_nat64 or address.teredo is not None:
+            raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
+        if address.ipv4_mapped is not None:
+            embedded_ipv4.append(address.ipv4_mapped)
+        if address.packed[:12] == bytes(12):
+            embedded_ipv4.append(ipaddress.IPv4Address(address.packed[-4:]))
+        if address.sixtofour is not None:
+            embedded_ipv4.append(address.sixtofour)
+        if address in well_known_nat64:
+            embedded_ipv4.append(ipaddress.IPv4Address(address.packed[-4:]))
+        if address in ipv4_translated:
+            embedded_ipv4.append(ipaddress.IPv4Address(address.packed[-4:]))
+
+    if embedded_ipv4:
+        if any(not _is_public_http_ipv4(item) for item in embedded_ipv4):
+            raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
+        return
+
+    if isinstance(address, ipaddress.IPv4Address):
+        public = _is_public_http_ipv4(address)
+    else:
+        public = _is_public_native_http_ipv6(address)
+    if not public:
+        raise RuntimeError(f"{fn_name}: non-public network targets are not allowed")
+
+
+def _http_origin(url: str) -> tuple[str, str, int | None]:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return (
+        scheme,
+        (parsed.hostname or "").lower().rstrip("."),
+        parsed.port or default_port,
+    )
+
+
+def _strip_cross_origin_redirect_headers(
+    source_url: str, target_url: str, redirected_request: Any
+) -> None:
+    if _http_origin(source_url) == _http_origin(target_url):
+        return
+    redirected_request.headers.clear()
+    redirected_request.unredirected_hdrs.clear()
 
 
 def _resolve_validated_http_addresses(
@@ -435,8 +522,16 @@ def install_http_callbacks(
                 headers: Any,
                 newurl: str,
             ) -> Any:
-                _check_scheme(urljoin(request.full_url, newurl), fn_name)
-                return super().redirect_request(request, fp, code, msg, headers, newurl)
+                target_url = urljoin(request.full_url, newurl)
+                _check_scheme(target_url, fn_name)
+                redirected = super().redirect_request(
+                    request, fp, code, msg, headers, newurl
+                )
+                if redirected is not None:
+                    _strip_cross_origin_redirect_headers(
+                        request.full_url, target_url, redirected
+                    )
+                return redirected
 
         return build_opener(
             ProxyHandler({}),
@@ -762,6 +857,73 @@ def install_stdin_callbacks(interpreter) -> None:
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
+_HTTP_LISTEN_REQUEST_DEADLINE_SECONDS = 30.0
+_HTTP_LISTEN_MAX_BODY_BYTES = 1_048_576
+_HTTP_FORBIDDEN_RESPONSE_HEADERS = frozenset(
+    {
+        "connection",
+        "content-length",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+
+def _http_request_header_values(headers: Any, name: str) -> tuple[str, ...]:
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        return tuple(get_all(name) or ())
+    items = getattr(headers, "items", None)
+    if callable(items):
+        normalized = name.casefold()
+        return tuple(
+            value
+            for key, value in items()
+            if isinstance(key, str) and key.casefold() == normalized
+        )
+    value = headers.get(name)
+    return () if value is None else (value,)
+
+
+def _validated_http_request_content_length(headers: Any) -> int:
+    if _http_request_header_values(headers, "Transfer-Encoding"):
+        raise ValueError("Transfer-Encoding is not supported")
+    values = _http_request_header_values(headers, "Content-Length")
+    if not values:
+        return 0
+    if len(values) != 1 or "," in values[0]:
+        raise ValueError("Ambiguous Content-Length header")
+    raw = values[0]
+    if raw.startswith("-"):
+        raise ValueError("Invalid Content-Length: must not be negative")
+    if raw != "0" and (
+        not raw
+        or raw[0] not in "123456789"
+        or any(character not in "0123456789" for character in raw[1:])
+    ):
+        raise ValueError("Invalid Content-Length header")
+    limit_text = str(_HTTP_LISTEN_MAX_BODY_BYTES)
+    if len(raw) > len(limit_text) or (len(raw) == len(limit_text) and raw > limit_text):
+        raise OverflowError("Request body too large")
+    length = int(raw)
+    if length > _HTTP_LISTEN_MAX_BODY_BYTES:  # defensive if the limit changes
+        raise OverflowError("Request body too large")
+    return length
+
+
+def _read_exact_http_request_body(reader: Any, length: int) -> bytes:
+    body = reader.read(length)
+    if not isinstance(body, bytes):
+        raise ValueError("Invalid request body stream")
+    if len(body) != length:
+        raise ValueError("Incomplete request body")
+    return body
+
+
 def _decode_request_body(raw_body: bytes) -> str:
     try:
         return raw_body.decode("utf-8")
@@ -793,6 +955,8 @@ def _plain_response(handler, status: int, body: str) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", "text/plain; charset=utf-8")
     handler.send_header("Content-Length", str(len(encoded)))
+    handler.send_header("Connection", "close")
+    handler.close_connection = True
     handler.end_headers()
     handler.wfile.write(encoded)
 
@@ -809,10 +973,32 @@ def _validate_response_headers(headers):
             raise RuntimeError("Invalid response header entry") from exc
         if not isinstance(name, str) or not _HEADER_NAME_RE.fullmatch(name):
             raise RuntimeError(f"Invalid response header name: {name!r}")
-        if not isinstance(value, str) or "\r" in value or "\n" in value:
+        if not isinstance(value, str) or any(
+            (ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value
+        ):
             raise RuntimeError(f"Invalid response header value for {name!r}")
+        try:
+            value.encode("latin-1", errors="strict")
+        except UnicodeEncodeError as exc:
+            raise RuntimeError(f"Invalid response header value for {name!r}") from exc
+        if name.casefold() in _HTTP_FORBIDDEN_RESPONSE_HEADERS:
+            raise RuntimeError(f"Response header is managed by the server: {name!r}")
         validated.append((name, value))
     return validated
+
+
+def _validate_http_response_status(status: Any, response_body: bytes) -> bool:
+    """Validate final response status and return whether it forbids a body."""
+    if (
+        not isinstance(status, int)
+        or isinstance(status, bool)
+        or not 200 <= status <= 599
+    ):
+        raise RuntimeError("Invalid response status")
+    bodyless = status in {204, 205, 304}
+    if bodyless and response_body:
+        raise RuntimeError(f"HTTP status {status} must not include a response body")
+    return bodyless
 
 
 def _run_serve_handler(interp: Any, handler: Any, request: Any) -> Any:
@@ -864,6 +1050,8 @@ def install_serve_callbacks(interpreter):
     Note: http_respond is registered as a standalone builtin in interpreter.py
     since it's a pure data constructor that doesn't need the serve capability.
     """
+    import socket
+    import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     from .sandbox import SandboxError
@@ -893,28 +1081,60 @@ def install_serve_callbacks(interpreter):
             # on serial handling.
             timeout = 30
 
-            def _handle(self):
-                raw = self.headers.get("Content-Length", "0")
+            def setup(self) -> None:
+                super().setup()
+                self.request.settimeout(self.timeout)
+                self._absolute_request_deadline = threading.Timer(
+                    _HTTP_LISTEN_REQUEST_DEADLINE_SECONDS,
+                    self._expire_request,
+                )
+                self._absolute_request_deadline.daemon = True
+                self._absolute_request_deadline.start()
+
+            def _expire_request(self) -> None:
                 try:
-                    content_length = int(raw)
-                except ValueError:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"Invalid Content-Length header")
+                    self.request.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+            def finish(self) -> None:
+                try:
+                    super().finish()
+                finally:
+                    deadline = getattr(self, "_absolute_request_deadline", None)
+                    if deadline is not None:
+                        deadline.cancel()
+
+            def _handle(self):
+                host_values = self.headers.get_all("Host", failobj=[]) or []
+                bound_port = int(cast(Any, self.server).server_port)
+                allowed_hosts = {
+                    f"127.0.0.1:{bound_port}",
+                    f"localhost:{bound_port}",
+                }
+                if bound_port == 80:
+                    allowed_hosts.update({"127.0.0.1", "localhost"})
+                if (
+                    len(host_values) != 1
+                    or host_values[0].casefold() not in allowed_hosts
+                ):
+                    _plain_response(self, 421, "Misdirected Request")
                     return
-                if content_length < 0:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"Invalid Content-Length: must not be negative")
+                try:
+                    content_length = _validated_http_request_content_length(
+                        self.headers
+                    )
+                except OverflowError as exc:
+                    _plain_response(self, 413, str(exc))
                     return
-                if content_length > 1_048_576:
-                    self.send_response(413)
-                    self.end_headers()
-                    self.wfile.write(b"Request body too large")
+                except ValueError as exc:
+                    _plain_response(self, 400, str(exc))
                     return
                 try:
                     body = (
-                        _decode_request_body(self.rfile.read(content_length))
+                        _decode_request_body(
+                            _read_exact_http_request_body(self.rfile, content_length)
+                        )
                         if content_length
                         else ""
                     )
@@ -936,8 +1156,6 @@ def install_serve_callbacks(interpreter):
                         try:
                             response = _run_serve_handler(interp, handler, request)
                             status = response.fields["status"]
-                            if not isinstance(status, int) or isinstance(status, bool):
-                                raise RuntimeError("Invalid response status")
                             response_headers = _validate_response_headers(
                                 response.fields.get("headers")
                             )
@@ -945,6 +1163,9 @@ def install_serve_callbacks(interpreter):
                             if not isinstance(body_value, str):
                                 raise RuntimeError("Invalid response body")
                             response_body = body_value.encode("utf-8")
+                            bodyless = _validate_http_response_status(
+                                status, response_body
+                            )
                         except SandboxError:
                             raise
                         except Exception:
@@ -961,12 +1182,15 @@ def install_serve_callbacks(interpreter):
                         self.send_response(status)
                         for hk, hv in response_headers:
                             self.send_header(hk, hv)
+                        if not bodyless:
+                            self.send_header("Content-Length", str(len(response_body)))
+                        self.send_header("Connection", "close")
+                        self.close_connection = True
                         self.end_headers()
-                        self.wfile.write(response_body)
+                        if not bodyless:
+                            self.wfile.write(response_body)
                         return
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b"Not Found")
+                _plain_response(self, 404, "Not Found")
 
             def do_GET(self):
                 self._handle()

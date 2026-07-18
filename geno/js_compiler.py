@@ -74,7 +74,6 @@ from .ast_nodes import (
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
-    TypeAlias,
     TypeDef,
     TypedHole,
     TypeIdentifier,
@@ -94,10 +93,12 @@ from .ast_nodes import (
 )
 from .base_compiler import BaseCompiler
 from .builtin_registry import (
+    all_builtin_names,
     js_backend_builtin_helper_names,
     js_backend_builtin_name_map,
 )
 from .js_runtime_prelude import JS_RUNTIME_PRELUDE
+from .manifest import validate_module_name
 from .types import (
     AnyType,
     ArrayType,
@@ -373,7 +374,66 @@ _JS_RECORD_FORBIDDEN_FIELD_NAMES = frozenset(
     }
 )
 
-JS_RESERVED_PRELUDE_NAMES = (
+_JS_EMITTED_LOCAL_HELPER_NAMES = frozenset(
+    {
+        "_GENO_MAP",
+        "_GENO_STRING",
+        "_GenoContractViolation",
+        "_compareGenoValues",
+        "_compareOrderedValues",
+        "_jsonFloatToString",
+        "_jsonStringLiteral",
+        "_mapSet",
+        "_safe_bitnot",
+        "_safe_neg",
+        "_safe_sub",
+        "_stringCharAt",
+        "_stringLength",
+        "_stringSubstring",
+    }
+)
+_JS_HOST_INTRINSIC_NAMES = frozenset(
+    {
+        "Array",
+        "BigInt",
+        "Date",
+        "Error",
+        "fetch",
+        "document",
+        "JSON",
+        "Map",
+        "Math",
+        "Number",
+        "Object",
+        "Promise",
+        "parseFloat",
+        "parseInt",
+        "RegExp",
+        "Set",
+        "String",
+        "Symbol",
+        "console",
+        "globalThis",
+        "require",
+        "process",
+        "undefined",
+        "requestAnimationFrame",
+    }
+)
+_JS_FIXED_GLOBAL_NAMES = frozenset(
+    {
+        "_geno_canvas",
+        "_geno_ctx",
+        "_geno_entry_main",
+        "_geno_frame",
+        "_geno_last_ts",
+        "_geno_state",
+        "_main_result",
+    }
+)
+
+
+_JS_LOCAL_RESERVED_NAMES = (
     frozenset(
         {
             "isConstructor",
@@ -436,7 +496,30 @@ JS_RESERVED_PRELUDE_NAMES = (
             "_GenoThrow",
         }
     )
+    | _JS_EMITTED_LOCAL_HELPER_NAMES
+    | _JS_HOST_INTRINSIC_NAMES
     | js_backend_builtin_helper_names()
+)
+
+_JS_PRELUDE_BINDING_RE = _re.compile(
+    r"^(?:(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+    r"|class\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+    r"|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*))\b",
+    _re.MULTILINE,
+)
+JS_RESERVED_PRELUDE_NAMES = (
+    (
+        frozenset(
+            next(name for name in match.groups() if name is not None)
+            for match in _JS_PRELUDE_BINDING_RE.finditer(JS_RUNTIME_PRELUDE)
+        )
+        - frozenset(all_builtin_names())
+    )
+    | _JS_LOCAL_RESERVED_NAMES
+    | _JS_FIXED_GLOBAL_NAMES
+)
+JS_DIRECT_REFERENCE_RESERVED_NAMES = (
+    JS_RESERVED_PRELUDE_NAMES - _JS_HOST_INTRINSIC_NAMES
 )
 
 
@@ -495,6 +578,7 @@ class JSCompiler(BaseCompiler):
         # mappings: list of (out_line, out_col, src_idx, src_line, src_col)
         self._mappings: list[tuple[int, int, int, int, int]] = []
         self._emit_function_assignments = False
+        self._active_module_bindings: dict[str, str] = {}
 
     _BUILTIN_NAME_MAP: dict[str, str] = js_backend_builtin_name_map()
 
@@ -516,6 +600,7 @@ class JSCompiler(BaseCompiler):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._active_module_bindings = {}
         self._reserve_user_temp_names(program)
         self._out_line = 0
         self._source_files = []
@@ -527,27 +612,12 @@ class JSCompiler(BaseCompiler):
         collect_definitions(program, into=self._definition_index)
 
         # Validate no user names shadow prelude names
-        for defn in program.definitions:
-            if isinstance(defn, FunctionDef) and defn.name in JS_RESERVED_PRELUDE_NAMES:
-                raise JSCompileError(
-                    f"'{defn.name}' is a reserved runtime name and cannot be "
-                    f"used as a function name"
-                )
-            if isinstance(defn, (TypeDef, TypeAlias)):
-                if defn.name in JS_RESERVED_PRELUDE_NAMES:
-                    raise JSCompileError(
-                        f"'{defn.name}' is a reserved runtime name and cannot be "
-                        f"used as a type name"
-                    )
-                if isinstance(defn, TypeDef):
-                    for variant in defn.variants:
-                        if variant.name in JS_RESERVED_PRELUDE_NAMES:
-                            raise JSCompileError(
-                                f"'{variant.name}' is a reserved runtime name and "
-                                f"cannot be used as a constructor name"
-                            )
-        self._validate_reserved_local_names(
-            program, JS_RESERVED_PRELUDE_NAMES, JSCompileError
+        self._validate_runtime_name_collisions(
+            program,
+            JS_RESERVED_PRELUDE_NAMES,
+            _JS_LOCAL_RESERVED_NAMES,
+            JSCompileError,
+            direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
         )
 
         # Compile all definitions
@@ -694,8 +764,34 @@ class JSCompiler(BaseCompiler):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._active_module_bindings = {}
         for program in dep_graph.parsed.values():
             self._reserve_user_temp_names(program)
+            self._validate_runtime_name_collisions(
+                program,
+                JS_RESERVED_PRELUDE_NAMES,
+                _JS_LOCAL_RESERVED_NAMES,
+                JSCompileError,
+                top_level_dispatchers_share_scope=False,
+                direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
+            )
+        for mod_name in dep_graph.sorted_modules:
+            try:
+                validate_module_name(mod_name)
+            except ValueError as exc:
+                raise JSCompileError(str(exc)) from exc
+            if mod_name in _JS_RESERVED:
+                raise JSCompileError(
+                    f"Invalid JavaScript module name '{mod_name}': reserved keyword"
+                )
+            if (
+                mod_name in JS_RESERVED_PRELUDE_NAMES
+                and mod_name not in _JS_HOST_INTRINSIC_NAMES
+            ):
+                raise JSCompileError(f"'{mod_name}' is a reserved runtime module name")
+        module_bindings = {
+            mod_name: self._fresh_temp() for mod_name in dep_graph.sorted_modules
+        }
         self._out_line = 0
         self._source_files = []
         self._source_index = {}
@@ -703,7 +799,6 @@ class JSCompiler(BaseCompiler):
 
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
         self._emit_function_assignments = False
-        module_public_exports: dict[str, list[str]] = {}
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
 
@@ -711,7 +806,6 @@ class JSCompiler(BaseCompiler):
             program = dep_graph.parsed[mod_name]
             self._register_module_param_names(mod_name, program)
             public_exports, impl_exports = self._module_runtime_exports(program)
-            module_public_exports[mod_name] = public_exports
             module_impl_exports[mod_name] = impl_exports
             module_runtime_exports[mod_name] = public_exports + impl_exports
 
@@ -722,9 +816,27 @@ class JSCompiler(BaseCompiler):
             own_export_names = set(runtime_exports)
             imported_runtime_names: dict[str, str] = {}
             ambiguous_imported_names: set[str] = set()
+            active_module_bindings = {
+                (defn.alias or defn.module_name): module_bindings[defn.module_name]
+                for defn in program.definitions
+                if isinstance(defn, ImportStatement)
+                and defn.module_name in module_bindings
+            }
+            export_collisions = own_export_names & active_module_bindings.keys()
+            if export_collisions:
+                collision = min(export_collisions)
+                raise JSCompileError(
+                    f"Imported module '{collision}' conflicts with a local export"
+                )
+            self._validate_reserved_local_names(
+                program,
+                active_module_bindings.keys(),
+                JSCompileError,
+            )
+            self._active_module_bindings = active_module_bindings
 
             for defn in program.definitions:
-                if not isinstance(defn, ImportStatement):
+                if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
                 for export_name in module_runtime_exports.get(defn.module_name, []):
                     if export_name in own_export_names:
@@ -738,17 +850,13 @@ class JSCompiler(BaseCompiler):
                 imported_runtime_names.pop(ambiguous, None)
 
             self._write(f"\n\n// === Module: {mod_name} ===\n")
-            self._writeln(f"const {mod_name} = (() => {{")
+            self._writeln(f"const {module_bindings[mod_name]} = (() => {{")
             self._indent()
-
-            for defn in program.definitions:
-                if isinstance(defn, ImportStatement) and defn.alias:
-                    self._writeln(f"const {defn.alias} = {defn.module_name};")
 
             for export_name, imported_module in sorted(imported_runtime_names.items()):
                 self._writeln(
                     f"const {self._mangle_name(export_name)} = "
-                    f"{imported_module}[{export_name!r}];"
+                    f"{module_bindings[imported_module]}[{export_name!r}];"
                 )
 
             # First pass: collect definitions
@@ -769,23 +877,20 @@ class JSCompiler(BaseCompiler):
             self._writeln(f"return {{{attrs}}};" if attrs else "return {};")
             self._dedent()
             self._writeln("})();")
+            self._active_module_bindings = {}
 
         for mod_name in dep_graph.sorted_modules:
             for impl_name in module_impl_exports[mod_name]:
                 self._writeln(
-                    f"const {self._mangle_name(impl_name)} = {mod_name}[{impl_name!r}];"
+                    f"const {self._mangle_name(impl_name)} = "
+                    f"{module_bindings[mod_name]}[{impl_name!r}];"
                 )
-
-        for export_name in module_public_exports.get(entrypoint, []):
-            self._writeln(
-                f"const {self._mangle_name(export_name)} = "
-                f"{entrypoint}[{export_name!r}];"
-            )
 
         # Emit trait dispatchers
         self._emit_trait_dispatchers()
 
         # Add main call from entrypoint module
+        entry_binding = module_bindings[entrypoint]
         func_names = set()
         main_is_async = False
         ep_program = dep_graph.parsed.get(entrypoint)
@@ -814,7 +919,7 @@ class JSCompiler(BaseCompiler):
             # App mode: emit requestAnimationFrame loop
             self._writeln()
             self._writeln("// App mode: game loop")
-            self._writeln("let _geno_state = init();")
+            self._writeln(f"let _geno_state = {entry_binding}['init']();")
             self._writeln("let _geno_last_ts = 0;")
             self._writeln("function _geno_frame(ts) {")
             self._indent()
@@ -822,8 +927,8 @@ class JSCompiler(BaseCompiler):
                 "const dt = _geno_last_ts === 0 ? 0.016 : (ts - _geno_last_ts) / 1000;"
             )
             self._writeln("_geno_last_ts = ts;")
-            self._writeln("_geno_state = update(_geno_state, dt);")
-            self._writeln("render(_geno_state);")
+            self._writeln(f"_geno_state = {entry_binding}['update'](_geno_state, dt);")
+            self._writeln(f"{entry_binding}['render'](_geno_state);")
             self._writeln("_geno_clear_pressed_keys();")
             self._writeln("_geno_clear_mouse_clicked();")
             self._writeln("requestAnimationFrame(_geno_frame);")
@@ -835,9 +940,9 @@ class JSCompiler(BaseCompiler):
             if main_is_async:
                 self._writeln("(async () => {")
                 self._indent()
-                self._writeln("const _main_result = await main();")
+                self._writeln(f"const _main_result = await {entry_binding}['main']();")
             else:
-                self._writeln("const _main_result = main();")
+                self._writeln(f"const _main_result = {entry_binding}['main']();")
             self._writeln("if (_main_result !== null && _main_result !== undefined) {")
             self._indent()
             main_result_type = (
@@ -1027,6 +1132,11 @@ class JSCompiler(BaseCompiler):
 
     def _compile_variant(self, variant: TypeVariant, formatter_name: str) -> None:
         for field_name, _ in variant.fields:
+            if field_name in _JS_RESERVED or field_name == "_withGenoFormatter":
+                raise JSCompileError(
+                    f"Record field '{field_name}' cannot be represented safely "
+                    "by the JavaScript backend"
+                )
             _validate_js_record_field_name(
                 field_name,
                 context="variant field",
@@ -1188,8 +1298,9 @@ class JSCompiler(BaseCompiler):
             for ens in defn.specs.ensures
         )
 
+        body_helper = self._fresh_temp() if has_ensures else ""
         if has_ensures:
-            self._writeln(f"{async_prefix}function _body_{func_name}() {{")
+            self._writeln(f"{async_prefix}function {body_helper}() {{")
             self._indent()
 
         self._writeln("try {")
@@ -1211,7 +1322,7 @@ class JSCompiler(BaseCompiler):
             self._dedent()
             self._writeln("}")
             await_body = "await " if defn.is_async else ""
-            self._writeln(f"const result = {await_body}_body_{func_name}();")
+            self._writeln(f"const result = {await_body}{body_helper}();")
             for ens in defn.specs.ensures:
                 if isinstance(ens.condition, BooleanLiteral):
                     if ens.condition.value:
@@ -2303,6 +2414,8 @@ class JSCompiler(BaseCompiler):
             return "true" if expr.value else "false"
 
         if isinstance(expr, Identifier):
+            if expr.name in self._active_module_bindings:
+                return self._active_module_bindings[expr.name]
             expected_type = getattr(expr, "_expected_runtime_type", None)
             if expr._resolved_builtin_name == "divide" and isinstance(
                 expected_type, FuncType
@@ -2324,6 +2437,8 @@ class JSCompiler(BaseCompiler):
             return self._mangle_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
+            if expr.name in self._active_module_bindings:
+                return self._active_module_bindings[expr.name]
             if expr.name == "None":
                 return "None_"
             variant = self._constructor_to_variant.get(expr.name)
@@ -3260,10 +3375,7 @@ def compile_project_to_html(
         for mod_name in dep_graph.sorted_modules:
             rf = dep_graph.file_map.get(mod_name)
             if rf:
-                try:
-                    sources_content[str(rf.path)] = rf.path.read_text(encoding="utf-8")
-                except OSError:
-                    pass
+                sources_content[str(rf.path)] = dep_graph.original_sources[mod_name]
 
     sm_json = None
     if source_map:

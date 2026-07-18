@@ -5,7 +5,16 @@ Tests for Geno Module System
 Tests in-memory module resolution via import statements.
 """
 
+import pytest
+
 from geno.api import RunConfig, check, run
+
+
+def test_module_filename_rejects_path_traversal():
+    from geno.api import _module_filename
+
+    with pytest.raises(ValueError, match="Invalid module name"):
+        _module_filename("../../examples/fibonacci", "")
 
 
 class TestModuleBasic:

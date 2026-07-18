@@ -236,7 +236,7 @@ class TestProcessSandboxConfigValidation:
         worker_config = json.loads(env["GENO_SANDBOX_CONFIG"])
         assert worker_config["max_cpu_time"] == 1
 
-    def test_trusted_prelude_line_count_forwarded_to_worker_env(self):
+    def test_caller_trusted_prelude_line_count_not_forwarded_to_worker_env(self):
         env = ProcessSandbox(
             ProcessSandboxConfig(
                 compiled_runtime_prelude=True,
@@ -244,7 +244,7 @@ class TestProcessSandboxConfigValidation:
             )
         )._create_restricted_env()
         worker_config = json.loads(env["GENO_SANDBOX_CONFIG"])
-        assert worker_config["trusted_prelude_line_count"] == 7
+        assert worker_config["trusted_prelude_line_count"] == 0
 
     def test_windows_worker_env_preserves_python_startup_vars(self, monkeypatch):
         required = {
@@ -264,6 +264,38 @@ class TestProcessSandboxConfigValidation:
         for name, value in required.items():
             assert env[name] == value
         assert env["PATH"] == os.environ["PATH"]
+
+    def test_python_benchmark_worker_env_omits_parent_credentials(self, monkeypatch):
+        sensitive = {
+            "OPENAI_API_KEY": "openai-secret",
+            "ANTHROPIC_API_KEY": "anthropic-secret",
+            "GOOGLE_API_KEY": "google-secret",
+            "GENO_CLI_ARGS": '["private-argument"]',
+        }
+        for name, value in sensitive.items():
+            monkeypatch.setenv(name, value)
+
+        env = ProcessSandbox(ProcessSandboxConfig())._create_restricted_env(
+            {"worker_mode": "python_benchmark"}
+        )
+
+        assert sensitive.keys().isdisjoint(env)
+        worker_config = json.loads(env["GENO_SANDBOX_CONFIG"])
+        assert worker_config["worker_mode"] == "python_benchmark"
+
+    def test_python_benchmark_request_is_bounded_before_spawn(self):
+        sandbox = ProcessSandbox(ProcessSandboxConfig())
+        oversized = {
+            "problem": {},
+            "solution_code": "x" * (4 * 1024 * 1024),
+            "timeout_seconds": 1.0,
+        }
+
+        with pytest.raises(
+            sandbox_module.SandboxError,
+            match="request exceeds the 4 MiB limit",
+        ):
+            sandbox.execute_python_benchmark(oversized)
 
     def test_sandbox_config_to_process_config_forwards_resource_limits(self):
         sandbox_config = SandboxConfig(

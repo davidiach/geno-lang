@@ -55,7 +55,7 @@ from .ast_nodes import (
     WhileStatement,
     WithExpr,
 )
-from .builtin_registry import builtin_param_name_lists
+from .builtin_registry import all_builtin_names, builtin_param_name_lists
 from .tokens import SourceLocation
 
 # Built-in type variants that must be registered for dynamic field lookup.
@@ -231,6 +231,108 @@ class BaseCompiler(ABC):
                     visit(getattr(value, field_info.name))
 
         visit(node)
+
+    def _validate_runtime_name_collisions(
+        self,
+        program: Program,
+        global_reserved_names: Collection[str],
+        local_reserved_names: Collection[str],
+        error_type: type[Exception],
+        top_level_dispatchers_share_scope: bool = True,
+        direct_reference_reserved_names: Collection[str] | None = None,
+    ) -> None:
+        """Reject every user binding that can overwrite emitted runtime state."""
+
+        def reject(name: str | None, kind: str) -> None:
+            if name is not None and name in global_reserved_names:
+                raise error_type(
+                    f"'{name}' is a reserved runtime name and cannot be used "
+                    f"as a {kind} name"
+                )
+
+        for defn in program.definitions:
+            if isinstance(defn, FunctionDef):
+                reject(defn.name, "function")
+            elif isinstance(defn, TypeAlias):
+                reject(defn.name, "type")
+            elif isinstance(defn, TypeDef):
+                reject(defn.name, "type")
+                for variant in defn.variants:
+                    reject(variant.name, "constructor")
+            elif isinstance(defn, TraitDef):
+                reject(defn.name, "trait")
+                # Trait dispatchers are emitted as top-level functions named
+                # after the method, so their names are global bindings too.
+                for trait_method in defn.methods:
+                    reject(trait_method.name, "trait method")
+            elif isinstance(defn, ImplDef):
+                for impl_method in defn.methods:
+                    reject(
+                        f"{defn.trait_name}_{impl_method.name}_{defn.target_type}",
+                        "implementation helper",
+                    )
+            elif isinstance(defn, ImportStatement) and defn.alias:
+                reject(defn.alias, "import alias")
+
+        reference_reserved_names = (
+            global_reserved_names
+            if direct_reference_reserved_names is None
+            else direct_reference_reserved_names
+        )
+        seen_references: set[int] = set()
+        if top_level_dispatchers_share_scope:
+            function_names = {
+                defn.name
+                for defn in program.definitions
+                if isinstance(defn, FunctionDef)
+            }
+            if collisions := function_names & self.trait_dispatch.keys():
+                name = min(collisions)
+                raise error_type(f"Function '{name}' conflicts with a trait dispatcher")
+
+        def validate_reference(value: object) -> None:
+            if isinstance(value, Identifier):
+                if (
+                    value.name in reference_reserved_names
+                    and value._resolved_builtin_name is None
+                    and value.name not in all_builtin_names()
+                ):
+                    raise error_type(
+                        f"'{value.name}' is a reserved runtime name and cannot "
+                        "be referenced directly"
+                    )
+                return
+            if value is None or isinstance(value, (str, bool, int, float, bytes)):
+                return
+            value_id = id(value)
+            if value_id in seen_references:
+                return
+            if isinstance(value, (list, tuple, set, frozenset)):
+                seen_references.add(value_id)
+                for item in value:
+                    validate_reference(item)
+                return
+            if isinstance(value, dict):
+                seen_references.add(value_id)
+                for key, item in value.items():
+                    validate_reference(key)
+                    validate_reference(item)
+                return
+            if is_dataclass(value) and not isinstance(value, type):
+                seen_references.add(value_id)
+                for field_info in fields(value):
+                    validate_reference(getattr(value, field_info.name))
+
+        validate_reference(program)
+
+        # Only helpers emitted directly inside user scopes need local-name
+        # protection. Global prelude functions resolve their dependencies in
+        # the module/global scope and do not justify banning ordinary locals.
+        self._validate_reserved_local_names(
+            program,
+            local_reserved_names,
+            error_type,
+        )
 
     def _validate_reserved_local_names(
         self,

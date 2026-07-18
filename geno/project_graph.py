@@ -36,6 +36,17 @@ def _resolve_contained_path(path: Path, root: Path) -> Path | None:
     return None
 
 
+def _validated_module_name(name: str, *, source: str) -> str:
+    """Return an identifier-safe module name or raise a graph error."""
+    from .manifest import validate_module_name
+
+    try:
+        validate_module_name(name)
+    except ValueError as exc:
+        raise ProjectGraphError(f"{exc} (from {source})") from exc
+    return name
+
+
 def _file_entry_to_path(root: Path, file_name: str) -> Path:
     """Resolve a manifest file entry to its candidate ``.geno`` path."""
     if not file_name.endswith(".geno"):
@@ -110,7 +121,9 @@ class ProjectGraph:
         if root is None:
             # Single-file fallback
             if start_path.is_file() and start_path.suffix == ".geno":
-                module_name = start_path.stem
+                module_name = _validated_module_name(
+                    start_path.stem, source=str(start_path)
+                )
                 return cls(
                     root=None,
                     entrypoint=module_name,
@@ -129,7 +142,12 @@ class ProjectGraph:
                                 f"File '{geno_file.name}' escapes the project root"
                             )
                         files.append(
-                            ResolvedFile(module_name=geno_file.stem, path=resolved)
+                            ResolvedFile(
+                                module_name=_validated_module_name(
+                                    geno_file.stem, source=str(geno_file)
+                                ),
+                                path=resolved,
+                            )
                         )
                     return cls(
                         root=start_path,
@@ -167,7 +185,9 @@ class ProjectGraph:
                         f"File '{file_name}' declared in geno.toml not found "
                         f"at {file_path}"
                     )
-                module_name = Path(file_name).stem
+                module_name = _validated_module_name(
+                    Path(file_name).stem, source=f"geno.toml file '{file_name}'"
+                )
                 resolved_files.append(
                     ResolvedFile(module_name=module_name, path=resolved)
                 )
@@ -180,12 +200,21 @@ class ProjectGraph:
                         f"File '{geno_file.name}' escapes the project root"
                     )
                 resolved_files.append(
-                    ResolvedFile(module_name=geno_file.stem, path=resolved)
+                    ResolvedFile(
+                        module_name=_validated_module_name(
+                            geno_file.stem, source=str(geno_file)
+                        ),
+                        path=resolved,
+                    )
                 )
 
         # Resolve dependencies from geno_modules/
         resolved_deps: Dict[str, Path] = {}
         geno_modules_dir = root / "geno_modules"
+        if geno_modules_dir.is_symlink():
+            raise ProjectGraphError(
+                f"Dependency directory must not be a symbolic link: {geno_modules_dir}"
+            )
         geno_modules_root = geno_modules_dir.resolve()
 
         for dep_name, _dep_info in manifest.dependencies.items():
@@ -211,6 +240,9 @@ class ProjectGraph:
             if dep_entry is not None:
                 entry_mod_name = (
                     pascal_name if pascal_name != dep_name else dep_entry.stem
+                )
+                entry_mod_name = _validated_module_name(
+                    entry_mod_name, source=str(dep_entry)
                 )
                 resolved_files.append(
                     ResolvedFile(
@@ -239,14 +271,17 @@ class ProjectGraph:
                         )
                     if resolved_file in registered_paths:
                         continue
+                    module_name = _validated_module_name(
+                        file_path.stem, source=str(file_path)
+                    )
                     resolved_files.append(
                         ResolvedFile(
-                            module_name=file_path.stem,
+                            module_name=module_name,
                             path=resolved_file,
                             is_dependency=True,
                             package_name=dep_name,
                             graph_name=dependency_private_graph_name(
-                                dep_name, file_path.stem
+                                dep_name, module_name
                             ),
                         )
                     )
@@ -266,14 +301,17 @@ class ProjectGraph:
                             sibling.name,
                         )
                         continue
+                    module_name = _validated_module_name(
+                        sibling.stem, source=str(sibling)
+                    )
                     resolved_files.append(
                         ResolvedFile(
-                            module_name=sibling.stem,
+                            module_name=module_name,
                             path=resolved_sibling,
                             is_dependency=True,
                             package_name=dep_name,
                             graph_name=dependency_private_graph_name(
-                                dep_name, sibling.stem
+                                dep_name, module_name
                             ),
                         )
                     )
@@ -316,10 +354,22 @@ def _parse_dependency_manifest(dep_dir: Path) -> Manifest | None:
     dep_manifest = dep_dir / "geno.toml"
     if not dep_manifest.exists():
         return None
+    if dep_manifest.is_symlink():
+        try:
+            resolved_manifest = dep_manifest.resolve(strict=True)
+            relative_manifest = resolved_manifest.relative_to(dep_dir.resolve())
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ProjectGraphError(
+                f"Dependency manifest escapes package root: {dep_manifest}"
+            ) from exc
+        if ".git" in relative_manifest.parts or not resolved_manifest.is_file():
+            raise ProjectGraphError(
+                f"Dependency manifest is unsafe or unhashed: {dep_manifest}"
+            )
     try:
         from .manifest import parse_manifest
 
-        return parse_manifest(dep_manifest)
+        return parse_manifest(dep_manifest, allow_symlink=True)
     except (OSError, ValueError, RuntimeError):
         # A corrupt dependency manifest otherwise surfaces as a misleading
         # 'module not found'; WARNING is visible via Python's default handler

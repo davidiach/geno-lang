@@ -625,7 +625,31 @@ def _is_stdlib_path(path: Path) -> bool:
     return str(path.resolve()).startswith(std_root)
 
 
+def _read_package_source(path: Path) -> str:
+    """Read source while holding the owning package publication lock."""
+    from geno.package_manager import _package_transaction_locks
+
+    with _package_transaction_locks(path):
+        return path.read_text(encoding="utf-8")
+
+
 def _load_project_view(
+    file_path: Path,
+    source_override: str | None = None,
+    source_overrides: Mapping[Path, str] | None = None,
+) -> _ProjectView:
+    """Build a project view without observing partial package publication."""
+    from geno.package_manager import _package_transaction_locks
+
+    with _package_transaction_locks(file_path):
+        return _load_project_view_unlocked(
+            file_path,
+            source_override=source_override,
+            source_overrides=source_overrides,
+        )
+
+
+def _load_project_view_unlocked(
     file_path: Path,
     source_override: str | None = None,
     source_overrides: Mapping[Path, str] | None = None,
@@ -682,6 +706,40 @@ def _load_project_view(
     )
 
 
+def _load_validation_project(
+    file_path: Path,
+    source: str,
+    all_overrides: Mapping[Path, str],
+) -> tuple[Any, dict[Path, str], Any | None]:
+    """Load validation inputs under the owning package publication lock."""
+    from geno.dependency_graph import DependencyGraph
+    from geno.package_manager import _package_transaction_locks
+    from geno.project_graph import ProjectGraph
+
+    def load() -> tuple[Any, dict[Path, str], Any | None]:
+        project = ProjectGraph.discover(file_path)
+        relevant_overrides = dict(
+            _relevant_source_overrides(
+                project.root,
+                file_path,
+                source,
+                all_overrides,
+            )
+            or {}
+        )
+        relevant_overrides[file_path.resolve()] = source
+        dependency_graph = None
+        if len(project.files) > 1 and _has_manifest_project(project.root):
+            dependency_graph = DependencyGraph.resolve(
+                project,
+                source_overrides=relevant_overrides,
+            )
+        return project, relevant_overrides, dependency_graph
+
+    with _package_transaction_locks(file_path):
+        return load()
+
+
 def _project_view_from_graph(
     project_files: Iterable[Any],
     sorted_modules: Iterable[str],
@@ -718,7 +776,7 @@ def _project_view_from_graph(
         else:
             imported_source = module_sources.get(module_name)
             if imported_source is None:
-                module_source = resolved_file.path.read_text(encoding="utf-8")
+                module_source = _read_package_source(resolved_file.path)
             else:
                 module_source = imported_source
         all_names, exported_names = _extract_names(module_source)
@@ -958,7 +1016,7 @@ class GenoLanguageServer:
             if self._open_doc_paths.get(uri) == path:
                 return source
         try:
-            return path.read_text(encoding="utf-8")
+            return _read_package_source(path)
         except OSError:
             return None
 
@@ -1035,7 +1093,7 @@ class GenoLanguageServer:
             return symbol_path, self._open_docs.get(uri)
         source = self._read_project_source(str(symbol_path))
         if source is None and symbol_path.exists():
-            source = symbol_path.read_text(encoding="utf-8")
+            source = _read_package_source(symbol_path)
         return symbol_path, source
 
     def _semantic_function_signature(
@@ -1326,14 +1384,10 @@ class GenoLanguageServer:
         # still want to surface those errors as LSP diagnostics.
         try:
             from geno.dependency_graph import (
-                DependencyGraph,
                 DependencyGraphError,
             )
             from geno.lexer import LexerError
             from geno.parser_base import ParseError, ParseErrors
-            from geno.project_graph import (
-                ProjectGraph,
-            )
             from geno.project_graph import (
                 ProjectGraphError as _ProjectGraphError,
             )
@@ -1353,20 +1407,12 @@ class GenoLanguageServer:
                 self._doc_cache[uri] = (source, all_symbols)
                 return
             source_overrides = self._source_overrides_from_open_documents()
-            project = ProjectGraph.discover(file_path)
-            source_overrides = dict(
-                _relevant_source_overrides(
-                    project.root,
-                    file_path,
-                    source,
-                    source_overrides,
-                )
-                or {}
+            project, source_overrides, dg = _load_validation_project(
+                file_path,
+                source,
+                source_overrides,
             )
-            source_overrides[file_path.resolve()] = source
-            if len(project.files) > 1 and _has_manifest_project(project.root):
-                dg = DependencyGraph.resolve(project, source_overrides=source_overrides)
-
+            if dg is not None:
                 # Read manifest targets if available
                 from geno.target_profile import (
                     TargetProfile,
@@ -2060,7 +2106,9 @@ class GenoLanguageServer:
                     module_uri = module_path.resolve().as_uri()
                     module_source = self._open_docs.get(module_uri)
                     if module_source is None:
-                        module_source = module_path.read_text(encoding="utf-8")
+                        module_source = self._read_project_source(path_str)
+                    if module_source is None:
+                        continue
                     info = _extract_type_defs(module_source, path_str).get(type_name)
                     if info is not None:
                         return info
@@ -2775,7 +2823,7 @@ def _get_func_signature(
             mod_source = (
                 project_source_reader(mod_path)
                 if project_source_reader is not None
-                else Path(mod_path).read_text(encoding="utf-8")
+                else _read_package_source(Path(mod_path))
             )
             if mod_source is None:
                 continue

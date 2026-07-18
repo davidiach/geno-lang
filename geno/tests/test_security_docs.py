@@ -57,3 +57,22 @@ def test_js_backend_security_docs_describe_capability_gating():
     assert "`--cap`" in section
     assert "`globalThis.__GENO_CAPS`" in section
     assert "`RunConfig`" in section
+
+
+def test_hosted_deployment_health_checks_preserve_host_policy():
+    text = (ROOT / "docs" / "deploy" / "hosted.md").read_text(encoding="utf-8")
+
+    kubernetes = _section(text, "## Kubernetes", "## Cloud Platforms")
+    assert kubernetes.count("- name: Host") == 2
+    assert kubernetes.count("value: geno.example.com") >= 2
+
+    ecs = _section(text, "### AWS ECS / Fargate", "### Google Cloud Run")
+    assert "Network Load Balancer" in ecs
+    assert "TCP target-group health check" in ecs
+    assert "urllib.request.urlopen" in ecs
+    assert "http://127.0.0.1:8000/healthz" in ecs
+
+    fly = _section(text, "### Fly.io", "## Security")
+    assert "[[http_service.checks]]" in fly
+    assert "[http_service.checks.headers]" in fly
+    assert 'Host = "geno.example.com"' in fly

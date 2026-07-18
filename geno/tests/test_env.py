@@ -310,7 +310,7 @@ class TestEnvCompiledPython:
         compiler = Compiler()
         python_code = compiler.compile(_parse(source))
         # Grant env capability for compiled output test
-        python_code += '\n_GENO_CAPS.add("env")\n'
+        python_code += "\n_GENO_CAPS = frozenset({'env'})\n"
         python_code += "__result__ = main()\n"
 
         env: dict[str, object] = {}
@@ -329,7 +329,7 @@ class TestEnvCompiledPython:
         compiler = Compiler()
         python_code = compiler.compile(_parse(source))
         # Grant env capability for compiled output test
-        python_code += '\n_GENO_CAPS.add("env")\n'
+        python_code += "\n_GENO_CAPS = frozenset({'env'})\n"
         python_code += "__result__ = main()\n"
 
         env: dict[str, object] = {}

@@ -165,7 +165,10 @@ end func
 """
 
     output = _compiled_js_output(source, {"print", "regex"})
-    assert "overlapping alternation" in output
+    assert any(
+        message in output
+        for message in ("overlapping alternation", "advanced or encoded")
+    )
     assert "accepted" not in output
 
 

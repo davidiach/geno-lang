@@ -822,8 +822,13 @@ class TestCompileCodeGenPaths:
         # `def _body_` that trapped `await` in a non-async helper.
         compile(code, "<t>", "exec")
         # The emitted helper must itself be async and be awaited.
-        assert "async def _body_outer" in code
-        assert "await _body_outer()" in code
+        helper_name = next(
+            line.strip().split()[2].split("(", 1)[0]
+            for line in code.splitlines()
+            if line.strip().startswith("async def _temp_")
+        )
+        assert helper_name.startswith("_temp_")
+        assert f"await {helper_name}()" in code
         # Execute end-to-end to confirm the ensures check still fires.
         ns: dict = {}
         exec(code, ns)

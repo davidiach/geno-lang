@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import argparse
 import collections
+import http.client
 import ipaddress
 import json
 import logging
 import math
 import multiprocessing
 import os
+import re
 import secrets
 import signal
+import socket
+import ssl
 import sys
 import threading
 import time
@@ -22,9 +26,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import AbstractSet, Any, cast
+from socketserver import TCPServer
+from typing import AbstractSet, Any, Iterator, cast
 from urllib.parse import urlsplit
 
+from ._darwin_resource import rlimit_as_ceiling
 from .api import RunConfig, constrain_prefix, run
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES
 from .capabilities import CapabilityParseError, normalize_capability_values
@@ -33,7 +39,9 @@ from .version_support import is_supported_python, unsupported_python_message
 
 logger = logging.getLogger(__name__)
 
+_CONNECTION_SEMAPHORE_FACTORY = threading.BoundedSemaphore
 _WORKER_READY = "ready"
+_WORKER_JOB_HANDLE: Any | None = None
 _IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
@@ -123,6 +131,12 @@ def _env_optional_bool(key: str) -> bool | None:
 MAX_REQUEST_BODY_BYTES: int = _env_positive_int(
     "GENO_MAX_REQUEST_BODY_BYTES", 1_048_576
 )  # 1 MB
+MAX_REQUEST_HEADER_BYTES: int = _env_positive_int(
+    "GENO_MAX_REQUEST_HEADER_BYTES", 65_536
+)  # 64 KiB, including the request line
+MAX_RESPONSE_BODY_BYTES: int = _env_positive_int(
+    "GENO_MAX_RESPONSE_BODY_BYTES", 8_388_608
+)  # 8 MB
 MAX_JSON_NESTING_DEPTH: int = _env_positive_int("GENO_MAX_JSON_NESTING_DEPTH", 128)
 MAX_MODULE_SOURCE_BYTES: int = _env_non_negative_int(
     "GENO_MAX_MODULE_SOURCE_BYTES", 1_000_000
@@ -153,6 +167,7 @@ WORKER_MAX_FILE_SIZE_BYTES: int = _env_non_negative_int(
 )
 WORKER_MAX_PROCESSES: int = _env_positive_int("GENO_WORKER_MAX_PROCESSES", 1)
 MAX_CONCURRENT_REQUESTS: int = _env_positive_int("GENO_MAX_CONCURRENT_REQUESTS", 16)
+MAX_CONNECTIONS: int = _env_positive_int("GENO_MAX_CONNECTIONS", 64)
 _REQUEST_TIMEOUT_SECONDS: int = _env_positive_int("GENO_REQUEST_TIMEOUT_SECONDS", 30)
 
 # Rate limiting: sliding-window per client IP on POST endpoints.
@@ -201,6 +216,38 @@ _REQUIRE_AUTH_FOR_PLAYGROUND: bool = _env_bool(
 
 class RequestError(ValueError):
     """Raised when the request body is malformed or unsupported."""
+
+
+class ResponseTooLarge(RuntimeError):
+    """Raised before headers are sent when a JSON response exceeds its bound."""
+
+
+class _HeaderBudgetReader:
+    """Delegate reads while enforcing an aggregate request-header byte budget."""
+
+    def __init__(self, stream: Any, *, initial_bytes: int, limit: int) -> None:
+        self._stream = stream
+        self._bytes_read = initial_bytes
+        self._limit = limit
+
+    def readline(self, size: int = -1) -> bytes:
+        remaining = self._limit - self._bytes_read
+        if remaining < 0:
+            raise http.client.LineTooLong("aggregate request headers")
+
+        # Read one byte beyond the remaining budget so an oversized request is
+        # rejected immediately rather than retained until a per-line limit fires.
+        bounded_size = remaining + 1
+        if size < 0 or size > bounded_size:
+            size = bounded_size
+        line = self._stream.readline(size)
+        self._bytes_read += len(line)
+        if self._bytes_read > self._limit:
+            raise http.client.LineTooLong("aggregate request headers")
+        return cast(bytes, line)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 @dataclass(frozen=True)
@@ -840,8 +887,91 @@ def _reject_bad_host(handler: BaseHTTPRequestHandler) -> None:
     handler.wfile.write(body)
 
 
+def _header_values(handler: BaseHTTPRequestHandler, name: str) -> tuple[str, ...]:
+    """Return every field value without collapsing duplicate HTTP headers."""
+    headers = handler.headers
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        values = get_all(name, [])
+        return tuple(str(value) for value in values)
+    value = headers.get(name)
+    if value is None:
+        return ()
+    return (str(value),)
+
+
 def _cors_origin_allowed(origin: str, allowed_origins: AbstractSet[str]) -> bool:
     return origin in allowed_origins
+
+
+def _request_origin_allowed(handler: BaseHTTPRequestHandler) -> bool:
+    """Allow absent, same-origin, and explicitly configured Origin values."""
+    origins = _header_values(handler, "Origin")
+    if len(origins) > 1:
+        return False
+    origin = origins[0] if origins else ""
+    if not origin:
+        return True
+    allowed_origins = cast(
+        AbstractSet[str],
+        getattr(handler, "_cors_allowed_origins", _CORS_ALLOWED_ORIGINS),
+    )
+    if _cors_origin_allowed(origin, allowed_origins):
+        return True
+    try:
+        parsed = urlsplit(origin)
+        origin_port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or not parsed.hostname
+    ):
+        return False
+    origin_default_port = 443 if parsed.scheme == "https" else 80
+    origin_host = (
+        parsed.scheme,
+        parsed.hostname.rstrip(".").lower(),
+        origin_port if origin_port is not None else origin_default_port,
+    )
+    hosts = _header_values(handler, "Host")
+    if len(hosts) != 1:
+        return False
+    request_host = _normalize_host_port(hosts[0])
+    if request_host is None:
+        return False
+    request_name, request_port = request_host
+    request_scheme = (
+        "https"
+        if isinstance(getattr(handler, "connection", None), ssl.SSLSocket)
+        else "http"
+    )
+    trusted_proxy = getattr(handler, "_trusted_proxy", None)
+    if (
+        trusted_proxy is not None
+        and getattr(handler, "client_address", (None,))[0] == trusted_proxy
+    ):
+        forwarded_proto_values = _header_values(handler, "X-Forwarded-Proto")
+        if forwarded_proto_values:
+            if len(forwarded_proto_values) != 1:
+                return False
+            forwarded_proto = forwarded_proto_values[0].strip().lower()
+            if forwarded_proto not in {"http", "https"}:
+                return False
+            request_scheme = forwarded_proto
+
+    request_default_port = 443 if request_scheme == "https" else 80
+    request_origin = (
+        request_scheme,
+        request_name,
+        request_port if request_port is not None else request_default_port,
+    )
+    return request_origin == origin_host
 
 
 def _add_cors_headers(handler: BaseHTTPRequestHandler) -> None:
@@ -850,7 +980,8 @@ def _add_cors_headers(handler: BaseHTTPRequestHandler) -> None:
         AbstractSet[str],
         getattr(handler, "_cors_allowed_origins", _CORS_ALLOWED_ORIGINS),
     )
-    origin = handler.headers.get("Origin", "")
+    origins = _header_values(handler, "Origin")
+    origin = origins[0] if len(origins) == 1 else ""
 
     if origin and _cors_origin_allowed(origin, allowed_origins):
         handler.send_header("Access-Control-Allow-Origin", origin)
@@ -876,17 +1007,179 @@ def _add_security_headers(handler: BaseHTTPRequestHandler) -> None:
     handler.send_header("Referrer-Policy", "no-referrer")
 
 
+def _json_ascii_string_size(value: str) -> int:
+    """Return JSONEncoder's ensure_ascii string size without allocating it."""
+    size = 2  # quotes
+    for character in value:
+        codepoint = ord(character)
+        if character in {'"', "\\"} or character in "\b\f\n\r\t":
+            size += 2
+        elif codepoint < 0x20:
+            size += 6
+        elif codepoint < 0x80:
+            size += 1
+        elif codepoint <= 0xFFFF:
+            size += 6
+        else:
+            size += 12
+        if size > MAX_RESPONSE_BODY_BYTES:
+            raise ResponseTooLarge("JSON response body exceeds configured limit")
+    return size
+
+
+def _dict_json_children(value: dict[Any, Any]) -> Iterator[Any]:
+    for key, item in value.items():
+        yield key
+        yield item
+
+
+def _bounded_json_int_text(value: int) -> str:
+    """Render an integer without Python's process-global decimal digit limit."""
+    negative = value < 0
+    magnitude = -value if negative else value
+    if magnitude == 0:
+        return "0"
+
+    # Reject obviously oversized integers before repeated division.  30104 / 100000
+    # is a conservative upper bound for log10(2), so this cannot admit a value
+    # whose decimal representation alone exceeds the response limit.
+    estimated_digits = (magnitude.bit_length() * 30_104) // 100_000 + 1
+    if estimated_digits + int(negative) > MAX_RESPONSE_BODY_BYTES:
+        raise ResponseTooLarge("JSON response body exceeds configured limit")
+
+    base = 1_000_000_000
+    chunks: list[int] = []
+    while magnitude:
+        magnitude, remainder = divmod(magnitude, base)
+        chunks.append(remainder)
+    prefix = "-" if negative else ""
+    return (
+        prefix
+        + str(chunks[-1])
+        + "".join(f"{chunk:09d}" for chunk in reversed(chunks[:-1]))
+    )
+
+
+class _BoundedJSONEncoder(json.JSONEncoder):
+    """JSON encoder with a local large-integer renderer.
+
+    Python's standard encoder uses ``int.__repr__``, which can raise for a valid
+    Geno integer when the interpreter's decimal digit safety limit is enabled.
+    Supplying the integer renderer to the pure-Python encoder avoids changing
+    that process-global setting (which would be unsafe in a threaded server).
+    """
+
+    def iterencode(self, value: Any, _one_shot: bool = False) -> Iterator[str]:
+        markers: dict[int, Any] | None = {} if self.check_circular else None
+        string_encoder = json.encoder.encode_basestring_ascii
+
+        def float_text(number: float) -> str:
+            if math.isfinite(number):
+                return float.__repr__(number)
+            if not self.allow_nan:
+                raise ValueError(
+                    "Out of range float values are not JSON compliant: " + repr(number)
+                )
+            if math.isnan(number):
+                return "NaN"
+            return "Infinity" if number > 0 else "-Infinity"
+
+        make_iterencode = json.encoder.__dict__["_make_iterencode"]
+        iterator = make_iterencode(
+            markers,
+            self.default,
+            string_encoder,
+            self.indent,
+            float_text,
+            self.key_separator,
+            self.item_separator,
+            self.sort_keys,
+            self.skipkeys,
+            _one_shot,
+            _intstr=_bounded_json_int_text,
+        )
+        return cast(Iterator[str], iterator(value, 0))
+
+
+def _validate_json_response_prefix(payload: Any) -> None:
+    """Bound every string before encoding and reject amplified object graphs."""
+    minimum_size = 0
+    active_containers: set[int] = set()
+    stack: list[tuple[Any, int | None]] = [(iter((payload,)), None)]
+    while stack:
+        iterator, container_id = stack[-1]
+        try:
+            value = next(iterator)
+        except StopIteration:
+            stack.pop()
+            if container_id is not None:
+                active_containers.remove(container_id)
+            continue
+
+        if isinstance(value, str):
+            minimum_size += _json_ascii_string_size(value)
+        elif value is None or value is True:
+            minimum_size += 4
+        elif value is False:
+            minimum_size += 5
+        elif isinstance(value, int):
+            minimum_size += len(_bounded_json_int_text(value))
+        elif isinstance(value, float):
+            minimum_size += 1
+        elif isinstance(value, dict):
+            identity = id(value)
+            if identity in active_containers:
+                raise ValueError("Circular reference detected")
+            count = len(value)
+            minimum_size += 2 + (count - 1 if count else 0) + count
+            active_containers.add(identity)
+            stack.append((iter(_dict_json_children(value)), identity))
+        elif isinstance(value, (list, tuple)):
+            identity = id(value)
+            if identity in active_containers:
+                raise ValueError("Circular reference detected")
+            count = len(value)
+            minimum_size += 2 + (count - 1 if count else 0)
+            active_containers.add(identity)
+            stack.append((iter(value), identity))
+        else:
+            # JSONEncoder will report unsupported values. Count one byte so
+            # walking a hostile graph remains bounded even before that error.
+            minimum_size += 1
+
+        if minimum_size > MAX_RESPONSE_BODY_BYTES:
+            raise ResponseTooLarge("JSON response body exceeds configured limit")
+
+
+def _bounded_json_response_body(payload: Any) -> bytes:
+    """Serialize JSON while retaining at most the configured response bound."""
+    _validate_json_response_prefix(payload)
+    encoder = _BoundedJSONEncoder(separators=(",", ":"), allow_nan=False)
+    body = bytearray()
+    for chunk in encoder.iterencode(payload):
+        encoded = chunk.encode("utf-8")
+        if len(body) + len(encoded) > MAX_RESPONSE_BODY_BYTES:
+            raise ResponseTooLarge("JSON response body exceeds configured limit")
+        body.extend(encoded)
+    return bytes(body)
+
+
 def _json_response(
     handler: BaseHTTPRequestHandler,
     status: HTTPStatus,
     payload: dict,
     *,
     request_id: str | None = None,
+    bounded: bool = True,
 ) -> None:
     # Compact separators: indent=2 pretty-printing inflated every response with
     # whitespace proportional to the (sandbox-bounded but still large) result,
     # needlessly amplifying bytes buffered and sent for each request.
-    body = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    body = (
+        _bounded_json_response_body(payload)
+        if bounded
+        else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    )
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
@@ -915,22 +1208,54 @@ def _text_response(
 
 
 def _load_json_body(handler: BaseHTTPRequestHandler) -> dict:
-    content_length = handler.headers.get("Content-Length")
-    if content_length is None:
-        raise RequestError("missing Content-Length header")
-    try:
-        length = int(content_length)
-    except ValueError as exc:
-        raise RequestError("invalid Content-Length header") from exc
+    if _header_values(handler, "Transfer-Encoding"):
+        raise RequestError("Transfer-Encoding is not supported")
 
-    if length < 0:
+    content_types = _header_values(handler, "Content-Type")
+    if len(content_types) != 1:
+        if not content_types:
+            raise RequestError("missing Content-Type header")
+        raise RequestError("ambiguous Content-Type header")
+    content_type = content_types[0]
+    media_type = content_type.partition(";")[0].strip().lower()
+    if media_type != "application/json":
+        raise RequestError("Content-Type must be application/json")
+
+    content_lengths = _header_values(handler, "Content-Length")
+    if not content_lengths:
+        raise RequestError("missing Content-Length header")
+    if len(content_lengths) != 1:
+        raise RequestError("ambiguous Content-Length header")
+    content_length = content_lengths[0]
+    if content_length.startswith("-"):
         raise RequestError("invalid Content-Length: must not be negative")
-    if length > MAX_REQUEST_BODY_BYTES:
+    if content_length != "0" and (
+        not content_length
+        or content_length[0] not in "123456789"
+        or any(character not in "0123456789" for character in content_length[1:])
+    ):
+        raise RequestError("invalid Content-Length header")
+    limit_text = str(MAX_REQUEST_BODY_BYTES)
+    if len(content_length) > len(limit_text) or (
+        len(content_length) == len(limit_text) and content_length > limit_text
+    ):
+        raise RequestError(
+            f"request body too large (max {MAX_REQUEST_BODY_BYTES} bytes)"
+        )
+    length = int(content_length)
+    if length > MAX_REQUEST_BODY_BYTES:  # defensive if the limit changes type
         raise RequestError(
             f"request body too large ({length} bytes, max {MAX_REQUEST_BODY_BYTES})"
         )
 
-    raw_body = handler.rfile.read(length)
+    try:
+        raw_body = handler.rfile.read(length)
+    finally:
+        body_complete = getattr(handler, "_body_complete", None)
+        if callable(body_complete):
+            body_complete()
+    if len(raw_body) != length:
+        raise RequestError("incomplete request body")
     try:
         body_text = raw_body.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -989,6 +1314,10 @@ def _coerce_modules(payload: dict) -> dict[str, str] | None:
     for name, source in modules.items():
         if not isinstance(name, str) or not isinstance(source, str):
             raise RequestError("'modules' entries must be string -> string")
+        if not re.fullmatch(r"[A-Z][A-Za-z0-9_]*", name):
+            raise RequestError(
+                f"invalid module name {name!r}: expected a simple PascalCase identifier"
+            )
         source_bytes = len(source.encode("utf-8"))
         if source_bytes > MAX_MODULE_SOURCE_BYTES:
             raise RequestError(
@@ -1186,21 +1515,81 @@ def _try_set_worker_rlimit(
     """Apply one worker rlimit when supported by the current platform."""
     limit = getattr(resource_module, limit_name, None)
     if limit is None:
-        return None
+        raise RuntimeError(
+            f"required worker resource limit {limit_name} is unavailable"
+        )
     try:
         resource_module.setrlimit(limit, (soft, hard))
     except (ValueError, OSError) as exc:
-        logger.warning("Failed to set %s for worker process: %s", limit_name, exc)
-        return None
+        raise RuntimeError(
+            f"failed to set required worker resource limit {limit_name}: {exc}"
+        ) from exc
     return limit_name
+
+
+def _apply_windows_worker_resource_limits() -> tuple[str, ...]:
+    """Assign the hosted worker itself to a fail-closed Windows Job Object."""
+    import ctypes
+    from ctypes import wintypes
+
+    from .sandbox import ProcessSandbox, ProcessSandboxConfig
+
+    config = ProcessSandboxConfig(
+        timeout=MAX_WALL_CLOCK_SECONDS,
+        max_memory_bytes=WORKER_MAX_MEMORY_BYTES or None,
+        max_cpu_time=WORKER_MAX_CPU_TIME or None,
+        max_file_size_bytes=WORKER_MAX_FILE_SIZE_BYTES,
+        max_processes=WORKER_MAX_PROCESSES,
+        strict=False,
+    )
+    limiter = ProcessSandbox(config)
+    ctypes_api = cast(Any, ctypes)
+    kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    raw_handle = kernel32.GetCurrentProcess()
+    handle_value = (
+        raw_handle
+        if isinstance(raw_handle, int)
+        else getattr(raw_handle, "value", None)
+    )
+    if handle_value is None:
+        raise RuntimeError("could not obtain hosted worker process handle")
+    current_process = type(
+        "_CurrentWorkerProcess",
+        (),
+        {"_handle": handle_value},
+    )()
+    job_handle = limiter._create_windows_job(
+        current_process,
+        redirector_overhead=0,
+    )
+    if job_handle is None:
+        raise RuntimeError("Windows Job Object resource limits are unavailable")
+
+    global _WORKER_JOB_HANDLE
+    _WORKER_JOB_HANDLE = job_handle
+    applied = ["JOB_ACTIVE_PROCESS_LIMIT"]
+    if WORKER_MAX_MEMORY_BYTES > 0:
+        applied.append("JOB_MEMORY_LIMIT")
+    if WORKER_MAX_CPU_TIME > 0:
+        applied.append("JOB_CPU_LIMIT")
+    # Hosted RunConfig never receives host callbacks, so Geno code has no file
+    # write primitive on Windows. POSIX additionally applies RLIMIT_FSIZE.
+    applied.append("NO_HOST_FILESYSTEM_CALLBACKS")
+    return tuple(applied)
 
 
 def _apply_worker_resource_limits() -> tuple[str, ...]:
     """Apply operator-controlled OS resource limits inside worker children."""
+    if os.name == "nt":
+        return _apply_windows_worker_resource_limits()
     try:
         import resource
-    except ImportError:
-        return ()
+    except ImportError as exc:
+        raise RuntimeError(
+            "required POSIX worker resource limits are unavailable"
+        ) from exc
 
     applied: list[str] = []
     if WORKER_MAX_CPU_TIME > 0:
@@ -1224,8 +1613,17 @@ def _apply_worker_resource_limits() -> tuple[str, ...]:
         if name is not None:
             applied.append(name)
     if WORKER_MAX_MEMORY_BYTES > 0:
+        try:
+            memory_ceiling = rlimit_as_ceiling(
+                WORKER_MAX_MEMORY_BYTES,
+                resource,
+            )
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(
+                f"failed to prepare required worker RLIMIT_AS: {exc}"
+            ) from exc
         name = _try_set_worker_rlimit(
-            resource, "RLIMIT_AS", WORKER_MAX_MEMORY_BYTES, WORKER_MAX_MEMORY_BYTES
+            resource, "RLIMIT_AS", memory_ceiling, memory_ceiling
         )
         if name is not None:
             applied.append(name)
@@ -1493,14 +1891,20 @@ def create_handler(
         TCP peer address of a trusted reverse proxy (e.g. ``"127.0.0.1"``).
         When the connection comes from this address, the real client IP is
         read from the rightmost syntactically valid, non-proxy
-        ``X-Forwarded-For`` entry. Invalid entries are ignored. When ``None``
-        (default), the TCP peer address is always used directly. Only set
-        this when you control the proxy; untrusted X-Forwarded-For headers can
-        be spoofed by clients.
+        ``X-Forwarded-For`` entry and a single exact ``X-Forwarded-Proto``
+        value of ``http`` or ``https`` defines the public scheme for
+        same-origin checks. Invalid client-IP entries are ignored; duplicate
+        or malformed forwarded-scheme values fail closed. When ``None``
+        (default), the TCP peer address and connection scheme are used
+        directly. Only set this when you control the proxy and it overwrites
+        both headers; forwarded headers can otherwise be spoofed by clients.
 
     Production deployments should place a reverse proxy (nginx, Caddy)
     in front of this server for TLS termination and connection management.
     """
+
+    if api_key is not None and not api_key.strip():
+        raise ValueError("api_key must not be empty or whitespace")
 
     if (
         isinstance(rate_limit_requests, bool)
@@ -1565,8 +1969,9 @@ def create_handler(
         """
         peer = handler.client_address[0]
         if trusted_proxy is not None and peer == trusted_proxy:
-            forwarded_for = handler.headers.get("X-Forwarded-For", "")
-            if forwarded_for:
+            forwarded_values = _header_values(handler, "X-Forwarded-For")
+            if forwarded_values:
+                forwarded_for = ",".join(forwarded_values)
                 client_ip = _client_ip_from_x_forwarded_for(
                     forwarded_for, trusted_proxy
                 )
@@ -1579,12 +1984,16 @@ def create_handler(
         if api_key is None:
             return True
         expected = api_key.encode()
-        auth_header = handler.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
+        auth_values = _header_values(handler, "Authorization")
+        if len(auth_values) == 1 and auth_values[0].startswith("Bearer "):
+            auth_header = auth_values[0]
             provided = auth_header[len("Bearer ") :].encode()
             if secrets.compare_digest(provided, expected):
                 return True
-        x_api_key = handler.headers.get("X-API-Key", "").encode()
+        key_values = _header_values(handler, "X-API-Key")
+        if len(key_values) != 1:
+            return False
+        x_api_key = key_values[0].encode()
         return bool(x_api_key and secrets.compare_digest(x_api_key, expected))
 
     def _check_get_auth(
@@ -1626,7 +2035,11 @@ def create_handler(
             AbstractSet[_HostPort],
             getattr(handler.server, "allowed_hosts", frozenset()),
         )
-        host_header = handler.headers.get("Host", "")
+        host_values = _header_values(handler, "Host")
+        if len(host_values) != 1:
+            _reject_bad_host(handler)
+            return False
+        host_header = host_values[0]
         if _host_allowed(host_header, allowed_hosts):
             return True
         # Accept a loopback Host header, but only from a genuinely local (loopback)
@@ -1634,7 +2047,11 @@ def create_handler(
         # a non-loopback bind (0.0.0.0) without letting an external client bypass
         # GENO_ALLOWED_HOSTS by sending "Host: 127.0.0.1" — the TCP peer address is
         # unspoofable, unlike the Host header.
-        if _peer_is_loopback(handler) and _host_header_is_loopback(host_header):
+        if (
+            handler.path == "/healthz"
+            and _peer_is_loopback(handler)
+            and _host_header_is_loopback(host_header)
+        ):
             return True
         _reject_bad_host(handler)
         return False
@@ -1644,12 +2061,56 @@ def create_handler(
 
         def setup(self) -> None:
             super().setup()
-            # Prevent stalled connections from exhausting threads.
+            # The inactivity timeout and absolute deadline jointly prevent a
+            # client from retaining a thread while dribbling headers or a body.
             self.request.settimeout(_REQUEST_TIMEOUT_SECONDS)
             self._cors_allowed_origins = _CORS_ALLOWED_ORIGINS
+            self._trusted_proxy = trusted_proxy
+            self._request_deadline = threading.Timer(
+                _REQUEST_TIMEOUT_SECONDS, self._expire_request_read
+            )
+            self._request_deadline.daemon = True
+            self._request_deadline.start()
+
+        def parse_request(self) -> bool:
+            original_rfile = self.rfile
+            self.rfile = cast(
+                Any,
+                _HeaderBudgetReader(
+                    original_rfile,
+                    initial_bytes=len(getattr(self, "raw_requestline", b"")),
+                    limit=MAX_REQUEST_HEADER_BYTES,
+                ),
+            )
+            try:
+                return super().parse_request()
+            finally:
+                self.rfile = original_rfile
+
+        def _expire_request_read(self) -> None:
+            try:
+                self.request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        def _headers_complete(self, *, expect_body: bool = False) -> None:
+            if not expect_body:
+                self._request_deadline.cancel()
+
+        def _body_complete(self) -> None:
+            self._request_deadline.cancel()
+
+        def finish(self) -> None:
+            try:
+                super().finish()
+            finally:
+                deadline = getattr(self, "_request_deadline", None)
+                if deadline is not None:
+                    deadline.cancel()
 
         def do_OPTIONS(self) -> None:
             """Handle CORS preflight requests."""
+            self._headers_complete()
             if not _check_host(self):
                 return
             self.send_response(HTTPStatus.NO_CONTENT)
@@ -1659,6 +2120,7 @@ def create_handler(
             self.end_headers()
 
         def do_GET(self) -> None:
+            self._headers_complete()
             if not _check_host(self):
                 return
             if self.path in {"", "/", "/playground"}:
@@ -1719,6 +2181,7 @@ def create_handler(
             self.wfile.write(body)
 
         def do_POST(self) -> None:
+            self._headers_complete(expect_body=True)
             if not _check_host(self):
                 return
             if self.path not in {"/run", "/constrain"}:
@@ -1726,6 +2189,14 @@ def create_handler(
                     self,
                     HTTPStatus.NOT_FOUND,
                     {"error": f"unknown endpoint: {self.path}"},
+                )
+                return
+
+            if not _request_origin_allowed(self):
+                _json_response(
+                    self,
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "cross-origin request is not allowed"},
                 )
                 return
 
@@ -1840,6 +2311,7 @@ def create_handler(
                                 http_status,
                                 _serialize_constraint_result(result),
                                 request_id=request_id,
+                                bounded=True,
                             )
                         elif status == "timeout":
                             collector.record_constrain_result(
@@ -1922,6 +2394,7 @@ def create_handler(
                                 http_status,
                                 _serialize_run_result(result),
                                 request_id=request_id,
+                                bounded=True,
                             )
                         elif status == "timeout":
                             collector.record(
@@ -1979,6 +2452,21 @@ def create_handler(
                                 {"error": "internal server error"},
                                 request_id=request_id,
                             )
+                except ResponseTooLarge:
+                    logger.warning(
+                        "Response exceeded configured limit request_id=%s path=%s",
+                        request_id,
+                        self.path,
+                    )
+                    http_status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                    outcome = "response_too_large"
+                    _json_response(
+                        self,
+                        http_status,
+                        {"error": "response too large"},
+                        request_id=request_id,
+                        bounded=False,
+                    )
                 except Exception:
                     logger.exception(
                         "Unhandled error in %s handler request_id=%s",
@@ -2019,6 +2507,47 @@ def create_handler(
     return MonitoringHandler
 
 
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server with admission control before thread creation."""
+
+    daemon_threads = True
+
+    def __init__(
+        self,
+        *args: Any,
+        max_connections: int = MAX_CONNECTIONS,
+        **kwargs: Any,
+    ) -> None:
+        self._connection_slots = _CONNECTION_SEMAPHORE_FACTORY(max_connections)
+        super().__init__(*args, **kwargs)
+
+    def server_bind(self) -> None:
+        """Bind without HTTPServer's blocking reverse-DNS lookup."""
+        TCPServer.server_bind(self)
+        bound_host, bound_port = self.server_address[:2]
+        # HTTPServer normally populates these after socket.getfqdn(). Geno has
+        # no hostname-dependent behavior, so the numeric bind address is both
+        # deterministic and sufficient.
+        self.server_name = str(bound_host)
+        self.server_port = int(bound_port)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._connection_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
+
+
 def create_server(
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -2037,17 +2566,33 @@ def create_server(
     rate_limit_window_seconds: float = _RATE_LIMIT_WINDOW_SECONDS,
     rate_limit_max_buckets: int = _RATE_LIMIT_MAX_BUCKETS,
     trusted_proxy: str | None = _TRUSTED_PROXY,
+    allow_insecure: bool = False,
     bind_and_activate: bool = True,
     startup_errors: list[str] | None = None,
 ) -> ThreadingHTTPServer:
     """Create the hosted Geno HTTP server."""
+
+    configured_allowed_hosts = (
+        _ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts
+    )
+    if allow_insecure and allowed_hosts is None and not configured_allowed_hosts:
+        # --allow-insecure is an explicit opt-out. Make that opt-out usable when
+        # no environment policy was supplied, while preserving every explicit
+        # programmatic allow-list (including an intentionally empty one).
+        configured_allowed_hosts = frozenset({"*"})
+    _enforce_secure_bind(
+        host,
+        api_key,
+        allow_insecure=allow_insecure,
+        allowed_hosts=configured_allowed_hosts,
+    )
 
     collector = RuntimeMetricsCollector(service=service, revision=revision)
     if startup_errors is None and bind_and_activate:
         startup_errors = _run_startup_checks()
     if startup_errors:
         collector.record_startup_errors(startup_errors)
-    server = ThreadingHTTPServer(
+    server = _BoundedThreadingHTTPServer(
         (host, port),
         create_handler(
             collector,
@@ -2069,7 +2614,7 @@ def create_server(
     server.allowed_hosts = _build_allowed_host_set(  # type: ignore[attr-defined]
         str(bound_host),
         int(bound_port),
-        _ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts,
+        configured_allowed_hosts,
     )
     server.collector = collector  # type: ignore[attr-defined]
     return server
@@ -2127,8 +2672,16 @@ def serve_forever(
     rate_limit_window_seconds: float = _RATE_LIMIT_WINDOW_SECONDS,
     rate_limit_max_buckets: int = _RATE_LIMIT_MAX_BUCKETS,
     trusted_proxy: str | None = _TRUSTED_PROXY,
+    allow_insecure: bool = False,
 ) -> None:
     """Run the hosted Geno HTTP server until interrupted."""
+
+    _enforce_secure_bind(
+        host,
+        api_key,
+        allow_insecure=allow_insecure,
+        allowed_hosts=_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts,
+    )
 
     errors = _run_startup_checks()
     if errors:
@@ -2175,6 +2728,7 @@ def serve_forever(
         rate_limit_window_seconds=rate_limit_window_seconds,
         rate_limit_max_buckets=rate_limit_max_buckets,
         trusted_proxy=trusted_proxy,
+        allow_insecure=allow_insecure,
         startup_errors=errors,
     )
     logger.info("Serving Geno runtime on http://%s:%s", host, port)
@@ -2266,6 +2820,7 @@ def main(argv: list[str] | None = None) -> None:
         allowed_capabilities=allowed_capabilities,
         api_key=api_key,
         trusted_proxy=trusted_proxy,
+        allow_insecure=args.allow_insecure,
     )
 
 
@@ -2276,6 +2831,8 @@ __all__ = [
     "MAX_MODULES",
     "MAX_MODULE_SOURCE_BYTES",
     "MAX_REQUEST_BODY_BYTES",
+    "MAX_REQUEST_HEADER_BYTES",
+    "MAX_RESPONSE_BODY_BYTES",
     "MAX_STEPS",
     "MAX_TIMEOUT_SECONDS",
     "RequestError",

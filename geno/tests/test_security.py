@@ -5,10 +5,15 @@ Security Tests for Geno
 Tests that the sandbox properly restricts dangerous operations.
 """
 
+import ctypes
+import errno
 import importlib
 import io
+import os
 import subprocess
 import sys
+import time
+from typing import Any, cast
 
 import pytest
 
@@ -25,6 +30,140 @@ from geno.sandbox import (
 )
 
 _has_typing_extensions = importlib.util.find_spec("typing_extensions") is not None  # type: ignore[attr-defined]
+
+
+class TestDarwinResourceLimits:
+    """Test Darwin's baseline-aware address-space limit calculation."""
+
+    def test_proc_pidinfo_reads_complete_virtual_size_record(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __call__(self, pid, flavor, argument, buffer, size):
+                assert pid == os.getpid()
+                assert flavor == 4
+                assert argument == 0
+                assert size == 96
+                assert size == ctypes.sizeof(_darwin_resource._ProcTaskInfo)
+                info = ctypes.cast(
+                    buffer, ctypes.POINTER(_darwin_resource._ProcTaskInfo)
+                ).contents
+                info.pti_virtual_size = 900_000_000
+                return size
+
+        fake_proc_pidinfo = FakeProcPidinfo()
+
+        class FakeLibproc:
+            proc_pidinfo = fake_proc_pidinfo
+
+        def fake_cdll(name, *, use_errno):
+            assert name == "/usr/lib/libproc.dylib"
+            assert use_errno is True
+            return FakeLibproc()
+
+        monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
+
+        assert _darwin_resource._read_darwin_virtual_size_bytes() == 900_000_000
+        assert fake_proc_pidinfo.restype is ctypes.c_int
+        assert fake_proc_pidinfo.argtypes == [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+
+    def test_proc_pidinfo_short_read_fails_closed(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __call__(self, _pid, _flavor, _argument, _buffer, size):
+                ctypes.set_errno(errno.EPERM)
+                return size - 1
+
+        class FakeLibproc:
+            proc_pidinfo = FakeProcPidinfo()
+
+        def fake_cdll(_name, *, use_errno):
+            assert use_errno is True
+            return FakeLibproc()
+
+        monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
+
+        with pytest.raises(OSError) as exc_info:
+            _darwin_resource._read_darwin_virtual_size_bytes()
+        assert exc_info.value.errno == errno.EPERM
+
+    def test_darwin_ceiling_adds_budget_and_preserves_hard_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 5
+            RLIM_INFINITY = -1
+
+            def __init__(self, hard_limit):
+                self.hard_limit = hard_limit
+
+            def getrlimit(self, which):
+                assert which == self.RLIMIT_AS
+                return (self.RLIM_INFINITY, self.hard_limit)
+
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "darwin")
+        baseline = 900_000_000
+        budget = 256_000_000
+
+        def reader():
+            return baseline
+
+        assert (
+            _darwin_resource.rlimit_as_ceiling(
+                budget,
+                FakeResource(-1),
+                virtual_size_reader=reader,
+            )
+            == baseline + budget
+        )
+        assert (
+            _darwin_resource.rlimit_as_ceiling(
+                budget,
+                FakeResource(1_000_000_000),
+                virtual_size_reader=reader,
+            )
+            == 1_000_000_000
+        )
+
+    def test_darwin_ceiling_rejects_exhausted_inherited_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 5
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(_which):
+                return (-1, 900_000_000)
+
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "darwin")
+
+        with pytest.raises(OSError, match="no address-space growth budget"):
+            _darwin_resource.rlimit_as_ceiling(
+                256_000_000,
+                FakeResource(),
+                virtual_size_reader=lambda: 900_000_000,
+            )
+
+    def test_non_darwin_ceiling_is_the_requested_absolute_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "linux")
+
+        assert _darwin_resource.rlimit_as_ceiling(123, object()) == 123
 
 
 class TestSandboxBasics:
@@ -813,6 +952,86 @@ class TestProcessSandbox:
         result, _output = run_in_process("__result__ = 42", config)
         assert result == 42
 
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows venv redirector topology",
+    )
+    def test_windows_worker_command_uses_base_interpreter(self):
+        """The Job must be assigned to the actual worker, not a venv shim."""
+        from pathlib import Path
+
+        from geno.sandbox import ProcessSandbox
+
+        base_executable = getattr(sys, "_base_executable", None)
+        assert isinstance(base_executable, str) and base_executable
+        command = ProcessSandbox._create_worker_command()
+        assert Path(command[0]).resolve() == Path(base_executable).resolve()
+        assert command[1:4] == ["-I", "-B", "-c"]
+        if sys.prefix != sys.base_prefix:
+            assert Path(command[0]).resolve() != Path(sys.executable).resolve()
+
+    def test_worker_resource_limit_failure_fails_closed(self, monkeypatch):
+        """A failed POSIX setrlimit must abort before user code executes."""
+        if sys.platform == "win32":
+            pytest.skip("Windows uses parent-installed Job Object limits")
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        needle = "resource.setrlimit(which, (soft, hard))"
+        worker_script = ProcessSandbox._WORKER_SCRIPT
+        assert worker_script.count(needle) == 1
+        monkeypatch.setattr(
+            ProcessSandbox,
+            "_WORKER_SCRIPT",
+            worker_script.replace(
+                needle,
+                "raise OSError('forced setrlimit failure')",
+                1,
+            ),
+        )
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0))
+        result, output, error = sandbox.execute("__result__ = 42")
+
+        assert result is None
+        assert output == ""
+        assert error is not None
+        assert "startup_error: failed to set RLIMIT_FSIZE" in error
+
+    def test_resource_setup_failure_kills_worker_and_fails_closed(self, monkeypatch):
+        """Parent-side resource setup errors must never run attacker code."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0))
+
+        def fail_job_setup(_process):
+            raise OSError("forced job setup failure")
+
+        monkeypatch.setattr(sandbox, "_create_windows_job", fail_job_setup)
+        with pytest.raises(SandboxError, match="resource limits"):
+            sandbox.execute("__result__ = 42")
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows Job Object enforcement",
+    )
+    def test_windows_job_enforces_memory_limit(self):
+        """Raw Python allocations must honor max_memory_bytes on Windows."""
+        from geno.sandbox import ProcessSandboxConfig, run_in_process
+
+        config = ProcessSandboxConfig(
+            timeout=5.0,
+            max_memory_bytes=64 * 1024 * 1024,
+        )
+        result, _output = run_in_process("__result__ = 42", config)
+        assert result == 42
+
+        with pytest.raises(RuntimeError):
+            run_in_process(
+                "payload = 'x' * 80_000_000\n__result__ = len(payload)",
+                config,
+            )
+
     def test_process_sandbox_forwards_max_integer_bits(self):
         """MED-04: SandboxConfig.max_integer_bits is forwarded through the
         GENO_MAX_INTEGER_BITS env var and injected into the worker as the
@@ -921,7 +1140,7 @@ class TestProcessSandbox:
         """The process sandbox should avoid persisting user code on disk."""
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
-        captured: dict[str, object] = {}
+        captured: dict[str, Any] = {}
 
         class CapturingStdin:
             def __init__(self):
@@ -970,6 +1189,15 @@ class TestProcessSandbox:
 
         sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda process, *_args: process.wait(),
+        )
         monkeypatch.setattr(threading, "Timer", capturing_timer)
 
         result, output, error = sandbox.execute("__result__ = 42")
@@ -977,14 +1205,17 @@ class TestProcessSandbox:
         assert result == 42
         assert output == ""
         assert error is None
-        assert captured["cmd"] == [
-            sys.executable,
-            "-c",
+        assert captured["cmd"] == sandbox._create_worker_command()
+        assert captured["cmd"][1:4] == ["-I", "-B", "-c"]
+        assert len(captured["cmd"][4]) < 256
+        assert captured["input"] == sandbox._frame_worker_input(
             sandbox._create_worker_script(),
-        ]
-        assert captured["input"] == "__result__ = 42"
+            "__result__ = 42",
+        )
+        assert captured["input"].endswith("__result__ = 42")
         assert captured["stdin_closed"] is True
-        assert captured["timeout"] == 5.0
+        assert 0.0 < captured["timeout"] <= 5.0
+        assert captured["popen_kwargs"]["start_new_session"] is (os.name == "posix")
 
     def test_process_sandbox_bounds_unstructured_stderr(self, monkeypatch):
         """Malformed worker stderr should be retained only up to a fixed bound."""
@@ -1023,6 +1254,15 @@ class TestProcessSandbox:
             )
         )
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda process, *_args: process.wait(),
+        )
 
         _result, output, error = sandbox.execute("__result__ = 42")
 
@@ -1031,6 +1271,498 @@ class TestProcessSandbox:
         assert "stderr truncated by ProcessSandbox" in error
         assert error.endswith("tail")
         assert len(error) <= sandbox._stderr_capture_limit() + 80
+
+    def test_kqueue_fallback_observes_exit_without_reaping(self, monkeypatch):
+        """BSD kqueue should supervise workers when waitid(WNOWAIT) is absent."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        registrations = []
+
+        class FakeObserver:
+            def __init__(self):
+                self.closed = False
+                self.controls = []
+
+            def control(self, changes, max_events, timeout):
+                self.controls.append((changes, max_events, timeout))
+                if changes is not None:
+                    registrations.extend(changes)
+                    return []
+                return [object()]
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            pid = 123
+
+        observers = []
+
+        def fake_kqueue():
+            observer = FakeObserver()
+            observers.append(observer)
+            return observer
+
+        def fake_kevent(ident, **kwargs):
+            return ident, kwargs
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", lambda *_args: None)
+        monkeypatch.setattr(
+            ProcessSandbox, "_waitid_supervision_available", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(sandbox_module.select, "kqueue", fake_kqueue, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "kevent", fake_kevent, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_FILTER_PROC", 1, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ADD", 2, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ENABLE", 4, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_NOTE_EXIT", 8, raising=False)
+
+        sandbox._require_posix_worker_supervision()
+        observer = sandbox._create_posix_exit_observer(
+            cast(subprocess.Popen[str], FakeProcess())
+        )
+
+        assert observer is observers[0]
+        assert registrations == [
+            (
+                123,
+                {
+                    "filter": 1,
+                    "flags": 6,
+                    "fflags": 8,
+                },
+            )
+        ]
+        assert sandbox._posix_worker_exit_observable(
+            cast(subprocess.Popen[str], FakeProcess()), observer
+        )
+        sandbox._close_posix_exit_observer(observer)
+        assert observers[0].closed is True
+
+    def test_kqueue_registration_interrupt_closes_and_propagates(self, monkeypatch):
+        """Cancellation during BSD observer setup must retain its original type."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+
+        class InterruptingObserver:
+            def __init__(self):
+                self.closed = False
+
+            def control(self, _changes, _max_events, _timeout):
+                raise KeyboardInterrupt
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            pid = 123
+
+        observer = InterruptingObserver()
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(
+            ProcessSandbox, "_waitid_supervision_available", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(
+            sandbox_module.select, "kqueue", lambda: observer, raising=False
+        )
+        monkeypatch.setattr(
+            sandbox_module.select,
+            "kevent",
+            lambda *_args, **_kwargs: object(),
+            raising=False,
+        )
+        monkeypatch.setattr(sandbox_module.select, "KQ_FILTER_PROC", 1, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ADD", 2, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_EV_ENABLE", 4, raising=False)
+        monkeypatch.setattr(sandbox_module.select, "KQ_NOTE_EXIT", 8, raising=False)
+
+        with pytest.raises(KeyboardInterrupt):
+            sandbox._create_posix_exit_observer(
+                cast(subprocess.Popen[str], FakeProcess())
+            )
+
+        assert observer.closed is True
+
+    def test_kqueue_fallback_kills_group_before_reaping(self, monkeypatch):
+        """A BSD exit event must leave the leader waitable through group cleanup."""
+        import threading
+
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        lifecycle = []
+
+        class FakeObserver:
+            def control(self, changes, max_events, timeout):
+                assert changes is None
+                assert max_events == 1
+                assert timeout is None
+                lifecycle.append("exit-observed")
+                return [object()]
+
+        class FakeProcess:
+            pid = 123
+
+            def wait(self):
+                lifecycle.append("leader-reaped")
+                return 0
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox, "_waitid_supervision_available", lambda: False)
+        monkeypatch.setattr(
+            sandbox,
+            "_kill_posix_process_group",
+            lambda _process, **_kwargs: lifecycle.append("group-killed"),
+        )
+
+        returncode = sandbox._wait_for_worker_tree(
+            cast(subprocess.Popen[str], FakeProcess()),
+            threading.Lock(),
+            threading.Event(),
+            threading.Event(),
+            FakeObserver(),
+        )
+
+        assert returncode == 0
+        assert lifecycle == ["exit-observed", "group-killed", "leader-reaped"]
+
+    def test_timeout_observer_failure_kills_worker_group_fail_closed(self, monkeypatch):
+        """A failed BSD exit query must not disable hard timeout enforcement."""
+        import threading
+
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        killed = False
+
+        class FailingObserver:
+            def control(self, _changes, _max_events, _timeout):
+                raise OSError("kqueue failed")
+
+        class FakeProcess:
+            pid = 123
+
+        def record_kill(_process):
+            nonlocal killed
+            killed = True
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(
+            ProcessSandbox, "_waitid_supervision_available", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", record_kill)
+        timed_out = threading.Event()
+        termination_errors: list[SandboxError] = []
+
+        sandbox._terminate_worker_on_timeout(
+            cast(subprocess.Popen[str], FakeProcess()),
+            threading.Lock(),
+            threading.Event(),
+            threading.Event(),
+            timed_out,
+            termination_errors,
+            FailingObserver(),
+        )
+
+        assert killed is True
+        assert timed_out.is_set() is True
+        assert len(termination_errors) == 1
+        assert "Lost POSIX sandbox worker state" in str(termination_errors[0])
+
+    def test_darwin_zombie_only_group_error_is_benign_after_exit(self, monkeypatch):
+        """Darwin's zombie-only EPERM must not fail completed worker cleanup."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+
+        class FakeProcess:
+            pid = 123
+
+        def zombie_only_group(_pid, _signal):
+            raise PermissionError(errno.EPERM, "zombie-only process group")
+
+        leader_probed = False
+
+        def signalable_zombie(pid, sig):
+            nonlocal leader_probed
+            assert (pid, sig) == (123, 0)
+            leader_probed = True
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setitem(sandbox_module.signal.__dict__, "SIGKILL", 9)
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", zombie_only_group)
+        monkeypatch.setattr(sandbox_module.os, "kill", signalable_zombie)
+
+        sandbox._kill_posix_process_group(
+            cast(subprocess.Popen[str], FakeProcess()), leader_exit_observed=True
+        )
+
+        assert leader_probed is True
+
+    @pytest.mark.parametrize("leader_exit_observed", [False, True])
+    def test_darwin_group_error_remains_fatal_without_unreaped_leader(
+        self, monkeypatch, leader_exit_observed
+    ):
+        """Darwin EPERM stays fail-closed before exit or without its zombie."""
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        leader_killed = False
+
+        class FakeProcess:
+            pid = 123
+
+            def kill(self):
+                nonlocal leader_killed
+                leader_killed = True
+
+        def denied_group(_pid, _signal):
+            raise PermissionError(errno.EPERM, "group denied")
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setitem(sandbox_module.signal.__dict__, "SIGKILL", 9)
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", denied_group)
+
+        def missing_leader(_pid, _signal):
+            raise ProcessLookupError(errno.ESRCH, "leader already reaped")
+
+        monkeypatch.setattr(sandbox_module.os, "kill", missing_leader)
+
+        with pytest.raises(SandboxError, match="process group"):
+            sandbox._kill_posix_process_group(
+                cast(subprocess.Popen[str], FakeProcess()),
+                leader_exit_observed=leader_exit_observed,
+            )
+
+        assert leader_killed is True
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_late_timeout_callback_does_not_kill_exited_worker(self, monkeypatch):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        killed = False
+
+        class FakeProcess:
+            def poll(self):
+                raise AssertionError("an exited POSIX leader must not be polled")
+
+        def unexpected_kill(_process):
+            nonlocal killed
+            killed = True
+
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", unexpected_kill)
+        lifecycle_lock = threading.Lock()
+        exit_observed = threading.Event()
+        exit_observed.set()
+        timed_out = threading.Event()
+        sandbox._terminate_worker_on_timeout(
+            cast(subprocess.Popen[str], FakeProcess()),
+            lifecycle_lock,
+            exit_observed,
+            threading.Event(),
+            timed_out,
+            [],
+        )
+
+        assert killed is False
+        assert timed_out.is_set() is False
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_timeout_observes_exited_leader_before_marking_timeout(self, monkeypatch):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        killed = False
+
+        class FakeProcess:
+            pid = 123
+
+        monkeypatch.setattr(
+            sandbox, "_posix_worker_exit_observable", lambda _process: True
+        )
+
+        def record_kill(_process, **_kwargs):
+            nonlocal killed
+            killed = True
+
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", record_kill)
+        exit_observed = threading.Event()
+        timed_out = threading.Event()
+        sandbox._terminate_worker_on_timeout(
+            cast(subprocess.Popen[str], FakeProcess()),
+            threading.Lock(),
+            exit_observed,
+            threading.Event(),
+            timed_out,
+            [],
+        )
+
+        assert killed is True
+        assert exit_observed.is_set() is True
+        assert timed_out.is_set() is False
+
+    def test_setup_interrupt_kills_and_reaps_worker(self, monkeypatch):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        real_popen = subprocess.Popen
+        processes = []
+
+        def capture_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        def interrupt_thread_start(_thread):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(subprocess, "Popen", capture_popen)
+        monkeypatch.setattr(threading.Thread, "start", interrupt_thread_start)
+
+        with pytest.raises(KeyboardInterrupt):
+            sandbox._run_worker(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                "",
+            )
+
+        assert len(processes) == 1
+        assert processes[0].returncode is not None
+        assert processes[0].stdin is not None and processes[0].stdin.closed
+        assert processes[0].stdout is not None and processes[0].stdout.closed
+        assert processes[0].stderr is not None and processes[0].stderr.closed
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_interrupted_wait_kills_worker_group(self, monkeypatch):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        real_kill = sandbox._kill_posix_process_group
+        killed = False
+
+        def interrupt_wait(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        def record_kill(process):
+            nonlocal killed
+            killed = True
+            real_kill(process)
+
+        monkeypatch.setattr(sandbox, "_wait_for_worker_tree", interrupt_wait)
+        monkeypatch.setattr(sandbox, "_kill_posix_process_group", record_kill)
+        with pytest.raises(KeyboardInterrupt):
+            sandbox._run_worker(
+                [sys.executable, "-c", "import time; time.sleep(30)"], ""
+            )
+        assert killed is True
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_worker_descendants_are_killed_after_normal_exit(self, tmp_path):
+        """A child inheriting worker pipes must not survive a normal worker exit."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "descendant-survived-normal-exit"
+        ready = tmp_path / "descendant-started-normal-exit"
+        child_script = (
+            "import pathlib, time; "
+            f"pathlib.Path({str(ready)!r}).write_text('ready'); "
+            "time.sleep(0.5); "
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
+        worker_script = (
+            "import pathlib, subprocess, sys, time\n"
+            f"ready = pathlib.Path({str(ready)!r})\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}])\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "if not ready.exists():\n"
+            "    raise RuntimeError('descendant did not start')\n"
+        )
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        returncode, _stdout, _stderr, _truncated = sandbox._run_worker(
+            [sys.executable, "-c", worker_script], ""
+        )
+
+        assert returncode == 0
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if marker.exists():
+                pytest.fail("sandbox worker descendant survived normal exit")
+            time.sleep(0.05)
+        assert not marker.exists(), "sandbox worker descendant survived normal exit"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+    def test_worker_descendants_are_killed_after_timeout(self, tmp_path):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "descendant-survived"
+        child_script = (
+            "import pathlib, time; "
+            "time.sleep(1); "
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
+        worker_script = (
+            "import subprocess, sys, time; "
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}]); "
+            "time.sleep(30)"
+        )
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=0.2, strict=False))
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            sandbox._run_worker([sys.executable, "-c", worker_script], "")
+
+        time.sleep(1.1)
+        assert not marker.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects only")
+    def test_windows_worker_descendants_end_with_normal_leader(self, tmp_path):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "windows-descendant-survived"
+        child_script = (
+            "import pathlib, time; "
+            "time.sleep(2); "
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
+        worker_script = (
+            "import subprocess, sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}])"
+        )
+        sandbox = ProcessSandbox(
+            ProcessSandboxConfig(
+                timeout=1.0,
+                strict=False,
+                max_memory_bytes=None,
+                max_processes=3,
+            )
+        )
+
+        started_at = time.monotonic()
+        returncode, _stdout, _stderr, _truncated = sandbox._run_worker(
+            [sys.executable, "-c", worker_script], ""
+        )
+        assert returncode == 0, _stderr
+        assert time.monotonic() - started_at < 1.5
+        time.sleep(2.1)
+        assert not marker.exists()
 
     def test_process_sandbox_bounds_worker_exception_messages(self):
         """Worker JSON errors should not serialize unbounded exception text."""
@@ -1056,7 +1788,123 @@ class TestProcessSandbox:
         from geno.sandbox import ProcessSandbox
 
         script = ProcessSandbox._WORKER_SCRIPT
-        assert script.index("code = sys.stdin.read()") < script.index("RLIMIT_AS")
+        assert script.index("code = sys.stdin.read()") < script.index(
+            "_benchmark_resource.setrlimit("
+        )
+
+    def test_worker_freezes_darwin_memory_ceiling_before_untrusted_input(self):
+        """The Darwin baseline must never include attacker-controlled stdin."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        prepare = script.index("memory_ceiling = (")
+        command = ProcessSandbox._create_worker_command()
+        assert command[1:4] == ["-I", "-B", "-c"]
+        assert "dont_writebytecode" not in script
+        read_input = script.index("code = sys.stdin.read()")
+        benchmark_preload = script.index("from benchmark.runner import")
+        frontend_preload = script.index("from geno.cli.run import")
+        frontend_graph_preload = script.index("_preload_process_run_support()")
+        assert benchmark_preload < prepare
+        assert frontend_preload < prepare
+        assert frontend_graph_preload < prepare
+        assert prepare < read_input
+        assert script.count("_worker_rlimit_as_ceiling(") == 2
+        assert script.count("(memory_ceiling, memory_ceiling)") == 3
+        assert "_benchmark_resource.setrlimit(" in script
+        assert "_frontend_resource.setrlimit(" in script
+        assert "_resource.setrlimit(" in script
+
+    def test_mode_workers_apply_memory_limit_before_untrusted_work(self):
+        """Trusted imports precede the baseline; requests remain limited."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        benchmark = script[
+            script.rindex('if _worker_mode == "python_benchmark"') : script.index(
+                "# Default Geno CLI mode"
+            )
+        ]
+        assert benchmark.index("setrlimit(") < benchmark.index("json.loads(code)")
+        assert benchmark.index("setrlimit(") < benchmark.index(
+            "_evaluate_python_in_process("
+        )
+
+        frontend = script[
+            script.rindex('if _worker_mode == "geno_cli"') : script.index(
+                "# ---- Worker-side AST validation"
+            )
+        ]
+        assert frontend.index("setrlimit(") < frontend.index("json.loads(code)")
+        assert frontend.index("setrlimit(") < frontend.index("_prepare_process_run(")
+
+    def test_cli_preloader_covers_lazy_frontend_modules(self, monkeypatch):
+        """Darwin baseline preloading includes every default-run subsystem."""
+        from geno.cli import run as run_module
+
+        imported: list[str] = []
+        monkeypatch.setattr(importlib, "import_module", imported.append)
+
+        run_module._preload_process_run_support()
+
+        assert tuple(imported) == run_module._PROCESS_RUN_SUPPORT_MODULES
+        assert {
+            "geno.compiler",
+            "geno.interpreter",
+            "geno.package_manager",
+            "geno.project_resolution",
+            "geno.typechecker",
+        } <= set(imported)
+
+    def test_geno_worker_requires_compiled_runtime_mode(self):
+        """The special request path cannot run without generated-code guards."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig, SandboxError
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(compiled_runtime_prelude=False))
+
+        with pytest.raises(SandboxError, match="compiled_runtime_prelude"):
+            sandbox.execute_geno_request({})
+
+    def test_geno_worker_ignores_cwd_package_shadow(self, tmp_path, monkeypatch):
+        """The isolated frontend must import Geno only from its trusted root."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        marker = tmp_path / "shadow-imported"
+        package = tmp_path / "geno"
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            f"open({str(marker)!r}, 'w').close()\n",
+            encoding="utf-8",
+        )
+        source = tmp_path / "main.geno"
+        source.write_text(
+            "func main() -> Int\n    return 1\nend func main\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        config = ProcessSandboxConfig(
+            timeout=15.0,
+            strict=False,
+            compiled_runtime_prelude=True,
+        )
+        request = {
+            "filename": str(source),
+            "target": None,
+            "check_examples": False,
+            "timeout": config.timeout,
+            "max_recursion_depth": config.max_recursion_depth,
+            "max_output_length": config.max_output_length,
+            "max_collection_size": config.max_collection_size,
+            "max_integer_bits": config.max_integer_bits,
+        }
+
+        result, output, error = ProcessSandbox(config).execute_geno_request(request)
+
+        assert error is None
+        assert output == ""
+        assert result == 1
+        assert not marker.exists()
 
     def test_process_sandbox_worker_has_structured_startup_error_envelope(self):
         """Pre-exec worker failures should be reported as JSON categories."""
@@ -1464,11 +2312,14 @@ class TestProcessSandboxResultChannel:
     @staticmethod
     def _fake_popen_for(stderr_text: str, returncode: int):
         class FakeStdin:
+            def __init__(self):
+                self.closed = False
+
             def write(self, _data):
                 pass
 
             def close(self):
-                pass
+                self.closed = True
 
         class FakeProcess:
             def __init__(self, _cmd, **_kwargs):
@@ -1485,6 +2336,57 @@ class TestProcessSandboxResultChannel:
 
         return lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)
 
+    @staticmethod
+    def _isolate_result_channel_from_process_supervision(sandbox, monkeypatch):
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda process, *_args: process.wait(),
+        )
+
+    def test_windows_job_close_failure_does_not_mask_cleanup_error(self, monkeypatch):
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=None, strict=False))
+        monkeypatch.setattr(
+            subprocess, "Popen", self._fake_popen_for("worker stderr\n", 1)
+        )
+        job_handle = object()
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: job_handle)
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(
+            sandbox,
+            "_wait_for_worker_tree",
+            lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt("interrupted")),
+        )
+        monkeypatch.setattr(
+            sandbox,
+            "_kill_posix_process_group",
+            lambda process: process.kill(),
+        )
+        close_calls = []
+
+        def fail_close(handle):
+            if handle is None:
+                return
+            close_calls.append(handle)
+            raise OSError("forced CloseHandle failure")
+
+        monkeypatch.setattr(sandbox, "_close_windows_job", fail_close)
+
+        with pytest.raises(
+            SandboxError, match="Failed to terminate sandbox worker"
+        ) as exc_info:
+            sandbox._run_worker(["python"], "")
+
+        assert isinstance(exc_info.value.__cause__, OSError)
+        assert close_calls == [job_handle]
+
     def test_exit_zero_without_result_json_raises(self, monkeypatch, caplog):
         """Worker exits 0 with no result line: SandboxError, logged at ERROR."""
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
@@ -1493,6 +2395,8 @@ class TestProcessSandboxResultChannel:
         monkeypatch.setattr(
             subprocess, "Popen", self._fake_popen_for("just some text\n", 0)
         )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         with caplog.at_level("ERROR", logger="geno.sandbox"):
             with pytest.raises(SandboxError, match="wrote no result JSON"):
@@ -1507,6 +2411,8 @@ class TestProcessSandboxResultChannel:
         monkeypatch.setattr(
             subprocess, "Popen", self._fake_popen_for('{"result": 42, "succ\n', 0)
         )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         with pytest.raises(SandboxError, match="unparseable result JSON"):
             sandbox.execute("__result__ = 42")
@@ -1521,6 +2427,8 @@ class TestProcessSandboxResultChannel:
         )
         huge_stderr = "x" * 50_000  # no JSON line survives, forces truncation
         monkeypatch.setattr(subprocess, "Popen", self._fake_popen_for(huge_stderr, 0))
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         with pytest.raises(SandboxError, match="capture limit"):
             sandbox.execute("__result__ = 42")
@@ -1533,11 +2441,32 @@ class TestProcessSandboxResultChannel:
         monkeypatch.setattr(
             subprocess, "Popen", self._fake_popen_for("boom without json\n", 1)
         )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
 
         result, _output, error = sandbox.execute("__result__ = 42")
         assert result is None
         assert error is not None
         assert "boom without json" in error
+
+    def test_nonzero_exit_rejects_success_envelope(self, monkeypatch):
+        """A crash or resource-limit kill after result output cannot report success."""
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=5.0, strict=False))
+        success = '{"result": 42, "success": true, "error": null}\n'
+        monkeypatch.setattr(
+            subprocess,
+            "Popen",
+            self._fake_popen_for(success, 1),
+        )
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        self._isolate_result_channel_from_process_supervision(sandbox, monkeypatch)
+
+        result, _output, error = sandbox.execute("__result__ = 42")
+        assert result is None
+        assert error is not None
+        assert "success" in error
 
     def test_oversized_result_reports_explicit_error(self):
         """A result too large for the stderr capture window must surface as an
@@ -1771,6 +2700,137 @@ class TestModuleProxyLeakRegression:
         code = "import math\n__result__ = math.e"
         result, _ = run_sandboxed(code, config, use_process=False)
         assert isinstance(result, float)
+
+    @pytest.mark.parametrize(
+        ("module_name", "attribute"),
+        [
+            ("dataclasses", "make_dataclass"),
+            ("dataclasses", "replace"),
+            ("functools", "update_wrapper"),
+            ("functools", "wraps"),
+        ],
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_hidden_attribute_helpers_are_blocked(
+        self, module_name, attribute, use_process
+    ):
+        """Trusted helpers that perform hidden traversal must not be exposed."""
+        code = f"import {module_name}\n__result__ = {module_name}.{attribute}\n"
+        with pytest.raises((SecurityViolation, RuntimeError)):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=False),
+                use_process=use_process,
+            )
+
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_callable_gadgets_cannot_leak_function_globals(self, use_process):
+        """Composable stdlib helpers must not expose raw function globals."""
+        code = """
+import dataclasses
+import functools
+name = ''.join(['__glo', 'bals__'])
+def init(self, **changes):
+    self.public = changes[next(iter(changes))]
+Leak = dataclasses.make_dataclass(
+    'Leak',
+    [name],
+    namespace={'__init__': init},
+)
+value = Leak(**{name: None})
+functools.update_wrapper(
+    value,
+    dataclasses.dataclass,
+    assigned=(name,),
+    updated=(),
+)
+leaked = dataclasses.replace(value).public
+__result__ = leaked['sys'].modules['builtins'].open('pyproject.toml').read(1)
+"""
+
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError)):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
+
+    @pytest.mark.parametrize(
+        "constructor",
+        ["abc.ABCMeta", "typing.ABCMeta", "typing.NamedTupleMeta"],
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_metaclass_constructors_are_blocked(self, constructor, use_process):
+        module = constructor.partition(".")[0]
+        code = (
+            f"import {module}\n"
+            "name = ''.join(['__get', 'attribute__'])\n"
+            f"C = {constructor}('C', (dict,), {{name: dict.__getitem__}})\n"
+            "__result__ = C(public='escaped').public\n"
+        )
+
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError), match="metaclass"):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "name = ''.join(['__get', 'attribute__'])\n"
+                "T = type(type(0))\n"
+                "C = T('C', (dict,), {name: dict.__getitem__})\n"
+                "__result__ = C(public='escaped').public\n"
+            ),
+            (
+                "import typing\n"
+                "name = ''.join(['__get', 'attribute__'])\n"
+                "T = typing.get_origin(typing.Type[int])\n"
+                "C = T('C', (dict,), {name: dict.__getitem__})\n"
+                "__result__ = C(public='escaped').public\n"
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_metaclass_results_are_blocked(self, code, use_process):
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError), match="metaclass"):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
+
+    @pytest.mark.skipif(
+        not _has_typing_extensions,
+        reason="typing_extensions not installed",
+    )
+    @pytest.mark.parametrize("use_process", [False, True])
+    def test_typing_extensions_metaclass_alias_is_blocked(self, use_process):
+        import typing_extensions
+
+        if not hasattr(typing_extensions, "GenericMeta"):
+            pytest.skip("typing_extensions.GenericMeta is unavailable")
+        code = (
+            "import typing_extensions\n"
+            "name = ''.join(['__get', 'attribute__'])\n"
+            "C = typing_extensions.GenericMeta("
+            "'C', (dict,), {name: dict.__getitem__})\n"
+            "__result__ = C(public='escaped').public\n"
+        )
+
+        assert validate_code_safety(code) == []
+        with pytest.raises((SecurityViolation, RuntimeError), match="metaclass"):
+            run_sandboxed(
+                code,
+                SandboxConfig(strict=True),
+                use_process=use_process,
+            )
 
 
 class TestForwardRefEvalRegression:

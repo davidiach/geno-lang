@@ -29,9 +29,39 @@ def _nested_json(depth: int) -> str:
 )
 def test_overlapping_noncapturing_regex_is_rejected(validator) -> None:
     with pytest.raises(
-        (GenoRuntimeError, RuntimeError), match="overlapping alternation"
+        (GenoRuntimeError, RuntimeError),
+        match=r"overlapping alternation|advanced or encoded",
     ):
         validator("(?:a|a)*b", "regex_match")
+
+
+@pytest.mark.parametrize("pattern", ["a{\u0661}", "a{\u00b2}"])
+@pytest.mark.parametrize(
+    "validator",
+    [_validate_regex_pattern, compiled_runtime._validate_regex_pattern],
+)
+def test_non_ascii_regex_quantifier_digits_are_rejected(validator, pattern) -> None:
+    with pytest.raises(
+        (GenoRuntimeError, RuntimeError),
+        match="advanced or encoded",
+    ):
+        validator(pattern, "regex_match")
+
+
+@pytest.mark.parametrize(
+    "validator",
+    [_validate_regex_pattern, compiled_runtime._validate_regex_pattern],
+)
+def test_regex_group_nesting_limit_precedes_recursive_scans(validator) -> None:
+    maximum = "(" * 128 + "a" + ")" * 128
+    excessive = "(" * 129 + "a" + ")" * 129
+
+    validator(maximum, "regex_match")
+    with pytest.raises(
+        (GenoRuntimeError, RuntimeError),
+        match="group nesting too deep",
+    ):
+        validator(excessive, "regex_match")
 
 
 def test_deep_json_returns_err_in_interpreter_and_compiled_python() -> None:
@@ -163,7 +193,8 @@ def test_equivalent_repeated_regex_alternatives_are_rejected(
     validator, pattern: str
 ) -> None:
     with pytest.raises(
-        (GenoRuntimeError, RuntimeError), match="overlapping alternation"
+        (GenoRuntimeError, RuntimeError),
+        match=r"overlapping alternation|advanced or encoded",
     ):
         validator(pattern, "regex_match")
 

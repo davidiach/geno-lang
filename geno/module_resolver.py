@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, cast
 
-from .ast_nodes import ImportStatement
+from .ast_nodes import ImportStatement, Program
 from .lexer import Lexer
 from .parser import Parser
 from .project_graph import dependency_private_graph_name
@@ -83,7 +83,7 @@ class ResolvedModuleSource:
 
 def resolve_modules(
     source_path: Path,
-    program,
+    program: Program,
     source_overrides: Mapping[Path, str] | None = None,
 ) -> dict[str, str]:
     """
@@ -108,11 +108,24 @@ def resolve_modules(
 
 def resolve_module_sources(
     source_path: Path,
-    program,
+    program: Program,
     source_overrides: Mapping[Path, str] | None = None,
 ) -> dict[str, ResolvedModuleSource]:
-    """Return resolved module sources with path metadata."""
+    """Return resolved module sources without observing partial package updates."""
+    from .package_manager import _package_transaction_locks
+
     base_dir = source_path.parent.resolve()
+    with _package_transaction_locks(base_dir):
+        return _resolve_module_sources_unlocked(
+            base_dir, program, source_overrides=source_overrides
+        )
+
+
+def _resolve_module_sources_unlocked(
+    base_dir: Path,
+    program: Program,
+    source_overrides: Mapping[Path, str] | None = None,
+) -> dict[str, ResolvedModuleSource]:
     overrides = {
         Path(path).resolve(): source
         for path, source in (source_overrides or {}).items()
@@ -175,7 +188,10 @@ def _resolve_imports(
             project_root = _find_project_root(base_dir)
             allowed_roots = [base_dir.resolve(), _STD_DIR.resolve()]
             if project_root:
-                allowed_roots.append((project_root / "geno_modules").resolve())
+                modules_root = project_root / "geno_modules"
+                if modules_root.is_symlink():
+                    raise ModuleResolutionError(name, base_dir, defn.location)
+                allowed_roots.append(modules_root.resolve())
             if not any(resolved_file.is_relative_to(r) for r in allowed_roots):
                 raise ModuleResolutionError(name, base_dir, defn.location)
 
@@ -363,6 +379,9 @@ def _find_in_geno_modules(name: str, base_dir: Path) -> Path | None:
     if project_root is None:
         return None
 
+    modules_root = project_root / "geno_modules"
+    if modules_root.is_symlink():
+        raise ModuleResolutionError(name, base_dir)
     # Try both the direct name and its kebab-case equivalent
     candidates_dirs: list[str] = [name, cast(str, pascal_to_kebab(name))]
     # Deduplicate while preserving order
@@ -374,9 +393,7 @@ def _find_in_geno_modules(name: str, base_dir: Path) -> Path | None:
             unique_dirs.append(d)
 
     for dir_name in unique_dirs:
-        dep_dir = _find_geno_modules_dependency_dir(
-            project_root / "geno_modules", dir_name
-        )
+        dep_dir = _find_geno_modules_dependency_dir(modules_root, dir_name)
         if dep_dir is None:
             continue
 
@@ -394,10 +411,18 @@ def _find_in_geno_modules(name: str, base_dir: Path) -> Path | None:
         # Fallback: read the dependency's geno.toml for its entrypoint
         dep_manifest = dep_dir / "geno.toml"
         if dep_manifest.exists():
+            if dep_manifest.is_symlink():
+                try:
+                    resolved_manifest = dep_manifest.resolve(strict=True)
+                    relative_manifest = resolved_manifest.relative_to(dep_dir.resolve())
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise ModuleResolutionError(name, dep_dir) from exc
+                if ".git" in relative_manifest.parts or not resolved_manifest.is_file():
+                    raise ModuleResolutionError(name, dep_dir)
             try:
                 from .manifest import parse_manifest
 
-                m = parse_manifest(dep_manifest)
+                m = parse_manifest(dep_manifest, allow_symlink=True)
                 if m.entrypoint:
                     entrypoint = cast(str, m.entrypoint)
                     candidate = dep_dir / f"{entrypoint}.geno"

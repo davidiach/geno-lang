@@ -196,7 +196,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-memory-bytes",
         type=_non_negative_int_arg,
         default=256 * 1024 * 1024,
-        help=("Process sandbox memory limit in bytes; 0 disables (default: 268435456)"),
+        help=(
+            "Process sandbox memory limit in bytes (Darwin: VM growth budget "
+            "above worker bootstrap); 0 disables (default: 268435456)"
+        ),
     )
     run_parser.add_argument(
         "--max-cpu-time",

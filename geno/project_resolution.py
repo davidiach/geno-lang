@@ -1038,13 +1038,28 @@ def resolve_file_context(
     source_override: str | None = None,
     source_overrides: Mapping[str | Path, str] | None = None,
 ) -> ResolvedFileContext:
-    """Resolve a concrete source file plus the modules it imports."""
-    requested_path = Path(start_path)
-    if not requested_path.exists():
-        raise _missing_path_error(start_path)
-    if not requested_path.is_file():
-        raise ProjectResolutionError(f"Expected a file path, got {requested_path}")
+    """Resolve a file without observing a partial dependency publication."""
+    from .package_manager import _package_transaction_locks
 
+    requested_path = Path(start_path)
+    with _package_transaction_locks(requested_path):
+        if not requested_path.exists():
+            raise _missing_path_error(start_path)
+        if not requested_path.is_file():
+            raise ProjectResolutionError(f"Expected a file path, got {requested_path}")
+        return _resolve_file_context_unlocked(
+            requested_path,
+            source_override=source_override,
+            source_overrides=source_overrides,
+        )
+
+
+def _resolve_file_context_unlocked(
+    requested_path: Path,
+    source_override: str | None = None,
+    source_overrides: Mapping[str | Path, str] | None = None,
+) -> ResolvedFileContext:
+    """Resolve a file while its package transaction lock is already held."""
     project = ProjectGraph.discover(requested_path)
     project, module_name, expand_single_file = _resolve_requested_file_project(
         requested_path, project
@@ -1081,10 +1096,26 @@ def resolve_project_context(
     source_override: str | None = None,
     source_overrides: Mapping[str | Path, str] | None = None,
 ) -> ResolvedProjectContext:
-    """Resolve a file or directory to entrypoint source plus imported modules."""
+    """Resolve a project without observing a partial dependency publication."""
+    from .package_manager import _package_transaction_locks
+
     requested_path = Path(start_path)
-    if not requested_path.exists():
-        raise _missing_path_error(start_path)
+    with _package_transaction_locks(requested_path):
+        if not requested_path.exists():
+            raise _missing_path_error(start_path)
+        return _resolve_project_context_unlocked(
+            requested_path,
+            source_override=source_override,
+            source_overrides=source_overrides,
+        )
+
+
+def _resolve_project_context_unlocked(
+    requested_path: Path,
+    source_override: str | None = None,
+    source_overrides: Mapping[str | Path, str] | None = None,
+) -> ResolvedProjectContext:
+    """Resolve a project while its package transaction lock is already held."""
 
     project = ProjectGraph.discover(requested_path)
     requested_module_name: str | None = None
