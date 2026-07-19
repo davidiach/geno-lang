@@ -1275,11 +1275,17 @@ class TestProcessSandbox:
 
     def test_non_default_config(self):
         """ProcessSandbox with non-default config values should work via JSON env var."""
+        from geno.execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
         from geno.sandbox import ProcessSandboxConfig, run_in_process
+
+        # This covers config transport, not low-memory enforcement. Keep the
+        # budget finite and explicitly non-default without assuming that every
+        # supported runtime can bootstrap inside the same fixed VM allowance.
+        memory_budget = DEFAULT_PROCESS_MAX_MEMORY_BYTES + 128 * 1024 * 1024
 
         config = ProcessSandboxConfig(
             timeout=10.0,
-            max_memory_bytes=128 * 1024 * 1024,
+            max_memory_bytes=memory_budget,
             max_output_length=500,
             max_file_size_bytes=0,
             max_processes=1,
