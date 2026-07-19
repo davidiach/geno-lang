@@ -34,6 +34,7 @@ from ._darwin_resource import rlimit_as_ceiling
 from .api import RunConfig, constrain_prefix, run
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES
 from .capabilities import CapabilityParseError, normalize_capability_values
+from .execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 from .monitoring import RunMetrics, RunOutcome, RuntimeMetricsCollector
 from .version_support import is_supported_python, unsupported_python_message
 
@@ -157,7 +158,7 @@ WORKER_STARTUP_GRACE_SECONDS: float = _env_positive_float(
     "GENO_WORKER_STARTUP_GRACE_SECONDS", 10.0
 )
 WORKER_MAX_MEMORY_BYTES: int = _env_non_negative_int(
-    "GENO_WORKER_MAX_MEMORY_BYTES", 256 * 1024 * 1024
+    "GENO_WORKER_MAX_MEMORY_BYTES", DEFAULT_PROCESS_MAX_MEMORY_BYTES
 )
 WORKER_MAX_CPU_TIME: float = _env_non_negative_float(
     "GENO_WORKER_MAX_CPU_TIME", MAX_WALL_CLOCK_SECONDS

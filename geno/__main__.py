@@ -38,6 +38,7 @@ from .cli._util import (
 )
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
 )
@@ -195,10 +196,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-memory-bytes",
         type=_non_negative_int_arg,
-        default=256 * 1024 * 1024,
+        default=DEFAULT_PROCESS_MAX_MEMORY_BYTES,
         help=(
             "Process sandbox memory limit in bytes (Darwin: VM growth budget "
-            "above worker bootstrap); 0 disables (default: 268435456)"
+            "above worker bootstrap); 0 disables "
+            f"(default: {DEFAULT_PROCESS_MAX_MEMORY_BYTES})"
         ),
     )
     run_parser.add_argument(

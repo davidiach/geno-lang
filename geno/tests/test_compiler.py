@@ -154,6 +154,12 @@ class TestCompilerBasics:
         assert result["__result__"] == 42
         assert result["__output__"] == ""
 
+    @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin stability check")
+    def test_compile_and_exec_process_sandbox_repeated_on_darwin(self):
+        """Compiled workers must have stable Darwin VM headroom."""
+        for _attempt in range(3):
+            self.test_compile_and_exec_process_sandbox_uses_trusted_prelude_prefix()
+
     def test_compile_and_exec_process_sandbox_runs_async_main(self):
         """Timeout path awaits async main without exposing asyncio imports."""
         source = """

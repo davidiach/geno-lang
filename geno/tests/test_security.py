@@ -35,7 +35,7 @@ _has_typing_extensions = importlib.util.find_spec("typing_extensions") is not No
 class TestDarwinResourceLimits:
     """Test Darwin's baseline-aware address-space limit calculation."""
 
-    def test_proc_pidinfo_reads_complete_virtual_size_record(self, monkeypatch):
+    def test_pidtaskinfo_reads_complete_adjusted_size_record(self, monkeypatch):
         from geno import _darwin_resource
 
         class FakeProcPidinfo:
@@ -44,9 +44,8 @@ class TestDarwinResourceLimits:
 
             def __call__(self, pid, flavor, argument, buffer, size):
                 assert pid == os.getpid()
-                assert flavor == 4
+                assert flavor == _darwin_resource._PROC_PIDTASKINFO
                 assert argument == 0
-                assert size == 96
                 assert size == ctypes.sizeof(_darwin_resource._ProcTaskInfo)
                 info = ctypes.cast(
                     buffer, ctypes.POINTER(_darwin_resource._ProcTaskInfo)
@@ -66,17 +65,12 @@ class TestDarwinResourceLimits:
 
         monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
 
-        assert _darwin_resource._read_darwin_virtual_size_bytes() == 900_000_000
+        assert (
+            _darwin_resource._read_darwin_adjusted_virtual_size_bytes() == 900_000_000
+        )
         assert fake_proc_pidinfo.restype is ctypes.c_int
-        assert fake_proc_pidinfo.argtypes == [
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint64,
-            ctypes.c_void_p,
-            ctypes.c_int,
-        ]
 
-    def test_proc_pidinfo_short_read_fails_closed(self, monkeypatch):
+    def test_pidtaskinfo_short_read_fails_closed(self, monkeypatch):
         from geno import _darwin_resource
 
         class FakeProcPidinfo:
@@ -90,15 +84,348 @@ class TestDarwinResourceLimits:
         class FakeLibproc:
             proc_pidinfo = FakeProcPidinfo()
 
+        monkeypatch.setattr(
+            _darwin_resource.ctypes,
+            "CDLL",
+            lambda *_args, **_kwargs: FakeLibproc(),
+        )
+
+        with pytest.raises(OSError) as exc_info:
+            _darwin_resource._read_darwin_adjusted_virtual_size_bytes()
+        assert exc_info.value.errno == errno.EPERM
+
+    def test_probe_finds_kernel_floor_without_architecture_guess(self):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 9
+            RLIM_INFINITY = -1
+
+            def __init__(self):
+                self.floor = 400_000_000
+                self.soft = self.RLIM_INFINITY
+                self.attempts = []
+
+            def getrlimit(self, which):
+                assert which == self.RLIMIT_AS
+                return self.soft, self.RLIM_INFINITY
+
+            def setrlimit(self, which, limits):
+                assert which == self.RLIMIT_AS
+                candidate, hard = limits
+                assert hard == self.RLIM_INFINITY
+                self.attempts.append(candidate)
+                if candidate < self.floor:
+                    raise ValueError("current limit exceeds maximum limit")
+                self.soft = candidate
+
+        resource = FakeResource()
+        requested = 64 * 1024 * 1024
+        upper_bound, hard_limit = (
+            _darwin_resource._probe_darwin_raw_map_size_upper_bound(
+                requested,
+                resource,
+                adjusted_size_reader=lambda: 100_000_000,
+                region_size_reader=lambda: 200_000_000,
+            )
+        )
+
+        assert upper_bound == resource.floor
+        assert hard_limit == resource.RLIM_INFINITY
+        assert resource.soft == resource.floor + requested
+        assert any(candidate < resource.floor for candidate in resource.attempts)
+
+    def test_probe_honors_one_byte_budget_exactly(self):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 9
+            RLIM_INFINITY = -1
+
+            def __init__(self):
+                self.floor = 400_012_345
+                self.soft = self.RLIM_INFINITY
+
+            def getrlimit(self, _which):
+                return self.soft, self.RLIM_INFINITY
+
+            def setrlimit(self, _which, limits):
+                candidate, hard = limits
+                assert hard == self.RLIM_INFINITY
+                if candidate < self.floor:
+                    raise ValueError("current limit exceeds maximum limit")
+                self.soft = candidate
+
+        resource = FakeResource()
+        upper_bound, hard_limit = (
+            _darwin_resource._probe_darwin_raw_map_size_upper_bound(
+                1,
+                resource,
+                adjusted_size_reader=lambda: 100_000_000,
+                region_size_reader=lambda: 100_000_000,
+            )
+        )
+
+        assert upper_bound == resource.floor
+        assert hard_limit == resource.RLIM_INFINITY
+        assert resource.soft == resource.floor + 1
+
+    def test_probe_preserves_inherited_hard_limit(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 9
+            RLIM_INFINITY = -1
+
+            def __init__(self):
+                self.floor = 400_000_000
+                self.soft = self.RLIM_INFINITY
+                self.hard = 450_000_000
+
+            def getrlimit(self, _which):
+                return self.soft, self.hard
+
+            def setrlimit(self, _which, limits):
+                candidate, hard = limits
+                assert hard == self.hard
+                if candidate < self.floor:
+                    raise OSError(errno.EINVAL, "below raw map")
+                self.soft = candidate
+
+        resource = FakeResource()
+        monkeypatch.setattr(_darwin_resource.sys, "platform", "darwin")
+
+        assert (
+            _darwin_resource.rlimit_as_ceiling(
+                64 * 1024 * 1024,
+                resource,
+                adjusted_size_reader=lambda: 350_000_000,
+                region_size_reader=lambda: 350_000_000,
+            )
+            == resource.hard
+        )
+
+    def test_probe_fails_closed_when_hard_limit_is_below_raw_map(self):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 9
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(_which):
+                return -1, 450_000_000
+
+            @staticmethod
+            def setrlimit(_which, _limits):
+                raise ValueError("current limit exceeds maximum limit")
+
+        with pytest.raises(OSError) as exc_info:
+            _darwin_resource._probe_darwin_raw_map_size_upper_bound(
+                64 * 1024 * 1024,
+                FakeResource(),
+                adjusted_size_reader=lambda: 400_000_000,
+                region_size_reader=lambda: 400_000_000,
+            )
+        assert exc_info.value.errno == errno.ENOMEM
+
+    def test_probe_propagates_unexpected_setrlimit_errors(self):
+        from geno import _darwin_resource
+
+        class FakeResource:
+            RLIMIT_AS = 9
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(_which):
+                return -1, -1
+
+            @staticmethod
+            def setrlimit(_which, _limits):
+                raise OSError(errno.EPERM, "denied")
+
+        with pytest.raises(OSError) as exc_info:
+            _darwin_resource._probe_darwin_raw_map_size_upper_bound(
+                64 * 1024 * 1024,
+                FakeResource(),
+                adjusted_size_reader=lambda: 100_000_000,
+                region_size_reader=lambda: 100_000_000,
+            )
+        assert exc_info.value.errno == errno.EPERM
+
+    def test_pidregioninfo_sums_raw_entries_and_skips_footprint(self, monkeypatch):
+        from geno import _darwin_resource
+
+        reserved_size = 0x6000000000  # 384 GiB ARM64 reserved-region span
+        regions = [
+            (0x1000, 32 * 1024 * 1024),
+            (0x1000000000, reserved_size),
+            (0x7000000000, 16 * 1024 * 1024),
+        ]
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, pid, flavor, cursor, buffer, size):
+                assert pid == os.getpid()
+                assert flavor == _darwin_resource._PROC_PIDREGIONINFO
+                assert size == 96
+                assert size == ctypes.sizeof(_darwin_resource._ProcRegionInfo)
+                info = ctypes.cast(
+                    buffer, ctypes.POINTER(_darwin_resource._ProcRegionInfo)
+                ).contents
+                expected_cursor = (
+                    0
+                    if self.calls == 0
+                    else regions[self.calls - 1][0] + regions[self.calls - 1][1]
+                )
+                assert cursor == expected_cursor
+                if self.calls == len(regions):
+                    info.pri_address = cursor
+                    info.pri_size = 123
+                    info.pri_user_tag = _darwin_resource._UINT32_MAX
+                    self.calls += 1
+                    return size
+                info.pri_address, info.pri_size = regions[self.calls]
+                self.calls += 1
+                return size
+
+        fake_proc_pidinfo = FakeProcPidinfo()
+
+        class FakeLibproc:
+            proc_pidinfo = fake_proc_pidinfo
+
+        def fake_cdll(name, *, use_errno):
+            assert name == "/usr/lib/libproc.dylib"
+            assert use_errno is True
+            return FakeLibproc()
+
+        monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
+
+        assert _darwin_resource._read_darwin_map_size_bytes() == sum(
+            size for _address, size in regions
+        )
+        assert fake_proc_pidinfo.calls == len(regions) + 1
+        assert fake_proc_pidinfo.restype is ctypes.c_int
+        assert fake_proc_pidinfo.argtypes == [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+
+    def test_pidregioninfo_accepts_einval_only_after_a_valid_region(self, monkeypatch):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, _pid, _flavor, cursor, buffer, size):
+                self.calls += 1
+                if self.calls == 1:
+                    assert cursor == 0
+                    info = ctypes.cast(
+                        buffer, ctypes.POINTER(_darwin_resource._ProcRegionInfo)
+                    ).contents
+                    info.pri_address = 0x1000
+                    info.pri_size = 0x2000
+                    return size
+                assert cursor == 0x3000
+                ctypes.set_errno(errno.EINVAL)
+                return 0
+
+        class FakeLibproc:
+            proc_pidinfo = FakeProcPidinfo()
+
         def fake_cdll(_name, *, use_errno):
             assert use_errno is True
             return FakeLibproc()
 
         monkeypatch.setattr(_darwin_resource.ctypes, "CDLL", fake_cdll)
 
+        assert _darwin_resource._read_darwin_map_size_bytes() == 0x2000
+
+    @pytest.mark.parametrize(
+        ("written", "error_number"),
+        [
+            (0, errno.EPERM),
+            (ctypes.sizeof(ctypes.c_uint64), 0),
+        ],
+    )
+    def test_pidregioninfo_errors_fail_closed(self, monkeypatch, written, error_number):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __call__(self, *_args):
+                ctypes.set_errno(error_number)
+                return written
+
+        class FakeLibproc:
+            proc_pidinfo = FakeProcPidinfo()
+
+        monkeypatch.setattr(
+            _darwin_resource.ctypes,
+            "CDLL",
+            lambda *_args, **_kwargs: FakeLibproc(),
+        )
+
         with pytest.raises(OSError) as exc_info:
-            _darwin_resource._read_darwin_virtual_size_bytes()
-        assert exc_info.value.errno == errno.EPERM
+            _darwin_resource._read_darwin_map_size_bytes()
+        assert exc_info.value.errno == (error_number or errno.EIO)
+
+    @pytest.mark.parametrize(
+        ("region_address", "region_size", "error_number"),
+        [
+            (0, 0, errno.EIO),
+            ((1 << 64) - 1, 2, errno.EOVERFLOW),
+            (0, sys.maxsize + 1, errno.EOVERFLOW),
+        ],
+    )
+    def test_pidregioninfo_invalid_entries_fail_closed(
+        self,
+        monkeypatch,
+        region_address,
+        region_size,
+        error_number,
+    ):
+        from geno import _darwin_resource
+
+        class FakeProcPidinfo:
+            argtypes = None
+            restype = None
+
+            def __call__(self, _pid, _flavor, _cursor, buffer, size):
+                info = ctypes.cast(
+                    buffer, ctypes.POINTER(_darwin_resource._ProcRegionInfo)
+                ).contents
+                info.pri_address = region_address
+                info.pri_size = region_size
+                return size
+
+        class FakeLibproc:
+            proc_pidinfo = FakeProcPidinfo()
+
+        monkeypatch.setattr(
+            _darwin_resource.ctypes,
+            "CDLL",
+            lambda *_args, **_kwargs: FakeLibproc(),
+        )
+
+        with pytest.raises(OSError) as exc_info:
+            _darwin_resource._read_darwin_map_size_bytes()
+        assert exc_info.value.errno == error_number
 
     def test_darwin_ceiling_adds_budget_and_preserves_hard_limit(self, monkeypatch):
         from geno import _darwin_resource
@@ -125,7 +452,7 @@ class TestDarwinResourceLimits:
             _darwin_resource.rlimit_as_ceiling(
                 budget,
                 FakeResource(-1),
-                virtual_size_reader=reader,
+                map_size_reader=reader,
             )
             == baseline + budget
         )
@@ -133,7 +460,7 @@ class TestDarwinResourceLimits:
             _darwin_resource.rlimit_as_ceiling(
                 budget,
                 FakeResource(1_000_000_000),
-                virtual_size_reader=reader,
+                map_size_reader=reader,
             )
             == 1_000_000_000
         )
@@ -155,7 +482,7 @@ class TestDarwinResourceLimits:
             _darwin_resource.rlimit_as_ceiling(
                 256_000_000,
                 FakeResource(),
-                virtual_size_reader=lambda: 900_000_000,
+                map_size_reader=lambda: 900_000_000,
             )
 
     def test_non_darwin_ceiling_is_the_requested_absolute_limit(self, monkeypatch):
@@ -164,6 +491,14 @@ class TestDarwinResourceLimits:
         monkeypatch.setattr(_darwin_resource.sys, "platform", "linux")
 
         assert _darwin_resource.rlimit_as_ceiling(123, object()) == 123
+
+    def test_process_memory_default_matches_supported_platform(self):
+        from geno.execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
+        from geno.sandbox import ProcessSandboxConfig
+
+        expected = 512 * 1024 * 1024 if sys.platform == "darwin" else 256 * 1024 * 1024
+        assert expected == DEFAULT_PROCESS_MAX_MEMORY_BYTES
+        assert ProcessSandboxConfig().max_memory_bytes == expected
 
 
 class TestSandboxBasics:

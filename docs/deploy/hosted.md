@@ -355,14 +355,16 @@ The repeatable `--allow-capability` CLI flag controls which capabilities
   environments.
 - **Worker process limits**: On platforms with `resource.setrlimit`, spawned
   workers apply operator-configured OS limits before hosted code runs:
-  `GENO_WORKER_MAX_MEMORY_BYTES` (default: 268435456), `GENO_WORKER_MAX_CPU_TIME`
-  (default: `GENO_MAX_WALL_CLOCK_SECONDS`), `GENO_WORKER_MAX_FILE_SIZE_BYTES`
-  (default: 0, meaning no file writes), and `GENO_WORKER_MAX_PROCESSES`
-  (default: 1). Set memory or CPU limits to 0 to disable that specific cap.
-  On Darwin, the memory value is a VM address-space growth budget above the
-  already-spawned trusted worker bootstrap, because XNU rejects an absolute
-  limit below the existing VM map. Any stricter inherited hard limit remains
-  authoritative.
+  `GENO_WORKER_MAX_MEMORY_BYTES` (default: 536870912 on Darwin and 268435456
+  elsewhere), `GENO_WORKER_MAX_CPU_TIME` (default:
+  `GENO_MAX_WALL_CLOCK_SECONDS`), `GENO_WORKER_MAX_FILE_SIZE_BYTES` (default:
+  0, meaning no file writes), and `GENO_WORKER_MAX_PROCESSES` (default: 1).
+  Set memory or CPU limits to 0 to disable that specific cap. On Darwin, the
+  memory value is a VM address-space growth budget above the already-spawned
+  trusted worker's raw VM-map size. Before reading untrusted input, Geno probes
+  XNU's actual soft-limit acceptance boundary to account for native, exotic,
+  and translated VM maps without architecture or kernel-version assumptions.
+  Any stricter inherited hard limit remains authoritative.
 - **Bounded concurrency**: Limits simultaneous executions via
   `GENO_MAX_CONCURRENT_REQUESTS` (default: 16)
 

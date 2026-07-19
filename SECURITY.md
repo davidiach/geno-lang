@@ -125,7 +125,8 @@ separate subprocess. This provides the strongest isolation boundary:
   steps; the embedding API defaults to no step limit unless `RunConfig(max_steps=...)`
   is set.
 - **Memory guards**: Configurable via `ProcessSandboxConfig(max_memory_bytes=...)`.
-  Default: 256 MB. Enforced via `resource.setrlimit(RLIMIT_AS)` on Linux/macOS.
+  Default: 512 MiB on Darwin and 256 MiB elsewhere. Enforced via
+  `resource.setrlimit(RLIMIT_AS)` on Linux/macOS.
   The runtime also enforces a `max_collection_size` (default: 10,000,000 elements) and
   a `max_integer_bits` (default: ~10,000 digits) to prevent memory exhaustion from
   within the language itself.

@@ -43,6 +43,7 @@ from benchmark.schema import (
 )
 from benchmark.schema import TestCase as BenchmarkTestCase
 from experiment.runner import ExperimentConfig, ExperimentRunner, GenerationResult
+from geno.execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 from geno.values import ConstructorValue
 from scripts.validate_benchmark import build_benchmark_analysis
 
@@ -1025,8 +1026,9 @@ def identity(x):
 
         assert result.error_category == ErrorCategory.RUNTIME
         assert observed["config"].max_memory_bytes == 512 * 1024 * 1024
-        assert benchmark_runner.ProcessSandboxConfig().max_memory_bytes == (
-            256 * 1024 * 1024
+        assert (
+            benchmark_runner.ProcessSandboxConfig().max_memory_bytes
+            == DEFAULT_PROCESS_MAX_MEMORY_BYTES
         )
 
     @pytest.mark.parametrize(
