@@ -1,0 +1,11 @@
+func main() -> Unit
+    let values: List[Int] = [1, 2, 3, 4, 5]
+    let doubled: List[Int] = map(values, fn(value: Int) -> value * 2)
+    let evens: List[Int] = filter(values, fn(value: Int) -> value % 2 == 0)
+    let total: Int = fold(list: values, initial: 0, reducer: fn(acc: Int, value: Int) -> acc + value)
+    print(head(doubled))
+    print(length(doubled))
+    print(length(evens))
+    print(total)
+    return ()
+end func

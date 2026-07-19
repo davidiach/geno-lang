@@ -42,9 +42,9 @@ def test_guide_walkthrough_snippets_parse():
 
 
 def test_spec_example_program_typechecks():
-    code = _geno_snippet_after_heading("docs/spec/v0.2.md", "## 12. Example Program")
+    code = _geno_snippet_after_heading("docs/spec/v0.4.md", "## 12. Example Program")
     program = Parser(
-        Lexer(code, "docs/spec/v0.2.md#example-program").tokenize()
+        Lexer(code, "docs/spec/v0.4.md#example-program").tokenize()
     ).parse_program()
 
     TypeChecker().check_program(program)

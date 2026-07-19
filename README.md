@@ -119,6 +119,8 @@ Geno is immutable by default and includes:
 The [Language Tour](docs/guide/language-tour.md) explains these features with
 runnable examples. Target-specific behavior is documented in
 [Portable Runtime Semantics](docs/reference/runtime-semantics.md).
+The [Language Specification](docs/spec/v0.4.md) defines the normative 0.4
+contract.
 
 ## Examples
 
@@ -170,7 +172,9 @@ pip install -e ".[dev]"
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and local
-checks. Use [GitHub Discussions](https://github.com/davidiach/geno-lang/discussions)
+checks, [GOVERNANCE.md](GOVERNANCE.md) for decision rights, and the
+[design proposal process](docs/proposals/README.md) for substantial changes.
+Use [GitHub Discussions](https://github.com/davidiach/geno-lang/discussions)
 for questions, the [preview feedback template](.github/ISSUE_TEMPLATE/preview_feedback.md)
 for early-user reports, and [SECURITY.md](SECURITY.md) for private vulnerability
 reporting. Release history is recorded in [CHANGELOG.md](CHANGELOG.md).

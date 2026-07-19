@@ -1,0 +1,24 @@
+func option_or_zero(value: Option[Int]) -> Int
+    example Some(5) -> 5
+    example None -> 0
+    return match value with
+        | Some(inner) -> inner
+        | None -> 0
+    end match
+end func
+
+func result_or_negative(value: Result[Int, Int]) -> Int
+    example Ok(7) -> 7
+    example Err(3) -> -3
+    return match value with
+        | Ok(inner) -> inner
+        | Err(error) -> 0 - error
+    end match
+end func
+
+func main() -> Unit
+    print(option_or_zero(Some(42)))
+    print(option_or_zero(None))
+    print(result_or_negative(Err(5)))
+    return ()
+end func

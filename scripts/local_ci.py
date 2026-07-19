@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Callable, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPO_CHECK_TARGETS = ("geno", "benchmark", "experiment", "analysis")
@@ -356,6 +356,17 @@ def build_release_steps() -> list[Step]:
         Step(
             name="validate-spec",
             command=(PYTHON_BIN, "scripts/validate_spec.py"),
+        ),
+        Step(
+            name="language-conformance",
+            command=(
+                PYTHON_BIN,
+                "scripts/run_conformance.py",
+                "--all-retained",
+                "--target",
+                "all",
+                "--require-node",
+            ),
         ),
         Step(
             name="validate-supported-targets",

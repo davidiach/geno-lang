@@ -84,7 +84,7 @@ def test_common_runtime_failures_use_granular_codes(
     ("source", "expected"),
     [
         ("$", ErrorCode.LEX_UNEXPECTED_CHAR),
-        ("wat", ErrorCode.PARSE_UNEXPECTED_TOKEN),
+        ("wat", ErrorCode.PARSE_INVALID_SYNTAX),
         (
             'func main() -> Int\n    return "wrong"\nend func\n',
             ErrorCode.TYPE_MISMATCH,

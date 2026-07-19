@@ -112,6 +112,7 @@ class TestBuildFullSteps:
             assert name in release_names
         assert "version-alignment" in release_names
         assert "validate-spec" in release_names
+        assert "language-conformance" in release_names
         assert "validate-supported-targets" in release_names
         assert "selfhost-parity" in release_names
         assert "validate-benchmark" in release_names
@@ -131,6 +132,14 @@ class TestBuildFullSteps:
         assert steps["validate-spec"].command == (
             sys.executable,
             "scripts/validate_spec.py",
+        )
+        assert steps["language-conformance"].command == (
+            sys.executable,
+            "scripts/run_conformance.py",
+            "--all-retained",
+            "--target",
+            "all",
+            "--require-node",
         )
         assert steps["validate-supported-targets"].command == (
             sys.executable,
@@ -156,6 +165,7 @@ class TestBuildFullSteps:
             "release-gate-apps",
             "builtin-parity",
             "validate-spec",
+            "language-conformance",
             "validate-supported-targets",
             "ruff-check-full",
             "ruff-format-full",

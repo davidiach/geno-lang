@@ -1,0 +1,17 @@
+func double(value: Int) -> Int
+    example 3 -> 6
+    return value * 2
+end func
+
+func add_one(value: Int) -> Int
+    example 3 -> 4
+    return value + 1
+end func
+
+func main() -> Unit
+    let first: Int = 5 |> double(_) |> add_one(_)
+    let second: Int = 3 |> double(_) |> double(_) |> add_one(_)
+    print(first)
+    print(second)
+    return ()
+end func

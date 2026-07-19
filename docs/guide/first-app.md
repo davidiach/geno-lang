@@ -86,6 +86,6 @@ geno check Main.geno
 
 ## Next Steps
 
-- Read the [Language Specification](../spec/v0.2.md) for the full reference
+- Read the [Language Specification](../spec/v0.4.md) for the full reference
 - Explore the [examples/](../../examples/) directory for more programs
 - Try building an interactive app with `geno build` (see README for app mode details)

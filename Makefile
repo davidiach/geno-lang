@@ -3,7 +3,7 @@
 #
 # Common development and experiment tasks.
 
-.PHONY: all install dev test lint format clean docs experiment analyze release-check release-gate-templates release-gate-vscode release-gate-apps validate-builtin-parity validate-dependencies validate-supported-targets optional-test-collection sandbox-regression dependency-audit local-ci local-ci-release security security-bounty
+.PHONY: all install dev test lint format clean docs experiment analyze conformance release-check release-gate-templates release-gate-vscode release-gate-apps validate-builtin-parity validate-dependencies validate-supported-targets optional-test-collection sandbox-regression dependency-audit local-ci local-ci-release security security-bounty
 
 PYTHON ?= python3
 
@@ -51,6 +51,9 @@ validate-supported-targets:
 validate-builtin-parity:
 	$(PYTHON) scripts/validate_builtin_parity.py
 
+conformance:
+	$(PYTHON) scripts/run_conformance.py --all-retained --target all --require-node
+
 validate-dependencies:
 	$(PYTHON) scripts/validate_dependencies.py
 
@@ -85,6 +88,7 @@ release-check:
 	$(PYTHON) scripts/release_gate_apps.py
 	$(PYTHON) scripts/validate_builtin_parity.py
 	$(PYTHON) scripts/validate_spec.py
+	$(PYTHON) scripts/run_conformance.py --all-retained --target all --require-node
 	$(PYTHON) scripts/validate_supported_targets.py
 	$(PYTHON) -m ruff check geno/ benchmark/ experiment/ analysis/
 	$(PYTHON) -m ruff format --check geno/ benchmark/ experiment/ analysis/
@@ -150,6 +154,7 @@ help:
 	@echo "  validate-dependencies - Validate dependency metadata and lockfiles"
 	@echo "  validate-supported-targets - Validate target docs against targets.toml"
 	@echo "  validate-builtin-parity - Validate builtin manifest/runtime parity"
+	@echo "  conformance - Run the frozen language corpus on every backend"
 	@echo "  optional-test-collection - Collect optional tests without Hypothesis"
 	@echo "  sandbox-regression - Run focused compiled sandbox regression tests"
 	@echo "  dependency-audit - Audit Python dependencies for known vulnerabilities"

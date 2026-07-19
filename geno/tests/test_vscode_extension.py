@@ -69,3 +69,20 @@ def test_run_file_uses_configured_geno_path():
     assert "buildRunFileInvocation(\n      genoPath,\n      filePath" in extension
     assert "shellPath: genoPath" in shell_escape
     assert "text: `geno run" not in shell_escape
+
+
+def test_packaged_extension_includes_language_client_runtime_dependencies():
+    manifest = json.loads((EXTENSION_ROOT / "package.json").read_text(encoding="utf-8"))
+    vscodeignore = (EXTENSION_ROOT / ".vscodeignore").read_text(encoding="utf-8")
+    release_gate = (ROOT / "scripts" / "release-gate-vscode.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "vscode-languageclient" in manifest["dependencies"]
+    assert (
+        "extension/node_modules/vscode-languageclient/lib/node/main.js" in release_gate
+    )
+    assert "--dependencies" in manifest["scripts"]["package"]
+    assert "node_modules/**" not in vscodeignore.splitlines()
+    assert "--no-dependencies" not in release_gate
+    assert "extension/node_modules/vscode-jsonrpc/lib/node/main.js" in release_gate

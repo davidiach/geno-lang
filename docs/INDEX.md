@@ -14,7 +14,7 @@
 - [Embedding API](reference/embedding-api.md) -- use Geno as a Python library
 - [Portable Runtime Semantics](reference/runtime-semantics.md) -- cross-backend numbers, copies, maps, and output
 - [LLM Prompting Guide](llm-prompting.md) -- system prompts and common LLM mistakes
-- [Language Specification (v0.2)](spec/v0.2.md) -- formal syntax and semantics
+- [Language Specification (v0.4)](spec/v0.4.md) -- normative syntax and semantics
 - [Supported Targets](SUPPORTED_TARGETS.md) -- compilation targets and builtin availability
 - [Benchmark Results](benchmark/results.md) -- published Geno-vs-Python results or current publication status
 
@@ -41,6 +41,10 @@
 ## Project and Contributing
 
 - [Maturity Matrix](MATURITY.md) -- what's stable, beta, experimental, or research
+- [Serious Beta Qualification](operations/serious-beta-qualification.md) -- evidence required before the label changes
+- [Compatibility Policy](operations/compatibility-policy.md) -- source, diagnostic, tooling, and security guarantees
+- [Governance](../GOVERNANCE.md) -- decision ownership and contributor roles
+- [Design Proposals](proposals/README.md) -- process for evolving the language contract
 - [Preview Program](preview-program.md) -- onboarding, prerequisites, current status
 - [Product Scope](SCOPE.md) -- target lanes, success criteria, non-goals
 - [Reference Apps](REFERENCE_APPS.md) -- CI-validated example applications

@@ -79,6 +79,7 @@ class TestToLspDiagnostic:
         assert lsp_diag.range.start.line == 4  # 0-indexed
         assert lsp_diag.range.start.character == 2  # 0-indexed
         assert lsp_diag.message == "expected Int, got String"
+        assert lsp_diag.code == ErrorCode.TYPE_MISMATCH.value
         assert lsp_diag.source == "geno"
 
     def test_warning_maps_to_severity_2(self):
@@ -110,6 +111,24 @@ class TestToLspDiagnostic:
         lsp_diag = _to_lsp_diagnostic(diag)
         assert lsp_diag.range.start.line == 0
         assert lsp_diag.range.start.character == 0
+
+    def test_project_exception_bridge_preserves_error_code(self):
+        error = cast(
+            Exception,
+            SimpleNamespace(
+                message="not callable",
+                error_code=ErrorCode.TYPE_NOT_CALLABLE,
+                location=SourceLocation(line=2, column=4, filename="<unknown>"),
+            ),
+        )
+
+        grouped = lsp_server._diagnostics_by_uri_from_exception(
+            error, "untitled:diagnostic"
+        )
+
+        assert (
+            grouped["untitled:diagnostic"][0].code == ErrorCode.TYPE_NOT_CALLABLE.value
+        )
 
 
 class TestWordAt:
@@ -201,6 +220,83 @@ class TestVirtualDocuments:
             )
         )
         assert completion_result.items
+
+
+class TestDocumentFormatting:
+    @staticmethod
+    def _format(source: str) -> list[types.TextEdit]:
+        uri = "untitled:Format-1"
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        formatting = server.lsp._get_handler(types.TEXT_DOCUMENT_FORMATTING)
+
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri,
+                    language_id="geno",
+                    version=1,
+                    text=source,
+                )
+            )
+        )
+        return cast(
+            list[types.TextEdit],
+            formatting(
+                types.DocumentFormattingParams(
+                    text_document=types.TextDocumentIdentifier(uri=uri),
+                    options=types.FormattingOptions(
+                        tab_size=4,
+                        insert_spaces=True,
+                    ),
+                ),
+            ),
+        )
+
+    def test_returns_single_whole_document_edit(self):
+        source = "func main() -> Int\nlet value: Int = 1\nreturn value\nend func\n"
+
+        edits = self._format(source)
+
+        assert len(edits) == 1
+        edit = edits[0]
+        assert edit.range == types.Range(
+            start=types.Position(line=0, character=0),
+            end=types.Position(line=4, character=0),
+        )
+        assert edit.new_text == (
+            "func main() -> Int\n    let value: Int = 1\n    return value\nend func\n"
+        )
+
+    def test_returns_no_edits_for_canonical_source(self):
+        source = (
+            "func main() -> Int\n    let value: Int = 1\n    return value\nend func\n"
+        )
+
+        assert self._format(source) == []
+
+    def test_uses_open_virtual_document_buffer(self):
+        source = "// draft\nfunc main() -> Int\nreturn 0\nend func"
+
+        edits = self._format(source)
+
+        assert len(edits) == 1
+        assert edits[0].range.end == types.Position(line=3, character=8)
+        assert edits[0].new_text == (
+            "// draft\nfunc main() -> Int\n    return 0\nend func\n"
+        )
+
+    def test_whole_document_range_uses_lsp_utf16_character_offsets(self):
+        source = "// \U0001f600"
+        edits = self._format(source)
+
+        assert len(edits) == 1
+        assert edits[0].range.end == types.Position(line=0, character=5)
+        assert edits[0].new_text == source + "\n"
 
 
 class TestGetTypeInfo:
