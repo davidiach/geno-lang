@@ -43,6 +43,14 @@ from geno.values import ConstructorValue
 
 _MISSING = object()
 
+# Python benchmark workers load the research evaluator and schema before
+# applying their address-space limit. macOS treats this as a growth budget
+# above that trusted bootstrap baseline, and 256 MiB is too close to the
+# allocator/VM-map boundary across hosted runner images. Keep the production
+# sandbox default at 256 MiB while giving this research-only worker a still-
+# bounded budget that also remains below the existing allocation-bomb test.
+_PYTHON_BENCHMARK_MAX_MEMORY_BYTES = 512 * 1024 * 1024
+
 
 class ErrorCategory(Enum):
     """Categories of errors for analysis."""
@@ -176,23 +184,23 @@ def _worker_json_value(value: Any, depth: int = 0) -> Any:
             return value
         return value[: _MAX_WIRE_STRING_CHARS - 16] + "... [truncated]"
     if isinstance(value, list | tuple):
-        items = [
+        sequence_items = [
             _worker_json_value(item, depth + 1) for item in value[:_MAX_WIRE_ITEMS]
         ]
         if len(value) > _MAX_WIRE_ITEMS:
-            items.append("<additional items truncated>")
-        return items
+            sequence_items.append("<additional items truncated>")
+        return sequence_items
     if isinstance(value, dict):
-        items: dict[str, Any] = {}
+        mapping_items: dict[str, Any] = {}
         for index, (key, item) in enumerate(value.items()):
             if index >= _MAX_WIRE_ITEMS:
-                items["<truncated>"] = "<additional items truncated>"
+                mapping_items["<truncated>"] = "<additional items truncated>"
                 break
             wire_key = key if isinstance(key, str) else _bounded_worker_text(key)
             if len(wire_key) > _MAX_WIRE_STRING_CHARS:
                 wire_key = wire_key[: _MAX_WIRE_STRING_CHARS - 16] + "... [truncated]"
-            items[wire_key] = _worker_json_value(item, depth + 1)
-        return items
+            mapping_items[wire_key] = _worker_json_value(item, depth + 1)
+        return mapping_items
     return _bounded_worker_text(value)
 
 
@@ -745,6 +753,7 @@ class BenchmarkRunner:
 
         config = ProcessSandboxConfig(
             timeout=process_timeout,
+            max_memory_bytes=_PYTHON_BENCHMARK_MAX_MEMORY_BYTES,
             max_cpu_time=process_timeout,
             strict=False,
             allow_print=False,

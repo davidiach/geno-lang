@@ -1002,6 +1002,33 @@ def identity(x):
         assert result.error_category == ErrorCategory.NONE
         assert result.all_passed
 
+    def test_python_worker_uses_explicit_bounded_memory_budget(self, monkeypatch):
+        observed = {}
+
+        class CapturingProcessSandbox:
+            def __init__(self, config):
+                observed["config"] = config
+
+            def execute_python_benchmark(self, _request):
+                return None, "", "stopped after config capture"
+
+        monkeypatch.setattr(
+            benchmark_runner,
+            "ProcessSandbox",
+            CapturingProcessSandbox,
+        )
+
+        result = make_python_runner().evaluate_python(
+            make_problem(),
+            "def identity(x):\n    return x\n",
+        )
+
+        assert result.error_category == ErrorCategory.RUNTIME
+        assert observed["config"].max_memory_bytes == 512 * 1024 * 1024
+        assert benchmark_runner.ProcessSandboxConfig().max_memory_bytes == (
+            256 * 1024 * 1024
+        )
+
     @pytest.mark.parametrize(
         "source",
         [
