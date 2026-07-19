@@ -44,11 +44,9 @@ from geno.values import ConstructorValue
 _MISSING = object()
 
 # Python benchmark workers load the research evaluator and schema before
-# applying their address-space limit. macOS treats this as a growth budget
-# above that trusted bootstrap baseline, and 256 MiB is too close to the
-# allocator/VM-map boundary across hosted runner images. Keep the production
-# sandbox default at 256 MiB while giving this research-only worker a still-
-# bounded budget that also remains below the existing allocation-bomb test.
+# applying their address-space limit. Keep an explicit finite 512 MiB budget
+# across hosts so research runs are reproducible; this matches Darwin's safer
+# default and remains below the existing allocation-bomb regression.
 _PYTHON_BENCHMARK_MAX_MEMORY_BYTES = 512 * 1024 * 1024
 
 

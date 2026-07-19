@@ -29,7 +29,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Collection
 
-from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
+from .execution_limits import (
+    DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_PROCESS_MAX_MEMORY_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +130,7 @@ class SandboxConfig:
     # ProcessSandbox-only address-space limit in bytes (None = no limit).
     # On Darwin this is a growth budget above the trusted worker's pre-input
     # bootstrap baseline.
-    max_memory_bytes: int | None = 256 * 1024 * 1024
+    max_memory_bytes: int | None = DEFAULT_PROCESS_MAX_MEMORY_BYTES
 
     # ProcessSandbox-only CPU time limit in seconds (None = no limit)
     max_cpu_time: float | None = None
@@ -1120,7 +1123,7 @@ class ProcessSandboxConfig:
     # Memory limit in bytes (POSIX rlimit / Windows Job, None = no limit).
     # On Darwin this is a growth budget above the trusted worker's pre-input
     # bootstrap baseline.
-    max_memory_bytes: int | None = 256 * 1024 * 1024  # 256 MB default
+    max_memory_bytes: int | None = DEFAULT_PROCESS_MAX_MEMORY_BYTES
 
     # Maximum CPU time (POSIX rlimit / Windows Job, None = no limit)
     max_cpu_time: float | None = None
@@ -2308,9 +2311,10 @@ def main():
         )
         return
 
-    # Freeze Darwin's trusted bootstrap baseline before reading attacker-
-    # controlled stdin. The ceiling is applied later because Python 3.13 needs
-    # allocator headroom while reading and validating the bounded request.
+    # Probe Darwin's trusted bootstrap floor and install a temporary soft guard
+    # before reading attacker-controlled stdin. The final hard ceiling is
+    # applied later because Python 3.13 needs allocator headroom while reading
+    # and validating the bounded request.
     memory_limit = config.get("max_memory_bytes", 0)
     try:
         memory_ceiling = (
@@ -2324,8 +2328,8 @@ def main():
         return
 
     # Read the code from stdin before tightening address-space limits. On
-    # Darwin, any memory consumed from this point onward counts against the
-    # already-frozen ceiling, so oversized pre-limit setup fails closed when
+    # Darwin, memory consumed from this point onward counts against the
+    # already-probed ceiling, so oversized pre-limit setup fails closed when
     # setrlimit runs.
     try:
         code = sys.stdin.read()

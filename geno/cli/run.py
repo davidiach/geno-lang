@@ -26,6 +26,7 @@ from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
 from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
+from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 from ._util import (
     _format_source_snippet,
     _print_error,
@@ -375,7 +376,7 @@ def run_file(
     max_output_length: int = 100_000,
     max_collection_size: int = 10_000_000,
     max_integer_bits: int = 33_219,
-    max_memory_bytes: int | None = 256 * 1024 * 1024,
+    max_memory_bytes: int | None = DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     max_cpu_time: float | None = None,
     max_file_size_bytes: int = 0,
     max_processes: int = 1,
@@ -421,7 +422,7 @@ def run_file(
         sys.exit(1)
 
     process_only_overrides = []
-    if max_memory_bytes not in (256 * 1024 * 1024,):
+    if max_memory_bytes not in (DEFAULT_PROCESS_MAX_MEMORY_BYTES,):
         process_only_overrides.append("--max-memory-bytes")
     if max_cpu_time is not None:
         process_only_overrides.append("--max-cpu-time")

@@ -195,6 +195,12 @@ end func main
             finally:
                 os.unlink(f.name)
 
+    @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin stability check")
+    def test_run_simple_program_repeated_on_darwin(self):
+        """Default CLI workers must have stable Darwin VM headroom."""
+        for _attempt in range(3):
+            self.test_run_simple_program()
+
     def test_run_compiled_async_main_awaits_result(self):
         """Compiled default run mode awaits async main in the process sandbox."""
         with _closed_temp_geno() as f:
