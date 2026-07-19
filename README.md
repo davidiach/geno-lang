@@ -246,7 +246,7 @@ Start here:
 Go deeper:
 
 - [Full Documentation Index](https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md)
-- [Language Specification](https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.2.md)
+- [Language Specification](https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.4.md)
 - [Embedding API](https://github.com/davidiach/geno-lang/blob/main/docs/reference/embedding-api.md)
 - [LLM Prompting Guide](https://github.com/davidiach/geno-lang/blob/main/docs/llm-prompting.md)
 - [Release Runbook](https://github.com/davidiach/geno-lang/blob/main/docs/operations/release-runbook.md)
@@ -278,8 +278,10 @@ make release-check
 ## Contributing
 
 Contributions are welcome. Start with [CONTRIBUTING.md](https://github.com/davidiach/geno-lang/blob/main/CONTRIBUTING.md), then
-look at the [preview feedback template](https://github.com/davidiach/geno-lang/blob/main/.github/ISSUE_TEMPLATE/preview_feedback.md)
-or the open issue list for scoped work.
+read [GOVERNANCE.md](https://github.com/davidiach/geno-lang/blob/main/GOVERNANCE.md) and the
+[design proposal process](https://github.com/davidiach/geno-lang/blob/main/docs/proposals/README.md).
+The [preview feedback template](https://github.com/davidiach/geno-lang/blob/main/.github/ISSUE_TEMPLATE/preview_feedback.md)
+and open issue list contain scoped work.
 
 Security issues should follow [SECURITY.md](https://github.com/davidiach/geno-lang/blob/main/SECURITY.md).
 

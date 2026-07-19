@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Normative language contract**: Published the versioned v0.4 specification, machine-checked effects, diagnostics, integer bounds, compatibility metadata, and a frozen all-backend conformance corpus.
+- **Language evolution process**: Added explicit governance, a design-proposal process, compatibility policy, and evidence-based serious-beta qualification criteria.
+- **Scheduled quality**: Added a weekly all-backend conformance and 2,000-case differential-fuzz workflow with retained failure artifacts.
+- **Editor formatting**: Added LSP whole-document formatting for saved, unsaved, and virtual Geno buffers.
+
+### Changed
+
+- **Stable diagnostic ownership**: Parser, type, and effect errors now emit granular E202 and E302-E311 codes at their owning compiler sites, including through the LSP exception bridge.
+- **Release qualification**: The release gate and local release plan now require the frozen corpus on the interpreter, Python, and JavaScript backends.
+
+### Fixed
+
+- **VS Code packaging**: The release gate now verifies the transitive `vscode-jsonrpc` runtime is present in the VSIX.
+
 ## [0.4.1] - 2026-07-19
 
 ### Changed
