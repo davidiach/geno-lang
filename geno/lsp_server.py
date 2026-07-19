@@ -8,6 +8,7 @@ Provides IDE features via the Language Server Protocol:
 - Go-to-definition
 - Completion (builtins, keywords, user-defined names)
 - Signature help (parameter info on function calls)
+- Document formatting
 
 Requires ``pygls`` (optional dependency: ``pip install geno-lang[lsp]``).
 """
@@ -45,6 +46,7 @@ except ImportError:
     HAS_PYGLS = False
 
 import geno
+from geno.formatter import format_source
 from geno.lsp_cache import (
     BoundedDict as _BoundedDict,
 )
@@ -119,10 +121,13 @@ def _diagnostics_by_uri_from_exception(
                 if err_path.exists():
                     err_uri = err_path.as_uri()
 
+        raw_code = getattr(error, "error_code", None)
+        code = getattr(raw_code, "value", raw_code)
         diag = _error_diagnostic(
             getattr(error, "message", str(error)),
             line=err_line,
             character=err_col,
+            code=code if isinstance(code, str) else None,
         )
         grouped.setdefault(err_uri, []).append(diag)
     return grouped
@@ -985,6 +990,7 @@ class GenoLanguageServer:
         feature(types.TEXT_DOCUMENT_RENAME)(locked(self.rename))
         feature(types.TEXT_DOCUMENT_REFERENCES)(locked(self.references))
         feature(types.TEXT_DOCUMENT_CODE_ACTION)(locked(self.code_action))
+        feature(types.TEXT_DOCUMENT_FORMATTING)(locked(self.formatting))
 
     @staticmethod
     def _document_lsp_version(document: Any) -> int | None:
@@ -1700,6 +1706,34 @@ class GenoLanguageServer:
         self._project_views.pop(uri, None)
         self.server.publish_diagnostics(uri, [])
         self._refresh_open_documents(previous_project_paths=previous_project_paths)
+
+    def formatting(
+        self,
+        params: types.DocumentFormattingParams,
+    ) -> list[types.TextEdit]:
+        """Return the canonical formatter edit for the current document buffer."""
+        uri = params.text_document.uri
+        source = self._open_docs.get(uri)
+        if source is None:
+            source = self.server.workspace.get_text_document(uri).source
+
+        formatted = format_source(source)
+        if formatted == source:
+            return []
+
+        source_lines = source.split("\n")
+        return [
+            types.TextEdit(
+                range=types.Range(
+                    start=types.Position(line=0, character=0),
+                    end=types.Position(
+                        line=len(source_lines) - 1,
+                        character=len(source_lines[-1].encode("utf-16-le")) // 2,
+                    ),
+                ),
+                new_text=formatted,
+            )
+        ]
 
     def hover(self, params: types.HoverParams) -> types.Hover | None:
         uri = params.text_document.uri

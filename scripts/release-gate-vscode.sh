@@ -50,6 +50,7 @@ required = {
     "extension/package.json",
     "extension/node_modules/vscode-languageclient/package.json",
     "extension/node_modules/vscode-languageclient/lib/node/main.js",
+    "extension/node_modules/vscode-jsonrpc/lib/node/main.js",
     "extension/out/extension.js",
     "extension/out/lspStatus.js",
     "extension.vsixmanifest",

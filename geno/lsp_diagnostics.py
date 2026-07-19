@@ -45,8 +45,14 @@ def to_lsp_diagnostic(diag: Any) -> Any:
     )
 
 
-def error_diagnostic(message: str, *, line: int = 0, character: int = 0) -> Any:
-    """Build a single-point LSP error diagnostic."""
+def error_diagnostic(
+    message: str,
+    *,
+    line: int = 0,
+    character: int = 0,
+    code: str | None = None,
+) -> Any:
+    """Build a categorized single-point LSP error diagnostic."""
     types = _require_lsp_types()
     return types.Diagnostic(
         range=types.Range(
@@ -54,6 +60,7 @@ def error_diagnostic(message: str, *, line: int = 0, character: int = 0) -> Any:
             end=types.Position(line=line, character=character),
         ),
         severity=types.DiagnosticSeverity.Error,
+        code=code,
         source="geno",
         message=message,
     )
