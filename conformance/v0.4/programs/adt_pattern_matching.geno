@@ -1,0 +1,17 @@
+type Shape = Circle(radius: Int) | Rect(w: Int, h: Int)
+
+func area(shape: Shape) -> Int
+    example Circle(5) -> 75
+    example Rect(3, 4) -> 12
+    match shape with
+        | Circle(radius) -> return radius * radius * 3
+        | Rect(width, height) -> return width * height
+    end match
+end func
+
+func main() -> Unit
+    print(area(Circle(5)))
+    print(area(Rect(3, 4)))
+    print(area(Circle(1)) + area(Rect(2, 3)))
+    return ()
+end func

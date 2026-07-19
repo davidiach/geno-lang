@@ -1,0 +1,16 @@
+func parsed_or(value: String, fallback: Int) -> Int
+    example ("42", -1) -> 42
+    example ("bad", -1) -> -1
+    match parse_int(value) with
+        | Some(number) -> return number
+        | None -> return fallback
+    end match
+end func
+
+func main() -> Unit
+    print(length("hello"))
+    print(parsed_or("42", -999))
+    print(parsed_or("-7", -999))
+    print(parsed_or("not-an-int", -999))
+    return ()
+end func

@@ -1,8 +1,12 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "Geno",
   "version": "0.4.1",
   "description": "Machine-readable specification for the Geno programming language",
+  "format_version": 1,
+  "language_series": "0.4",
+  "status": "normative-pre-1.0",
+  "human_spec": "docs/spec/v0.4.md",
+  "compatibility_policy": "docs/operations/compatibility-policy.md",
 
   "keywords": [
     "and", "assert", "async", "await", "break", "catch", "continue",
@@ -46,6 +50,29 @@
     "embedding_timeout": "cooperative; untrusted code requires process isolation"
   },
 
+  "effect_system": {
+    "syntax": "with effect1, effect2",
+    "valid_effects": [
+      "clock", "env", "fs", "http", "io", "mutation", "process",
+      "random", "regex", "stdin", "throw"
+    ],
+    "inference": "Effects are inferred from effectful builtins, mutation, throw, and calls to effectful functions.",
+    "declaration": "A declared effect set is an upper bound; inferred effects not present in it are rejected.",
+    "capability_relationship": "Effects are static declarations; runtime capabilities independently authorize effectful operations."
+  },
+
+  "diagnostics": {
+    "stability": "Published error-code meanings are stable within the 0.4 language series.",
+    "fallbacks": ["E100", "E200", "E300", "E499"],
+    "codes": [
+      "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
+      "E204", "E300", "E301", "E302", "E303", "E304", "E305", "E306",
+      "E307", "E308", "E309", "E310", "E311", "E312", "E400", "E401",
+      "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409",
+      "E410", "E411", "E412", "E413", "E499", "E500", "E501", "E502",
+      "E503", "E504", "E505"
+    ]
+  },
   "operators": {
     "precedence_ascending": [
       {"level": 1, "operators": ["or"], "kind": "logical"},
@@ -65,10 +92,10 @@
 
   "syntax": {
     "function": {
-      "template": "func name(param: Type, ...) -> ReturnType\\n  [requires condition]\\n  [ensures condition]\\n  [example (args) -> result]\\n  body\\nend func",
+      "template": "func name(param: Type, ...) -> ReturnType [with effect, ...]\\n  [requires condition]\\n  [ensures condition]\\n  [example (args) -> result]\\n  body\\nend func",
       "notes": [
         "Every function must have at least one example clause (except main, async, app helpers)",
-        "Functions with 3+ parameters require named arguments at call sites",
+        "Named arguments are required when a function has 3+ required parameters or a call supplies 3+ arguments; range is positional-only",
         "Zero-arg examples use: example () -> value"
       ]
     },

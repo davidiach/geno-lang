@@ -501,7 +501,7 @@ class TypeChecker(ExhaustivenessMixin):
         self,
         message: str,
         location: SourceLocation,
-        error_code: ErrorCode | None = None,
+        error_code: ErrorCode | None = ErrorCode.TYPE_MISMATCH,
     ) -> TypeError:
         """Create and record a type error."""
         error = TypeError(message, location, error_code)
@@ -932,6 +932,7 @@ class TypeChecker(ExhaustivenessMixin):
                     self._error(
                         f"Duplicate function definition: '{defn.name}'",
                         defn.location,
+                        ErrorCode.TYPE_DUPLICATE_DEFINITION,
                     )
                     continue
                 seen_function_names.add(defn.name)
@@ -1579,6 +1580,7 @@ class TypeChecker(ExhaustivenessMixin):
                     f"Constructor '{constructor_name}' is already defined "
                     f"by type '{existing_type}'",
                     defn.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
                 )
             self._constructor_to_type[constructor_name] = defn.name
 
@@ -1629,7 +1631,11 @@ class TypeChecker(ExhaustivenessMixin):
     def _collect_trait_def(self, defn: TraitDef) -> None:
         """Collect a trait definition."""
         if defn.name in self.trait_defs:
-            self._error(f"Duplicate trait definition: '{defn.name}'", defn.location)
+            self._error(
+                f"Duplicate trait definition: '{defn.name}'",
+                defn.location,
+                ErrorCode.TYPE_DUPLICATE_DEFINITION,
+            )
             return
         self.trait_defs[defn.name] = defn
 
@@ -1682,6 +1688,7 @@ class TypeChecker(ExhaustivenessMixin):
             self._error(
                 f"Unknown type: '{defn.target_type}'{hint}",
                 defn.location,
+                ErrorCode.TYPE_UNDEFINED_TYPE,
             )
             return
 
@@ -1691,6 +1698,7 @@ class TypeChecker(ExhaustivenessMixin):
                 f"Duplicate implementation of trait '{defn.trait_name}' "
                 f"for type '{defn.target_type}'",
                 defn.location,
+                ErrorCode.TYPE_DUPLICATE_DEFINITION,
             )
             return
 
@@ -1830,13 +1838,18 @@ class TypeChecker(ExhaustivenessMixin):
                     f"Unknown effect '{effect_name}'. "
                     f"Valid effects are: {', '.join(sorted(VALID_EFFECTS))}",
                     defn.location,
+                    ErrorCode.EFFECT_UNKNOWN,
                 )
 
         # Validate no duplicate parameter names
         seen_params = set()
         for param in defn.params:
             if param.name in seen_params:
-                self._error(f"Duplicate parameter name '{param.name}'", param.location)
+                self._error(
+                    f"Duplicate parameter name '{param.name}'",
+                    param.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
             seen_params.add(param.name)
 
         self._validate_ensures_result_binding_collisions(defn)
@@ -1903,6 +1916,7 @@ class TypeChecker(ExhaustivenessMixin):
                         f"{', '.join(sorted(undeclared))}. "
                         f"Declared effects: {', '.join(sorted(declared)) if declared else '(pure)'}",
                         defn.location,
+                        ErrorCode.EFFECT_VIOLATION,
                     )
                 # Use declared effects as the function's signature effects
                 final_effects = declared
@@ -2717,7 +2731,9 @@ class TypeChecker(ExhaustivenessMixin):
 
         if not env.is_mutable(stmt.target):
             self._error(
-                f"Cannot assign to immutable variable: {stmt.target}", stmt.location
+                f"Cannot assign to immutable variable: {stmt.target}",
+                stmt.location,
+                ErrorCode.TYPE_IMMUTABLE_ASSIGN,
             )
             return
 
@@ -2747,6 +2763,7 @@ class TypeChecker(ExhaustivenessMixin):
             self._error(
                 f"Cannot assign index on immutable variable: {root_name}",
                 stmt.location,
+                ErrorCode.TYPE_IMMUTABLE_ASSIGN,
             )
             return
 
@@ -2812,6 +2829,7 @@ class TypeChecker(ExhaustivenessMixin):
             self._error(
                 f"Cannot assign field on immutable variable: {root_name}",
                 stmt.location,
+                ErrorCode.TYPE_IMMUTABLE_ASSIGN,
             )
             return
 
@@ -2829,12 +2847,14 @@ class TypeChecker(ExhaustivenessMixin):
                 f"{', '.join(missing_variants)}); use pattern matching "
                 f"to update variant-specific fields",
                 stmt.location,
+                ErrorCode.TYPE_UNKNOWN_FIELD,
             )
             return
         if not field_types:
             self._error(
                 f"No field '{stmt.field_name}' on type {target_type.name}",
                 stmt.location,
+                ErrorCode.TYPE_UNKNOWN_FIELD,
             )
             return
 
@@ -3478,10 +3498,27 @@ class TypeChecker(ExhaustivenessMixin):
                         )
                 return impl_func_type.return_type
 
+        if (
+            identifier_func is not None
+            and env.lookup(identifier_func.name) is None
+            and identifier_func.name not in self._target_rejected
+        ):
+            hint = _suggest_name(identifier_func.name, self._env_names(env))
+            self._error(
+                f"Undefined function: {identifier_func.name}{hint}",
+                expr.location,
+                ErrorCode.TYPE_UNDEFINED_FUNC,
+            )
+            return _ANY_TYPE
+
         func_type = self._check_expression(func_expr, env)
 
         if not isinstance(func_type, FuncType):
-            self._error(f"Cannot call non-function type: {func_type}", expr.location)
+            self._error(
+                f"Cannot call non-function type: {func_type}",
+                expr.location,
+                ErrorCode.TYPE_NOT_CALLABLE,
+            )
             return _ANY_TYPE
 
         # Check argument count (with default parameter support)
@@ -3787,6 +3824,7 @@ class TypeChecker(ExhaustivenessMixin):
             self._error(
                 f"Module '{ns_name}' has no exported symbol '{expr.field_name}'",
                 expr.location,
+                ErrorCode.TYPE_UNKNOWN_FIELD,
             )
             return AnyType()
 
@@ -3803,6 +3841,7 @@ class TypeChecker(ExhaustivenessMixin):
                     f"{', '.join(missing_variants)}); use pattern matching "
                     f"to access variant-specific fields",
                     expr.location,
+                    ErrorCode.TYPE_UNKNOWN_FIELD,
                 )
                 return AnyType()
             if field_types:
@@ -3816,7 +3855,9 @@ class TypeChecker(ExhaustivenessMixin):
                     return field_type
 
         self._error(
-            f"Unknown field '{expr.field_name}' on type {target_type}", expr.location
+            f"Unknown field '{expr.field_name}' on type {target_type}",
+            expr.location,
+            ErrorCode.TYPE_UNKNOWN_FIELD,
         )
         return AnyType()
 
@@ -3969,6 +4010,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Unknown field '{field_name}' on type {target_type}",
                     value_expr.location,
+                    ErrorCode.TYPE_UNKNOWN_FIELD,
                 )
                 continue
             value_type = self._check_expression(value_expr, env)
@@ -4450,6 +4492,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Pattern type mismatch: expected {expected_type}, got {literal_type}",
                     pattern.location,
+                    ErrorCode.TYPE_PATTERN_MISMATCH,
                 )
         elif isinstance(pattern, ConstructorPattern):
             type_name: str | None = None
@@ -4469,6 +4512,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Constructor pattern {pattern.constructor} is not valid for type {expected_type}",
                     pattern.location,
+                    ErrorCode.TYPE_PATTERN_MISMATCH,
                 )
                 return
 
@@ -4476,6 +4520,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Constructor {pattern.constructor} does not belong to type {type_name}",
                     pattern.location,
+                    ErrorCode.TYPE_PATTERN_MISMATCH,
                 )
                 return
 
@@ -4495,6 +4540,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Constructor {pattern.constructor} expects {len(fields)} fields, got {len(pattern.subpatterns)}",
                     pattern.location,
+                    ErrorCode.TYPE_PATTERN_MISMATCH,
                 )
             for subpat, (_field_name, field_type) in zip(pattern.subpatterns, fields):
                 resolved = self._substitute_type_vars(field_type, type_param_map)
@@ -4517,6 +4563,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"List pattern used with non-list type: {expected_type}",
                     pattern.location,
+                    ErrorCode.TYPE_PATTERN_MISMATCH,
                 )
         elif isinstance(pattern, RestPattern):
             # Rest pattern at top level (shouldn't happen, but handle gracefully)
@@ -4746,7 +4793,11 @@ class TypeChecker(ExhaustivenessMixin):
             for declared in self._declared_user_types:
                 known_types.update(declared)
             hint = _suggest_name(name, known_types)
-            raise TypeError(f"Unknown type: '{name}'{hint}", type_annot.location)
+            raise TypeError(
+                f"Unknown type: '{name}'{hint}",
+                type_annot.location,
+                ErrorCode.TYPE_UNDEFINED_TYPE,
+            )
 
         elif isinstance(type_annot, FunctionType):
             param_types = tuple(

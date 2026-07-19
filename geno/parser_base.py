@@ -226,9 +226,13 @@ class ParserBase:
             ErrorCode.PARSE_EXPECTED_TOKEN,
         )
 
-    def _error(self, message: str) -> ParseError:
-        """Create a parse error at current location."""
-        return ParseError(message, self._current().location)
+    def _error(
+        self,
+        message: str,
+        error_code: ErrorCode = ErrorCode.PARSE_INVALID_SYNTAX,
+    ) -> ParseError:
+        """Create a categorized parse error at the current location."""
+        return ParseError(message, self._current().location, error_code)
 
     def _record_error(self, error: ParseError) -> None:
         """Record an error for later reporting."""

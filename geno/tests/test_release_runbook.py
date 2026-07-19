@@ -53,6 +53,9 @@ def test_release_runbook_lists_key_release_check_gates():
             "builtin registry and runtime parity validation"
         ),
         "scripts/validate_spec.py": "language spec validation",
+        "scripts/run_conformance.py --all-retained --target all --require-node": (
+            "frozen all-backend language conformance"
+        ),
         "scripts/validate_supported_targets.py": (
             "supported target documentation validation"
         ),

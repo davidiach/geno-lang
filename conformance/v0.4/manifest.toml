@@ -1,0 +1,88 @@
+schema_version = 1
+language_version = "0.4"
+description = "Frozen Geno 0.4 source and diagnostic compatibility corpus"
+
+[[cases]]
+id = "arithmetic-control-flow"
+path = "programs/arithmetic_control_flow.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "3\n2\n55\n"
+
+[[cases]]
+id = "adt-pattern-matching"
+path = "programs/adt_pattern_matching.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "75\n12\n9\n"
+
+[[cases]]
+id = "option-result"
+path = "programs/option_result.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "10\n-1\n5\n-1\n"
+
+[[cases]]
+id = "pipeline"
+path = "programs/pipeline.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "11\n13\n"
+
+[[cases]]
+id = "higher-order-lists"
+path = "programs/higher_order_lists.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "2\n5\n2\n15\n"
+
+[[cases]]
+id = "match-expressions"
+path = "programs/match_expressions.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "42\n0\n-5\n"
+
+[[cases]]
+id = "mutable-collections"
+path = "programs/mutable_collections.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "3\n99\n30\n2\n"
+
+[[cases]]
+id = "string-and-conversion"
+path = "programs/string_and_conversion.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "5\n42\n-7\n-999\n"
+
+[[cases]]
+id = "diagnostic-type-mismatch"
+path = "programs/diagnostic_type_mismatch.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]
+
+[[cases]]
+id = "diagnostic-undefined-name"
+path = "programs/diagnostic_undefined_name.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E301"]
+
+[[cases]]
+id = "diagnostic-unclosed-function"
+path = "programs/diagnostic_unclosed_function.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E201"]

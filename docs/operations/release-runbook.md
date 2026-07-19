@@ -35,6 +35,7 @@ exact gate; at the time of writing it covers:
 - example app validation
 - builtin registry and runtime parity validation
 - language spec validation
+- frozen all-backend language conformance
 - supported target documentation validation
 - ruff lint and format checks
 - mypy over `geno/`

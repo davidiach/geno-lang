@@ -7,7 +7,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -82,6 +82,32 @@ def get_source_capabilities() -> set[str]:
     from geno.builtin_registry import CAPABILITY_MAP
 
     return set(CAPABILITY_MAP.keys())
+
+
+def get_source_effects() -> set[str]:
+    from geno.builtin_registry import VALID_EFFECTS
+
+    return set(VALID_EFFECTS)
+
+
+def get_source_diagnostic_codes() -> set[str]:
+    from geno.diagnostics import ErrorCode
+
+    return {code.value for code in ErrorCode}
+
+
+def get_source_portable_int_bounds() -> tuple[int, int]:
+    from geno import _runtime_support, builtins, js_compiler
+
+    maxima = {
+        _runtime_support._MAX_SAFE_JS_INT,
+        builtins._MAX_SAFE_JS_INT,
+        js_compiler._MAX_SAFE_JS_INT,
+    }
+    if len(maxima) != 1:
+        raise RuntimeError(f"Portable integer bounds disagree in source: {maxima}")
+    maximum = maxima.pop()
+    return -maximum, maximum
 
 
 def get_source_lifecycle() -> set[str]:
@@ -384,6 +410,27 @@ def _record_set_mismatch(
     errors.append(f"{label}: " + "; ".join(parts))
 
 
+def _unique_string_set(
+    raw: Any,
+    *,
+    path: str,
+    errors: list[str],
+) -> set[str] | None:
+    """Validate a contract array without silently normalizing malformed data."""
+    if not isinstance(raw, list):
+        errors.append(f"'{path}' must be a list in spec.json")
+        return None
+    if not all(isinstance(item, str) for item in raw):
+        errors.append(f"'{path}' must contain only strings in spec.json")
+        return None
+    items = cast(list[str], raw)
+    values = set(items)
+    if len(values) != len(items):
+        errors.append(f"'{path}' must not contain duplicate entries in spec.json")
+        return None
+    return values
+
+
 def _spec_capabilities(spec: dict[str, Any], errors: list[str]) -> set[str]:
     raw = spec.get("capabilities", {})
     if isinstance(raw, list):
@@ -427,6 +474,113 @@ def _validate_capability_map(spec: dict[str, Any], errors: list[str]) -> None:
         )
 
 
+def _validate_language_contract(spec: dict[str, Any], errors: list[str]) -> None:
+    from geno._version import __version__
+
+    expected_series = ".".join(__version__.split(".")[:2])
+    if spec.get("format_version") != 1:
+        errors.append("'format_version' must be 1 in spec.json")
+    if spec.get("version") != __version__:
+        errors.append(
+            f"Language version mismatch: expected {__version__!r}, "
+            f"got {spec.get('version')!r}"
+        )
+    if spec.get("language_series") != expected_series:
+        errors.append(
+            f"Language series mismatch: expected {expected_series!r}, "
+            f"got {spec.get('language_series')!r}"
+        )
+    if spec.get("status") != "normative-pre-1.0":
+        errors.append("'status' must be 'normative-pre-1.0' in spec.json")
+
+    expected_human_spec = f"docs/spec/v{expected_series}.md"
+    human_spec = spec.get("human_spec")
+    if human_spec != expected_human_spec:
+        errors.append(
+            f"Human specification mismatch: expected {expected_human_spec!r}, "
+            f"got {human_spec!r}"
+        )
+    elif not (ROOT / human_spec).is_file():
+        errors.append(f"Human specification does not exist: {human_spec}")
+
+    compatibility_policy = spec.get("compatibility_policy")
+    if compatibility_policy != "docs/operations/compatibility-policy.md":
+        errors.append(
+            "Compatibility policy must be "
+            "'docs/operations/compatibility-policy.md' in spec.json"
+        )
+    elif not (ROOT / compatibility_policy).is_file():
+        errors.append(f"Compatibility policy does not exist: {compatibility_policy}")
+
+    runtime_semantics = spec.get("runtime_semantics")
+    portable_int = (
+        runtime_semantics.get("portable_javascript_int")
+        if isinstance(runtime_semantics, dict)
+        else None
+    )
+    if not isinstance(portable_int, dict):
+        errors.append(
+            "'runtime_semantics.portable_javascript_int' must be an object in spec.json"
+        )
+    else:
+        expected_min, expected_max = get_source_portable_int_bounds()
+        if (portable_int.get("min"), portable_int.get("max")) != (
+            expected_min,
+            expected_max,
+        ):
+            errors.append(
+                "Portable integer bounds mismatch: "
+                f"expected {(expected_min, expected_max)!r}, "
+                f"got {(portable_int.get('min'), portable_int.get('max'))!r}"
+            )
+
+    effect_system = spec.get("effect_system")
+    if not isinstance(effect_system, dict):
+        errors.append("'effect_system' must be an object in spec.json")
+    else:
+        raw_effects = _unique_string_set(
+            effect_system.get("valid_effects"),
+            path="effect_system.valid_effects",
+            errors=errors,
+        )
+        if raw_effects is not None:
+            _record_set_mismatch(
+                errors,
+                "Effect names mismatch",
+                get_source_effects(),
+                raw_effects,
+            )
+
+    diagnostics = spec.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        errors.append("'diagnostics' must be an object in spec.json")
+    else:
+        raw_codes = _unique_string_set(
+            diagnostics.get("codes"),
+            path="diagnostics.codes",
+            errors=errors,
+        )
+        if raw_codes is not None:
+            _record_set_mismatch(
+                errors,
+                "Diagnostic codes mismatch",
+                get_source_diagnostic_codes(),
+                raw_codes,
+            )
+        raw_fallbacks = _unique_string_set(
+            diagnostics.get("fallbacks"),
+            path="diagnostics.fallbacks",
+            errors=errors,
+        )
+        if raw_fallbacks is not None:
+            _record_set_mismatch(
+                errors,
+                "Diagnostic fallback codes mismatch",
+                {"E100", "E200", "E300", "E499"},
+                raw_fallbacks,
+            )
+
+
 def _validate_local_binding_syntax(spec: dict[str, Any], errors: list[str]) -> None:
     syntax = spec.get("syntax", {})
     if not isinstance(syntax, dict):
@@ -465,6 +619,7 @@ def _validate_local_binding_syntax(spec: dict[str, Any], errors: list[str]) -> N
 
 def validate_spec(spec: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    _validate_language_contract(spec, errors)
 
     _record_set_mismatch(
         errors,

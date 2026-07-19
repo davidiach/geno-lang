@@ -1,0 +1,15 @@
+func main() -> Unit
+    let values: Vec[Int] = vec_new()
+    vec_push(values, 10)
+    vec_push(values, 20)
+    vec_push(values, 30)
+    print(vec_length(values))
+    vec_set(vec: values, index: 1, value: 99)
+    print(vec_get(values, 1))
+    match vec_pop(values) with
+        | Some(value) -> print(value)
+        | None -> print(-1)
+    end match
+    print(vec_length(values))
+    return ()
+end func
