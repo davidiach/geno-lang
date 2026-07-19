@@ -27,5 +27,5 @@ cd vscode-geno
 npm ci
 npm run compile
 npm run package
-code --install-extension geno-0.4.0.vsix
+code --install-extension geno-0.4.1.vsix
 ```

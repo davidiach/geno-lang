@@ -1,6 +1,6 @@
 # Geno Preview Program
 
-> **Status: Preview (v0.4.0)** — Geno is available for early evaluation, but
+> **Status: Preview (v0.4.1)** — Geno is available for early evaluation, but
 > the structured external beta program has not produced public participant
 > metrics or a retrospective yet.
 

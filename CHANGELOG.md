@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-19
+
+### Changed
+
+- **Supply-chain maintenance**: Consolidated and pinned GitHub Actions, hash-locked release tooling, migrated development coverage to pytest-cov 7, and updated the VS Code TypeScript and language-client toolchain (#9, #13, #15, #16, #17, #20)
+- **Extension dependencies**: Resolved known VS Code extension dependency vulnerabilities and refreshed the lockfile (#14)
+- **Security support window**: The supported release line is now 0.4.x
+
+### Fixed
+
+- **VS Code packaging**: Packaged the Python language-server runtime in the VSIX and aligned the extension build and release gate (#13)
+- **CI timeout stability**: Isolated timeout scheduler regressions and stabilized extension checks after the 0.4.0 release (#13)
+- **macOS benchmark stability**: Gave research-only Python benchmark workers an explicit finite memory budget instead of relying on production defaults (#22)
+- **macOS sandbox stability**: Raised Darwin's production address-space growth budget to 512 MiB, probed XNU's accepted boundary without architecture assumptions, and stabilized the cross-platform config-transport smoke test (#23, #24)
+
+### Security
+
+- **Untrusted process execution**: Hardened POSIX and Windows worker startup, supervision, cleanup, resource enforcement, compiled-runtime prelude handling, and regex limits (#17)
+- **Package integrity**: Hardened source capture, lock and state files, symlink handling, crash recovery, content hashing, and release dependency validation (#17)
+- **Hosted boundaries**: Enforced Host, forwarded-header, request-body, and module boundaries and corrected deployment health checks (#17)
+- **Regression coverage**: Added security tests for the discovered vulnerability classes; the in-process embedding API remains cooperative and generated JavaScript remains for trusted environments (#17)
+
 ## [0.4.0] - 2026-07-13
 
 ### Added
