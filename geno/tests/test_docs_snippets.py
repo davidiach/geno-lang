@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from geno.interpreter import interpret
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.typechecker import TypeChecker
@@ -47,3 +48,19 @@ def test_spec_example_program_typechecks():
     ).parse_program()
 
     TypeChecker().check_program(program)
+
+
+def test_readme_opening_example_executes_with_examples_enabled():
+    code = _geno_snippet("README.md", 1)
+    source = "README.md#opening-example"
+    program = Parser(Lexer(code, source).tokenize()).parse_program()
+
+    TypeChecker().check_program(program)
+    assert (
+        interpret(
+            code,
+            source,
+            check_examples=True,
+        )
+        == "excellent"
+    )
