@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Stable diagnostic ownership**: Parser, type, and effect errors now emit granular E202 and E302-E311 codes at their owning compiler sites, including through the LSP exception bridge.
 - **Release qualification**: The release gate and local release plan now require the frozen corpus on the interpreter, Python, and JavaScript backends.
+- **CLI entrypoint exit status**: `main() -> Int` now becomes the portable
+  process status (modulo 256) in `geno run`, the self-hosted `run` command,
+  and standalone Python/Node artifacts after buffered output is emitted.
+  Normal nonzero exits produce no runtime trace, and watch mode reports their
+  status while continuing to watch.
+- **Entrypoint result migration**: Programs that intentionally used an `Int`
+  return as display output should call `print(value)` and return `Unit` (or
+  return `0` after printing). Embedding APIs continue returning the raw value
+  without terminating their host process.
+- **Entrypoint ownership**: Only `main` declared in the selected entry module
+  is invoked. Interpreter, process, self-hosted, and compiled paths no longer
+  disagree when an imported module happens to export a function named `main`.
+- **Generated ESM import safety**: Node ES modules invoke `main` only when run
+  directly; importing them no longer runs the program or changes the host
+  process status. Browser-targeted ESM remains free of Node-only imports.
 
 ### Fixed
 

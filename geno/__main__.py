@@ -18,7 +18,7 @@ Usage:
 import argparse
 import math
 import os
-from typing import Any
+from typing import Any, cast
 
 from .capabilities import CapabilityParseError, normalize_capability_values
 from .cli._util import (
@@ -559,7 +559,7 @@ def dispatch_args(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
     extra: list[str],
-) -> None:
+) -> int | None:
     """Dispatch parsed CLI arguments to the selected command implementation."""
     _check_python_version(
         args.command,
@@ -591,7 +591,7 @@ def dispatch_args(
             except ValueError:
                 program_args = extra  # argparse may strip '--'
         run_file = _command("run_file")
-        run_file(
+        result = run_file(
             args.file,
             check_examples=not args.no_check_examples,
             unsafe=args.unsafe,
@@ -612,6 +612,7 @@ def dispatch_args(
             json_output=args.json_output,
             program_args=program_args,
         )
+        return cast(int | None, result)
     elif args.command == "compile":
         compile_file = _command("compile_file")
         compile_file(
@@ -722,13 +723,15 @@ def dispatch_args(
     else:
         parser.print_help()
 
+    return None
 
-def main(argv: list[str] | None = None) -> None:
+
+def main(argv: list[str] | None = None) -> int | None:
     """CLI entrypoint."""
     parser = build_parser()
     args, extra = parser.parse_known_args(argv)
-    dispatch_args(parser, args, extra)
+    return dispatch_args(parser, args, extra)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

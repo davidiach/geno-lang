@@ -33,6 +33,7 @@ from .builtin_registry import allowed_gated_builtins
 from .capabilities import normalize_capability_values
 from .dependency_graph import DependencyGraphError
 from .diagnostics import Diagnostic, ErrorCode, Severity
+from .entrypoint import entrypoint_returns_int
 from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
 from .project_graph import ProjectGraphError
 from .project_resolution import (
@@ -749,18 +750,19 @@ def run(
         timing.run_ms = (time.perf_counter() - t_run) * 1000
         timing.total_ms = (time.perf_counter() - t0) * 1000
 
-        return _emit_monitoring_hook(
-            cfg,
-            RunResult(
-                ok=True,
-                value=value_to_json(result_raw),
-                value_raw=result_raw,
-                output=output,
-                diagnostics=diagnostics,
-                timing=timing,
-                steps_used=steps,
-            ),
+        run_result = RunResult(
+            ok=True,
+            value=value_to_json(result_raw),
+            value_raw=result_raw,
+            output=output,
+            diagnostics=diagnostics,
+            timing=timing,
+            steps_used=steps,
         )
+        run_result.__dict__["_main_returns_int"] = entrypoint_returns_int(
+            program, parsed_modules
+        )
+        return _emit_monitoring_hook(cfg, run_result)
 
     # Exception ordering matters: subclasses must be caught before their
     # parent classes.  StepLimitExceeded and RecursionLimitError are both

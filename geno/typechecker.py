@@ -1590,6 +1590,7 @@ class TypeChecker(ExhaustivenessMixin):
         """Build a function signature and named-arg metadata."""
         param_types = tuple(self._resolve_type(p.param_type) for p in defn.params)
         return_type = self._resolve_type(defn.return_type)
+        defn.__dict__["_resolved_return_type"] = return_type
         for param_type in param_types:
             self._validate_keyed_collection_type(param_type, defn.location)
         self._validate_keyed_collection_type(return_type, defn.location)

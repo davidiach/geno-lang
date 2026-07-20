@@ -61,7 +61,7 @@ def compile_file(
             sources_content: dict[str, str] = {}
 
             if is_multi:
-                code = compiler.compile_project(dg)
+                code = compiler.compile_project(dg, esm=esm)
                 if emit_source_map:
                     for mod_name in dg.sorted_modules:
                         rf = dg.file_map.get(mod_name)
@@ -71,7 +71,7 @@ def compile_file(
                             ]
             else:
                 program = dg.parsed[dg.sorted_modules[0]]
-                code = compiler.compile(program)
+                code = compiler.compile(program, esm=esm)
                 if emit_source_map:
                     source_path = pg.files[0].path
                     sources_content[str(source_path)] = dg.original_sources[
