@@ -45,11 +45,25 @@ Run with Node.js:
 node app.js
 ```
 
+HTTP calls in compiled Node output require only the `http` capability. Geno's
+internal synchronous bridge does not grant user code process execution:
+
+```bash
+node app.js --cap http
+```
+
+Loopback, private, link-local, multicast, reserved, and unspecified targets are
+denied by default, including after redirects. Trusted local deployments can opt
+in with `GENO_HTTP_ALLOW_PRIVATE=1`.
+
 ### ES Module output
 
 ```bash
 geno compile Main.geno --target js --esm -o app.mjs
 ```
+
+ES-module output targets Node.js and supports the same filesystem and HTTP
+runtime services. Use `geno build` for browser artifacts.
 
 ### Requirements
 

@@ -47,7 +47,18 @@
     "map_get": "total lookup returning Option[V]",
     "print": "canonical Geno representation plus newline; top-level String values are unquoted",
     "runtime_preludes": "hand-maintained target-specific implementations guarded by cross-backend parity tests",
-    "embedding_timeout": "cooperative; untrusted code requires process isolation"
+    "embedding_timeout": "cooperative; untrusted code requires process isolation",
+    "http": {
+      "capability": "http",
+      "schemes": ["http", "https"],
+      "received_status": "Every received status is a response: http_fetch/http_post return the body and http_request returns Ok(HttpResponse)",
+      "failures": "Scheme, transport, redirect-policy, and network-policy failures throw from http_fetch/http_post and return Err from http_request",
+      "response_headers": "ordered duplicate-preserving List[(String, String)]",
+      "redirects": "at most 10; each target is revalidated; caller headers are stripped across origins",
+      "network_policy": "non-public addresses denied unless a trusted host sets GENO_HTTP_ALLOW_PRIVATE=1",
+      "collection_policy": "UTF-8 response bodies are streamed to the runtime collection limit",
+      "node_bridge": "request data is passed over stdin and the bridge does not grant the process capability"
+    }
   },
 
   "effect_system": {

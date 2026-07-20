@@ -428,6 +428,7 @@ _JS_FIXED_GLOBAL_NAMES = frozenset(
         "_geno_frame",
         "_geno_last_ts",
         "_geno_state",
+        "_GENO_CREATE_REQUIRE",
         "_main_result",
     }
 )
@@ -3137,6 +3138,8 @@ def compile_to_js(
             out_file=out_file,
             sources_content={filename: source},
         )
+        if esm:
+            sm_json = _offset_source_map_lines(sm_json, _ESM_SOURCE_MAP_LINE_DELTA)
         return js_code, sm_json
 
     return js_code
@@ -3247,6 +3250,13 @@ def _geno_type_to_ts(type_annot) -> str:
     return "unknown"
 
 
+_ESM_NODE_PREAMBLE = (
+    'import { createRequire as _GENO_CREATE_REQUIRE } from "node:module";\n'
+    "const require = _GENO_CREATE_REQUIRE(import.meta.url);\n"
+)
+_ESM_SOURCE_MAP_LINE_DELTA = _ESM_NODE_PREAMBLE.count("\n") - 1
+
+
 def _to_esm(js_code: str, program: Program) -> str:
     """Convert compiled JS to ES module format.
 
@@ -3257,6 +3267,7 @@ def _to_esm(js_code: str, program: Program) -> str:
 
     # ESM is implicitly strict
     js_code = js_code.replace('"use strict";\n', "", 1)
+    js_code = _ESM_NODE_PREAMBLE + js_code
 
     # Collect exported names
     exports: list[str] = []

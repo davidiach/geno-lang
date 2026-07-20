@@ -53,7 +53,14 @@ CLI and automation scripts running on the Python interpreter. Full access to fil
 
 ### node-cli
 
-CLI and automation scripts compiled to Node.js. Filesystem access uses Node.js `fs` module; HTTP uses Node.js `fetch` through a synchronous bridge that requires both the `http` and `process` capabilities. User-authored process execution is not supported on this target.
+CLI and automation scripts compiled to Node.js. Filesystem access uses Node.js
+`fs`; HTTP uses an internal synchronous CommonJS/ES-module bridge gated solely
+by the `http` capability. The bridge does not expose process execution to Geno
+code: request data travels over stdin, responses are streamed to the collection
+limit, redirects and resolved addresses are policy-checked, and cross-origin
+redirects discard caller headers. `http_request` preserves ordered duplicate
+header pairs and returns scheme, transport, and network-policy failures as
+`Err`. User-authored process execution is not supported on this target.
 
 **Capabilities:** fs, http, env, clock, random, print, regex
 

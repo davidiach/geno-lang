@@ -452,6 +452,7 @@ def install_http_callbacks(
     """Install real HTTP implementations for --cap http."""
     import http.client
     import ssl
+    from urllib.error import HTTPError
     from urllib.parse import urljoin
     from urllib.request import (
         HTTPHandler,
@@ -513,6 +514,9 @@ def install_http_callbacks(
                 return self.do_open(_ValidatedHTTPSConnection, request)
 
         class _HttpOnlyRedirectHandler(HTTPRedirectHandler):
+            max_repeats = 11
+            max_redirections = 11
+
             def redirect_request(
                 self,
                 request: Any,
@@ -522,15 +526,53 @@ def install_http_callbacks(
                 headers: Any,
                 newurl: str,
             ) -> Any:
+                redirect_count = getattr(request, "_geno_redirect_count", 0)
+                if redirect_count >= 10:
+                    raise RuntimeError(f"{fn_name}: too many redirects")
                 target_url = urljoin(request.full_url, newurl)
                 _check_scheme(target_url, fn_name)
-                redirected = super().redirect_request(
-                    request, fp, code, msg, headers, newurl
+                source_method = request.get_method().upper()
+                redirected_method = source_method
+                if (code == 303 and source_method != "HEAD") or (
+                    code in {301, 302} and source_method == "POST"
+                ):
+                    redirected_method = "GET"
+
+                redirected_data = getattr(request, "data", None)
+                if redirected_method != source_method or (
+                    redirected_method in {"GET", "HEAD"}
+                    and redirected_data
+                    in {
+                        "",
+                        b"",
+                    }
+                ):
+                    redirected_data = None
+
+                redirected_headers: dict[str, str] = {}
+                if _http_origin(request.full_url) == _http_origin(target_url):
+                    redirected_headers = dict(request.headers)
+                    if redirected_method != source_method:
+                        redirected_headers = {
+                            key: value
+                            for key, value in redirected_headers.items()
+                            if key.lower()
+                            not in {
+                                "content-length",
+                                "content-type",
+                                "transfer-encoding",
+                            }
+                        }
+
+                redirected = Request(
+                    target_url,
+                    data=redirected_data,
+                    headers=redirected_headers,
+                    origin_req_host=request.origin_req_host,
+                    unverifiable=True,
+                    method=redirected_method,
                 )
-                if redirected is not None:
-                    _strip_cross_origin_redirect_headers(
-                        request.full_url, target_url, redirected
-                    )
+                cast(Any, redirected)._geno_redirect_count = redirect_count + 1
                 return redirected
 
         return build_opener(
@@ -545,6 +587,9 @@ def install_http_callbacks(
         try:
             with _open_request(Request(url), "http_fetch") as resp:
                 result = _read_limited_utf8_stream(interpreter, resp, "http_fetch")
+        except HTTPError as resp:
+            with resp:
+                result = _read_limited_utf8_stream(interpreter, resp, "http_fetch")
         except (OSError, ValueError) as e:
             raise RuntimeError(f"http_fetch: {e}")
         return _checked_callback_result(interpreter, result)
@@ -556,6 +601,9 @@ def install_http_callbacks(
             req.add_header("Content-Type", "application/json")
             with _open_request(req, "http_post") as resp:
                 result = _read_limited_utf8_stream(interpreter, resp, "http_post")
+        except HTTPError as resp:
+            with resp:
+                result = _read_limited_utf8_stream(interpreter, resp, "http_post")
         except (OSError, ValueError) as e:
             raise RuntimeError(f"http_post: {e}")
         return _checked_callback_result(interpreter, result)
@@ -563,11 +611,22 @@ def install_http_callbacks(
     def _http_request(method, url, headers, body):
         try:
             _check_scheme(url, "http_request")
-            data = body.encode("utf-8") if body is not None else None
-            req = Request(url, data=data, method=method)
+            normalized_method = method.upper()
+            data = (
+                None
+                if normalized_method in {"GET", "HEAD"} and body == ""
+                else body.encode("utf-8")
+                if body is not None
+                else None
+            )
+            req = Request(url, data=data, method=normalized_method)
             for key, value in headers:
                 req.add_header(key, value)
-            with _open_request(req, "http_request") as resp:
+            try:
+                response_handle = _open_request(req, "http_request")
+            except HTTPError as http_error:
+                response_handle = http_error
+            with response_handle as resp:
                 resp_headers = [(k, v) for k, v in resp.getheaders()]
                 body_text = _read_limited_utf8_stream(interpreter, resp, "http_request")
                 result = ConstructorValue(

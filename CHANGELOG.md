@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Compiled Node HTTP**: Repaired CommonJS and ES-module HTTP with an `http`-only, stdin-based bridge; streamed bounded responses; enforced private-address and redirect policy; preserved duplicate headers and non-2xx bodies across Python and Node; and kept expected `http_request` failures trace-free.
 - **VS Code packaging**: The release gate now verifies the transitive `vscode-jsonrpc` runtime is present in the VSIX.
 
 ## [0.4.1] - 2026-07-19
