@@ -428,6 +428,25 @@ class Interpreter:
                 ],
                 location=loc,
             ),
+            TypeDef(
+                name="FileKind",
+                type_params=[],
+                variants=[
+                    _variant("FileKindFile", []),
+                    _variant("FileKindDirectory", []),
+                    _variant("FileKindSymlink", []),
+                    _variant("FileKindOther", []),
+                ],
+                location=loc,
+            ),
+            TypeDef(
+                name="FileMetadata",
+                type_params=[],
+                variants=[
+                    _variant("FileMetadata", ["kind", "size", "modified_ms"]),
+                ],
+                location=loc,
+            ),
         ]
 
         for type_def in builtin_types:
@@ -769,6 +788,19 @@ class Interpreter:
             ),
             ("fs_list_dir", self._stub_host_callback("fs_list_dir"), 1, ["path"]),
             ("fs_exists", self._stub_host_callback("fs_exists"), 1, ["path"]),
+            ("fs_metadata", self._stub_host_callback("fs_metadata"), 1, ["path"]),
+            (
+                "fs_symlink_metadata",
+                self._stub_host_callback("fs_symlink_metadata"),
+                1,
+                ["path"],
+            ),
+            (
+                "fs_canonicalize",
+                self._stub_host_callback("fs_canonicalize"),
+                1,
+                ["path"],
+            ),
             ("http_fetch", self._stub_host_callback("http_fetch"), 1, ["url"]),
             ("http_post", self._stub_host_callback("http_post"), 2, ["url", "body"]),
             (
@@ -2586,7 +2618,8 @@ class Interpreter:
         """Evaluate a constructor call.
 
         Built-in type variants (Option, Result, JsonValue, HttpResponse,
-        HttpRequest, ProcessResult) are registered in ``type_defs`` at init
+        HttpRequest, ProcessResult, FileKind, FileMetadata) are registered in
+        `type_defs` at init
         time so they are resolved dynamically through the same path as
         user-defined types.
         """

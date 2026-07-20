@@ -1,0 +1,5 @@
+# EXPECT: E412
+# fs_canonicalize without the "fs" capability should fail.
+func main() -> Result[String, String]
+    return fs_canonicalize(path: "/etc/passwd")
+end func

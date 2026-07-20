@@ -3214,10 +3214,12 @@ def builtin_path_extension(path: str) -> str:
 
 
 def builtin_path_is_absolute(path: str) -> bool:
-    """Return whether a path is absolute."""
+    """Return whether a path is absolute, including canonical Windows paths."""
     import posixpath
 
-    return posixpath.isabs(path)
+    return posixpath.isabs(path) or (
+        len(path) >= 3 and path[0].isalpha() and path[1:3] == ":/"
+    )
 
 
 # =============================================================================

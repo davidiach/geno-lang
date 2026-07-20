@@ -11,7 +11,7 @@ builtins your program needs.
 | `print` | `print` | Console output |
 | `clock` | `clock_now`, `clock_format`, `clock_parse`, `clock_elapsed`, `sleep_ms`, `datetime_now`, `datetime_format`, `datetime_parse`, `datetime_elapsed` | Timestamps, timing |
 | `random` | `random_int`, `random_float`, `math_random_int`, `math_random_float` | Random number generation |
-| `fs` | `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists` | File I/O |
+| `fs` | `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, `fs_canonicalize` | File I/O and metadata |
 | `http` | `http_fetch`, `http_post`, `http_request` | HTTP requests (http/https only) |
 | `regex` | `regex_match`, `regex_find_all`, `regex_replace` | Regular expressions |
 | `env` | `env_get`, `env_get_or`, `cli_args` | Environment variables, CLI args |
@@ -108,7 +108,12 @@ Python and Node output:
   `GENO_FS_ALLOW_ABSOLUTE=1` only for trusted deployments that need absolute
   paths inside those roots. Set `GENO_FS_READ_ONLY=1` to allow filesystem reads
   while rejecting `fs_write_text`. Symlink escapes are rejected after realpath
-  resolution.
+  resolution. `fs_metadata` follows the final link, `fs_symlink_metadata`
+  inspects that link itself, and `fs_canonicalize` returns an existing absolute
+  real path with `/` separators. A final link inside a root may be inspected,
+  but followed metadata and canonicalization still reject target escapes. See
+  [Filesystem Metadata and Canonicalization](filesystem.md) for the full
+  behavior contract.
 - `http` requests allow only `http` and `https` and reject loopback,
   link-local, private, multicast, reserved, and unspecified targets by
   default. Redirect targets are checked with the same policy. Set
@@ -188,7 +193,8 @@ These builtins are pure computation and require no capability grant:
 
 **Path operations** (pure string manipulation):
 `path_extension`, `path_filename`, `path_is_absolute`, `path_join`,
-`path_parent`
+`path_parent`. The portable representation uses `/`; `path_is_absolute` also
+recognizes canonical Windows drive paths such as `C:/work/file`.
 
 **Array operations:**
 `array_new`, `array_from_list`, `array_get`, `array_set`, `array_length`,

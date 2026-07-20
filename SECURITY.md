@@ -186,7 +186,7 @@ call the corresponding builtins.
 | `clock`    | `datetime_now`, `datetime_format`, `datetime_parse`, `datetime_elapsed`, `clock_now`, `clock_format`, `clock_parse`, `clock_elapsed`, `sleep_ms` | Low |
 | `random`   | `math_random_int`, `math_random_float`, `random_int`, `random_float` | Low |
 | `env`      | `env_get`, `env_get_or`, `cli_args`                    | Medium     |
-| `fs`       | `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists` | High  |
+| `fs`       | `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, `fs_canonicalize` | High  |
 | `http`     | `http_fetch`, `http_post`, `http_request`              | High       |
 | `regex`    | `regex_match`, `regex_find_all`, `regex_replace`       | Low        |
 | `process`  | `exec`, `exec_with_input`, `spawn`, `spawn_with_input` | Critical   |
@@ -412,7 +412,7 @@ different security profile than the Python sandbox.
   (string repeat, list repeat, `range`, set union, `array_new`, `array_from_list`) are guarded.
 - **Regex pattern length limit**: Patterns are capped at 1,000 characters (`_MAX_REGEX_PATTERN_LEN`)
   to mitigate ReDoS.
-- **I/O stubs that fail closed**: `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`,
+- **I/O stubs that fail closed**: `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, `fs_canonicalize`,
   `exec`, and `exec_with_input` all throw or return `Err` in the browser context rather than
   silently succeeding.
 - **Immutable constructors**: ADT values (`Some`, `Ok`, `Err`, `JsonValue`, etc.) are created
