@@ -28,10 +28,13 @@
     "primitive": ["Int", "Float", "Bool", "String", "Unit"],
     "collections": ["List[T]", "Array[T]", "Vec[T]", "Set[T]", "Map[K, V]", "MutableMap[K, V]"],
     "algebraic": ["Option[T]", "Result[T, E]"],
+    "builtin_algebraic": ["JsonValue", "HttpRequest", "HttpResponse", "ProcessResult", "FileKind", "FileMetadata"],
     "async": ["Async[T]"],
     "constructors": {
       "Option": ["Some(value)", "None"],
-      "Result": ["Ok(value)", "Err(error)"]
+      "Result": ["Ok(value)", "Err(error)"],
+      "FileKind": ["FileKindFile", "FileKindDirectory", "FileKindSymlink", "FileKindOther"],
+      "FileMetadata": ["FileMetadata(kind, size, modified_ms)"]
     }
   },
 
@@ -378,6 +381,20 @@
     }
   },
 
+  "filesystem_semantics": {
+    "types": {
+      "FileKind": ["FileKindFile", "FileKindDirectory", "FileKindSymlink", "FileKindOther"],
+      "FileMetadata": {"fields": {"kind": "FileKind", "size": "Int", "modified_ms": "Int"}}
+    },
+    "builtins": {
+      "fs_metadata": "(path: String) -> Result[FileMetadata, String]; follows the final symbolic link",
+      "fs_symlink_metadata": "(path: String) -> Result[FileMetadata, String]; does not follow the final symbolic link",
+      "fs_canonicalize": "(path: String) -> Result[String, String]; requires existence and returns an absolute slash-normalized real path"
+    },
+    "errors": "Ordinary OS and configured-root policy failures return Err; capability and portable-resource violations remain runtime errors",
+    "targets": ["python-cli", "node-cli", "python-hosted"]
+  },
+
   "module_system": {
     "description": "Modules are PascalCase .geno files. `run(source, modules={...})` resolves imports only from the provided in-memory module sources. File/project execution (`run_path`, `check_path`, and CLI commands) resolves modules from disk via project resolution and package metadata, then applies explicit module overlays for imported modules of the same name.",
     "syntax": "import ModuleName [as Alias]",
@@ -411,7 +428,7 @@
       "clock": ["datetime_now", "datetime_format", "datetime_parse", "datetime_elapsed", "clock_now", "clock_format", "clock_parse", "clock_elapsed", "sleep_ms"],
       "random": ["math_random_int", "math_random_float", "random_int", "random_float"],
       "env": ["env_get", "env_get_or", "cli_args"],
-      "fs": ["fs_read_text", "fs_write_text", "fs_list_dir", "fs_exists"],
+      "fs": ["fs_read_text", "fs_write_text", "fs_list_dir", "fs_exists", "fs_metadata", "fs_symlink_metadata", "fs_canonicalize"],
       "http": ["http_fetch", "http_post", "http_request"],
       "regex": ["regex_match", "regex_find_all", "regex_replace"],
       "process": ["exec", "exec_with_input", "spawn", "spawn_with_input"],

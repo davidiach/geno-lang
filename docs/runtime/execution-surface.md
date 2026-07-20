@@ -8,7 +8,7 @@ This document defines the supported production execution surface for Geno.
 - Hosted deployments should instrument `geno.run()` through `RunConfig(monitoring_hook=...)` or the helper collector in `geno.monitoring`.
 - If `RunConfig.capabilities` is omitted, capability gating fails closed.
 - Every gated builtin is denied unless its capability is present.
-- `fs_read_text` and `http_fetch` require both the matching capability and a host callback.
+- Interpreter filesystem builtins and HTTP client builtins require both the matching capability and an explicit host callback.
 - Module imports resolve from `RunConfig(modules=...)`, not from the filesystem.
 
 ## Pure Builtins
@@ -33,7 +33,7 @@ The following builtin families are part of the supported runtime surface and rem
 - `print` requires `print`
 - `clock_now`, `clock_format`, `clock_parse`, `clock_elapsed` require `clock`
 - `random_int`, `random_float` require `random`
-- `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists` require `fs` (read/write also need host callbacks)
+- `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, and `fs_canonicalize` require `fs` (all require host callbacks in the interpreter)
 - `http_fetch`, `http_post`, `http_request` require `http` (fetch/post/request also need host callbacks)
 - `regex_match`, `regex_find_all`, `regex_replace` require `regex`
 - `env_get`, `env_get_or`, `cli_args` require `env`

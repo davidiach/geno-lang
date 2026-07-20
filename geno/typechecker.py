@@ -451,6 +451,29 @@ class TypeChecker(ExhaustivenessMixin):
             },
         )
 
+        self.type_defs["FileKind"] = TypeDefInfo(
+            name="FileKind",
+            type_params=[],
+            variants={
+                "FileKindFile": [],
+                "FileKindDirectory": [],
+                "FileKindSymlink": [],
+                "FileKindOther": [],
+            },
+        )
+
+        self.type_defs["FileMetadata"] = TypeDefInfo(
+            name="FileMetadata",
+            type_params=[],
+            variants={
+                "FileMetadata": [
+                    ("kind", UserType("FileKind")),
+                    ("size", IntType()),
+                    ("modified_ms", IntType()),
+                ],
+            },
+        )
+
         # Build constructor→type reverse index for built-in types
         for type_name, type_info in self.type_defs.items():
             for constructor_name in type_info.variants:

@@ -183,6 +183,12 @@ result = geno.run(source, config=RunConfig(
 ))
 ```
 
+The same explicit-callback rule applies to `fs_metadata`,
+`fs_symlink_metadata`, and `fs_canonicalize`; granting `fs` never installs
+ambient filesystem access in `geno.run()`. Metadata callbacks return the usual
+interpreter `Result` and built-in ADT values (`ConstructorValue` instances), so
+embedders retain full control over path policy and reported metadata.
+
 Host callbacks run as trusted code inside the interpreter. They are **not**
 subject to the execution timeout. Implement your own timeouts for I/O
 operations.

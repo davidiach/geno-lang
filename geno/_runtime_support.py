@@ -406,6 +406,34 @@ class ProcessResult(Constructor):
     stderr: str
 
 
+@dataclass(frozen=True, repr=False)
+class FileKindFile(Constructor):
+    __slots__ = ()
+
+
+@dataclass(frozen=True, repr=False)
+class FileKindDirectory(Constructor):
+    __slots__ = ()
+
+
+@dataclass(frozen=True, repr=False)
+class FileKindSymlink(Constructor):
+    __slots__ = ()
+
+
+@dataclass(frozen=True, repr=False)
+class FileKindOther(Constructor):
+    __slots__ = ()
+
+
+@dataclass(frozen=True, repr=False)
+class FileMetadata(Constructor):
+    __slots__ = ("kind", "modified_ms", "size")
+    kind: Constructor
+    size: int
+    modified_ms: int
+
+
 class _PropagateReturn(Exception):
     """Internal: raised by _propagate() to trigger early return from ?."""
 
@@ -3329,7 +3357,9 @@ def path_extension(path):
 
 
 def path_is_absolute(path):
-    return _runtime_posixpath.isabs(path)
+    return _runtime_posixpath.isabs(path) or (
+        len(path) >= 3 and path[0].isalpha() and path[1:3] == ":/"
+    )
 
 
 # =============================================================================
@@ -3957,6 +3987,56 @@ def _resolve_fs_path(path: str, fn_name: str) -> str:
     raise RuntimeError(f"{fn_name}: path escapes configured filesystem roots")
 
 
+def _resolve_fs_lstat_path(path: str, fn_name: str) -> str:
+    """Resolve parent components while preserving the final path component."""
+    import os as _os
+
+    if not isinstance(path, str):
+        raise RuntimeError(f"{fn_name}: path must be String")
+
+    def resolve_parent(parent: str) -> str:
+        absolute = parent
+        drive, tail = _os.path.splitdrive(absolute)
+        if _os.path.altsep:
+            tail = tail.replace(_os.path.altsep, _os.path.sep)
+        current = drive + _os.path.sep if tail.startswith(_os.path.sep) else drive
+        for component in tail.split(_os.path.sep):
+            if not component or component == ".":
+                continue
+            if component == "..":
+                current = _os.path.dirname(current)
+            else:
+                current = _os.path.realpath(_os.path.join(current, component))
+        return current
+
+    def resolve_candidate(candidate: str) -> str:
+        parent, name = _os.path.split(candidate)
+        if not name:
+            return resolve_parent(candidate)
+        return _os.path.normpath(_os.path.join(resolve_parent(parent), name))
+
+    roots = _fs_policy_roots()
+    if _os.path.isabs(path):
+        resolved = resolve_candidate(path)
+        if _geno_env_truthy("GENO_FS_ALLOW_ABSOLUTE"):
+            absolute_roots = roots
+        elif _geno_env_list("GENO_FS_ROOTS") is None:
+            absolute_roots = [_os.path.realpath(root) for root in _fs_cli_arg_roots()]
+        else:
+            absolute_roots = []
+        if any(_is_under_root(resolved, root) for root in absolute_roots):
+            return resolved
+        if any(_is_under_root(resolved, root) for root in roots):
+            raise RuntimeError(f"{fn_name}: absolute paths are not allowed")
+        raise RuntimeError(f"{fn_name}: path escapes configured filesystem roots")
+
+    for root in roots:
+        resolved = resolve_candidate(_os.path.join(root, path))
+        if _is_under_root(resolved, root):
+            return resolved
+    raise RuntimeError(f"{fn_name}: path escapes configured filesystem roots")
+
+
 def _fs_writes_allowed() -> bool:
     return not _geno_env_truthy("GENO_FS_READ_ONLY")
 
@@ -4308,6 +4388,73 @@ def fs_exists(path: str) -> bool:
 
     path = _resolve_fs_path(path, "fs_exists")
     return os.path.exists(path)
+
+
+def _file_metadata_from_stat(stat_result: Any, fn_name: str) -> FileMetadata:
+    import stat as _stat
+
+    mode = stat_result.st_mode
+    kind: Constructor
+    if _stat.S_ISREG(mode):
+        kind = FileKindFile()
+    elif _stat.S_ISDIR(mode):
+        kind = FileKindDirectory()
+    elif _stat.S_ISLNK(mode):
+        kind = FileKindSymlink()
+    else:
+        kind = FileKindOther()
+    size = _require_safe_js_int(stat_result.st_size, f"{fn_name} size")
+    modified_ms = _require_safe_js_int(
+        stat_result.st_mtime_ns // 1_000_000,
+        f"{fn_name} modified_ms",
+    )
+    return FileMetadata(kind, size, modified_ms)
+
+
+def fs_metadata(path: str) -> Any:
+    """Return metadata for a path, following the final symbolic link."""
+    _require_cap("fs", "fs_metadata")
+    import os as _os
+
+    try:
+        resolved = _resolve_fs_path(path, "fs_metadata")
+        stat_result = _os.stat(resolved)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return Err(str(exc))
+    return _check_collection_size(
+        Ok(_file_metadata_from_stat(stat_result, "fs_metadata"))
+    )
+
+
+def fs_symlink_metadata(path: str) -> Any:
+    """Return metadata without following the final symbolic link."""
+    _require_cap("fs", "fs_symlink_metadata")
+    import os as _os
+
+    try:
+        resolved = _resolve_fs_lstat_path(path, "fs_symlink_metadata")
+        stat_result = _os.lstat(resolved)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return Err(str(exc))
+    return _check_collection_size(
+        Ok(_file_metadata_from_stat(stat_result, "fs_symlink_metadata"))
+    )
+
+
+def fs_canonicalize(path: str) -> Any:
+    """Return the absolute, symlink-resolved path using portable separators."""
+    _require_cap("fs", "fs_canonicalize")
+    import os as _os
+
+    try:
+        resolved = _resolve_fs_path(path, "fs_canonicalize")
+        if not _os.path.exists(resolved):
+            raise FileNotFoundError(f"fs_canonicalize: path does not exist: {path}")
+    except (OSError, RuntimeError, ValueError) as exc:
+        return Err(str(exc))
+    canonical = resolved.replace("\\", "/")
+    _check_string_result_size("fs_canonicalize", len(canonical))
+    return _check_collection_size(Ok(canonical))
 
 
 # =============================================================================

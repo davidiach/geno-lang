@@ -227,6 +227,27 @@ node-cli = "capability-gated"
 browser = "unavailable"
 python-hosted = "capability-gated"
 
+[builtins.fs_metadata]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
+[builtins.fs_symlink_metadata]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
+[builtins.fs_canonicalize]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
 # --- HTTP builtins ---
 
 [builtins.http_fetch]

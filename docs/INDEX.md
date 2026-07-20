@@ -10,6 +10,7 @@
 ## Reference
 
 - [Capability Reference](reference/capabilities.md) -- what `--cap print`, `--cap fs`, etc. unlock
+- [Filesystem Metadata and Canonicalization](reference/filesystem.md) -- portable stat, lstat, realpath, and path-policy behavior
 - [Common Pitfalls](reference/common-pitfalls.md) -- the top 10 mistakes and how to fix them
 - [Embedding API](reference/embedding-api.md) -- use Geno as a Python library
 - [Portable Runtime Semantics](reference/runtime-semantics.md) -- cross-backend numbers, copies, maps, and output

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Language evolution process**: Added explicit governance, a design-proposal process, compatibility policy, and evidence-based serious-beta qualification criteria.
 - **Scheduled quality**: Added a weekly all-backend conformance and 2,000-case differential-fuzz workflow with retained failure artifacts.
 - **Editor formatting**: Added LSP whole-document formatting for saved, unsaved, and virtual Geno buffers.
+- **Filesystem inspection**: Added capability-gated `fs_metadata`, `fs_symlink_metadata`, and `fs_canonicalize` with typed file kinds, portable millisecond timestamps, scoped symlink handling, and compiled Python/Node parity.
 
 ### Changed
 

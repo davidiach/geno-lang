@@ -261,6 +261,9 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "fs_write_text": (["path", "content"], "fs"),
     "fs_list_dir": (["path"], "fs"),
     "fs_exists": (["path"], "fs"),
+    "fs_metadata": (["path"], "fs"),
+    "fs_symlink_metadata": (["path"], "fs"),
+    "fs_canonicalize": (["path"], "fs"),
     # --- Regex (gated by regex) --------------------------------------------
     "regex_match": (["pattern", "text"], "regex"),
     "regex_find_all": (["pattern", "text"], "regex"),
