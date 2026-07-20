@@ -2309,7 +2309,9 @@ class TestJSCompilerReservedNames:
         assert "class_kw" in js_code
         assert compile_and_run_js(source) == "42"
 
-    @pytest.mark.parametrize("name", ["_requireCap", "_validateRegexPattern"])
+    @pytest.mark.parametrize(
+        "name", ["_requireCap", "_validateRegexPattern", "_GENO_CREATE_REQUIRE"]
+    )
     def test_all_runtime_prelude_functions_are_reserved(self, name):
         source = f"""
         func {name}(value: String, context: String) -> Unit
@@ -3234,30 +3236,30 @@ console.log("ok");
 """
         assert run_js_runtime_script(script) == "ok"
 
-    def test_node_http_requires_process_cap_before_child_process_spawn(self):
+    def test_node_http_bridge_uses_stdin_without_process_cap(self):
         script = """
-const originalRequire = require;
-let childProcessRequested = false;
-require = function(name) {
-    if (name === "child_process") {
-        childProcessRequested = true;
-    }
-    return originalRequire(name);
+const cp = require("child_process");
+const originalExecFileSync = cp.execFileSync;
+let observedArgs = null;
+let observedInput = null;
+cp.execFileSync = function(_program, args, options) {
+    observedArgs = args;
+    observedInput = options.input;
+    return JSON.stringify({ok: true, status: 200, body: "ok", headers: []});
 };
-
 _GENO_CAPS.add("http");
-let message = "";
-try {
-    http_fetch("http://example.test");
-} catch (error) {
-    message = String(error.message);
+const secret = "request-body-secret";
+const result = http_post("https://example.test/path", secret);
+cp.execFileSync = originalExecFileSync;
+if (result !== "ok") {
+    throw new Error("wrong result: " + result);
 }
-require = originalRequire;
-if (!message.includes("requires '--cap process'")) {
-    throw new Error("wrong error: " + message);
+if (observedArgs.join(" ").includes(secret)) {
+    throw new Error("request body leaked into argv");
 }
-if (childProcessRequested) {
-    throw new Error("http-only call requested child_process");
+const envelope = JSON.parse(observedInput);
+if (envelope.body !== secret || envelope.url !== "https://example.test/path") {
+    throw new Error("request envelope was not sent through stdin");
 }
 console.log("ok");
 """
@@ -3344,13 +3346,13 @@ for (const name of ["a.txt", "b.txt", "c.txt"]) fs.writeFileSync(path.join(bigDi
 expectThrows("fs_list_dir", () => fs_list_dir(bigDir), "List size exceeds limit");
 
 _GENO_CAPS.add("http");
-_syncFetch = () => ({ok: true, status: 200, body: "abcd", headers: {}});
+_GENO_CAPS.add("process");
+_syncFetch = () => ({ok: true, status: 200, body: "abcd", headers: []});
 expectThrows("http_fetch", () => http_fetch("http://example.test"), "String size exceeds limit");
 expectThrows("http_post", () => http_post("http://example.test", ""), "String size exceeds limit");
-_syncFetch = () => ({ok: true, status: 200, body: "ok", headers: {a: "1", b: "2", c: "3"}});
-expectThrows("http_request", () => http_request("GET", "http://example.test", {}, ""), "Map size exceeds limit");
+_syncFetch = () => ({ok: true, status: 200, body: "ok", headers: [["a", "1"], ["b", "2"], ["c", "3"]]});
+expectThrows("http_request", () => http_request("GET", "http://example.test", [], ""), "List size exceeds limit");
 
-_GENO_CAPS.add("process");
 const cp = require("child_process");
 const originalSpawnSync = cp.spawnSync;
 cp.spawnSync = () => ({status: 0, stdout: "abcd", stderr: ""});

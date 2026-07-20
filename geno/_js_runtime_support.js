@@ -2063,32 +2063,41 @@ function fs_exists(path) {
 // HTTP Builtins (capability-gated: --cap http, Node.js/browser networking)
 // =============================================================================
 
-// Synchronous HTTP via child_process: spawns a sub-node process that runs
-// an async fetch and writes the result to stdout.  This keeps the main
-// compiled output synchronous while using Node's built-in fetch (18+). In
-// Node, this internal bridge also requires the process capability so that an
-// http-only grant never hides child-process execution.
+// Synchronous HTTP via child_process: the main compiled program remains
+// synchronous while a constant child script performs asynchronous Node I/O.
+// Request data travels over stdin, never argv. The child is an implementation
+// detail of the http capability and does not grant Geno code process access.
 function _validateHttpScheme(url, fnName) {
     const match = /^[A-Za-z][A-Za-z0-9+.-]*:/.exec(String(url));
     const scheme = match ? match[0].slice(0, -1).toLowerCase() : "";
     if (scheme !== "http" && scheme !== "https") {
         throw new Error(
-            `${fnName}: scheme '${scheme}' is not allowed, only http and https`
+            fnName + ": scheme '" + scheme
+            + "' is not allowed, only http and https"
         );
     }
 }
 
 function _parseBrowserResponseHeaders(rawHeaders) {
-    const headers = {};
+    const headers = [];
     if (!rawHeaders) return headers;
     rawHeaders.trim().split(/[\r\n]+/).forEach(line => {
         const idx = line.indexOf(":");
         if (idx <= 0) return;
         const key = line.slice(0, idx).trim();
         const value = line.slice(idx + 1).trim();
-        if (key) headers[key] = value;
+        if (key) headers.push([key, value]);
     });
     return headers;
+}
+
+function _normalizeHttpHeaderEntries(headers) {
+    if (headers && headers._tag === "Some") headers = headers.value;
+    if (headers === null || headers === undefined) return [];
+    if (headers instanceof _GENO_MAP) return Array.from(headers.entries());
+    if (Array.isArray(headers)) return headers;
+    if (typeof headers === "object") return Object.entries(headers);
+    return [];
 }
 
 function _syncBrowserFetch(method, url, headers, body) {
@@ -2097,7 +2106,7 @@ function _syncBrowserFetch(method, url, headers, body) {
     }
     const xhr = new XMLHttpRequest();
     xhr.open(method, url, false);
-    for (const [key, value] of Object.entries(headers || {})) {
+    for (const [key, value] of _normalizeHttpHeaderEntries(headers)) {
         xhr.setRequestHeader(key, value);
     }
     try {
@@ -2109,36 +2118,469 @@ function _syncBrowserFetch(method, url, headers, body) {
             headers: _parseBrowserResponseHeaders(xhr.getAllResponseHeaders()),
         };
     } catch (e) {
-        return {ok: false, status: 0, body: "", headers: {}, error: e.message};
+        return {ok: false, status: 0, body: "", headers: [], error: e.message};
     }
 }
 
-function _syncFetch(method, url, headers, body, builtinName) {
-    if (typeof require === "undefined") {
-        return _syncBrowserFetch(method, url, headers, body);
+function _nodeHttpBridgeMain() {
+    const dns = require("node:dns");
+    const fs = require("node:fs");
+    const http = require("node:http");
+    const https = require("node:https");
+    const net = require("node:net");
+
+    const requestEnvelope = JSON.parse(fs.readFileSync(0, "utf8"));
+    const allowPrivate = /^(1|true|yes|on)$/i.test(
+        process.env.GENO_HTTP_ALLOW_PRIVATE || ""
+    );
+    const deniedIPv4 = [
+        ["0.0.0.0", 8],
+        ["10.0.0.0", 8],
+        ["100.64.0.0", 10],
+        ["127.0.0.0", 8],
+        ["169.254.0.0", 16],
+        ["172.16.0.0", 12],
+        ["192.0.0.0", 24],
+        ["192.0.2.0", 24],
+        ["192.88.99.0", 24],
+        ["192.168.0.0", 16],
+        ["198.18.0.0", 15],
+        ["198.51.100.0", 24],
+        ["203.0.113.0", 24],
+        ["224.0.0.0", 4],
+        ["240.0.0.0", 4],
+    ];
+    const deniedIPv6 = [
+        ["::", 128],
+        ["::1", 128],
+        ["100::", 64],
+        ["5f00::", 16],
+        ["2001::", 23],
+        ["2001:20::", 28],
+        ["2001:30::", 28],
+        ["2001:db8::", 32],
+        ["3fff::", 20],
+        ["fc00::", 7],
+        ["fe80::", 10],
+        ["fec0::", 10],
+        ["ff00::", 8],
+    ];
+    const blockedAddresses = new net.BlockList();
+    for (const [address, prefix] of deniedIPv4) {
+        blockedAddresses.addSubnet(address, prefix, "ipv4");
     }
-    _requireCap("process", builtinName);
-    const cp = require("child_process");
-    const script = `
-        (async () => {
-            const opts = { method: ${_GENO_JSON.stringify(method)} };
-            const hdrs = ${_GENO_JSON.stringify(headers || {})};
-            if (Object.keys(hdrs).length) opts.headers = hdrs;
-            if (${_GENO_JSON.stringify(body)} !== null) opts.body = ${_GENO_JSON.stringify(body)};
-            try {
-                const r = await fetch(${_GENO_JSON.stringify(url)}, opts);
-                const t = await r.text();
-                process.stdout.write(_GENO_JSON.stringify({ok: true, status: r.status, body: t}));
-            } catch (e) {
-                process.stdout.write(_GENO_JSON.stringify({ok: false, error: e.message}));
+    for (const [address, prefix] of deniedIPv6) {
+        blockedAddresses.addSubnet(address, prefix, "ipv6");
+    }
+
+    function ipv4Number(address) {
+        const parts = address.split(".").map(Number);
+        if (
+            parts.length !== 4
+            || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)
+        ) {
+            return null;
+        }
+        return (
+            ((parts[0] << 24) >>> 0)
+            + (parts[1] << 16)
+            + (parts[2] << 8)
+            + parts[3]
+        ) >>> 0;
+    }
+
+    function isPublicIPv4(address) {
+        const value = ipv4Number(address);
+        if (value === null) return false;
+        for (const [network, prefix] of deniedIPv4) {
+            const base = ipv4Number(network);
+            const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+            if ((value & mask) === (base & mask)) return false;
+        }
+        return true;
+    }
+
+    function ipv4FromGroups(high, low) {
+        return [
+            high >>> 8,
+            high & 0xff,
+            low >>> 8,
+            low & 0xff,
+        ].join(".");
+    }
+
+    function ipv6Groups(address) {
+        let normalized = address.toLowerCase().split("%", 1)[0];
+        if (normalized.includes(".")) {
+            const lastColon = normalized.lastIndexOf(":");
+            const ipv4 = ipv4Number(normalized.slice(lastColon + 1));
+            if (ipv4 === null) return null;
+            normalized = (
+                normalized.slice(0, lastColon + 1)
+                + ((ipv4 >>> 16) & 0xffff).toString(16)
+                + ":"
+                + (ipv4 & 0xffff).toString(16)
+            );
+        }
+        const halves = normalized.split("::");
+        if (halves.length > 2) return null;
+        const left = halves[0] ? halves[0].split(":") : [];
+        const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+        const missing = 8 - left.length - right.length;
+        if (
+            missing < 0
+            || (halves.length === 1 && missing !== 0)
+            || (halves.length === 2 && missing < 1)
+        ) {
+            return null;
+        }
+        const groups = [
+            ...left,
+            ...Array(missing).fill("0"),
+            ...right,
+        ].map(part => Number.parseInt(part, 16));
+        if (
+            groups.length !== 8
+            || groups.some(group => (
+                !Number.isInteger(group) || group < 0 || group > 0xffff
+            ))
+        ) {
+            return null;
+        }
+        return groups;
+    }
+
+    function embeddedIPv4(address) {
+        const groups = ipv6Groups(address);
+        if (groups === null) return null;
+        const firstFiveZero = groups.slice(0, 5).every(group => group === 0);
+        const firstSixZero = groups.slice(0, 6).every(group => group === 0);
+        if (firstSixZero || (firstFiveZero && groups[5] === 0xffff)) {
+            return ipv4FromGroups(groups[6], groups[7]);
+        }
+        if (
+            groups[0] === 0x64
+            && groups[1] === 0xff9b
+            && groups.slice(2, 6).every(group => group === 0)
+        ) {
+            return ipv4FromGroups(groups[6], groups[7]);
+        }
+        if (
+            groups.slice(0, 3).every(group => group === 0)
+            && groups[3] === 0xffff
+            && groups[4] === 0
+            && groups[5] === 0
+        ) {
+            return ipv4FromGroups(groups[6], groups[7]);
+        }
+        if (groups[0] === 0x2002) {
+            return ipv4FromGroups(groups[1], groups[2]);
+        }
+        return null;
+    }
+
+    function validateAddress(address, family, fnName) {
+        if (allowPrivate) return;
+        if (family === 4) {
+            if (!isPublicIPv4(address)) {
+                throw new Error(
+                    fnName + ": non-public network targets are not allowed"
+                );
             }
-        })();
-    `;
+            return;
+        }
+        const groups = ipv6Groups(address);
+        if (groups === null) {
+            throw new Error(fnName + ": cannot validate resolved host " + address);
+        }
+        if (
+            groups[0] === 0x64
+            && groups[1] === 0xff9b
+            && groups[2] === 1
+        ) {
+            throw new Error(
+                fnName + ": non-public network targets are not allowed"
+            );
+        }
+        const embedded = embeddedIPv4(address);
+        if (
+            (embedded !== null && !isPublicIPv4(embedded))
+            || (
+                embedded === null
+                && blockedAddresses.check(address.split("%", 1)[0], "ipv6")
+            )
+        ) {
+            throw new Error(
+                fnName + ": non-public network targets are not allowed"
+            );
+        }
+    }
+
+    async function validatedAddresses(target, fnName) {
+        const parsed = new URL(target);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            throw new Error(
+                fnName + ": scheme '" + parsed.protocol.slice(0, -1)
+                + "' is not allowed, only http and https"
+            );
+        }
+        let hostname = parsed.hostname;
+        if (hostname.startsWith("[") && hostname.endsWith("]")) {
+            hostname = hostname.slice(1, -1);
+        }
+        if (!hostname) {
+            throw new Error(fnName + ": URL must include a hostname");
+        }
+        const literalFamily = net.isIP(hostname);
+        let addresses;
+        if (literalFamily) {
+            addresses = [{address: hostname, family: literalFamily}];
+        } else {
+            try {
+                addresses = await dns.promises.lookup(
+                    hostname,
+                    {all: true, verbatim: true}
+                );
+            } catch (_error) {
+                throw new Error(
+                    fnName + ": cannot resolve host '" + hostname + "'"
+                );
+            }
+        }
+        if (!addresses.length) {
+            throw new Error(fnName + ": cannot resolve host '" + hostname + "'");
+        }
+        for (const entry of addresses) {
+            validateAddress(entry.address, entry.family, fnName);
+        }
+        return {parsed, hostname, addresses};
+    }
+
+    function requestHeaders(entries) {
+        const grouped = new Map();
+        for (const entry of entries || []) {
+            if (!Array.isArray(entry) || entry.length < 2) continue;
+            const name = String(entry[0]);
+            const value = String(entry[1]);
+            const normalized = name.toLowerCase();
+            if (!grouped.has(normalized)) {
+                grouped.set(normalized, {name, values: []});
+            }
+            grouped.get(normalized).values.push(value);
+        }
+        const headers = {};
+        for (const {name, values} of grouped.values()) {
+            headers[name] = values.length === 1 ? values[0] : values;
+        }
+        return headers;
+    }
+
+    function pinnedLookup(addresses) {
+        return (_hostname, options, callback) => {
+            if (options && options.all) {
+                callback(null, addresses);
+            } else {
+                callback(null, addresses[0].address, addresses[0].family);
+            }
+        };
+    }
+
+    async function openResponse(method, target, headers, body, fnName) {
+        const validated = await validatedAddresses(target, fnName);
+        const {parsed, hostname, addresses} = validated;
+        const transport = parsed.protocol === "https:" ? https : http;
+        const outgoingHeaders = requestHeaders(headers);
+        const headerNames = Object.keys(outgoingHeaders).map(name => name.toLowerCase());
+        if (
+            body !== null
+            && body !== undefined
+            && !headerNames.includes("content-length")
+            && !headerNames.includes("transfer-encoding")
+        ) {
+            outgoingHeaders["Content-Length"] = Buffer.byteLength(String(body));
+        }
+        const options = {
+            protocol: parsed.protocol,
+            hostname,
+            port: parsed.port || undefined,
+            path: parsed.pathname + parsed.search,
+            method,
+            headers: outgoingHeaders,
+            lookup: pinnedLookup(addresses),
+            agent: false,
+        };
+        return new Promise((resolve, reject) => {
+            let req;
+            try {
+                req = transport.request(options, resolve);
+            } catch (error) {
+                reject(error);
+                return;
+            }
+            req.setTimeout(30000, () => {
+                req.destroy(new Error(fnName + ": request timed out"));
+            });
+            req.on("error", reject);
+            if (body !== null && body !== undefined) req.write(String(body));
+            req.end();
+        });
+    }
+
+    function rawHeaderEntries(response) {
+        const entries = [];
+        for (let index = 0; index < response.rawHeaders.length; index += 2) {
+            entries.push([
+                response.rawHeaders[index],
+                response.rawHeaders[index + 1],
+            ]);
+        }
+        return entries;
+    }
+
+    async function readBody(response) {
+        const decoder = new TextDecoder("utf-8");
+        const parts = [];
+        let size = 0;
+        for await (const chunk of response) {
+            const text = decoder.decode(chunk, {stream: true});
+            size += Array.from(text).length;
+            if (size > requestEnvelope.maxCollectionSize) {
+                response.destroy();
+                const error = new Error(
+                    "String size exceeds limit ("
+                    + size + " > " + requestEnvelope.maxCollectionSize + ")"
+                );
+                error.code = "GENO_COLLECTION_LIMIT";
+                throw error;
+            }
+            parts.push(text);
+        }
+        const tail = decoder.decode();
+        size += Array.from(tail).length;
+        if (size > requestEnvelope.maxCollectionSize) {
+            const error = new Error(
+                "String size exceeds limit ("
+                + size + " > " + requestEnvelope.maxCollectionSize + ")"
+            );
+            error.code = "GENO_COLLECTION_LIMIT";
+            throw error;
+        }
+        parts.push(tail);
+        return parts.join("");
+    }
+
+    function redirectMethod(status, method) {
+        if (status === 303 && method !== "HEAD") return "GET";
+        if ((status === 301 || status === 302) && method === "POST") return "GET";
+        return method;
+    }
+
+    function withoutContentHeaders(headers) {
+        return (headers || []).filter(entry => {
+            const name = String(entry[0]).toLowerCase();
+            return (
+                name !== "content-length"
+                && name !== "content-type"
+                && name !== "transfer-encoding"
+            );
+        });
+    }
+
+    async function perform() {
+        let method = String(requestEnvelope.method).toUpperCase();
+        let target = String(requestEnvelope.url);
+        let headers = requestEnvelope.headers || [];
+        let body = requestEnvelope.body;
+        for (let redirects = 0; ; redirects += 1) {
+            const response = await openResponse(
+                method,
+                target,
+                headers,
+                body,
+                requestEnvelope.builtinName
+            );
+            const location = response.headers.location;
+            if (
+                location
+                && [301, 302, 303, 307, 308].includes(response.statusCode)
+            ) {
+                if (redirects >= 10) {
+                    response.destroy();
+                    throw new Error(
+                        requestEnvelope.builtinName + ": too many redirects"
+                    );
+                }
+                const redirected = new URL(location, target).toString();
+                if (new URL(target).origin !== new URL(redirected).origin) {
+                    headers = [];
+                }
+                const nextMethod = redirectMethod(response.statusCode, method);
+                if (nextMethod !== method) {
+                    headers = withoutContentHeaders(headers);
+                    body = null;
+                }
+                method = nextMethod;
+                target = redirected;
+                response.destroy();
+                continue;
+            }
+            return {
+                ok: true,
+                status: response.statusCode || 0,
+                body: await readBody(response),
+                headers: rawHeaderEntries(response),
+            };
+        }
+    }
+
+    perform().then(result => {
+        process.stdout.write(JSON.stringify(result));
+    }).catch(error => {
+        process.stdout.write(JSON.stringify({
+            ok: false,
+            error: error && error.message ? error.message : String(error),
+            limitError: Boolean(error && error.code === "GENO_COLLECTION_LIMIT"),
+        }));
+    });
+}
+
+function _syncFetch(method, url, headers, body, builtinName) {
+    const normalizedMethod = String(method).toUpperCase();
+    const requestBody = (
+        (normalizedMethod === "GET" || normalizedMethod === "HEAD") && body === ""
+    ) ? null : body;
+    if (typeof require === "undefined") {
+        return _syncBrowserFetch(normalizedMethod, url, headers, requestBody);
+    }
+    const cp = require("child_process");
+    const headerEntries = _normalizeHttpHeaderEntries(headers);
+    const envelope = _GENO_JSON.stringify({
+        method: normalizedMethod,
+        url: String(url),
+        headers: headerEntries,
+        body: requestBody,
+        builtinName,
+        maxCollectionSize: _MAX_COLLECTION_SIZE,
+    });
+    const script = "(" + _nodeHttpBridgeMain.toString() + ")()";
+    // JSON may use six transport characters for one Geno code point.
+    const maxBuffer = _GENO_MATH.min(
+        _GENO_NUMBER.MAX_SAFE_INTEGER,
+        _MAX_COLLECTION_SIZE * 6 + 65536
+    );
     const result = cp.execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
+        input: envelope,
         timeout: 30000,
+        maxBuffer,
     });
-    return _GENO_JSON.parse(result);
+    const parsed = _GENO_JSON.parse(result);
+    if (parsed.limitError) {
+        const error = new Error(parsed.error);
+        error._genoCollectionLimit = true;
+        throw error;
+    }
+    return parsed;
 }
 
 function http_fetch(url) {
@@ -2153,7 +2595,9 @@ function http_fetch(url) {
 function http_post(url, body) {
     _requireCap("http", "http_post");
     _validateHttpScheme(url, "http_post");
-    const r = _syncFetch("POST", url, {"Content-Type": "text/plain"}, body, "http_post");
+    const r = _syncFetch(
+        "POST", url, [["Content-Type", "application/json"]], body, "http_post"
+    );
     if (!r.ok) throw new Error(r.error);
     _checkStringResultSize("http_post", _stringLength(r.body));
     return r.body;
@@ -2166,28 +2610,26 @@ function http_request(method, url, headers, body) {
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
-    const hMap = {};
-    if (headers && typeof headers === "object") {
-        if (headers._tag === "Some" && headers.value) {
-            for (const [k, v] of Object.entries(headers.value)) hMap[k] = v;
-        } else if (!headers._tag) {
-            for (const [k, v] of Object.entries(headers)) hMap[k] = v;
-        }
-    }
+    const headerEntries = _normalizeHttpHeaderEntries(headers);
     const bodyStr = (body && body._tag === "Some") ? body.value : (typeof body === "string" ? body : null);
-    const r = _syncFetch(method, url, hMap, bodyStr, "http_request");
+    let r;
+    try {
+        r = _syncFetch(method, url, headerEntries, bodyStr, "http_request");
+    } catch (e) {
+        if (e && e._genoCollectionLimit) throw e;
+        return { _tag: "Err", error: e.message };
+    }
     if (!r.ok) return { _tag: "Err", error: r.error };
-    const responseHeaders = r.headers || {};
-    const responseHeaderEntries = Object.entries(responseHeaders);
+    const responseHeaderEntries = _normalizeHttpHeaderEntries(r.headers);
     _checkStringResultSize("http_request", _stringLength(r.body));
-    _checkCollectionKind("Map", responseHeaderEntries.length);
+    _checkCollectionKind("List", responseHeaderEntries.length);
     for (const [key, value] of responseHeaderEntries) {
         _checkStringResultSize("http_request", _stringLength(key));
         _checkStringResultSize("http_request", _stringLength(String(value)));
     }
     return {
         _tag: "Ok",
-        value: { status: r.status, body: r.body, headers: responseHeaders }
+        value: HttpResponse(r.status, r.body, responseHeaderEntries)
     };
 }
 

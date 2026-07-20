@@ -52,7 +52,13 @@ def compile_file(
         checker.check_project_graph(dg)
 
         if target == "js":
-            from ..js_compiler import JSCompiler, generate_dts
+            from ..js_compiler import (
+                _ESM_SOURCE_MAP_LINE_DELTA,
+                JSCompiler,
+                _offset_source_map_lines,
+                _to_esm,
+                generate_dts,
+            )
 
             if source_map and not output:
                 raise ValueError("--source-map requires -o/--output for JS compile")
@@ -79,8 +85,6 @@ def compile_file(
                     ]
 
             if esm:
-                from ..js_compiler import _to_esm
-
                 entrypoint_mod = resolved.entrypoint
                 code = _to_esm(code, dg.parsed[entrypoint_mod])
 
@@ -93,6 +97,10 @@ def compile_file(
                         sources_content=sources_content,
                     )
                     code += f"\n//# sourceMappingURL={Path(map_file).name}\n"
+                    if esm:
+                        sm_json = _offset_source_map_lines(
+                            sm_json, _ESM_SOURCE_MAP_LINE_DELTA
+                        )
                     write_text_output(map_file, sm_json)
                 # Generate .d.ts file
                 entrypoint_mod = resolved.entrypoint
