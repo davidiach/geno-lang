@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -448,7 +449,9 @@ class TestBrowserDeployGuide:
             "    setRequestHeader(key, value) { this.headers[key] = value; }\n"
             "    send(body) {\n"
             "        this.status = this.url.includes('missing') ? 404 : 201;\n"
-            "        this.responseText = `${this.method}:${this.url}:${body}`;\n"
+            "        const header = this.headers['X-Test'] || '';\n"
+            "        this.responseText =\n"
+            "            `${this.method}:${this.url}:${body}:${header}`;\n"
             "    }\n"
             '    getAllResponseHeaders() { return "x-test: ok\\r\\n"; }\n'
             "}\n"
@@ -458,22 +461,36 @@ class TestBrowserDeployGuide:
             "const r = http_request(\n"
             '    "POST",\n'
             '    "https://example.test/post",\n'
-            '    {"X-Test": "yes"},\n'
-            '    Some("body")\n'
+            '    [["X-Test", "yes"]],\n'
+            '    "body"\n'
             ");\n"
             "console.log(\n"
             "    r._tag + ':' + r.value.status + ':' + r.value.body + ':'\n"
-            "    + r.value.headers['x-test']\n"
+            "    + r.value.headers[0][1]\n"
             ");\n"
+            "console.log(http_request(\n"
+            '    "get",\n'
+            '    "https://example.test/empty-get",\n'
+            "    [],\n"
+            '    ""\n'
+            ").value.body);\n"
+            "console.log(http_request(\n"
+            '    "HEAD",\n'
+            '    "https://example.test/empty-head",\n'
+            "    [],\n"
+            '    ""\n'
+            ").value.body);\n"
         )
 
         result = _run_browser_like_js(script)
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().splitlines() == [
-            "GET:https://example.test/data:null",
-            "GET:https://example.test/missing:null",
-            "Ok:201:POST:https://example.test/post:body:ok",
+            "GET:https://example.test/data:null:",
+            "GET:https://example.test/missing:null:",
+            "Ok:201:POST:https://example.test/post:body:yes:ok",
+            "GET:https://example.test/empty-get:null:",
+            "HEAD:https://example.test/empty-head:null:",
         ]
 
 
@@ -639,6 +656,37 @@ class TestSourceMapQuality:
         assert sm["version"] == 3
         assert sm["mappings"]
 
+    def test_esm_source_map_via_cli_accounts_for_node_preamble(self, tmp_path):
+        """CLI ESM source maps include the Node createRequire preamble."""
+        src = tmp_path / "Main.geno"
+        src.write_text(_BROWSER_SOURCE_MAP_SOURCE)
+        out_js = tmp_path / "app.mjs"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "compile",
+                str(src),
+                "--target",
+                "js",
+                "--esm",
+                "--source-map",
+                "-o",
+                str(out_js),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+        source_map = json.loads((tmp_path / "app.mjs.map").read_text())
+        generated_line = _first_generated_line_for_source_line(source_map, 0)
+
+        assert "function double" in out_js.read_text().splitlines()[generated_line]
+
 
 class TestDtsGeneration:
     """Validate TypeScript declaration (.d.ts) output."""
@@ -770,6 +818,25 @@ class TestEsmOutput:
 
         assert '"use strict"' not in js_code
 
+    def test_esm_source_map_accounts_for_node_preamble(self):
+        """ESM source-map lines include the createRequire bridge."""
+        from geno.js_compiler import compile_to_js
+
+        compiled = compile_to_js(
+            _BROWSER_SOURCE_MAP_SOURCE,
+            filename="Main.geno",
+            source_map=True,
+            source_map_file="app.mjs",
+            esm=True,
+        )
+        assert isinstance(compiled, tuple)
+        js_code, source_map_json = compiled
+        generated_line = _first_generated_line_for_source_line(
+            json.loads(source_map_json), 0
+        )
+
+        assert "function double" in js_code.splitlines()[generated_line]
+
     def test_esm_via_cli(self, tmp_path):
         """CLI compile --target js --esm produces ESM output."""
         src = tmp_path / "Multi.geno"
@@ -892,7 +959,10 @@ def _run_browser_like_js(js_code: str) -> subprocess.CompletedProcess[str]:
         "  process.exit(1);\n"
         "}\n"
     )
-    return run_node_code(harness, node_executable=node, timeout=10)
+    return cast(
+        subprocess.CompletedProcess[str],
+        run_node_code(harness, node_executable=node, timeout=10),
+    )
 
 
 _SOURCE_MAP_BASE64_ALPHABET = (
@@ -954,6 +1024,6 @@ def _inline_source_map(script: str) -> dict[str, object]:
     for line in script.splitlines():
         if marker in line:
             b64 = line.split(marker, 1)[1]
-            return json.loads(base64.b64decode(b64).decode())
+            return cast(dict[str, object], json.loads(base64.b64decode(b64).decode()))
 
     raise AssertionError("inline source map not found")

@@ -57,10 +57,10 @@ python out.py --cap fs --cap http
 Without `--cap`, all gated builtins are denied (fail-closed).
 
 Standalone Node.js output follows the same fail-closed capability model. Its
-synchronous HTTP helpers use an internal child-process bridge to call Node's
-async `fetch`, so Node HTTP calls require both `--cap http` and `--cap process`.
-Browser output uses browser networking APIs instead and does not require the
-process capability for HTTP.
+synchronous HTTP helpers use an internal bridge gated by `--cap http`; the
+bridge does not expose process execution to Geno code, so `--cap process` is
+neither required nor supported on this target. Browser output uses browser
+networking APIs and the same `http` capability, subject to browser CORS policy.
 
 ### Interpreter mode (`geno run --unsafe --cap`)
 
@@ -97,8 +97,8 @@ embedding deliberately sets `default_request_capabilities`.
 ### Host Resource Scope
 
 Granting `fs`, `http`, or `process` unlocks host resources, so the built-in
-host callbacks apply scoped policies in direct interpreter mode and standalone
-Python output:
+runtime applies scoped policies in direct interpreter mode and standalone
+Python and Node output:
 
 - `fs` paths are resolved under configured filesystem roots. By default the
   only root is the current working directory and absolute paths are rejected.

@@ -4328,6 +4328,7 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
         HTTPRedirectHandler,
         HTTPSHandler,
         ProxyHandler,
+        Request,
         build_opener,
     )
 
@@ -4365,6 +4366,9 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
             return self.do_open(_ValidatedHTTPSConnection, req)
 
     class _HttpOnlyRedirectHandler(HTTPRedirectHandler):
+        max_repeats = 11
+        max_redirections = 11
+
         def redirect_request(
             self,
             req: Any,
@@ -4374,13 +4378,49 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
             headers: Any,
             newurl: str,
         ) -> Any:
+            redirect_count = getattr(req, "_geno_redirect_count", 0)
+            if redirect_count >= 10:
+                raise RuntimeError(f"{fn_name}: too many redirects")
             target_url = urljoin(req.full_url, newurl)
             _validate_http_scheme(target_url, fn_name)
-            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-            if redirected is not None:
-                _strip_cross_origin_redirect_headers(
-                    req.full_url, target_url, redirected
-                )
+            source_method = req.get_method().upper()
+            redirected_method = source_method
+            if (code == 303 and source_method != "HEAD") or (
+                code in {301, 302} and source_method == "POST"
+            ):
+                redirected_method = "GET"
+
+            redirected_data = getattr(req, "data", None)
+            if redirected_method != source_method or (
+                redirected_method in {"GET", "HEAD"}
+                and redirected_data
+                in {
+                    "",
+                    b"",
+                }
+            ):
+                redirected_data = None
+
+            redirected_headers: dict[str, str] = {}
+            if _http_origin(req.full_url) == _http_origin(target_url):
+                redirected_headers = dict(req.headers)
+                if redirected_method != source_method:
+                    redirected_headers = {
+                        key: value
+                        for key, value in redirected_headers.items()
+                        if key.lower()
+                        not in {"content-length", "content-type", "transfer-encoding"}
+                    }
+
+            redirected = Request(  # noqa: S310
+                target_url,
+                data=redirected_data,
+                headers=redirected_headers,
+                origin_req_host=req.origin_req_host,
+                unverifiable=True,
+                method=redirected_method,
+            )
+            cast(Any, redirected)._geno_redirect_count = redirect_count + 1
             return redirected
 
     return build_opener(
@@ -4395,6 +4435,7 @@ def http_fetch(url: str) -> str:
     """Fetch a URL and return the response body as a string."""
     _require_cap("http", "http_fetch")
     _validate_http_scheme(url, "http_fetch")
+    from urllib.error import HTTPError
     from urllib.request import Request
 
     try:
@@ -4403,6 +4444,9 @@ def http_fetch(url: str) -> str:
             timeout=30,
             fn_name="http_fetch",
         ) as resp:
+            result = _read_limited_utf8_stream(resp, "http_fetch")
+    except HTTPError as resp:
+        with resp:
             result = _read_limited_utf8_stream(resp, "http_fetch")
     except (OSError, ValueError, RuntimeError) as e:
         raise RuntimeError(f"http_fetch: {e}")
@@ -4414,12 +4458,16 @@ def http_post(url: str, body: str) -> str:
     """POST to a URL and return the response body as a string."""
     _require_cap("http", "http_post")
     _validate_http_scheme(url, "http_post")
+    from urllib.error import HTTPError
     from urllib.request import Request
 
     try:
         req = Request(url, data=body.encode("utf-8"), method="POST")  # noqa: S310
         req.add_header("Content-Type", "application/json")
         with _open_http_url(req, timeout=30, fn_name="http_post") as resp:
+            result = _read_limited_utf8_stream(resp, "http_post")
+    except HTTPError as resp:
+        with resp:
             result = _read_limited_utf8_stream(resp, "http_post")
     except (OSError, ValueError, RuntimeError) as e:
         raise RuntimeError(f"http_post: {e}")
@@ -4430,19 +4478,34 @@ def http_post(url: str, body: str) -> str:
 def http_request(method: str, url: str, headers, body):
     """Make an HTTP request, returning Result[HttpResponse, String]."""
     _require_cap("http", "http_request")
-    from urllib.error import URLError
+    from urllib.error import HTTPError, URLError
     from urllib.request import Request
 
     try:
         _validate_http_scheme(url, "http_request")
-        data = body.encode("utf-8") if body is not None else None
-        req = Request(url, data=data, method=method)  # noqa: S310
+        normalized_method = method.upper()
+        data = (
+            None
+            if normalized_method in {"GET", "HEAD"} and body == ""
+            else body.encode("utf-8")
+            if body is not None
+            else None
+        )
+        req = Request(url, data=data, method=normalized_method)  # noqa: S310
         for key, value in headers:
             req.add_header(key, value)
-        with _open_http_url(req, timeout=30, fn_name="http_request") as resp:
+        try:
+            response_handle = _open_http_url(req, timeout=30, fn_name="http_request")
+        except HTTPError as http_error:
+            response_handle = http_error
+        with response_handle as resp:
             resp_headers = [(k, v) for k, v in resp.getheaders()]
-            body_text = _read_limited_utf8_stream(resp, "http_request")
+            body_text = _read_limited_utf8_stream(
+                resp, "http_request", limit_error_type=_GenoOutputLimitError
+            )
             response = HttpResponse(resp.status, body_text, resp_headers)
+    except _GenoOutputLimitError:
+        raise
     except URLError as e:
         return Err(str(e))
     except (OSError, ValueError, TypeError, RuntimeError) as e:
