@@ -1237,6 +1237,15 @@ class Interpreter:
             RuntimeError: For runtime errors
         """
         # Resolve imports first
+        entrypoint_main = next(
+            (
+                defn
+                for defn in program.definitions
+                if isinstance(defn, FunctionDef) and defn.name == "main"
+            ),
+            None,
+        )
+
         if modules is not None:
             resolved: set[str] = set()
             module_imports: dict[
@@ -1307,9 +1316,16 @@ class Interpreter:
                     self._output_length = 0
 
                 # Look for a main function
-                if execute_main and "main" in self.functions:
+                if execute_main and entrypoint_main is not None:
                     main_func = self.global_env.lookup("main")
-                    return self._call_function(main_func, [])
+                    result = self._call_function(
+                        main_func, [], location=entrypoint_main.location
+                    )
+                    if entrypoint_main.is_async:
+                        return self._execute_async_value(
+                            result, entrypoint_main.location
+                        )
+                    return result
 
                 return None
 
@@ -2484,6 +2500,10 @@ class Interpreter:
     def _eval_await(self, expr: AwaitExpr, env: Environment) -> Any:
         """Evaluate an await expression — execute the async value synchronously."""
         value = self.eval_expr(expr.expr, env)
+        return self._execute_async_value(value, expr.location)
+
+    def _execute_async_value(self, value: Any, location: SourceLocation | None) -> Any:
+        """Execute a deferred async closure, or return a synchronous value."""
         if isinstance(value, AsyncValue):
             # Execute the async closure's body directly (bypass is_async check)
             func = value.closure
@@ -2510,12 +2530,12 @@ class Interpreter:
                 except PropagateException as prop:
                     result = prop.value
                 except BreakException:
-                    raise RuntimeError("'break' outside of loop", expr.location)
+                    raise RuntimeError("'break' outside of loop", location)
                 except ContinueException:
-                    raise RuntimeError("'continue' outside of loop", expr.location)
+                    raise RuntimeError("'continue' outside of loop", location)
                 if func.specs:
                     self._check_ensures(func, call_env, result)
-                self._check_collection_limits([result], expr.location)
+                self._check_collection_limits([result], location)
                 return result
             finally:
                 self.call_depth -= 1

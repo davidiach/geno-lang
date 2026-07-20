@@ -74,6 +74,7 @@ from .ast_nodes import (
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TypeAlias,
     TypeDef,
     TypedHole,
     TypeIdentifier,
@@ -85,6 +86,7 @@ from .ast_nodes import (
     WildcardPattern,
     WithExpr,
 )
+from .entrypoint import entrypoint_returns_int, visible_type_aliases
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -591,11 +593,120 @@ class JSCompiler(BaseCompiler):
             return f"{name}_kw"
         return name
 
+    def _emit_main_result(
+        self,
+        main_def: FunctionDef | None,
+        *,
+        type_aliases: dict[str, TypeAlias] | None = None,
+        main_returns_int: bool | None = None,
+    ) -> None:
+        """Emit host-boundary handling for a completed main call."""
+        resolved_return_type = (
+            main_def.__dict__.get("_resolved_return_type")
+            if main_def is not None
+            else None
+        )
+        main_result_type = (
+            resolved_return_type
+            if isinstance(resolved_return_type, Type)
+            else self._annotation_to_type(
+                main_def.return_type, type_aliases=type_aliases
+            )
+            if main_def is not None
+            else None
+        )
+        rendered_main = self._compile_formatted_value(
+            "_main_result",
+            main_result_type,
+            mode="display",
+            top_level=True,
+        )
+        uses_exit_status = (
+            isinstance(main_result_type, IntType)
+            if main_returns_int is None
+            else main_returns_int
+        )
+        if uses_exit_status:
+            self._writeln(
+                "if (typeof process === 'object' && process !== null && "
+                "process.release && process.release.name === 'node') {"
+            )
+            self._indent()
+            self._writeln("process.exitCode = ((_main_result % 256) + 256) % 256;")
+            self._dedent()
+            self._writeln("} else {")
+            self._indent()
+            self._writeln(f"console.log({rendered_main});")
+            self._dedent()
+            self._writeln("}")
+            return
+
+        self._writeln("if (_main_result !== null && _main_result !== undefined) {")
+        self._indent()
+        self._writeln(f"console.log({rendered_main});")
+        self._dedent()
+        self._writeln("}")
+
+    def _open_esm_entrypoint_guard(self) -> None:
+        """Guard ESM main execution so importing the module is side-effect safe."""
+        file_url_to_path = self._fresh_temp()
+        create_require = self._fresh_temp()
+        realpath_sync = self._fresh_temp()
+        entry_require = self._fresh_temp()
+        is_eval = self._fresh_temp()
+        fallback_main = self._fresh_temp()
+        self._writeln(
+            f'import {{ fileURLToPath as {file_url_to_path} }} from "node:url";'
+        )
+        self._writeln(
+            f'import {{ createRequire as {create_require} }} from "node:module";'
+        )
+        self._writeln(f'import {{ realpathSync as {realpath_sync} }} from "node:fs";')
+        self._writeln(f"const {entry_require} = {create_require}(import.meta.url);")
+        self._writeln(
+            f"const {is_eval} = process.execArgv.some(arg => "
+            "arg === '--eval' || arg.startsWith('--eval=') || "
+            "(arg.startsWith('-e') && !arg.startsWith('--')) || "
+            "arg === '--print' || arg.startsWith('--print=') || "
+            "(arg.startsWith('-p') && !arg.startsWith('--')));"
+        )
+        self._writeln(f"let {fallback_main} = false;")
+        self._writeln(f"if (!{is_eval} && process.argv[1]) {{")
+        self._indent()
+        self._writeln("try {")
+        self._indent()
+        self._writeln(
+            f"{fallback_main} = "
+            f"{realpath_sync}({file_url_to_path}(import.meta.url)) === "
+            f"{realpath_sync}({entry_require}.resolve(process.argv[1]));"
+        )
+        self._dedent()
+        self._writeln("} catch {")
+        self._indent()
+        self._writeln(f"{fallback_main} = false;")
+        self._dedent()
+        self._writeln("}")
+        self._dedent()
+        self._writeln("}")
+        self._writeln(
+            "if (typeof process === 'object' && process !== null && "
+            "(import.meta.main === true || "
+            "(typeof import.meta.main !== 'boolean' && "
+            f"{fallback_main}))) {{"
+        )
+        self._indent()
+
     # =========================================================================
     # Core compilation
     # =========================================================================
 
-    def compile(self, program: Program, tree_shake: bool = True) -> str:
+    def compile(
+        self,
+        program: Program,
+        tree_shake: bool = True,
+        *,
+        esm: bool = False,
+    ) -> str:
         # Compile user code into a separate buffer first
         self.output = StringIO()
         self.indent_level = 0
@@ -683,35 +794,23 @@ class JSCompiler(BaseCompiler):
             )
             if has_main:
                 self._writeln()
+                if esm:
+                    self._open_esm_entrypoint_guard()
                 if main_is_async:
                     self._writeln("(async () => {")
                     self._indent()
                     self._writeln("const _main_result = await main();")
                 else:
                     self._writeln("const _main_result = main();")
-                self._writeln(
-                    "if (_main_result !== null && _main_result !== undefined) {"
-                )
-                self._indent()
-                main_result_type = (
-                    self._annotation_to_type(main_def.return_type)
-                    if main_def is not None
-                    else None
-                )
-                rendered_main = self._compile_formatted_value(
-                    "_main_result",
-                    main_result_type,
-                    mode="display",
-                    top_level=True,
-                )
-                self._writeln(f"console.log({rendered_main});")
-                self._dedent()
-                self._writeln("}")
+                self._emit_main_result(main_def)
                 if main_is_async:
                     self._dedent()
                     self._writeln(
                         "})().catch(e => { console.error(e); process.exitCode = 1; });"
                     )
+                if esm:
+                    self._dedent()
+                    self._writeln("}")
 
         user_code = str(self.output.getvalue())
 
@@ -755,7 +854,13 @@ class JSCompiler(BaseCompiler):
                 )
         return public_exports, impl_exports
 
-    def compile_project(self, dep_graph, tree_shake: bool = True) -> str:
+    def compile_project(
+        self,
+        dep_graph,
+        tree_shake: bool = True,
+        *,
+        esm: bool = False,
+    ) -> str:
         """Compile all modules in a DependencyGraph to a single JS file.
 
         Modules are emitted in topological order (dependencies first).
@@ -801,7 +906,6 @@ class JSCompiler(BaseCompiler):
         self._emit_function_assignments = False
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
-
         for mod_name in dep_graph.sorted_modules:
             program = dep_graph.parsed[mod_name]
             self._register_module_param_names(mod_name, program)
@@ -894,7 +998,13 @@ class JSCompiler(BaseCompiler):
         func_names = set()
         main_is_async = False
         ep_program = dep_graph.parsed.get(entrypoint)
+        entrypoint_type_aliases: dict[str, TypeAlias] = {}
+        entrypoint_main_returns_int: bool | None = None
         if ep_program:
+            entrypoint_type_aliases = visible_type_aliases(ep_program, dep_graph.parsed)
+            entrypoint_main_returns_int = entrypoint_returns_int(
+                ep_program, dep_graph.parsed
+            )
             func_names = {
                 d.name for d in ep_program.definitions if isinstance(d, FunctionDef)
             }
@@ -937,33 +1047,27 @@ class JSCompiler(BaseCompiler):
             self._writeln("requestAnimationFrame(_geno_frame);")
         elif "main" in func_names:
             self._writeln()
+            if esm:
+                self._open_esm_entrypoint_guard()
             if main_is_async:
                 self._writeln("(async () => {")
                 self._indent()
                 self._writeln(f"const _main_result = await {entry_binding}['main']();")
             else:
                 self._writeln(f"const _main_result = {entry_binding}['main']();")
-            self._writeln("if (_main_result !== null && _main_result !== undefined) {")
-            self._indent()
-            main_result_type = (
-                self._annotation_to_type(main_def.return_type)
-                if main_def is not None
-                else None
+            self._emit_main_result(
+                main_def,
+                type_aliases=entrypoint_type_aliases,
+                main_returns_int=entrypoint_main_returns_int,
             )
-            rendered_main = self._compile_formatted_value(
-                "_main_result",
-                main_result_type,
-                mode="display",
-                top_level=True,
-            )
-            self._writeln(f"console.log({rendered_main});")
-            self._dedent()
-            self._writeln("}")
             if main_is_async:
                 self._dedent()
                 self._writeln(
                     "})().catch(e => { console.error(e); process.exitCode = 1; });"
                 )
+            if esm:
+                self._dedent()
+                self._writeln("}")
 
         user_code = str(self.output.getvalue())
 
@@ -1480,9 +1584,13 @@ class JSCompiler(BaseCompiler):
         return f'"{self._escape_js_string(value)}"'
 
     def _annotation_to_type(
-        self, type_annot: object, bindings: dict[str, Type] | None = None
+        self,
+        type_annot: object,
+        bindings: dict[str, Type] | None = None,
+        type_aliases: dict[str, TypeAlias] | None = None,
     ) -> Type | None:
         bindings = bindings or {}
+        aliases = self.type_aliases if type_aliases is None else type_aliases
 
         if isinstance(type_annot, SimpleType):
             if not type_annot.type_params and type_annot.name in bindings:
@@ -1491,22 +1599,10 @@ class JSCompiler(BaseCompiler):
             params = [
                 converted if converted is not None else AnyType()
                 for converted in (
-                    self._annotation_to_type(param, bindings)
+                    self._annotation_to_type(param, bindings, aliases)
                     for param in type_annot.type_params
                 )
             ]
-
-            alias_def = self.type_aliases.get(type_annot.name)
-            if alias_def is not None:
-                alias_bindings = dict(bindings)
-                alias_bindings.update(
-                    {
-                        name: params[index]
-                        for index, name in enumerate(alias_def.type_params)
-                        if index < len(params)
-                    }
-                )
-                return self._annotation_to_type(alias_def.target_type, alias_bindings)
 
             if type_annot.name == "Int" and not params:
                 return IntType()
@@ -1526,10 +1622,33 @@ class JSCompiler(BaseCompiler):
                 return OptionType(params[0])
             if type_annot.name == "Result" and len(params) >= 2:
                 return ResultType(params[0], params[1])
-            if type_annot.name == "Tuple":
+            if type_annot.name == "Tuple" and params:
                 return TupleType(tuple(params))
             if type_annot.name == "Async" and params:
                 return AsyncType(params[0])
+            if type_annot.name == "Map" and len(params) >= 2:
+                return MapType(params[0], params[1])
+            if type_annot.name == "MutableMap" and len(params) >= 2:
+                return MutableMapType(params[0], params[1])
+            if type_annot.name == "Vec" and params:
+                return VecType(params[0])
+            if type_annot.name == "Set" and params:
+                return SetType(params[0])
+
+            alias_def = aliases.get(type_annot.name)
+            if alias_def is not None:
+                alias_bindings = dict(bindings)
+                alias_bindings.update(
+                    {
+                        name: params[index]
+                        for index, name in enumerate(alias_def.type_params)
+                        if index < len(params)
+                    }
+                )
+                return self._annotation_to_type(
+                    alias_def.target_type, alias_bindings, aliases
+                )
+
             if not type_annot.type_params:
                 return UserType(type_annot.name)
             return UserType(type_annot.name, tuple(params))
@@ -3120,13 +3239,13 @@ def compile_to_js(
     parser = Parser(tokens)
     program = parser.parse_program()
 
+    profile = target_profile or TargetProfile.load("node-cli")
     if typecheck:
-        profile = target_profile or TargetProfile.load("node-cli")
         checker = TypeChecker(target_profile=profile)
         checker.check_program(program)
 
     compiler = JSCompiler(track_source_map=source_map)
-    js_code = compiler.compile(program)
+    js_code = compiler.compile(program, esm=esm and profile.target != "browser")
 
     if esm:
         js_code = _to_esm(js_code, program)

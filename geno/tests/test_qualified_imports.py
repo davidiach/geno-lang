@@ -500,8 +500,8 @@ class TestQualifiedAccess:
             text=True,
             timeout=10,
         )
-        assert py_result.returncode == 0, py_result.stderr
-        assert "7" in py_result.stdout
+        assert py_result.returncode == 7, py_result.stderr
+        assert py_result.stdout == ""
 
         js_code = JSCompiler().compile_project(dg)
         js_out = tmp_path / "qualified_async.js"
@@ -512,8 +512,8 @@ class TestQualifiedAccess:
             text=True,
             timeout=10,
         )
-        assert js_result.returncode == 0, js_result.stderr
-        assert "7" in js_result.stdout
+        assert js_result.returncode == 7, js_result.stderr
+        assert js_result.stdout == ""
 
     def test_unknown_transitive_import_still_errors(self, tmp_path):
         """Project checking still rejects unknown imports nested in dependencies."""

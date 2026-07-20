@@ -18,6 +18,7 @@ import geno.compiler as compiler_module
 from geno.compiler import (
     CompileError,
     Compiler,
+    _compiled_main_script_wrapper,
     _insert_compiled_runtime_capability_assignment,
     _strip_runtime_prelude_imports,
     _trusted_runtime_prelude_line_count,
@@ -51,13 +52,12 @@ def _compiled_runtime_env(
 def _compiled_python_process_result(source: str, max_collection_size: int = 10):
     python_code = _strip_runtime_prelude_imports(compile_to_python(source))
     trusted_prelude_line_count = _trusted_runtime_prelude_line_count(python_code)
-    main_guard = (
-        "\n\nif __name__ == '__main__':\n"
-        "    result = main()\n"
-        "    if result is not None:\n"
-        "        print(result)\n"
-    )
-    python_code = python_code.replace(main_guard, "\n\n__result__ = main()\n")
+    for main_returns_int in (True, False):
+        main_guard = _compiled_main_script_wrapper(
+            is_async=False, main_returns_int=main_returns_int
+        )
+        if main_guard in python_code:
+            python_code = python_code.replace(main_guard, "\n\n__result__ = main()\n")
     sandbox = ProcessSandbox(
         ProcessSandboxConfig(
             timeout=5,

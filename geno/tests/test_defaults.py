@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import geno
 from geno.compiler import compile_and_exec, compile_to_python
 from geno.js_compiler import compile_to_js
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import display_main_result_for_test, run_node_code
 
 
 def run(source: str):
@@ -40,6 +40,7 @@ def _compile_js_and_run(source: str) -> str:
     """Compile to JS, run via Node, return stdout stripped."""
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
+    js_out = display_main_result_for_test(js_out)
     result = run_node_code(js_out, timeout=10)
     if result.returncode != 0:
         raise RuntimeError(f"JS execution failed: {result.stderr}")

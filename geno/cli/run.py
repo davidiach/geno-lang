@@ -26,6 +26,7 @@ from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
 from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
+from ..entrypoint import entrypoint_returns_int
 from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 from ._util import (
     _format_source_snippet,
@@ -35,6 +36,9 @@ from ._util import (
 )
 
 RunMode = Literal["json", "unsafe", "process"]
+_PROCESS_RESULT_DISPLAY = "display"
+_PROCESS_RESULT_EXIT = "exit"
+_PROCESS_RESULT_UNIT = "unit"
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,7 @@ def _resolve_run_program(filename: str, target: str | None) -> ResolvedRunProgra
 
     resolved = resolve_project_context(filename)
     dependency_graph = resolved.dependency_graph
+    program = dependency_graph.parsed[resolved.entrypoint]
     target_names: list[str] = (
         [target]
         if target is not None
@@ -98,7 +103,7 @@ def _resolve_run_program(filename: str, target: str | None) -> ResolvedRunProgra
     check_targets: list[str | None] = list(target_names) if target_names else [None]
     return ResolvedRunProgram(
         dependency_graph=dependency_graph,
-        program=dependency_graph.parsed[resolved.entrypoint],
+        program=program,
         parsed_modules=resolved.parsed_modules or None,
         check_targets=check_targets,
         project_root=resolved.project.root,
@@ -139,6 +144,18 @@ def _format_json_run_output(result: Any) -> str:
         "steps_used": result.steps_used,
     }
     return json_mod.dumps(output, indent=2, allow_nan=False)
+
+
+def _main_result_exit_status(value: Any, *, main_returns_int: bool) -> int | None:
+    """Translate an exact Geno Int result to its portable process status."""
+    if main_returns_int and type(value) is int:
+        return value % 256
+    return None
+
+
+def _is_unit_main_result(value: Any) -> bool:
+    """Return whether *value* is either compiled or interpreted Unit."""
+    return value is None or (type(value) is tuple and not value)
 
 
 def _explicit_fs_roots_for_run(
@@ -247,6 +264,7 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     program = resolved_run.program
     parsed_modules = resolved_run.parsed_modules
     _typecheck_run_graph(dependency_graph, resolved_run.check_targets)
+    main_returns_int = entrypoint_returns_int(program, dependency_graph.parsed)
 
     if check_examples and _program_has_example_clauses(program, parsed_modules):
         from ..api import _apply_capabilities as _apply_example_capabilities
@@ -289,6 +307,15 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         main_name="_geno_entry_main" if parsed_modules else "main",
         catch_name_error=True,
     )
+    if main_returns_int:
+        python_code += f"\n__result__ = [{_PROCESS_RESULT_EXIT!r}, __result__ % 256]\n"
+    else:
+        python_code += (
+            "\nif __result__ is None:\n"
+            f"    __result__ = [{_PROCESS_RESULT_UNIT!r}]\n"
+            "else:\n"
+            f"    __result__ = [{_PROCESS_RESULT_DISPLAY!r}, str(__result__)]\n"
+        )
     return {
         "python_code": python_code,
         "runtime_capabilities": sorted(DEFAULT_ALLOWED_CAPABILITIES),
@@ -384,7 +411,7 @@ def run_file(
     target: str | None = None,
     json_output: bool = False,
     program_args: list[str] | None = None,
-):
+) -> int | None:
     """Run a Geno source file.
 
     By default, compiles to Python and runs in ProcessSandbox for hard timeouts.
@@ -494,7 +521,10 @@ def run_file(
         print(_format_json_run_output(result))
         if not result.ok:
             sys.exit(1)
-        return
+        return _main_result_exit_status(
+            result.value_raw,
+            main_returns_int=bool(getattr(result, "_main_returns_int", False)),
+        )
 
     from ..dependency_graph import (
         CircularDependencyError,
@@ -562,9 +592,23 @@ def run_file(
                 sys.exit(1)
             if run_output:
                 print(run_output, end="")
-            if result is not None:
-                print(f"=> {result}")
-            return
+            if result == [_PROCESS_RESULT_UNIT]:
+                return None
+            if (
+                type(result) is list
+                and len(result) == 2
+                and result[0] == _PROCESS_RESULT_EXIT
+                and type(result[1]) is int
+            ):
+                return result[1]
+            if (
+                type(result) is list
+                and len(result) == 2
+                and result[0] == _PROCESS_RESULT_DISPLAY
+                and type(result[1]) is str
+            ):
+                print(f"=> {result[1]}")
+                return None
 
         resolved_run = _resolve_run_program(filename, target)
         dg = resolved_run.dependency_graph
@@ -573,6 +617,7 @@ def run_file(
 
         # Type check all modules (not just the entrypoint)
         _typecheck_run_graph(dg, resolved_run.check_targets)
+        main_returns_int = entrypoint_returns_int(program, dg.parsed)
 
         if run_mode == "unsafe":
             # Direct interpreter (no process isolation)
@@ -633,8 +678,14 @@ def run_file(
             run_output = interpreter.get_output()
             if run_output:
                 print(run_output, end="")
-            if result is not None:
+            exit_status = _main_result_exit_status(
+                result, main_returns_int=main_returns_int
+            )
+            if exit_status is not None:
+                return exit_status
+            if not _is_unit_main_result(result):
                 print(f"=> {interpreter._format_value(result)}")
+            return None
 
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)
@@ -695,3 +746,5 @@ def run_file(
     except RuntimeError as e:
         _print_runtime_error(e)
         sys.exit(1)
+
+    return None

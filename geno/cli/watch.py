@@ -107,10 +107,16 @@ def watch_run(
 
     def _run_once():
         start = time.monotonic()
+        exit_status: int | None = None
         try:
-            run_file(str(target), check_examples=True, unsafe=unsafe)
-        except SystemExit:
-            pass
+            exit_status = run_file(str(target), check_examples=True, unsafe=unsafe)
+        except SystemExit as error:
+            if isinstance(error.code, int):
+                exit_status = error.code
+            elif error.code is not None:
+                exit_status = 1
+        if exit_status not in (None, 0):
+            print(_dim(f"Process exited with status {exit_status}"))
         elapsed = time.monotonic() - start
         print()
         print(_dim(f"Completed in {elapsed:.2f}s"))
