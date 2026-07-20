@@ -3087,6 +3087,22 @@ end func resolve_single_import
 // Main entry point: run a program
 // ============================================================================
 
+// Return whether the entry program itself declares main.
+func defs_define_main(defs: List[Def]) -> Bool
+    example [] -> false
+    if length(defs) == 0 then
+        return false
+    end if
+    match head(defs) with
+        | FuncDef(name, _params, _ret_type, _specs, _body, _closing, _anns, _effs, _span) ->
+        if name == "main" then
+            return true
+        end if
+        return defs_define_main(tail(defs))
+        | _ -> return defs_define_main(tail(defs))
+    end match
+end func defs_define_main
+
 // Run a program, optionally with modules for imports.
 // Returns the result of main(), or UnitVal if no main function.
 func run_program_with_state(st: InterpState, program: Program, modules: MutableMap[String, Program], check_ex: Bool) -> Value
@@ -3108,6 +3124,9 @@ func run_program_with_state(st: InterpState, program: Program, modules: MutableM
 
     // Look for and call main
     let main_opt: Option[Value] = env_lookup(st.global_env, "main")
+    if not defs_define_main(program.defs) then
+        return UnitVal
+    end if
     if is_some(main_opt) then
         let main_fn: Value = unwrap(main_opt)
         let result: Value = call_function(st: st, func_val: main_fn, call_args: [], env: st.global_env)

@@ -19,6 +19,12 @@ print(result.ok)      # True
 print(result.value)   # 42
 ```
 
+
+`geno.run()` is value-oriented even when `main()` returns an `Int`: the value
+is stored in `RunResult` and is never converted into a process exit or
+`SystemExit`. Process-status translation is reserved for `geno run` and
+standalone generated artifacts.
+
 ## Core Functions
 
 ### `geno.run(source, filename="<api>", config=None) -> RunResult`

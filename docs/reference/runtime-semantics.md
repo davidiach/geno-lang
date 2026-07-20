@@ -58,6 +58,35 @@ emits that representation followed by a newline, except that a top-level
 `print("hello")` writes `hello`, while strings nested in a constructor or
 collection retain the canonical quoted representation.
 
+## Entrypoints and process exits
+
+Execution engines return `main()`'s value to their caller. Only an outer
+executable boundary translates that value into a process status.
+
+The entrypoint must be the selected program's own `main` declaration. An
+imported function named `main` is not invoked as the program entrypoint.
+- `main() -> Unit` exits with status 0.
+- `main() -> Int` exits with the returned integer normalized modulo 256. The
+  value is not displayed as a result.
+- Output emitted before a normal return is preserved, including before a
+  nonzero exit. Expected nonzero exits do not emit error diagnostics.
+- Other accepted return types retain their legacy displayed-result behavior
+  and exit successfully.
+- Uncaught runtime errors still exit nonzero and emit a useful Geno diagnostic
+  or standalone-host traceback.
+
+`geno run`, the self-hosted `run` command, generated Python scripts, and
+generated Node.js artifacts share this behavior. Node uses deferred
+`process.exitCode` so buffered output can drain. Importing generated Python
+does not call `main()` or exit. Generated Node ES modules also call `main()`
+only when executed directly, not when imported by another module. `geno watch`
+reports nonzero returned statuses but remains alive to observe subsequent
+changes.
+
+Embedding and sandbox APIs remain value-oriented: `geno.api.run()`,
+`Interpreter.run()`, and process-sandbox result channels return the value and
+never terminate their host process.
+
 ## Runtime implementations
 
 The interpreter and the Python and JavaScript runtime preludes are three

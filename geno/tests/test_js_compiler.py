@@ -21,7 +21,7 @@ from geno.ast_nodes import (
 from geno.js_compiler import JSCompileError, JSCompiler, compile_to_js
 from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
 from geno.parser import parse
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import display_main_result_for_test, run_node_code
 from geno.typechecker import TypeChecker
 from geno.typechecker import TypeError as GenoTypeError
 
@@ -32,6 +32,7 @@ def compile_and_run_js(source: str) -> str:
     """Compile Geno to JS, run via Node, return stdout."""
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
+    js_out = display_main_result_for_test(js_out)
     result = run_node_code(js_out, args=("--cap", "print"), timeout=10)
     if result.returncode != 0:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
@@ -2199,6 +2200,7 @@ class TestJSCompilerSpecs:
         end func
         """
         js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
         helper_match = re.search(r"async function (_temp_\d+)\(\)", js_code)
         assert helper_match is not None
         assert f"const result = await {helper_match.group(1)}();" in js_code

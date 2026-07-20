@@ -28,7 +28,12 @@ except (ImportError, AttributeError):
 from geno.compiler import compile_to_python
 from geno.interpreter import interpret
 from geno.js_compiler import compile_to_js
-from geno.tests._script_runner import run_node_code, run_python_code
+from geno.tests._script_runner import (
+    display_main_result_for_test,
+    display_python_main_result_for_test,
+    run_node_code,
+    run_python_code,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,7 +44,7 @@ _NODE = shutil.which("node")
 
 def _run_python(source: str) -> str:
     """Compile Geno to Python and execute, return stdout."""
-    py_code = compile_to_python(source)
+    py_code = display_python_main_result_for_test(compile_to_python(source))
     result = run_python_code(py_code, python_executable=sys.executable, timeout=10)
     if result.returncode != 0:
         raise RuntimeError(f"Python backend failed: {result.stderr}")
@@ -55,7 +60,11 @@ def _run_js(source: str) -> str:
     js_code = compile_to_js(source)
     if isinstance(js_code, tuple):
         js_code = js_code[0]
-    result = run_node_code(js_code, node_executable=node, timeout=10)
+    result = run_node_code(
+        display_main_result_for_test(js_code),
+        node_executable=node,
+        timeout=10,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"JS backend failed: {result.stderr}")
     stdout = result.stdout

@@ -4638,8 +4638,8 @@ class TestTypeInferenceCompiled:
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
         result = run_node_code(js_code, timeout=10)
-        assert result.returncode == 0
-        assert "50" in result.stdout
+        assert result.returncode == 50
+        assert result.stdout == ""
 
 
 class TestTypeInferenceParsing:

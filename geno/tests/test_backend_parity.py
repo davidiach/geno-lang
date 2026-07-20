@@ -2251,8 +2251,9 @@ class TestBackendParity:
         main_source = (
             "import Lib\n"
             '@untested("entry point")\n'
-            "func main() -> Int\n"
-            "  return Lib.encode(c: 3, a: 1, b: 2)\n"
+            "func main() -> Unit\n"
+            "  print(Lib.encode(c: 3, a: 1, b: 2))\n"
+            "  return ()\n"
             "end func\n"
         )
 
@@ -2269,8 +2270,9 @@ class TestBackendParity:
             "import A\n"
             "import B\n"
             '@untested("entry point")\n'
-            "func main() -> Int\n"
-            "  return A.value() * 10 + B.value()\n"
+            "func main() -> Unit\n"
+            "  print(A.value() * 10 + B.value())\n"
+            "  return ()\n"
             "end func\n"
         )
 
