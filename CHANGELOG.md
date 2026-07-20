@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Target-aware lowering contract**: Checks that name an execution target now validate the checked AST with its canonical compiler backend in memory; manifest compilation selects compatible execution profiles while preserving `compile --target python|js` and adding an explicit `--profile` override.
 - **Stable diagnostic ownership**: Parser, type, and effect errors now emit granular E202 and E302-E311 codes at their owning compiler sites, including through the LSP exception bridge.
 - **Release qualification**: The release gate and local release plan now require the frozen corpus on the interpreter, Python, and JavaScript backends.
 - **CLI entrypoint exit status**: `main() -> Int` now becomes the portable
@@ -37,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Compiled Node HTTP**: Repaired CommonJS and ES-module HTTP with an `http`-only, stdin-based bridge; streamed bounded responses; enforced private-address and redirect policy; preserved duplicate headers and non-2xx bodies across Python and Node; and kept expected `http_request` failures trace-free.
+- **Target/compiler parity**: Target-aware CLI and embedding checks now reject backend-invalid integer literals, record fields, runtime names, and project namespaces before artifact emission; invalid manifests cannot be bypassed by an explicit check target, and expected compiler/build failures no longer expose Python tracebacks or partial output paths.
 - **VS Code packaging**: The release gate now verifies the transitive `vscode-jsonrpc` runtime is present in the VSIX.
 
 ## [0.4.1] - 2026-07-19

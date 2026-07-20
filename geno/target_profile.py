@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Literal, Set
 
 try:
     import tomllib
@@ -30,6 +30,10 @@ TARGETS_TOML = (
 
 VALID_TARGETS = {"python-cli", "node-cli", "browser", "python-hosted"}
 
+BackendKind = Literal["python", "javascript"]
+_COMPILE_PROFILES = {"python": ("python-cli", "python-hosted"), "js": ("node-cli",)}
+_DEFAULT_COMPILE_PROFILE = {"python": "python-cli", "js": "node-cli"}
+
 
 class ManifestTargetError(ValueError):
     """Raised when ``geno.toml`` declares an invalid target."""
@@ -44,6 +48,8 @@ class TargetProfile:
     """Availability info for a specific compilation target."""
 
     target: str
+    # Runtime family declared by targets.toml; None only for permissive profiles.
+    runtime: str | None = None
     # Builtins explicitly marked "unavailable" on this target
     unavailable: Set[str] = field(default_factory=set)
     # Builtins that are "capability-gated" on this target
@@ -69,6 +75,15 @@ class TargetProfile:
                 f"Available on: {alt_str}"
             )
         return f"'{builtin_name}' is not available on the '{self.target}' target."
+
+    @property
+    def backend_kind(self) -> BackendKind | None:
+        """Return the compiler backend that validates this execution target."""
+        if self.runtime == "python":
+            return "python"
+        if self.runtime in {"node", "browser"}:
+            return "javascript"
+        return None
 
     def _find_supporting_targets(self, builtin_name: str) -> list[str]:
         """Find targets that support the given builtin."""
@@ -110,11 +125,16 @@ class TargetProfile:
             )
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
 
+        target_info = raw.get("targets", {}).get(target, {})
+        runtime = target_info.get("runtime")
+        if runtime not in {"python", "node", "browser"}:
+            raise RuntimeError(
+                f"Target metadata for '{target}' has invalid runtime {runtime!r}."
+            )
+
         unavailable: set[str] = set()
         capability_gated: dict[str, str] = {}
-        capabilities = set(
-            raw.get("targets", {}).get(target, {}).get("capabilities", [])
-        )
+        capabilities = set(target_info.get("capabilities", []))
 
         for builtin_name, info in raw.get("builtins", {}).items():
             availability = info.get(target, "available")
@@ -126,6 +146,7 @@ class TargetProfile:
 
         return cls(
             target=target,
+            runtime=runtime,
             unavailable=unavailable,
             capability_gated=capability_gated,
             capabilities=capabilities,
@@ -169,6 +190,49 @@ def resolve_manifest_targets(project_root: Path | None) -> list[str]:
         if target not in targets:
             targets.append(target)
     return targets
+
+
+def resolve_compilation_profiles(
+    project_root: Path | None,
+    backend: str,
+    requested_profile: str | None = None,
+) -> list[TargetProfile]:
+    """Resolve execution profiles for a Python or JavaScript compilation."""
+    if backend not in _COMPILE_PROFILES:
+        raise ValueError("Compilation target must be 'python' or 'js'.")
+
+    # Validate the manifest even when an explicit profile overrides selection.
+    declared = resolve_manifest_targets(project_root)
+    compatible = _COMPILE_PROFILES[backend]
+
+    if requested_profile is not None:
+        profile = TargetProfile.load(requested_profile)
+        if requested_profile == "browser":
+            raise ValueError(
+                "The browser execution profile requires 'geno build'; raw "
+                "JavaScript compilation does not include the browser wrapper."
+            )
+        if requested_profile not in compatible:
+            choices = ", ".join(compatible)
+            raise ValueError(
+                f"Execution profile '{requested_profile}' is not compatible with "
+                f"the '{backend}' backend. Compatible profiles: {choices}."
+            )
+        return [profile]
+
+    selected = [target for target in declared if target in compatible]
+    if selected:
+        return [TargetProfile.load(target) for target in selected]
+    if backend == "js" and "browser" in declared:
+        raise ValueError(
+            "The project declares browser but not node-cli JavaScript output; "
+            "use 'geno build' for the browser wrapper, or pass "
+            "'--profile node-cli' to compile raw JavaScript explicitly."
+        )
+
+    # An explicit output backend remains authoritative for compatibility. When
+    # no declared execution profile maps to it, keep the historical default.
+    return [TargetProfile.load(_DEFAULT_COMPILE_PROFILE[backend])]
 
 
 def resolve_manifest_target(project_root: Path | None) -> str | None:

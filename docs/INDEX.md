@@ -43,6 +43,7 @@
 - [Maturity Matrix](MATURITY.md) -- what's stable, beta, experimental, or research
 - [Serious Beta Qualification](operations/serious-beta-qualification.md) -- evidence required before the label changes
 - [Compatibility Policy](operations/compatibility-policy.md) -- source, diagnostic, tooling, and security guarantees
+- [Target-aware Check Contract](design/target-aware-check.md) -- execution-profile checks and backend-lowering guarantees
 - [Governance](../GOVERNANCE.md) -- decision ownership and contributor roles
 - [Design Proposals](proposals/README.md) -- process for evolving the language contract
 - [Preview Program](preview-program.md) -- onboarding, prerequisites, current status
