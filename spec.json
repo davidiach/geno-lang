@@ -38,7 +38,7 @@
   "runtime_semantics": {
     "numeric_equality": "Int and Float compare by numeric value; structural equality applies this recursively",
     "integer_division": "truncates toward zero",
-    "portable_javascript_int": {"min": -9007199254740991, "max": 9007199254740991, "behavior_outside_range": "runtime error"},
+    "portable_javascript_int": {"min": -9007199254740991, "max": 9007199254740991, "literal_behavior_outside_range": "target check and compilation error", "computed_behavior_outside_range": "runtime error"},
     "python_interpreter_integer_limit": "RunConfig.max_integer_bits (default 33219 bits)",
     "constructor_values": "value semantics; rebinding snapshots and with returns an independent value",
     "mutable_reference_types": ["Array[T]", "Vec[T]", "Set[T]", "MutableMap[K, V]"],
@@ -375,6 +375,20 @@
   ],
 
   "compilation_targets": ["python", "javascript"],
+
+  "target_aware_check": {
+    "python_targets": ["python-cli", "python-hosted"],
+    "javascript_targets": ["node-cli", "browser"],
+    "manifest_behavior": "checks every declared target; explicit target still validates manifest spelling",
+    "targetless_behavior": "permissive language check with no backend-lowering guarantee",
+    "validation_effects": "in-memory only; writes no artifact, executes no code, grants no capabilities",
+    "browser_artifact_command": "geno build"
+  },
+
+  "backend_record_field_constraints": {
+    "python": "reject Python keywords and dunder fields",
+    "javascript": ["JavaScript keywords", "_tag", "_withGenoFormatter", "__proto__", "constructor", "prototype"]
+  },
 
   "async_await": {
     "description": "Async functions return Async[T] and are defined with 'async func'. Use 'await' to resolve Async[T] values. 'await' is allowed inside 'async func' and inside 'main()'. Async functions are exempt from example clause requirements.",

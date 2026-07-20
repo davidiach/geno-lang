@@ -4283,6 +4283,138 @@ class TestDocumentSyncDiagnostics:
         )
         assert any("python-cli" in diag.message for diag in latest[main_file.as_uri()])
 
+    def test_did_open_reports_manifest_target_backend_constraint(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main"]\ntargets = ["node-cli"]\n'
+        )
+        main_file = tmp_path / "Main.geno"
+        source = "func main() -> Int\n  return 9007199254740992\nend func\n"
+        main_file.write_text(source)
+
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        published: list[tuple[str, list[types.Diagnostic]]] = []
+        monkeypatch.setattr(
+            server,
+            "publish_diagnostics",
+            lambda uri, diags: published.append((uri, list(diags))),
+        )
+
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=main_file.as_uri(),
+                    language_id="geno",
+                    version=1,
+                    text=source,
+                )
+            )
+        )
+
+        latest = {uri: diags for uri, diags in published}
+        messages = [diag.message for diag in latest[main_file.as_uri()]]
+        assert any("safe integer range" in message for message in messages)
+        assert any("node-cli" in message for message in messages)
+
+    def test_did_open_browser_target_uses_real_single_file_module_name(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Some"\nfiles = ["Some"]\ntargets = ["browser"]\n'
+        )
+        source_file = tmp_path / "Some.geno"
+        source = "func main() -> Int\n  return 0\nend func\n"
+        source_file.write_text(source)
+
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        published: list[tuple[str, list[types.Diagnostic]]] = []
+        monkeypatch.setattr(
+            server,
+            "publish_diagnostics",
+            lambda uri, diags: published.append((uri, list(diags))),
+        )
+
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=source_file.as_uri(),
+                    language_id="geno",
+                    version=1,
+                    text=source,
+                )
+            )
+        )
+
+        latest = {uri: diags for uri, diags in published}
+        messages = [diag.message for diag in latest[source_file.as_uri()]]
+        assert any("reserved runtime module name" in message for message in messages)
+
+    def test_did_open_reports_every_manifest_target_backend_constraint(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\n'
+            'files = ["Main", "Utils"]\n'
+            'targets = ["node-cli", "python-cli"]\n'
+        )
+        main_file = tmp_path / "Main.geno"
+        utils_file = tmp_path / "Utils.geno"
+        main_source = (
+            "import Utils\n"
+            "type Box = Box(nonlocal: Int)\n"
+            "func main() -> Int\n"
+            "  return 9007199254740992\n"
+            "end func\n"
+        )
+        utils_source = (
+            "export func helper(x: Int) -> Int\n"
+            "  example 1 -> 1\n"
+            "  return x\n"
+            "end func\n"
+        )
+        main_file.write_text(main_source)
+        utils_file.write_text(utils_source)
+
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        published: list[tuple[str, list[types.Diagnostic]]] = []
+        monkeypatch.setattr(
+            server,
+            "publish_diagnostics",
+            lambda uri, diags: published.append((uri, list(diags))),
+        )
+
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=main_file.as_uri(),
+                    language_id="geno",
+                    version=1,
+                    text=main_source,
+                )
+            )
+        )
+
+        latest = {uri: diags for uri, diags in published}
+        messages = [diag.message for diag in latest[main_file.as_uri()]]
+        assert any("safe integer range" in message for message in messages)
+        assert any("cannot be represented safely" in message for message in messages)
+
     def test_did_open_reports_multiple_project_type_errors(
         self, tmp_path, monkeypatch
     ) -> None:
