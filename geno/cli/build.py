@@ -29,6 +29,7 @@ def build_app(
         NameCollisionError,
     )
     from ..js_compiler import (
+        JSCompileError,
         JSCompiler,
         _browser_capability_bootstrap,
         _coerce_canvas_dimension,
@@ -89,11 +90,11 @@ def build_app(
         else:
             # Directory output: dist/ with index.html and app.js
             dist_dir = Path(output) if output else Path("dist")
-            dist_dir.mkdir(parents=True, exist_ok=True)
 
             # Compile JS via the unified project pipeline
             compiler = JSCompiler(track_source_map=source_map)
             js_code = compiler.compile_project(dg)
+            dist_dir.mkdir(parents=True, exist_ok=True)
 
             sources_content: dict[str, str] = {}
             if source_map:
@@ -170,6 +171,9 @@ canvas {{ border: 1px solid #333; }}
         sys.exit(1)
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)
+        sys.exit(1)
+    except JSCompileError as e:
+        print(f"Build Error: {e}", file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
         # Malformed geno.toml (TOMLDecodeError subclasses ValueError) or an

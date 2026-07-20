@@ -1,4 +1,4 @@
-"""``geno check`` — type check only."""
+"""``geno check`` — check types and target lowering compatibility."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from ._util import _format_source_snippet, _print_error, report_deep_nesting_err
 
 
 def check_file(filename: str, target: str | None = None):
-    """Type check a Geno source file or project."""
+    """Check types and any selected target backend for a file or project."""
     from ..dependency_graph import (
         CircularDependencyError,
         DependencyGraphError,
@@ -27,14 +27,17 @@ def check_file(filename: str, target: str | None = None):
 
         # Resolve targets: CLI flag checks one target; manifest checks all declared targets.
         from ..target_profile import TargetProfile, resolve_manifest_targets
-
-        target_names: list[str] = (
-            [target] if target is not None else resolve_manifest_targets(pg.root)
+        from ..target_validation import (
+            TargetValidationError,
+            validate_project_for_target,
         )
+
+        manifest_targets = resolve_manifest_targets(pg.root)
+        target_names: list[str] = [target] if target is not None else manifest_targets
         check_targets: list[str | None] = list(target_names) if target_names else [None]
 
         checked = None
-        target_errors: list[tuple[str | None, TypeError]] = []
+        target_errors: list[tuple[str | None, Exception]] = []
         for target_name in check_targets:
             target_profile = (
                 TargetProfile.load(target_name) if target_name is not None else None
@@ -42,12 +45,21 @@ def check_file(filename: str, target: str | None = None):
             checker = TypeChecker(target_profile=target_profile)
             try:
                 checked = checker.check_project_graph(dg)
-            except TypeError as e:
+                if target_profile is not None:
+                    validate_project_for_target(dg, target_profile)
+            except (TypeError, TargetValidationError) as e:
                 target_errors.append((target_name, e))
 
         if target_errors:
             for target_name, error in target_errors:
-                if target_name is None:
+                if isinstance(error, TargetValidationError):
+                    label = (
+                        "Target Error"
+                        if target_name is None
+                        else f"Target Error (target: {target_name})"
+                    )
+                    _print_error(label, error.backend_message)
+                elif target_name is None:
                     _print_error("Type Error", error)
                 else:
                     _print_error(f"Type Error (target: {target_name})", error)

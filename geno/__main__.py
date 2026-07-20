@@ -254,6 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compilation target (default: python)",
     )
     compile_parser.add_argument(
+        "--profile",
+        choices=["python-cli", "node-cli", "browser", "python-hosted"],
+        help="Execution profile used for target-aware compile validation",
+    )
+    compile_parser.add_argument(
         "--esm",
         action="store_true",
         help="Emit ES module format (JS target only)",
@@ -265,12 +270,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Check command
-    check_parser = subparsers.add_parser("check", help="Type check only")
+    check_parser = subparsers.add_parser(
+        "check", help="Check types and target compatibility"
+    )
     check_parser.add_argument("file", help="Source file to check")
     check_parser.add_argument(
         "--target",
         choices=["python-cli", "node-cli", "browser", "python-hosted"],
-        help="Target platform for availability checking",
+        help="Target platform for availability and backend validation",
     )
 
     # Constraints command
@@ -620,6 +627,7 @@ def dispatch_args(
             target=args.target,
             esm=args.esm,
             source_map=args.source_map,
+            profile=args.profile,
         )
     elif args.command == "build":
         build_app = _command("build_app")

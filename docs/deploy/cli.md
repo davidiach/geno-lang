@@ -4,6 +4,12 @@
 
 Geno CLI apps can be compiled to either Python or JavaScript (Node.js) for distribution.
 
+When a project manifest declares an execution profile compatible with the
+selected backend, compilation validates that profile before emission. Otherwise
+it preserves the legacy `python-cli` or `node-cli` default. Use `--profile` to
+select a compatible profile explicitly (for example, `--profile python-hosted`).
+Browser applications use `geno build`, not raw JavaScript compilation.
+
 ## Compile to Python
 
 ```bash

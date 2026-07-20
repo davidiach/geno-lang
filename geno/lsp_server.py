@@ -133,6 +133,20 @@ def _diagnostics_by_uri_from_exception(
     return grouped
 
 
+def _diagnostics_by_uri_from_exceptions(
+    exceptions: Iterable[Exception],
+    default_uri: str,
+) -> dict[str, list[Any]]:
+    """Merge LSP diagnostics from independent target validation failures."""
+    grouped: dict[str, list[Any]] = {}
+    for exc in exceptions:
+        for uri, diagnostics in _diagnostics_by_uri_from_exception(
+            exc, default_uri
+        ).items():
+            grouped.setdefault(uri, []).extend(diagnostics)
+    return grouped
+
+
 # ---------------------------------------------------------------------------
 # Keyword and builtin lists for completion
 # ---------------------------------------------------------------------------
@@ -1424,6 +1438,10 @@ class GenoLanguageServer:
                     TargetProfile,
                     resolve_manifest_targets,
                 )
+                from geno.target_validation import (
+                    TargetValidationError,
+                    validate_project_for_target,
+                )
 
                 # Typecheck via the same pipeline as geno check
                 from geno.typechecker import TypeChecker
@@ -1435,14 +1453,40 @@ class GenoLanguageServer:
                     manifest_check_targets: list[str | None] = (
                         list(manifest_target_names) if manifest_target_names else [None]
                     )
+                    target_errors: list[Exception] = []
                     for manifest_target_name in manifest_check_targets:
-                        manifest_target_profile = (
-                            TargetProfile.load(manifest_target_name)
-                            if manifest_target_name is not None
-                            else None
+                        try:
+                            manifest_target_profile = (
+                                TargetProfile.load(manifest_target_name)
+                                if manifest_target_name is not None
+                                else None
+                            )
+                            checker = TypeChecker(
+                                target_profile=manifest_target_profile
+                            )
+                            checker.check_project_graph(dg)
+                            if manifest_target_profile is not None:
+                                validate_project_for_target(dg, manifest_target_profile)
+                        except (
+                            TargetValidationError,
+                            GenoTypeError,
+                            GenoTypeErrors,
+                            TypeError,
+                        ) as exc:
+                            target_errors.append(exc)
+                    if target_errors:
+                        grouped_diags = _diagnostics_by_uri_from_exceptions(
+                            target_errors, uri
                         )
-                        checker = TypeChecker(target_profile=manifest_target_profile)
-                        checker.check_project_graph(dg)
+                        for err_uri, diagnostics in grouped_diags.items():
+                            self.server.publish_diagnostics(err_uri, diagnostics)
+                        for rf in project.files:
+                            mod_uri = rf.path.as_uri()
+                            if mod_uri not in grouped_diags:
+                                self.server.publish_diagnostics(mod_uri, [])
+                        all_symbols, _ = _extract_completion_symbols(source)
+                        self._doc_cache[uri] = (source, all_symbols)
+                        return
                 except (
                     DependencyGraphError,
                     LexerError,
@@ -1450,6 +1494,7 @@ class GenoLanguageServer:
                     ParseErrors,
                     _ProjectGraphError,
                     ProjectResolutionError,
+                    TargetValidationError,
                     GenoTypeError,
                     GenoTypeErrors,
                     TypeError,
@@ -1493,6 +1538,10 @@ class GenoLanguageServer:
                     TargetProfile,
                     resolve_manifest_targets,
                 )
+                from geno.target_validation import (
+                    TargetValidationError,
+                    validate_project_for_target,
+                )
 
                 # Typecheck via the same pipeline as geno check
                 from geno.typechecker import TypeChecker
@@ -1504,14 +1553,38 @@ class GenoLanguageServer:
                     check_targets: list[str | None] = (
                         list(target_names) if target_names else [None]
                     )
+                    target_errors = []
                     for target_name in check_targets:
-                        target_profile = (
-                            TargetProfile.load(target_name)
-                            if target_name is not None
-                            else None
+                        try:
+                            target_profile = (
+                                TargetProfile.load(target_name)
+                                if target_name is not None
+                                else None
+                            )
+                            checker = TypeChecker(target_profile=target_profile)
+                            checker.check_project_graph(dg)
+                            if target_profile is not None:
+                                validate_project_for_target(dg, target_profile)
+                        except (
+                            TargetValidationError,
+                            GenoTypeError,
+                            GenoTypeErrors,
+                            TypeError,
+                        ) as exc:
+                            target_errors.append(exc)
+                    if target_errors:
+                        grouped_diags = _diagnostics_by_uri_from_exceptions(
+                            target_errors, uri
                         )
-                        checker = TypeChecker(target_profile=target_profile)
-                        checker.check_project_graph(dg)
+                        for err_uri, diagnostics in grouped_diags.items():
+                            self.server.publish_diagnostics(err_uri, diagnostics)
+                        for rf in context.project.files:
+                            mod_uri = rf.path.as_uri()
+                            if mod_uri not in grouped_diags:
+                                self.server.publish_diagnostics(mod_uri, [])
+                        all_symbols, _ = _extract_completion_symbols(source)
+                        self._doc_cache[uri] = (source, all_symbols)
+                        return
                 except (
                     DependencyGraphError,
                     LexerError,
@@ -1519,6 +1592,7 @@ class GenoLanguageServer:
                     ParseErrors,
                     _ProjectGraphError,
                     ProjectResolutionError,
+                    TargetValidationError,
                     GenoTypeError,
                     GenoTypeErrors,
                     TypeError,
@@ -1557,6 +1631,7 @@ class GenoLanguageServer:
                         filename=context.filename,
                         modules=context.merged_module_sources(),
                         target=target_name,
+                        _module_name=context.module_name,
                     )
                     if not result.ok:
                         lsp_diags.extend(

@@ -131,7 +131,7 @@ class RunConfig:
                  Used for in-memory module resolution with ``import`` statements.
                  When combined with ``run_path()``, explicit modules override
                  filesystem-resolved project/dependency modules of the same name.
-        target: Optional target platform for builtin availability checks.
+        target: Optional target for builtin availability checking.
                 ``run_path()`` uses this explicit value when provided;
                 otherwise it honors the nearest project's ``geno.toml`` targets.
                 Multi-target manifests are prechecked against every declared
@@ -959,6 +959,8 @@ def check(
     filename: str = "<api>",
     modules: dict[str, str] | None = None,
     target: str | None = None,
+    *,
+    _module_name: str | None = None,
 ) -> CheckResult:
     """
     Parse and type-check Geno source code without executing it.
@@ -967,7 +969,9 @@ def check(
         source: Geno source code.
         filename: Filename for error messages.
         modules: Optional map of module names to Geno source strings.
-        target: Optional target platform for builtin availability checks.
+        target: Optional target for builtin and backend-lowering validation.
+            A real filename also supplies the entrypoint module name for
+            project-style target validation.
 
     Returns:
         CheckResult with ok status and diagnostics.
@@ -975,6 +979,10 @@ def check(
     from .lexer import Lexer, LexerError
     from .parser import ParseError, ParseErrors, Parser
     from .target_profile import TargetProfile
+    from .target_validation import (
+        TargetValidationError,
+        validate_program_collection_for_target,
+    )
     from .typechecker import TypeChecker
     from .types import TypeError, TypeErrors
 
@@ -1043,6 +1051,20 @@ def check(
                 mod_checker = TypeChecker(target_profile=target_profile)
                 mod_checker.check_program(mod_ast, modules=other_mods or None)
         checker.check_program(program, modules=parsed_modules)
+        if target_profile is not None:
+            entrypoint_name = _module_name
+            if entrypoint_name is None and filename and not filename.startswith("<"):
+                entrypoint_name = Path(filename).stem or None
+            validate_program_collection_for_target(
+                program,
+                parsed_modules or {},
+                target_profile,
+                entrypoint_name=entrypoint_name,
+            )
+    except TargetValidationError as e:
+        _finalize_timing(timing, "typecheck_ms", t_tc, t0)
+        diagnostics.append(_make_diagnostic(e, ErrorCode.TYPE_MISMATCH))
+        return CheckResult(ok=False, diagnostics=diagnostics, timing=timing)
     except (ValueError, RuntimeError) as e:
         _finalize_timing(timing, "typecheck_ms", t_tc, t0)
         diagnostics.append(_make_config_diagnostic(str(e)))
@@ -1067,7 +1089,7 @@ def check_path(
     modules: dict[str, str] | None = None,
     target: str | None = None,
 ) -> CheckResult:
-    """Resolve a Geno file or project from disk, then parse and type-check it."""
+    """Resolve, type-check, and target-validate a Geno file or project."""
     timing = Timing()
     t0 = time.perf_counter()
 
@@ -1078,11 +1100,8 @@ def check_path(
         overlay_names = merged_inputs.overlay_graph_keys or None
         from .target_profile import resolve_manifest_targets
 
-        target_names: list[str] = (
-            [target]
-            if target is not None
-            else resolve_manifest_targets(resolved.project.root)
-        )
+        manifest_targets = resolve_manifest_targets(resolved.project.root)
+        target_names: list[str] = [target] if target is not None else manifest_targets
         module_paths = {
             name: str(resolved_file.path)
             for name, resolved_file in resolved.dependency_graph.file_map.items()
@@ -1122,6 +1141,7 @@ def check_path(
             filename=resolved.filename,
             modules=effective_modules,
             target=target_name,
+            _module_name=resolved.entrypoint,
         )
         if not current.ok:
             diagnostics.extend(

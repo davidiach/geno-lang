@@ -7,7 +7,13 @@ Geno compiles to multiple backends. Each **target** defines a runtime, available
 
 ## Target vocabulary
 
-Geno uses two related but distinct concepts:
+Geno uses two related but distinct concepts. Target-aware checks validate both
+builtin availability and whether the checked AST can be lowered by the target's
+canonical backend. Validation happens in memory: it writes no artifact, executes
+no generated code, and grants no capabilities. See the
+[target-aware check behavior contract](design/target-aware-check.md).
+
+The two concepts are:
 
 - **Execution targets** (`geno check --target`, `geno test --target`): `python-cli`, `node-cli`, `browser`, `python-hosted`. These describe the runtime environment and determine which builtins are available.
 - **Compilation backends** (`geno compile --target`): `python`, `js`. These select the output language.
@@ -19,18 +25,33 @@ For programs shared with JavaScript, portable `Int` values are limited to
 range. Python and interpreter execution support the separately configured
 `max_integer_bits` limit. See [Portable Runtime Semantics](reference/runtime-semantics.md).
 
+JavaScript target checks reject integer literals and integer pattern literals
+outside that exact range. Target checks also reject source names, module/export
+names, and record fields that the selected backend cannot represent safely.
+Python keywords and dunder record fields are invalid for Python targets;
+JavaScript keywords, runtime discriminator fields, and prototype-sensitive
+fields are invalid for JavaScript targets.
+
 ### Manifest target
 
-Set `targets` in `geno.toml` to automatically apply the first target profile:
+Set `targets` in `geno.toml` to check every declared target profile:
 
 ```toml
 entrypoint = "Main"
-targets = ["browser"]
+targets = ["python-cli", "node-cli"]
 ```
 
-This is equivalent to passing `--target browser` to target-aware commands such as
-`geno check`, `geno run`, and `geno test`. The `geno build` command always applies
-the `browser` profile regardless of the manifest target.
+An explicit `geno check --target TARGET` checks one execution target, while
+still validating every target name in the manifest so typos fail closed. With
+no explicit or manifest target, `geno check` remains a target-agnostic language
+check and does not guarantee that either compiler can lower the program.
+
+`geno compile --target python|js` retains its output-backend selector. It checks
+the compatible execution profiles declared by the manifest, falling back to
+`python-cli` or `node-cli` when no compatible profile is declared. Use `--profile` for
+an explicit compatible override. Browser output always uses `geno build`; raw
+JavaScript compilation does not install the browser capability bootstrap or
+HTML wrapper.
 
 For `geno test`, the target profile is applied before execution; examples and
 test blocks still run through the interpreter. Backend parity is covered by the

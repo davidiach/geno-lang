@@ -19,22 +19,21 @@ def compile_file(
     target: str = "python",
     esm: bool = False,
     source_map: bool = False,
+    profile: str | None = None,
 ):
     """Compile a Geno source file or project to Python or JavaScript."""
+    from ..compiler import CompileError
     from ..dependency_graph import (
         CircularDependencyError,
         DependencyGraphError,
         NameCollisionError,
     )
+    from ..js_compiler import JSCompileError
     from ..lexer import LexerError
     from ..parser import ParseError, ParseErrors
     from ..project_graph import ProjectGraphError
     from ..project_resolution import ProjectResolutionError, resolve_project_context
-    from ..target_profile import (
-        ManifestTargetError,
-        TargetProfile,
-        resolve_manifest_targets,
-    )
+    from ..target_profile import ManifestTargetError, resolve_compilation_profiles
     from ..typechecker import TypeChecker, TypeError
 
     try:
@@ -43,13 +42,11 @@ def compile_file(
         dg = resolved.dependency_graph
         is_multi = len(dg.sorted_modules) > 1
 
-        # Type check via project graph with the selected backend's target profile.
-        target_name = "node-cli" if target == "js" else "python-cli"
-        # Validate the project manifest fail-closed even though compile targets
-        # are selected by the backend flag rather than by the manifest list.
-        resolve_manifest_targets(pg.root)
-        checker = TypeChecker(target_profile=TargetProfile.load(target_name))
-        checker.check_project_graph(dg)
+        # Type check every selected execution profile before backend emission.
+        profiles = resolve_compilation_profiles(pg.root, target, profile)
+        for target_profile in profiles:
+            checker = TypeChecker(target_profile=target_profile)
+            checker.check_project_graph(dg)
 
         if target == "js":
             from ..js_compiler import JSCompiler, generate_dts
@@ -138,6 +135,9 @@ def compile_file(
         sys.exit(1)
     except ManifestTargetError as e:
         print(f"Manifest Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (CompileError, JSCompileError) as e:
+        print(f"Compile Error: {e}", file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
