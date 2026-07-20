@@ -443,6 +443,15 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
         (StringType(),), ResultType(ListType(StringType()), StringType())
     ),
     "fs_exists": FuncType((StringType(),), BoolType()),
+    "fs_metadata": FuncType(
+        (StringType(),), ResultType(UserType("FileMetadata"), StringType())
+    ),
+    "fs_symlink_metadata": FuncType(
+        (StringType(),), ResultType(UserType("FileMetadata"), StringType())
+    ),
+    "fs_canonicalize": FuncType(
+        (StringType(),), ResultType(StringType(), StringType())
+    ),
     "http_fetch": FuncType((StringType(),), StringType()),
     "http_post": FuncType((StringType(), StringType()), StringType()),
     "http_request": FuncType(

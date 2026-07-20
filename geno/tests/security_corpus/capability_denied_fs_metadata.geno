@@ -1,0 +1,5 @@
+# EXPECT: E412
+# fs_metadata without the "fs" capability should fail.
+func main() -> Result[FileMetadata, String]
+    return fs_metadata(path: "/etc/passwd")
+end func

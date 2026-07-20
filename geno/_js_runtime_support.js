@@ -385,6 +385,15 @@ function ProcessResult(exit_code, stdout, stderr) {
     return Object.freeze({ _tag: 'ProcessResult', exit_code, stdout, stderr });
 }
 
+// Filesystem metadata constructors
+function FileKindFile() { return Object.freeze({ _tag: 'FileKindFile' }); }
+function FileKindDirectory() { return Object.freeze({ _tag: 'FileKindDirectory' }); }
+function FileKindSymlink() { return Object.freeze({ _tag: 'FileKindSymlink' }); }
+function FileKindOther() { return Object.freeze({ _tag: 'FileKindOther' }); }
+function FileMetadata(kind, size, modified_ms) {
+    return Object.freeze({ _tag: 'FileMetadata', kind, size, modified_ms });
+}
+
 // =============================================================================
 // Mutable Array
 // =============================================================================
@@ -2057,6 +2066,72 @@ function fs_exists(path) {
     }
     const fs = require("fs");
     return fs.existsSync(path);
+}
+
+function _fileMetadataFromStats(stats, fnName) {
+    let kind;
+    if (stats.isFile()) kind = FileKindFile();
+    else if (stats.isDirectory()) kind = FileKindDirectory();
+    else if (stats.isSymbolicLink()) kind = FileKindSymlink();
+    else kind = FileKindOther();
+
+    const size = _fromSafeJsBigInt(stats.size, fnName + " size");
+    const divisor = 1000000n;
+    let modifiedMs = stats.mtimeNs / divisor;
+    if (stats.mtimeNs < 0n && stats.mtimeNs % divisor !== 0n) modifiedMs -= 1n;
+    return FileMetadata(
+        kind,
+        size,
+        _fromSafeJsBigInt(modifiedMs, fnName + " modified_ms")
+    );
+}
+
+function fs_metadata(path) {
+    _requireCap("fs", "fs_metadata");
+    if (typeof require === "undefined") {
+        return Err("fs_metadata is not available in browser context");
+    }
+    const fs = require("fs");
+    let stats;
+    try {
+        stats = fs.statSync(path, { bigint: true });
+    } catch (e) {
+        return Err(e.message);
+    }
+    return _checkCollectionSize(Ok(_fileMetadataFromStats(stats, "fs_metadata")));
+}
+
+function fs_symlink_metadata(path) {
+    _requireCap("fs", "fs_symlink_metadata");
+    if (typeof require === "undefined") {
+        return Err("fs_symlink_metadata is not available in browser context");
+    }
+    const fs = require("fs");
+    let stats;
+    try {
+        stats = fs.lstatSync(path, { bigint: true });
+    } catch (e) {
+        return Err(e.message);
+    }
+    return _checkCollectionSize(
+        Ok(_fileMetadataFromStats(stats, "fs_symlink_metadata"))
+    );
+}
+
+function fs_canonicalize(path) {
+    _requireCap("fs", "fs_canonicalize");
+    if (typeof require === "undefined") {
+        return Err("fs_canonicalize is not available in browser context");
+    }
+    const fs = require("fs");
+    let canonical;
+    try {
+        canonical = fs.realpathSync(path).replace(/\\/g, "/");
+    } catch (e) {
+        return Err(e.message);
+    }
+    _checkStringResultSize("fs_canonicalize", _stringLength(canonical));
+    return _checkCollectionSize(Ok(canonical));
 }
 
 // =============================================================================
@@ -4231,7 +4306,7 @@ function path_extension(path) {
 }
 
 function path_is_absolute(path) {
-    return path.startsWith('/');
+    return path.startsWith('/') || /^[A-Za-z]:\//.test(path);
 }
 
 // =============================================================================

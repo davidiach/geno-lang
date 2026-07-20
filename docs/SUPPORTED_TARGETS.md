@@ -165,6 +165,9 @@ The following builtins require no capabilities and work on every target:
 | `fs_write_text` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_list_dir` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_exists` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_metadata` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_symlink_metadata` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_canonicalize` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `http_fetch` | http | Cap: http | Cap: http | Cap: http | Cap: http |
 | `http_post` | http | Cap: http | Cap: http | Cap: http | Cap: http |
 | `http_request` | http | Cap: http | Cap: http | Cap: http | Cap: http |

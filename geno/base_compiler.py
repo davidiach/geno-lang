@@ -95,6 +95,13 @@ _BUILTIN_VARIANTS: list[TypeVariant] = [
     _builtin_variant("HttpRequest", ["method", "path", "query", "headers", "body"]),
     # ProcessResult
     _builtin_variant("ProcessResult", ["exit_code", "stdout", "stderr"]),
+    # FileKind
+    _builtin_variant("FileKindFile", []),
+    _builtin_variant("FileKindDirectory", []),
+    _builtin_variant("FileKindSymlink", []),
+    _builtin_variant("FileKindOther", []),
+    # FileMetadata
+    _builtin_variant("FileMetadata", ["kind", "size", "modified_ms"]),
 ]
 
 
@@ -586,7 +593,7 @@ class BaseCompiler(ABC):
         """
         variant = self._constructor_to_variant.get(constructor)
         if variant is not None and index < len(variant.fields):
-            return variant.fields[index][0]
+            return str(variant.fields[index][0])
         return f"field_{index}"
 
     # =========================================================================

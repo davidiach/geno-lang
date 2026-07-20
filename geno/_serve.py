@@ -81,6 +81,55 @@ def _resolve_scoped_path(
     raise RuntimeError(f"{fn_name}: path escapes configured filesystem roots")
 
 
+def _resolve_scoped_lstat_path(
+    path: Any,
+    fn_name: str,
+    roots: list[str],
+    *,
+    allow_absolute_paths: bool,
+) -> str:
+    """Resolve parent components while preserving the final path component."""
+    import os
+
+    if not isinstance(path, str):
+        raise RuntimeError(f"{fn_name}: path must be String")
+
+    def resolve_parent(parent: str) -> str:
+        absolute = parent
+        drive, tail = os.path.splitdrive(absolute)
+        if os.path.altsep:
+            tail = tail.replace(os.path.altsep, os.path.sep)
+        current = drive + os.path.sep if tail.startswith(os.path.sep) else drive
+        for component in tail.split(os.path.sep):
+            if not component or component == ".":
+                continue
+            if component == "..":
+                current = os.path.dirname(current)
+            else:
+                current = os.path.realpath(os.path.join(current, component))
+        return current
+
+    def resolve_candidate(candidate: str) -> str:
+        parent, name = os.path.split(candidate)
+        if not name:
+            return resolve_parent(candidate)
+        return os.path.normpath(os.path.join(resolve_parent(parent), name))
+
+    if os.path.isabs(path):
+        if not allow_absolute_paths:
+            raise RuntimeError(f"{fn_name}: absolute paths are not allowed")
+        resolved = resolve_candidate(path)
+        if any(_is_under_root(resolved, root) for root in roots):
+            return resolved
+        raise RuntimeError(f"{fn_name}: path escapes configured filesystem roots")
+
+    for root in roots:
+        resolved = resolve_candidate(os.path.join(root, path))
+        if _is_under_root(resolved, root):
+            return resolved
+    raise RuntimeError(f"{fn_name}: path escapes configured filesystem roots")
+
+
 def _read_limited_utf8_stream(interpreter, reader, fn_name: str) -> str:
     import codecs
 
@@ -431,6 +480,78 @@ def install_fs_callbacks(
         )
         return os.path.exists(path)
 
+    def _metadata_value(stat_result: Any, fn_name: str) -> Any:
+        import stat
+
+        mode = stat_result.st_mode
+        if stat.S_ISREG(mode):
+            kind_name = "FileKindFile"
+        elif stat.S_ISDIR(mode):
+            kind_name = "FileKindDirectory"
+        elif stat.S_ISLNK(mode):
+            kind_name = "FileKindSymlink"
+        else:
+            kind_name = "FileKindOther"
+        size = stat_result.st_size
+        modified_ms = stat_result.st_mtime_ns // 1_000_000
+        max_safe_int = 2**53 - 1
+        if not (-max_safe_int <= size <= max_safe_int):
+            raise RuntimeError(f"{fn_name} size exceeds JavaScript safe integer range")
+        if not (-max_safe_int <= modified_ms <= max_safe_int):
+            raise RuntimeError(
+                f"{fn_name} modified_ms exceeds JavaScript safe integer range"
+            )
+        return ConstructorValue(
+            "FileMetadata",
+            {
+                "kind": ConstructorValue(kind_name, {}),
+                "size": size,
+                "modified_ms": modified_ms,
+            },
+        )
+
+    def _fs_metadata(path: Any) -> Any:
+        try:
+            resolved = _resolve_scoped_path(
+                path, "fs_metadata", fs_roots, allow_absolute_paths=absolute_ok
+            )
+            stat_result = os.stat(resolved)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        result = ConstructorValue(
+            "Ok", {"value": _metadata_value(stat_result, "fs_metadata")}
+        )
+        return _checked_callback_result(interpreter, result)
+
+    def _fs_symlink_metadata(path: Any) -> Any:
+        try:
+            resolved = _resolve_scoped_lstat_path(
+                path,
+                "fs_symlink_metadata",
+                fs_roots,
+                allow_absolute_paths=absolute_ok,
+            )
+            stat_result = os.lstat(resolved)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        result = ConstructorValue(
+            "Ok",
+            {"value": _metadata_value(stat_result, "fs_symlink_metadata")},
+        )
+        return _checked_callback_result(interpreter, result)
+
+    def _fs_canonicalize(path: Any) -> Any:
+        try:
+            resolved = _resolve_scoped_path(
+                path, "fs_canonicalize", fs_roots, allow_absolute_paths=absolute_ok
+            )
+            if not os.path.exists(resolved):
+                raise FileNotFoundError(f"fs_canonicalize: path does not exist: {path}")
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        result = ConstructorValue("Ok", {"value": resolved.replace("\\", "/")})
+        return _checked_callback_result(interpreter, result)
+
     interpreter.global_env.bind(
         "fs_read_text", BuiltinFunction("fs_read_text", _fs_read_text, 1, ["path"])
     )
@@ -443,6 +564,17 @@ def install_fs_callbacks(
     )
     interpreter.global_env.bind(
         "fs_exists", BuiltinFunction("fs_exists", _fs_exists, 1, ["path"])
+    )
+    interpreter.global_env.bind(
+        "fs_metadata", BuiltinFunction("fs_metadata", _fs_metadata, 1, ["path"])
+    )
+    interpreter.global_env.bind(
+        "fs_symlink_metadata",
+        BuiltinFunction("fs_symlink_metadata", _fs_symlink_metadata, 1, ["path"]),
+    )
+    interpreter.global_env.bind(
+        "fs_canonicalize",
+        BuiltinFunction("fs_canonicalize", _fs_canonicalize, 1, ["path"]),
     )
 
 
