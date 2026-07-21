@@ -4516,6 +4516,17 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
         max_repeats = 11
         max_redirections = 11
 
+        def http_error_308(
+            self,
+            req: Any,
+            fp: Any,
+            code: int,
+            msg: str,
+            headers: Any,
+        ) -> Any:
+            # Python 3.10 does not register 308 as a redirect status.
+            return self.http_error_302(req, fp, code, msg, headers)
+
         def redirect_request(
             self,
             req: Any,

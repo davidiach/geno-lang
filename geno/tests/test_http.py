@@ -12,7 +12,7 @@ from geno.diagnostics import ErrorCode
 
 
 @contextmanager
-def _redirect_server(location: str):
+def _redirect_server(location: str, status: int = 302):
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/target":
@@ -20,7 +20,7 @@ def _redirect_server(location: str):
                 self.end_headers()
                 self.wfile.write(b"redirect-ok")
                 return
-            self.send_response(302)
+            self.send_response(status)
             self.send_header("Location", location)
             self.end_headers()
 
@@ -265,6 +265,19 @@ class TestHttpSchemeValidation:
         monkeypatch.setattr(runtime_support, "_GENO_CAPS", {"http"})
         monkeypatch.setenv("GENO_HTTP_ALLOW_PRIVATE", "1")
         with _redirect_server("/target") as url:
+            assert runtime_support.http_fetch(url) == "redirect-ok"
+
+    def test_runtime_http_fetch_supports_308_without_stdlib_handler(self, monkeypatch):
+        import urllib.request
+
+        import geno._runtime_support as runtime_support
+
+        monkeypatch.delattr(
+            urllib.request.HTTPRedirectHandler, "http_error_308", raising=False
+        )
+        monkeypatch.setattr(runtime_support, "_GENO_CAPS", {"http"})
+        monkeypatch.setenv("GENO_HTTP_ALLOW_PRIVATE", "1")
+        with _redirect_server("/target", status=308) as url:
             assert runtime_support.http_fetch(url) == "redirect-ok"
 
     def test_runtime_http_fetch_rejects_non_http_redirect(self, monkeypatch):
