@@ -336,6 +336,22 @@ class TestHttpSchemeValidation:
             with pytest.raises(RuntimeError, match="scheme 'ftp' is not allowed"):
                 http_fetch(url)
 
+    def test_unsafe_http_fetch_supports_308_without_stdlib_handler(self, monkeypatch):
+        import urllib.request
+
+        from geno._serve import install_http_callbacks as _install_http_callbacks
+        from geno.interpreter import Interpreter
+
+        monkeypatch.delattr(
+            urllib.request.HTTPRedirectHandler, "http_error_308", raising=False
+        )
+        interpreter = Interpreter()
+        _install_http_callbacks(interpreter, allow_private_networks=True)
+        http_fetch = interpreter.global_env.bindings["http_fetch"].func
+
+        with _redirect_server("/target", status=308) as url:
+            assert http_fetch(url) == "redirect-ok"
+
     def test_unsafe_http_request_bad_headers_returns_err(self):
         from geno._serve import install_http_callbacks as _install_http_callbacks
         from geno.interpreter import Interpreter

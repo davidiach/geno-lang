@@ -649,6 +649,17 @@ def install_http_callbacks(
             max_repeats = 11
             max_redirections = 11
 
+            def http_error_308(
+                self,
+                request: Any,
+                fp: Any,
+                code: int,
+                msg: str,
+                headers: Any,
+            ) -> Any:
+                # Python 3.10 does not register 308 as a redirect status.
+                return self.http_error_302(request, fp, code, msg, headers)
+
             def redirect_request(
                 self,
                 request: Any,
