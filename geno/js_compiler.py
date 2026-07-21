@@ -3246,10 +3246,11 @@ def compile_to_js(
         checker.check_program(program)
 
     compiler = JSCompiler(track_source_map=source_map)
-    js_code = compiler.compile(program, esm=esm and profile.target != "browser")
+    include_node_preamble = esm and profile.target != "browser"
+    js_code = compiler.compile(program, esm=include_node_preamble)
 
     if esm:
-        js_code = _to_esm(js_code, program)
+        js_code = _to_esm(js_code, program, include_node_preamble=include_node_preamble)
 
     if source_map:
         out_file = source_map_file or "output.js"
@@ -3257,7 +3258,7 @@ def compile_to_js(
             out_file=out_file,
             sources_content={filename: source},
         )
-        if esm:
+        if include_node_preamble:
             sm_json = _offset_source_map_lines(sm_json, _ESM_SOURCE_MAP_LINE_DELTA)
         return js_code, sm_json
 
@@ -3376,17 +3377,19 @@ _ESM_NODE_PREAMBLE = (
 _ESM_SOURCE_MAP_LINE_DELTA = _ESM_NODE_PREAMBLE.count("\n") - 1
 
 
-def _to_esm(js_code: str, program: Program) -> str:
+def _to_esm(js_code: str, program: Program, *, include_node_preamble: bool) -> str:
     """Convert compiled JS to ES module format.
 
-    Removes "use strict" (implicit in ESM), and appends export statements
-    for all user-defined functions and type constructors.
+    Appends exports for user definitions. Node ESM replaces "use strict" with
+    its compatibility preamble; browser ESM retains the harmless directive so
+    existing source-map line positions remain stable.
     """
     from .ast_nodes import FunctionDef, TypeDef
 
-    # ESM is implicitly strict
-    js_code = js_code.replace('"use strict";\n', "", 1)
-    js_code = _ESM_NODE_PREAMBLE + js_code
+    if include_node_preamble:
+        # ESM is implicitly strict; the two-line preamble replaces this line.
+        js_code = js_code.replace('"use strict";\n', "", 1)
+        js_code = _ESM_NODE_PREAMBLE + js_code
 
     # Collect exported names
     exports: list[str] = []

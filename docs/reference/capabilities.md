@@ -96,9 +96,18 @@ embedding deliberately sets `default_request_capabilities`.
 
 ### Host Resource Scope
 
-Granting `fs`, `http`, or `process` unlocks host resources, so the built-in
-runtime applies scoped policies in direct interpreter mode and standalone
-Python and Node output:
+Granting `fs`, `http`, or `process` unlocks host resources. In direct
+interpreter mode and standalone Python output, built-in host callbacks apply
+the scoped policies below:
+
+Generated Node output is a trusted-runtime deployment: `--cap` gates which
+APIs are wired, not an OS sandbox. Node `fs` builtins use host APIs directly
+and do not honor Python filesystem roots or read-only policy. Geno `process`
+builtins are unavailable on `node-cli`; the child process used internally by
+the HTTP bridge is not exposed as process capability. The Node HTTP bridge
+does enforce the scheme, private-address, redirect, and response-size policies
+below, but those checks do not sandbox the artifact. See
+[Security Policy](../../SECURITY.md#javascript-backend-limitations).
 
 - `fs` paths are resolved under configured filesystem roots. By default the
   only root is the current working directory and absolute paths are rejected.
