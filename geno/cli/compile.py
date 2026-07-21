@@ -57,6 +57,9 @@ def compile_file(
                 generate_dts,
             )
 
+            include_node_preamble = esm and all(
+                target_profile.target != "browser" for target_profile in profiles
+            )
             if source_map and not output:
                 raise ValueError("--source-map requires -o/--output for JS compile")
             emit_source_map = bool(output and source_map)
@@ -64,7 +67,7 @@ def compile_file(
             sources_content: dict[str, str] = {}
 
             if is_multi:
-                code = compiler.compile_project(dg, esm=esm)
+                code = compiler.compile_project(dg, esm=include_node_preamble)
                 if emit_source_map:
                     for mod_name in dg.sorted_modules:
                         rf = dg.file_map.get(mod_name)
@@ -74,7 +77,7 @@ def compile_file(
                             ]
             else:
                 program = dg.parsed[dg.sorted_modules[0]]
-                code = compiler.compile(program, esm=esm)
+                code = compiler.compile(program, esm=include_node_preamble)
                 if emit_source_map:
                     source_path = pg.files[0].path
                     sources_content[str(source_path)] = dg.original_sources[
@@ -83,7 +86,11 @@ def compile_file(
 
             if esm:
                 entrypoint_mod = resolved.entrypoint
-                code = _to_esm(code, dg.parsed[entrypoint_mod])
+                code = _to_esm(
+                    code,
+                    dg.parsed[entrypoint_mod],
+                    include_node_preamble=include_node_preamble,
+                )
 
             if output:
                 js_file = output
@@ -94,7 +101,7 @@ def compile_file(
                         sources_content=sources_content,
                     )
                     code += f"\n//# sourceMappingURL={Path(map_file).name}\n"
-                    if esm:
+                    if include_node_preamble:
                         sm_json = _offset_source_map_lines(
                             sm_json, _ESM_SOURCE_MAP_LINE_DELTA
                         )

@@ -351,15 +351,27 @@ def test_compiled_node_esm_runs_main_only_as_entrypoint(tmp_path: Path) -> None:
 
 
 def test_browser_targeted_esm_does_not_import_node_runtime() -> None:
-    js_code = compile_to_js(
-        _source("Int", "return 2"),
+    source = _source("Int", "return 2")
+    profile = TargetProfile.load("browser")
+    esm_result = compile_to_js(
+        source,
         esm=True,
-        target_profile=TargetProfile.load("browser"),
+        source_map=True,
+        target_profile=profile,
     )
+    script_result = compile_to_js(source, source_map=True, target_profile=profile)
 
-    assert isinstance(js_code, str)
-    assert 'from "node:url"' not in js_code
+    assert isinstance(esm_result, tuple)
+    assert isinstance(script_result, tuple)
+    js_code, esm_source_map = esm_result
+    _, script_source_map = script_result
+    assert 'from "node:' not in js_code
+    assert js_code.startswith('"use strict";\n')
     assert "const _main_result = main();" in js_code
+    assert (
+        json.loads(esm_source_map)["mappings"]
+        == json.loads(script_source_map)["mappings"]
+    )
 
 
 @pytest.mark.skipif(_NODE is None, reason="Node.js not installed")

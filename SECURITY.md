@@ -444,13 +444,15 @@ different security profile than the Python sandbox.
   browser target capabilities at startup. It does not provide Python's `RunConfig` or
   host-callback policy surface; granted capabilities execute against the surrounding JS
   environment.
-- **No capability confinement on Node (`node-cli` target)**: On the Python runtime, a granted
-  `fs` capability confines access to configured roots, rejects `..` and symlink escapes, and
-  honors `GENO_FS_READ_ONLY`; `http` and `process` are similarly policy-checked. The JS runtime
-  wires the corresponding builtins directly to Node's `fs`/`http`/`child_process` with **no
-  confinement**: `--cap fs` on a node-cli artifact grants read/write to any path the OS user
-  can reach. On the JS target, capability flags select which APIs are wired up — they are
-  **not** a sandbox. Treat compiled JS artifacts as trusted-code deployments only.
+- **No filesystem confinement on Node (`node-cli` target)**: Python execution
+  confines `fs` to configured roots. The JS runtime wires filesystem builtins
+  directly to Node's `fs`; `--cap fs` grants access to any path the OS user can
+  reach. Geno process builtins are unavailable on `node-cli`. The policy-checked
+  Node HTTP bridge uses `child_process` internally, but does not expose it as a
+  process capability. The bridge enforces scheme, private-address, redirect, and
+  response-size policies, but these checks do not create an OS sandbox. On the JS
+  target, capability flags select which APIs are wired up; they are **not** a
+  sandbox. Treat compiled JS artifacts as trusted-code deployments only.
 
 ### Intended Use Case
 
