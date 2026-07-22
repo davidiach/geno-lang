@@ -53,7 +53,7 @@ def _run_cli(
         pytest.param(
             ("--unsafe",),
             _source("Unit", "return ()"),
-            "=> ()\n",
+            "",
             id="direct-unit",
         ),
         pytest.param((), _source("Int", "return 0"), "=> 0\n", id="process-zero"),
