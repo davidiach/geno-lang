@@ -2244,7 +2244,7 @@ class TestProcessSandbox:
 
         assert error is None
         assert output == ""
-        assert result == ["exit", 1]
+        assert result == 1
         assert not marker.exists()
 
     def test_process_sandbox_worker_has_structured_startup_error_envelope(self):

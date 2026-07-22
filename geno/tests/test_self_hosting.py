@@ -785,49 +785,13 @@ class TestSelfhostBuiltinAliases:
         assert not result.ok
 
 
-class TestSelfhostCliExitSemantics:
-    @pytest.mark.parametrize(
-        ("source", "expected_status", "expected_stdout"),
-        [
-            pytest.param(
-                "func main() -> Unit\n    return ()\nend func\n",
-                0,
-                "",
-                id="unit",
-            ),
-            pytest.param(
-                'func main() -> Int\n    print("before selfhost exit")\n'
-                "    return 2\nend func\n",
-                2,
-                "before selfhost exit\n",
-                id="int",
-            ),
-            pytest.param(
-                'func main() -> String\n    return "legacy"\nend func\n',
-                0,
-                "=> legacy\n",
-                id="legacy-display",
-            ),
-            pytest.param(
-                "func main() -> Float\n    return 2\nend func\n",
-                0,
-                "=> 2\n",
-                id="float-widened-from-int-is-not-exit-status",
-            ),
-        ],
-    )
-    def test_run_command_propagates_inner_main_status(
-        self,
-        tmp_path: Path,
-        source: str,
-        expected_status: int,
-        expected_stdout: str,
-    ) -> None:
+class TestSelfhostCliResultCompatibility:
+    @staticmethod
+    def _run(tmp_path: Path, source: str) -> subprocess.CompletedProcess[str]:
         repo_root = Path(__file__).resolve().parents[2]
         inner_program = tmp_path / "Inner.geno"
         inner_program.write_text(source, encoding="utf-8")
-
-        result = subprocess.run(
+        return subprocess.run(
             [
                 sys.executable,
                 "-m",
@@ -849,43 +813,27 @@ class TestSelfhostCliExitSemantics:
             check=False,
         )
 
-        assert result.returncode == expected_status, result.stderr
-        assert result.stdout == expected_stdout
+    def test_integer_result_preserves_output_and_success_status(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(
+            tmp_path,
+            'func main() -> Int\n    print("report-ready")\n    return 2\nend func\n',
+        )
+
+        assert result.returncode == 0
+        assert result.stdout == "report-ready\n=> 0\n"
         assert result.stderr == ""
 
-    def test_run_command_does_not_invoke_imported_main(self, tmp_path: Path) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        inner_program = tmp_path / "App.geno"
-        inner_program.write_text("import Lib\n", encoding="utf-8")
+    def test_imported_main_is_not_entrypoint(self, tmp_path: Path) -> None:
         (tmp_path / "Lib.geno").write_text(
             "func main() -> Int\n    return 2\nend func\n",
             encoding="utf-8",
         )
+        result = self._run(tmp_path, "import Lib\n")
 
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "geno",
-                "run",
-                str(repo_root / "selfhost" / "Main.geno"),
-                "--no-check-examples",
-                "--unsafe",
-                "--cap",
-                "env,fs,print",
-                "--",
-                "run",
-                str(inner_program),
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == ""
+        assert result.returncode == 0
+        assert result.stdout == "=> 0\n"
         assert result.stderr == ""
 
 

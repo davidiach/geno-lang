@@ -89,7 +89,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WildcardPattern,
     WithExpr,
 )
-from .entrypoint import entrypoint_returns_int
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -696,12 +695,14 @@ class Compiler(BaseCompiler, ASTVisitor):
                 main_defn = d
                 break
         if main_defn is not None:
-            self.output.write(
-                _compiled_main_script_wrapper(
-                    main_defn.is_async,
-                    main_returns_int=entrypoint_returns_int(program),
-                )
-            )
+            self.output.write("\n\nif __name__ == '__main__':\n")
+            if main_defn.is_async:
+                self.output.write("    import asyncio\n")
+                self.output.write("    result = asyncio.run(main())\n")
+            else:
+                self.output.write("    result = main()\n")
+            self.output.write("    if result is not None:\n")
+            self.output.write("        print(result)\n")
 
         return str(self.output.getvalue())
 
@@ -871,15 +872,14 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Add main call
         if main_defn is not None:
-            self.output.write(
-                _compiled_main_script_wrapper(
-                    main_defn.is_async,
-                    main_name="_geno_entry_main",
-                    main_returns_int=entrypoint_returns_int(
-                        dep_graph.parsed[entrypoint], dep_graph.parsed
-                    ),
-                )
-            )
+            self.output.write("\n\nif __name__ == '__main__':\n")
+            if main_defn.is_async:
+                self.output.write("    import asyncio\n")
+                self.output.write("    result = asyncio.run(_geno_entry_main())\n")
+            else:
+                self.output.write("    result = _geno_entry_main()\n")
+            self.output.write("    if result is not None:\n")
+            self.output.write("        print(result)\n")
 
         return str(self.output.getvalue())
 
@@ -3014,30 +3014,6 @@ def _insert_compiled_runtime_capability_assignment(
     return assignment + python_code
 
 
-def _compiled_main_script_wrapper(
-    is_async: bool,
-    *,
-    main_name: str = "main",
-    main_returns_int: bool = False,
-) -> str:
-    """Return import-safe script entrypoint code for a compiled main."""
-    call = f"asyncio.run({main_name}())" if is_async else f"{main_name}()"
-    lines = ["", "", "if __name__ == '__main__':"]
-    if is_async:
-        lines.append("    import asyncio")
-    lines.append(f"    result = {call}")
-    if main_returns_int:
-        lines.append("    raise SystemExit(result % 256)")
-    else:
-        lines.extend(
-            [
-                "    if result is not None:",
-                "        print(result)",
-            ]
-        )
-    return "\n".join(lines) + "\n"
-
-
 def _compiled_main_result_capture(
     is_async: bool,
     *,
@@ -3047,7 +3023,7 @@ def _compiled_main_result_capture(
     call = f"_geno_run_async({main_name}())" if is_async else f"{main_name}()"
     assignment = f"__result__ = {call}"
     if catch_name_error:
-        return f"\n\n__result__ = None\ntry:\n    {assignment}\nexcept NameError:\n    pass\n"
+        return f"\n\ntry:\n    {assignment}\nexcept NameError:\n    pass\n"
     return f"\n\n{assignment}\n"
 
 
@@ -3112,21 +3088,29 @@ def compile_and_exec(
             trusted_prelude_line_count = _trusted_runtime_prelude_line_count(exec_code)
             # Replace the __name__ guard with a direct __result__
             # assignment so the process sandbox captures the return value.
-            guard_options = [
-                (
-                    _compiled_main_script_wrapper(
-                        is_async=is_async,
-                        main_returns_int=main_returns_int,
-                    ),
-                    _compiled_main_result_capture(is_async=is_async),
+            _MAIN_GUARD = (
+                "\n\nif __name__ == '__main__':\n"
+                "    result = main()\n"
+                "    if result is not None:\n"
+                "        print(result)\n"
+            )
+            _ASYNC_MAIN_GUARD = (
+                "\n\nif __name__ == '__main__':\n"
+                "    import asyncio\n"
+                "    result = asyncio.run(main())\n"
+                "    if result is not None:\n"
+                "        print(result)\n"
+            )
+            if _ASYNC_MAIN_GUARD in exec_code:
+                exec_code = exec_code.replace(
+                    _ASYNC_MAIN_GUARD,
+                    _compiled_main_result_capture(is_async=True),
                 )
-                for is_async in (True, False)
-                for main_returns_int in (True, False)
-            ]
-            for guard, capture in guard_options:
-                if guard in exec_code:
-                    exec_code = exec_code.replace(guard, capture)
-                    break
+            elif _MAIN_GUARD in exec_code:
+                exec_code = exec_code.replace(
+                    _MAIN_GUARD,
+                    _compiled_main_result_capture(is_async=False),
+                )
 
             process_config = ProcessSandboxConfig(
                 timeout=timeout,

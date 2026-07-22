@@ -86,7 +86,7 @@ from .ast_nodes import (
     WildcardPattern,
     WithExpr,
 )
-from .entrypoint import entrypoint_returns_int, visible_type_aliases
+from .entrypoint import visible_type_aliases
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -599,7 +599,6 @@ class JSCompiler(BaseCompiler):
         main_def: FunctionDef | None,
         *,
         type_aliases: dict[str, TypeAlias] | None = None,
-        main_returns_int: bool | None = None,
     ) -> None:
         """Emit host-boundary handling for a completed main call."""
         resolved_return_type = (
@@ -622,26 +621,6 @@ class JSCompiler(BaseCompiler):
             mode="display",
             top_level=True,
         )
-        uses_exit_status = (
-            isinstance(main_result_type, IntType)
-            if main_returns_int is None
-            else main_returns_int
-        )
-        if uses_exit_status:
-            self._writeln(
-                "if (typeof process === 'object' && process !== null && "
-                "process.release && process.release.name === 'node') {"
-            )
-            self._indent()
-            self._writeln("process.exitCode = ((_main_result % 256) + 256) % 256;")
-            self._dedent()
-            self._writeln("} else {")
-            self._indent()
-            self._writeln(f"console.log({rendered_main});")
-            self._dedent()
-            self._writeln("}")
-            return
-
         self._writeln("if (_main_result !== null && _main_result !== undefined) {")
         self._indent()
         self._writeln(f"console.log({rendered_main});")
@@ -1000,12 +979,8 @@ class JSCompiler(BaseCompiler):
         main_is_async = False
         ep_program = dep_graph.parsed.get(entrypoint)
         entrypoint_type_aliases: dict[str, TypeAlias] = {}
-        entrypoint_main_returns_int: bool | None = None
         if ep_program:
             entrypoint_type_aliases = visible_type_aliases(ep_program, dep_graph.parsed)
-            entrypoint_main_returns_int = entrypoint_returns_int(
-                ep_program, dep_graph.parsed
-            )
             func_names = {
                 d.name for d in ep_program.definitions if isinstance(d, FunctionDef)
             }
@@ -1059,7 +1034,6 @@ class JSCompiler(BaseCompiler):
             self._emit_main_result(
                 main_def,
                 type_aliases=entrypoint_type_aliases,
-                main_returns_int=entrypoint_main_returns_int,
             )
             if main_is_async:
                 self._dedent()

@@ -286,48 +286,16 @@ func type_check_entry(path: String, program: Program, modules: MutableMap[String
     return errors
 end func type_check_entry
 
-// Report whether the checked main signature has an exact Int return type.
-func is_int_main_type(t: GType) -> Bool
-    example TFunc([], TInt, []) -> true
-    example TFunc([], TFloat, []) -> false
-    match t with
-        | TFunc(_params, TInt, _effects) -> return true
-        | _ -> return false
-    end match
-end func is_int_main_type
-
-@untested("reads the mutable checker environment")
-func checker_main_returns_int(cs: CheckerState, program: Program) -> Bool
-    if not defs_define_main(program.defs) then
-        return false
-    end if
-    match type_env_lookup(env: cs.global_env, name: "main") with
-        | Some(main_type) -> return is_int_main_type(main_type)
-        | None -> return false
-    end match
-end func checker_main_returns_int
-
 // Run a program and print runtime diagnostics if present.
 @untested("helper for CLI diagnostics")
-func run_entry(path: String, program: Program, modules: MutableMap[String, Program], main_returns_int: Bool) -> Int
+func run_entry(path: String, program: Program, modules: MutableMap[String, Program]) -> Bool
     let st: InterpState = make_interp_state_with_filename(path)
-    let result: Value = run_program_with_state(st: st, program: program, modules: modules, check_ex: false)
+    let _result: Value = run_program_with_state(st: st, program: program, modules: modules, check_ex: false)
     if vec_length(st.diagnostics) > 0 then
         print_diag_list(vec_to_list(st.diagnostics))
-        return 1
+        return false
     end if
-    if main_returns_int then
-        match result with
-            | IntVal(status) -> return ((status % 256) + 256) % 256
-            | _ -> return 1
-        end match
-    end if
-    match result with
-        | UnitVal -> return 0
-        | _ ->
-        print("=> " + value_to_str(result))
-        return 0
-    end match
+    return true
 end func run_entry
 
 // Verify examples without invoking main, and print diagnostics if present.
@@ -389,18 +357,17 @@ func cmd_run(path: String) -> Int
     let program: Program = unwrap(program_opt)
     let base_dir: String = path_dirname(entry_path)
     let modules: MutableMap[String, Program] = load_program_modules(base_dir, program)
-    let cs: CheckerState = make_checker_with_filename(entry_path)
-    let errors: Int = check_program(cs: cs, program: program, modules: modules)
-    if errors > 0 then
-        print_diag_list(vec_to_list(cs.diagnostics))
-    end if
+    let errors: Int = type_check_entry(path: entry_path, program: program, modules: modules)
 
     if errors > 0 then
         print(path + ": " + to_string(errors) + " type error(s), aborting")
         return 1
     end if
 
-    return run_entry(path: entry_path, program: program, modules: modules, main_returns_int: checker_main_returns_int(cs, program))
+    if not run_entry(path: entry_path, program: program, modules: modules) then
+        return 1
+    end if
+    return 0
 end func cmd_run
 
 // Run the test command: parse, check, and verify examples without calling main.

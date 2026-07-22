@@ -305,5 +305,5 @@ class TestTestBlockCompilation:
         assert isinstance(js_code, str)
         assert "double works" not in js_code
         result = run_node_code(js_code, timeout=10)
-        assert result.returncode == 42
-        assert result.stdout == ""
+        assert result.returncode == 0
+        assert result.stdout.strip() == "42"

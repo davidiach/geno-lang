@@ -6,24 +6,6 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
-_NODE_MAIN_EXIT_GUARD = (
-    "if (typeof process === 'object' && process !== null && "
-    "process.release && process.release.name === 'node') {"
-)
-
-
-def display_main_result_for_test(js_code: str) -> str:
-    """Route an Int main through the browser display branch in value tests."""
-    return js_code.replace(_NODE_MAIN_EXIT_GUARD, "if (false) {")
-
-
-def display_python_main_result_for_test(python_code: str) -> str:
-    """Keep compiled-Python value tests independent of script exit policy."""
-    return python_code.replace(
-        "    raise SystemExit(result % 256)",
-        "    print(result)",
-    )
-
 
 def _run_generated_script(
     executable: str,
