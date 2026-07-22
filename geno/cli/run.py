@@ -141,6 +141,11 @@ def _format_json_run_output(result: Any) -> str:
     return json_mod.dumps(output, indent=2, allow_nan=False)
 
 
+def _is_unit_main_result(value: Any) -> bool:
+    """Return whether *value* is either a compiled or interpreted Unit."""
+    return value is None or (type(value) is tuple and not value)
+
+
 def _explicit_fs_roots_for_run(
     filename: str,
     project_root,
@@ -562,7 +567,7 @@ def run_file(
                 sys.exit(1)
             if run_output:
                 print(run_output, end="")
-            if result is not None:
+            if not _is_unit_main_result(result):
                 print(f"=> {result}")
             return
 
@@ -633,7 +638,7 @@ def run_file(
             run_output = interpreter.get_output()
             if run_output:
                 print(run_output, end="")
-            if result is not None:
+            if not _is_unit_main_result(result):
                 print(f"=> {interpreter._format_value(result)}")
 
     except FileNotFoundError:
