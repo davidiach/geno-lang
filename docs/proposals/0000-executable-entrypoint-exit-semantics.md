@@ -215,9 +215,11 @@ After proposal acceptance and before a v0.5 release:
 - retain `conformance/v0.4` unchanged;
 - add `conformance/v0.5` with the new executable contract;
 - add a v0.5 schema version while continuing to load the retained v0.4 schema;
-- give executable run cases exact `expected_stdout` and
+- give text-mode executable run cases exact `expected_stdout` and
   `expected_exit_status` fields, plus either exact `expected_stderr` or
-  `expected_stderr_contains` assertions;
+  `expected_stderr_contains` assertions. JSON cases parse the envelope and
+  compare stable semantic fields while ignoring or separately validating
+  nondeterministic timing fields;
 - let runtime-error cases use an `expected_exit_class = "nonzero"` assertion,
   mutually exclusive with an exact status, together with required diagnostic
   substrings;
@@ -242,8 +244,8 @@ After proposal acceptance and before a v0.5 release:
   release notes to identify the break and migration.
 
 The Python embedding API is behavior-compatible: it continues returning the raw
-value and never terminates the host. Generated-module import behavior becomes
-safer and is not a supported break.
+value and never terminates the host. The inert generated-Python and Node-ESM
+import behavior already published in v0.4.2 remains unchanged.
 
 ## Security And Resource Limits
 
@@ -287,9 +289,12 @@ Acceptance and release require focused tests for:
 - raw hosted-callback and embedding results;
 - entry-module ownership in multi-module programs.
 
-Normal-result cases must assert exact stdout, empty stderr, and exact status for
-`cli-direct`, `cli-process`, `cli-json`, compiled Python, compiled Node script,
-direct Node ESM, and self-hosted execution. Uncaught runtime-error cases must
+Text-mode normal-result cases must assert exact stdout, empty stderr, and exact
+status for `cli-direct`, `cli-process`, compiled Python, compiled Node script,
+direct Node ESM, and self-hosted execution. `cli-json` cases must parse the
+envelope, assert stable value/output/diagnostic fields, validate the timing
+schema without requiring exact timing values, and assert empty stderr plus the
+exact process status. Uncaught runtime-error cases must
 assert nonzero status and required Geno-facing stderr text; they must also
 assert that the expected normal-exit trace suppression has not hidden useful
 diagnostics. Browser, watch, hosted-callback, import, and embedding cases use
