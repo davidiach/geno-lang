@@ -58,34 +58,19 @@ emits that representation followed by a newline, except that a top-level
 `print("hello")` writes `hello`, while strings nested in a constructor or
 collection retain the canonical quoted representation.
 
-## Entrypoints and process exits
+## Entrypoint results and imports
 
-Execution engines return `main()`'s value to their caller. Only an outer
-executable boundary translates that value into a process status.
+Geno 0.4 treats `main()`'s return value as a program result, not as a process
+status. A successful `main() -> Int` is displayed by `geno run` and standalone
+compiled Python and Node artifacts, and the process exits with status 0.
+`main() -> Unit` also succeeds with status 0. Output emitted before a returned
+result is preserved. A genuine uncaught runtime error instead exits nonzero and
+emits a diagnostic (or a host traceback for a standalone generated artifact).
 
-The entrypoint must be the selected program's own `main` declaration. An
-imported function named `main` is not invoked as the program entrypoint.
-- `main() -> Unit` exits with status 0.
-- `main() -> Int` exits with the returned integer normalized modulo 256. The
-  value is not displayed as a result.
-- Output emitted before a normal return is preserved, including before a
-  nonzero exit. Expected nonzero exits do not emit error diagnostics.
-- Other accepted return types retain their legacy displayed-result behavior
-  and exit successfully.
-- Uncaught runtime errors still exit nonzero and emit a useful Geno diagnostic
-  or standalone-host traceback.
-
-`geno run`, the self-hosted `run` command, generated Python scripts, and
-generated Node.js artifacts share this behavior. Node uses deferred
-`process.exitCode` so buffered output can drain. Importing generated Python
-does not call `main()` or exit. Generated Node ES modules also call `main()`
-only when executed directly, not when imported by another module. `geno watch`
-reports nonzero returned statuses but remains alive to observe subsequent
-changes.
-
-Embedding and sandbox APIs remain value-oriented: `geno.api.run()`,
-`Interpreter.run()`, and process-sandbox result channels return the value and
-never terminate their host process.
+Only `main` declared in the selected entry program is invoked. Embedding APIs
+such as `geno.api.run()` return the value in `RunResult` and never terminate the
+host process. Importing generated Python or Node ESM defines and exports the
+program without invoking `main` or exiting the importer.
 
 ## Runtime implementations
 

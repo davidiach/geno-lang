@@ -1,6 +1,6 @@
 {
   "name": "Geno",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Machine-readable specification for the Geno programming language",
   "format_version": 1,
   "language_series": "0.4",
@@ -49,16 +49,16 @@
     "map_index": "partial; a missing key raises a runtime error",
     "map_get": "total lookup returning Option[V]",
     "print": "canonical Geno representation plus newline; top-level String values are unquoted",
-    "process_exit": {
+    "entrypoint_result": {
       "unit_status": 0,
-      "int_status": "returned value normalized modulo 256",
-      "preserve_output_before_exit": true,
-      "normal_nonzero_has_traceback": false,
+      "int_behavior": "displayed program result with status 0",
+      "preserve_output_before_result": true,
       "uncaught_runtime_error": "nonzero with diagnostic or standalone-host traceback",
       "embedding_terminates_host": false,
       "generated_python_import_executes_main": false,
       "generated_node_esm_import_executes_main": false,
-      "imported_main_is_entrypoint": false
+      "imported_main_is_entrypoint": false,
+      "selfhost_behavior": "preserves inner printed output and reports command success/failure through its outer result; the inner Int result is not displayed"
     },
     "runtime_preludes": "hand-maintained target-specific implementations guarded by cross-backend parity tests",
     "embedding_timeout": "cooperative; untrusted code requires process isolation",

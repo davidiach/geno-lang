@@ -12,7 +12,7 @@ from typing import Callable
 
 import pytest
 
-from geno.tests._script_runner import display_main_result_for_test, run_node_code
+from geno.tests._script_runner import run_node_code
 
 
 @pytest.fixture()
@@ -132,7 +132,6 @@ def compile_and_run_js() -> Callable[[str], str]:
     def _run(source: str) -> str:
         js_out = compile_to_js(source)
         assert isinstance(js_out, str)
-        js_out = display_main_result_for_test(js_out)
         result = run_node_code(js_out, args=("--cap", "print"), timeout=10)
         if result.returncode != 0:
             raise RuntimeError(f"JS execution failed: {result.stderr}")

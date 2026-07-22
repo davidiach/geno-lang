@@ -228,8 +228,8 @@ end func
                     text=True,
                     timeout=10,
                 )
-                assert result.returncode == 42, result.stderr
-                assert result.stdout == ""
+                assert result.returncode == 0, result.stderr
+                assert "=> 42" in result.stdout
                 assert "coroutine" not in result.stdout
                 assert "coroutine" not in result.stderr
             finally:
@@ -288,8 +288,8 @@ end func
             timeout=10,
         )
 
-        assert result.returncode == 42
-        assert result.stdout == ""
+        assert result.returncode == 0
+        assert "42" in result.stdout
 
     def test_run_resolves_local_imports_for_legacy_direct_file_extensions(
         self, tmp_path
@@ -316,8 +316,8 @@ end func
             timeout=10,
         )
 
-        assert result.returncode == 42
-        assert result.stdout == ""
+        assert result.returncode == 0
+        assert "42" in result.stdout
 
     def test_run_name_collision_reports_consistent_error(self, tmp_path):
         write_dependency_collision_fixture(tmp_path)
@@ -795,10 +795,9 @@ class TestGenoRunResourceLimits:
             fail_if_parent_resolves,
         )
 
-        exit_status = run_command.run_file(str(app), check_examples=False)
+        run_command.run_file(str(app), check_examples=False)
 
-        assert exit_status == 7
-        assert capsys.readouterr().out == ""
+        assert "=> 7" in capsys.readouterr().out
 
     def test_timeout_covers_frontend_startup(self, tmp_path):
         app = tmp_path / "App.geno"
@@ -862,7 +861,7 @@ end func main
                     text=True,
                     timeout=10,
                 )
-                assert result.returncode == 42
+                assert result.returncode == 0
                 data = json.loads(result.stdout)
                 assert data["ok"] is True
                 assert data["value"] == 42
@@ -1049,7 +1048,7 @@ end func main
             timeout=10,
         )
 
-        assert result.returncode == 42
+        assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["ok"] is True
         assert data["value"] == 42
@@ -2672,28 +2671,6 @@ class TestCliWatchResolution:
         assert calls[0][1]["unsafe"] is False
         captured = capsys.readouterr()
         assert "Execution mode: process sandbox" in captured.out
-
-    def test_watch_run_reports_nonzero_main_status(self, tmp_path, monkeypatch, capsys):
-        import time
-
-        from geno.cli import run as run_mod
-        from geno.cli.watch import watch_run
-
-        app = tmp_path / "App.geno"
-        app.write_text("func main() -> Int\n    return 2\nend func\n")
-
-        def fake_run_file(*args, **kwargs):
-            return 2
-
-        def stop_watch(_seconds):
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(run_mod, "run_file", fake_run_file)
-        monkeypatch.setattr(time, "sleep", stop_watch)
-
-        watch_run(str(app))
-
-        assert "Process exited with status 2" in capsys.readouterr().out
 
     def test_watch_run_allows_explicit_unsafe_mode(self, tmp_path, monkeypatch, capsys):
         import time

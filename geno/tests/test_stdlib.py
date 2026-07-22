@@ -218,8 +218,8 @@ class TestStdStringImport:
             text=True,
             timeout=30,
         )
-        assert run_result.returncode == 2, run_result.stderr
-        assert run_result.stdout == ""
+        assert run_result.returncode == 0, run_result.stderr
+        assert run_result.stdout.strip() == "2"
 
     def test_compiled_js_executes_wrapper_imports(self, tmp_path):
         (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
@@ -266,8 +266,8 @@ class TestStdStringImport:
             text=True,
             timeout=30,
         )
-        assert run_result.returncode == 2, run_result.stderr
-        assert run_result.stdout == ""
+        assert run_result.returncode == 0, run_result.stderr
+        assert run_result.stdout.strip() == "2"
 
 
 class TestStdGenericForwarders:

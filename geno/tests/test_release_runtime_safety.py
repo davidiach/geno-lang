@@ -103,26 +103,27 @@ def _run_cli(tmp_path, source: str, *args: str) -> subprocess.CompletedProcess[s
 
 
 @pytest.mark.parametrize(
-    ("source", "expected_exit_status"),
+    ("source", "expected"),
     [
         (
-            """func main() -> Int\n    let now = clock_now()\n    return 0\nend func\n""",
-            0,
+            """func main() -> Int\n    return clock_now()\nend func\n""",
+            None,
         ),
         (
             """func main() -> Int\n    return random_int(min: 1, max: 1)\nend func\n""",
-            1,
+            "=> 1",
         ),
     ],
 )
 def test_default_process_run_supports_its_default_capabilities(
-    tmp_path, source: str, expected_exit_status: int
+    tmp_path, source: str, expected: str | None
 ) -> None:
     result = _run_cli(tmp_path, source, "--no-check-examples")
 
-    assert result.returncode == expected_exit_status, result.stderr
+    assert result.returncode == 0, result.stderr
     assert "Import of" not in result.stderr
-    assert result.stdout == ""
+    if expected is not None:
+        assert expected in result.stdout
 
 
 def test_default_process_run_supports_pure_json_builtin(tmp_path) -> None:
@@ -135,8 +136,8 @@ end func
 """
     result = _run_cli(tmp_path, source, "--no-check-examples")
 
-    assert result.returncode == 42, result.stderr
-    assert result.stdout == ""
+    assert result.returncode == 0, result.stderr
+    assert "=> 42" in result.stdout
 
 
 def test_json_mode_uses_normal_default_print_capability(tmp_path) -> None:

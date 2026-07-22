@@ -104,15 +104,14 @@ end func
 ```geno
 import Utils
 
-func main() -> Unit
-    print(double(21))
-    return ()
+func main() -> Int
+    return double(21)
 end func
 ```
 
 ```bash
 geno run Main.geno --unsafe
-# 42
+# => 42
 ```
 
 Import resolution looks for `ModuleName.geno` in the same directory as the importing file.

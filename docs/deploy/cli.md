@@ -4,36 +4,18 @@
 
 Geno CLI apps can be compiled to either Python or JavaScript (Node.js) for distribution.
 
-## Process exit contract
+## Executable result contract (v0.4)
 
-The outermost CLI or generated-script wrapper translates `main()`'s return
-value into process behavior.
+A successful `main() -> Int` is an ordinary displayed program result in the
+0.4 language series; it does not become the process status. `geno run` prefixes
+the value with `=>`, while standalone Python and Node artifacts print the value
+directly. Both forms exit with status 0 and preserve output produced before the
+result. Uncaught runtime errors still exit nonzero.
 
-Only `main` declared by the selected entry program is an entrypoint; an
-unqualified imported function named `main` is not invoked as one.
-- `main() -> Unit` exits successfully with status `0`.
-- `main() -> Int` uses the returned value as the process status. For portable
-  status values, Geno normalizes the integer modulo 256, so `258` exits `2`
-  and `-1` exits `255` on every supported host.
-- Output printed before a normal return is preserved. A nonzero `Int` return
-  is an expected exit and does not produce a runtime traceback.
-- An uncaught runtime error remains a failure: it exits nonzero and emits a
-  diagnostic (or the host traceback for a standalone generated artifact).
-- Other `main()` return types retain the pre-0.4 behavior of displaying the
-  returned value and exiting successfully.
-
-Exit handling belongs only to executable boundaries. `geno.run()` and
-`geno.api.run()` return the value in `RunResult` and never terminate the host
-process. Importing generated Python also only defines the compiled program;
-`main()` and its exit handling run only when the file is executed as a script.
-Generated ES modules likewise call `main()` only when run as Node's entrypoint;
-importing one only evaluates its definitions and exports.
-
-`geno run`, the self-hosted `run` command, standalone generated Python, and
-standalone generated Node.js use this same contract. Geno sets Node's deferred
-`process.exitCode` instead of calling `process.exit()`, allowing buffered
-output to drain normally. `geno watch` reports a nonzero returned status and
-continues watching for changes.
+Executable behavior is applied only when the artifact is run directly.
+Importing generated Python or Node ESM does not invoke `main` or terminate the
+importing process. Embedding through `geno.api.run()` returns the value to the
+host instead of applying executable behavior.
 
 ## Compilation profiles
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-22
+
 ### Added
 
 - **Normative language contract**: Published the versioned v0.4 specification, machine-checked effects, diagnostics, integer bounds, compatibility metadata, and a frozen all-backend conformance corpus.
@@ -20,27 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Target-aware lowering contract**: Checks that name an execution target now validate the checked AST with its canonical compiler backend in memory; manifest compilation selects compatible execution profiles while preserving `compile --target python|js` and adding an explicit `--profile` override.
 - **Stable diagnostic ownership**: Parser, type, and effect errors now emit granular E202 and E302-E311 codes at their owning compiler sites, including through the LSP exception bridge.
 - **Release qualification**: The release gate and local release plan now require the frozen corpus on the interpreter, Python, and JavaScript backends.
-- **CLI entrypoint exit status**: `main() -> Int` now becomes the portable
-  process status (modulo 256) in `geno run`, the self-hosted `run` command,
-  and standalone Python/Node artifacts after buffered output is emitted.
-  Normal nonzero exits produce no runtime trace, and watch mode reports their
-  status while continuing to watch.
-- **Entrypoint result migration**: Programs that intentionally used an `Int`
-  return as display output should call `print(value)` and return `Unit` (or
-  return `0` after printing). Embedding APIs continue returning the raw value
-  without terminating their host process.
-- **Entrypoint ownership**: Only `main` declared in the selected entry module
-  is invoked. Interpreter, process, self-hosted, and compiled paths no longer
-  disagree when an imported module happens to export a function named `main`.
-- **Generated ESM import safety**: Node ES modules invoke `main` only when run
-  directly; importing them no longer runs the program or changes the host
-  process status. Browser-targeted ESM remains free of Node-only imports.
 
 ### Fixed
 
 - **Compiled Node HTTP**: Repaired CommonJS and ES-module HTTP with an `http`-only, stdin-based bridge; streamed bounded responses; enforced private-address and redirect policy; preserved duplicate headers and non-2xx bodies across Python and Node; and kept expected `http_request` failures trace-free.
 - **Target/compiler parity**: Target-aware CLI and embedding checks now reject backend-invalid integer literals, record fields, runtime names, and project namespaces before artifact emission; invalid manifests cannot be bypassed by an explicit check target, and expected compiler/build failures no longer expose Python tracebacks or partial output paths.
 - **VS Code packaging**: The release gate now verifies the transitive `vscode-jsonrpc` runtime is present in the VSIX.
+- **Python 3.10 HTTP redirects**: Added explicit HTTP 308 dispatch for compiled Python and hosted callbacks while preserving redirect validation, limits, and method/body semantics.
+- **Entrypoint ownership**: Only `main` declared in the selected entry module is invoked; an imported module that exports `main` no longer becomes an accidental entrypoint.
+- **Generated ESM import safety**: Node ES modules invoke `main` only when run directly, while imports remain inert and browser-targeted ESM remains free of Node-only imports.
+- **v0.4 result compatibility**: Kept `main() -> Int` as an ordinary displayed result with successful process status in primary `geno run` and standalone compiled artifacts; embedding calls return the value without terminating their host, while the legacy self-hosted command adapter remains unchanged.
 
 ## [0.4.1] - 2026-07-19
 
