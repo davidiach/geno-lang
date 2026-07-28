@@ -266,7 +266,7 @@ class Interpreter:
         check_examples: bool = True,
         max_recursion_depth: int | None = None,
         sandbox_config: SandboxConfig | None = None,
-        capabilities: Collection[str] | None | object = _UNSPECIFIED_CAPABILITIES,
+        capabilities: Collection[str] | object | None = _UNSPECIFIED_CAPABILITIES,
     ):
         """
         Initialize the interpreter.

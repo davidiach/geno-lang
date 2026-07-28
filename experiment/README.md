@@ -168,6 +168,7 @@ can be plugged in:
 ```python
 import openai
 
+
 def openai_generate(model: str, prompt: str, language: str) -> str:
     response = openai.chat.completions.create(
         model=model,
@@ -176,6 +177,7 @@ def openai_generate(model: str, prompt: str, language: str) -> str:
         max_tokens=2048,
     )
     return response.choices[0].message.content
+
 
 runner.set_generator(openai_generate)
 ```
@@ -263,7 +265,10 @@ stats = StatisticalTests(alpha=0.05)
 
 # McNemar's test for paired pass/fail data
 result = stats.mcnemar_test(
-    both_pass=40, a_only=12, b_only=5, both_fail=20,
+    both_pass=40,
+    a_only=12,
+    b_only=5,
+    both_fail=20,
 )
 print(result.p_value, result.effect_size, result.interpretation)
 
