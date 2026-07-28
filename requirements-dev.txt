@@ -10,7 +10,7 @@ pytest-cov>=7.0,<8
 pytest-timeout>=2.4.0,<3
 
 # Linting and formatting
-ruff>=0.15.14,<0.17
+ruff>=0.16.0,<0.17
 
 # Type checking
 mypy>=2.1.0,<3
