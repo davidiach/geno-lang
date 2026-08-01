@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -216,6 +217,45 @@ jobs:
 
 def test_current_dependency_surfaces_pass_validation():
     assert validate_dependency_surfaces() == []
+
+
+def test_release_gate_pipeline_requires_full_tag_history():
+    pinned_ref = "a" * 40
+    steps: list[dict[str, Any]] = [
+        {
+            "uses": f"actions/checkout@{pinned_ref}",
+            "with": {"fetch-depth": 0},
+        },
+        {
+            "uses": f"actions/setup-python@{pinned_ref}",
+            "with": {"python-version": "3.11"},
+        },
+        {
+            "uses": f"actions/setup-node@{pinned_ref}",
+            "with": {"node-version": "20"},
+        },
+        {
+            "run": "\n".join(
+                (
+                    "python -m pip install --require-hashes -r requirements-dev.lock",
+                    "python -m pip install --require-hashes -r requirements-release.lock",
+                    "python -m pip install --no-deps --no-build-isolation -e .",
+                )
+            )
+        },
+        {
+            "run": (
+                'python scripts/check_version_alignment.py --tag "${GITHUB_REF_NAME}"'
+            )
+        },
+        {"run": "make release-check PYTHON=python"},
+    ]
+
+    assert validate_dependencies._steps_form_strict_release_gate_pipeline(steps, 5)
+
+    steps[0] = {"uses": f"actions/checkout@{pinned_ref}"}
+
+    assert not validate_dependencies._steps_form_strict_release_gate_pipeline(steps, 5)
 
 
 def test_valid_dependency_fixture_passes(tmp_path: Path):

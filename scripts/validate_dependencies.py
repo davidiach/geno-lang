@@ -973,7 +973,9 @@ def _steps_form_strict_release_gate_pipeline(
     if len(proof_steps) != 6:
         return False
     return (
-        _step_is_strict_pinned_action(proof_steps[0], "actions/checkout", None)
+        _step_is_strict_pinned_action(
+            proof_steps[0], "actions/checkout", {"fetch-depth": 0}
+        )
         and _step_is_strict_pinned_action(
             proof_steps[1],
             "actions/setup-python",
