@@ -18,9 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_PYPROJECT_STATUS = "3 - Alpha"
 _CHANGELOG_RELEASE_HEADING_RE = re.compile(
     r"^## \[(?P<version>\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*))\] "
-    r"- \d{4}-\d{2}-\d{2}\s*$",
+    r"- \d{4}-\d{2}-\d{2}[ \t]*$",
     re.MULTILINE,
 )
+_LEVEL_TWO_HEADING_RE = re.compile(r"^##(?:\s+|$)", re.MULTILINE)
 
 
 def _string_value(value: Any) -> str:
@@ -66,8 +67,9 @@ def get_changelog_release_entries(
     text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     matches = list(_CHANGELOG_RELEASE_HEADING_RE.finditer(text))
     entries: list[tuple[str, str]] = []
-    for index, match in enumerate(matches):
-        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+    for match in matches:
+        next_heading = _LEVEL_TWO_HEADING_RE.search(text, match.end())
+        body_end = next_heading.start() if next_heading is not None else len(text)
         entries.append((match.group("version"), text[match.end() : body_end]))
     return entries
 

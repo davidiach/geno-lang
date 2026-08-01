@@ -637,6 +637,13 @@ def _step_runs_release_gate(step: dict[str, Any]) -> bool:
     )
 
 
+def _step_checks_release_commit_on_main(step: dict[str, Any]) -> bool:
+    return _step_has_exact_command_groups(
+        step,
+        (("git", "merge-base", "--is-ancestor", "${GITHUB_SHA}", "origin/main"),),
+    )
+
+
 def _step_installs_dev_lock(step: dict[str, Any]) -> bool:
     return _step_has_exact_pip_install(
         step,
@@ -966,11 +973,7 @@ def _steps_form_strict_release_gate_pipeline(
     gate_index: int,
 ) -> bool:
     proof_steps = steps[: gate_index + 1]
-    if len(proof_steps) == 2:
-        return _step_installs_exact_release_dependencies(
-            proof_steps[0]
-        ) and _step_runs_release_gate(proof_steps[1])
-    if len(proof_steps) != 6:
+    if len(proof_steps) != 7:
         return False
     return (
         _step_is_strict_pinned_action(
@@ -998,7 +1001,8 @@ def _steps_form_strict_release_gate_pipeline(
                 ),
             ),
         )
-        and _step_runs_release_gate(proof_steps[5])
+        and _step_checks_release_commit_on_main(proof_steps[5])
+        and _step_runs_release_gate(proof_steps[6])
     )
 
 

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Toolchain and supply-chain maintenance**: Updated Ruff, pinned GitHub Actions, the PyPI publishing action, and VS Code extension transitive dependencies.
-- **Release validation**: Release tags must now be newer than existing changelog and repository releases, with dated, non-empty release notes.
+- **Release validation**: Release tags must now point to `main` and be newer than existing changelog and repository releases, with dated, non-empty release notes.
 
 ### Fixed
 

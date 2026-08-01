@@ -158,6 +158,25 @@ def test_collect_errors_requires_changelog_release_notes(tmp_path):
     assert any("has no release notes" in error for error in errors)
 
 
+def test_changelog_notes_do_not_leak_across_malformed_following_heading(tmp_path):
+    _write_alignment_fixture(tmp_path)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [0.3.1] - 2026-04-07\n\n"
+        "### Fixed\n\n"
+        "## [0.3.0]\n\n"
+        "### Fixed\n\n"
+        "- Notes from an older malformed section.\n",
+        encoding="utf-8",
+    )
+
+    errors = alignment.collect_errors(tmp_path)
+
+    assert any(
+        "CHANGELOG.md entry for current version 0.3.1 has no release notes" in error
+        for error in errors
+    )
+
+
 def test_collect_errors_rejects_retrograde_release_tag(tmp_path):
     _write_alignment_fixture(tmp_path)
     (tmp_path / "CHANGELOG.md").write_text(
