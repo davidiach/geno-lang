@@ -1732,6 +1732,14 @@ class TypeChecker(ExhaustivenessMixin):
         # Build a map of implemented method names to their FunctionDef nodes
         impl_method_map: dict[str, FunctionDef] = {}
         for method in defn.methods:
+            if method.name in impl_method_map:
+                self._error(
+                    f"Duplicate method definition: '{method.name}' in impl "
+                    f"'{defn.trait_name}' for '{defn.target_type}'",
+                    method.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
+                continue
             impl_method_map[method.name] = method
 
         # Verify all required methods are implemented and signatures match
@@ -1786,6 +1794,8 @@ class TypeChecker(ExhaustivenessMixin):
         # Register the implementation
         method_types: dict[str, FuncType] = {}
         for method in defn.methods:
+            if method.name in method_types:
+                continue
             param_types = tuple(self._resolve_type(p.param_type) for p in method.params)
             return_type = self._resolve_type(method.return_type)
             effects = frozenset(method.effects) if method.effects else frozenset()

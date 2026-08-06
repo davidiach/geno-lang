@@ -11,6 +11,7 @@ import pytest
 
 from geno.api import RunConfig, run
 from geno.compiler import compile_and_exec
+from geno.diagnostics import ErrorCode
 from geno.js_compiler import compile_to_js
 from geno.lexer import Lexer
 from geno.parser import Parser
@@ -4011,6 +4012,68 @@ class TestTraitDuplicateImpl:
         """
         with pytest.raises(Exception, match="Duplicate implementation"):
             run_geno(source)
+
+    def test_duplicate_method_rejected_at_second_definition(self):
+        source = """trait Touch
+    func touch(self: Self) -> Unit
+end trait
+
+type Box = Box(value: Int)
+
+impl Touch for Box
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        return ()
+    end func
+
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        return ()
+    end func
+end impl
+"""
+
+        with pytest.raises(TypeError) as exc_info:
+            typecheck(source)
+
+        error = exc_info.value
+        assert error.error_code == ErrorCode.TYPE_DUPLICATE_DEFINITION
+        assert (
+            error.message
+            == "Duplicate method definition: 'touch' in impl 'Touch' for 'Box'"
+        )
+        assert error.location.line == 13
+
+    @pytest.mark.timeout(2)
+    def test_duplicate_methods_with_conflicting_effects_complete_boundedly(self):
+        source = """type Box = Box(value: Int)
+
+trait Touch
+    func touch(self: Self) -> Unit
+end trait
+
+impl Touch for Box
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        return ()
+    end func
+
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        print("effect seed")
+        return ()
+    end func
+end impl
+"""
+
+        with pytest.raises(TypeError) as exc_info:
+            typecheck(source)
+
+        assert exc_info.value.error_code == ErrorCode.TYPE_DUPLICATE_DEFINITION
+        assert (
+            exc_info.value.message
+            == "Duplicate method definition: 'touch' in impl 'Touch' for 'Box'"
+        )
 
 
 # ── Review fix tests ──────────────────────────────────────────────────
