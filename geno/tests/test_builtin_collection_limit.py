@@ -9,12 +9,17 @@ allowed pre-allocation up to 10 M elements before the post-check could
 reject the result.
 """
 
+import functools
+import inspect
 import io
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from geno import builtins as _builtins
+from geno.builtin_registry import CAPABILITY_MAP
 from geno.interpreter import Interpreter
 from geno.parser import parse
 from geno.sandbox import SandboxConfig
@@ -30,9 +35,457 @@ def _restore_cap():
     _builtins.set_max_collection_size(saved)
 
 
-def test_interpreter_init_propagates_max_collection_size():
-    Interpreter(sandbox_config=SandboxConfig(max_collection_size=42))
-    assert _builtins.get_max_collection_size() == 42
+def _call_installed(interp: Interpreter, name: str, args: list):
+    return interp._call_function(interp.global_env.bindings[name], args)
+
+
+def _append_one(interp: Interpreter):
+    return _call_installed(interp, "append", [[0, 1, 2], 3])
+
+
+@pytest.mark.parametrize(
+    "construction_order",
+    [("wide", "tight"), ("tight", "wide")],
+)
+@pytest.mark.parametrize("call_order", [("wide", "tight"), ("tight", "wide")])
+def test_live_interpreters_keep_collection_limits_isolated(
+    construction_order, call_order
+):
+    limits = {"wide": 4, "tight": 3}
+    interpreters = {}
+    for name in construction_order:
+        interpreters[name] = _interp_with_limit(limits[name])
+
+    for name in call_order:
+        if name == "wide":
+            assert _append_one(interpreters[name]) == [0, 1, 2, 3]
+        else:
+            with pytest.raises(
+                GenoRuntimeError,
+                match=r"List size exceeds limit \(4 > 3\)",
+            ):
+                _append_one(interpreters[name])
+
+
+def test_interpreter_init_does_not_mutate_direct_builtin_limit():
+    _builtins.set_max_collection_size(7)
+
+    _interp_with_limit(3)
+
+    assert _builtins.get_max_collection_size() == 7
+
+
+def test_direct_builtin_limit_remains_legacy_global_and_not_interpreter_context():
+    interp = _interp_with_limit(4)
+    _builtins.set_max_collection_size(3)
+
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"List size exceeds limit \(4 > 3\)",
+    ):
+        _builtins.builtin_append([0, 1, 2], 3)
+
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"List size exceeds limit \(4 > 3\)",
+    ):
+        _builtins.builtin_append([0, 1, 2], 3, max_collection_size=4)
+
+    assert _append_one(interp) == [0, 1, 2, 3]
+
+
+def test_interpreter_bound_limit_wins_above_and_below_legacy_global():
+    wide = _interp_with_limit(4)
+    tight = _interp_with_limit(3)
+
+    _builtins.set_max_collection_size(3)
+    assert _append_one(wide) == [0, 1, 2, 3]
+
+    _builtins.set_max_collection_size(4)
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"List size exceeds limit \(4 > 3\)",
+    ):
+        _append_one(tight)
+
+
+def test_all_limit_aware_interpreter_builtins_bind_the_interpreter_limit():
+    limit = 42
+    interp = Interpreter(
+        check_examples=False,
+        sandbox_config=SandboxConfig(max_collection_size=limit),
+        capabilities=CAPABILITY_MAP,
+    )
+    bound_names = set()
+    bound_funcs = set()
+    bound_targets = set()
+    unbound_names = []
+
+    for name, value in interp.global_env.bindings.items():
+        if not isinstance(value, BuiltinFunction):
+            continue
+        func = value.func
+        target = func.func if isinstance(func, functools.partial) else func
+        try:
+            parameters = inspect.signature(target).parameters
+        except (TypeError, ValueError):
+            continue
+        if "max_collection_size" not in parameters:
+            if (
+                isinstance(func, functools.partial)
+                and "max_collection_size" in func.keywords
+            ):
+                unbound_names.append(name)
+                continue
+            continue
+        if name == "to_string":
+            if (
+                isinstance(func, functools.partial)
+                or not inspect.isfunction(func)
+                or (func.__kwdefaults__ or {}).get("max_collection_size") != limit
+            ):
+                unbound_names.append(name)
+                continue
+        elif (
+            not isinstance(func, functools.partial)
+            or func.keywords.get("max_collection_size") != limit
+        ):
+            unbound_names.append(name)
+            continue
+        if not inspect.isfunction(target):
+            unbound_names.append(name)
+            continue
+        shadow_globals = target.__globals__
+        if (
+            shadow_globals is vars(_builtins)
+            or shadow_globals.get("_effective_max_collection_size")
+            is not _builtins._interpreter_effective_max_collection_size
+        ):
+            unbound_names.append(name)
+            continue
+        bound_names.add(name)
+        bound_funcs.add(func)
+        bound_targets.add(target)
+
+    assert unbound_names == []
+    assert len(bound_names) == 41
+    assert {"to_string", "vec_push", "mutable_map_set"} <= bound_names
+
+    roots = _builtins._INTERPRETER_BUILTIN_ROOTS
+    clones = _builtins._INTERPRETER_BUILTIN_CLONES
+    bound_cache = _builtins._INTERPRETER_BOUND_BUILTINS
+    assert roots is not None
+    assert bound_cache is not None
+    assert len(roots) == 41
+    assert bound_cache[0] == limit
+    assert set(bound_cache[1].values()) == bound_funcs
+    assert len(set(roots.values()) & bound_targets) == 40
+    assert len(clones) == 82
+
+    for original, clone in roots.items():
+        assert clones[original] is clone
+
+    for original, clone in clones.items():
+        assert clone.__code__ is original.__code__
+        assert clone.__defaults__ == original.__defaults__
+        assert clone.__kwdefaults__ == original.__kwdefaults__
+        assert clone.__annotations__ == original.__annotations__
+        assert "_MAX_COLLECTION_SIZE" not in clone.__code__.co_names
+        for dependency_name in original.__code__.co_names:
+            dependency = vars(_builtins).get(dependency_name)
+            if dependency_name == "_effective_max_collection_size":
+                assert (
+                    clone.__globals__[dependency_name]
+                    is _builtins._interpreter_effective_max_collection_size
+                )
+            elif (
+                inspect.isfunction(dependency)
+                and dependency.__module__ == _builtins.__name__
+            ):
+                assert clone.__globals__[dependency_name] is clones[dependency]
+
+    to_string = interp.global_env.bindings["to_string"].func
+    root_to_string = roots[_builtins._bounded_stringify_value]
+    assert inspect.isfunction(to_string)
+    assert to_string.__code__ is root_to_string.__code__
+    assert to_string.__globals__ is root_to_string.__globals__
+    assert to_string.__kwdefaults__ is not None
+    assert to_string.__kwdefaults__["max_collection_size"] == limit
+    assert interp._builtin_stringify_value is to_string
+    assert "_effective_max_collection_size" not in to_string.__code__.co_names
+
+    second = Interpreter(
+        check_examples=False,
+        sandbox_config=SandboxConfig(max_collection_size=limit),
+        capabilities=CAPABILITY_MAP,
+    )
+    assert _builtins._INTERPRETER_BUILTIN_ROOTS is roots
+    assert _builtins._INTERPRETER_BOUND_BUILTINS is bound_cache
+    assert second.global_env.bindings["to_string"].func is to_string
+    assert (
+        second.global_env.bindings["append"].func
+        is interp.global_env.bindings["append"].func
+    )
+
+
+def test_interpreter_stringify_limit_is_isolated_from_newer_interpreter():
+    wide = _interp_with_limit(10)
+    tight = _interp_with_limit(4)
+    value = [1, 2]
+
+    assert _call_installed(wide, "to_string", [value]) == "[1, 2]"
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"to_string: String size exceeds limit \(5 > 4\)",
+    ):
+        _call_installed(tight, "to_string", [value])
+
+
+def test_reentrant_callback_uses_each_bound_interpreter_limit():
+    wide = _interp_with_limit(10)
+    tight = _interp_with_limit(4)
+    value = [1, 2]
+
+    def call_tight_then_wide(arg):
+        with pytest.raises(
+            GenoRuntimeError,
+            match=r"to_string: String size exceeds limit \(5 > 4\)",
+        ):
+            _call_installed(tight, "to_string", [arg])
+        return _call_installed(wide, "to_string", [arg])
+
+    callback = BuiltinFunction(
+        "call_tight_then_wide",
+        call_tight_then_wide,
+        1,
+        ["value"],
+    )
+    assert wide._call_function(callback, [value]) == "[1, 2]"
+
+    _builtins.set_max_collection_size(4)
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"to_string: String size exceeds limit \(5 > 4\)",
+    ):
+        _builtins.stringify_value(value)
+
+
+def test_bound_limit_survives_nested_builtin_exception():
+    interp = _interp_with_limit(10)
+    value = [1, 2]
+
+    def fail_after_bound_stringify(arg):
+        assert _call_installed(interp, "to_string", [arg]) == "[1, 2]"
+        raise GenoRuntimeError("callback failed")
+
+    callback = BuiltinFunction(
+        "fail_after_bound_stringify",
+        fail_after_bound_stringify,
+        1,
+        ["value"],
+    )
+    _builtins.set_max_collection_size(4)
+
+    with pytest.raises(GenoRuntimeError, match="callback failed"):
+        interp._call_function(callback, [value])
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"to_string: String size exceeds limit \(5 > 4\)",
+    ):
+        _builtins.stringify_value(value)
+
+
+def test_host_callback_output_is_checked_at_interpreter_egress():
+    interp = _interp_with_limit(2)
+    observed = []
+
+    def host_callback():
+        observed.append(True)
+        return "abcd"
+
+    callback = BuiltinFunction(
+        "host_callback",
+        host_callback,
+        0,
+        [],
+    )
+
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"String size exceeds limit \(4 > 2\)",
+    ):
+        interp._call_function(callback, [])
+
+    assert observed == [True]
+
+
+def test_direct_builtin_inside_host_callback_uses_legacy_global_cap():
+    interp = _interp_with_limit(10)
+    _builtins.set_max_collection_size(4)
+    callback = BuiltinFunction(
+        "direct_stringify_callback",
+        _builtins.stringify_value,
+        1,
+        ["value"],
+    )
+
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"to_string: String size exceeds limit \(5 > 4\)",
+    ):
+        interp._call_function(callback, [[1, 2]])
+
+
+def test_api_env_policy_wrapper_retains_interpreter_bound_limit(monkeypatch):
+    from geno.api import RunConfig, _install_env_policy
+
+    env_name = "G"
+    monkeypatch.setenv(env_name, "abcd")
+    interp = Interpreter(
+        check_examples=False,
+        sandbox_config=SandboxConfig(max_collection_size=4),
+        capabilities={"env"},
+    )
+    _install_env_policy(
+        interp,
+        RunConfig(
+            capabilities={"env"},
+            env_allowed_names={env_name},
+        ),
+    )
+    _builtins.set_max_collection_size(3)
+
+    assert _call_installed(interp, "env_get_or", [env_name, ""]) == "abcd"
+
+
+def test_concurrent_interpreter_initialization_and_calls_are_isolated():
+    wide_ready = threading.Event()
+    tight_ready = threading.Event()
+    call_barrier = threading.Barrier(2)
+
+    def wide_worker():
+        interp = _interp_with_limit(4)
+        wide_ready.set()
+        assert tight_ready.wait(timeout=5)
+        call_barrier.wait(timeout=5)
+        for _ in range(100):
+            assert _append_one(interp) == [0, 1, 2, 3]
+
+    def tight_worker():
+        assert wide_ready.wait(timeout=5)
+        interp = _interp_with_limit(3)
+        tight_ready.set()
+        call_barrier.wait(timeout=5)
+        for _ in range(100):
+            with pytest.raises(
+                GenoRuntimeError,
+                match=r"List size exceeds limit \(4 > 3\)",
+            ):
+                _append_one(interp)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(wide_worker), executor.submit(tight_worker)]
+        for future in futures:
+            future.result(timeout=10)
+
+
+def test_concurrent_different_limit_cache_replacement_is_isolated():
+    barrier = threading.Barrier(16)
+
+    def worker(limit):
+        barrier.wait(timeout=5)
+        for _ in range(20):
+            interp = _interp_with_limit(limit)
+            if limit == 10:
+                assert _call_installed(interp, "append", [[0, 1, 2, 3], 4]) == [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]
+                assert _call_installed(interp, "to_string", [[1, 2]]) == "[1, 2]"
+            else:
+                with pytest.raises(GenoRuntimeError, match="size exceeds limit"):
+                    _call_installed(interp, "append", [[0, 1, 2, 3], 4])
+                with pytest.raises(GenoRuntimeError, match="size exceeds limit"):
+                    _call_installed(interp, "to_string", [[1, 2]])
+
+    limits = [4, 10] * 8
+    with ThreadPoolExecutor(max_workers=len(limits)) as executor:
+        futures = [executor.submit(worker, limit) for limit in limits]
+        for future in futures:
+            future.result(timeout=15)
+
+    bound_cache = _builtins._INTERPRETER_BOUND_BUILTINS
+    assert bound_cache is not None
+    assert bound_cache[0] in {4, 10}
+    assert len(bound_cache[1]) == 41
+
+
+def test_unbound_mutation_prechecks_use_interpreter_local_limit():
+    wide = _interp_with_limit(2)
+    _interp_with_limit(1)
+    vec = _call_installed(wide, "vec_new", [])
+
+    _call_installed(wide, "vec_push", [vec, 1])
+    _call_installed(wide, "vec_push", [vec, 2])
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"Vec size exceeds limit \(3 > 2\)",
+    ):
+        _call_installed(wide, "vec_push", [vec, 3])
+
+    assert _call_installed(wide, "vec_length", [vec]) == 2
+
+    mutable_map = _call_installed(wide, "mutable_map_new", [])
+    _call_installed(wide, "mutable_map_set", [mutable_map, "a", 1])
+    _call_installed(wide, "mutable_map_set", [mutable_map, "b", 2])
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"MutableMap size exceeds limit \(3 > 2\)",
+    ):
+        _call_installed(wide, "mutable_map_set", [mutable_map, "c", 3])
+
+    assert _call_installed(wide, "mutable_map_size", [mutable_map]) == 2
+
+
+def test_stringify_limit_fails_before_result_allocation(monkeypatch):
+    interp = _interp_with_limit(4)
+    result_called = False
+    original_result = _builtins._StringifyWriter.result
+
+    def observed_result(writer):
+        nonlocal result_called
+        result_called = True
+        return original_result(writer)
+
+    monkeypatch.setattr(_builtins._StringifyWriter, "result", observed_result)
+
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"to_string: String size exceeds limit \(5 > 4\)",
+    ):
+        _call_installed(interp, "to_string", [[1, 2]])
+
+    assert not result_called
+
+
+def test_internal_fstring_stringify_uses_interpreter_local_limit():
+    source = """
+    func main() -> String
+        return f"{[1, 2]}"
+    end func
+    """
+    wide = _interp_with_limit(10)
+    tight = _interp_with_limit(4)
+
+    assert wide.run(parse(source)) == "[1, 2]"
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"to_string: String size exceeds limit \(5 > 4\)",
+    ):
+        tight.run(parse(source))
 
 
 def test_concat_pre_check_honors_configured_limit():
@@ -251,14 +704,13 @@ def test_map_from_entries_pre_check_honors_configured_limit():
         _builtins.builtin_map_from_entries([("a", 1), ("b", 2), ("c", 3)])
 
 
-def test_default_cap_restored_after_interpreter_configured_down():
-    """Creating a default-config Interpreter after a tightened one
-    restores the default cap so tests that share the module do not
-    observe stale tightened limits."""
+def test_interpreter_construction_preserves_explicit_direct_builtin_cap():
+    """Interpreter-local limits never rewrite the legacy direct-call cap."""
+    _builtins.set_max_collection_size(50)
     Interpreter(sandbox_config=SandboxConfig(max_collection_size=50))
     assert _builtins.get_max_collection_size() == 50
     Interpreter(sandbox_config=SandboxConfig())
-    assert _builtins.get_max_collection_size() == SandboxConfig().max_collection_size
+    assert _builtins.get_max_collection_size() == 50
 
 
 def test_set_max_collection_size_rejects_negative():
