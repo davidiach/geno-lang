@@ -194,6 +194,76 @@ class TestCircularImport:
         assert cycle == ["A", "A"], "Self-import cycle should be [A, A]"
 
 
+class TestCycleDetectionAdversarialGraphs:
+    def test_ignores_unknown_edges_without_mutating_adjacency(self):
+        edges = {
+            "A": ["external.before", "B", "external.after"],
+            "B": ["external.before", "external.after"],
+        }
+        original_edges = {name: list(neighbors) for name, neighbors in edges.items()}
+
+        dependency_graph._detect_cycles(edges)
+
+        assert edges == original_edges
+
+    @pytest.mark.parametrize(
+        ("edges", "expected_cycle"),
+        [
+            ({"A": ["A"]}, ["A", "A"]),
+            ({"A": ["B"], "B": ["A"]}, ["A", "B", "A"]),
+            (
+                {"A": ["B"], "B": ["C"], "C": ["A"]},
+                ["A", "B", "C", "A"],
+            ),
+        ],
+    )
+    def test_reconstructs_exact_cycle(self, edges, expected_cycle):
+        with pytest.raises(CircularDependencyError) as exc_info:
+            dependency_graph._detect_cycles(edges)
+
+        assert exc_info.value.cycle == expected_cycle
+        assert str(exc_info.value) == (
+            f"Circular import detected: {' -> '.join(expected_cycle)}"
+        )
+
+    def test_reports_first_cycle_in_module_and_raw_neighbor_order(self):
+        edges = {
+            "Entry": ["external", "Left", "Right"],
+            "Left": ["Loop"],
+            "Loop": ["Left"],
+            "Right": ["Entry"],
+        }
+
+        with pytest.raises(CircularDependencyError) as exc_info:
+            dependency_graph._detect_cycles(edges)
+
+        assert exc_info.value.cycle == ["Left", "Loop", "Left"]
+
+    def test_handles_deep_acyclic_graph_without_recursion(self):
+        depth = 5_000
+        edges = {f"module_{i}": [f"module_{i + 1}"] for i in range(depth - 1)}
+        edges[f"module_{depth - 1}"] = []
+
+        dependency_graph._detect_cycles(edges)
+
+    def test_high_fanout_adjacency_is_not_repeatedly_rescanned(self):
+        class IterationCountingList(list[str]):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        fanout = 2_000
+        root_neighbors = IterationCountingList([f"leaf_{i}" for i in range(fanout)])
+        edges: dict[str, list[str]] = {"root": root_neighbors}
+        edges.update((neighbor, []) for neighbor in root_neighbors)
+
+        dependency_graph._detect_cycles(edges)
+
+        assert root_neighbors.iterations <= 1
+
+
 # =========================================================================
 # Name collision detection
 # =========================================================================
