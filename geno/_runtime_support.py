@@ -25,7 +25,7 @@ _builtin_zip: Callable[..., Any] = zip
 _builtin_enumerate: Callable[..., Any] = enumerate
 _builtin_min = min
 _builtin_max = max
-_GENO_OBJECT = ().__class__.__mro__[-1]
+_GENO_OBJECT: Any = ().__class__.__mro__[-1]
 _GENO_MISSING = _GENO_OBJECT()
 _DECIMAL_INT_RE = _re.compile(r"^-?[0-9]+$")
 _MAX_SAFE_JS_INT = 2**53 - 1
@@ -1219,9 +1219,7 @@ def _rehash_identity_table(values, size):
     for value in values:
         if value is _GENO_MISSING:
             continue
-        identity_hash = (
-            _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK  # type: ignore[call-arg]
-        )
+        identity_hash = _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK
         index = identity_hash & mask
         perturb = identity_hash
         while table[index] is not _GENO_MISSING:
@@ -1300,9 +1298,7 @@ def _check_collection_size(result):
                 )
                 visited = None
         else:
-            identity_hash = (
-                _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK  # type: ignore[call-arg]
-            )
+            identity_hash = _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK
             identity_mask = len(identity_table) - 1
             identity_index = identity_hash & identity_mask
             identity_perturb = identity_hash
