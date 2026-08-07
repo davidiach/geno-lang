@@ -38,6 +38,13 @@ def compile_and_run_js(source: str) -> str:
     return cast(str, result.stdout).strip()
 
 
+def compile_js_with_full_runtime(source: str) -> str:
+    """Compile *source* without tree-shaking for direct runtime-unit probes."""
+    program = parse(source)
+    TypeChecker().check_program(program)
+    return JSCompiler(track_source_map=False).compile(program, tree_shake=False)
+
+
 @pytest.mark.parametrize("module_name", ["X = 1; console.log('PWNED')", "default"])
 def test_compile_project_rejects_unsafe_module_name(module_name):
     program = parse("")
@@ -2021,7 +2028,7 @@ class TestJSCompilerConversions:
         assert compile_and_run_js(source) == "5.0"
 
     def test_math_stdlib_helpers_reject_unsafe_int_results(self):
-        js_code = compile_to_js(
+        js_code = compile_js_with_full_runtime(
             """
             func main() -> Unit
                 return ()
@@ -2199,6 +2206,7 @@ class TestJSCompilerSpecs:
         end func
         """
         js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
         helper_match = re.search(r"async function (_temp_\d+)\(\)", js_code)
         assert helper_match is not None
         assert f"const result = await {helper_match.group(1)}();" in js_code
@@ -2612,7 +2620,7 @@ class TestJSCompilerMapOperations:
 
     def test_map_runtime_round_trip(self):
         """Verify map_insert and map_get work in the JS runtime."""
-        js_code = compile_to_js(
+        js_code = compile_js_with_full_runtime(
             """
         func main() -> Int
             return 0
@@ -3689,6 +3697,79 @@ class TestJSCompilerSourceMapTracking:
 
 
 class TestJSCompilerPreludeTreeShaking:
+    @staticmethod
+    def _reset_prelude_cache():
+        js_compiler._PRELUDE_SECTIONS = None
+        js_compiler._PRELUDE_ALL_NAMES = None
+        js_compiler._PRELUDE_SECTION_DEPS = None
+        js_compiler._PRELUDE_NAME_TO_SECTIONS = None
+        js_compiler._PRELUDE_SECTION_CLOSURES = None
+
+    def test_prelude_name_index_excludes_indented_local_declarations(self):
+        self._reset_prelude_cache()
+        js_compiler._init_prelude_sections()
+
+        assert js_compiler._PRELUDE_ALL_NAMES is not None
+        assert "cp" not in js_compiler._PRELUDE_ALL_NAMES
+        assert "result" not in js_compiler._PRELUDE_ALL_NAMES
+
+    def test_local_declaration_does_not_create_cross_section_dependency(
+        self, monkeypatch
+    ):
+        synthetic_prelude = """
+// === Referencing section ===
+function first() {
+    return shared;
+}
+// === Unrelated section ===
+function second() {
+    const shared = 1;
+    return shared;
+}
+"""
+        self._reset_prelude_cache()
+        monkeypatch.setattr(js_compiler, "JS_RUNTIME_PRELUDE", synthetic_prelude)
+        try:
+            shaken = js_compiler._tree_shake_prelude("first();")
+            assert "function first()" in shaken
+            assert "function second()" not in shaken
+        finally:
+            self._reset_prelude_cache()
+
+    def test_top_level_transitive_dependency_remains_included(self, monkeypatch):
+        synthetic_prelude = """
+// === Caller section ===
+function first() {
+    return helper();
+}
+// === Helper section ===
+function helper() {
+    return 1;
+}
+"""
+        self._reset_prelude_cache()
+        monkeypatch.setattr(js_compiler, "JS_RUNTIME_PRELUDE", synthetic_prelude)
+        try:
+            shaken = js_compiler._tree_shake_prelude("first();")
+            assert "function first()" in shaken
+            assert "function helper()" in shaken
+        finally:
+            self._reset_prelude_cache()
+
+    def test_tiny_program_omits_unrelated_helpers_and_stays_compact(self):
+        source = """
+        func main() -> Int
+            return 42
+        end func
+        """
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+
+        assert "_nodeHttpBridgeMain" not in js_code
+        assert "regex_match" not in js_code
+        assert len(js_code.encode()) < 70_000
+        assert compile_and_run_js(source) == "42"
+
     @pytest.mark.parametrize(
         "user_code",
         [

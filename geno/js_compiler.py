@@ -244,7 +244,7 @@ def _init_prelude_sections() -> None:
             current_names = set()
         else:
             current_lines.append(line)
-            m = _PRELUDE_NAME_DEF_RE.match(stripped)
+            m = _PRELUDE_NAME_DEF_RE.match(line)
             if m:
                 name = m.group(1) or m.group(2) or m.group(3)
                 if name:
