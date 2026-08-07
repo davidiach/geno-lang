@@ -212,6 +212,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_MAX_INTEGER_BITS",
             "_list_size_exceeded",
             "_safe_add",
+            "_safe_str_add",
             "_safe_mul",
             "_safe_pow",
             "_safe_bitand",
@@ -2333,9 +2334,13 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return f"_float_div({left}, {right})"
             return f"_safe_div({left}, {right})"
 
-        # Addition / subtraction on non-Int operands keep the generic
-        # helpers (string/list size guards, Int-where-Float runtime ints).
+        # Typed strings use a helper whose exact-built-in path avoids generic
+        # result dispatch. Its fallback preserves host-provided subclass
+        # behavior. Other non-Int operands keep the generic helper because
+        # Float parameters may receive runtime Int values.
         if expr.operator == "+":
+            if is_string_type(expr.left) and is_string_type(expr.right):
+                return f"_safe_str_add({left}, {right})"
             return f"_safe_add({left}, {right})"
         if expr.operator == "-":
             return f"_safe_sub({left}, {right})"

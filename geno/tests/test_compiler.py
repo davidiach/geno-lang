@@ -2836,8 +2836,10 @@ class TestCompilerCollectionSizeLimits:
 
     def test_compiled_uses_safe_add(self):
         """Compiled + must be guarded: inline bit check for Int variables,
-        _safe_add for non-Int operands. Small literal addends are exempt
-        (bounded constants cannot produce integer-bomb growth)."""
+        a typed helper for String, and _safe_add for other non-Int operands.
+        Small literal addends are exempt because bounded constants cannot
+        produce integer-bomb growth.
+        """
         source = """
         func add(a: Int, b: Int) -> Int
             example (1, 2) -> 3
@@ -2863,7 +2865,88 @@ class TestCompilerCollectionSizeLimits:
             return "a" + "b"
         end func
         """
-        assert "_safe_add(" in compile_to_python(string_source)
+        string_code = compile_to_python(string_source)
+        string_body = string_code[string_code.find("def main") :]
+        assert "_safe_str_add(" in string_body
+        assert "_safe_add(" not in string_body
+
+        float_source = """
+        func add_float(a: Float, b: Float) -> Float
+            example (1.0, 2.0) -> 3.0
+            return a + b
+        end func
+        """
+        float_code = compile_to_python(float_source)
+        float_body = float_code[float_code.find("def add_float") :]
+        assert "_safe_add(" in float_body
+        assert "_safe_str_add(" not in float_body
+
+    def test_compiled_string_add_preserves_host_boundary_behavior(self):
+        source = """
+        func append(left: String, right: String) -> String
+            example ("a", "b") -> "ab"
+            return left + right
+        end func
+        """
+        env = compile_and_exec(source, timeout=None)
+        append = cast(Callable[[object, object], object], env["append"])
+
+        assert append("a", "b") == "ab"
+        assert append(1, 2) == 3
+
+        events: list[str] = []
+
+        class HostString(str):
+            def __len__(self):
+                events.append("len")
+                return super().__len__()
+
+            def __add__(self, other):
+                events.append("add")
+                return 1 << 9
+
+        env["_MAX_INTEGER_BITS"] = 8
+        with pytest.raises(
+            RuntimeError, match=r"Integer exceeds maximum size \(10 bits\)"
+        ):
+            append(HostString("a"), HostString("b"))
+        assert events == ["len", "len", "add"]
+
+        marker = object()
+        left = [marker]
+        right = [marker]
+        result = env["_safe_str_add"](left, right)
+        assert result == [marker, marker]
+        assert result is not left and result is not right
+        assert result[0] is marker and result[1] is marker
+
+    def test_compiled_string_add_prechecks_exact_string_limit(self):
+        env = _compiled_runtime_env(1)
+
+        assert env["_safe_str_add"]("a", "") == "a"
+        with pytest.raises(
+            RuntimeError,
+            match=r"^String size exceeds limit \(2 > 1\)$",
+        ) as exc_info:
+            env["_safe_str_add"]("a", "b")
+        assert exc_info.value.__cause__ is None
+
+    def test_string_result_size_error_preserves_cause_contract(self):
+        env = _compiled_runtime_env(1)
+
+        assert env["_check_string_result_size"]("to_upper", 1) is None
+        with pytest.raises(
+            RuntimeError,
+            match=r"^to_upper: String size exceeds limit \(2 > 1\)$",
+        ) as exc_info:
+            env["_check_string_result_size"]("to_upper", 2)
+
+        error = exc_info.value
+        cause = error.__cause__
+        assert isinstance(cause, RuntimeError)
+        assert str(cause) == "String size exceeds limit (2 > 1)"
+        assert error.__context__ is cause
+        assert error.__suppress_context__ is True
 
     def test_compiled_int_fast_paths_enforce_bit_limit(self):
         """Typed integer arithmetic must still go through guarded helpers."""

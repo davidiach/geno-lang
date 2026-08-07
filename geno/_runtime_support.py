@@ -1396,10 +1396,12 @@ def _check_collection_kind(kind: str, size: int) -> None:
 
 
 def _check_string_result_size(func_name: str, size: int) -> None:
-    try:
-        _check_collection_kind("String", size)
-    except RuntimeError as exc:
-        raise RuntimeError(f"{func_name}: {exc}") from exc
+    limit = _MAX_COLLECTION_SIZE
+    if size > limit:
+        try:
+            raise RuntimeError(f"String size exceeds limit ({size} > {limit})")
+        except RuntimeError as exc:
+            raise RuntimeError(f"{func_name}: {exc}") from exc
 
 
 def _split_result_count(func_name: str, text: str, delimiter: str) -> int:
@@ -1437,6 +1439,16 @@ def _safe_add(a, b):
     if isinstance(result, int) and result.bit_length() > _MAX_INTEGER_BITS:
         raise RuntimeError(f"Integer exceeds maximum size ({result.bit_length()} bits)")
     return result
+
+
+def _safe_str_add(a, b):
+    """Fast string addition with generic behavior at host boundaries."""
+    if type(a) is not str or type(b) is not str:
+        return _safe_add(a, b)
+    expected = len(a) + len(b)
+    if expected > _MAX_COLLECTION_SIZE:
+        _check_collection_kind("String", expected)
+    return a + b
 
 
 def _safe_mul(a, b):
