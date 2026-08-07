@@ -1230,6 +1230,18 @@ def _compiled_prelude_blob(prelude_text: str) -> tuple[bytes, str]:
     return blob, hashlib.sha256(blob).hexdigest()
 
 
+@lru_cache(maxsize=4)
+def _worker_frame_prefix(worker_script: str) -> str:
+    """Return the deterministic compressed frame prefix for a worker script."""
+    import base64
+    import zlib
+
+    encoded = base64.b85encode(
+        zlib.compress(worker_script.encode("utf-8"), level=9)
+    ).decode("ascii")
+    return f"{encoded}\n"
+
+
 class ProcessSandbox:
     """
     Execute code in a subprocess with hard timeout enforcement.
@@ -1352,13 +1364,7 @@ class ProcessSandbox:
     @staticmethod
     def _frame_worker_input(worker_script: str, code: str) -> str:
         """Put the compressed trusted worker before the untrusted stdin payload."""
-        import base64
-        import zlib
-
-        encoded = base64.b85encode(
-            zlib.compress(worker_script.encode("utf-8"), level=9)
-        ).decode("ascii")
-        return f"{encoded}\n{code}"
+        return _worker_frame_prefix(worker_script) + f"{code}"
 
     def _create_windows_job(
         self,

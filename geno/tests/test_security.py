@@ -1311,6 +1311,63 @@ class TestProcessSandbox:
         if sys.prefix != sys.base_prefix:
             assert Path(command[0]).resolve() != Path(sys.executable).resolve()
 
+    def test_worker_frame_prefix_cache_preserves_exact_framing(self):
+        import base64
+        import zlib
+
+        from geno.sandbox import ProcessSandbox, _worker_frame_prefix
+
+        def legacy_frame(worker_script: str, code: str) -> str:
+            encoded = base64.b85encode(
+                zlib.compress(worker_script.encode("utf-8"), level=9)
+            ).decode("ascii")
+            return f"{encoded}\n{code}"
+
+        _worker_frame_prefix.cache_clear()
+        try:
+            scripts = ("print('worker')", "print('variant')")
+            payloads = ("", "__result__ = 42", "line one\nline two")
+            for worker_script in scripts:
+                for payload in payloads:
+                    framed = ProcessSandbox._frame_worker_input(worker_script, payload)
+                    assert framed == legacy_frame(worker_script, payload)
+                    encoded, decoded_payload = framed.split("\n", 1)
+                    assert (
+                        zlib.decompress(base64.b85decode(encoded)).decode("utf-8")
+                        == worker_script
+                    )
+                    assert decoded_payload == payload
+
+            info = _worker_frame_prefix.cache_info()
+            assert (info.hits, info.misses, info.currsize, info.maxsize) == (4, 2, 2, 4)
+        finally:
+            _worker_frame_prefix.cache_clear()
+
+    def test_worker_frame_prefix_cache_is_bounded_and_payload_independent(self):
+        from geno.sandbox import ProcessSandbox, _worker_frame_prefix
+
+        _worker_frame_prefix.cache_clear()
+        try:
+            script = "print('worker')"
+            for index in range(20):
+                payload = f"payload-{index}-" + ("x" * 10_000)
+                framed = ProcessSandbox._frame_worker_input(script, payload)
+                assert framed.endswith(payload)
+
+            warm_info = _worker_frame_prefix.cache_info()
+            assert (warm_info.hits, warm_info.misses, warm_info.currsize) == (19, 1, 1)
+
+            for index in range(5):
+                ProcessSandbox._frame_worker_input(f"script-{index}", "payload")
+            bounded_info = _worker_frame_prefix.cache_info()
+            assert bounded_info.currsize == bounded_info.maxsize == 4
+
+            misses_before = bounded_info.misses
+            ProcessSandbox._frame_worker_input(script, "fresh payload")
+            assert _worker_frame_prefix.cache_info().misses == misses_before + 1
+        finally:
+            _worker_frame_prefix.cache_clear()
+
     def test_worker_resource_limit_failure_fails_closed(self, monkeypatch):
         """A failed POSIX setrlimit must abort before user code executes."""
         if sys.platform == "win32":
