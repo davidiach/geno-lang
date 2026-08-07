@@ -30,6 +30,9 @@ _GENO_MISSING = _GENO_OBJECT()
 _DECIMAL_INT_RE = _re.compile(r"^-?[0-9]+$")
 _MAX_SAFE_JS_INT = 2**53 - 1
 _MIN_SAFE_JS_INT = -_MAX_SAFE_JS_INT
+_IDENTITY_TRACKER_THRESHOLD = 32
+_IDENTITY_TABLE_INITIAL_SIZE = 64
+_IDENTITY_HASH_MASK = (1 << 64) - 1
 
 
 def _require_safe_js_int(value: int, context: str) -> int:
@@ -1210,18 +1213,45 @@ except NameError:
     _MAX_INTEGER_BITS = 33_219
 
 
-def _check_collection_size(result):
-    """Raise if a reachable value exceeds configured runtime size limits.
+def _rehash_identity_table(values, size):
+    table = [_GENO_MISSING] * size
+    mask = size - 1
+    for value in values:
+        if value is _GENO_MISSING:
+            continue
+        identity_hash = (
+            _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK  # type: ignore[call-arg]
+        )
+        index = identity_hash & mask
+        perturb = identity_hash
+        while table[index] is not _GENO_MISSING:
+            index = (index * 5 + perturb + 1) & mask
+            perturb >>= 5
+        table[index] = value
+    return table
 
-    This backs generated-code expression checks as well as helper return
-    checks. Walk nested compiled-runtime containers so a small outer list or
-    constructor cannot hide an over-limit inner value.
-    """
+
+def _check_collection_size(result):
+    """Validate a generated value and its reachable collection graph."""
+    if result is True or result is False:
+        return result
+    if isinstance(result, int):
+        if result.bit_length() > _MAX_INTEGER_BITS:
+            raise RuntimeError(
+                f"Integer exceeds maximum size ({result.bit_length()} bits)"
+            )
+        return result
+    if isinstance(result, str):
+        _check_collection_kind("String", len(result))
+        return result
+
     stack: list[Any] = [result]
-    visited: list[Any] = []
+    visited: list[Any] | None = []
+    identity_table: list[Any] | None = None
+    tracked_count = 0
     while stack:
         value = stack.pop()
-        if isinstance(value, bool):
+        if value is True or value is False:
             # bool is an int subclass; don't apply the bit-length check to it.
             continue
         if isinstance(value, int):
@@ -1234,53 +1264,113 @@ def _check_collection_size(result):
             _check_collection_kind("String", len(value))
             continue
 
-        if any(seen is value for seen in visited):
+        if isinstance(value, list):
+            value_kind = 1
+        elif isinstance(value, tuple):
+            value_kind = 2
+        elif isinstance(value, dict):
+            value_kind = 3
+        elif isinstance(value, _GenoArray):
+            value_kind = 4
+        elif isinstance(value, _GenoVec):
+            value_kind = 5
+        elif isinstance(value, _GenoSet):
+            value_kind = 6
+        elif isinstance(value, _GenoMutableMap):
+            value_kind = 7
+        elif isinstance(value, Constructor):
+            value_kind = 8
+        else:
             continue
 
-        if isinstance(value, list):
+        if identity_table is None:
+            assert visited is not None
+            seen_before = False
+            for seen in visited:
+                if seen is value:
+                    seen_before = True
+                    break
+            if seen_before:
+                continue
             visited.append(value)
+            tracked_count += 1
+            if tracked_count == _IDENTITY_TRACKER_THRESHOLD + 1:
+                identity_table = _rehash_identity_table(
+                    visited, _IDENTITY_TABLE_INITIAL_SIZE
+                )
+                visited = None
+        else:
+            identity_hash = (
+                _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK  # type: ignore[call-arg]
+            )
+            identity_mask = len(identity_table) - 1
+            identity_index = identity_hash & identity_mask
+            identity_perturb = identity_hash
+            while True:
+                seen = identity_table[identity_index]
+                if seen is _GENO_MISSING or seen is value:
+                    break
+                identity_index = (
+                    identity_index * 5 + identity_perturb + 1
+                ) & identity_mask
+                identity_perturb >>= 5
+            if seen is value:
+                continue
+
+            # Resize before an insertion would exceed an 80% (4/5) load factor.
+            if (tracked_count + 1) * 5 > len(identity_table) * 4:
+                identity_table = _rehash_identity_table(
+                    identity_table, len(identity_table) * 2
+                )
+                identity_mask = len(identity_table) - 1
+                identity_index = identity_hash & identity_mask
+                identity_perturb = identity_hash
+                while identity_table[identity_index] is not _GENO_MISSING:
+                    identity_index = (
+                        identity_index * 5 + identity_perturb + 1
+                    ) & identity_mask
+                    identity_perturb >>= 5
+
+            identity_table[identity_index] = value
+            tracked_count += 1
+
+        if value_kind == 1:
             _check_collection_kind("List", len(value))
             stack.extend(value)
             continue
-        if isinstance(value, tuple):
-            visited.append(value)
+
+        if value_kind == 2:
             _check_collection_kind("Tuple", len(value))
             stack.extend(value)
             continue
-        if isinstance(value, dict):
-            visited.append(value)
+        if value_kind == 3:
             _check_collection_kind("Map", len(value))
             stack.extend(value.keys())
             stack.extend(value.values())
             continue
 
-        if isinstance(value, _GenoArray):
-            visited.append(value)
+        if value_kind == 4:
             _check_collection_kind("Array", len(value))
             stack.extend(value._elements)
             continue
 
-        if isinstance(value, _GenoVec):
-            visited.append(value)
+        if value_kind == 5:
             _check_collection_kind("Vec", len(value))
             stack.extend(value._elements)
             continue
 
-        if isinstance(value, _GenoSet):
-            visited.append(value)
+        if value_kind == 6:
             _check_collection_kind("Set", len(value))
             stack.extend(value._data)
             continue
 
-        if isinstance(value, _GenoMutableMap):
-            visited.append(value)
+        if value_kind == 7:
             _check_collection_kind("MutableMap", len(value._data))
             stack.extend(value._data.keys())
             stack.extend(value._data.values())
             continue
 
-        if isinstance(value, Constructor):
-            visited.append(value)
+        if value_kind == 8:
             stack.extend(
                 getattr(value, field.name) for field in _dataclasses_fields(value)
             )
