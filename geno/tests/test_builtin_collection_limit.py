@@ -23,7 +23,14 @@ from geno.builtin_registry import CAPABILITY_MAP
 from geno.interpreter import Interpreter
 from geno.parser import parse
 from geno.sandbox import SandboxConfig
-from geno.values import BuiltinFunction
+from geno.values import (
+    ArrayValue,
+    BuiltinFunction,
+    ConstructorValue,
+    MutableMapValue,
+    SetValue,
+    VecValue,
+)
 from geno.values import RuntimeError as GenoRuntimeError
 
 
@@ -900,6 +907,276 @@ def test_check_collection_limits_handles_cyclic_structures():
     a.append(a)
     # Self-referential list, size 1 — within the limit, must terminate.
     interp._check_collection_limits([a], None)
+
+
+def test_check_collection_limits_exact_runtime_kinds_enforce_nested_limits():
+    interp = Interpreter(
+        check_examples=False,
+        sandbox_config=SandboxConfig(
+            max_collection_size=2,
+            max_integer_bits=3,
+        ),
+    )
+
+    array = ArrayValue([0, 1, 2])
+    vec = VecValue()
+    vec._elements.extend([0, 1, 2])
+    set_value = SetValue()
+    set_value._data.update({0, 1, 2})
+    mutable_map = MutableMapValue()
+    mutable_map._data.update({0: 0, 1: 1, 2: 2})
+    cases = [
+        ([0, 1, 2], "List"),
+        ((0, 1, 2), "Tuple"),
+        ({0: 0, 1: 1, 2: 2}, "Map"),
+        ("abc", "String"),
+        (array, "Array"),
+        (vec, "Vec"),
+        (set_value, "Set"),
+        (mutable_map, "MutableMap"),
+        (ConstructorValue("Wrap", {"value": [0, 1, 2]}), "List"),
+        (8, "Integer"),
+    ]
+
+    for value, kind in cases:
+        with pytest.raises(
+            GenoRuntimeError,
+            match=rf"{kind} .*exceeds (?:limit|maximum size)",
+        ):
+            # Nest scalars so they exercise the full DFS instead of the
+            # scalar-only root fast path.
+            interp._check_collection_limits([[value]], None)
+
+    for value in (True, 1.5, None, 7, "ab"):
+        interp._check_collection_limits([[[value]]], None)
+
+
+def test_check_collection_limits_runtime_subclasses_keep_fallback_semantics():
+    class ListSubclass(list):
+        pass
+
+    class TupleSubclass(tuple):
+        pass
+
+    class DictSubclass(dict):
+        pass
+
+    class StringSubclass(str):
+        pass
+
+    class IntSubclass(int):
+        pass
+
+    class ArraySubclass(ArrayValue):
+        pass
+
+    class VecSubclass(VecValue):
+        pass
+
+    class SetSubclass(SetValue):
+        pass
+
+    class MutableMapSubclass(MutableMapValue):
+        pass
+
+    class ConstructorSubclass(ConstructorValue):
+        pass
+
+    interp = Interpreter(
+        check_examples=False,
+        sandbox_config=SandboxConfig(
+            max_collection_size=2,
+            max_integer_bits=3,
+        ),
+    )
+    vec = VecSubclass()
+    vec._elements.extend([0, 1, 2])
+    set_value = SetSubclass()
+    set_value._data.update({0, 1, 2})
+    mutable_map = MutableMapSubclass()
+    mutable_map._data.update({0: 0, 1: 1, 2: 2})
+    cases = [
+        (ListSubclass([0, 1, 2]), "List"),
+        (TupleSubclass((0, 1, 2)), "Tuple"),
+        (DictSubclass({0: 0, 1: 1, 2: 2}), "Map"),
+        (StringSubclass("abc"), "String"),
+        (ArraySubclass([0, 1, 2]), "Array"),
+        (vec, "Vec"),
+        (set_value, "Set"),
+        (mutable_map, "MutableMap"),
+        (ConstructorSubclass("Wrap", {"value": [0, 1, 2]}), "List"),
+        (IntSubclass(8), "Integer"),
+    ]
+
+    for value, kind in cases:
+        with pytest.raises(
+            GenoRuntimeError,
+            match=rf"{kind} .*exceeds (?:limit|maximum size)",
+        ):
+            interp._check_collection_limits([[value]], None)
+
+
+def test_check_collection_limits_exact_dispatch_preserves_dfs_child_order(
+    monkeypatch,
+):
+    interp = _interp_with_limit(10)
+    events = []
+    original = interp._check_collection_size
+
+    def observe(kind, size, location):
+        events.append((kind, size))
+        original(kind, size, location)
+
+    monkeypatch.setattr(interp, "_check_collection_size", observe)
+    leaf = [1]
+    array = ArrayValue([leaf])
+    mutable_map = MutableMapValue()
+    mutable_map._data["key"] = array
+
+    interp._check_collection_limits([("tail",), mutable_map], None)
+
+    # The stack is LIFO. Map values therefore precede keys, while roots and
+    # children are otherwise extended in their original order.
+    assert events == [
+        ("MutableMap", 1),
+        ("Array", 1),
+        ("List", 1),
+        ("String", 3),
+        ("Tuple", 1),
+        ("String", 4),
+    ]
+
+
+def test_check_collection_limits_exact_dispatch_preserves_error_precedence():
+    interp = _interp_with_limit(2)
+
+    # Dict keys are pushed before values, so the value is visited first by
+    # the LIFO walker. Preserve that ordering when both descendants violate.
+    value = {"oversized-key": [0, 1, 2]}
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"List size exceeds limit \(3 > 2\)",
+    ):
+        interp._check_collection_limits([value], None)
+
+    # Later roots are also visited first.
+    with pytest.raises(
+        GenoRuntimeError,
+        match=r"Tuple size exceeds limit \(3 > 2\)",
+    ):
+        interp._check_collection_limits([[0, 1, 2], (0, 1, 2)], None)
+
+
+def test_check_collection_limits_handles_wide_deep_shared_and_cyclic_graphs():
+    interp = _interp_with_limit(2_500)
+    shared = [1]
+    cycle: list[object] = []
+    cycle.append(cycle)
+    deep: object = shared
+    for _ in range(2_000):
+        deep = [deep]
+    wide = list(range(2_000))
+    graph = ConstructorValue(
+        "Graph",
+        {
+            "deep": deep,
+            "wide": wide,
+            "shared": [shared, shared],
+            "cycle": cycle,
+        },
+    )
+
+    interp._check_collection_limits([graph], None)
+
+    assert cycle[0] is cycle
+    assert graph.fields["shared"][0] is graph.fields["shared"][1]
+    assert len(wide) == 2_000
+
+
+def test_exact_dispatch_keeps_callback_checks_around_side_effects():
+    interp = _interp_with_limit(2)
+    observed: list[str] = []
+
+    def capture_nested(value):
+        observed.append("called")
+        return value
+
+    capture = BuiltinFunction(
+        "capture_nested",
+        capture_nested,
+        1,
+        ["value"],
+    )
+    oversized = ConstructorValue("Wrap", {"value": [0, 1, 2]})
+
+    with pytest.raises(GenoRuntimeError, match="List size exceeds limit"):
+        interp._call_function(capture, [oversized])
+    assert observed == []
+
+    def return_nested():
+        observed.append("called")
+        return oversized
+
+    result = BuiltinFunction(
+        "return_nested",
+        return_nested,
+        0,
+        [],
+    )
+    with pytest.raises(GenoRuntimeError, match="List size exceeds limit"):
+        interp._call_function(result, [])
+    assert observed == ["called"]
+
+
+def test_exact_dispatch_keeps_incremental_mutation_target_exclusion():
+    interp = _interp_with_limit(2)
+    vec = VecValue()
+    vec._elements.extend([0, 1, 2])
+
+    # The already-large target is intentionally excluded for non-growing
+    # incremental mutations; their new value is still checked before mutation.
+    _call_installed(interp, "vec_set", [vec, 0, 9])
+    assert vec._elements == [9, 1, 2]
+
+    with pytest.raises(GenoRuntimeError, match="List size exceeds limit"):
+        _call_installed(interp, "vec_set", [vec, 0, [0, 1, 2]])
+    assert vec._elements == [9, 1, 2]
+
+
+def test_exact_dispatch_isolated_across_concurrent_and_reentrant_interpreters():
+    tight = _interp_with_limit(2)
+    wide = _interp_with_limit(3)
+    graph = ConstructorValue("Wrap", {"value": [0, 1, 2]})
+
+    def check(interp, accepted):
+        for _ in range(50):
+            if accepted:
+                interp._check_collection_limits([graph], None)
+            else:
+                with pytest.raises(GenoRuntimeError, match="List size exceeds limit"):
+                    interp._check_collection_limits([graph], None)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(check, tight, False),
+            executor.submit(check, wide, True),
+        ]
+        for future in futures:
+            future.result(timeout=10)
+
+    def check_tight_then_wide(value):
+        with pytest.raises(GenoRuntimeError, match="List size exceeds limit"):
+            tight._check_collection_limits([value], None)
+        wide._check_collection_limits([value], None)
+        return 1
+
+    callback = BuiltinFunction(
+        "check_tight_then_wide",
+        check_tight_then_wide,
+        1,
+        ["value"],
+    )
+    assert wide._call_function(callback, [graph]) == 1
 
 
 def test_installed_fs_callbacks_honor_configured_limit(tmp_path):

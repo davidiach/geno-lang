@@ -2123,6 +2123,70 @@ class Interpreter:
         stack: list[Any] = list(roots)
         while stack:
             value = stack.pop()
+            t = type(value)
+
+            # Geno's concrete runtime values dominate this walk. Dispatch
+            # those exact types directly so nested primitive-heavy values do
+            # not repeatedly pay the fallback isinstance chain. Subclasses
+            # and foreign host objects still use the original chain below,
+            # preserving its type precedence and extensibility behavior.
+            if t is int:
+                if value.bit_length() > max_bits:
+                    self._check_integer_bits(value, location)
+                continue
+            if t is bool or t is float or value is None:
+                continue
+
+            value_id = id(value)
+            if value_id in visited:
+                continue
+
+            if t is list:
+                visited.add(value_id)
+                self._check_collection_size("List", len(value), location)
+                stack.extend(value)
+                continue
+            if t is tuple:
+                visited.add(value_id)
+                self._check_collection_size("Tuple", len(value), location)
+                stack.extend(value)
+                continue
+            if t is dict:
+                visited.add(value_id)
+                self._check_collection_size("Map", len(value), location)
+                stack.extend(value.keys())
+                stack.extend(value.values())
+                continue
+            if t is ConstructorValue:
+                visited.add(value_id)
+                stack.extend(value.fields.values())
+                continue
+            if t is str:
+                visited.add(value_id)
+                self._check_collection_size("String", len(value), location)
+                continue
+            if t is ArrayValue:
+                visited.add(value_id)
+                self._check_collection_size("Array", len(value), location)
+                stack.extend(value._elements)
+                continue
+            if t is VecValue:
+                visited.add(value_id)
+                self._check_collection_size("Vec", len(value), location)
+                stack.extend(value._elements)
+                continue
+            if t is SetValue:
+                visited.add(value_id)
+                self._check_collection_size("Set", len(value), location)
+                stack.extend(value._data)
+                continue
+            if t is MutableMapValue:
+                visited.add(value_id)
+                self._check_collection_size("MutableMap", len(value), location)
+                stack.extend(value._data.keys())
+                stack.extend(value._data.values())
+                continue
+
             if isinstance(value, bool):
                 continue
             if isinstance(value, int):
