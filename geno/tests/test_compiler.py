@@ -652,6 +652,119 @@ class TestCompilerVariables:
 class TestCompilerCopySemantics:
     """Test that let/var produce independent copies of collections."""
 
+    @staticmethod
+    def _generated_body(source: str, *, typecheck: bool = True) -> str:
+        return compile_to_python(source, typecheck=typecheck).split(
+            "# Generated Code Follows", 1
+        )[1]
+
+    def test_primitive_bindings_skip_redundant_deepcopy(self):
+        source = """
+        func one() -> Int
+            example () -> 1
+            return 1
+        end func
+
+        func main() -> Float
+            let count: Int = one()
+            let text = "hello"
+            var enabled: Bool = true
+            let nothing: Unit = ()
+            let promoted: Float = count
+            if enabled and text == "hello" and nothing == () then
+                return promoted
+            end if
+            return 0.0
+        end func
+        """
+        body = self._generated_body(source)
+
+        assert "_geno_deepcopy" not in body
+        env = compile_and_exec(source, timeout=None)
+        result = env["main"]()
+        assert result == 1.0
+        assert type(result) is float
+
+    def test_primitive_alias_bindings_skip_redundant_deepcopy(self):
+        source = """
+        type Count = Int
+        type Identity[T] = T
+
+        func main() -> Int
+            let source: Int = 7
+            let count: Count = source
+            let identity: Identity[Int] = count
+            return identity
+        end func
+        """
+        body = self._generated_body(source)
+
+        assert "count: 'Count' = source" in body
+        assert "identity: 'Identity[int]' = count" in body
+        assert compile_and_run(source) == 7
+
+    def test_float_promotion_remains_direct_and_exact(self):
+        source = """
+        func one() -> Int
+            example () -> 1
+            return 1
+        end func
+
+        func main() -> Float
+            let promoted: Float = one()
+            return promoted
+        end func
+        """
+        body = self._generated_body(source)
+
+        assert "promoted: 'float' = _promote_int_to_float(one())" in body
+        env = compile_and_exec(source, timeout=None)
+        result = env["main"]()
+        assert result == 1.0
+        assert type(result) is float
+
+    def test_collection_and_adt_bindings_keep_snapshot_copy(self):
+        source = """
+        type Box = Box(value: Int)
+
+        func main() -> Int
+            let source_list: List[Int] = [1]
+            let copied_list: List[Int] = source_list
+            let source_map: Map[String, Int] = map_from_list([("a", 1)])
+            let copied_map: Map[String, Int] = source_map
+            let source_option: Option[Int] = Some(1)
+            let copied_option: Option[Int] = source_option
+            let source_result: Result[Int, String] = Ok(1)
+            let copied_result: Result[Int, String] = source_result
+            let source_box: Box = Box(1)
+            let copied_box: Box = source_box
+            return copied_list[0]
+        end func
+        """
+        body = self._generated_body(source)
+
+        for name in (
+            "source_list",
+            "source_map",
+            "source_option",
+            "source_result",
+            "source_box",
+        ):
+            assert f"= _geno_deepcopy({name})" in body
+        assert compile_and_run(source) == 1
+
+    def test_typecheck_false_keeps_conservative_snapshot_copy(self):
+        source = """
+        func main() -> Int
+            let source: Int = 1
+            let copy: Int = source
+            return copy
+        end func
+        """
+        body = self._generated_body(source, typecheck=False)
+
+        assert "copy: 'int' = _geno_deepcopy(source)" in body
+
     def test_var_list_copies(self):
         """var binding of a List should produce an independent copy."""
         source = """

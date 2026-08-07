@@ -100,7 +100,9 @@ from .builtin_registry import (
 )
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .types import FloatType, UserType
+from .types import BoolType, FloatType, IntType, StringType, UnitType, UserType
+
+_PRIMITIVE_BINDING_TYPES = (IntType, FloatType, BoolType, StringType, UnitType)
 
 
 # Names defined in the runtime prelude that must not be shadowed by user code.
@@ -1415,7 +1417,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
-        rhs = f"_geno_deepcopy({value})"
+        rhs = (
+            value
+            if self._binding_has_primitive_type(stmt)
+            else f"_geno_deepcopy({value})"
+        )
         rhs = self._promote_expr_to_expected_float(
             rhs, getattr(stmt, "_expected_runtime_type", type_annot)
         )
@@ -1457,7 +1463,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
-        rhs = f"_geno_deepcopy({value})"
+        rhs = (
+            value
+            if self._binding_has_primitive_type(stmt)
+            else f"_geno_deepcopy({value})"
+        )
         rhs = self._promote_expr_to_expected_float(rhs, expected_type)
         if type_annot is not None:
             ann = self._compile_type_annotation(type_annot)
@@ -1466,6 +1476,14 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln(f"{name}: '{ann}' = {rhs}")
         else:
             self._writeln(f"{name} = {rhs}")
+
+    @staticmethod
+    def _binding_has_primitive_type(stmt: LetStatement | VarStatement) -> bool:
+        """Return whether binding *stmt* snapshots an immutable primitive."""
+        resolved_type = getattr(stmt, "_expected_runtime_type", None)
+        if resolved_type is None:
+            resolved_type = getattr(stmt.value, "_resolved_type", None)
+        return isinstance(resolved_type, _PRIMITIVE_BINDING_TYPES)
 
     @staticmethod
     def _needs_constructor_copy(value: Expression) -> bool:
