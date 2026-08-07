@@ -171,6 +171,16 @@ function _checkedPythonCase(funcName, text, upper) {
 }
 
 function _checkCollectionSize(result, kindOverride = null) {
+    if (typeof result === 'string') {
+        _checkCollectionKind(kindOverride || "String", _stringLength(result));
+        return result;
+    }
+    if (typeof result === 'number' && _GENO_NUMBER.isInteger(result)) {
+        _checkIntegerBits(result);
+        return result;
+    }
+    if (result === null || typeof result !== 'object') return result;
+
     const stack = [{ value: result, kindOverride }];
     const seen = new _GENO_SET();
     while (stack.length > 0) {

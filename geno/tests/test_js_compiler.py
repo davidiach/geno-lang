@@ -3203,6 +3203,129 @@ class TestJSCompilerOutput:
             assert result.returncode != 0
             assert message in result.stderr
 
+    def test_collection_guard_skips_traversal_set_for_root_scalars(self):
+        js_code = (
+            _limit_globals(max_collection_size=1, max_integer_bits=1)
+            + """
+const NativeSet = globalThis.Set;
+let setConstructions = 0;
+globalThis.Set = new Proxy(NativeSet, {
+    construct(target, args, newTarget) {
+        setConstructions += 1;
+        return Reflect.construct(target, args, newTarget);
+    },
+});
+"""
+            + JS_RUNTIME_PRELUDE
+            + """
+const before = setConstructions;
+const scalarCases = [
+    "x", 1, -0, 1.5, NaN, Infinity, true, null, undefined, 1n,
+    Symbol("x"), () => 1,
+];
+for (const value of scalarCases) {
+    if (!Object.is(_checkCollectionSize(value), value)) {
+        throw new Error("collection guard changed scalar identity");
+    }
+}
+if (setConstructions !== before) {
+    throw new Error(`scalar checks constructed ${setConstructions - before} traversal sets`);
+}
+
+_checkCollectionSize([]);
+if (setConstructions !== before + 1) {
+    throw new Error("object check did not construct exactly one traversal set");
+}
+console.log("ok");
+"""
+        )
+        result = run_node_code(js_code, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "ok"
+
+    def test_collection_guard_root_scalar_limits_and_kind_override(self):
+        script = """
+function expectThrows(label, fn, expected) {
+    try {
+        fn();
+    } catch (error) {
+        if (String(error.message) === expected) return;
+        throw new Error(label + " wrong error: " + error.message);
+    }
+    throw new Error(label + " did not throw");
+}
+
+const smile = String.fromCodePoint(128512);
+if (_checkCollectionSize(smile) !== smile) throw new Error("astral identity changed");
+expectThrows(
+    "unicode code-point length",
+    () => _checkCollectionSize(smile + smile),
+    "String size exceeds limit (2 > 1)",
+);
+expectThrows(
+    "kind override",
+    () => _checkCollectionSize("ab", "Tuple"),
+    "Tuple size exceeds limit (2 > 1)",
+);
+if (_checkCollectionSize(1) !== 1) throw new Error("integer identity changed");
+expectThrows(
+    "integer bit limit",
+    () => _checkCollectionSize(2),
+    "Integer exceeds maximum size (2 bits)",
+);
+if (_checkCollectionSize(2n) !== 2n) throw new Error("BigInt behavior changed");
+console.log("ok");
+"""
+        assert (
+            run_js_runtime_script(script, max_collection_size=1, max_integer_bits=1)
+            == "ok"
+        )
+
+    def test_collection_guard_object_graph_contract(self):
+        script = """
+function expectThrows(label, fn, expected) {
+    try {
+        fn();
+    } catch (error) {
+        if (String(error.message) === expected) return;
+        throw new Error(label + " wrong error: " + error.message);
+    }
+    throw new Error(label + " did not throw");
+}
+
+const shared = [1];
+const cyclic = {_tag: "Node", left: shared, right: shared};
+cyclic.self = cyclic;
+if (_checkCollectionSize(cyclic) !== cyclic) throw new Error("object identity changed");
+
+expectThrows(
+    "root before nested",
+    () => _checkCollectionSize([2, 2]),
+    "List size exceeds limit (2 > 1)",
+);
+expectThrows(
+    "nested integer",
+    () => _checkCollectionSize([2]),
+    "Integer exceeds maximum size (2 bits)",
+);
+
+const hostile = new Proxy({}, {
+    has() {
+        throw new Error("hostile has trap");
+    },
+});
+expectThrows(
+    "hostile object",
+    () => _checkCollectionSize(hostile),
+    "hostile has trap",
+);
+console.log("ok");
+"""
+        assert (
+            run_js_runtime_script(script, max_collection_size=1, max_integer_bits=1)
+            == "ok"
+        )
+
     def test_runtime_collection_helpers_honor_configured_limit(self):
         script = """
 function expectThrows(label, fn, fragment) {
