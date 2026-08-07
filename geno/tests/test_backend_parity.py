@@ -1226,6 +1226,21 @@ end func
         id="adt_with_fields",
     ),
     pytest.param(
+        # --- Wide ADT field order and exact match binding ---
+        """\
+type Wide = Wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int)
+
+func main() -> Unit
+    let value: Wide = Wide(1, 2, 3, 4, 5, 6, 7, 8)
+    match value with
+        | Wide(a, b, c, d, e, f, g, h) -> print(a + b + c + d + e + f + g + h)
+    end match
+    return ()
+end func
+""",
+        id="adt_wide_fields",
+    ),
+    pytest.param(
         # --- Option type ---
         """\
 func safe_head(xs: List[Int]) -> Option[Int]

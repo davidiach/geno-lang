@@ -1107,6 +1107,9 @@ def match_constructor(value, constructor_name: str):
     return False
 
 
+_MEMBER_DESCRIPTOR_TYPE = type(_object_getattribute(Some, "__dict__")["value"])
+
+
 _BLOCKED_FIELD_NAMES = frozenset(
     {
         "__class__",
@@ -1173,6 +1176,18 @@ def get_field(value, field_name: str):
         value_dict = None
     if isinstance(value_dict, dict) and field_name in value_dict:
         return value_dict[field_name]
+
+    # Generated and built-in Geno constructors are frozen slotted dataclasses.
+    # Their fields are exact-class member descriptors, so resolve that common
+    # case directly instead of scanning every dataclass field for each match
+    # binding.  Inherited slots intentionally stay on the compatibility path
+    # below, which preserves MRO and arbitrary-dataclass behaviour.
+    value_type = type(value)
+    if isinstance(value, Constructor):
+        value_type_dict = _object_getattribute(value_type, "__dict__")
+        descriptor = value_type_dict.get(field_name, _GENO_MISSING)
+        if type(descriptor) is _MEMBER_DESCRIPTOR_TYPE:
+            return _object_getattribute(value, field_name)
 
     try:
         dataclass_fields = _dc.fields(value)

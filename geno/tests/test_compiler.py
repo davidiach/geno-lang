@@ -1949,6 +1949,60 @@ class TestCompilerPatternMatchFieldSafety:
         with pytest.raises(RuntimeError, match="not allowed"):
             compile_and_run(source)
 
+    def test_generated_slotted_fields_skip_dataclass_scans(self, monkeypatch):
+        """Each generated-field lookup is constant work, independent of ADT width."""
+        import dataclasses
+
+        field_count = 64
+        fields = ", ".join(f"f{i}: Int" for i in range(field_count))
+        source = f"""
+        type Wide = Wide({fields})
+
+        func main() -> Int
+            return 0
+        end func
+        """
+        globals_dict = compile_and_exec(source, timeout=None)
+        wide_type = globals_dict["Wide"]
+        value = wide_type(*range(field_count))
+        runtime_get_field = globals_dict["get_field"]
+        member_descriptor_type = globals_dict["_MEMBER_DESCRIPTOR_TYPE"]
+
+        assert type(vars(wide_type)["f0"]) is member_descriptor_type
+
+        dataclass_scan_calls = 0
+        real_fields = dataclasses.fields
+
+        def counted_fields(instance):
+            nonlocal dataclass_scan_calls
+            dataclass_scan_calls += 1
+            return real_fields(instance)
+
+        monkeypatch.setattr(dataclasses, "fields", counted_fields)
+        assert [runtime_get_field(value, f"f{i}") for i in range(field_count)] == list(
+            range(field_count)
+        )
+        assert dataclass_scan_calls == 0
+
+    def test_wide_generated_match_preserves_binding_order(self):
+        """A wide generated ADT match resolves every field with exact semantics."""
+        field_count = 32
+        fields = ", ".join(f"f{i}: Int" for i in range(field_count))
+        arguments = ", ".join(str(i) for i in range(field_count))
+        bindings = ", ".join(f"v{i}" for i in range(field_count))
+        total = " + ".join(f"v{i}" for i in range(field_count))
+        source = f"""
+        type Wide = Wide({fields})
+
+        func main() -> Int
+            let value: Wide = Wide({arguments})
+            match value with
+                | Wide({bindings}) -> return {total}
+            end match
+        end func
+        """
+        assert compile_and_run(source) == sum(range(field_count))
+
 
 class TestCompilerReservedNameProtection:
     """Test that user code cannot shadow security-critical prelude names."""
