@@ -43,6 +43,7 @@ def _compile_js_and_run(source: str) -> str:
     result = run_node_code(js_out, timeout=10)
     if result.returncode != 0:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
+    assert isinstance(result.stdout, str)
     return result.stdout.strip()
 
 
@@ -263,9 +264,9 @@ end func
 func main() -> Int
   return add(5)
 end func
-"""
+        """
         js_code = compile_to_js(source)
-        assert "= 10" in js_code
+        assert "y = _checkCollectionSize(10)" in js_code
 
     def test_compiled_js_runs_with_default(self):
         """Compiled JS executes correctly using the default value."""

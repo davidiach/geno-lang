@@ -397,8 +397,8 @@ class TestJsonCompiledJS:
 
         js_code = compile_to_js(
             """
-            func main() -> Unit
-                return ()
+            func main() -> String
+                return json_stringify(value: JsonInt(0))
             end func
             """
         )
@@ -420,8 +420,8 @@ try {
 
         js_code = compile_to_js(
             """
-            func main() -> Unit
-                return ()
+            func main() -> String
+                return json_stringify(value: JsonFloat(0.0))
             end func
             """
         )
@@ -598,8 +598,8 @@ class TestJsonToStringCompiled:
 
         js_code = compile_to_js(
             """
-            func main() -> Unit
-                return ()
+            func main() -> String
+                return json_to_string(value: 0.0)
             end func
             """
         )

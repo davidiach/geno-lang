@@ -1505,7 +1505,7 @@ class TestFStrings:
         end func main
         """
         js = compile_js(source)
-        assert "to_string" in js
+        assert "_GENO_STRING(_temp_2)" in js
         assert "`" in js  # template literal
 
     def test_fstring_with_list_expr(self):
