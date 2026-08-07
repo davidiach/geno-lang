@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks import harness, lab
+from benchmarks import harness, lab, surfaces
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -137,6 +137,92 @@ def test_parser_help_and_case_selection_are_real_and_deterministic():
         "01_fib_rec_25",
         "03_ackermann_3_6",
     ]
+
+
+def test_surface_summary_has_raw_samples_dispersion_and_tails():
+    result = surfaces.summarize([1, 2, 3, 4, 100])
+
+    assert result["median"] == 3
+    assert result["mad"] == 1
+    assert result["p95"] == pytest.approx(80.8)
+    assert result["p99"] == pytest.approx(96.16)
+    assert result["samples"] == [1.0, 2.0, 3.0, 4.0, 100.0]
+
+
+def test_surface_fixture_is_deterministic_and_project_is_selectable(tmp_path):
+    fixture = tmp_path / "fixture"
+    metadata = surfaces.make_project_fixture(fixture, module_count=3)
+
+    assert metadata["module_count"] == 4
+    assert metadata["expected_output"] == "3"
+    assert (
+        (fixture / "geno.toml")
+        .read_text(encoding="utf-8")
+        .startswith('entrypoint = "Main"')
+    )
+    assert "return step2(0)" in (fixture / "Main.geno").read_text(encoding="utf-8")
+    help_text = surfaces.build_parser().format_help()
+    assert "process_sandbox" in help_text
+    assert "--fresh-process-repetitions" in help_text
+    assert "--keep-fixture" in help_text
+
+
+def test_surface_fresh_workers_reject_cross_process_output_nondeterminism(
+    monkeypatch, tmp_path
+):
+    def result(python_hash, javascript_hash):
+        return {
+            "fresh_process_wall_ns": 1,
+            "process_memory": None,
+            "import_ns": 1,
+            "cold": {"pipeline_ns": 1},
+            "output": {
+                "python_sha256": python_hash,
+                "javascript_sha256": javascript_hash,
+            },
+            "correctness": {"passed": True},
+        }
+
+    results = iter((result("python-a", "js"), result("python-b", "js")))
+    monkeypatch.setattr(
+        surfaces, "_run_worker", lambda *_args, **_kwargs: next(results)
+    )
+
+    merged = surfaces._run_fresh_workers(
+        tmp_path / "script.py", "project", tmp_path, 2, 2
+    )
+
+    assert merged["correctness"]["passed"] is False
+    assert merged["correctness"]["fresh_process_hashes_deterministic"] is False
+    assert len(merged["fresh_process_evidence"]["output_hash_pairs"]) == 2
+
+
+def test_surface_timeout_kills_and_reaps_child():
+    class TimedOutProcess:
+        def __init__(self):
+            self.communications = 0
+            self.killed = False
+
+        def communicate(self, timeout=None):
+            self.communications += 1
+            if self.communications == 1:
+                raise subprocess.TimeoutExpired("surface", timeout)
+            return "stdout", "stderr"
+
+        def kill(self):
+            self.killed = True
+
+    process = TimedOutProcess()
+
+    with pytest.raises(RuntimeError, match="timed out after 1 seconds"):
+        surfaces._communicate_with_timeout(
+            process,  # type: ignore[arg-type]
+            timeout=1,
+            context="test surface",
+        )
+
+    assert process.killed is True
+    assert process.communications == 2
 
 
 def test_cli_fresh_process_artifact_contains_metadata_compile_and_raw_samples(
