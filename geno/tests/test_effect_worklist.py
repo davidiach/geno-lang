@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import random
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
-from geno import typechecker as typechecker_module
+from geno import effect_stabilizer as effect_stabilizer_module
 from geno.ast_nodes import FunctionDef, ImplDef, Program
 from geno.parser import parse
 from geno.typechecker import TypeChecker, TypeEnv
@@ -28,8 +31,53 @@ _Snapshot = tuple[
 ]
 
 
+def _stabilize_legacy(
+    checker: TypeChecker,
+    functions: list[FunctionDef],
+    impl_methods: list[tuple[ImplDef, FunctionDef]],
+) -> None:
+    """Run the original fixed-point loop independently of production helpers."""
+    while True:
+        changed = False
+
+        for defn in functions:
+            existing_type = checker.global_env.lookup(defn.name)
+            if not isinstance(existing_type, FuncType):
+                continue
+            final_effects = checker._stable_effects_for_function(defn)
+            if existing_type.effects != final_effects:
+                checker.global_env.bind(
+                    defn.name,
+                    FuncType(
+                        existing_type.param_types,
+                        existing_type.return_type,
+                        final_effects,
+                    ),
+                )
+                changed = True
+
+        for impl_def, method in impl_methods:
+            method_types = checker.impl_registry.get(
+                (impl_def.trait_name, impl_def.target_type)
+            )
+            if method_types is None or method.name not in method_types:
+                continue
+            existing_type = method_types[method.name]
+            final_effects = checker._stable_effects_for_function(method)
+            if existing_type.effects != final_effects:
+                method_types[method.name] = FuncType(
+                    existing_type.param_types,
+                    existing_type.return_type,
+                    final_effects,
+                )
+                changed = True
+
+        if not changed:
+            return
+
+
 class _LegacyChecker(TypeChecker):
-    """Run the extracted original fixed-point loop from its original frame."""
+    """Run the original fixed-point loop from its original frame."""
 
     def _stabilize_function_effects(self, program: Program) -> None:
         functions = [
@@ -41,7 +89,7 @@ class _LegacyChecker(TypeChecker):
             if isinstance(defn, ImplDef)
             for method in defn.methods
         ]
-        self._stabilize_function_effects_legacy_items(functions, impl_methods)
+        _stabilize_legacy(self, functions, impl_methods)
 
 
 class _CountingChecker(TypeChecker):
@@ -50,7 +98,6 @@ class _CountingChecker(TypeChecker):
     def __init__(self) -> None:
         super().__init__()
         self.stabilization_inferences = 0
-        self.legacy_fallbacks = 0
         self._inside_stabilization = False
 
     def _stabilize_function_effects(self, program: Program) -> None:
@@ -66,14 +113,6 @@ class _CountingChecker(TypeChecker):
         if self._inside_stabilization:
             self.stabilization_inferences += 1
         return super()._infer_function_effects(defn, env)
-
-    def _stabilize_function_effects_legacy_items(
-        self,
-        functions: list[FunctionDef],
-        impl_methods: list[tuple[ImplDef, FunctionDef]],
-    ) -> None:
-        self.legacy_fallbacks += 1
-        super()._stabilize_function_effects_legacy_items(functions, impl_methods)
 
 
 def _inject_delayed_diagnostic(
@@ -286,18 +325,56 @@ def _fan_in_source(size: int) -> str:
 
 @contextmanager
 def _record_sparse_runs() -> Iterator[list[bool]]:
-    original_run = typechecker_module._EffectSparseScheduler.run
+    original_run = effect_stabilizer_module._EffectSparseScheduler.run
     calls: list[bool] = []
 
     def recording_run(self: object) -> None:
         calls.append(True)
         original_run(self)  # type: ignore[arg-type]
 
-    typechecker_module._EffectSparseScheduler.run = recording_run  # type: ignore[method-assign]
+    effect_stabilizer_module._EffectSparseScheduler.run = recording_run  # type: ignore[method-assign]
     try:
         yield calls
     finally:
-        typechecker_module._EffectSparseScheduler.run = original_run  # type: ignore[method-assign]
+        effect_stabilizer_module._EffectSparseScheduler.run = original_run  # type: ignore[method-assign]
+
+
+@contextmanager
+def _record_legacy_finishes() -> Iterator[list[bool]]:
+    original_finish = effect_stabilizer_module._finish_legacy
+    calls: list[bool] = []
+
+    def recording_finish(
+        checker: TypeChecker,
+        functions: list[FunctionDef],
+        impl_methods: list[tuple[ImplDef, FunctionDef]],
+    ) -> None:
+        calls.append(True)
+        original_finish(checker, functions, impl_methods)
+
+    effect_stabilizer_module._finish_legacy = recording_finish
+    try:
+        yield calls
+    finally:
+        effect_stabilizer_module._finish_legacy = original_finish
+
+
+def test_small_program_does_not_import_large_scheduler() -> None:
+    source = _independent_source(1, effectful=False)
+    script = (
+        "import sys\n"
+        "from geno.parser import parse\n"
+        "from geno.typechecker import TypeChecker\n"
+        f"TypeChecker().check_program(parse({source!r}))\n"
+        "assert 'geno.effect_stabilizer' not in sys.modules\n"
+    )
+    subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_threshold_keeps_63_exact_and_switches_sparse_64() -> None:
@@ -447,11 +524,12 @@ func invalid() -> Unit
 end func invalid
 """ + _chain_source(63)
     checker = _DelayedDiagnosticChecker()
-    candidate = _snapshot(source, checker=checker)
+    with _record_legacy_finishes() as finishes:
+        candidate = _snapshot(source, checker=checker)
     legacy = _snapshot(source, checker=_DelayedDiagnosticLegacyChecker())
     assert candidate == legacy
     assert not candidate[0]
-    assert checker.legacy_fallbacks == 1
+    assert finishes == [True]
 
 
 def test_declared_throw_and_try_effects_match_legacy() -> None:
