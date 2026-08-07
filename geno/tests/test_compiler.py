@@ -2948,6 +2948,81 @@ class TestCompilerCollectionSizeLimits:
         assert error.__context__ is cause
         assert error.__suppress_context__ is True
 
+    def test_case_helpers_preserve_result_limit_error_contract(self):
+        env = _compiled_runtime_env(1)
+
+        cases = (
+            ("to_upper", chr(223), 2),
+            ("to_lower", chr(304), 2),
+        )
+        for name, value, size in cases:
+            with pytest.raises(
+                RuntimeError,
+                match=rf"^{name}: String size exceeds limit \({size} > 1\)$",
+            ) as exc_info:
+                env[name](value)  # type: ignore[operator]
+
+            error = exc_info.value
+            cause = error.__cause__
+            assert isinstance(cause, RuntimeError)
+            assert str(cause) == f"String size exceeds limit ({size} > 1)"
+            assert error.__context__ is cause
+            assert error.__suppress_context__ is True
+
+    def test_case_helpers_preserve_host_method_and_len_behavior(self):
+        env = _compiled_runtime_env(8)
+        events: list[str] = []
+
+        class HostResult:
+            def __len__(self):
+                events.append("len")
+                return 2
+
+        result = HostResult()
+
+        class HostString:
+            def upper(self):
+                events.append("upper")
+                return result
+
+            def lower(self):
+                events.append("lower")
+                return result
+
+        host = HostString()
+        assert env["to_upper"](host) is result  # type: ignore[operator]
+        assert env["to_lower"](host) is result  # type: ignore[operator]
+        assert events == ["upper", "len", "lower", "len"]
+
+        class LenBomb:
+            def __len__(self):
+                raise ValueError("len bomb")
+
+        class BombString:
+            def upper(self):
+                return LenBomb()
+
+        with pytest.raises(ValueError, match=r"^len bomb$"):
+            env["to_upper"](BombString())  # type: ignore[operator]
+
+    def test_case_helpers_snapshot_mutated_limit_after_result_len(self):
+        env = _compiled_runtime_env(8)
+
+        class HostResult:
+            def __len__(self):
+                env["_MAX_COLLECTION_SIZE"] = 1
+                return 2
+
+        class HostString:
+            def lower(self):
+                return HostResult()
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"^to_lower: String size exceeds limit \(2 > 1\)$",
+        ):
+            env["to_lower"](HostString())  # type: ignore[operator]
+
     def test_compiled_int_fast_paths_enforce_bit_limit(self):
         """Typed integer arithmetic must still go through guarded helpers."""
         source = """

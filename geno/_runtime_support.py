@@ -600,13 +600,19 @@ def trim(s: str) -> str:
 
 def to_lower(s: str) -> str:
     result = s.lower()
-    _check_string_result_size("to_lower", len(result))
+    size = len(result)
+    limit = _MAX_COLLECTION_SIZE
+    if size > limit:
+        _string_result_size_exceeded("to_lower", size, limit)
     return result
 
 
 def to_upper(s: str) -> str:
     result = s.upper()
-    _check_string_result_size("to_upper", len(result))
+    size = len(result)
+    limit = _MAX_COLLECTION_SIZE
+    if size > limit:
+        _string_result_size_exceeded("to_upper", size, limit)
     return result
 
 
@@ -1395,13 +1401,17 @@ def _check_collection_kind(kind: str, size: int) -> None:
         )
 
 
+def _string_result_size_exceeded(func_name: str, size: int, limit: int) -> None:
+    try:
+        raise RuntimeError(f"String size exceeds limit ({size} > {limit})")
+    except RuntimeError as exc:
+        raise RuntimeError(f"{func_name}: {exc}") from exc
+
+
 def _check_string_result_size(func_name: str, size: int) -> None:
     limit = _MAX_COLLECTION_SIZE
     if size > limit:
-        try:
-            raise RuntimeError(f"String size exceeds limit ({size} > {limit})")
-        except RuntimeError as exc:
-            raise RuntimeError(f"{func_name}: {exc}") from exc
+        _string_result_size_exceeded(func_name, size, limit)
 
 
 def _split_result_count(func_name: str, text: str, delimiter: str) -> int:
