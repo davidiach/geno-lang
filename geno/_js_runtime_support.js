@@ -536,6 +536,7 @@ const _MAP_MISSING = {};
 
 function _mapFindKey(m, key) {
     if (m.has(key)) return key;
+    if (key === null || typeof key !== 'object') return _MAP_MISSING;
     for (const existingKey of m.keys()) {
         if (_valuesEqual(existingKey, key)) return existingKey;
     }

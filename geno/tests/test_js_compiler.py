@@ -42,7 +42,9 @@ def compile_js_with_full_runtime(source: str) -> str:
     """Compile *source* without tree-shaking for direct runtime-unit probes."""
     program = parse(source)
     TypeChecker().check_program(program)
-    return JSCompiler(track_source_map=False).compile(program, tree_shake=False)
+    js_code = JSCompiler(track_source_map=False).compile(program, tree_shake=False)
+    assert isinstance(js_code, str)
+    return js_code
 
 
 @pytest.mark.parametrize("module_name", ["X = 1; console.log('PWNED')", "default"])
@@ -2647,6 +2649,114 @@ console.log(is_none(r2));
         assert lines[-3] == "true"
         assert lines[-2] == "42"
         assert lines[-1] == "true"
+
+    def test_primitive_map_keys_use_native_identity_without_structural_fallback(self):
+        script = r"""
+function assert(condition, message) {
+    if (!condition) throw new Error(message);
+}
+
+const cases = [
+    ["string", "plain", "absent"],
+    ["unicode", "\u{1F642}\u{1F680}", "\u{1F642}"],
+    ["zero", 0, 1],
+    ["negative zero", -0, 1],
+    ["NaN", NaN, 1.5],
+    ["positive infinity", Infinity, -Infinity],
+    ["negative infinity", -Infinity, Infinity],
+    ["maximum safe integer", Number.MAX_SAFE_INTEGER, 0],
+    ["minimum safe integer", Number.MIN_SAFE_INTEGER, 0],
+    ["true", true, false],
+    ["false", false, true],
+    ["null", null, undefined],
+    ["undefined", undefined, null],
+    ["bigint", 9007199254740993n, 9007199254740992n],
+];
+
+for (const [label, key, missingKey] of cases) {
+    const map = new Map([[key, label]]);
+    assert(_mapFindKey(map, key) !== _MAP_MISSING, label + " hit");
+    assert(_mapGetValue(map, key) === label, label + " value");
+    assert(_mapFindKey(map, missingKey) === _MAP_MISSING, label + " miss");
+}
+
+const symbol = Symbol("stored");
+const symbols = new Map([[symbol, "symbol"]]);
+assert(_mapFindKey(symbols, symbol) === symbol, "symbol identity hit");
+assert(_mapFindKey(symbols, Symbol("stored")) === _MAP_MISSING, "symbol miss");
+
+const callable = function stored() {};
+const callables = new Map([[callable, "function"]]);
+assert(_mapFindKey(callables, callable) === callable, "function identity hit");
+assert(_mapFindKey(callables, function stored() {}) === _MAP_MISSING, "function miss");
+
+const numeric = new Map([[1, "number"], [1n, "bigint"]]);
+assert(_mapGetValue(numeric, 1) === "number", "number value");
+assert(_mapGetValue(numeric, 1n) === "bigint", "bigint value");
+
+console.log("ok");
+"""
+        assert run_js_runtime_script(script) == "ok"
+
+    def test_map_structural_keys_keep_canonical_key_and_insertion_order(self):
+        script = r"""
+function assert(condition, message) {
+    if (!condition) throw new Error(message);
+}
+
+const canonical = [1, [2, 3]];
+const equalKey = [1, [2, 3]];
+const distinctKey = [1, [2, 4]];
+const raw = new Map([[canonical, "old"], ["tail", "tail"]]);
+assert(_mapFindKey(raw, equalKey) === canonical, "structural lookup");
+assert(_mapFindKey(raw, distinctKey) === _MAP_MISSING, "structural collision miss");
+_mapSet(raw, equalKey, "new");
+assert(raw.size === 2, "structural update size");
+assert([...raw.keys()][0] === canonical, "canonical key retained");
+assert([...raw.keys()][1] === "tail", "update order retained");
+assert(_mapGetValue(raw, equalKey) === "new", "structural value updated");
+
+const immutable = map_from_entries([["a", 1], ["b", 2]]);
+const updated = map_insert(immutable, "a", 9);
+const appended = map_insert(updated, "c", 3);
+assert(_mapGetValue(immutable, "a") === 1, "immutable source unchanged");
+assert(_mapGetValue(updated, "a") === 9, "immutable update");
+assert([...updated.keys()].join(",") === "a,b", "immutable update order");
+assert([...appended.keys()].join(",") === "a,b,c", "immutable insert order");
+
+const mutable = mutable_map_new();
+mutable_map_set(mutable, "a", 1);
+mutable_map_set(mutable, "b", 2);
+mutable_map_set(mutable, "a", 9);
+assert(mutable_map_get(mutable, "a").value === 9, "mutable update");
+assert(mutable_map_contains(mutable, "missing") === false, "mutable miss");
+assert([...mutable._data.keys()].join(",") === "a,b", "mutable update order");
+mutable_map_delete(mutable, "a");
+assert([...mutable._data.keys()].join(",") === "b", "mutable delete");
+
+console.log("ok");
+"""
+        assert run_js_runtime_script(script) == "ok"
+
+    def test_map_lookup_tree_shakes_fast_and_structural_paths_together(self):
+        source = """
+        func main() -> Int
+            let m: Map[String, Int] = map_from_entries([("answer", 42)])
+            match map_get(m, "answer") with
+                | Some(value) -> return value
+                | None -> return 0
+            end match
+        end func
+        """
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+
+        assert "function _mapFindKey(m, key)" in js_code
+        assert "if (key === null || typeof key !== 'object')" in js_code
+        assert "for (const existingKey of m.keys())" in js_code
+        assert "function _valuesEqual(a, b)" in js_code
+        assert "_nodeHttpBridgeMain" not in js_code
+        assert compile_and_run_js(source) == "42"
 
     def test_tuple_map_keys_use_structural_equality(self):
         source = """
