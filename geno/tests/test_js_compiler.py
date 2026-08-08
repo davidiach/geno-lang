@@ -38,6 +38,15 @@ def compile_and_run_js(source: str) -> str:
     return cast(str, result.stdout).strip()
 
 
+def compile_js_with_full_runtime(source: str) -> str:
+    """Compile *source* without tree-shaking for direct runtime-unit probes."""
+    program = parse(source)
+    TypeChecker().check_program(program)
+    js_code = JSCompiler(track_source_map=False).compile(program, tree_shake=False)
+    assert isinstance(js_code, str)
+    return js_code
+
+
 @pytest.mark.parametrize("module_name", ["X = 1; console.log('PWNED')", "default"])
 def test_compile_project_rejects_unsafe_module_name(module_name):
     program = parse("")
@@ -2021,7 +2030,7 @@ class TestJSCompilerConversions:
         assert compile_and_run_js(source) == "5.0"
 
     def test_math_stdlib_helpers_reject_unsafe_int_results(self):
-        js_code = compile_to_js(
+        js_code = compile_js_with_full_runtime(
             """
             func main() -> Unit
                 return ()
@@ -2199,6 +2208,7 @@ class TestJSCompilerSpecs:
         end func
         """
         js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
         helper_match = re.search(r"async function (_temp_\d+)\(\)", js_code)
         assert helper_match is not None
         assert f"const result = await {helper_match.group(1)}();" in js_code
@@ -2612,7 +2622,7 @@ class TestJSCompilerMapOperations:
 
     def test_map_runtime_round_trip(self):
         """Verify map_insert and map_get work in the JS runtime."""
-        js_code = compile_to_js(
+        js_code = compile_js_with_full_runtime(
             """
         func main() -> Int
             return 0
@@ -2639,6 +2649,114 @@ console.log(is_none(r2));
         assert lines[-3] == "true"
         assert lines[-2] == "42"
         assert lines[-1] == "true"
+
+    def test_primitive_map_keys_use_native_identity_without_structural_fallback(self):
+        script = r"""
+function assert(condition, message) {
+    if (!condition) throw new Error(message);
+}
+
+const cases = [
+    ["string", "plain", "absent"],
+    ["unicode", "\u{1F642}\u{1F680}", "\u{1F642}"],
+    ["zero", 0, 1],
+    ["negative zero", -0, 1],
+    ["NaN", NaN, 1.5],
+    ["positive infinity", Infinity, -Infinity],
+    ["negative infinity", -Infinity, Infinity],
+    ["maximum safe integer", Number.MAX_SAFE_INTEGER, 0],
+    ["minimum safe integer", Number.MIN_SAFE_INTEGER, 0],
+    ["true", true, false],
+    ["false", false, true],
+    ["null", null, undefined],
+    ["undefined", undefined, null],
+    ["bigint", 9007199254740993n, 9007199254740992n],
+];
+
+for (const [label, key, missingKey] of cases) {
+    const map = new Map([[key, label]]);
+    assert(_mapFindKey(map, key) !== _MAP_MISSING, label + " hit");
+    assert(_mapGetValue(map, key) === label, label + " value");
+    assert(_mapFindKey(map, missingKey) === _MAP_MISSING, label + " miss");
+}
+
+const symbol = Symbol("stored");
+const symbols = new Map([[symbol, "symbol"]]);
+assert(_mapFindKey(symbols, symbol) === symbol, "symbol identity hit");
+assert(_mapFindKey(symbols, Symbol("stored")) === _MAP_MISSING, "symbol miss");
+
+const callable = function stored() {};
+const callables = new Map([[callable, "function"]]);
+assert(_mapFindKey(callables, callable) === callable, "function identity hit");
+assert(_mapFindKey(callables, function stored() {}) === _MAP_MISSING, "function miss");
+
+const numeric = new Map([[1, "number"], [1n, "bigint"]]);
+assert(_mapGetValue(numeric, 1) === "number", "number value");
+assert(_mapGetValue(numeric, 1n) === "bigint", "bigint value");
+
+console.log("ok");
+"""
+        assert run_js_runtime_script(script) == "ok"
+
+    def test_map_structural_keys_keep_canonical_key_and_insertion_order(self):
+        script = r"""
+function assert(condition, message) {
+    if (!condition) throw new Error(message);
+}
+
+const canonical = [1, [2, 3]];
+const equalKey = [1, [2, 3]];
+const distinctKey = [1, [2, 4]];
+const raw = new Map([[canonical, "old"], ["tail", "tail"]]);
+assert(_mapFindKey(raw, equalKey) === canonical, "structural lookup");
+assert(_mapFindKey(raw, distinctKey) === _MAP_MISSING, "structural collision miss");
+_mapSet(raw, equalKey, "new");
+assert(raw.size === 2, "structural update size");
+assert([...raw.keys()][0] === canonical, "canonical key retained");
+assert([...raw.keys()][1] === "tail", "update order retained");
+assert(_mapGetValue(raw, equalKey) === "new", "structural value updated");
+
+const immutable = map_from_entries([["a", 1], ["b", 2]]);
+const updated = map_insert(immutable, "a", 9);
+const appended = map_insert(updated, "c", 3);
+assert(_mapGetValue(immutable, "a") === 1, "immutable source unchanged");
+assert(_mapGetValue(updated, "a") === 9, "immutable update");
+assert([...updated.keys()].join(",") === "a,b", "immutable update order");
+assert([...appended.keys()].join(",") === "a,b,c", "immutable insert order");
+
+const mutable = mutable_map_new();
+mutable_map_set(mutable, "a", 1);
+mutable_map_set(mutable, "b", 2);
+mutable_map_set(mutable, "a", 9);
+assert(mutable_map_get(mutable, "a").value === 9, "mutable update");
+assert(mutable_map_contains(mutable, "missing") === false, "mutable miss");
+assert([...mutable._data.keys()].join(",") === "a,b", "mutable update order");
+mutable_map_delete(mutable, "a");
+assert([...mutable._data.keys()].join(",") === "b", "mutable delete");
+
+console.log("ok");
+"""
+        assert run_js_runtime_script(script) == "ok"
+
+    def test_map_lookup_tree_shakes_fast_and_structural_paths_together(self):
+        source = """
+        func main() -> Int
+            let m: Map[String, Int] = map_from_entries([("answer", 42)])
+            match map_get(m, "answer") with
+                | Some(value) -> return value
+                | None -> return 0
+            end match
+        end func
+        """
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+
+        assert "function _mapFindKey(m, key)" in js_code
+        assert "if (key === null || typeof key !== 'object')" in js_code
+        assert "for (const existingKey of m.keys())" in js_code
+        assert "function _valuesEqual(a, b)" in js_code
+        assert "_nodeHttpBridgeMain" not in js_code
+        assert compile_and_run_js(source) == "42"
 
     def test_tuple_map_keys_use_structural_equality(self):
         source = """
@@ -3195,6 +3313,129 @@ class TestJSCompilerOutput:
             assert result.returncode != 0
             assert message in result.stderr
 
+    def test_collection_guard_skips_traversal_set_for_root_scalars(self):
+        js_code = (
+            _limit_globals(max_collection_size=1, max_integer_bits=1)
+            + """
+const NativeSet = globalThis.Set;
+let setConstructions = 0;
+globalThis.Set = new Proxy(NativeSet, {
+    construct(target, args, newTarget) {
+        setConstructions += 1;
+        return Reflect.construct(target, args, newTarget);
+    },
+});
+"""
+            + JS_RUNTIME_PRELUDE
+            + """
+const before = setConstructions;
+const scalarCases = [
+    "x", 1, -0, 1.5, NaN, Infinity, true, null, undefined, 1n,
+    Symbol("x"), () => 1,
+];
+for (const value of scalarCases) {
+    if (!Object.is(_checkCollectionSize(value), value)) {
+        throw new Error("collection guard changed scalar identity");
+    }
+}
+if (setConstructions !== before) {
+    throw new Error(`scalar checks constructed ${setConstructions - before} traversal sets`);
+}
+
+_checkCollectionSize([]);
+if (setConstructions !== before + 1) {
+    throw new Error("object check did not construct exactly one traversal set");
+}
+console.log("ok");
+"""
+        )
+        result = run_node_code(js_code, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "ok"
+
+    def test_collection_guard_root_scalar_limits_and_kind_override(self):
+        script = """
+function expectThrows(label, fn, expected) {
+    try {
+        fn();
+    } catch (error) {
+        if (String(error.message) === expected) return;
+        throw new Error(label + " wrong error: " + error.message);
+    }
+    throw new Error(label + " did not throw");
+}
+
+const smile = String.fromCodePoint(128512);
+if (_checkCollectionSize(smile) !== smile) throw new Error("astral identity changed");
+expectThrows(
+    "unicode code-point length",
+    () => _checkCollectionSize(smile + smile),
+    "String size exceeds limit (2 > 1)",
+);
+expectThrows(
+    "kind override",
+    () => _checkCollectionSize("ab", "Tuple"),
+    "Tuple size exceeds limit (2 > 1)",
+);
+if (_checkCollectionSize(1) !== 1) throw new Error("integer identity changed");
+expectThrows(
+    "integer bit limit",
+    () => _checkCollectionSize(2),
+    "Integer exceeds maximum size (2 bits)",
+);
+if (_checkCollectionSize(2n) !== 2n) throw new Error("BigInt behavior changed");
+console.log("ok");
+"""
+        assert (
+            run_js_runtime_script(script, max_collection_size=1, max_integer_bits=1)
+            == "ok"
+        )
+
+    def test_collection_guard_object_graph_contract(self):
+        script = """
+function expectThrows(label, fn, expected) {
+    try {
+        fn();
+    } catch (error) {
+        if (String(error.message) === expected) return;
+        throw new Error(label + " wrong error: " + error.message);
+    }
+    throw new Error(label + " did not throw");
+}
+
+const shared = [1];
+const cyclic = {_tag: "Node", left: shared, right: shared};
+cyclic.self = cyclic;
+if (_checkCollectionSize(cyclic) !== cyclic) throw new Error("object identity changed");
+
+expectThrows(
+    "root before nested",
+    () => _checkCollectionSize([2, 2]),
+    "List size exceeds limit (2 > 1)",
+);
+expectThrows(
+    "nested integer",
+    () => _checkCollectionSize([2]),
+    "Integer exceeds maximum size (2 bits)",
+);
+
+const hostile = new Proxy({}, {
+    has() {
+        throw new Error("hostile has trap");
+    },
+});
+expectThrows(
+    "hostile object",
+    () => _checkCollectionSize(hostile),
+    "hostile has trap",
+);
+console.log("ok");
+"""
+        assert (
+            run_js_runtime_script(script, max_collection_size=1, max_integer_bits=1)
+            == "ok"
+        )
+
     def test_runtime_collection_helpers_honor_configured_limit(self):
         script = """
 function expectThrows(label, fn, fragment) {
@@ -3689,6 +3930,79 @@ class TestJSCompilerSourceMapTracking:
 
 
 class TestJSCompilerPreludeTreeShaking:
+    @staticmethod
+    def _reset_prelude_cache():
+        js_compiler._PRELUDE_SECTIONS = None
+        js_compiler._PRELUDE_ALL_NAMES = None
+        js_compiler._PRELUDE_SECTION_DEPS = None
+        js_compiler._PRELUDE_NAME_TO_SECTIONS = None
+        js_compiler._PRELUDE_SECTION_CLOSURES = None
+
+    def test_prelude_name_index_excludes_indented_local_declarations(self):
+        self._reset_prelude_cache()
+        js_compiler._init_prelude_sections()
+
+        assert js_compiler._PRELUDE_ALL_NAMES is not None
+        assert "cp" not in js_compiler._PRELUDE_ALL_NAMES
+        assert "result" not in js_compiler._PRELUDE_ALL_NAMES
+
+    def test_local_declaration_does_not_create_cross_section_dependency(
+        self, monkeypatch
+    ):
+        synthetic_prelude = """
+// === Referencing section ===
+function first() {
+    return shared;
+}
+// === Unrelated section ===
+function second() {
+    const shared = 1;
+    return shared;
+}
+"""
+        self._reset_prelude_cache()
+        monkeypatch.setattr(js_compiler, "JS_RUNTIME_PRELUDE", synthetic_prelude)
+        try:
+            shaken = js_compiler._tree_shake_prelude("first();")
+            assert "function first()" in shaken
+            assert "function second()" not in shaken
+        finally:
+            self._reset_prelude_cache()
+
+    def test_top_level_transitive_dependency_remains_included(self, monkeypatch):
+        synthetic_prelude = """
+// === Caller section ===
+function first() {
+    return helper();
+}
+// === Helper section ===
+function helper() {
+    return 1;
+}
+"""
+        self._reset_prelude_cache()
+        monkeypatch.setattr(js_compiler, "JS_RUNTIME_PRELUDE", synthetic_prelude)
+        try:
+            shaken = js_compiler._tree_shake_prelude("first();")
+            assert "function first()" in shaken
+            assert "function helper()" in shaken
+        finally:
+            self._reset_prelude_cache()
+
+    def test_tiny_program_omits_unrelated_helpers_and_stays_compact(self):
+        source = """
+        func main() -> Int
+            return 42
+        end func
+        """
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+
+        assert "_nodeHttpBridgeMain" not in js_code
+        assert "regex_match" not in js_code
+        assert len(js_code.encode()) < 70_000
+        assert compile_and_run_js(source) == "42"
+
     @pytest.mark.parametrize(
         "user_code",
         [

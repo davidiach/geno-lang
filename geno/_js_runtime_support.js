@@ -171,6 +171,16 @@ function _checkedPythonCase(funcName, text, upper) {
 }
 
 function _checkCollectionSize(result, kindOverride = null) {
+    if (typeof result === 'string') {
+        _checkCollectionKind(kindOverride || "String", _stringLength(result));
+        return result;
+    }
+    if (typeof result === 'number' && _GENO_NUMBER.isInteger(result)) {
+        _checkIntegerBits(result);
+        return result;
+    }
+    if (result === null || typeof result !== 'object') return result;
+
     const stack = [{ value: result, kindOverride }];
     const seen = new _GENO_SET();
     while (stack.length > 0) {
@@ -526,6 +536,7 @@ const _MAP_MISSING = {};
 
 function _mapFindKey(m, key) {
     if (m.has(key)) return key;
+    if (key === null || typeof key !== 'object') return _MAP_MISSING;
     for (const existingKey of m.keys()) {
         if (_valuesEqual(existingKey, key)) return existingKey;
     }

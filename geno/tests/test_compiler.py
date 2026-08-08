@@ -652,6 +652,119 @@ class TestCompilerVariables:
 class TestCompilerCopySemantics:
     """Test that let/var produce independent copies of collections."""
 
+    @staticmethod
+    def _generated_body(source: str, *, typecheck: bool = True) -> str:
+        return compile_to_python(source, typecheck=typecheck).split(
+            "# Generated Code Follows", 1
+        )[1]
+
+    def test_primitive_bindings_skip_redundant_deepcopy(self):
+        source = """
+        func one() -> Int
+            example () -> 1
+            return 1
+        end func
+
+        func main() -> Float
+            let count: Int = one()
+            let text = "hello"
+            var enabled: Bool = true
+            let nothing: Unit = ()
+            let promoted: Float = count
+            if enabled and text == "hello" and nothing == () then
+                return promoted
+            end if
+            return 0.0
+        end func
+        """
+        body = self._generated_body(source)
+
+        assert "_geno_deepcopy" not in body
+        env = compile_and_exec(source, timeout=None)
+        result = env["main"]()
+        assert result == 1.0
+        assert type(result) is float
+
+    def test_primitive_alias_bindings_skip_redundant_deepcopy(self):
+        source = """
+        type Count = Int
+        type Identity[T] = T
+
+        func main() -> Int
+            let source: Int = 7
+            let count: Count = source
+            let identity: Identity[Int] = count
+            return identity
+        end func
+        """
+        body = self._generated_body(source)
+
+        assert "count: 'Count' = source" in body
+        assert "identity: 'Identity[int]' = count" in body
+        assert compile_and_run(source) == 7
+
+    def test_float_promotion_remains_direct_and_exact(self):
+        source = """
+        func one() -> Int
+            example () -> 1
+            return 1
+        end func
+
+        func main() -> Float
+            let promoted: Float = one()
+            return promoted
+        end func
+        """
+        body = self._generated_body(source)
+
+        assert "promoted: 'float' = _promote_int_to_float(one())" in body
+        env = compile_and_exec(source, timeout=None)
+        result = env["main"]()
+        assert result == 1.0
+        assert type(result) is float
+
+    def test_collection_and_adt_bindings_keep_snapshot_copy(self):
+        source = """
+        type Box = Box(value: Int)
+
+        func main() -> Int
+            let source_list: List[Int] = [1]
+            let copied_list: List[Int] = source_list
+            let source_map: Map[String, Int] = map_from_list([("a", 1)])
+            let copied_map: Map[String, Int] = source_map
+            let source_option: Option[Int] = Some(1)
+            let copied_option: Option[Int] = source_option
+            let source_result: Result[Int, String] = Ok(1)
+            let copied_result: Result[Int, String] = source_result
+            let source_box: Box = Box(1)
+            let copied_box: Box = source_box
+            return copied_list[0]
+        end func
+        """
+        body = self._generated_body(source)
+
+        for name in (
+            "source_list",
+            "source_map",
+            "source_option",
+            "source_result",
+            "source_box",
+        ):
+            assert f"= _geno_deepcopy({name})" in body
+        assert compile_and_run(source) == 1
+
+    def test_typecheck_false_keeps_conservative_snapshot_copy(self):
+        source = """
+        func main() -> Int
+            let source: Int = 1
+            let copy: Int = source
+            return copy
+        end func
+        """
+        body = self._generated_body(source, typecheck=False)
+
+        assert "copy: 'int' = _geno_deepcopy(source)" in body
+
     def test_var_list_copies(self):
         """var binding of a List should produce an independent copy."""
         source = """
@@ -1836,6 +1949,60 @@ class TestCompilerPatternMatchFieldSafety:
         with pytest.raises(RuntimeError, match="not allowed"):
             compile_and_run(source)
 
+    def test_generated_slotted_fields_skip_dataclass_scans(self, monkeypatch):
+        """Each generated-field lookup is constant work, independent of ADT width."""
+        import dataclasses
+
+        field_count = 64
+        fields = ", ".join(f"f{i}: Int" for i in range(field_count))
+        source = f"""
+        type Wide = Wide({fields})
+
+        func main() -> Int
+            return 0
+        end func
+        """
+        globals_dict = compile_and_exec(source, timeout=None)
+        wide_type = globals_dict["Wide"]
+        value = wide_type(*range(field_count))
+        runtime_get_field = globals_dict["get_field"]
+        member_descriptor_type = globals_dict["_MEMBER_DESCRIPTOR_TYPE"]
+
+        assert type(vars(wide_type)["f0"]) is member_descriptor_type
+
+        dataclass_scan_calls = 0
+        real_fields = dataclasses.fields
+
+        def counted_fields(instance):
+            nonlocal dataclass_scan_calls
+            dataclass_scan_calls += 1
+            return real_fields(instance)
+
+        monkeypatch.setattr(dataclasses, "fields", counted_fields)
+        assert [runtime_get_field(value, f"f{i}") for i in range(field_count)] == list(
+            range(field_count)
+        )
+        assert dataclass_scan_calls == 0
+
+    def test_wide_generated_match_preserves_binding_order(self):
+        """A wide generated ADT match resolves every field with exact semantics."""
+        field_count = 32
+        fields = ", ".join(f"f{i}: Int" for i in range(field_count))
+        arguments = ", ".join(str(i) for i in range(field_count))
+        bindings = ", ".join(f"v{i}" for i in range(field_count))
+        total = " + ".join(f"v{i}" for i in range(field_count))
+        source = f"""
+        type Wide = Wide({fields})
+
+        func main() -> Int
+            let value: Wide = Wide({arguments})
+            match value with
+                | Wide({bindings}) -> return {total}
+            end match
+        end func
+        """
+        assert compile_and_run(source) == sum(range(field_count))
+
 
 class TestCompilerReservedNameProtection:
     """Test that user code cannot shadow security-critical prelude names."""
@@ -2669,8 +2836,10 @@ class TestCompilerCollectionSizeLimits:
 
     def test_compiled_uses_safe_add(self):
         """Compiled + must be guarded: inline bit check for Int variables,
-        _safe_add for non-Int operands. Small literal addends are exempt
-        (bounded constants cannot produce integer-bomb growth)."""
+        a typed helper for String, and _safe_add for other non-Int operands.
+        Small literal addends are exempt because bounded constants cannot
+        produce integer-bomb growth.
+        """
         source = """
         func add(a: Int, b: Int) -> Int
             example (1, 2) -> 3
@@ -2696,7 +2865,163 @@ class TestCompilerCollectionSizeLimits:
             return "a" + "b"
         end func
         """
-        assert "_safe_add(" in compile_to_python(string_source)
+        string_code = compile_to_python(string_source)
+        string_body = string_code[string_code.find("def main") :]
+        assert "_safe_str_add(" in string_body
+        assert "_safe_add(" not in string_body
+
+        float_source = """
+        func add_float(a: Float, b: Float) -> Float
+            example (1.0, 2.0) -> 3.0
+            return a + b
+        end func
+        """
+        float_code = compile_to_python(float_source)
+        float_body = float_code[float_code.find("def add_float") :]
+        assert "_safe_add(" in float_body
+        assert "_safe_str_add(" not in float_body
+
+    def test_compiled_string_add_preserves_host_boundary_behavior(self):
+        source = """
+        func append(left: String, right: String) -> String
+            example ("a", "b") -> "ab"
+            return left + right
+        end func
+        """
+        env = compile_and_exec(source, timeout=None)
+        append = cast(Callable[[object, object], object], env["append"])
+
+        assert append("a", "b") == "ab"
+        assert append(1, 2) == 3
+
+        events: list[str] = []
+
+        class HostString(str):
+            def __len__(self):
+                events.append("len")
+                return super().__len__()
+
+            def __add__(self, other):
+                events.append("add")
+                return 1 << 9
+
+        env["_MAX_INTEGER_BITS"] = 8
+        with pytest.raises(
+            RuntimeError, match=r"Integer exceeds maximum size \(10 bits\)"
+        ):
+            append(HostString("a"), HostString("b"))
+        assert events == ["len", "len", "add"]
+
+        marker = object()
+        left = [marker]
+        right = [marker]
+        result = env["_safe_str_add"](left, right)
+        assert result == [marker, marker]
+        assert result is not left and result is not right
+        assert result[0] is marker and result[1] is marker
+
+    def test_compiled_string_add_prechecks_exact_string_limit(self):
+        env = _compiled_runtime_env(1)
+
+        assert env["_safe_str_add"]("a", "") == "a"
+        with pytest.raises(
+            RuntimeError,
+            match=r"^String size exceeds limit \(2 > 1\)$",
+        ) as exc_info:
+            env["_safe_str_add"]("a", "b")
+        assert exc_info.value.__cause__ is None
+
+    def test_string_result_size_error_preserves_cause_contract(self):
+        env = _compiled_runtime_env(1)
+
+        assert env["_check_string_result_size"]("to_upper", 1) is None
+        with pytest.raises(
+            RuntimeError,
+            match=r"^to_upper: String size exceeds limit \(2 > 1\)$",
+        ) as exc_info:
+            env["_check_string_result_size"]("to_upper", 2)
+
+        error = exc_info.value
+        cause = error.__cause__
+        assert isinstance(cause, RuntimeError)
+        assert str(cause) == "String size exceeds limit (2 > 1)"
+        assert error.__context__ is cause
+        assert error.__suppress_context__ is True
+
+    def test_case_helpers_preserve_result_limit_error_contract(self):
+        env = _compiled_runtime_env(1)
+
+        cases = (
+            ("to_upper", chr(223), 2),
+            ("to_lower", chr(304), 2),
+        )
+        for name, value, size in cases:
+            with pytest.raises(
+                RuntimeError,
+                match=rf"^{name}: String size exceeds limit \({size} > 1\)$",
+            ) as exc_info:
+                env[name](value)  # type: ignore[operator]
+
+            error = exc_info.value
+            cause = error.__cause__
+            assert isinstance(cause, RuntimeError)
+            assert str(cause) == f"String size exceeds limit ({size} > 1)"
+            assert error.__context__ is cause
+            assert error.__suppress_context__ is True
+
+    def test_case_helpers_preserve_host_method_and_len_behavior(self):
+        env = _compiled_runtime_env(8)
+        events: list[str] = []
+
+        class HostResult:
+            def __len__(self):
+                events.append("len")
+                return 2
+
+        result = HostResult()
+
+        class HostString:
+            def upper(self):
+                events.append("upper")
+                return result
+
+            def lower(self):
+                events.append("lower")
+                return result
+
+        host = HostString()
+        assert env["to_upper"](host) is result  # type: ignore[operator]
+        assert env["to_lower"](host) is result  # type: ignore[operator]
+        assert events == ["upper", "len", "lower", "len"]
+
+        class LenBomb:
+            def __len__(self):
+                raise ValueError("len bomb")
+
+        class BombString:
+            def upper(self):
+                return LenBomb()
+
+        with pytest.raises(ValueError, match=r"^len bomb$"):
+            env["to_upper"](BombString())  # type: ignore[operator]
+
+    def test_case_helpers_snapshot_mutated_limit_after_result_len(self):
+        env = _compiled_runtime_env(8)
+
+        class HostResult:
+            def __len__(self):
+                env["_MAX_COLLECTION_SIZE"] = 1
+                return 2
+
+        class HostString:
+            def lower(self):
+                return HostResult()
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"^to_lower: String size exceeds limit \(2 > 1\)$",
+        ):
+            env["to_lower"](HostString())  # type: ignore[operator]
 
     def test_compiled_int_fast_paths_enforce_bit_limit(self):
         """Typed integer arithmetic must still go through guarded helpers."""

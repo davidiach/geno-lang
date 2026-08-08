@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Union, cast
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Mapping, Union, cast
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -232,6 +232,9 @@ class _BuiltinCheckerState:
 
 _DEFAULT_BUILTIN_CHECKER_STATE: _BuiltinCheckerState | None = None
 
+_EFFECT_SPARSE_MIN_ITEMS = 64
+_ImplEffectItem = tuple[ImplDef, FunctionDef]
+
 
 def _clone_type_def_info(info: TypeDefInfo) -> TypeDefInfo:
     """Return an isolated copy of a TypeDefInfo entry."""
@@ -296,6 +299,10 @@ class TypeChecker(ExhaustivenessMixin):
         checker = TypeChecker()
         checker.check_program(program)  # Raises TypeError on failure
     """
+
+    # The large-program scheduler installs this callback only while discovering
+    # concrete trait slots. The class default avoids common-path instance state.
+    _effect_trait_observer: Callable[[str, str, str], None] | None = None
 
     def __init__(self, target_profile: TargetProfile | None = None) -> None:
         self.global_env = TypeEnv()
@@ -1732,6 +1739,14 @@ class TypeChecker(ExhaustivenessMixin):
         # Build a map of implemented method names to their FunctionDef nodes
         impl_method_map: dict[str, FunctionDef] = {}
         for method in defn.methods:
+            if method.name in impl_method_map:
+                self._error(
+                    f"Duplicate method definition: '{method.name}' in impl "
+                    f"'{defn.trait_name}' for '{defn.target_type}'",
+                    method.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
+                continue
             impl_method_map[method.name] = method
 
         # Verify all required methods are implemented and signatures match
@@ -1786,6 +1801,8 @@ class TypeChecker(ExhaustivenessMixin):
         # Register the implementation
         method_types: dict[str, FuncType] = {}
         for method in defn.methods:
+            if method.name in method_types:
+                continue
             param_types = tuple(self._resolve_type(p.param_type) for p in method.params)
             return_type = self._resolve_type(method.return_type)
             effects = frozenset(method.effects) if method.effects else frozenset()
@@ -2150,9 +2167,9 @@ class TypeChecker(ExhaustivenessMixin):
         return inferred
 
     def _stabilize_function_effects(self, program: Program) -> None:
-        """Iteratively infer effects for functions until signatures stabilize."""
+        """Keep small programs exact; adapt only large stabilization graphs."""
         functions: list[FunctionDef] = []
-        impl_methods: list[tuple[ImplDef, FunctionDef]] = []
+        impl_methods: list[_ImplEffectItem] = []
 
         for defn in program.definitions:
             if isinstance(defn, FunctionDef):
@@ -2160,6 +2177,12 @@ class TypeChecker(ExhaustivenessMixin):
             elif isinstance(defn, ImplDef):
                 for method in defn.methods:
                     impl_methods.append((defn, method))
+
+        if len(functions) + len(impl_methods) >= _EFFECT_SPARSE_MIN_ITEMS:
+            from .effect_stabilizer import stabilize_function_effects
+
+            stabilize_function_effects(self, functions, impl_methods)
+            return
 
         while True:
             changed = False
@@ -2197,7 +2220,7 @@ class TypeChecker(ExhaustivenessMixin):
                     changed = True
 
             if not changed:
-                break
+                return
 
     def _infer_body_effects(
         self, stmts: list[Statement], env: TypeEnv
@@ -2325,6 +2348,9 @@ class TypeChecker(ExhaustivenessMixin):
             method_types = self.impl_registry.get((trait_name, resolved_type_name))
             if method_types is None or callee.name not in method_types:
                 continue
+            effect_trait_observer = self._effect_trait_observer
+            if effect_trait_observer is not None:
+                effect_trait_observer(callee.name, trait_name, resolved_type_name)
             effects |= method_types[callee.name].effects
         return frozenset(effects)
 

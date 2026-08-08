@@ -18,6 +18,7 @@ Usage:
 import argparse
 import math
 import os
+import sys
 from typing import Any
 
 from .capabilities import CapabilityParseError, normalize_capability_values
@@ -733,6 +734,20 @@ def dispatch_args(
 
 def main(argv: list[str] | None = None) -> None:
     """CLI entrypoint."""
+    effective_argv = argv
+    if argv is None and type(sys.argv) is list:
+        effective_argv = sys.argv[1:]
+    if (
+        type(effective_argv) is list
+        and len(effective_argv) == 1
+        and type(effective_argv[0]) is str
+        and effective_argv[0] == "--version"
+    ):
+        from . import __version__
+
+        sys.stdout.write(f"geno {__version__}\n")
+        raise SystemExit(0)
+
     parser = build_parser()
     args, extra = parser.parse_known_args(argv)
     dispatch_args(parser, args, extra)

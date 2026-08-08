@@ -1855,6 +1855,124 @@ class TestGenoHelp:
 
         assert __version__ in result.stdout
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--version"],
+            ["--version", "extra"],
+            ["extra", "--version"],
+            ["--version", "--help"],
+            ["--version", "--version"],
+            ["--version=1"],
+        ],
+    )
+    def test_version_argv_matches_parser_contract(self, argv, capsys):
+        """The fast path and every neighboring argv retain argparse behavior."""
+        import geno.__main__ as cli_main
+
+        parser = cli_main.build_parser()
+        with pytest.raises(SystemExit) as expected_exit:
+            parser.parse_known_args(argv)
+        expected = capsys.readouterr()
+
+        with pytest.raises(SystemExit) as actual_exit:
+            cli_main.main(argv)
+        actual = capsys.readouterr()
+
+        assert actual_exit.value.code == expected_exit.value.code
+        assert actual.out == expected.out
+        assert actual.err == expected.err
+
+    def test_version_fast_path_accepts_implicit_argv(self, monkeypatch, capsys):
+        import geno.__main__ as cli_main
+        from geno import __version__
+
+        monkeypatch.setattr(sys, "argv", ["geno", "--version"])
+        monkeypatch.setattr(
+            cli_main,
+            "build_parser",
+            lambda: pytest.fail("exact --version should not build the parser"),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cli_main.main()
+
+        assert exc.value.code == 0
+        assert capsys.readouterr().out == f"geno {__version__}\n"
+
+    def test_version_fast_path_does_not_preslice_sys_argv_subclass(
+        self, monkeypatch, capsys
+    ):
+        import geno.__main__ as cli_main
+
+        class StatefulArgv(list):
+            slice_count = 0
+
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    self.slice_count += 1
+                    if self.slice_count == 1:
+                        return ["--help"]
+                    return ["--version"]
+                return super().__getitem__(key)
+
+        stateful_argv = StatefulArgv(["geno", "--help"])
+        monkeypatch.setattr(sys, "argv", stateful_argv)
+
+        with pytest.raises(SystemExit) as exc:
+            cli_main.main()
+
+        assert exc.value.code == 0
+        assert stateful_argv.slice_count == 1
+        captured = capsys.readouterr()
+        assert captured.out.startswith("usage: geno")
+        assert captured.err == ""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            [],
+            ["--help"],
+            ["--version", "extra"],
+            ("--version",),
+        ],
+    )
+    def test_version_fast_path_is_exact(self, argv, monkeypatch):
+        import geno.__main__ as cli_main
+
+        class ParserPathReached(Exception):
+            pass
+
+        def fail_parser():
+            raise ParserPathReached
+
+        monkeypatch.setattr(cli_main, "build_parser", fail_parser)
+        with pytest.raises(ParserPathReached):
+            cli_main.main(argv)
+
+    def test_version_module_and_console_entry_outputs_match(self):
+        """Both supported entrypoint shapes produce identical bytes and status."""
+        module_entry = subprocess.run(
+            [sys.executable, "-m", "geno", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        console_entry = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from geno.__main__ import main; main(['--version'])",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert module_entry.returncode == console_entry.returncode == 0
+        assert module_entry.stdout == console_entry.stdout
+        assert module_entry.stderr == console_entry.stderr == ""
+
     def test_no_args_shows_repl_or_help(self):
         """Running without args should start REPL or show help."""
         # Just verify it doesn't crash - REPL would hang so we timeout quickly
@@ -2011,6 +2129,11 @@ class TestMainCompatExports:
         import geno.__main__ as cli_main
 
         for name in (
+            "CapabilityParseError",
+            "DEFAULT_INTERPRETER_MAX_STEPS",
+            "DEFAULT_PROCESS_MAX_MEMORY_BYTES",
+            "DEFAULT_TEST_MAX_STEPS",
+            "DEFAULT_TEST_TIMEOUT",
             "_emit_unsupported_python_error",
             "_format_source_snippet",
             "_print_error",
@@ -2020,8 +2143,49 @@ class TestMainCompatExports:
             "_run_test_suite_once",
             "_run_tests_watch",
             "_snapshot_watch_mtimes",
+            "normalize_capability_values",
         ):
             assert hasattr(cli_main, name), f"missing compatibility export: {name}"
+
+    def test_eager_import_compatibility_exports_remain_available(self):
+        from geno.__main__ import (
+            DEFAULT_INTERPRETER_MAX_STEPS,
+            DEFAULT_PROCESS_MAX_MEMORY_BYTES,
+            DEFAULT_TEST_MAX_STEPS,
+            DEFAULT_TEST_TIMEOUT,
+            CapabilityParseError,
+            _check_python_version,
+            _emit_unsupported_python_error,
+            _format_source_snippet,
+            _print_error,
+            _print_runtime_error,
+            normalize_capability_values,
+        )
+        from geno.capabilities import CapabilityParseError as ExpectedParseError
+        from geno.capabilities import (
+            normalize_capability_values as expected_normalize,
+        )
+        from geno.cli import _util
+        from geno.execution_limits import (
+            DEFAULT_INTERPRETER_MAX_STEPS as expected_interpreter_steps,
+        )
+        from geno.execution_limits import (
+            DEFAULT_PROCESS_MAX_MEMORY_BYTES as expected_process_memory,
+        )
+        from geno.execution_limits import DEFAULT_TEST_MAX_STEPS as expected_test_steps
+        from geno.execution_limits import DEFAULT_TEST_TIMEOUT as expected_test_timeout
+
+        assert CapabilityParseError is ExpectedParseError
+        assert normalize_capability_values is expected_normalize
+        assert _check_python_version is _util._check_python_version
+        assert _emit_unsupported_python_error is _util._emit_unsupported_python_error
+        assert _format_source_snippet is _util._format_source_snippet
+        assert _print_error is _util._print_error
+        assert _print_runtime_error is _util._print_runtime_error
+        assert expected_interpreter_steps == DEFAULT_INTERPRETER_MAX_STEPS
+        assert expected_process_memory == DEFAULT_PROCESS_MAX_MEMORY_BYTES
+        assert expected_test_steps == DEFAULT_TEST_MAX_STEPS
+        assert expected_test_timeout == DEFAULT_TEST_TIMEOUT
 
 
 class TestGenoBundle:

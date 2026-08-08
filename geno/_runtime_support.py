@@ -25,11 +25,14 @@ _builtin_zip: Callable[..., Any] = zip
 _builtin_enumerate: Callable[..., Any] = enumerate
 _builtin_min = min
 _builtin_max = max
-_GENO_OBJECT = ().__class__.__mro__[-1]
+_GENO_OBJECT: Any = ().__class__.__mro__[-1]
 _GENO_MISSING = _GENO_OBJECT()
 _DECIMAL_INT_RE = _re.compile(r"^-?[0-9]+$")
 _MAX_SAFE_JS_INT = 2**53 - 1
 _MIN_SAFE_JS_INT = -_MAX_SAFE_JS_INT
+_IDENTITY_TRACKER_THRESHOLD = 32
+_IDENTITY_TABLE_INITIAL_SIZE = 64
+_IDENTITY_HASH_MASK = (1 << 64) - 1
 
 
 def _require_safe_js_int(value: int, context: str) -> int:
@@ -597,13 +600,19 @@ def trim(s: str) -> str:
 
 def to_lower(s: str) -> str:
     result = s.lower()
-    _check_string_result_size("to_lower", len(result))
+    size = len(result)
+    limit = _MAX_COLLECTION_SIZE
+    if size > limit:
+        _string_result_size_exceeded("to_lower", size, limit)
     return result
 
 
 def to_upper(s: str) -> str:
     result = s.upper()
-    _check_string_result_size("to_upper", len(result))
+    size = len(result)
+    limit = _MAX_COLLECTION_SIZE
+    if size > limit:
+        _string_result_size_exceeded("to_upper", size, limit)
     return result
 
 
@@ -1104,6 +1113,9 @@ def match_constructor(value, constructor_name: str):
     return False
 
 
+_MEMBER_DESCRIPTOR_TYPE = type(_object_getattribute(Some, "__dict__")["value"])
+
+
 _BLOCKED_FIELD_NAMES = frozenset(
     {
         "__class__",
@@ -1171,6 +1183,18 @@ def get_field(value, field_name: str):
     if isinstance(value_dict, dict) and field_name in value_dict:
         return value_dict[field_name]
 
+    # Generated and built-in Geno constructors are frozen slotted dataclasses.
+    # Their fields are exact-class member descriptors, so resolve that common
+    # case directly instead of scanning every dataclass field for each match
+    # binding.  Inherited slots intentionally stay on the compatibility path
+    # below, which preserves MRO and arbitrary-dataclass behaviour.
+    value_type = type(value)
+    if isinstance(value, Constructor):
+        value_type_dict = _object_getattribute(value_type, "__dict__")
+        descriptor = value_type_dict.get(field_name, _GENO_MISSING)
+        if type(descriptor) is _MEMBER_DESCRIPTOR_TYPE:
+            return _object_getattribute(value, field_name)
+
     try:
         dataclass_fields = _dc.fields(value)
     except TypeError:
@@ -1210,18 +1234,43 @@ except NameError:
     _MAX_INTEGER_BITS = 33_219
 
 
-def _check_collection_size(result):
-    """Raise if a reachable value exceeds configured runtime size limits.
+def _rehash_identity_table(values, size):
+    table = [_GENO_MISSING] * size
+    mask = size - 1
+    for value in values:
+        if value is _GENO_MISSING:
+            continue
+        identity_hash = _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK
+        index = identity_hash & mask
+        perturb = identity_hash
+        while table[index] is not _GENO_MISSING:
+            index = (index * 5 + perturb + 1) & mask
+            perturb >>= 5
+        table[index] = value
+    return table
 
-    This backs generated-code expression checks as well as helper return
-    checks. Walk nested compiled-runtime containers so a small outer list or
-    constructor cannot hide an over-limit inner value.
-    """
+
+def _check_collection_size(result):
+    """Validate a generated value and its reachable collection graph."""
+    if result is True or result is False:
+        return result
+    if isinstance(result, int):
+        if result.bit_length() > _MAX_INTEGER_BITS:
+            raise RuntimeError(
+                f"Integer exceeds maximum size ({result.bit_length()} bits)"
+            )
+        return result
+    if isinstance(result, str):
+        _check_collection_kind("String", len(result))
+        return result
+
     stack: list[Any] = [result]
-    visited: list[Any] = []
+    visited: list[Any] | None = []
+    identity_table: list[Any] | None = None
+    tracked_count = 0
     while stack:
         value = stack.pop()
-        if isinstance(value, bool):
+        if value is True or value is False:
             # bool is an int subclass; don't apply the bit-length check to it.
             continue
         if isinstance(value, int):
@@ -1234,53 +1283,111 @@ def _check_collection_size(result):
             _check_collection_kind("String", len(value))
             continue
 
-        if any(seen is value for seen in visited):
+        if isinstance(value, list):
+            value_kind = 1
+        elif isinstance(value, tuple):
+            value_kind = 2
+        elif isinstance(value, dict):
+            value_kind = 3
+        elif isinstance(value, _GenoArray):
+            value_kind = 4
+        elif isinstance(value, _GenoVec):
+            value_kind = 5
+        elif isinstance(value, _GenoSet):
+            value_kind = 6
+        elif isinstance(value, _GenoMutableMap):
+            value_kind = 7
+        elif isinstance(value, Constructor):
+            value_kind = 8
+        else:
             continue
 
-        if isinstance(value, list):
+        if identity_table is None:
+            assert visited is not None
+            seen_before = False
+            for seen in visited:
+                if seen is value:
+                    seen_before = True
+                    break
+            if seen_before:
+                continue
             visited.append(value)
+            tracked_count += 1
+            if tracked_count == _IDENTITY_TRACKER_THRESHOLD + 1:
+                identity_table = _rehash_identity_table(
+                    visited, _IDENTITY_TABLE_INITIAL_SIZE
+                )
+                visited = None
+        else:
+            identity_hash = _GENO_OBJECT.__hash__(value) & _IDENTITY_HASH_MASK
+            identity_mask = len(identity_table) - 1
+            identity_index = identity_hash & identity_mask
+            identity_perturb = identity_hash
+            while True:
+                seen = identity_table[identity_index]
+                if seen is _GENO_MISSING or seen is value:
+                    break
+                identity_index = (
+                    identity_index * 5 + identity_perturb + 1
+                ) & identity_mask
+                identity_perturb >>= 5
+            if seen is value:
+                continue
+
+            # Resize before an insertion would exceed an 80% (4/5) load factor.
+            if (tracked_count + 1) * 5 > len(identity_table) * 4:
+                identity_table = _rehash_identity_table(
+                    identity_table, len(identity_table) * 2
+                )
+                identity_mask = len(identity_table) - 1
+                identity_index = identity_hash & identity_mask
+                identity_perturb = identity_hash
+                while identity_table[identity_index] is not _GENO_MISSING:
+                    identity_index = (
+                        identity_index * 5 + identity_perturb + 1
+                    ) & identity_mask
+                    identity_perturb >>= 5
+
+            identity_table[identity_index] = value
+            tracked_count += 1
+
+        if value_kind == 1:
             _check_collection_kind("List", len(value))
             stack.extend(value)
             continue
-        if isinstance(value, tuple):
-            visited.append(value)
+
+        if value_kind == 2:
             _check_collection_kind("Tuple", len(value))
             stack.extend(value)
             continue
-        if isinstance(value, dict):
-            visited.append(value)
+        if value_kind == 3:
             _check_collection_kind("Map", len(value))
             stack.extend(value.keys())
             stack.extend(value.values())
             continue
 
-        if isinstance(value, _GenoArray):
-            visited.append(value)
+        if value_kind == 4:
             _check_collection_kind("Array", len(value))
             stack.extend(value._elements)
             continue
 
-        if isinstance(value, _GenoVec):
-            visited.append(value)
+        if value_kind == 5:
             _check_collection_kind("Vec", len(value))
             stack.extend(value._elements)
             continue
 
-        if isinstance(value, _GenoSet):
-            visited.append(value)
+        if value_kind == 6:
             _check_collection_kind("Set", len(value))
             stack.extend(value._data)
             continue
 
-        if isinstance(value, _GenoMutableMap):
-            visited.append(value)
+        if value_kind == 7:
             _check_collection_kind("MutableMap", len(value._data))
             stack.extend(value._data.keys())
             stack.extend(value._data.values())
             continue
 
-        if isinstance(value, Constructor):
-            visited.append(value)
+        if value_kind == 8:
             stack.extend(
                 getattr(value, field.name) for field in _dataclasses_fields(value)
             )
@@ -1294,11 +1401,17 @@ def _check_collection_kind(kind: str, size: int) -> None:
         )
 
 
-def _check_string_result_size(func_name: str, size: int) -> None:
+def _string_result_size_exceeded(func_name: str, size: int, limit: int) -> None:
     try:
-        _check_collection_kind("String", size)
+        raise RuntimeError(f"String size exceeds limit ({size} > {limit})")
     except RuntimeError as exc:
         raise RuntimeError(f"{func_name}: {exc}") from exc
+
+
+def _check_string_result_size(func_name: str, size: int) -> None:
+    limit = _MAX_COLLECTION_SIZE
+    if size > limit:
+        _string_result_size_exceeded(func_name, size, limit)
 
 
 def _split_result_count(func_name: str, text: str, delimiter: str) -> int:
@@ -1336,6 +1449,16 @@ def _safe_add(a, b):
     if isinstance(result, int) and result.bit_length() > _MAX_INTEGER_BITS:
         raise RuntimeError(f"Integer exceeds maximum size ({result.bit_length()} bits)")
     return result
+
+
+def _safe_str_add(a, b):
+    """Fast string addition with generic behavior at host boundaries."""
+    if type(a) is not str or type(b) is not str:
+        return _safe_add(a, b)
+    expected = len(a) + len(b)
+    if expected > _MAX_COLLECTION_SIZE:
+        _check_collection_kind("String", expected)
+    return a + b
 
 
 def _safe_mul(a, b):

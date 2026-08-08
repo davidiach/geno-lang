@@ -98,6 +98,99 @@ class TestDescriptorProtocolAttacks:
 
         assert runtime_support.get_field(Safe(), "secret") == 42
 
+    def test_runtime_get_field_preserves_supported_field_owners(self):
+        """Dataclasses, namespaces, modules, and inherited slots stay compatible."""
+        import dataclasses
+        import types
+
+        @dataclasses.dataclass
+        class Plain:
+            secret: int
+
+        @dataclasses.dataclass(slots=True)
+        class SlottedParent:
+            inherited: int
+
+        @dataclasses.dataclass(slots=True)
+        class SlottedChild(SlottedParent):
+            owned: int
+
+        module = types.ModuleType("safe_module")
+        module.__dict__["secret"] = 43
+        namespace = types.SimpleNamespace(secret=44)
+
+        assert runtime_support.get_field(Plain(42), "secret") == 42
+        assert runtime_support.get_field(SlottedChild(45, 46), "inherited") == 45
+        assert runtime_support.get_field(SlottedChild(45, 46), "owned") == 46
+        assert runtime_support.get_field(module, "secret") == 43
+        assert runtime_support.get_field(namespace, "secret") == 44
+        with pytest.raises(RuntimeError, match="has no field"):
+            runtime_support.get_field({"secret": 47}, "secret")
+
+    def test_runtime_get_field_allows_builtin_constructor_slots(self):
+        """Built-in Geno constructors use the same exact slot ownership model."""
+        assert runtime_support.get_field(runtime_support.Some(42), "value") == 42
+        assert runtime_support.get_field(runtime_support.Ok("ok"), "value") == "ok"
+        assert runtime_support.get_field(runtime_support.Err("bad"), "error") == "bad"
+
+    def test_runtime_get_field_rejects_untrusted_constructor_descriptor(self):
+        """The constructor fast path must not invoke an arbitrary descriptor."""
+        accesses = []
+
+        class MaliciousDescriptor:
+            def __get__(self, instance, owner=None):
+                accesses.append((instance, owner))
+                return 42
+
+        class EvilConstructor(runtime_support.Constructor):
+            secret = MaliciousDescriptor()
+
+        with pytest.raises(RuntimeError, match="has no field"):
+            runtime_support.get_field(EvilConstructor(), "secret")
+        assert accesses == []
+
+    def test_runtime_get_field_preserves_arbitrary_slot_mro_behavior(self):
+        """Non-Geno slots must remain on the legacy metaclass and MRO path."""
+        mro_accesses = []
+
+        class HookedMro(type):
+            def __getattribute__(cls, name):
+                if name == "__mro__":
+                    mro_accesses.append(cls)
+                    return ()
+                return super().__getattribute__(name)
+
+        class HookedHost(metaclass=HookedMro):
+            __slots__ = ("field",)
+
+        class SlottedBase:
+            __slots__ = ("field",)
+
+        class SlottedChild(SlottedBase):
+            __slots__ = ()
+
+        hooked = HookedHost()
+        object.__setattr__(hooked, "field", 42)
+        inherited = SlottedChild()
+        object.__setattr__(inherited, "field", 43)
+
+        with pytest.raises(RuntimeError, match="has no field"):
+            runtime_support.get_field(hooked, "field")
+        assert mro_accesses == [HookedHost]
+        assert runtime_support.get_field(inherited, "field") == 43
+
+    @pytest.mark.parametrize("field_name", ["_secret", "__class__", "format"])
+    def test_runtime_get_field_keeps_private_and_blocked_names_closed(self, field_name):
+        """Fast descriptor resolution must remain behind field-name policy."""
+
+        class Value:
+            pass
+
+        value = Value()
+        value.__dict__[field_name] = 42
+        with pytest.raises(RuntimeError, match="not allowed"):
+            runtime_support.get_field(value, field_name)
+
     def test_class_with_getattribute_blocked_strict(self):
         """In strict mode, class definitions with __getattribute__ are blocked."""
         config = SandboxConfig(strict=True)

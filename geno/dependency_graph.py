@@ -652,33 +652,32 @@ def _detect_cycles(edges: Dict[str, List[str]]) -> None:
     """
     WHITE, GRAY, BLACK = 0, 1, 2
     color: Dict[str, int] = dict.fromkeys(edges, WHITE)
-    parent: Dict[str, str | None] = dict.fromkeys(edges)
 
     for start in edges:
         if color[start] != WHITE:
             continue
-        stack: list[tuple[str, int]] = [(start, 0)]
+        stack: list[tuple[str, List[str], int]] = [(start, edges[start], 0)]
         while stack:
-            node, idx = stack.pop()
+            node, neighbors, idx = stack.pop()
             if idx == 0:
                 color[node] = GRAY
 
-            neighbors = [n for n in edges.get(node, []) if n in edges]
             if idx < len(neighbors):
-                stack.append((node, idx + 1))
+                stack.append((node, neighbors, idx + 1))
                 neighbor = neighbors[idx]
+                if neighbor not in edges:
+                    continue
                 if color[neighbor] == GRAY:
                     # Reconstruct the cycle
                     cycle = [neighbor]
-                    for frame_node, _ in reversed(stack):
+                    for frame_node, _, _ in reversed(stack):
                         cycle.append(frame_node)
                         if frame_node == neighbor:
                             break
                     cycle.reverse()
                     raise CircularDependencyError(cycle)
                 if color[neighbor] == WHITE:
-                    parent[neighbor] = node
-                    stack.append((neighbor, 0))
+                    stack.append((neighbor, edges[neighbor], 0))
             else:
                 color[node] = BLACK
 

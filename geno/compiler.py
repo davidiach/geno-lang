@@ -100,7 +100,9 @@ from .builtin_registry import (
 )
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .types import FloatType, UserType
+from .types import BoolType, FloatType, IntType, StringType, UnitType, UserType
+
+_PRIMITIVE_BINDING_TYPES = (IntType, FloatType, BoolType, StringType, UnitType)
 
 
 # Names defined in the runtime prelude that must not be shadowed by user code.
@@ -210,6 +212,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_MAX_INTEGER_BITS",
             "_list_size_exceeded",
             "_safe_add",
+            "_safe_str_add",
             "_safe_mul",
             "_safe_pow",
             "_safe_bitand",
@@ -1415,7 +1418,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
-        rhs = f"_geno_deepcopy({value})"
+        rhs = (
+            value
+            if self._binding_has_primitive_type(stmt)
+            else f"_geno_deepcopy({value})"
+        )
         rhs = self._promote_expr_to_expected_float(
             rhs, getattr(stmt, "_expected_runtime_type", type_annot)
         )
@@ -1457,7 +1464,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
-        rhs = f"_geno_deepcopy({value})"
+        rhs = (
+            value
+            if self._binding_has_primitive_type(stmt)
+            else f"_geno_deepcopy({value})"
+        )
         rhs = self._promote_expr_to_expected_float(rhs, expected_type)
         if type_annot is not None:
             ann = self._compile_type_annotation(type_annot)
@@ -1466,6 +1477,14 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln(f"{name}: '{ann}' = {rhs}")
         else:
             self._writeln(f"{name} = {rhs}")
+
+    @staticmethod
+    def _binding_has_primitive_type(stmt: LetStatement | VarStatement) -> bool:
+        """Return whether binding *stmt* snapshots an immutable primitive."""
+        resolved_type = getattr(stmt, "_expected_runtime_type", None)
+        if resolved_type is None:
+            resolved_type = getattr(stmt.value, "_resolved_type", None)
+        return isinstance(resolved_type, _PRIMITIVE_BINDING_TYPES)
 
     @staticmethod
     def _needs_constructor_copy(value: Expression) -> bool:
@@ -2315,9 +2334,13 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return f"_float_div({left}, {right})"
             return f"_safe_div({left}, {right})"
 
-        # Addition / subtraction on non-Int operands keep the generic
-        # helpers (string/list size guards, Int-where-Float runtime ints).
+        # Typed strings use a helper whose exact-built-in path avoids generic
+        # result dispatch. Its fallback preserves host-provided subclass
+        # behavior. Other non-Int operands keep the generic helper because
+        # Float parameters may receive runtime Int values.
         if expr.operator == "+":
+            if is_string_type(expr.left) and is_string_type(expr.right):
+                return f"_safe_str_add({left}, {right})"
             return f"_safe_add({left}, {right})"
         if expr.operator == "-":
             return f"_safe_sub({left}, {right})"
