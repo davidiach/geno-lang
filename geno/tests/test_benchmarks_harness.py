@@ -278,7 +278,10 @@ def test_cli_fresh_process_artifact_contains_metadata_compile_and_raw_samples(
 
 
 def test_fresh_process_worker_timeout_is_an_error_case(monkeypatch):
+    launches = []
+
     def timed_out_run(command, **kwargs):
+        launches.append(command)
         raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
 
     monkeypatch.setattr(lab.subprocess, "run", timed_out_run)
@@ -297,3 +300,5 @@ def test_fresh_process_worker_timeout_is_an_error_case(monkeypatch):
     assert case["status"] == "error"
     assert case["error"]["type"] == "WorkerTimeoutError"
     assert case["error"]["message"] == "worker timed out after 300s"
+    # The first timeout ends the loop; no further workers are spawned.
+    assert len(launches) == 1

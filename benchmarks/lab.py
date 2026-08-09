@@ -250,6 +250,8 @@ def run_case_fresh_processes(
                 timeout=300,
             )
         except subprocess.TimeoutExpired as timeout_error:
+            # One failure already makes the merged case an error; later
+            # repetitions cannot change that, so don't risk more 300s hangs.
             results.append(
                 {
                     "name": name,
@@ -261,7 +263,7 @@ def run_case_fresh_processes(
                     },
                 }
             )
-            continue
+            break
         try:
             result = json.loads(completed.stdout)
         except json.JSONDecodeError:
