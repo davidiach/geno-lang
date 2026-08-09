@@ -59,44 +59,9 @@ def stabilize_function_effects(
     initial_error_prefix = len(checker.errors)
     item_count = len(functions) + len(impl_methods)
     while True:
-        changed = False
-        changed_count = 0
+        changed_count = checker._sweep_function_effects(functions, impl_methods)
 
-        for defn in functions:
-            existing_type = checker.global_env.lookup(defn.name)
-            if not isinstance(existing_type, FuncType):
-                continue
-            final_effects = checker._stable_effects_for_function(defn)
-            if existing_type.effects != final_effects:
-                checker.global_env.bind(
-                    defn.name,
-                    FuncType(
-                        existing_type.param_types,
-                        existing_type.return_type,
-                        final_effects,
-                    ),
-                )
-                changed = True
-                changed_count += 1
-
-        for impl_def, method in impl_methods:
-            method_types = checker.impl_registry.get(
-                (impl_def.trait_name, impl_def.target_type)
-            )
-            if method_types is None or method.name not in method_types:
-                continue
-            existing_type = method_types[method.name]
-            final_effects = checker._stable_effects_for_function(method)
-            if existing_type.effects != final_effects:
-                method_types[method.name] = FuncType(
-                    existing_type.param_types,
-                    existing_type.return_type,
-                    final_effects,
-                )
-                changed = True
-                changed_count += 1
-
-        if not changed:
+        if not changed_count:
             return
         if len(checker.errors) != initial_error_prefix:
             continue
@@ -117,43 +82,8 @@ def _finish_legacy(
     impl_methods: list[_ImplEffectItem],
 ) -> None:
     """Finish with the original sweep after a sparse diagnostic rollback."""
-    while True:
-        changed = False
-
-        for defn in functions:
-            existing_type = checker.global_env.lookup(defn.name)
-            if not isinstance(existing_type, FuncType):
-                continue
-            final_effects = checker._stable_effects_for_function(defn)
-            if existing_type.effects != final_effects:
-                checker.global_env.bind(
-                    defn.name,
-                    FuncType(
-                        existing_type.param_types,
-                        existing_type.return_type,
-                        final_effects,
-                    ),
-                )
-                changed = True
-
-        for impl_def, method in impl_methods:
-            method_types = checker.impl_registry.get(
-                (impl_def.trait_name, impl_def.target_type)
-            )
-            if method_types is None or method.name not in method_types:
-                continue
-            existing_type = method_types[method.name]
-            final_effects = checker._stable_effects_for_function(method)
-            if existing_type.effects != final_effects:
-                method_types[method.name] = FuncType(
-                    existing_type.param_types,
-                    existing_type.return_type,
-                    final_effects,
-                )
-                changed = True
-
-        if not changed:
-            return
+    while checker._sweep_function_effects(functions, impl_methods):
+        pass
 
 
 class _EffectSparseScheduler:

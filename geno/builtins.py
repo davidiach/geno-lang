@@ -12,8 +12,8 @@ import random
 import re
 import time
 from functools import partial
-from types import FunctionType
-from typing import Any, Callable
+from types import CodeType, FunctionType
+from typing import Any, Callable, Iterator
 
 from .values import (
     ArrayValue,
@@ -50,6 +50,15 @@ def _interpreter_effective_max_collection_size(
     return max_collection_size
 
 
+def _iter_code_global_names(code: CodeType) -> Iterator[str]:
+    """Yield global names referenced by ``code``, including nested code
+    objects (comprehensions on Python < 3.12, nested functions)."""
+    yield from code.co_names
+    for const in code.co_consts:
+        if isinstance(const, CodeType):
+            yield from _iter_code_global_names(const)
+
+
 def _clone_interpreter_builtin_graph(
     func: Callable[..., Any],
     module_globals: dict[str, Any],
@@ -76,7 +85,7 @@ def _clone_interpreter_builtin_graph(
     clone.__module__ = func.__module__
     clones[func] = clone
 
-    for name in func.__code__.co_names:
+    for name in _iter_code_global_names(func.__code__):
         value = module_globals.get(name)
         if name == "_effective_max_collection_size":
             isolated_globals[name] = _interpreter_effective_max_collection_size

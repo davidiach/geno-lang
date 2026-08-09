@@ -198,7 +198,7 @@ def test_all_limit_aware_interpreter_builtins_bind_the_interpreter_limit():
         assert clone.__kwdefaults__ == original.__kwdefaults__
         assert clone.__annotations__ == original.__annotations__
         assert "_MAX_COLLECTION_SIZE" not in clone.__code__.co_names
-        for dependency_name in original.__code__.co_names:
+        for dependency_name in _builtins._iter_code_global_names(original.__code__):
             dependency = vars(_builtins).get(dependency_name)
             if dependency_name == "_effective_max_collection_size":
                 assert (

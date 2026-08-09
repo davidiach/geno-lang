@@ -17,7 +17,6 @@ import ctypes
 import hashlib
 import http.client
 import json
-import math
 import os
 import queue
 import re
@@ -38,6 +37,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from benchmarks.harness import (  # noqa: E402
     collect_environment_metadata,
     configure_utf8_streams,
+    percentile,
     write_json_artifact,
     write_payload_to_stream,
 )
@@ -45,20 +45,6 @@ from benchmarks.harness import (  # noqa: E402
 SCHEMA_VERSION = 1
 SURFACES = ("project", "lsp", "hosted", "javascript", "process_sandbox")
 T = TypeVar("T")
-
-
-def percentile(values: Sequence[int | float], fraction: float) -> float:
-    """Return a linearly interpolated percentile for a non-empty sample."""
-    if not values:
-        raise ValueError("cannot calculate a percentile of no values")
-    ordered = sorted(float(value) for value in values)
-    index = (len(ordered) - 1) * fraction
-    lower = math.floor(index)
-    upper = math.ceil(index)
-    if lower == upper:
-        return ordered[lower]
-    weight = index - lower
-    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 def summarize(values: Sequence[int | float]) -> dict[str, Any]:

@@ -275,3 +275,25 @@ def test_cli_fresh_process_artifact_contains_metadata_compile_and_raw_samples(
     assert {sample["process_index"] for sample in case["samples"]} == {0, 1}
     assert case["summary"]["compile"]["geno_codegen_seconds"]["median_seconds"]
     assert case["summary"]["execution"]["geno"]["mad_seconds"] >= 0
+
+
+def test_fresh_process_worker_timeout_is_an_error_case(monkeypatch):
+    def timed_out_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(lab.subprocess, "run", timed_out_run)
+    problem = lab.select_problems(["02_factorial_20"])[0]
+    config = harness.MeasurementConfig(
+        warmups=0,
+        repetitions=1,
+        target_sample_seconds=0.001,
+        max_loops=1,
+        bootstrap_resamples=20,
+        seed=7,
+    )
+
+    case = lab.run_case_fresh_processes(problem, config, process_repetitions=2)
+
+    assert case["status"] == "error"
+    assert case["error"]["type"] == "WorkerTimeoutError"
+    assert case["error"]["message"] == "worker timed out after 300s"

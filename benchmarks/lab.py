@@ -238,16 +238,30 @@ def run_case_fresh_processes(
     name = problem[0]
     results: list[Mapping[str, Any]] = []
     for process_index in range(process_repetitions):
-        completed = subprocess.run(  # noqa: S603
-            _worker_command(name, config, process_index),
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-        )
+        try:
+            completed = subprocess.run(  # noqa: S603
+                _worker_command(name, config, process_index),
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as timeout_error:
+            results.append(
+                {
+                    "name": name,
+                    "status": "error",
+                    "correctness": {"checked": False, "matched": False},
+                    "error": {
+                        "type": "WorkerTimeoutError",
+                        "message": f"worker timed out after {timeout_error.timeout}s",
+                    },
+                }
+            )
+            continue
         try:
             result = json.loads(completed.stdout)
         except json.JSONDecodeError:
