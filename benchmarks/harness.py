@@ -86,6 +86,11 @@ def _percentile(sorted_values: Sequence[float], fraction: float) -> float:
     return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
 
 
+def percentile(values: Sequence[int | float], fraction: float) -> float:
+    """Return a linearly interpolated percentile for a non-empty sample."""
+    return _percentile(sorted(float(value) for value in values), fraction)
+
+
 def bootstrap_median_ci(
     values: Sequence[float], *, resamples: int, seed: int
 ) -> list[float]:

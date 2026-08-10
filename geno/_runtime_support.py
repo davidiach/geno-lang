@@ -1234,7 +1234,7 @@ except NameError:
     _MAX_INTEGER_BITS = 33_219
 
 
-def _rehash_identity_table(values, size):
+def _rehash_identity_table(values: list[Any], size: int) -> list[Any]:
     table = [_GENO_MISSING] * size
     mask = size - 1
     for value in values:
@@ -1451,7 +1451,7 @@ def _safe_add(a, b):
     return result
 
 
-def _safe_str_add(a, b):
+def _safe_str_add(a: Any, b: Any) -> Any:
     """Fast string addition with generic behavior at host boundaries."""
     if type(a) is not str or type(b) is not str:
         return _safe_add(a, b)

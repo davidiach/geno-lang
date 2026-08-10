@@ -2184,43 +2184,50 @@ class TypeChecker(ExhaustivenessMixin):
             stabilize_function_effects(self, functions, impl_methods)
             return
 
-        while True:
-            changed = False
+        while self._sweep_function_effects(functions, impl_methods):
+            pass
 
-            for defn in functions:
-                existing_type = self.global_env.lookup(defn.name)
-                if not isinstance(existing_type, FuncType):
-                    continue
-                final_effects = self._stable_effects_for_function(defn)
-                if existing_type.effects != final_effects:
-                    self.global_env.bind(
-                        defn.name,
-                        FuncType(
-                            existing_type.param_types,
-                            existing_type.return_type,
-                            final_effects,
-                        ),
-                    )
-                    changed = True
+    def _sweep_function_effects(
+        self,
+        functions: list[FunctionDef],
+        impl_methods: list[_ImplEffectItem],
+    ) -> int:
+        """Run one dense effect sweep pass; return the number of rebinds."""
+        changed_count = 0
 
-            for impl_def, method in impl_methods:
-                method_types = self.impl_registry.get(
-                    (impl_def.trait_name, impl_def.target_type)
-                )
-                if method_types is None or method.name not in method_types:
-                    continue
-                existing_type = method_types[method.name]
-                final_effects = self._stable_effects_for_function(method)
-                if existing_type.effects != final_effects:
-                    method_types[method.name] = FuncType(
+        for defn in functions:
+            existing_type = self.global_env.lookup(defn.name)
+            if not isinstance(existing_type, FuncType):
+                continue
+            final_effects = self._stable_effects_for_function(defn)
+            if existing_type.effects != final_effects:
+                self.global_env.bind(
+                    defn.name,
+                    FuncType(
                         existing_type.param_types,
                         existing_type.return_type,
                         final_effects,
-                    )
-                    changed = True
+                    ),
+                )
+                changed_count += 1
 
-            if not changed:
-                return
+        for impl_def, method in impl_methods:
+            method_types = self.impl_registry.get(
+                (impl_def.trait_name, impl_def.target_type)
+            )
+            if method_types is None or method.name not in method_types:
+                continue
+            existing_type = method_types[method.name]
+            final_effects = self._stable_effects_for_function(method)
+            if existing_type.effects != final_effects:
+                method_types[method.name] = FuncType(
+                    existing_type.param_types,
+                    existing_type.return_type,
+                    final_effects,
+                )
+                changed_count += 1
+
+        return changed_count
 
     def _infer_body_effects(
         self, stmts: list[Statement], env: TypeEnv
