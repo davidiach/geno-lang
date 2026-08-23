@@ -276,3 +276,43 @@ python3 benchmarks/run_benchmark.py -v      # verbose (correctness checks)
   (explicit loops, same data structures) -- not Pythonic idioms
 - Ratios are Geno median / Python median
 - Problems where both sides finish in <5 ms are excluded as noise
+
+## Portability of These Numbers
+
+The table above is a snapshot from one machine, and it does not reproduce on
+another. Re-running this suite unchanged on a different Linux / CPython 3.11
+host produced:
+
+| Metric | Recorded above | Same suite, other host |
+|---|---|---|
+| Measured problems | 53 | 71 |
+| Pass rate (<=2x) | 84.9% | 47.9% |
+| Median ratio | 1.60x | 2.05x |
+
+Two independent effects, both measured:
+
+1. **The 5 ms skip floor changes which problems count.** 18 problems that skip
+   here are measured there, and their median ratio is 3.61x. The floor exists
+   to keep ratios reproducible, but because it is an absolute wall-clock
+   threshold it also makes suite *composition* a function of machine speed —
+   and the problems it admits on a slower machine are exactly the short ones
+   where Geno's fixed per-operation overhead dominates.
+2. **Ratios themselves shift.** Restricted to the same 53 problems measured
+   above, the other host still reports 54.7% pass and a 1.93x median. A ratio
+   between two programs on one machine is not as machine-independent as it
+   looks: the two sides have different constant overheads, and those do not
+   scale together across CPUs and CPython builds.
+
+The consequence is that this metric is **not yet suitable for a CI ratchet**
+(see [Performance Ratchets](../docs/benchmark/perf-ratchets.md)). Gating merges
+on it as defined would produce failures that reflect the runner rather than the
+change. Making it gateable needs a machine-independent definition — a frozen
+measured set rather than a wall-clock skip floor is the obvious first step, and
+scaling each problem's work until it clears the noise floor everywhere is the
+thorough one.
+
+None of this invalidates the optimization work recorded above: the per-problem
+analysis, the guard-placement decisions, and the integer-limit contract all
+stand. It means the *headline* number is a property of a measurement setup as
+much as of the compiler, and should be read that way until the definition is
+tightened.
