@@ -211,3 +211,32 @@ def test_update_budget_text_replaces_a_stale_provenance_comment() -> None:
     assert "999.0" not in updated
     assert updated.count("[cli_latency.baseline_ms]") == 1
     assert "version = 60.0" in updated
+
+
+def test_update_budget_text_leaves_a_following_section_intact() -> None:
+    # The baseline table is currently last in the file. It should stay safe to
+    # append another section after it.
+    text = (
+        "[calibration]\nreference_ms = 1.0\n\n"
+        "# Lowest of 9 runs per pass, recorded on Linux / CPython 3.11.\n"
+        "[cli_latency.baseline_ms]\nversion = 999.0\n\n"
+        "[future_section]\nkeep_me = true\n"
+    )
+
+    updated = ratchets.update_budget_text(text, _suite(2.0, **{"version": 60.0}))
+
+    assert "[future_section]\nkeep_me = true\n" in updated
+    assert "999.0" not in updated
+    assert updated.count("version = 60.0") == 1
+
+
+def test_update_budget_text_is_idempotent() -> None:
+    text = ratchets.BUDGET_PATH.read_text(encoding="utf-8")
+    result = _suite(8.0, **{"version": 60.0, "run-hello": 400.0})
+
+    once = ratchets.update_budget_text(text, result)
+    twice = ratchets.update_budget_text(once, result)
+
+    assert once == twice
+    assert twice.count("[cli_latency.baseline_ms]") == 1
+    assert twice.count("# Lowest of") == 1
