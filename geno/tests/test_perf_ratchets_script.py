@@ -33,6 +33,15 @@ def test_repo_budgets_load() -> None:
     assert budgets.cli_latency.runs >= 1
 
 
+def test_rebaselining_samples_at_least_as_hard_as_checking() -> None:
+    # A baseline is a minimum, so a baseline sampled more thinly than the check
+    # lands higher and quietly loosens the ratchet on every re-record.
+    cli = ratchets.load_budgets().cli_latency
+
+    assert cli.update_runs >= cli.runs
+    assert cli.update_passes >= 1
+
+
 def test_every_scenario_has_a_recorded_baseline() -> None:
     budgets = ratchets.load_budgets()
     recorded = set(budgets.cli_latency.baseline_ms)
@@ -66,7 +75,12 @@ def test_evaluate_flags_a_regression_beyond_headroom() -> None:
         reference_ms=8.0,
         max_scale=4.0,
         cli_latency=ratchets.CliLatencyBudgets(
-            runs=5, warmups=2, headroom=1.2, baseline_ms={"run-hello": 100.0}
+            runs=5,
+            update_runs=9,
+            update_passes=3,
+            warmups=2,
+            headroom=1.2,
+            baseline_ms={"run-hello": 100.0},
         ),
     )
 
@@ -83,7 +97,12 @@ def test_evaluate_scales_budgets_by_calibration() -> None:
         reference_ms=8.0,
         max_scale=4.0,
         cli_latency=ratchets.CliLatencyBudgets(
-            runs=5, warmups=2, headroom=1.2, baseline_ms={"run-hello": 100.0}
+            runs=5,
+            update_runs=9,
+            update_passes=3,
+            warmups=2,
+            headroom=1.2,
+            baseline_ms={"run-hello": 100.0},
         ),
     )
 
@@ -99,7 +118,12 @@ def test_unrecorded_scenarios_are_reported_rather_than_ignored() -> None:
         reference_ms=8.0,
         max_scale=4.0,
         cli_latency=ratchets.CliLatencyBudgets(
-            runs=5, warmups=2, headroom=1.2, baseline_ms={"run-hello": 100.0}
+            runs=5,
+            update_runs=9,
+            update_passes=3,
+            warmups=2,
+            headroom=1.2,
+            baseline_ms={"run-hello": 100.0},
         ),
     )
     result = _suite(8.0, **{"run-hello": 100.0, "run-medium": 100.0})
@@ -136,3 +160,54 @@ def test_select_scenarios_rejects_unknown_names() -> None:
 def test_select_scenarios_defaults_to_the_full_suite() -> None:
     assert cli_latency.select_scenarios(None) == cli_latency.SCENARIOS
     assert cli_latency.select_scenarios([]) == cli_latency.SCENARIOS
+
+
+def test_merge_suites_keeps_the_lowest_reading_of_each_scenario() -> None:
+    merged = ratchets.merge_suites(
+        [
+            _suite(9.0, **{"version": 60.0, "run-hello": 500.0}),
+            _suite(8.0, **{"version": 65.0, "run-hello": 470.0}),
+            _suite(8.5, **{"version": 61.0, "run-hello": 480.0}),
+        ]
+    )
+    by_name = {m.name: m.min_ms for m in merged.measurements}
+
+    assert by_name == {"version": 60.0, "run-hello": 470.0}
+    assert merged.calibration_ms == 8.0
+
+
+def test_merge_suites_preserves_scenario_order() -> None:
+    merged = ratchets.merge_suites(
+        [
+            _suite(8.0, **{"version": 60.0, "run-hello": 500.0}),
+            _suite(8.0, **{"version": 65.0, "run-hello": 470.0}),
+        ]
+    )
+
+    assert [m.name for m in merged.measurements] == ["version", "run-hello"]
+
+
+def test_merge_suites_rejects_an_empty_sample() -> None:
+    with pytest.raises(ValueError, match="no suite passes"):
+        ratchets.merge_suites([])
+
+
+def test_provenance_records_the_sample_count_actually_used() -> None:
+    result = ratchets.merge_suites([_suite(8.0, **{"version": 60.0})])
+
+    assert "of 5 runs per pass" in ratchets.render_provenance(result)
+
+
+def test_update_budget_text_replaces_a_stale_provenance_comment() -> None:
+    text = (
+        "[calibration]\nreference_ms = 1.0\n\n"
+        "# Minimum of 9 runs, recorded on Solaris / CPython 2.7.\n"
+        "[cli_latency.baseline_ms]\nversion = 999.0\n"
+    )
+
+    updated = ratchets.update_budget_text(text, _suite(2.0, **{"version": 60.0}))
+
+    assert "Solaris" not in updated
+    assert "999.0" not in updated
+    assert updated.count("[cli_latency.baseline_ms]") == 1
+    assert "version = 60.0" in updated

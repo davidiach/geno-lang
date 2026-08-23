@@ -2,13 +2,16 @@
 
 ``geno run`` compiles and executes inside the process-isolated worker, so the
 worker imports lexer/parser/typechecker/dependency-graph itself. Importing them
-in the parent as well pays for the whole frontend twice per run — roughly 20%
-of the wall-clock time of running a small program — for exception names the
-process path cannot raise, because the worker reports every frontend failure
-back as pre-formatted text.
+in the parent as well pays for the whole frontend twice per run -- 17.2% of the
+wall-clock time of running a small program, measured paired -- for exception
+names the process path cannot raise, because the worker reports every frontend
+failure back as pre-formatted text.
 
-This is a footprint assertion rather than a timing one so it stays meaningful
-on a busy CI runner. ``make perf-ratchets`` covers the wall-clock side.
+This asserts the footprint rather than the timing, and that is what makes it
+the real guard for this regression. 17.2% sits under the perf ratchet's 20%
+headroom, which cannot safely be tightened below roughly four times the ~5%
+measurement noise, so ``make perf-ratchets`` would let a reintroduction
+through. The import footprint is exact on any machine at any load.
 """
 
 from __future__ import annotations

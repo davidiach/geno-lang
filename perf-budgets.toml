@@ -18,7 +18,7 @@
 # Machine speed on a fixed CPU-bound workload (benchmarks/cli_latency.py),
 # measured alongside the baselines below. Budgets are scaled by
 # measured/reference so they survive being checked on slower hardware.
-reference_ms = 7.78
+reference_ms = 7.84
 
 # Scaling only ever relaxes budgets, never tightens them: a machine that is
 # faster than the reference gets free headroom rather than a spurious failure
@@ -33,17 +33,31 @@ max_scale = 4.0
 runs = 5
 warmups = 2
 
+# Runs used by --update. Re-baselining samples more than checking does: the
+# recorded baseline is a minimum, and a minimum over fewer runs lands higher,
+# so re-recording at the check's sample count would loosen the ratchet a little
+# on every pass. The provenance comment above the table is generated from the
+# count actually used, so it cannot drift from the numbers.
+update_runs = 9
+
+# Suite passes --update averages over by keeping each scenario's lowest
+# reading. Sampling more runs inside one pass stops helping quickly; what does
+# not settle is drift between passes minutes apart as machine load changes,
+# which lands straight in the recorded baseline (observed: run-hello moving
+# 466-515 ms across single-pass re-baselines on one container).
+update_passes = 3
+
 # Allowed regression over the recorded baseline before the check fails. 20%
 # is wide enough to absorb runner noise (repeat suite runs vary by ~5% here)
 # and tight enough to catch the regressions worth catching — re-importing the
 # frontend in the `geno run` parent process, for instance, costs ~25%.
 headroom = 1.20
 
-# Minimum of 9 runs, recorded on Linux / CPython 3.11.
+# Lowest of 9 runs per pass, recorded on Linux / CPython 3.11.
 [cli_latency.baseline_ms]
-version = 61.8
-check-medium = 156.0
-test-medium = 178.6
-run-hello = 468.9
-run-medium = 522.8
-compile-medium = 294.7
+version = 61.4
+check-medium = 166.2
+test-medium = 186.8
+run-hello = 484.7
+run-medium = 528.3
+compile-medium = 309.1

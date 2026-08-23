@@ -50,10 +50,50 @@ A faster machine gets free headroom rather than a spurious failure from a
 calibration workload that does not perfectly track CLI cost, and a
 pathologically noisy runner cannot switch the check off entirely.
 
-**Headroom of 20%.** Repeat suite runs vary by roughly 5% on a quiet machine.
-20% absorbs that while still catching the regressions worth catching — for
-scale, importing the frontend in the `geno run` parent process, which the
-worker then imports again, costs about 25% on `run-hello`.
+**Headroom of 20%.** Repeated readings of an unchanged scenario vary by around
+5% here — `check-medium`, which no recent change touches, moved -5.1% between
+arms of a paired A/B run. 20% is four times that noise floor, which is about as
+tight as this measurement supports.
+
+That sets a floor on what the ratchet can see, and it is worth being concrete
+about where the floor lands. Removing the duplicate frontend import from the
+`geno run` parent — a change worth making, and the one this harness was built
+alongside — is worth 17.2% on `run-hello` (548.9 ms to 468.3 ms, paired, lowest
+of 9 runs across 3 alternating passes). That is *below* the 20% threshold: the
+ratchet would not have caught its reintroduction.
+
+The conclusion is not to tighten the threshold until that example passes, which
+would trade a missed regression for recurring false failures on a busy runner.
+It is that a wall-clock ratchet is the wrong instrument for a regression with a
+precise structural signature. `geno/tests/test_cli_run_import_footprint.py`
+asserts that specific property directly — no frontend module loaded in the
+`geno run` parent — and fails deterministically, on any machine, at any load.
+Where a regression can be pinned to a property, assert the property; the
+ratchet is the net for the drift that cannot be.
+
+## Re-baselining sampling
+
+`--update` measures differently from the check, for a reason worth knowing
+before changing either number.
+
+Sampling more runs *within* a pass stops helping quickly: 21 runs was no more
+stable than 9 (2.7% vs 3.4% spread over three repeats). What does not settle is
+drift *between* passes minutes apart, as machine load changes — single-pass
+re-baselines of `run-hello` ranged over 466-515 ms on one container, a 10.5%
+spread that lands directly in the recorded baseline and silently re-tunes the
+ratchet's sensitivity.
+
+So `--update` runs the suite `update_passes` times and keeps each scenario's
+lowest reading. Every reading is already a minimum and noise only ever adds
+time, so the lowest across passes is the best estimate of the real cost. That
+took the same spread to about 1.8%. It costs roughly a minute, which is fine
+for something done deliberately and rarely.
+
+`update_runs` is also held at or above the check's `runs`, and a test enforces
+that: a baseline sampled more thinly than the check lands higher, which would
+loosen the ratchet a little on every re-record. The provenance comment above
+the baseline table is generated from the count actually used, so it cannot
+drift from the numbers underneath it.
 
 ## Re-baselining
 

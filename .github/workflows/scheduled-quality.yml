@@ -80,12 +80,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e "."
 
+      # --out archives this run's numbers. Re-running the suite to capture them
+      # would measure something else: the suite is noisy, so a second run can
+      # disagree with the one that just failed, and it doubles the benchmark
+      # work for an artifact that then cannot explain the failure.
       - name: Enforce performance budgets
-        run: make perf-ratchets PYTHON=python
-
-      - name: Record the measurement
-        if: always()
-        run: python scripts/check_perf_ratchets.py --json > cli-latency.json || true
+        run: python scripts/check_perf_ratchets.py --out cli-latency.json
 
       - name: Upload the measurement
         if: always()
