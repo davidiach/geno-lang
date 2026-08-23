@@ -1,0 +1,63 @@
+# Performance ratchets for Geno.
+#
+# The same idea as the debt budgets in scripts/check_ci_dx_ratchets.py, applied
+# to runtime numbers: measure a frozen workload, record what it costs today,
+# and fail when a change makes it meaningfully worse. Enforced by
+# `make perf-ratchets` (scripts/check_perf_ratchets.py).
+#
+# Re-baselining is a deliberate act. When a change legitimately moves a number
+# — in either direction — run:
+#
+#     python3 scripts/check_perf_ratchets.py --update
+#
+# on the machine that enforces the budgets, and commit the result with the
+# change that caused it. Wins must be recorded too: an unrecorded win is
+# headroom for the next regression to hide in.
+
+[calibration]
+# Machine speed on a fixed CPU-bound workload (benchmarks/cli_latency.py),
+# measured alongside the baselines below. Budgets are scaled by
+# measured/reference so they survive being checked on slower hardware.
+reference_ms = 7.84
+
+# Scaling only ever relaxes budgets, never tightens them: a machine that is
+# faster than the reference gets free headroom rather than a spurious failure
+# from a calibration workload that does not perfectly track CLI cost. The cap
+# stops a pathologically noisy runner from disabling the check entirely.
+max_scale = 4.0
+
+[cli_latency]
+# Measured runs per scenario, and warmups discarded before measuring. The
+# ratchet checks the minimum of the measured runs: scheduler noise only ever
+# adds time, so the minimum is the stable estimator.
+runs = 5
+warmups = 2
+
+# Runs used by --update. Re-baselining samples more than checking does: the
+# recorded baseline is a minimum, and a minimum over fewer runs lands higher,
+# so re-recording at the check's sample count would loosen the ratchet a little
+# on every pass. The provenance comment above the table is generated from the
+# count actually used, so it cannot drift from the numbers.
+update_runs = 9
+
+# Suite passes --update averages over by keeping each scenario's lowest
+# reading. Sampling more runs inside one pass stops helping quickly; what does
+# not settle is drift between passes minutes apart as machine load changes,
+# which lands straight in the recorded baseline (observed: run-hello moving
+# 466-515 ms across single-pass re-baselines on one container).
+update_passes = 3
+
+# Allowed regression over the recorded baseline before the check fails. 20%
+# is wide enough to absorb runner noise (repeat suite runs vary by ~5% here)
+# and tight enough to catch the regressions worth catching — re-importing the
+# frontend in the `geno run` parent process, for instance, costs ~25%.
+headroom = 1.20
+
+# Lowest of 9 runs per pass, recorded on Linux / CPython 3.11.
+[cli_latency.baseline_ms]
+version = 61.4
+check-medium = 166.2
+test-medium = 186.8
+run-hello = 484.7
+run-medium = 528.3
+compile-medium = 309.1

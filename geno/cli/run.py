@@ -501,29 +501,27 @@ def run_file(
             sys.exit(1)
         return
 
-    from ..dependency_graph import (
-        CircularDependencyError,
-        DependencyGraphError,
-        NameCollisionError,
-    )
-    from ..lexer import LexerError
-    from ..parser import ParseError, ParseErrors
-    from ..project_graph import ProjectGraphError
-    from ..project_resolution import ProjectResolutionError
-    from ..sandbox import (
-        ProcessSandbox,
-        ProcessSandboxConfig,
-        SandboxConfig,
-        SandboxError,
-        SecurityViolation,
-        StepLimitExceeded,
-        TimeoutError,
-    )
-    from ..typechecker import TypeError
-    from ..values import RuntimeError as GenoRuntimeError
+    if run_mode == "process":
+        # The isolated worker owns this path's entire frontend: it resolves,
+        # typechecks and compiles the program, and reports every frontend
+        # failure back as pre-formatted text behind
+        # ``_GENO_FRONTEND_ERROR_PREFIX`` (see the ``geno_cli`` branch of the
+        # sandbox worker, which catches ``BaseException`` around
+        # ``_prepare_process_run``). Importing the frontend here would load
+        # lexer/parser/typechecker/dependency-graph in the parent purely to
+        # bind exception names this path cannot raise, duplicating imports the
+        # worker pays for again in the child. So this branch stays above the
+        # frontend import block and imports the sandbox alone.
+        from ..sandbox import (
+            ProcessSandbox,
+            ProcessSandboxConfig,
+            SandboxError,
+            SecurityViolation,
+            StepLimitExceeded,
+            TimeoutError,
+        )
 
-    try:
-        if run_mode == "process":
+        try:
             request = {
                 "filename": filename,
                 "target": target,
@@ -570,7 +568,53 @@ def run_file(
             if not _is_unit_main_result(result):
                 print(f"=> {result}")
             return
+        except FileNotFoundError:
+            print(f"Error: File not found: {filename}", file=sys.stderr)
+            sys.exit(1)
+        except ValueError as e:
+            print(f"Manifest Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except SecurityViolation as e:
+            print(f"Security Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except (TimeoutError, StepLimitExceeded) as e:
+            print(f"Limit Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except SandboxError as e:
+            # Infrastructure failure inside the process sandbox (e.g. the
+            # worker's result channel was lost) — not a user-program error.
+            print(f"Sandbox Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except RecursionError:
+            report_deep_nesting_error(filename)
+            # Unreachable today (the reporter exits), but this branch now sits
+            # above the interpreter path rather than inside its try block, so
+            # falling through would run the program unsandboxed.
+            return
+        except RuntimeError as e:
+            _print_runtime_error(e)
+            sys.exit(1)
 
+    from ..dependency_graph import (
+        CircularDependencyError,
+        DependencyGraphError,
+        NameCollisionError,
+    )
+    from ..lexer import LexerError
+    from ..parser import ParseError, ParseErrors
+    from ..project_graph import ProjectGraphError
+    from ..project_resolution import ProjectResolutionError
+    from ..sandbox import (
+        SandboxConfig,
+        SandboxError,
+        SecurityViolation,
+        StepLimitExceeded,
+        TimeoutError,
+    )
+    from ..typechecker import TypeError
+    from ..values import RuntimeError as GenoRuntimeError
+
+    try:
         resolved_run = _resolve_run_program(filename, target)
         dg = resolved_run.dependency_graph
         program = resolved_run.program

@@ -56,3 +56,42 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 30
+
+  cli-latency-ratchet:
+    # Not on PR CI yet. The budgets in perf-budgets.toml were recorded on a
+    # developer machine, and the calibration in benchmarks/cli_latency.py only
+    # ever widens them, never tightens — so a hosted runner needs a few clean
+    # weekly runs before the numbers are trustworthy enough to gate merges on.
+    # Promote this to .github/workflows/ci.yml once they are, re-recording the
+    # baselines on the runner with `make perf-ratchets-update`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "."
+
+      # --out archives this run's numbers. Re-running the suite to capture them
+      # would measure something else: the suite is noisy, so a second run can
+      # disagree with the one that just failed, and it doubles the benchmark
+      # work for an artifact that then cannot explain the failure.
+      - name: Enforce performance budgets
+        run: python scripts/check_perf_ratchets.py --out cli-latency.json
+
+      - name: Upload the measurement
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-latency-${{ github.run_id }}
+          path: cli-latency.json
+          if-no-files-found: warn
+          retention-days: 90

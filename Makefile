@@ -3,7 +3,7 @@
 #
 # Common development and experiment tasks.
 
-.PHONY: all install dev test lint format clean docs experiment analyze conformance release-check release-gate-templates release-gate-vscode release-gate-apps validate-builtin-parity validate-dependencies validate-supported-targets optional-test-collection sandbox-regression dependency-audit local-ci local-ci-release security security-bounty
+.PHONY: all install dev test lint format clean docs experiment analyze conformance perf-ratchets-update release-check release-gate-templates release-gate-vscode release-gate-apps validate-builtin-parity validate-dependencies validate-supported-targets optional-test-collection sandbox-regression dependency-audit perf-ratchets local-ci local-ci-release security security-bounty
 
 PYTHON ?= python3
 
@@ -53,6 +53,14 @@ validate-builtin-parity:
 
 conformance:
 	$(PYTHON) scripts/run_conformance.py --all-retained --target all --require-node
+
+# Measure CLI latency and enforce perf-budgets.toml
+perf-ratchets:
+	$(PYTHON) scripts/check_perf_ratchets.py
+
+# Re-record the perf baselines after an intended change
+perf-ratchets-update:
+	$(PYTHON) scripts/check_perf_ratchets.py --update
 
 validate-dependencies:
 	$(PYTHON) scripts/validate_dependencies.py
@@ -155,6 +163,8 @@ help:
 	@echo "  validate-supported-targets - Validate target docs against targets.toml"
 	@echo "  validate-builtin-parity - Validate builtin manifest/runtime parity"
 	@echo "  conformance - Run the frozen language corpus on every backend"
+	@echo "  perf-ratchets - Measure CLI latency against perf-budgets.toml"
+	@echo "  perf-ratchets-update - Re-record the perf baselines"
 	@echo "  optional-test-collection - Collect optional tests without Hypothesis"
 	@echo "  sandbox-regression - Run focused compiled sandbox regression tests"
 	@echo "  dependency-audit - Audit Python dependencies for known vulnerabilities"

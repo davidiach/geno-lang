@@ -1,0 +1,12 @@
+// Minimal program: measures the CLI startup floor, not language work.
+
+func greet(name: String) -> String
+    requires length(name) > 0
+    example "world" -> "Hello, world!"
+
+    return "Hello, " + name + "!"
+end func
+
+func main() -> String
+    return greet("world")
+end func

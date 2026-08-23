@@ -37,6 +37,7 @@
 - [Benchmark Quality Criteria](benchmark/quality_criteria.md) -- benchmark problem standards
 - [Benchmark Validation Contract](benchmark/validation-contract.md) -- corpus validation rules
 - [Benchmark Results](../benchmarks/RESULTS.md) -- current or historical performance results
+- [Performance Ratchets](benchmark/perf-ratchets.md) -- measured budgets that gate performance regressions
 - [LLM Prompting Guide](llm-prompting.md) -- guidance for generating Geno code with LLMs
 
 ## Project and Contributing
