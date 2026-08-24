@@ -14,20 +14,22 @@ a selected `main() -> Int` supplies the process status modulo 256 without being
 printed automatically. Normal nonzero results preserve prior output and do not
 produce runtime traces.
 
-The rule applies consistently to `geno run`, process-sandbox execution, the
-self-hosted runner, and standalone Python and Node artifacts. Embedding APIs,
-imported generated Python modules, and imported Node-targeted ESM remain
-values-and-functions interfaces: they must never terminate the host process
-merely because `main` returns an integer. Browser auto-start artifacts and the
-default standalone JavaScript script are executable outputs, not import APIs.
+The rule applies consistently to executable `geno run` requests, including
+those routed through process-sandbox execution, the self-hosted runner, and
+standalone Python and Node artifacts. Embedding APIs, generic sandbox result
+channels, imported generated Python modules, and imported Node-targeted ESM
+remain values-and-functions interfaces: they return the raw result and must
+never terminate the host process merely because `main` returns an integer.
+Browser auto-start artifacts and the default standalone JavaScript script are
+executable outputs, not import APIs.
 
 This is an intentional behavior change from the documented v0.4 CLI contract,
-including the compatibility behavior published in v0.4.2, and therefore
+including the compatibility behavior retained in v0.4.3, and therefore
 targets v0.5. It must not ship in a v0.4 patch release.
 
 ## Motivation
 
-Geno v0.4.2 displays an integer returned by `main`. That is convenient for
+Geno v0.4.3 displays an integer returned by `main`. That is convenient for
 small examples but prevents a serious command-line application from reporting
 a normal failure status to CI. Applications must throw to fail, which turns an
 expected result into a runtime diagnostic. In the direct interpreter path that
@@ -112,6 +114,13 @@ synchronous `main` that returns an async value is not implicitly awaited merely
 because it is the entrypoint; it follows the ordinary rule for its declared
 return type.
 
+The existing language also permits `await` directly inside a synchronous
+`main`. Such an entrypoint is an asynchronous execution form even without an
+`async` modifier: hosts must lower and await it exactly once, then classify the
+completed result from its resolved static return annotation. This is distinct
+from a synchronous `main` that merely returns an async value without awaiting
+it.
+
 ### Result normalization
 
 At an executable boundary:
@@ -144,10 +153,12 @@ produce the target's useful Geno-facing diagnostic and a nonzero process status.
 
 ### Embedding and imports
 
-`geno.api.run()` and equivalent embedding result channels return the raw Geno
-value. They never call `sys.exit`, set the embedding process status, or invoke a
-Node termination primitive. An embedded integer result of 258 is returned as
-258, not normalized to 2.
+`geno.api.run()`, public `compile_and_exec()`, and equivalent embedding or
+generic sandbox result channels return the raw Geno value. They never call
+`sys.exit`, set the embedding process status, or invoke a Node termination
+primitive. This remains true when `compile_and_exec()` uses `ProcessSandbox`
+because a timeout is configured. An embedded or generic sandbox integer result
+of 258 is returned as 258, not normalized to 2, and the caller continues.
 
 `geno run --json` is an executable CLI boundary, not an embedding API, even
 though it uses the embedding machinery internally. It writes one JSON result
@@ -181,8 +192,11 @@ can emit captured output before returning the normalized CLI status.
 
 - The direct interpreter returns the raw `main` value internally; the CLI owns
   status normalization and output ordering.
-- Process-sandbox mode normalizes and tags the result in the isolated worker;
-  the parent CLI emits captured output and returns the tagged status.
+- A CLI-specific process-sandbox request carries both the raw result and its
+  normalized status through the isolated worker; the parent CLI emits captured
+  output and returns the tagged status. Generic `ProcessSandbox` and
+  `compile_and_exec()` requests retain the raw result and never alter the host
+  process status.
 - JSON CLI mode serializes the raw result and captured output before returning
   the same normalized executable status as the other CLI lanes.
 - Standalone generated Python applies the rule under `if __name__ ==
@@ -206,9 +220,9 @@ time, or random access.
 ## Compatibility And Migration
 
 This proposal changes observable v0.4 behavior for `main() -> Int`, including
-the contract published in v0.4.2. It must be called out as a v0.5 breaking
-change. The migration is to print intentional display values explicitly and
-return `Unit` or a separate integer status.
+the contract published in v0.4.2 and retained in v0.4.3. It must be called out
+as a v0.5 breaking change. The migration is to print intentional display values
+explicitly and return `Unit` or a separate integer status.
 
 After proposal acceptance and before a v0.5 release:
 
@@ -232,12 +246,14 @@ After proposal acceptance and before a v0.5 release:
   failure;
 - add a direct Node ESM lane with status, output, import-inertness, and runtime
   error cases;
-- add focused self-host, watch, browser ESM, hosted callback, embedding, and
+- add focused self-host, watch, browser ESM, hosted callback, embedding,
+  `compile_and_exec()` with and without process isolation, generic sandbox, and
   imported-entrypoint lanes. Browser cases must verify target-defined display
   behavior and the absence of Node imports even with a `process` polyfill;
 - add v0.5 cases for Unit status 0, Int status 2, negative and overflowing
-  normalization, async and aliased returns, JSON raw-value/status separation,
-  output-before-nonzero, uncaught errors, and Python/Node parity;
+  normalization, async and aliased returns, synchronous `main` containing
+  `await`, JSON raw-value/status separation, output-before-nonzero, uncaught
+  errors, and Python/Node parity;
 - keep the restored v0.4 specification and corpus unchanged and publish the
   accepted rule in a v0.5 specification;
 - update `spec.json`, the compatibility matrix, getting-started examples, and
@@ -271,14 +287,16 @@ Acceptance and release require focused tests for:
 
 - Unit status 0 and Int status 2;
 - modulo behavior for negative and greater-than-255 values;
-- resolved aliases and awaited async `main`, plus no implicit await for a
-  synchronous `main` returning an async value;
+- resolved aliases and awaited async `main`, synchronous `main` containing
+  `await`, plus no implicit await for a synchronous `main` returning an async
+  value;
 - JSON envelopes that retain the raw value while the CLI returns normalized
   status;
 - output preservation before normal nonzero exit;
 - absence of traces for expected nonzero results;
 - useful diagnostics and nonzero status for uncaught runtime errors;
-- raw-value, non-terminating embedding behavior;
+- raw-value, non-terminating embedding, `compile_and_exec()`, and generic
+  process-sandbox behavior, including caller continuation after raw result 258;
 - inert generated Python and Node-targeted ESM imports;
 - direct and process-sandbox `geno run` parity;
 - standalone Python, Node script, and directly executed Node ESM parity;
@@ -328,7 +346,7 @@ exit 2 with preserved output, an uncaught error, embedding, and installed
 Python/Node artifacts.
 
 If review rejects the design, record the Rejected status and rationale while
-leaving the restored v0.4.2 behavior unchanged. Do not publish the proposed
+leaving the current v0.4.3 behavior unchanged. Do not publish the proposed
 behavior under a v0.4 patch number or waive the compatibility rule.
 
 ## Alternatives
