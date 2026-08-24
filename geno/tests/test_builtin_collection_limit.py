@@ -415,7 +415,10 @@ def test_concurrent_different_limit_cache_replacement_is_isolated():
     with ThreadPoolExecutor(max_workers=len(limits)) as executor:
         futures = [executor.submit(worker, limit) for limit in limits]
         for future in futures:
-            future.result(timeout=15)
+            # Full-suite coverage can make this construction-heavy stress test
+            # exceed 15 seconds on shared CI runners.  Keep a generous local
+            # guard while the repository-level 60-second timeout catches hangs.
+            future.result(timeout=45)
 
     bound_cache = _builtins._INTERPRETER_BOUND_BUILTINS
     assert bound_cache is not None
