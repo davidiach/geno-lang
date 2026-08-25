@@ -11,9 +11,7 @@ import os
 import random
 import re
 import time
-from functools import partial
-from types import CodeType, FunctionType
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from .values import (
     ArrayValue,
@@ -32,153 +30,23 @@ DEFAULT_MAX_COLLECTION_SIZE = 10_000_000
 _MAX_SAFE_JS_INT = 2**53 - 1
 _MIN_SAFE_JS_INT = -_MAX_SAFE_JS_INT
 
-# Process-wide cap retained for direct builtin callers. Interpreters use a
-# cached shadow function graph whose effective-cap helper is identity.
+# Process-wide cap retained for direct builtin callers.  Builtins installed on
+# an ``Interpreter`` are bound to an ``_InterpreterCap`` instead, so a live
+# interpreter enforces only its own ``SandboxConfig.max_collection_size``.
 _MAX_COLLECTION_SIZE: int = DEFAULT_MAX_COLLECTION_SIZE
-_INTERPRETER_BUILTIN_GLOBALS: dict[str, Any] | None = None
-_INTERPRETER_BUILTIN_CLONES: dict[Callable[..., Any], Callable[..., Any]] = {}
-_INTERPRETER_BUILTIN_ROOTS: dict[Callable[..., Any], Callable[..., Any]] | None = None
-_INTERPRETER_BOUND_BUILTINS: (
-    tuple[int, dict[Callable[..., Any], Callable[..., Any]]] | None
-) = None
 
 
-def _interpreter_effective_max_collection_size(
-    max_collection_size: int,
-) -> int:
-    """Return an interpreter-bound cap without consulting process-global state."""
-    return max_collection_size
+class _InterpreterCap(int):
+    """A collection cap supplied by an ``Interpreter``'s ``SandboxConfig``.
 
+    ``_effective_max_collection_size`` treats a plain int as a *direct* caller's
+    limit and narrows it with the process-wide cap, preserving the legacy
+    module-level ``set_max_collection_size`` semantics.  A cap wrapped in this
+    type identifies the interpreter-installed call path, which is isolated from
+    that global by construction.
+    """
 
-def _iter_code_global_names(code: CodeType) -> Iterator[str]:
-    """Yield global names used by a code object and any nested code objects."""
-    yield from code.co_names
-    for const in code.co_consts:
-        if isinstance(const, CodeType):
-            yield from _iter_code_global_names(const)
-
-
-def _clone_interpreter_builtin_graph(
-    func: Callable[..., Any],
-    module_globals: dict[str, Any],
-    isolated_globals: dict[str, Any],
-    clones: dict[Callable[..., Any], Callable[..., Any]],
-) -> Callable[..., Any]:
-    existing = clones.get(func)
-    if existing is not None:
-        return existing
-
-    clone = FunctionType(
-        func.__code__,
-        isolated_globals,
-        func.__name__,
-        func.__defaults__,
-        func.__closure__,
-    )
-    clone.__kwdefaults__ = (
-        None if func.__kwdefaults__ is None else func.__kwdefaults__.copy()
-    )
-    clone.__annotations__ = func.__annotations__.copy()
-    clone.__dict__.update(func.__dict__)
-    clone.__qualname__ = func.__qualname__
-    clone.__module__ = func.__module__
-    clones[func] = clone
-
-    for name in _iter_code_global_names(func.__code__):
-        value = module_globals.get(name)
-        if name == "_effective_max_collection_size":
-            isolated_globals[name] = _interpreter_effective_max_collection_size
-        elif isinstance(value, FunctionType) and value.__module__ == __name__:
-            isolated_globals[name] = _clone_interpreter_builtin_graph(
-                value,
-                module_globals,
-                isolated_globals,
-                clones,
-            )
-    return clone
-
-
-def _interpreter_collection_limited_builtins(
-    funcs: tuple[Callable[..., Any], ...],
-) -> dict[Callable[..., Any], Callable[..., Any]]:
-    """Return cached builtin variants whose collection cap is interpreter-local."""
-    global _INTERPRETER_BUILTIN_GLOBALS
-    global _INTERPRETER_BUILTIN_CLONES
-    global _INTERPRETER_BUILTIN_ROOTS
-
-    roots = _INTERPRETER_BUILTIN_ROOTS
-    if roots is not None:
-        return roots
-
-    module_globals = globals()
-    isolated_globals = module_globals.copy()
-    clones: dict[Callable[..., Any], Callable[..., Any]] = {}
-    isolated_globals["_effective_max_collection_size"] = (
-        _interpreter_effective_max_collection_size
-    )
-    roots = {
-        func: _clone_interpreter_builtin_graph(
-            func,
-            module_globals,
-            isolated_globals,
-            clones,
-        )
-        for func in funcs
-    }
-    # Publish only after the complete reachable graph is coherent. Concurrent
-    # first constructions may build equivalent graphs; either publication is safe.
-    _INTERPRETER_BUILTIN_CLONES = clones
-    _INTERPRETER_BUILTIN_GLOBALS = isolated_globals
-    _INTERPRETER_BUILTIN_ROOTS = roots
-    return roots
-
-
-def _specialize_interpreter_stringify_value(
-    func: Callable[..., Any], max_collection_size: int
-) -> Callable[..., Any]:
-    specialized = FunctionType(
-        func.__code__,
-        func.__globals__,
-        func.__name__,
-        func.__defaults__,
-        func.__closure__,
-    )
-    specialized.__kwdefaults__ = (
-        {} if func.__kwdefaults__ is None else func.__kwdefaults__.copy()
-    )
-    specialized.__kwdefaults__["max_collection_size"] = max_collection_size
-    specialized.__annotations__ = func.__annotations__.copy()
-    specialized.__dict__.update(func.__dict__)
-    specialized.__qualname__ = func.__qualname__
-    specialized.__module__ = func.__module__
-    return specialized
-
-
-def _interpreter_bound_collection_limited_builtins(
-    max_collection_size: int,
-) -> dict[Callable[..., Any], Callable[..., Any]]:
-    """Return a bounded cache of callables transformed for one interpreter cap."""
-    global _INTERPRETER_BOUND_BUILTINS
-
-    cached = _INTERPRETER_BOUND_BUILTINS
-    if cached is not None and cached[0] == max_collection_size:
-        return cached[1]
-
-    roots = _INTERPRETER_BUILTIN_ROOTS
-    if roots is None:
-        raise AssertionError("interpreter builtin roots must be initialized first")
-    bound = {
-        original: (
-            _specialize_interpreter_stringify_value(clone, max_collection_size)
-            if original is _bounded_stringify_value
-            else partial(clone, max_collection_size=max_collection_size)
-        )
-        for original, clone in roots.items()
-    }
-    # Retain only the most recently requested cap. Concurrent constructions may
-    # publish equivalent or different complete maps; each caller keeps its result.
-    _INTERPRETER_BOUND_BUILTINS = (max_collection_size, bound)
-    return bound
+    __slots__ = ()
 
 
 def set_max_collection_size(n: int) -> None:
@@ -197,7 +65,14 @@ def get_max_collection_size() -> int:
 
 
 def _effective_max_collection_size(max_collection_size: int) -> int:
-    """Use the explicit/direct cap together with the legacy global cap."""
+    """Resolve the cap a builtin should enforce for this call.
+
+    Interpreter-installed builtins are bound to an ``_InterpreterCap`` and use
+    it verbatim.  Direct module-level callers keep the legacy behavior: their
+    limit is narrowed by the process-wide cap.
+    """
+    if type(max_collection_size) is _InterpreterCap:
+        return int(max_collection_size)
     return min(max_collection_size, _MAX_COLLECTION_SIZE)
 
 

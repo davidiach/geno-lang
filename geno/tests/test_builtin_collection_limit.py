@@ -20,7 +20,7 @@ import pytest
 
 from geno import builtins as _builtins
 from geno.builtin_registry import CAPABILITY_MAP
-from geno.interpreter import Interpreter
+from geno.interpreter import _COLLECTION_LIMITED_BUILTINS, Interpreter
 from geno.parser import parse
 from geno.sandbox import SandboxConfig
 from geno.values import BuiltinFunction
@@ -110,6 +110,13 @@ def test_interpreter_bound_limit_wins_above_and_below_legacy_global():
 
 
 def test_all_limit_aware_interpreter_builtins_bind_the_interpreter_limit():
+    """Every limit-aware builtin must be installed with this interpreter's cap.
+
+    This is the guard that stops a newly added builtin from silently escaping
+    the sandbox limit: if its signature takes ``max_collection_size`` but its
+    name is missing from ``_COLLECTION_LIMITED_BUILTINS``, it stays bound to
+    ``DEFAULT_MAX_COLLECTION_SIZE`` and this test names it.
+    """
     limit = 42
     interp = Interpreter(
         check_examples=False,
@@ -117,8 +124,6 @@ def test_all_limit_aware_interpreter_builtins_bind_the_interpreter_limit():
         capabilities=CAPABILITY_MAP,
     )
     bound_names = set()
-    bound_funcs = set()
-    bound_targets = set()
     unbound_names = []
 
     for name, value in interp.global_env.bindings.items():
@@ -136,96 +141,35 @@ def test_all_limit_aware_interpreter_builtins_bind_the_interpreter_limit():
                 and "max_collection_size" in func.keywords
             ):
                 unbound_names.append(name)
-                continue
             continue
-        if name == "to_string":
-            if (
-                isinstance(func, functools.partial)
-                or not inspect.isfunction(func)
-                or (func.__kwdefaults__ or {}).get("max_collection_size") != limit
-            ):
-                unbound_names.append(name)
-                continue
-        elif (
-            not isinstance(func, functools.partial)
-            or func.keywords.get("max_collection_size") != limit
-        ):
+        if not isinstance(func, functools.partial):
             unbound_names.append(name)
             continue
-        if not inspect.isfunction(target):
-            unbound_names.append(name)
-            continue
-        shadow_globals = target.__globals__
-        if (
-            shadow_globals is vars(_builtins)
-            or shadow_globals.get("_effective_max_collection_size")
-            is not _builtins._interpreter_effective_max_collection_size
-        ):
+        bound = func.keywords.get("max_collection_size")
+        # A plain int would be narrowed by the process-wide cap inside
+        # ``_effective_max_collection_size``; only ``_InterpreterCap`` is
+        # isolated from it.
+        if type(bound) is not _builtins._InterpreterCap or bound != limit:
             unbound_names.append(name)
             continue
         bound_names.add(name)
-        bound_funcs.add(func)
-        bound_targets.add(target)
 
     assert unbound_names == []
-    assert len(bound_names) == 41
+    assert bound_names == _COLLECTION_LIMITED_BUILTINS
     assert {"to_string", "vec_push", "mutable_map_set"} <= bound_names
 
-    roots = _builtins._INTERPRETER_BUILTIN_ROOTS
-    clones = _builtins._INTERPRETER_BUILTIN_CLONES
-    bound_cache = _builtins._INTERPRETER_BOUND_BUILTINS
-    assert roots is not None
-    assert bound_cache is not None
-    assert len(roots) == 41
-    assert bound_cache[0] == limit
-    assert set(bound_cache[1].values()) == bound_funcs
-    assert len(set(roots.values()) & bound_targets) == 40
-    assert len(clones) == 82
-
-    for original, clone in roots.items():
-        assert clones[original] is clone
-
-    for original, clone in clones.items():
-        assert clone.__code__ is original.__code__
-        assert clone.__defaults__ == original.__defaults__
-        assert clone.__kwdefaults__ == original.__kwdefaults__
-        assert clone.__annotations__ == original.__annotations__
-        assert "_MAX_COLLECTION_SIZE" not in clone.__code__.co_names
-        for dependency_name in _builtins._iter_code_global_names(original.__code__):
-            dependency = vars(_builtins).get(dependency_name)
-            if dependency_name == "_effective_max_collection_size":
-                assert (
-                    clone.__globals__[dependency_name]
-                    is _builtins._interpreter_effective_max_collection_size
-                )
-            elif (
-                inspect.isfunction(dependency)
-                and dependency.__module__ == _builtins.__name__
-            ):
-                assert clone.__globals__[dependency_name] is clones[dependency]
-
     to_string = interp.global_env.bindings["to_string"].func
-    root_to_string = roots[_builtins._bounded_stringify_value]
-    assert inspect.isfunction(to_string)
-    assert to_string.__code__ is root_to_string.__code__
-    assert to_string.__globals__ is root_to_string.__globals__
-    assert to_string.__kwdefaults__ is not None
-    assert to_string.__kwdefaults__["max_collection_size"] == limit
+    assert to_string.func is _builtins._bounded_stringify_value
     assert interp._builtin_stringify_value is to_string
-    assert "_effective_max_collection_size" not in to_string.__code__.co_names
 
-    second = Interpreter(
-        check_examples=False,
-        sandbox_config=SandboxConfig(max_collection_size=limit),
-        capabilities=CAPABILITY_MAP,
-    )
-    assert _builtins._INTERPRETER_BUILTIN_ROOTS is roots
-    assert _builtins._INTERPRETER_BOUND_BUILTINS is bound_cache
-    assert second.global_env.bindings["to_string"].func is to_string
-    assert (
-        second.global_env.bindings["append"].func
-        is interp.global_env.bindings["append"].func
-    )
+
+def test_interpreter_cap_is_isolated_from_the_process_wide_cap():
+    """``_InterpreterCap`` opts a call out of the legacy global narrowing."""
+    _builtins.set_max_collection_size(3)
+
+    assert _builtins._effective_max_collection_size(10) == 3
+    assert _builtins._effective_max_collection_size(_builtins._InterpreterCap(10)) == 10
+    assert _builtins._effective_max_collection_size(_builtins._InterpreterCap(2)) == 2
 
 
 def test_interpreter_stringify_limit_is_isolated_from_newer_interpreter():
@@ -389,7 +333,7 @@ def test_concurrent_interpreter_initialization_and_calls_are_isolated():
             future.result(timeout=10)
 
 
-def test_concurrent_different_limit_cache_replacement_is_isolated():
+def test_concurrent_interleaved_limits_stay_isolated():
     barrier = threading.Barrier(16)
 
     def worker(limit):
@@ -419,11 +363,6 @@ def test_concurrent_different_limit_cache_replacement_is_isolated():
             # exceed 15 seconds on shared CI runners.  Keep a generous local
             # guard while the repository-level 60-second timeout catches hangs.
             future.result(timeout=45)
-
-    bound_cache = _builtins._INTERPRETER_BOUND_BUILTINS
-    assert bound_cache is not None
-    assert bound_cache[0] in {4, 10}
-    assert len(bound_cache[1]) == 41
 
 
 def test_unbound_mutation_prechecks_use_interpreter_local_limit():

@@ -11,8 +11,9 @@ import math
 import sys
 import threading
 import time
-from collections.abc import Collection, Generator
+from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
+from functools import partial
 from types import MappingProxyType
 from typing import Any, cast
 
@@ -353,6 +354,12 @@ class Interpreter:
 
         # Reverse index: constructor name -> parent type name (O(1) lookup)
         self._constructor_to_type: dict[str, str] = {}
+
+        # ``to_string`` bound to this interpreter's collection cap.  Held
+        # separately from the ``to_string`` binding so f-string formatting keeps
+        # working when that builtin is replaced by a capability-denied stub.
+        # Assigned in _init_builtins below.
+        self._builtin_stringify_value: Callable[[Any], str] = _builtins.stringify_value
 
         # Trait support: (trait_name, type_name) -> {method_name: Closure}
         self.trait_impls: dict[tuple[str, str], dict[str, Closure]] = {}
@@ -977,26 +984,15 @@ class Interpreter:
             ),
         ]
 
-        max_collection_size = self.sandbox_config.max_collection_size
-        bound_cache = _builtins._INTERPRETER_BOUND_BUILTINS
-        if bound_cache is None or bound_cache[0] != max_collection_size:
-            if _builtins._INTERPRETER_BUILTIN_ROOTS is None:
-                roots = tuple(
-                    func
-                    for name, func, _arity, _param_names in builtins
-                    if name in _COLLECTION_LIMITED_BUILTINS
-                )
-                _builtins._interpreter_collection_limited_builtins(roots)
-            shadow_builtins = _builtins._interpreter_bound_collection_limited_builtins(
-                max_collection_size
-            )
-        else:
-            shadow_builtins = bound_cache[1]
+        # Bind the sandbox limit as an _InterpreterCap so the builtin pre-checks
+        # enforce *this* interpreter's cap and ignore the process-wide one that
+        # ``_builtins.set_max_collection_size`` still governs for direct callers.
+        cap = _builtins._InterpreterCap(self.sandbox_config.max_collection_size)
 
         shared_param_names = interpreter_builtin_param_name_lists()
         for name, func, arity, param_names in builtins:
             if name in _COLLECTION_LIMITED_BUILTINS:
-                func = shadow_builtins[func]
+                func = partial(func, max_collection_size=cap)
             if name == "to_string":
                 self._builtin_stringify_value = func
             resolved_param_names = shared_param_names.get(name, param_names)
