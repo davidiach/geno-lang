@@ -2121,20 +2121,13 @@ class TestWorkerStartupGrace:
     def test_execute_worker_timeout_stops_fake_worker(self):
         completed = threading.Event()
 
-        # The worker only records completion if its cancellable wait expires
-        # before ``terminate()`` reaches it, so ``run_delay`` is the budget the
-        # supervisor has to deliver the cancel after the wall timeout fires.
-        # At the original 0.2s that budget was ~0.15s, which a loaded runner
-        # could miss under coverage; 1.0s keeps the same assertion with room to
-        # spare.  A cancelled worker returns immediately, so the wider delay
-        # costs nothing on the passing path.
         with patch(
             "geno.server.multiprocessing.get_context",
             return_value=_ThreadContext(),
         ):
             status, payload = _execute_worker_with_wall_timeout(
                 _record_completion_worker,
-                (1.0, completed),
+                (0.2, completed),
                 wall_timeout=0.05,
                 startup_grace=0.3,
             )
