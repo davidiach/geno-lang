@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Interpreter collection caps are now interpreter-local**: Builtins installed on an `Interpreter` enforce only that interpreter's `SandboxConfig.max_collection_size`. The process-wide `geno.builtins.set_max_collection_size` cap no longer tightens (or is clobbered by) live interpreters; it now governs only direct module-level builtin calls. Embedders that relied on the global setter to constrain interpreters should pass the limit via `SandboxConfig` instead.
+
 ## [0.4.3] - 2026-08-01
 
 ### Changed

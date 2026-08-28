@@ -30,12 +30,23 @@ DEFAULT_MAX_COLLECTION_SIZE = 10_000_000
 _MAX_SAFE_JS_INT = 2**53 - 1
 _MIN_SAFE_JS_INT = -_MAX_SAFE_JS_INT
 
-# Module-level collection-size cap used by builtin pre-checks.
-# The Interpreter calls ``set_max_collection_size`` during init with the
-# value from ``SandboxConfig.max_collection_size`` so tightened limits are
-# enforced *before* a builtin allocates its output, not only after
-# (the ``_call_function`` post-check runs after allocation).
+# Process-wide cap retained for direct builtin callers.  Builtins installed on
+# an ``Interpreter`` are bound to an ``_InterpreterCap`` instead, so a live
+# interpreter enforces only its own ``SandboxConfig.max_collection_size``.
 _MAX_COLLECTION_SIZE: int = DEFAULT_MAX_COLLECTION_SIZE
+
+
+class _InterpreterCap(int):
+    """A collection cap supplied by an ``Interpreter``'s ``SandboxConfig``.
+
+    ``_effective_max_collection_size`` treats a plain int as a *direct* caller's
+    limit and narrows it with the process-wide cap, preserving the legacy
+    module-level ``set_max_collection_size`` semantics.  A cap wrapped in this
+    type identifies the interpreter-installed call path, which is isolated from
+    that global by construction.
+    """
+
+    __slots__ = ()
 
 
 def set_max_collection_size(n: int) -> None:
@@ -54,7 +65,19 @@ def get_max_collection_size() -> int:
 
 
 def _effective_max_collection_size(max_collection_size: int) -> int:
-    """Honor both the caller-supplied limit and the module-level cap."""
+    """Resolve the cap a builtin should enforce for this call.
+
+    Interpreter-installed builtins are bound to an ``_InterpreterCap`` and use
+    it verbatim.  Direct module-level callers keep the legacy behavior: their
+    limit is narrowed by the process-wide cap.
+
+    Callers must pass ``max_collection_size`` through unchanged: arithmetic on
+    it (``cap - 1``, ``min(cap, n)``) returns a plain ``int`` and silently
+    reinstates the process-wide narrowing.  Compute with the *sizes* being
+    checked instead, as the ``_check_result_string_size`` callers do.
+    """
+    if type(max_collection_size) is _InterpreterCap:
+        return int(max_collection_size)
     return min(max_collection_size, _MAX_COLLECTION_SIZE)
 
 
@@ -876,17 +899,21 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
 
 
 def stringify_value(value: Any, _seen: set[int] | None = None) -> str:
-    """Format a value for ``to_string`` without quoting a top-level string."""
+    """Format a value for direct callers using the legacy process-wide cap."""
     writer = _StringifyWriter("to_string", _MAX_COLLECTION_SIZE)
     _write_stringify_value(value, writer, _seen or set(), top_level=True)
     return writer.result()
 
 
-def _stringify_value(
-    value: Any, _seen: set[int] | None = None, *, top_level: bool = False
+def _bounded_stringify_value(
+    value: Any,
+    _seen: set[int] | None = None,
+    *,
+    max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE,
 ) -> str:
-    writer = _StringifyWriter("to_string", _MAX_COLLECTION_SIZE)
-    _write_stringify_value(value, writer, _seen or set(), top_level=top_level)
+    """Format an installed to_string value with an explicit collection cap."""
+    writer = _StringifyWriter("to_string", max_collection_size)
+    _write_stringify_value(value, writer, _seen or set(), top_level=True)
     return writer.result()
 
 
