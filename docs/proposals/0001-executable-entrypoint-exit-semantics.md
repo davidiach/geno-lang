@@ -48,7 +48,7 @@ result-display contract before v0.4.2 was published while retaining compatible
 entrypoint-ownership and generated-module import-safety fixes.
 
 The reverted implementation is historical design and test evidence, not an
-accepted or staged v0.5 implementation. If this proposal is accepted, v0.5
+accepted or staged v0.5 implementation. Under this accepted proposal, v0.5
 reintroduces the behavior through separate reviewed implementation and
 conformance pull requests.
 
@@ -133,10 +133,14 @@ At an executable boundary:
    behavior and status 0 for v0.5. The primary CLI and standalone artifacts
    keep displaying those results. The legacy self-hosted command adapter keeps
    omitting the inner result. Their future deprecation is outside this proposal.
-4. An entry module with no `main` retains the existing successful no-op
-   behavior: status 0 and no implicit output. A type error or an uncaught
-   runtime error is not a normal result; existing diagnostics and nonzero
-   failure behavior apply.
+4. An entry module with no `main` and no other target-defined lifecycle
+   entrypoint retains the existing successful no-op behavior: status 0 and no
+   implicit output. App-mode programs are excluded: `docs/spec/v0.4.md`
+   section 9.12 defines them as an `init`/`update`/`render` trio with no
+   `main`, and the JavaScript backend auto-starts their frame loop. They keep
+   that behavior; this rule does not reclassify them as no-ops. A type error
+   or an uncaught runtime error is not a normal result; existing diagnostics
+   and nonzero failure behavior apply.
 
 Modulo 256 is defined as mathematical modulo, so `-1` normalizes to 255 and
 `258` normalizes to 2. The normalization is performed once, at the executable
@@ -328,17 +332,12 @@ return a normal nonzero integer, and produce no traceback.
 
 ## Rollout And Observability
 
-1. Keep this proposal open in Draft for at least 14 calendar days after the
-   material 2026-07-22 revision.
-2. Obtain an independent human technical review, then record project-lead
-   acceptance and the decision rationale.
-3. Resolve all compatibility, backend, security, and conformance questions.
-4. Set the status to Accepted, assign the permanent proposal number, and merge
-   this design record without runtime implementation changes.
-5. Add the v0.5 specification, corpus, migration fixtures, and runtime/backend
+This record is Accepted and numbered. The remaining work is:
+
+1. Add the v0.5 specification, corpus, migration fixtures, and runtime/backend
    behavior in separate reviewed implementation PRs.
-6. Re-run the canonical release gate and external dogfood from built artifacts.
-7. Publish only as a v0.5 prerelease with curated breaking-change notes.
+2. Re-run the canonical release gate and external dogfood from built artifacts.
+3. Publish only as a v0.5 prerelease with curated breaking-change notes.
 
 Release evidence records the accepted proposal, candidate commit, CI and
 release-gate runs, conformance output, dogfood result, release owner,
@@ -346,9 +345,10 @@ independent reviewer, and support owner. A post-release smoke verifies exit 0,
 exit 2 with preserved output, an uncaught error, embedding, and installed
 Python/Node artifacts.
 
-If review rejects the design, record the Rejected status and rationale while
-leaving the current v0.4.3 behavior unchanged. Do not publish the proposed
-behavior under a v0.4 patch number or waive the compatibility rule.
+Superseding or amending this direction uses a new proposal, per
+`docs/proposals/README.md`. Until the implementation ships, v0.4.3 behavior
+stays unchanged: do not publish the proposed behavior under a v0.4 patch
+number or waive the compatibility rule.
 
 ## Alternatives
 
