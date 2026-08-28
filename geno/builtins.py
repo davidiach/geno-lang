@@ -70,6 +70,11 @@ def _effective_max_collection_size(max_collection_size: int) -> int:
     Interpreter-installed builtins are bound to an ``_InterpreterCap`` and use
     it verbatim.  Direct module-level callers keep the legacy behavior: their
     limit is narrowed by the process-wide cap.
+
+    Callers must pass ``max_collection_size`` through unchanged: arithmetic on
+    it (``cap - 1``, ``min(cap, n)``) returns a plain ``int`` and silently
+    reinstates the process-wide narrowing.  Compute with the *sizes* being
+    checked instead, as the ``_check_result_string_size`` callers do.
     """
     if type(max_collection_size) is _InterpreterCap:
         return int(max_collection_size)
@@ -909,17 +914,6 @@ def _bounded_stringify_value(
     """Format an installed to_string value with an explicit collection cap."""
     writer = _StringifyWriter("to_string", max_collection_size)
     _write_stringify_value(value, writer, _seen or set(), top_level=True)
-    return writer.result()
-
-
-def _stringify_value(
-    value: Any,
-    _seen: set[int] | None = None,
-    *,
-    top_level: bool = False,
-) -> str:
-    writer = _StringifyWriter("to_string", _MAX_COLLECTION_SIZE)
-    _write_stringify_value(value, writer, _seen or set(), top_level=top_level)
     return writer.result()
 
 

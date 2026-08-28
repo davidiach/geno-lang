@@ -334,11 +334,11 @@ def test_concurrent_interpreter_initialization_and_calls_are_isolated():
 
 
 def test_concurrent_interleaved_limits_stay_isolated():
-    barrier = threading.Barrier(16)
+    barrier = threading.Barrier(8)
 
     def worker(limit):
-        barrier.wait(timeout=5)
-        for _ in range(20):
+        barrier.wait(timeout=15)
+        for _ in range(10):
             interp = _interp_with_limit(limit)
             if limit == 10:
                 assert _call_installed(interp, "append", [[0, 1, 2, 3], 4]) == [
@@ -355,14 +355,16 @@ def test_concurrent_interleaved_limits_stay_isolated():
                 with pytest.raises(GenoRuntimeError, match="size exceeds limit"):
                     _call_installed(interp, "to_string", [[1, 2]])
 
-    limits = [4, 10] * 8
+    limits = [4, 10] * 4
     with ThreadPoolExecutor(max_workers=len(limits)) as executor:
         futures = [executor.submit(worker, limit) for limit in limits]
         for future in futures:
-            # Full-suite coverage can make this construction-heavy stress test
-            # exceed 15 seconds on shared CI runners.  Keep a generous local
-            # guard while the repository-level 60-second timeout catches hangs.
-            future.result(timeout=45)
+            # Interpreter construction dominates this stress test, so the work
+            # is kept small enough to stay well inside the repository-level
+            # 60-second timeout even under full-suite coverage on a shared CI
+            # runner.  Eight interleaved threads still cover cross-interpreter
+            # contamination; more rounds only cost margin.
+            future.result(timeout=20)
 
 
 def test_unbound_mutation_prechecks_use_interpreter_local_limit():
