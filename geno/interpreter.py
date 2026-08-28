@@ -11,7 +11,7 @@ import math
 import sys
 import threading
 import time
-from collections.abc import Collection, Generator
+from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from functools import partial
 from types import MappingProxyType
@@ -176,6 +176,52 @@ _INCREMENTAL_MUTATION_BUILTINS = frozenset(
 )
 _UNSPECIFIED_CAPABILITIES = object()
 
+_COLLECTION_LIMITED_BUILTINS = frozenset(
+    {
+        "append",
+        "concat",
+        "split",
+        "join",
+        "replace",
+        "range",
+        "format",
+        "to_string",
+        "repeat_string",
+        "string_pad_left",
+        "string_pad_right",
+        "string_repeat",
+        "string_split",
+        "string_join",
+        "string_replace",
+        "json_parse",
+        "json_stringify",
+        "json_stringify_pretty",
+        "json_to_string",
+        "csv_parse",
+        "csv_parse_with_headers",
+        "toml_parse",
+        "regex_find_all",
+        "regex_replace",
+        "env_get",
+        "env_get_or",
+        "cli_args",
+        "list_flatten",
+        "list_intersperse",
+        "array_new",
+        "array_from_list",
+        "map_from_list",
+        "map_insert",
+        "map_merge",
+        "map_entries",
+        "map_from_entries",
+        "set_from_list",
+        "set_add",
+        "set_union",
+        "mutable_map_set",
+        "vec_push",
+    }
+)
+
 # Exception types a builtin may raise as an ordinary, user-facing Geno error
 # (bad argument, arithmetic, etc.). Anything outside this set reaching the
 # builtin-call catch-all is an internal toolchain defect, not user error, so
@@ -309,17 +355,17 @@ class Interpreter:
         # Reverse index: constructor name -> parent type name (O(1) lookup)
         self._constructor_to_type: dict[str, str] = {}
 
+        # ``to_string`` bound to this interpreter's collection cap.  Held
+        # separately from the ``to_string`` binding so f-string formatting keeps
+        # working when that builtin is replaced by a capability-denied stub.
+        # Assigned in _init_builtins below.
+        self._builtin_stringify_value: Callable[[Any], str] = _builtins.stringify_value
+
         # Trait support: (trait_name, type_name) -> {method_name: Closure}
         self.trait_impls: dict[tuple[str, str], dict[str, Closure]] = {}
         # Set of method names that are trait methods (for dispatch detection)
         self.trait_method_names: set[str] = set()
         self.trait_method_param_names: dict[tuple[str, str], list[str]] = {}
-
-        # Propagate the configured cap to the module-level limit consulted
-        # by builtin pre-checks (set_at, concat, range, array_new, set_*,
-        # repeat_string, etc.) so a tightened sandbox limit is enforced
-        # before those builtins allocate their output.
-        _builtins.set_max_collection_size(self.sandbox_config.max_collection_size)
 
         self._register_builtin_types()
         self._init_builtins()
@@ -456,47 +502,6 @@ class Interpreter:
 
     def _init_builtins(self) -> None:
         """Initialize built-in functions."""
-        collection_limited_builtins = {
-            "append",
-            "concat",
-            "split",
-            "join",
-            "replace",
-            "range",
-            "format",
-            "repeat_string",
-            "string_pad_left",
-            "string_pad_right",
-            "string_repeat",
-            "string_split",
-            "string_join",
-            "string_replace",
-            "json_parse",
-            "json_stringify",
-            "json_stringify_pretty",
-            "json_to_string",
-            "csv_parse",
-            "csv_parse_with_headers",
-            "toml_parse",
-            "regex_find_all",
-            "regex_replace",
-            "env_get",
-            "env_get_or",
-            "cli_args",
-            "list_flatten",
-            "list_intersperse",
-            "array_new",
-            "array_from_list",
-            "map_from_list",
-            "map_insert",
-            "map_merge",
-            "map_entries",
-            "map_from_entries",
-            "set_from_list",
-            "set_add",
-            "set_union",
-        }
-
         # Format: (name, func, arity, fallback_param_names)
         builtins = [
             # List operations
@@ -737,7 +742,7 @@ class Interpreter:
             ("parse_float", _builtins.builtin_parse_float, 1, ["text"]),
             (
                 "to_string",
-                _builtins.stringify_value,
+                _builtins._bounded_stringify_value,
                 1,
                 ["value"],
             ),
@@ -979,13 +984,17 @@ class Interpreter:
             ),
         ]
 
+        # Bind the sandbox limit as an _InterpreterCap so the builtin pre-checks
+        # enforce *this* interpreter's cap and ignore the process-wide one that
+        # ``_builtins.set_max_collection_size`` still governs for direct callers.
+        cap = _builtins._InterpreterCap(self.sandbox_config.max_collection_size)
+
         shared_param_names = interpreter_builtin_param_name_lists()
         for name, func, arity, param_names in builtins:
-            if name in collection_limited_builtins:
-                func = partial(
-                    func,
-                    max_collection_size=self.sandbox_config.max_collection_size,
-                )
+            if name in _COLLECTION_LIMITED_BUILTINS:
+                func = partial(func, max_collection_size=cap)
+            if name == "to_string":
+                self._builtin_stringify_value = func
             resolved_param_names = shared_param_names.get(name, param_names)
             self.global_env.bind(
                 name,
@@ -1779,14 +1788,14 @@ class Interpreter:
 
     def _eval_fstring(self, expr: FStringExpr, env: Environment) -> str:
         parts = []
+        limit = self.sandbox_config.max_collection_size
         for part in expr.parts:
             if isinstance(part, str):
                 parts.append(part)
             else:
                 value = self.eval_expr(part, env)
-                parts.append(_builtins.stringify_value(value))
+                parts.append(self._builtin_stringify_value(value))
         result = "".join(parts)
-        limit = self.sandbox_config.max_collection_size
         if len(result) > limit:
             raise RuntimeError(
                 f"String size exceeds limit ({len(result)} > {limit})",
