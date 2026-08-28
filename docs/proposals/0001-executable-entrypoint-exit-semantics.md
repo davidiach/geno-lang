@@ -1,8 +1,9 @@
-# Proposal 0000: Executable Entrypoint Exit Semantics
+# Proposal 0001: Executable Entrypoint Exit Semantics
 
-- Status: Draft
+- Status: Accepted
 - Authors: David Iach
 - Created: 2026-07-21
+- Accepted: 2026-08-28
 - Discussion: https://github.com/davidiach/geno-lang/issues/31
 - Supersedes: None
 
