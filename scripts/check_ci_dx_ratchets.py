@@ -298,15 +298,49 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
             errors.append(f"hosted LSP test slice missing {target}")
 
     test_job = job_bodies.get("test", "")
-    canonical_condition = (
-        "if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'"
-    )
-    if f"Run tests with coverage\n      {canonical_condition}" not in test_job:
-        errors.append("coverage must run only on canonical Ubuntu/Python 3.11")
+    if "--cov=geno" in test_job:
+        errors.append("compatibility matrix must not repeat the coverage suite")
     if "Run compatibility tests without coverage" not in test_job:
         errors.append("compatibility matrix must retain a non-coverage pytest step")
-    if f"Run type checker on examples\n      {canonical_condition}" not in test_job:
-        errors.append("example checks must run once on canonical Ubuntu/Python 3.11")
+    if re.search(r"- os: ubuntu-latest\s+python-version: '3\.11'", test_job):
+        errors.append(
+            "canonical Ubuntu/Python 3.11 must not repeat in compatibility CI"
+        )
+
+    coverage_shard_job = job_bodies.get("coverage-shard", "")
+    for snippet, label in {
+        "shard: [0, 1, 2]": "three-way coverage matrix",
+        "scripts/pytest_shard.py": "deterministic pytest shard runner",
+        "--shard-count 3": "three-way shard selection",
+        "--cov=geno": "coverage collection",
+        "--cov-report=": "deferred aggregate coverage report",
+        "COVERAGE_FILE:": "isolated coverage data file",
+        "actions/upload-artifact@": "coverage artifact upload",
+        "if-no-files-found: error": "missing coverage artifact failure",
+    }.items():
+        if snippet not in coverage_shard_job:
+            errors.append(f"hosted coverage shard job missing {label}")
+    if "--cov-fail-under" in coverage_shard_job:
+        errors.append("coverage threshold must run only after shard data is combined")
+
+    coverage_report_job = job_bodies.get("coverage-report", "")
+    for snippet, label in {
+        "name: test (ubuntu-latest, 3.11)": "canonical required-check name",
+        "if: ${{ always() }}": "failure-propagating aggregate condition",
+        "needs: coverage-shard": "coverage shard dependency",
+        "needs.coverage-shard.result != 'success'": "coverage shard failure guard",
+        "actions/download-artifact@": "coverage artifact download",
+        "merge-multiple: true": "coverage artifact merge",
+        "expected 3 coverage shards": "complete shard artifact guard",
+        "python -m coverage combine": "coverage data combination",
+        "python -m coverage report --fail-under=80": "aggregate coverage threshold",
+        "codecov/codecov-action@": "aggregate Codecov upload",
+        "Run type checker on examples": "canonical example checks",
+        "Selfhost parity check": "canonical selfhost parity",
+        "Selfhost smoke check": "canonical selfhost smoke",
+    }.items():
+        if snippet not in coverage_report_job:
+            errors.append(f"hosted coverage report job missing {label}")
 
     release_job = job_bodies.get("release-check", "")
     if "make release-validators PYTHON=python" not in release_job:
