@@ -136,6 +136,40 @@ def test_publish_workflow_checks_tag_before_release_gate():
     assert "--tag" in tag_check["run"]
 
 
+def test_publish_workflow_only_releases_commits_reachable_from_main():
+    jobs = _publish_workflow_jobs()
+    release_job = jobs["release-check"]
+    names = _step_names(release_job)
+
+    checkout = release_job["steps"][0]
+    assert checkout["with"]["fetch-depth"] == 0
+    assert names.index("Verify release commit is on main") < names.index(
+        "Run release gate"
+    )
+    ancestry_check = _step_by_name(release_job, "Verify release commit is on main")[
+        "run"
+    ]
+    assert "git merge-base --is-ancestor" in ancestry_check
+    assert "origin/main" in ancestry_check
+
+
+def test_publish_workflow_bounds_jobs_caches_tools_and_retries_index_propagation():
+    jobs = _publish_workflow_jobs()
+
+    assert all(job.get("timeout-minutes") for job in jobs.values())
+    release_python = _step_by_name(jobs["release-check"], "Set up Python")["with"]
+    release_node = _step_by_name(jobs["release-check"], "Set up Node.js")["with"]
+    build_python = _step_by_name(jobs["build"], "Set up Python")["with"]
+    assert release_python["cache"] == "pip"
+    assert release_node["cache"] == "npm"
+    assert build_python["cache"] == "pip"
+
+    verify = _step_by_name(jobs["verify"], "Verify published package")["run"]
+    assert "--no-cache-dir" in verify
+    assert "for attempt in {1..10}" in verify
+    assert "sleep 30" not in verify
+
+
 def test_publish_workflow_scopes_oidc_to_shell_free_publish_job():
     workflow = _publish_workflow()
     jobs = workflow["jobs"]

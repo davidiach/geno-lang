@@ -3,7 +3,7 @@
 #
 # Common development and experiment tasks.
 
-.PHONY: all install dev test lint format clean docs experiment analyze conformance perf-ratchets-update release-check release-gate-templates release-gate-vscode release-gate-apps validate-builtin-parity validate-dependencies validate-supported-targets optional-test-collection sandbox-regression dependency-audit perf-ratchets local-ci local-ci-release security security-bounty
+.PHONY: all install dev test lint format clean docs experiment analyze conformance perf-ratchets-update release-check release-validators release-gate-templates release-gate-vscode release-gate-apps validate-builtin-parity validate-dependencies validate-supported-targets optional-test-collection sandbox-regression dependency-audit perf-ratchets local-ci local-ci-release security security-bounty
 
 PYTHON ?= python3
 
@@ -28,7 +28,7 @@ test:
 
 # Run tests with coverage
 coverage:
-	$(PYTHON) -m pytest geno/tests/ -v --tb=short --cov=geno --cov-report=term --cov-report=html --cov-fail-under=80 --timeout=60
+	$(PYTHON) -m pytest geno/tests/ -q --tb=short --cov=geno --cov-report=term --cov-report=html --cov-fail-under=80 --timeout=60
 
 # Lint code
 lint:
@@ -87,7 +87,20 @@ release-gate-vscode:
 release-gate-apps:
 	$(PYTHON) scripts/release_gate_apps.py
 
-# Release readiness checks
+# Hosted pull-request CI already runs templates/apps, lint, type checks,
+# security, selfhost parity, and the Python-version matrix in dedicated jobs.
+# Keep the release-only slice separate so those checks are not repeated.
+release-validators:
+	$(PYTHON) scripts/check_version_alignment.py
+	$(PYTHON) scripts/validate_dependencies.py --check-installs
+	PYTHON=$(PYTHON) bash scripts/release-gate-vscode.sh
+	$(PYTHON) scripts/validate_builtin_parity.py
+	$(PYTHON) scripts/validate_spec.py
+	$(PYTHON) scripts/run_conformance.py --all-retained --target all --require-node
+	$(PYTHON) scripts/validate_supported_targets.py
+	$(PYTHON) scripts/validate_benchmark.py --strict-budgets
+
+# Full release readiness checks
 release-check:
 	$(PYTHON) scripts/check_version_alignment.py
 	$(PYTHON) scripts/validate_dependencies.py --check-installs
@@ -102,7 +115,7 @@ release-check:
 	$(PYTHON) -m ruff format --check geno/ benchmark/ experiment/ analysis/
 	$(PYTHON) -m mypy geno/ --ignore-missing-imports --no-error-summary
 	$(PYTHON) -m ruff check geno/ --select S --ignore S101
-	$(PYTHON) -m pytest geno/tests/ -v --tb=short --cov=geno --cov-report=term --cov-fail-under=80 --timeout=60
+	$(PYTHON) -m pytest geno/tests/ -q --tb=short --cov=geno --cov-report=term --cov-fail-under=80 --timeout=60
 	$(PYTHON) scripts/check_selfhost_parity.py
 	$(PYTHON) scripts/validate_benchmark.py --strict-budgets
 
@@ -168,6 +181,7 @@ help:
 	@echo "  optional-test-collection - Collect optional tests without Hypothesis"
 	@echo "  sandbox-regression - Run focused compiled sandbox regression tests"
 	@echo "  dependency-audit - Audit Python dependencies for known vulnerabilities"
+	@echo "  release-validators - Run release-only checks not duplicated by hosted CI"
 	@echo "  release-gate-templates - Validate init templates (scaffold + check + test)"
 	@echo "  release-gate-vscode - Build and package the VS Code extension"
 	@echo "  release-gate-apps - Validate example apps"

@@ -67,7 +67,7 @@ def test_release_runbook_lists_key_release_check_gates():
         ),
         "-m mypy geno/": "mypy over `geno/`",
         "-m ruff check geno/ --select S --ignore S101": "security linting",
-        "-m pytest geno/tests/ -v --tb=short --cov=geno": (
+        "-m pytest geno/tests/ -q --tb=short --cov=geno": (
             "pytest over `geno/tests/` with coverage and per-test timeouts"
         ),
         "scripts/check_selfhost_parity.py": "selfhost parity checks",

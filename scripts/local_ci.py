@@ -274,7 +274,7 @@ def build_full_steps() -> list[Step]:
                 "-m",
                 "pytest",
                 "geno/tests/",
-                "-v",
+                "-q",
                 "--tb=short",
                 "--cov=geno",
                 "--cov-report=term",
@@ -439,9 +439,18 @@ def _print_summary(results: Sequence[StepResult]) -> None:
         print(f"- {result.status}: {result.name}{suffix}")
 
 
-def run_steps(steps: Sequence[Step], dry_run: bool = False) -> int:
-    """Run a sequence of steps and return the process exit code."""
-    results = [_execute_step(step, dry_run=dry_run) for step in steps]
+def run_steps(
+    steps: Sequence[Step],
+    dry_run: bool = False,
+    keep_going: bool = False,
+) -> int:
+    """Run steps, stopping at the first hard failure unless requested otherwise."""
+    results: list[StepResult] = []
+    for step in steps:
+        result = _execute_step(step, dry_run=dry_run)
+        results.append(result)
+        if result.status == "FAIL" and not keep_going:
+            break
     _print_summary(results)
     failures = [result for result in results if result.status == "FAIL"]
     return 1 if failures else 0
@@ -464,7 +473,20 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
             help="Print the planned commands without running them.",
         )
 
+    def add_keep_going_flag(
+        target: argparse.ArgumentParser,
+        *,
+        default: bool | str = False,
+    ) -> None:
+        target.add_argument(
+            "--keep-going",
+            action="store_true",
+            default=default,
+            help="Run every selected step even after a hard failure.",
+        )
+
     add_dry_run_flag(parser)
+    add_keep_going_flag(parser)
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
@@ -473,6 +495,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Run a scoped local gate for touched files and explicit pytest targets.",
     )
     add_dry_run_flag(targeted, default=argparse.SUPPRESS)
+    add_keep_going_flag(targeted, default=argparse.SUPPRESS)
     targeted.add_argument(
         "--paths",
         nargs="*",
@@ -491,16 +514,19 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Run the repo-wide local gate.",
     )
     add_dry_run_flag(full, default=argparse.SUPPRESS)
+    add_keep_going_flag(full, default=argparse.SUPPRESS)
     optional = subparsers.add_parser(
         "optional",
         help="Run opt-in optional fuzz and property checks.",
     )
     add_dry_run_flag(optional, default=argparse.SUPPRESS)
+    add_keep_going_flag(optional, default=argparse.SUPPRESS)
     release = subparsers.add_parser(
         "release",
         help="Run the release-sensitive local gate, including benchmark and template checks.",
     )
     add_dry_run_flag(release, default=argparse.SUPPRESS)
+    add_keep_going_flag(release, default=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -515,7 +541,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps = build_optional_steps()
     else:
         steps = build_release_steps()
-    return run_steps(steps, dry_run=args.dry_run)
+    return run_steps(
+        steps,
+        dry_run=args.dry_run,
+        keep_going=args.keep_going,
+    )
 
 
 if __name__ == "__main__":

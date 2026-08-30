@@ -96,6 +96,42 @@ def test_workflow_surface_reports_missing_required_snippet(tmp_path: Path) -> No
     assert any("exact pip-audit CI install pin" in error for error in errors)
 
 
+def test_workflow_surface_reports_efficiency_regressions(tmp_path: Path) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(
+        """jobs:
+  lsp-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@example
+      - run: python -m pytest geno/tests/ -q
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python -m pytest geno/tests/ --cov=geno
+  release-check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make release-check
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "Makefile").write_text("all:\n\t@true\n", encoding="utf-8")
+
+    errors = ratchets.check_workflow_surface(tmp_path)
+
+    assert any("has no timeout" in error for error in errors)
+    assert any("pip caching" in error for error in errors)
+    assert any("LSP job must not repeat" in error for error in errors)
+    assert any("coverage must run only" in error for error in errors)
+    assert any("non-duplicating validator slice" in error for error in errors)
+    assert any("cache must include the release lockfile" in error for error in errors)
+    assert any("release validator slice missing" in error for error in errors)
+    assert any("release-gate workflow missing" in error for error in errors)
+    assert any("main/master branch coverage" in error for error in errors)
+
+
 def test_test_typing_profile_surface_reports_missing_profile(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         """

@@ -47,6 +47,10 @@ python3 scripts/local_ci.py release
 
 `make local-ci` runs `full`, and `make local-ci-release` runs `release`.
 
+Local CI stops after the first hard failure so a cheap lint or type error does
+not leave an expensive test suite running. Pass `--keep-going` before or after
+the mode when a complete diagnostic sweep is more useful than fast feedback.
+
 ## Expectations
 
 Minimum expectations:

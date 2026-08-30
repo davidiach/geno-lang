@@ -179,9 +179,16 @@ jobs:
       - uses: actions/setup-python@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.lock
+            requirements-release.lock
       - uses: actions/setup-node@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode-geno/package-lock.json
       - name: Install dependencies
         run: |
           python -m pip install --require-hashes -r requirements-dev.lock
@@ -241,11 +248,11 @@ def test_release_gate_pipeline_requires_tag_history_and_main_ancestry():
         },
         {
             "uses": f"actions/setup-python@{pinned_ref}",
-            "with": {"python-version": "3.11"},
+            "with": validate_dependencies._RELEASE_SETUP_PYTHON_OPTIONS,
         },
         {
             "uses": f"actions/setup-node@{pinned_ref}",
-            "with": {"node-version": "20"},
+            "with": validate_dependencies._RELEASE_SETUP_NODE_OPTIONS,
         },
         {
             "run": "\n".join(
@@ -266,6 +273,14 @@ def test_release_gate_pipeline_requires_tag_history_and_main_ancestry():
     ]
 
     assert validate_dependencies._steps_form_strict_release_gate_pipeline(steps, 6)
+
+    uncached_python = steps[1]
+    steps[1] = {
+        "uses": f"actions/setup-python@{pinned_ref}",
+        "with": {"python-version": "3.11"},
+    }
+    assert not validate_dependencies._steps_form_strict_release_gate_pipeline(steps, 6)
+    steps[1] = uncached_python
 
     legacy_steps = [steps[3], steps[6]]
     assert not validate_dependencies._steps_form_strict_release_gate_pipeline(

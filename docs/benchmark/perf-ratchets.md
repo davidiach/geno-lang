@@ -122,9 +122,10 @@ change first.
 
 Other unmeasured numbers, roughly in order of value:
 
-- **CI wall time.** No pip caching on `setup-python`, no `pytest-xdist`,
-  coverage on all five matrix legs, and `release-check` re-running the full
-  suite after the matrix already ran it.
+- **CI wall time.** CI now caches pip downloads, collects coverage on one
+  canonical matrix leg, and avoids duplicate release/LSP suites. Hosted cold-
+  and warm-cache timings are not recorded yet, and `pytest-xdist` remains
+  unvalidated for this suite.
 - **LLM pass@1.** `experiment/` is a complete harness pointed at 79 benchmark
   problems, and no result has ever been committed
   (`docs/benchmark/llm-correctness-results.md`). This is the number closest to

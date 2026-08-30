@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import sys
 import tokenize
 from dataclasses import dataclass
@@ -225,6 +226,12 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
     ci_workflow = (root / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
+    release_gate_path = root / ".github" / "workflows" / "release-gate.yml"
+    release_gate_workflow = (
+        release_gate_path.read_text(encoding="utf-8")
+        if release_gate_path.exists()
+        else ""
+    )
     makefile = (root / "Makefile").read_text(encoding="utf-8")
     required_ci_snippets = {
         "windows-latest": "Windows CI runner",
@@ -253,10 +260,89 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "--require-hashes -r requirements-dev.lock": "dev lockfile audit",
         "--strict --progress-spinner off": "strict dependency audit mode",
         "scripts/audit_release_lock.py": "platform-aware release lockfile audit",
+        "release-validators:": "non-duplicating hosted release validator target",
     }
     for snippet, label in required_makefile_snippets.items():
         if snippet not in makefile:
-            errors.append(f"Makefile dependency-audit target missing {label}")
+            errors.append(f"Makefile missing {label}")
+
+    jobs_text = ci_workflow.split("\njobs:\n", 1)[-1]
+    job_matches = re.findall(
+        r"(?ms)^  ([A-Za-z0-9_-]+):\s*\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*\n|\Z)",
+        jobs_text,
+    )
+    job_bodies = dict(job_matches)
+    for job_name, body in job_bodies.items():
+        if "timeout-minutes:" not in body:
+            errors.append(f".github/workflows/ci.yml job {job_name} has no timeout")
+
+    setup_python_count = ci_workflow.count("uses: actions/setup-python@")
+    pip_cache_count = ci_workflow.count("cache: pip")
+    if pip_cache_count != setup_python_count:
+        errors.append(
+            ".github/workflows/ci.yml must enable pip caching on every "
+            f"setup-python step: {pip_cache_count}/{setup_python_count}"
+        )
+
+    lsp_job = job_bodies.get("lsp-tests", "")
+    if re.search(r"python -m pytest\s+geno/tests/\s", lsp_job):
+        errors.append("hosted LSP job must not repeat the full pytest suite")
+    for target in (
+        "geno/tests/test_lsp.py",
+        "geno/tests/test_lsp_cache.py",
+        "geno/tests/test_lsp_helpers.py",
+        "geno/tests/test_medium_fixes.py",
+        "geno/tests/test_project_resolution_consistency.py",
+    ):
+        if target not in lsp_job:
+            errors.append(f"hosted LSP test slice missing {target}")
+
+    test_job = job_bodies.get("test", "")
+    canonical_condition = (
+        "if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'"
+    )
+    if f"Run tests with coverage\n      {canonical_condition}" not in test_job:
+        errors.append("coverage must run only on canonical Ubuntu/Python 3.11")
+    if "Run compatibility tests without coverage" not in test_job:
+        errors.append("compatibility matrix must retain a non-coverage pytest step")
+    if f"Run type checker on examples\n      {canonical_condition}" not in test_job:
+        errors.append("example checks must run once on canonical Ubuntu/Python 3.11")
+
+    release_job = job_bodies.get("release-check", "")
+    if "make release-validators PYTHON=python" not in release_job:
+        errors.append(
+            "hosted release check must use the non-duplicating validator slice"
+        )
+    if "requirements-release.lock" not in release_job:
+        errors.append("hosted release check cache must include the release lockfile")
+
+    release_target = ""
+    if "\nrelease-validators:\n" in makefile:
+        release_target = makefile.split("\nrelease-validators:\n", 1)[-1].split(
+            "\nrelease-check:\n", 1
+        )[0]
+    for snippet, label in {
+        "scripts/check_version_alignment.py": "version alignment",
+        "scripts/validate_dependencies.py --check-installs": "dependency validation",
+        "scripts/release-gate-vscode.sh": "VS Code packaging",
+        "scripts/validate_builtin_parity.py": "builtin parity",
+        "scripts/validate_spec.py": "spec validation",
+        "scripts/run_conformance.py": "language conformance",
+        "scripts/validate_supported_targets.py": "target validation",
+        "scripts/validate_benchmark.py": "benchmark validation",
+    }.items():
+        if snippet not in release_target:
+            errors.append(f"hosted release validator slice missing {label}")
+
+    for snippet, label in {
+        "scripts/release-gate-templates.sh": "template validation",
+        "scripts/release_gate_apps.py": "app validation",
+        "branches: [main, master]": "main/master branch coverage",
+        "timeout-minutes:": "bounded job timeout",
+        "cache: pip": "pip caching",
+    }.items():
+        if snippet not in release_gate_workflow:
+            errors.append(f"release-gate workflow missing {label}")
 
     release_audit_path = root / "scripts" / "audit_release_lock.py"
     release_audit = (
