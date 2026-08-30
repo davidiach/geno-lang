@@ -16,6 +16,7 @@ concurrency:
 jobs:
   clean-install-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,6 +25,10 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements.lock
 
     - name: Set up Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -41,6 +46,7 @@ jobs:
 
   release-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,22 +55,29 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
+          requirements-release.lock
 
     - name: Set up Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: '20'
+        cache: npm
+        cache-dependency-path: vscode-geno/package-lock.json
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
-    - name: Run release gate
-      run: make release-check
+    - name: Run release-specific validators
+      run: make release-validators PYTHON=python
 
   optional-test-collection:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,18 +86,22 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install without Hypothesis
       run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        pip install "pytest>=9.0.3,<10"
+        python -m pip install -e .
+        python -m pip install "pytest>=9.0.3,<10"
 
     - name: Collect optional property tests
       run: make optional-test-collection PYTHON=python
 
   fuzz-property-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,23 +110,24 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Run fuzz and property tests
       run: python -m pytest geno/tests/test_property_based.py geno/tests/test_fuzzing.py geno/tests/test_differential_fuzzing.py -q --tb=short --timeout=60
 
   lsp-tests:
-    # Runs the FULL suite with the lsp extra installed, not just
-    # geno/tests/test_lsp.py: importorskip("pygls")-guarded tests exist in
-    # other files (e.g. test_project_resolution_consistency.py) and are
-    # silently skipped everywhere else — the main test matrix installs only
-    # the dev extra. The per-test timeout stays at 60s; the slow doc-cache
-    # eviction test carries its own pytest.mark.timeout(360) override.
+    # The main matrix omits the optional LSP dependencies. Exercise every test
+    # module that imports the LSP server or gates behavior on pygls/lsprotocol,
+    # without repeating the unrelated 5,000+ test suite.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,17 +136,28 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install LSP dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev,lsp]"
+        python -m pip install -e ".[dev,lsp]"
 
-    - name: Run full test suite with LSP extra
-      run: python -m pytest geno/tests/ -q --tb=short --timeout=60
+    - name: Run LSP test slice
+      run: >-
+        python -m pytest
+        geno/tests/test_lsp.py
+        geno/tests/test_lsp_cache.py
+        geno/tests/test_lsp_helpers.py
+        geno/tests/test_medium_fixes.py
+        geno/tests/test_project_resolution_consistency.py
+        -q --tb=short --timeout=60
 
   sandbox-regression:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -137,17 +166,21 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.13'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Run sandbox regression slice
       run: make sandbox-regression PYTHON=python
 
   dependency-audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,11 +189,15 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          requirements.lock
+          requirements-dev.lock
+          requirements-release.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install "pip-audit==2.10.0"
+        python -m pip install "pip-audit==2.10.0"
 
     - name: Audit Python dependencies
       run: make dependency-audit PYTHON=python
@@ -170,6 +207,7 @@ jobs:
     # misconfigured runtime (Host allow-list, missing SIGTERM handling, OOM
     # sizing) is caught before release (M-02).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -234,6 +272,7 @@ jobs:
             python-version: '3.11'
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,15 +281,23 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Run tests with coverage
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
       run: |
-        python -m pytest geno/tests/ -v --tb=short --cov=geno --cov-report=xml --cov-report=term --cov-fail-under=80 --timeout=60
+        python -m pytest geno/tests/ -q --tb=short --cov=geno --cov-report=xml --cov-report=term --cov-fail-under=80 --timeout=60
+
+    - name: Run compatibility tests without coverage
+      if: matrix.python-version != '3.11' || matrix.os != 'ubuntu-latest'
+      run: python -m pytest geno/tests/ -q --tb=short --timeout=60
 
     - name: Upload coverage to Codecov
       if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
@@ -260,6 +307,7 @@ jobs:
         fail_ci_if_error: false
 
     - name: Run type checker on examples
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
       run: |
         for f in examples/*.geno; do
           if [ -f "$f" ]; then
@@ -282,6 +330,7 @@ jobs:
 
   windows-smoke:
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -290,6 +339,10 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Set up Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -298,8 +351,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev,lsp]"
+        python -m pip install -e ".[dev,lsp]"
 
     - name: Run Windows smoke tests
       run: python -m pytest geno/tests/test_cli.py geno/tests/test_api.py geno/tests/test_compiler.py geno/tests/test_js_compiler.py geno/tests/test_package_index.py geno/tests/test_sandbox_config.py geno/tests/test_package_manager.py::TestManifestParse::test_manifest_filesystem_sensitive_dependency_name_raises -q --tb=short --timeout=60
@@ -309,6 +361,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -316,11 +369,14 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Check formatting and linting with ruff
       run: |
@@ -329,6 +385,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -336,11 +393,14 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Run mypy
       run: |
@@ -348,6 +408,7 @@ jobs:
 
   js-output:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -355,6 +416,10 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Set up Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -363,9 +428,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-        npm install -g typescript
+        python -m pip install -e ".[dev]"
+        npm install -g typescript@7.0.2
 
     - name: Validate JS compilation and source maps
       run: |
@@ -420,6 +484,7 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -427,11 +492,14 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Run security lint
       run: |

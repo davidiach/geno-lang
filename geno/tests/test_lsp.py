@@ -5089,20 +5089,17 @@ class TestDocumentSyncDiagnostics:
         assert item_map["Some"].kind == types.CompletionItemKind.EnumMember
         assert item_map["None"].kind == types.CompletionItemKind.EnumMember
 
-    @pytest.mark.timeout(360)
     def test_completion_recovers_local_symbols_after_doc_cache_eviction(
         self, tmp_path, monkeypatch
     ):
         """Still-open documents keep local completion after LRU eviction.
 
-        Opens _DOC_CACHE_MAX + 1 (= 513) documents to exercise the eviction
-        boundary, so it is legitimately slow — ~90s in isolation, but well over
-        the suite-wide 60s pytest-timeout when run inside the full suite on a
-        loaded machine. Give it generous headroom rather than weakening the
-        eviction-boundary coverage (the doc count is tied to the production
-        _DOC_CACHE_MAX constant). The hosted lsp-tests job runs test_lsp.py on
-        its own, so it sees the lighter isolated timing.
+        The eviction behavior is independent of the production cache size, so
+        use a two-entry boundary here. Opening three documents still exercises
+        the server's real cache wiring and recovery path without constructing
+        513 workspaces.
         """
+        monkeypatch.setattr(lsp_server, "_DOC_CACHE_MAX", 2)
         server = create_server(diag_debounce_sec=0)
         server.lsp._workspace = Workspace(
             None,

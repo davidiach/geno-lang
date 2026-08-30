@@ -6,11 +6,13 @@ import pytest
 
 import scripts.local_ci as local_ci
 from scripts.local_ci import (
+    Step,
     build_full_steps,
     build_optional_steps,
     build_release_steps,
     build_targeted_steps,
     main,
+    run_steps,
 )
 
 
@@ -219,9 +221,10 @@ class TestCliParsing:
     def test_optional_dry_run_routes_to_optional_plan(self, monkeypatch):
         captured: dict[str, object] = {}
 
-        def fake_run_steps(steps, dry_run=False):
+        def fake_run_steps(steps, dry_run=False, keep_going=False):
             captured["names"] = [step.name for step in steps]
             captured["dry_run"] = dry_run
+            captured["keep_going"] = keep_going
             return 0
 
         monkeypatch.setattr(local_ci, "run_steps", fake_run_steps)
@@ -230,14 +233,16 @@ class TestCliParsing:
         assert captured == {
             "names": ["optional-test-collection", "fuzz-property-tests"],
             "dry_run": True,
+            "keep_going": False,
         }
 
     def test_global_dry_run_routes_to_optional_plan(self, monkeypatch):
         captured: dict[str, object] = {}
 
-        def fake_run_steps(steps, dry_run=False):
+        def fake_run_steps(steps, dry_run=False, keep_going=False):
             captured["names"] = [step.name for step in steps]
             captured["dry_run"] = dry_run
+            captured["keep_going"] = keep_going
             return 0
 
         monkeypatch.setattr(local_ci, "run_steps", fake_run_steps)
@@ -246,4 +251,54 @@ class TestCliParsing:
         assert captured == {
             "names": ["optional-test-collection", "fuzz-property-tests"],
             "dry_run": True,
+            "keep_going": False,
         }
+
+    def test_keep_going_is_forwarded_after_subcommand(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def fake_run_steps(steps, dry_run=False, keep_going=False):
+            captured["keep_going"] = keep_going
+            return 0
+
+        monkeypatch.setattr(local_ci, "run_steps", fake_run_steps)
+
+        assert main(["full", "--keep-going"]) == 0
+        assert captured == {"keep_going": True}
+
+
+class TestRunSteps:
+    def test_stops_after_first_hard_failure_by_default(self):
+        executed: list[str] = []
+
+        def fail() -> int:
+            executed.append("fail")
+            return 1
+
+        def later() -> int:
+            executed.append("later")
+            return 0
+
+        exit_code = run_steps([Step("fail", runner=fail), Step("later", runner=later)])
+
+        assert exit_code == 1
+        assert executed == ["fail"]
+
+    def test_keep_going_runs_steps_after_a_hard_failure(self):
+        executed: list[str] = []
+
+        def fail() -> int:
+            executed.append("fail")
+            return 1
+
+        def later() -> int:
+            executed.append("later")
+            return 0
+
+        exit_code = run_steps(
+            [Step("fail", runner=fail), Step("later", runner=later)],
+            keep_going=True,
+        )
+
+        assert exit_code == 1
+        assert executed == ["fail", "later"]

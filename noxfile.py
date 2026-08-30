@@ -10,7 +10,7 @@ def tests(session: nox.Session) -> None:
     session.run(
         "pytest",
         "geno/tests/",
-        "-v",
+        "-q",
         "--tb=short",
         "--cov=geno",
         "--cov-fail-under=80",

@@ -923,6 +923,25 @@ def _step_is_strict_pinned_action(
     )
 
 
+_RELEASE_SETUP_PYTHON_OPTIONS = {
+    "python-version": "3.11",
+    "cache": "pip",
+    "cache-dependency-path": (
+        "pyproject.toml\nrequirements-dev.lock\nrequirements-release.lock\n"
+    ),
+}
+_RELEASE_SETUP_NODE_OPTIONS = {
+    "node-version": "20",
+    "cache": "npm",
+    "cache-dependency-path": "vscode-geno/package-lock.json",
+}
+_ARTIFACT_SETUP_PYTHON_OPTIONS = {
+    "python-version": "3.11",
+    "cache": "pip",
+    "cache-dependency-path": "requirements.lock\nrequirements-release.lock\n",
+}
+
+
 def _steps_form_strict_artifact_build_pipeline(
     steps: list[dict[str, Any]],
 ) -> bool:
@@ -936,7 +955,7 @@ def _steps_form_strict_artifact_build_pipeline(
         len(action_prefix) == 2
         and _step_is_strict_pinned_action(action_prefix[0], "actions/checkout", None)
         and _step_is_strict_pinned_action(
-            action_prefix[1], "actions/setup-python", {"python-version": "3.11"}
+            action_prefix[1], "actions/setup-python", _ARTIFACT_SETUP_PYTHON_OPTIONS
         )
     ):
         return False
@@ -982,12 +1001,12 @@ def _steps_form_strict_release_gate_pipeline(
         and _step_is_strict_pinned_action(
             proof_steps[1],
             "actions/setup-python",
-            {"python-version": "3.11"},
+            _RELEASE_SETUP_PYTHON_OPTIONS,
         )
         and _step_is_strict_pinned_action(
             proof_steps[2],
             "actions/setup-node",
-            {"node-version": "20"},
+            _RELEASE_SETUP_NODE_OPTIONS,
         )
         and _step_installs_exact_release_dependencies(proof_steps[3])
         and _step_has_exact_command_groups(
