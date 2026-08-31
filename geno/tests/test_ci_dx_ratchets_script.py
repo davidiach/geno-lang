@@ -209,6 +209,53 @@ def test_workflow_surface_reports_coverage_balance_profile_regression(
     )
 
 
+def test_workflow_surface_reports_shard_plan_regressions(tmp_path: Path) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow = (ratchets.ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = workflow.replace(
+        "          --plan-manifest coverage-data/shard-plan.${{ matrix.shard }}.json "
+        "\\\n",
+        "",
+        1,
+    )
+    workflow = workflow.replace(
+        "        test -s coverage-data/shard-plan.${{ matrix.shard }}.json\n",
+        "",
+        1,
+    )
+    workflow = workflow.replace(
+        "          coverage-data/shard-plan.${{ matrix.shard }}.json\n",
+        "",
+        1,
+    )
+    workflow = workflow.replace(
+        "        python scripts/pytest_shard.py --validate-plan-manifests "
+        '"${plan_files[@]}"\n',
+        "",
+        1,
+    )
+    (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
+    (tmp_path / "Makefile").write_text(
+        (ratchets.ROOT / "Makefile").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    errors = ratchets.check_workflow_surface(tmp_path)
+
+    assert "hosted coverage shard job missing shard plan manifest output" in errors
+    assert "hosted coverage shard job missing nonempty shard plan guard" in errors
+    assert (
+        "hosted coverage shard job missing paired coverage and shard plan artifact "
+        "upload" in errors
+    )
+    assert (
+        "hosted coverage report job missing shard plan agreement validation" in errors
+    )
+
+
 def test_test_typing_profile_surface_reports_missing_profile(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         """

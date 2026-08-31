@@ -290,14 +290,19 @@ jobs:
           --shard-index ${{ matrix.shard }} \
           --shard-count 3 \
           --balance-profile coverage-ubuntu-py311 \
+          --plan-manifest coverage-data/shard-plan.${{ matrix.shard }}.json \
           -- \
           -q --tb=short --timeout=60 --cov=geno --cov-report=
+        test -s coverage-data/coverage.${{ matrix.shard }}
+        test -s coverage-data/shard-plan.${{ matrix.shard }}.json
 
     - name: Upload coverage shard
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: coverage-data-${{ matrix.shard }}
-        path: coverage-data/coverage.${{ matrix.shard }}
+        path: |
+          coverage-data/coverage.${{ matrix.shard }}
+          coverage-data/shard-plan.${{ matrix.shard }}.json
         if-no-files-found: error
         retention-days: 1
 
@@ -340,6 +345,15 @@ jobs:
       env:
         COVERAGE_FILE: coverage-data/.coverage
       run: |
+        mapfile -t plan_files < <(
+          find coverage-data -maxdepth 1 -type f -name 'shard-plan.*.json' -print | sort
+        )
+        if [ "${#plan_files[@]}" -ne 3 ]; then
+          echo "::error::expected 3 shard plans, found ${#plan_files[@]}"
+          exit 1
+        fi
+        python scripts/pytest_shard.py --validate-plan-manifests "${plan_files[@]}"
+
         mapfile -t coverage_files < <(
           find coverage-data -maxdepth 1 -type f -name 'coverage.*' -print | sort
         )

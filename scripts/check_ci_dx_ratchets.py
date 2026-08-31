@@ -355,6 +355,17 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "--balance-profile coverage-ubuntu-py311": (
             "measured Ubuntu/Python 3.11 coverage balance profile"
         ),
+        "--plan-manifest coverage-data/shard-plan.${{ matrix.shard }}.json": (
+            "shard plan manifest output"
+        ),
+        "test -s coverage-data/shard-plan.${{ matrix.shard }}.json": (
+            "nonempty shard plan guard"
+        ),
+        (
+            "path: |\n"
+            "          coverage-data/coverage.${{ matrix.shard }}\n"
+            "          coverage-data/shard-plan.${{ matrix.shard }}.json"
+        ): "paired coverage and shard plan artifact upload",
         "--cov=geno": "coverage collection",
         "--cov-report=": "deferred aggregate coverage report",
         "COVERAGE_FILE:": "isolated coverage data file",
@@ -374,6 +385,8 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "needs.coverage-shard.result != 'success'": "coverage shard failure guard",
         "actions/download-artifact@": "coverage artifact download",
         "merge-multiple: true": "coverage artifact merge",
+        "expected 3 shard plans": "complete shard plan artifact guard",
+        "--validate-plan-manifests": "shard plan agreement validation",
         "expected 3 coverage shards": "complete shard artifact guard",
         "python -m coverage combine": "coverage data combination",
         "python -m coverage report --fail-under=80": "aggregate coverage threshold",
