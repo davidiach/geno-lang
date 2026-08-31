@@ -148,6 +148,12 @@ def test_workflow_surface_reports_compatibility_shard_regressions(
         1,
     )
     workflow = workflow.replace(
+        "          --shard-count 2 \\\n",
+        "          --shard-count 2 \\\n"
+        "          --balance-profile coverage-ubuntu-py311 \\\n",
+        1,
+    )
+    workflow = workflow.replace(
         "    needs: compatibility-ubuntu-312",
         "    needs: compatibility-ubuntu-310",
         1,
@@ -171,6 +177,35 @@ def test_workflow_surface_reports_compatibility_shard_regressions(
     assert (
         "hosted compatibility-ubuntu-312-report job missing compatibility shard dependency"
         in errors
+    )
+    assert (
+        "hosted compatibility-ubuntu-310 job must not use the coverage balance profile"
+        in errors
+    )
+
+
+def test_workflow_surface_reports_coverage_balance_profile_regression(
+    tmp_path: Path,
+) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow = (ratchets.ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = workflow.replace(
+        "          --balance-profile coverage-ubuntu-py311 \\\n", "", 1
+    )
+    (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
+    (tmp_path / "Makefile").write_text(
+        (ratchets.ROOT / "Makefile").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    errors = ratchets.check_workflow_surface(tmp_path)
+
+    assert (
+        "hosted coverage shard job missing measured Ubuntu/Python 3.11 coverage "
+        "balance profile" in errors
     )
 
 
