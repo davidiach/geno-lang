@@ -320,6 +320,10 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         for snippet, label in required_shard_snippets.items():
             if snippet not in shard_job:
                 errors.append(f"hosted {job_name} job missing {label}")
+        if "--balance-profile" in shard_job:
+            errors.append(
+                f"hosted {job_name} job must not use the coverage balance profile"
+            )
         if "--cov=geno" in shard_job:
             errors.append(f"hosted {job_name} job must not collect coverage")
 
@@ -348,6 +352,9 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "shard: [0, 1, 2]": "three-way coverage matrix",
         "scripts/pytest_shard.py": "deterministic pytest shard runner",
         "--shard-count 3": "three-way shard selection",
+        "--balance-profile coverage-ubuntu-py311": (
+            "measured Ubuntu/Python 3.11 coverage balance profile"
+        ),
         "--cov=geno": "coverage collection",
         "--cov-report=": "deferred aggregate coverage report",
         "COVERAGE_FILE:": "isolated coverage data file",
