@@ -690,10 +690,19 @@ class TestP3_11_PythonSupportMetadata:
         )
         declared_min, declared_exclusive_max = match.groups()
 
+        full_suite_jobs = (
+            "coverage-shard",
+            "compatibility-ubuntu-310",
+            "compatibility-ubuntu-312",
+            "compatibility-ubuntu-313",
+            "compatibility-macos-311",
+        )
         ci_versions = sorted(
             {
-                entry["python-version"]
-                for entry in ci_config["jobs"]["test"]["strategy"]["matrix"]["include"]
+                step["with"]["python-version"]
+                for job_name in full_suite_jobs
+                for step in ci_config["jobs"][job_name]["steps"]
+                if "actions/setup-python@" in step.get("uses", "")
             },
             key=lambda v: tuple(int(part) for part in v.split(".")),
         )

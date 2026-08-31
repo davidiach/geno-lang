@@ -297,12 +297,48 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         if target not in lsp_job:
             errors.append(f"hosted LSP test slice missing {target}")
 
-    test_job = job_bodies.get("test", "")
-    if "--cov=geno" in test_job:
-        errors.append("compatibility matrix must not repeat the coverage suite")
-    if "Run compatibility tests without coverage" not in test_job:
-        errors.append("compatibility matrix must retain a non-coverage pytest step")
-    if re.search(r"- os: ubuntu-latest\s+python-version: '3\.11'", test_job):
+    compatibility_targets = {
+        "compatibility-ubuntu-310": ("ubuntu-latest", "3.10"),
+        "compatibility-ubuntu-312": ("ubuntu-latest", "3.12"),
+        "compatibility-ubuntu-313": ("ubuntu-latest", "3.13"),
+        "compatibility-macos-311": ("macos-latest", "3.11"),
+    }
+    for job_name, (runner, python_version) in compatibility_targets.items():
+        shard_job = job_bodies.get(job_name, "")
+        required_shard_snippets = {
+            f"name: compatibility-shard ({runner}, {python_version}, "
+            "${{ matrix.shard }})": "explicit compatibility shard name",
+            "fail-fast: false": "non-fail-fast compatibility strategy",
+            "shard: [0, 1]": "two-way compatibility matrix",
+            f"runs-on: {runner}": "compatibility runner",
+            f"python-version: '{python_version}'": "compatibility Python version",
+            "scripts/pytest_shard.py": "deterministic pytest shard runner",
+            "--shard-index ${{ matrix.shard }}": "matrix-bound shard selection",
+            "--shard-count 2": "two-way shard selection",
+            "Run compatibility shard without coverage": "non-coverage pytest step",
+        }
+        for snippet, label in required_shard_snippets.items():
+            if snippet not in shard_job:
+                errors.append(f"hosted {job_name} job missing {label}")
+        if "--cov=geno" in shard_job:
+            errors.append(f"hosted {job_name} job must not collect coverage")
+
+        report_name = f"{job_name}-report"
+        report_job = job_bodies.get(report_name, "")
+        required_report_snippets = {
+            f"name: test ({runner}, {python_version})": "required compatibility name",
+            "if: ${{ always() }}": "failure-propagating aggregate condition",
+            f"needs: {job_name}": "compatibility shard dependency",
+            f"needs.{job_name}.result": "compatibility shard failure guard",
+            "SHARD_RESULT": "explicit compatibility shard result",
+            '!= "success"': "fail-closed compatibility result comparison",
+            "exit 1": "failing compatibility result exit",
+        }
+        for snippet, label in required_report_snippets.items():
+            if snippet not in report_job:
+                errors.append(f"hosted {report_name} job missing {label}")
+
+    if "compatibility-shard (ubuntu-latest, 3.11" in ci_workflow:
         errors.append(
             "canonical Ubuntu/Python 3.11 must not repeat in compatibility CI"
         )

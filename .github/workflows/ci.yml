@@ -375,40 +375,205 @@ jobs:
           python -m geno check "$f"
         done
 
-  test:
+  compatibility-ubuntu-310:
+    name: compatibility-shard (ubuntu-latest, 3.10, ${{ matrix.shard }})
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python-version: '3.10'
-          - os: ubuntu-latest
-            python-version: '3.12'
-          - os: ubuntu-latest
-            python-version: '3.13'
-          - os: macos-latest
-            python-version: '3.11'
+        shard: [0, 1]
 
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python 3.10
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.10'
         cache: pip
         cache-dependency-path: |
           pyproject.toml
           requirements-dev.lock
 
     - name: Install dependencies
-      run: |
-        python -m pip install -e ".[dev]"
+      run: python -m pip install -e ".[dev]"
 
-    - name: Run compatibility tests without coverage
-      run: python -m pytest geno/tests/ -q --tb=short --timeout=60
+    - name: Run compatibility shard without coverage
+      run: |
+        python scripts/pytest_shard.py \
+          --shard-index ${{ matrix.shard }} \
+          --shard-count 2 \
+          -- \
+          -q --tb=short --timeout=60
+
+  compatibility-ubuntu-312:
+    name: compatibility-shard (ubuntu-latest, 3.12, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
+
+    - name: Install dependencies
+      run: python -m pip install -e ".[dev]"
+
+    - name: Run compatibility shard without coverage
+      run: |
+        python scripts/pytest_shard.py \
+          --shard-index ${{ matrix.shard }} \
+          --shard-count 2 \
+          -- \
+          -q --tb=short --timeout=60
+
+  compatibility-ubuntu-313:
+    name: compatibility-shard (ubuntu-latest, 3.13, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.13'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
+
+    - name: Install dependencies
+      run: python -m pip install -e ".[dev]"
+
+    - name: Run compatibility shard without coverage
+      run: |
+        python scripts/pytest_shard.py \
+          --shard-index ${{ matrix.shard }} \
+          --shard-count 2 \
+          -- \
+          -q --tb=short --timeout=60
+
+  compatibility-macos-311:
+    name: compatibility-shard (macos-latest, 3.11, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.11'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          requirements-dev.lock
+
+    - name: Install dependencies
+      run: python -m pip install -e ".[dev]"
+
+    - name: Run compatibility shard without coverage
+      run: |
+        python scripts/pytest_shard.py \
+          --shard-index ${{ matrix.shard }} \
+          --shard-count 2 \
+          -- \
+          -q --tb=short --timeout=60
+
+  compatibility-ubuntu-310-report:
+    name: test (ubuntu-latest, 3.10)
+    if: ${{ always() }}
+    needs: compatibility-ubuntu-310
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Require successful Ubuntu/Python 3.10 shards
+      env:
+        SHARD_RESULT: ${{ needs.compatibility-ubuntu-310.result }}
+      run: |
+        if [ "$SHARD_RESULT" != "success" ]; then
+          echo "::error::compatibility shard result was $SHARD_RESULT"
+          exit 1
+        fi
+
+  compatibility-ubuntu-312-report:
+    name: test (ubuntu-latest, 3.12)
+    if: ${{ always() }}
+    needs: compatibility-ubuntu-312
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Require successful Ubuntu/Python 3.12 shards
+      env:
+        SHARD_RESULT: ${{ needs.compatibility-ubuntu-312.result }}
+      run: |
+        if [ "$SHARD_RESULT" != "success" ]; then
+          echo "::error::compatibility shard result was $SHARD_RESULT"
+          exit 1
+        fi
+
+  compatibility-ubuntu-313-report:
+    name: test (ubuntu-latest, 3.13)
+    if: ${{ always() }}
+    needs: compatibility-ubuntu-313
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Require successful Ubuntu/Python 3.13 shards
+      env:
+        SHARD_RESULT: ${{ needs.compatibility-ubuntu-313.result }}
+      run: |
+        if [ "$SHARD_RESULT" != "success" ]; then
+          echo "::error::compatibility shard result was $SHARD_RESULT"
+          exit 1
+        fi
+
+  compatibility-macos-311-report:
+    name: test (macos-latest, 3.11)
+    if: ${{ always() }}
+    needs: compatibility-macos-311
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Require successful macOS/Python 3.11 shards
+      env:
+        SHARD_RESULT: ${{ needs.compatibility-macos-311.result }}
+      run: |
+        if [ "$SHARD_RESULT" != "success" ]; then
+          echo "::error::compatibility shard result was $SHARD_RESULT"
+          exit 1
+        fi
 
   windows-smoke:
     runs-on: windows-latest

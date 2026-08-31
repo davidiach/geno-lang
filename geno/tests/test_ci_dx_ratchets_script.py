@@ -133,6 +133,47 @@ def test_workflow_surface_reports_efficiency_regressions(tmp_path: Path) -> None
     assert any("main/master branch coverage" in error for error in errors)
 
 
+def test_workflow_surface_reports_compatibility_shard_regressions(
+    tmp_path: Path,
+) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow = (ratchets.ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = workflow.replace("        shard: [0, 1]", "        shard: [0]", 1)
+    workflow = workflow.replace(
+        "          --shard-index ${{ matrix.shard }} \\\n          --shard-count 2",
+        "          --shard-index 0 \\\n          --shard-count 2",
+        1,
+    )
+    workflow = workflow.replace(
+        "    needs: compatibility-ubuntu-312",
+        "    needs: compatibility-ubuntu-310",
+        1,
+    )
+    (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
+    (tmp_path / "Makefile").write_text(
+        (ratchets.ROOT / "Makefile").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    errors = ratchets.check_workflow_surface(tmp_path)
+
+    assert (
+        "hosted compatibility-ubuntu-310 job missing two-way compatibility matrix"
+        in errors
+    )
+    assert (
+        "hosted compatibility-ubuntu-310 job missing matrix-bound shard selection"
+        in errors
+    )
+    assert (
+        "hosted compatibility-ubuntu-312-report job missing compatibility shard dependency"
+        in errors
+    )
+
+
 def test_test_typing_profile_surface_reports_missing_profile(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         """
