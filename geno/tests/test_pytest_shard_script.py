@@ -1,7 +1,10 @@
 """Tests for scripts/pytest_shard.py."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +35,48 @@ def _write_plan_manifests(
             shards=shards,
             shard_index=index,
             balance_profile="demo-profile",
+        )
+    return paths
+
+
+def _write_timing_manifests(tmp_path: Path, plan: pytest_shard.ShardPlan) -> list[Path]:
+    fingerprint = pytest_shard.shard_plan_sha256(plan)
+    paths = [tmp_path / f"shard-timing.{index}.json" for index in range(3)]
+    for index, path in enumerate(paths):
+        files: list[pytest_shard.FileTiming] = [
+            {
+                "path": test_path,
+                "node_count": plan["collected_test_counts"][test_path],
+                "call_report_count": plan["collected_test_counts"][test_path],
+                "passed_count": plan["collected_test_counts"][test_path],
+                "skipped_count": 0,
+                "xfailed_count": 0,
+                "xpassed_count": 0,
+                "failed_count": 0,
+                "setup_ms": 1,
+                "call_ms": 2 + index,
+                "teardown_ms": 0,
+                "total_ms": 3 + index,
+            }
+            for test_path in plan["shards"][index]
+        ]
+        reported_ms = sum(file["total_ms"] for file in files)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "shard_index": index,
+                    "plan_sha256": fingerprint,
+                    "measurement": pytest_shard._TIMING_MEASUREMENT,
+                    "provenance": pytest_shard._timing_provenance(),
+                    "pytest_exitstatus": 0,
+                    "session_elapsed_ms": reported_ms + 10,
+                    "reported_elapsed_ms": reported_ms,
+                    "unattributed_elapsed_ms": 10,
+                    "files": files,
+                }
+            ),
+            encoding="utf-8",
         )
     return paths
 
@@ -230,6 +275,310 @@ def test_shard_plan_manifests_validate_round_trip(tmp_path: Path, capsys) -> Non
     assert "validated 3 matching pytest shard plans" in capsys.readouterr().out
 
 
+def test_file_timing_plugin_aggregates_phases_and_node_ids(
+    tmp_path: Path, monkeypatch
+) -> None:
+    clock = iter((1_000_000_000, 2_250_000_000))
+    monkeypatch.setattr(pytest_shard.time, "perf_counter_ns", lambda: next(clock))
+    output = tmp_path / "shard-timing.0.json"
+    plugin = pytest_shard._FileTimingPlugin(output, 0, "a" * 64)
+    plugin.pytest_sessionstart(None)
+    for report in (
+        SimpleNamespace(
+            nodeid=r"geno\tests\test_alpha.py::test_one",
+            when="setup",
+            duration=0.004,
+            failed=False,
+            skipped=False,
+            passed=True,
+        ),
+        SimpleNamespace(
+            nodeid="geno/tests/test_alpha.py::test_one",
+            when="call",
+            duration=0.050,
+            failed=False,
+            skipped=False,
+            passed=True,
+        ),
+        SimpleNamespace(
+            nodeid="geno/tests/test_alpha.py::test_one",
+            when="teardown",
+            duration=0.006,
+            failed=False,
+            skipped=False,
+            passed=True,
+        ),
+        SimpleNamespace(
+            nodeid="geno/tests/test_alpha.py::test_two",
+            when="call",
+            duration=0.040,
+            failed=False,
+            skipped=False,
+            passed=True,
+        ),
+    ):
+        plugin.pytest_runtest_logreport(report)
+    plugin.pytest_sessionfinish(None, pytest.ExitCode.OK)
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["pytest_exitstatus"] == 0
+    assert manifest["session_elapsed_ms"] == 1_250
+    assert manifest["reported_elapsed_ms"] == 100
+    assert manifest["unattributed_elapsed_ms"] == 1_150
+    assert manifest["files"] == [
+        {
+            "path": "geno/tests/test_alpha.py",
+            "node_count": 2,
+            "call_report_count": 2,
+            "passed_count": 2,
+            "skipped_count": 0,
+            "xfailed_count": 0,
+            "xpassed_count": 0,
+            "failed_count": 0,
+            "setup_ms": 4,
+            "call_ms": 90,
+            "teardown_ms": 6,
+            "total_ms": 100,
+        }
+    ]
+
+
+def test_file_timing_plugin_runs_in_nested_pytest(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "shard-timing.0.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            (
+                "geno/tests/test_pytest_shard_script.py::"
+                "test_parse_collected_test_counts_normalizes_paths"
+            ),
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "scripts.pytest_shard",
+            "--geno-file-timings-json",
+            str(output),
+            "--geno-shard-index",
+            "0",
+            "--geno-plan-sha256",
+            "a" * 64,
+        ],
+        cwd=pytest_shard.ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["files"][0]["node_count"] == 1
+    assert manifest["files"][0]["path"] == ("geno/tests/test_pytest_shard_script.py")
+
+
+def test_file_timing_plugin_records_setup_and_runtime_skips(
+    tmp_path: Path, monkeypatch
+) -> None:
+    clock = iter((1_000_000_000, 1_100_000_000))
+    monkeypatch.setattr(pytest_shard.time, "perf_counter_ns", lambda: next(clock))
+    output = tmp_path / "shard-timing.0.json"
+    plugin = pytest_shard._FileTimingPlugin(output, 0, "a" * 64)
+    plugin.pytest_sessionstart(None)
+    for report in (
+        SimpleNamespace(
+            nodeid="geno/tests/test_alpha.py::test_setup_skip",
+            when="setup",
+            duration=0.010,
+            failed=False,
+            skipped=True,
+            passed=False,
+        ),
+        SimpleNamespace(
+            nodeid="geno/tests/test_alpha.py::test_runtime_skip",
+            when="setup",
+            duration=0.005,
+            failed=False,
+            skipped=False,
+            passed=True,
+        ),
+        SimpleNamespace(
+            nodeid="geno/tests/test_alpha.py::test_runtime_skip",
+            when="call",
+            duration=0.020,
+            failed=False,
+            skipped=True,
+            passed=False,
+        ),
+    ):
+        plugin.pytest_runtest_logreport(report)
+    plugin.pytest_sessionfinish(None, pytest.ExitCode.OK)
+
+    timing = json.loads(output.read_text(encoding="utf-8"))["files"][0]
+    assert timing["node_count"] == 2
+    assert timing["call_report_count"] == 1
+    assert timing["skipped_count"] == 2
+    assert timing["passed_count"] == 0
+
+
+def test_shard_timing_manifests_validate_round_trip(tmp_path: Path, capsys) -> None:
+    plan_paths = _write_plan_manifests(tmp_path)
+    plan = pytest_shard.validate_shard_plan_manifests(plan_paths)
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+
+    manifests = pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+    assert [manifest["shard_index"] for manifest in manifests] == [0, 1, 2]
+    assert (
+        pytest_shard.main(
+            [
+                "--validate-plan-manifests",
+                *(str(path) for path in plan_paths),
+                "--timing-manifests",
+                *(str(path) for path in timing_paths),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "validated pytest shard timings" in output
+    assert "slowest files" in output
+
+
+def test_main_labels_timing_validation_failures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_paths = _write_plan_manifests(tmp_path)
+    plan = pytest_shard.validate_shard_plan_manifests(plan_paths)
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    timing_paths[0].write_text("{}", encoding="utf-8")
+
+    assert (
+        pytest_shard.main(
+            [
+                "--validate-plan-manifests",
+                *(str(path) for path in plan_paths),
+                "--timing-manifests",
+                *(str(path) for path in timing_paths),
+            ]
+        )
+        == 1
+    )
+    assert "pytest shard timing validation failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("fingerprint", "fingerprint"),
+        ("node-count", "node count"),
+        ("missing-file", "nonempty list"),
+        ("negative-duration", "nonnegative integer"),
+        ("bool-duration", "nonnegative integer"),
+        ("phase-total", "phases do not sum"),
+        ("outcome-total", "outcomes do not sum"),
+        ("call-count", "call report count exceeds"),
+        ("call-count-low", "call report count misses completed calls"),
+        ("failed-outcome", "successful timing contains failed"),
+        ("provenance", "environment fingerprint"),
+        ("impossible-session", "reported timing exceeds session"),
+        ("session-total", "unattributed timing"),
+    ],
+)
+def test_shard_timing_validation_rejects_invalid_data(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[0].read_text(encoding="utf-8"))
+    if mutation == "fingerprint":
+        manifest["plan_sha256"] = "0" * 64
+    elif mutation == "node-count":
+        manifest["files"][0]["node_count"] += 1
+        manifest["files"][0]["call_report_count"] += 1
+        manifest["files"][0]["passed_count"] += 1
+    elif mutation == "missing-file":
+        manifest["files"] = []
+        manifest["reported_elapsed_ms"] = 0
+        manifest["unattributed_elapsed_ms"] = manifest["session_elapsed_ms"]
+    elif mutation == "negative-duration":
+        manifest["files"][0]["call_ms"] = -1
+    elif mutation == "bool-duration":
+        manifest["files"][0]["call_ms"] = True
+    elif mutation == "phase-total":
+        manifest["files"][0]["total_ms"] += 1
+    elif mutation == "outcome-total":
+        manifest["files"][0]["passed_count"] -= 1
+    elif mutation == "call-count":
+        manifest["files"][0]["call_report_count"] += 1
+    elif mutation == "call-count-low":
+        manifest["files"][0]["call_report_count"] = 0
+    elif mutation == "failed-outcome":
+        manifest["files"][0]["passed_count"] -= 1
+        manifest["files"][0]["failed_count"] += 1
+    elif mutation == "provenance":
+        manifest["provenance"]["environment_sha256"] = "0" * 64
+    elif mutation == "impossible-session":
+        manifest["session_elapsed_ms"] = 0
+        manifest["unattributed_elapsed_ms"] = 0
+    else:
+        manifest["unattributed_elapsed_ms"] += 1
+    timing_paths[0].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+
+def test_shard_timing_validation_rejects_incomplete_set(tmp_path: Path) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+
+    with pytest.raises(ValueError, match="expected 3 shard timing manifests"):
+        pytest_shard.validate_shard_timing_manifests(timing_paths[:2], plan)
+
+
+def test_shard_timing_validation_rejects_mixed_ci_runs(tmp_path: Path) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    manifest["provenance"]["github_run_attempt"] = "2"
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="different CI runs"):
+        pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+
+def test_shard_timing_validation_rejects_mixed_runtime_environments(
+    tmp_path: Path, monkeypatch
+) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    monkeypatch.setenv(pytest_shard._RUNNER_IMAGE_VERSION_ENV, "different-image")
+    manifest["provenance"] = pytest_shard._timing_provenance()
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="different runtime environments"):
+        pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+
+def test_shard_timing_validation_rejects_filename_index_mismatch(
+    tmp_path: Path,
+) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_path = _write_timing_manifests(tmp_path, plan)[0]
+    renamed = tmp_path / "shard-timing.copy.json"
+    renamed.write_text(timing_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="filename does not match"):
+        pytest_shard._load_shard_timing_manifest(renamed, plan)
+
+
 def test_shard_plan_validation_rejects_collection_drift(tmp_path: Path) -> None:
     paths = _write_plan_manifests(tmp_path)
     changed_counts = {
@@ -382,6 +731,172 @@ def test_main_rejects_plan_manifest_filename_that_cannot_be_validated(
                 "--list-only",
             ]
         )
+
+
+def test_main_writes_and_validates_shard_timing(tmp_path: Path, monkeypatch) -> None:
+    counts = {
+        "geno/tests/test_alpha.py": 3,
+        "geno/tests/test_beta.py": 2,
+    }
+    monkeypatch.setattr(pytest_shard, "collect_test_counts", lambda: counts)
+    timing_path = tmp_path / "shard-timing.1.json"
+
+    def fake_run(command, *, cwd, check):
+        assert cwd == pytest_shard.ROOT
+        assert check is False
+        args = list(command)
+        output = Path(args[args.index("--geno-file-timings-json") + 1])
+        plan_sha256 = args[args.index("--geno-plan-sha256") + 1]
+        output.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "shard_index": 1,
+                    "plan_sha256": plan_sha256,
+                    "measurement": pytest_shard._TIMING_MEASUREMENT,
+                    "provenance": pytest_shard._timing_provenance(),
+                    "pytest_exitstatus": 0,
+                    "session_elapsed_ms": 60,
+                    "reported_elapsed_ms": 50,
+                    "unattributed_elapsed_ms": 10,
+                    "files": [
+                        {
+                            "path": "geno/tests/test_beta.py",
+                            "node_count": 2,
+                            "call_report_count": 2,
+                            "passed_count": 2,
+                            "skipped_count": 0,
+                            "xfailed_count": 0,
+                            "xpassed_count": 0,
+                            "failed_count": 0,
+                            "setup_ms": 5,
+                            "call_ms": 40,
+                            "teardown_ms": 5,
+                            "total_ms": 50,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(pytest_shard.subprocess, "run", fake_run)
+
+    assert (
+        pytest_shard.main(
+            [
+                "--shard-index",
+                "1",
+                "--shard-count",
+                "2",
+                "--plan-manifest",
+                str(tmp_path / "shard-plan.1.json"),
+                "--timing-manifest",
+                str(timing_path),
+            ]
+        )
+        == 0
+    )
+    assert (
+        json.loads(timing_path.read_text(encoding="utf-8"))["files"][0]["total_ms"]
+        == 50
+    )
+
+
+def test_main_removes_stale_timing_and_preserves_pytest_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        pytest_shard,
+        "collect_test_counts",
+        lambda: {"geno/tests/test_alpha.py": 1},
+    )
+    timing_path = tmp_path / "shard-timing.0.json"
+    timing_path.write_text("stale", encoding="utf-8")
+
+    def fake_failed_run(command, *, cwd, check):
+        args = list(command)
+        output = Path(args[args.index("--geno-file-timings-json") + 1])
+        output.write_text("fresh failed-run timing", encoding="utf-8")
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(pytest_shard.subprocess, "run", fake_failed_run)
+
+    assert (
+        pytest_shard.main(
+            [
+                "--shard-index",
+                "0",
+                "--shard-count",
+                "1",
+                "--plan-manifest",
+                str(tmp_path / "shard-plan.0.json"),
+                "--timing-manifest",
+                str(timing_path),
+            ]
+        )
+        == 1
+    )
+    assert not timing_path.exists()
+
+
+def test_main_removes_post_run_invalid_timing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        pytest_shard,
+        "collect_test_counts",
+        lambda: {"geno/tests/test_alpha.py": 1},
+    )
+    timing_path = tmp_path / "shard-timing.0.json"
+
+    def fake_success_with_invalid_timing(command, *, cwd, check):
+        args = list(command)
+        output = Path(args[args.index("--geno-file-timings-json") + 1])
+        output.write_text("{}", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        pytest_shard.subprocess, "run", fake_success_with_invalid_timing
+    )
+
+    assert (
+        pytest_shard.main(
+            [
+                "--shard-index",
+                "0",
+                "--shard-count",
+                "1",
+                "--plan-manifest",
+                str(tmp_path / "shard-plan.0.json"),
+                "--timing-manifest",
+                str(timing_path),
+            ]
+        )
+        == 1
+    )
+    assert not timing_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "message"),
+    [
+        (["--timing-manifest", "shard-timing.0.json"], "requires --plan-manifest"),
+        (
+            [
+                "--plan-manifest",
+                "shard-plan.0.json",
+                "--timing-manifest",
+                "timing.json",
+            ],
+            r"shard-timing\.0\.json",
+        ),
+    ],
+)
+def test_main_rejects_invalid_timing_options(
+    extra_args: list[str], message: str
+) -> None:
+    with pytest.raises(SystemExit, match=message):
+        pytest_shard.main(["--shard-index", "0", "--shard-count", "1", *extra_args])
 
 
 def test_main_list_only_applies_balance_profile(monkeypatch, capsys) -> None:

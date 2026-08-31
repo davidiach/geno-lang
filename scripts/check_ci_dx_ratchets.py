@@ -361,11 +361,22 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "test -s coverage-data/shard-plan.${{ matrix.shard }}.json": (
             "nonempty shard plan guard"
         ),
+        "--timing-manifest coverage-data/shard-timing.${{ matrix.shard }}.json": (
+            "shard timing manifest output"
+        ),
+        "test -s coverage-data/shard-timing.${{ matrix.shard }}.json": (
+            "nonempty shard timing guard"
+        ),
+        "name: coverage-data-${{ github.run_attempt }}-${{ matrix.shard }}": (
+            "run-attempt-scoped coverage artifact producer name"
+        ),
         (
             "path: |\n"
             "          coverage-data/coverage.${{ matrix.shard }}\n"
-            "          coverage-data/shard-plan.${{ matrix.shard }}.json"
-        ): "paired coverage and shard plan artifact upload",
+            "          coverage-data/shard-plan.${{ matrix.shard }}.json\n"
+            "          coverage-data/shard-timing.${{ matrix.shard }}.json"
+        ): "paired coverage, shard plan, and timing artifact upload",
+        "retention-days: 14": "timing evidence retention",
         "--cov=geno": "coverage collection",
         "--cov-report=": "deferred aggregate coverage report",
         "COVERAGE_FILE:": "isolated coverage data file",
@@ -374,6 +385,8 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
     }.items():
         if snippet not in coverage_shard_job:
             errors.append(f"hosted coverage shard job missing {label}")
+    if coverage_shard_job.count("actions/upload-artifact@") != 1:
+        errors.append("hosted coverage shard job must use one artifact upload action")
     if "--cov-fail-under" in coverage_shard_job:
         errors.append("coverage threshold must run only after shard data is combined")
 
@@ -384,10 +397,22 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "needs: coverage-shard": "coverage shard dependency",
         "needs.coverage-shard.result != 'success'": "coverage shard failure guard",
         "actions/download-artifact@": "coverage artifact download",
+        "pattern: coverage-data-${{ github.run_attempt }}-*": (
+            "run-attempt-scoped coverage artifact consumer pattern"
+        ),
+        "path: coverage-data": "coverage artifact download path",
         "merge-multiple: true": "coverage artifact merge",
         "expected 3 shard plans": "complete shard plan artifact guard",
+        "find coverage-data -maxdepth 1 -type f -name "
+        "'shard-plan.*.json' -print": "exact shard plan artifact glob",
         "--validate-plan-manifests": "shard plan agreement validation",
+        "expected 3 shard timings": "complete shard timing artifact guard",
+        "find coverage-data -maxdepth 1 -type f -name "
+        "'shard-timing.*.json' -print": "exact shard timing artifact glob",
+        "--timing-manifests": "shard timing agreement validation",
         "expected 3 coverage shards": "complete shard artifact guard",
+        "find coverage-data -maxdepth 1 -type f -name "
+        "'coverage.*' -print": "exact coverage artifact glob",
         "python -m coverage combine": "coverage data combination",
         "python -m coverage report --fail-under=80": "aggregate coverage threshold",
         "codecov/codecov-action@": "aggregate Codecov upload",
