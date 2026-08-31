@@ -1,8 +1,39 @@
 """Tests for scripts/pytest_shard.py."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from scripts import pytest_shard
+
+
+def _write_plan_manifests(
+    tmp_path: Path,
+    *,
+    counts: dict[str, int] | None = None,
+    shards: list[list[str]] | None = None,
+) -> list[Path]:
+    counts = counts or {
+        "geno/tests/test_alpha.py": 3,
+        "geno/tests/test_beta.py": 2,
+        "geno/tests/test_gamma.py": 1,
+    }
+    weights = dict(counts)
+    shards = shards or pytest_shard.partition_test_files(
+        counts, 3, balance_weights=weights
+    )
+    paths = [tmp_path / f"shard-plan.{index}.json" for index in range(3)]
+    for index, path in enumerate(paths):
+        pytest_shard.write_shard_plan_manifest(
+            path,
+            test_counts=counts,
+            balance_weights=weights,
+            shards=shards,
+            shard_index=index,
+            balance_profile="demo-profile",
+        )
+    return paths
 
 
 def test_parse_collected_test_counts_normalizes_paths() -> None:
@@ -176,6 +207,96 @@ def test_coverage_profile_heavy_groups_survive_small_collection_growth() -> None
         )
 
 
+def test_shard_plan_manifests_validate_round_trip(tmp_path: Path, capsys) -> None:
+    paths = _write_plan_manifests(tmp_path)
+
+    plan = pytest_shard.validate_shard_plan_manifests(paths)
+
+    assert plan["total_nodes"] == 6
+    assert plan["shard_count"] == 3
+    assert (
+        len(
+            {
+                json.loads(path.read_text(encoding="utf-8"))["plan_sha256"]
+                for path in paths
+            }
+        )
+        == 1
+    )
+    assert (
+        pytest_shard.main(["--validate-plan-manifests", *(str(path) for path in paths)])
+        == 0
+    )
+    assert "validated 3 matching pytest shard plans" in capsys.readouterr().out
+
+
+def test_shard_plan_validation_rejects_collection_drift(tmp_path: Path) -> None:
+    paths = _write_plan_manifests(tmp_path)
+    changed_counts = {
+        "geno/tests/test_alpha.py": 4,
+        "geno/tests/test_beta.py": 2,
+        "geno/tests/test_gamma.py": 1,
+    }
+    changed_shards = pytest_shard.partition_test_files(changed_counts, 3)
+    pytest_shard.write_shard_plan_manifest(
+        paths[1],
+        test_counts=changed_counts,
+        balance_weights=changed_counts,
+        shards=changed_shards,
+        shard_index=1,
+        balance_profile="demo-profile",
+    )
+
+    with pytest.raises(ValueError, match="plans disagree"):
+        pytest_shard.validate_shard_plan_manifests(paths)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("fingerprint", "fingerprint"),
+        ("schema", "schema version"),
+        ("selected", "selected shard"),
+    ],
+)
+def test_shard_plan_validation_rejects_tampering(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    paths = _write_plan_manifests(tmp_path)
+    manifest = json.loads(paths[0].read_text(encoding="utf-8"))
+    if mutation == "fingerprint":
+        manifest["plan_sha256"] = "0" * 64
+    elif mutation == "schema":
+        manifest["plan"]["schema_version"] = 2
+    else:
+        manifest["selected_shard"] = ["geno/tests/test_beta.py"]
+    paths[0].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        pytest_shard.validate_shard_plan_manifests(paths)
+
+
+def test_shard_plan_validation_rejects_incomplete_manifest_set(
+    tmp_path: Path,
+) -> None:
+    paths = _write_plan_manifests(tmp_path)
+
+    with pytest.raises(ValueError, match="expected 3 shard plan manifests"):
+        pytest_shard.validate_shard_plan_manifests(paths[:2])
+
+
+def test_shard_plan_validation_rejects_non_exact_assignment(tmp_path: Path) -> None:
+    invalid_shards = [
+        ["geno/tests/test_alpha.py"],
+        ["geno/tests/test_alpha.py"],
+        ["geno/tests/test_gamma.py"],
+    ]
+    paths = _write_plan_manifests(tmp_path, shards=invalid_shards)
+
+    with pytest.raises(ValueError, match="exactly once"):
+        pytest_shard.validate_shard_plan_manifests(paths)
+
+
 def test_balance_profile_rejects_wrong_shard_count() -> None:
     with pytest.raises(ValueError, match="requires 3 shards"):
         pytest_shard.balance_weights_for_profile(
@@ -211,7 +332,9 @@ def test_partition_test_files_rejects_invalid_inputs(
         pytest_shard.partition_test_files(counts, shard_count)
 
 
-def test_main_list_only_reports_selected_shard(monkeypatch, capsys) -> None:
+def test_main_list_only_reports_selected_shard(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
     monkeypatch.setattr(
         pytest_shard,
         "collect_test_counts",
@@ -221,13 +344,44 @@ def test_main_list_only_reports_selected_shard(monkeypatch, capsys) -> None:
         },
     )
 
+    plan_path = tmp_path / "shard-plan.1.json"
     assert (
-        pytest_shard.main(["--shard-index", "1", "--shard-count", "2", "--list-only"])
+        pytest_shard.main(
+            [
+                "--shard-index",
+                "1",
+                "--shard-count",
+                "2",
+                "--plan-manifest",
+                str(plan_path),
+                "--list-only",
+            ]
+        )
         == 0
     )
     output = capsys.readouterr().out
     assert "pytest shard 2/2: 1 files, 2/5 nodes" in output
     assert "geno/tests/test_beta.py" in output
+    manifest = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert manifest["shard_index"] == 1
+    assert manifest["selected_shard"] == ["geno/tests/test_beta.py"]
+
+
+def test_main_rejects_plan_manifest_filename_that_cannot_be_validated(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit, match=r"shard-plan\.1\.json"):
+        pytest_shard.main(
+            [
+                "--shard-index",
+                "1",
+                "--shard-count",
+                "2",
+                "--plan-manifest",
+                str(tmp_path / "plan.json"),
+                "--list-only",
+            ]
+        )
 
 
 def test_main_list_only_applies_balance_profile(monkeypatch, capsys) -> None:
