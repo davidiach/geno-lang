@@ -17,8 +17,10 @@ there would introduce a divergence rather than remove one.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -185,3 +187,139 @@ def test_generated_python_is_syntactically_valid_for_deep_nesting() -> None:
     namespace: dict[str, object] = {}
     exec(compile_to_python(_program(body)), namespace)
     assert namespace["main"]() == 0
+
+
+# ---------------------------------------------------------------------------
+# The JavaScript backend's side of the same rule.
+#
+# JS is block scoped, so nesting needed no help -- but it rejects two `const`
+# declarations of one name in a single block, and a same-scope Geno rebind
+# (`let x = 1` then `let x = 2`) emitted exactly that.  The program was a
+# SyntaxError and did not run at all, where the interpreter and the Python
+# backend both returned the rebound value.  A block that re-binds a name now
+# introduces it with `let` and makes the later occurrences assignments, which
+# keeps the rebind observable to a closure made in between.
+# ---------------------------------------------------------------------------
+
+REBIND_CASES = [
+    pytest.param(
+        "    let x: Int = 5\n    let x: Int = 10\n    return x", 10, id="let_twice"
+    ),
+    pytest.param(
+        "    let x: Int = 1\n    let x: Int = 2\n    let x: Int = 3\n    return x",
+        3,
+        id="let_three_times",
+    ),
+    pytest.param(
+        "    var x: Int = 5\n    var x: Int = 10\n    return x", 10, id="var_twice"
+    ),
+    pytest.param(
+        "    let y: Int = 0\n    if true then\n        let x: Int = 1\n        let x: Int = 2\n        return x\n    end if\n    return y",
+        2,
+        id="rebind_inside_a_block",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n    let y: Int = 10\n    return x + y",
+        15,
+        id="no_rebind_is_untouched",
+    ),
+]
+
+
+def _run_node(source: str) -> str:
+    from geno.js_compiler import compile_to_js
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".mjs", delete=False, encoding="utf-8", newline="\n"
+    ) as handle:
+        handle.write(compile_to_js(source))
+        path = handle.name
+    try:
+        completed = subprocess.run(
+            ["node", path], capture_output=True, text=True, timeout=60, check=False
+        )
+        assert completed.returncode == 0, completed.stderr[-400:]
+        return completed.stdout.strip().splitlines()[-1]
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js not available")
+@pytest.mark.parametrize(("body", "expected"), REBIND_CASES)
+def test_js_backend_runs_a_same_scope_rebind(body: str, expected: int) -> None:
+    """This emitted two `const` declarations and would not parse."""
+    assert _run_node(_program(body)) == str(expected)
+
+
+@pytest.mark.parametrize(("body", "expected"), REBIND_CASES)
+def test_compiled_python_agrees_on_a_same_scope_rebind(
+    body: str, expected: int
+) -> None:
+    namespace: dict[str, object] = {}
+    exec(compile_to_python(_program(body)), namespace)
+    assert namespace["main"]() == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js not available")
+def test_a_closure_made_between_two_bindings_sees_the_rebind() -> None:
+    """Why the rebind is an assignment rather than a second binding.
+
+    Renaming instead would give the closure the *old* value on JS while the
+    interpreter and Python gave it the new one -- trading one divergence for
+    another.
+    """
+    source = """func main() -> Int
+    let x: Int = 1
+    let f = fn() -> x
+    let x: Int = 2
+    return f()
+end func
+"""
+    namespace: dict[str, object] = {}
+    exec(compile_to_python(source), namespace)
+    assert namespace["main"]() == 2
+    assert _run_node(source) == "2"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js not available")
+def test_a_binding_may_rebind_a_parameter() -> None:
+    """A `let` re-binding a parameter agrees across the backends.
+
+    This one was never broken: the JS function body is wrapped in `try {`,
+    so the emitted `const p` sat in a nested block and legally shadowed the
+    parameter.  It now compiles to an assignment instead, which is what the
+    interpreter and the Python backend do -- so a closure over the parameter
+    made beforehand observes the new value on every backend rather than only
+    on two of them.
+    """
+    source = """func main() -> Int
+    example () -> 9
+    return helper(1)
+end func
+
+func helper(p: Int) -> Int
+    example (1) -> 9
+    let p: Int = 9
+    return p
+end func
+"""
+    namespace: dict[str, object] = {}
+    exec(compile_to_python(source), namespace)
+    assert namespace["main"]() == 9
+    assert _run_node(source) == "9"
+
+
+def test_only_a_rebound_name_loses_const() -> None:
+    """`const` must survive for every name the block does not re-bind."""
+    from geno.js_compiler import compile_to_js
+
+    js = compile_to_js(
+        _program(
+            "    let a: Int = 1\n    let b: Int = 2\n    let b: Int = 3\n    return a + b"
+        )
+    )
+    body = js[js.index("function main") :]
+    body = body[: body.index("catch")]
+    assert "const a = " in body, body
+    assert "let b = " in body, body
+    assert "const b = " not in body, body

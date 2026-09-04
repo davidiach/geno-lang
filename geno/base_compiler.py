@@ -10,7 +10,7 @@ and target-independent compilation methods.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from io import StringIO
@@ -602,15 +602,22 @@ class BaseCompiler(ABC):
     # =========================================================================
 
     @contextmanager
-    def _block_scope(self, bound_names: Iterable[str] = ()) -> Iterator[None]:
+    def _block_scope(
+        self,
+        bound_names: Iterable[str] = (),
+        statements: Sequence[Statement] = (),
+    ) -> Iterator[None]:
         """Open a nested Geno block scope around a control-flow body.
 
         Geno blocks scope their bindings: a `let` inside an `if` shadows a
         same-named binding outside it rather than overwriting it, as both the
-        interpreter and `test_shadowing` require.  JavaScript's own `const`
-        and `let` are block scoped, so this is a no-op for the JS backend;
-        the Python backend overrides it to rename the shadowed binding,
-        because Python scopes per function, not per block.
+        interpreter and `test_shadowing` require.
+
+        Both backends override this, for opposite reasons.  Python scopes per
+        function, so it renames a binding that shadows an enclosing one.
+        JavaScript is already block scoped and needs no renaming, but it
+        rejects two `const` declarations of one name in a single block, so it
+        uses *statements* to look ahead for a name this block re-binds.
         """
         yield
 
@@ -620,7 +627,7 @@ class BaseCompiler(ABC):
         self._writeln(self._if_open(cond))
         self._indent()
         if stmt.then_body:
-            with self._block_scope():
+            with self._block_scope(statements=stmt.then_body):
                 for s in stmt.then_body:
                     self._compile_statement(s)
         else:
@@ -630,7 +637,7 @@ class BaseCompiler(ABC):
         if stmt.else_body:
             self._writeln(self._else_open())
             self._indent()
-            with self._block_scope():
+            with self._block_scope(statements=stmt.else_body):
                 for s in stmt.else_body:
                     self._compile_statement(s)
             self._dedent()
@@ -642,7 +649,7 @@ class BaseCompiler(ABC):
         self._writeln(self._while_open(cond))
         self._indent()
         if stmt.body:
-            with self._block_scope():
+            with self._block_scope(statements=stmt.body):
                 for s in stmt.body:
                     self._compile_statement(s)
         else:
@@ -657,7 +664,7 @@ class BaseCompiler(ABC):
         self._writeln(self._for_open(var, iterable))
         self._indent()
         if stmt.body:
-            with self._block_scope([stmt.variable]):
+            with self._block_scope([stmt.variable], stmt.body):
                 for s in stmt.body:
                     self._compile_statement(s)
         else:

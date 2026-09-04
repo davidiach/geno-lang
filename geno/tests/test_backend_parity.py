@@ -2212,6 +2212,11 @@ func main() -> Unit
         y = y + 1
     end while
     print(x)
+    // A same-scope rebind is a rebind on every backend.  This emitted two
+    // `const` declarations on JS, so the program was a SyntaxError there.
+    let z: Int = 1
+    let z: Int = 2
+    print(z)
     return ()
 end func
 """,

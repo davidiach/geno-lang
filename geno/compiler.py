@@ -18,6 +18,7 @@ from typing import (
     Iterable,
     Iterator,
     Optional,
+    Sequence,
     cast,
 )
 
@@ -393,8 +394,16 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._block_scopes = saved
 
     @contextmanager
-    def _block_scope(self, bound_names: Iterable[str] = ()) -> Iterator[None]:
-        """Open a nested Geno block scope (an if/while/for/match/try body)."""
+    def _block_scope(
+        self,
+        bound_names: Iterable[str] = (),
+        statements: Sequence[Statement] = (),
+    ) -> Iterator[None]:
+        """Open a nested Geno block scope (an if/while/for/match/try body).
+
+        *statements* is unused here — it exists for the JS backend, which
+        needs to look ahead for a name the block re-binds.
+        """
         scope = _BlockScope(names=set(bound_names), overrides={})
         self._block_scopes.append(scope)
         self._name_overrides.append(scope.overrides)
