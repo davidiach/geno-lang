@@ -128,8 +128,11 @@ quote-style = "double"
 [tool.coverage.run]
 patch = ["subprocess"]
 omit = [
-    # This test file is entirely gated on optional LSP dependencies.
-    "geno/tests/test_lsp.py",
+    # Measure the product, not the suite.  `--cov=geno` otherwise includes
+    # `geno/tests/` -- ~54% of measured statements, ~98% covered by virtue of
+    # having been executed -- which inflates the headline figure and lets
+    # production coverage fall a long way before the gate notices.
+    "geno/tests/*",
 ]
 
 [tool.mypy]
