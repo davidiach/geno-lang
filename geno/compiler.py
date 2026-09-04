@@ -9,9 +9,17 @@ import ast
 import builtins as _python_builtins
 import keyword
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from functools import lru_cache
 from io import StringIO
-from typing import TYPE_CHECKING, Collection, Iterator, Optional, cast
+from typing import (
+    TYPE_CHECKING,
+    Collection,
+    Iterable,
+    Iterator,
+    Optional,
+    cast,
+)
 
 from ._backend_fastpath import (
     APPEND_FAST_PATH_BUILTIN,
@@ -101,6 +109,19 @@ from .builtin_registry import (
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
 from .types import FloatType, UserType
+
+
+@dataclass
+class _BlockScope:
+    """One Geno block scope while compiling a function body.
+
+    ``names`` are the Geno names bound directly in this block; ``overrides``
+    maps those that shadow an enclosing binding to the fresh Python name they
+    were renamed to.
+    """
+
+    names: set[str] = field(default_factory=set)
+    overrides: dict[str, str] = field(default_factory=dict)
 
 
 # Names defined in the runtime prelude that must not be shadowed by user code.
@@ -347,6 +368,63 @@ class Compiler(BaseCompiler, ASTVisitor):
         # same-function catch could observe, so try bodies keep the
         # expression-form guard (target stays unassigned on failure).
         self._try_depth = 0
+        # Stack of active block scopes for the function being compiled.
+        # Python has no block scope, so a `let` inside a nested Geno block
+        # would otherwise overwrite a same-named binding from an enclosing
+        # block.  The interpreter and the JS backend both shadow instead
+        # (see `test_shadowing`), so nested bindings are renamed here.
+        self._block_scopes: list[_BlockScope] = []
+        self._shadow_seq = 0
+
+    @contextmanager
+    def _function_scope(self, param_names: Iterable[str] = ()) -> Iterator[None]:
+        """Open the outermost scope of a function or lambda body.
+
+        A Python ``def``/``lambda`` already introduces a real scope, so an
+        inner body starts from a clean stack: a `let` inside it shadows an
+        outer binding through Python's own scoping and needs no renaming.
+        """
+        saved = self._block_scopes
+        self._block_scopes = []
+        try:
+            with self._block_scope(param_names):
+                yield
+        finally:
+            self._block_scopes = saved
+
+    @contextmanager
+    def _block_scope(self, bound_names: Iterable[str] = ()) -> Iterator[None]:
+        """Open a nested Geno block scope (an if/while/for/match/try body)."""
+        scope = _BlockScope(names=set(bound_names), overrides={})
+        self._block_scopes.append(scope)
+        self._name_overrides.append(scope.overrides)
+        try:
+            yield
+        finally:
+            self._name_overrides.pop()
+            self._block_scopes.pop()
+
+    def _declare_block_binding(self, name: str) -> str:
+        """Return the Python name a `let`/`var` in the current block binds.
+
+        A binding that shadows one from an *enclosing* block gets a fresh
+        name, registered as an override so later references in this block
+        resolve to it.  Re-binding in the *same* block keeps the existing
+        name, matching the interpreter and the Python backend, which both
+        treat that as a rebind rather than a new binding.
+        """
+        if not self._block_scopes:
+            return self._mangle_name(name)
+        current = self._block_scopes[-1]
+        if name in current.names:
+            return current.overrides.get(name, self._mangle_name(name))
+        current.names.add(name)
+        if any(name in scope.names for scope in self._block_scopes[:-1]):
+            self._shadow_seq += 1
+            renamed = f"{self._mangle_name(name)}__geno_shadow{self._shadow_seq}"
+            current.overrides[name] = renamed
+            return renamed
+        return self._mangle_name(name)
 
     def _compiled_identifier_name(self, name: str) -> str:
         """Resolve an identifier, honoring scoped capture/shadow overrides."""
@@ -1167,8 +1245,9 @@ class Compiler(BaseCompiler, ASTVisitor):
         if not defn.body:
             self._writeln("pass")
         else:
-            for stmt in defn.body:
-                self._compile_statement(stmt)
+            with self._function_scope(p.name for p in defn.params):
+                for stmt in defn.body:
+                    self._compile_statement(stmt)
 
         if uses_propagate:
             self._dedent()
@@ -1323,8 +1402,9 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._try_depth += 1
         try:
             if stmt.try_body:
-                for s in stmt.try_body:
-                    self._compile_statement(s)
+                with self._block_scope():
+                    for s in stmt.try_body:
+                        self._compile_statement(s)
             else:
                 self._writeln("pass")
         finally:
@@ -1350,8 +1430,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._indent()
             self._writeln(f"{var_name} = __geno_err__.value")
         if stmt.catch_clause.body:
-            for s in stmt.catch_clause.body:
-                self._compile_statement(s)
+            with self._block_scope([stmt.catch_clause.variable]):
+                for s in stmt.catch_clause.body:
+                    self._compile_statement(s)
         else:
             self._writeln("pass")
         self._dedent()
@@ -1366,8 +1447,9 @@ class Compiler(BaseCompiler, ASTVisitor):
         try:
             with self._with_shadowed_bindings([stmt.variable]):
                 if stmt.body:
-                    for s in stmt.body:
-                        self._compile_statement(s)
+                    with self._block_scope([stmt.variable]):
+                        for s in stmt.body:
+                            self._compile_statement(s)
                 else:
                     self._writeln("pass")
         finally:
@@ -1381,7 +1463,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         Match interpreter semantics: shallow copy for collections (list/dict),
         no copy for immutable primitives (Int, Float, Bool, String, Unit).
         """
-        name = self._mangle_name(stmt.name)
+        name = self._declare_block_binding(stmt.name)
         type_annot = stmt.type_annotation
         # Determine copy strategy from the declared type
         type_name = (
@@ -1424,7 +1506,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         Copy semantics must match let — var only makes the binding mutable,
         not the value.  Array is a reference type and is never copied.
         """
-        name = self._mangle_name(stmt.name)
+        name = self._declare_block_binding(stmt.name)
         type_annot = stmt.type_annotation
         type_name = (
             getattr(type_annot, "name", None)
@@ -1559,14 +1641,16 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln(f"if {guard_code}:")
                     self._indent()
                     if arm.body:
-                        for s in arm.body:
-                            self._compile_statement(s)
+                        with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                            for s in arm.body:
+                                self._compile_statement(s)
                     self._writeln(f"{matched_var} = True")
                     self._dedent()
                 else:
                     if arm.body:
-                        for s in arm.body:
-                            self._compile_statement(s)
+                        with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                            for s in arm.body:
+                                self._compile_statement(s)
                     self._writeln(f"{matched_var} = True")
                 self._dedent()
             self._writeln(f"if not {matched_var}:")
@@ -1587,8 +1671,9 @@ class Compiler(BaseCompiler, ASTVisitor):
                 for var_name, expr in bindings:
                     self._writeln(f"{var_name} = {expr}")
                 if arm.body:
-                    for s in arm.body:
-                        self._compile_statement(s)
+                    with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                        for s in arm.body:
+                            self._compile_statement(s)
                 else:
                     self._writeln("pass")
                 self._dedent()
@@ -2677,8 +2762,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                 if not expr.block_body:
                     self._writeln("pass")
                 else:
-                    for stmt in expr.block_body:
-                        self._compile_statement(stmt)
+                    # A block lambda compiles to a nested `def`, which is a
+                    # real Python scope, so its body starts a fresh stack.
+                    with self._function_scope(p.name for p in expr.params):
+                        for stmt in expr.block_body:
+                            self._compile_statement(stmt)
             self._dedent()
             return cast(str, func_name)
         else:

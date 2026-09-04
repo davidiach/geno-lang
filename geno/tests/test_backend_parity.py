@@ -2194,6 +2194,30 @@ end func
         id="int_literal_in_float_position",
     ),
     pytest.param(
+        # --- Geno blocks scope their bindings on every backend ---
+        # Python scopes per function, not per block, so a `let` inside an `if`
+        # used to overwrite the outer binding and the compiled program
+        # returned the inner value.  The interpreter and JS both shadow.
+        """\
+func main() -> Unit
+    let x: Int = 5
+    if true then
+        let x: Int = 10
+        print(x)
+    end if
+    print(x)
+    var y: Int = 1
+    while y < 2 do
+        let x: Int = 99
+        y = y + 1
+    end while
+    print(x)
+    return ()
+end func
+""",
+        id="block_scoped_bindings",
+    ),
+    pytest.param(
         # --- Float printing keeps the fractional part across backends ---
         # Floats and JS numbers share one runtime representation, so whole-valued
         # floats must be formatted via static type info, not a runtime check.
