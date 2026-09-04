@@ -170,6 +170,15 @@ WORKER_MAX_PROCESSES: int = _env_positive_int("GENO_WORKER_MAX_PROCESSES", 1)
 MAX_CONCURRENT_REQUESTS: int = _env_positive_int("GENO_MAX_CONCURRENT_REQUESTS", 16)
 MAX_CONNECTIONS: int = _env_positive_int("GENO_MAX_CONNECTIONS", 64)
 _REQUEST_TIMEOUT_SECONDS: int = _env_positive_int("GENO_REQUEST_TIMEOUT_SECONDS", 30)
+# A separate, much shorter budget for reading the request line and headers.
+# A legitimate client sends its head immediately; only a client dribbling
+# headers needs longer.  Without this, each half-open connection held a
+# connection slot for the full request timeout, so MAX_CONNECTIONS idle
+# sockets took the whole server down -- /healthz and /metrics included --
+# for as long as the attacker kept reconnecting.
+_HEADER_TIMEOUT_SECONDS: float = _env_positive_float("GENO_HEADER_TIMEOUT_SECONDS", 5)
+# Rate limit for the pool-exhaustion warning so a flood cannot spam the log.
+_REJECTION_WARNING_INTERVAL_SECONDS: float = 10.0
 
 # Rate limiting: sliding-window per client IP on POST endpoints.
 # Set GENO_RATE_LIMIT_REQUESTS=0 to disable rate limiting entirely.
@@ -2064,9 +2073,27 @@ def create_handler(
             super().setup()
             # The inactivity timeout and absolute deadline jointly prevent a
             # client from retaining a thread while dribbling headers or a body.
-            self.request.settimeout(_REQUEST_TIMEOUT_SECONDS)
+            # Reading the head gets the shorter budget so a half-open
+            # connection cannot hold a connection slot for the full request
+            # timeout; parse_request extends it once the head has arrived.
+            self.request.settimeout(_HEADER_TIMEOUT_SECONDS)
             self._cors_allowed_origins = _CORS_ALLOWED_ORIGINS
             self._trusted_proxy = trusted_proxy
+            self._request_deadline = threading.Timer(
+                _HEADER_TIMEOUT_SECONDS, self._expire_request_read
+            )
+            self._request_deadline.daemon = True
+            self._request_deadline.start()
+
+        def _extend_deadline_for_request_body(self) -> None:
+            """Grant the full request budget now that the head has arrived."""
+            previous = getattr(self, "_request_deadline", None)
+            if previous is not None:
+                previous.cancel()
+            try:
+                self.request.settimeout(_REQUEST_TIMEOUT_SECONDS)
+            except OSError:  # pragma: no cover - socket already torn down
+                return
             self._request_deadline = threading.Timer(
                 _REQUEST_TIMEOUT_SECONDS, self._expire_request_read
             )
@@ -2084,9 +2111,12 @@ def create_handler(
                 ),
             )
             try:
-                return super().parse_request()
+                parsed = super().parse_request()
             finally:
                 self.rfile = original_rfile
+            if parsed:
+                self._extend_deadline_for_request_body()
+            return parsed
 
         def _expire_request_read(self) -> None:
             try:
@@ -2520,7 +2550,27 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         **kwargs: Any,
     ) -> None:
         self._connection_slots = _CONNECTION_SEMAPHORE_FACTORY(max_connections)
+        self._max_connections = max_connections
+        self.rejected_connections = 0
+        self._rejection_lock = threading.Lock()
+        self._last_rejection_warning = 0.0
         super().__init__(*args, **kwargs)
+
+    def _record_rejected_connection(self) -> None:
+        """Count a refused connection and warn, at most once per interval."""
+        with self._rejection_lock:
+            self.rejected_connections += 1
+            total = self.rejected_connections
+            now = time.monotonic()
+            if now - self._last_rejection_warning < _REJECTION_WARNING_INTERVAL_SECONDS:
+                return
+            self._last_rejection_warning = now
+        logger.warning(
+            "connection pool exhausted: refused %d connection(s) so far "
+            "(limit %d, GENO_MAX_CONNECTIONS)",
+            total,
+            self._max_connections,
+        )
 
     def server_bind(self) -> None:
         """Bind without HTTPServer's blocking reverse-DNS lookup."""
@@ -2534,6 +2584,10 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._connection_slots.acquire(blocking=False):
+            # Dropping the connection silently made a full connection-pool
+            # exhaustion invisible: no log line, and no counter, because the
+            # rate limiter only sees requests that were already admitted.
+            self._record_rejected_connection()
             self.shutdown_request(request)
             return
         try:
