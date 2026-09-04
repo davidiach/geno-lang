@@ -566,7 +566,12 @@ def run_file(
             if run_output:
                 print(run_output, end="")
             if not _is_unit_main_result(result):
-                print(f"=> {result}")
+                # Render the Geno value in Geno syntax.  A bare f-string here
+                # printed Python's repr, so a Bool surfaced as `True` and a
+                # List[String] as `['a', 'b']` -- host syntax for a Geno value.
+                from .._runtime_support import _geno_format
+
+                print(f"=> {_geno_format(result)}")
             return
         except FileNotFoundError:
             print(f"Error: File not found: {filename}", file=sys.stderr)

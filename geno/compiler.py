@@ -695,14 +695,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 main_defn = d
                 break
         if main_defn is not None:
-            self.output.write("\n\nif __name__ == '__main__':\n")
-            if main_defn.is_async:
-                self.output.write("    import asyncio\n")
-                self.output.write("    result = asyncio.run(main())\n")
-            else:
-                self.output.write("    result = main()\n")
-            self.output.write("    if result is not None:\n")
-            self.output.write("        print(result)\n")
+            self.output.write(_compiled_main_guard(is_async=bool(main_defn.is_async)))
 
         return str(self.output.getvalue())
 
@@ -872,14 +865,12 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Add main call
         if main_defn is not None:
-            self.output.write("\n\nif __name__ == '__main__':\n")
-            if main_defn.is_async:
-                self.output.write("    import asyncio\n")
-                self.output.write("    result = asyncio.run(_geno_entry_main())\n")
-            else:
-                self.output.write("    result = _geno_entry_main()\n")
-            self.output.write("    if result is not None:\n")
-            self.output.write("        print(result)\n")
+            self.output.write(
+                _compiled_main_guard(
+                    is_async=bool(main_defn.is_async),
+                    main_name="_geno_entry_main",
+                )
+            )
 
         return str(self.output.getvalue())
 
@@ -3014,6 +3005,23 @@ def _insert_compiled_runtime_capability_assignment(
     return assignment + python_code
 
 
+def _compiled_main_guard(*, is_async: bool, main_name: str = "main") -> str:
+    """Return the ``__main__`` guard emitted after a compiled program.
+
+    Emitters and the consumers that rewrite this block share this one
+    definition: a hand-copied literal that drifts from the emitted text turns
+    a `.replace()` into a silent no-op rather than an error.
+    """
+    call = f"asyncio.run({main_name}())" if is_async else f"{main_name}()"
+    lines = ["\n\nif __name__ == '__main__':\n"]
+    if is_async:
+        lines.append("    import asyncio\n")
+    lines.append(f"    result = {call}\n")
+    lines.append("    if result is not None:\n")
+    lines.append("        print(_geno_format(result))\n")
+    return "".join(lines)
+
+
 def _compiled_main_result_capture(
     is_async: bool,
     *,
@@ -3099,19 +3107,8 @@ def compile_and_exec(
             trusted_prelude_line_count = _trusted_runtime_prelude_line_count(exec_code)
             # Replace the __name__ guard with a direct __result__
             # assignment so the process sandbox captures the return value.
-            _MAIN_GUARD = (
-                "\n\nif __name__ == '__main__':\n"
-                "    result = main()\n"
-                "    if result is not None:\n"
-                "        print(result)\n"
-            )
-            _ASYNC_MAIN_GUARD = (
-                "\n\nif __name__ == '__main__':\n"
-                "    import asyncio\n"
-                "    result = asyncio.run(main())\n"
-                "    if result is not None:\n"
-                "        print(result)\n"
-            )
+            _MAIN_GUARD = _compiled_main_guard(is_async=False)
+            _ASYNC_MAIN_GUARD = _compiled_main_guard(is_async=True)
             if _ASYNC_MAIN_GUARD in exec_code:
                 exec_code = exec_code.replace(
                     _ASYNC_MAIN_GUARD,
