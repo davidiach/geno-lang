@@ -2150,6 +2150,42 @@ end func
         id="match_expr_user_variant",
     ),
     pytest.param(
+        # --- An Int literal in a Float position is a Float value ---
+        # float_print_whole_values covers literals that are already Float.
+        # These are Int literals the typechecker widens to Float via
+        # _expected_runtime_type: call arguments, container elements, tuple
+        # slots, constructor fields, Option payloads and JSON values.  The JS
+        # backend renders them from static type, so a Python-side Int here
+        # made the same program print `3` on one backend and `3.0` on the
+        # other -- reaching machine-readable output through json_to_string.
+        """\
+type Wrap = Wrap(v: Float)
+
+func show(x: Float) -> String
+    example (1.0) -> "1.0"
+    return to_string(x)
+end func show
+
+func main() -> Unit
+    print(show(3))
+    let xs: List[Float] = [1, 2]
+    print(to_string(xs))
+    let nested: List[List[Float]] = [[1], [2]]
+    print(to_string(nested))
+    let t: (Float, Float) = (1, 2)
+    print(to_string(t))
+    print(to_string(Wrap(5)))
+    let o: Option[Float] = Some(7)
+    print(to_string(o))
+    print(json_to_string(JsonFloat(3)))
+    let mixed: List[Float] = [2.5, 1, 3]
+    print(to_string(mixed))
+    return ()
+end func
+""",
+        id="int_literal_in_float_position",
+    ),
+    pytest.param(
         # --- Float printing keeps the fractional part across backends ---
         # Floats and JS numbers share one runtime representation, so whole-valued
         # floats must be formatted via static type info, not a runtime check.

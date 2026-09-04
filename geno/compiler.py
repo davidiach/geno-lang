@@ -1728,6 +1728,14 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         if expr_type is IntegerLiteral:
             int_expr = cast(IntegerLiteral, expr)
+            # An Int literal in a Float position is a Float value.  The JS
+            # backend already renders it as one, so emitting a Python int
+            # here made the same program print `3` on one backend and `3.0`
+            # on the other -- visible through to_string and json_to_string.
+            if self._expected_runtime_type_is_float(
+                getattr(expr, "_expected_runtime_type", None)
+            ):
+                return self._compile_expected_float_literal(int_expr.value)
             return self._compile_int_literal(int_expr.value)
 
         if expr_type is FloatLiteral:
@@ -1858,6 +1866,21 @@ class Compiler(BaseCompiler, ASTVisitor):
         if value.bit_length() <= _RAW_INT_LITERAL_MAX_BITS:
             return str(value)
         return f"_check_collection_size({value})"
+
+    def _compile_expected_float_literal(self, value: int) -> str:
+        """Emit an Int literal that sits in a Float position as a float.
+
+        Values that do not survive the conversion exactly keep the runtime
+        promotion, so the failure surfaces there rather than silently
+        emitting an inexact or infinite literal.
+        """
+        try:
+            promoted = float(value)
+        except OverflowError:
+            return f"_promote_int_to_float({self._compile_int_literal(value)})"
+        if promoted != value:
+            return f"_promote_int_to_float({self._compile_int_literal(value)})"
+        return repr(promoted)
 
     def _compile_string_literal(self, value: str) -> str:
         """Emit a string literal with its size check inlined.

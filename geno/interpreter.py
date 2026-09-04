@@ -1774,7 +1774,12 @@ class Interpreter:
 
     def _eval_integer_literal(self, expr: IntegerLiteral, env: Environment) -> Any:
         self._check_integer_bits(expr.value, expr.location)
-        return expr.value
+        # An Int literal in a Float position is a Float value; without this
+        # the interpreter and compiled Python printed `3` where the JS
+        # backend printed `3.0` for the same program.
+        return _promote_int_to_expected_float(
+            expr.value, getattr(expr, "_expected_runtime_type", None)
+        )
 
     def _eval_float_literal(self, expr: FloatLiteral, env: Environment) -> Any:
         return expr.value
