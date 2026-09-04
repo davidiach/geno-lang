@@ -279,7 +279,10 @@ jobs:
           requirements-dev.lock
 
     - name: Install dependencies
-      run: python -m pip install -e ".[dev]"
+      # Include the LSP extra: without pygls the LSP suites skip, leaving
+      # geno/lsp_server.py at 20% and pulling measured coverage below the
+      # floor even though lsp-tests exercises that code in its own job.
+      run: python -m pip install -e ".[dev,lsp]"
 
     - name: Run coverage shard
       env:
