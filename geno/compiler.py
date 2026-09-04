@@ -3017,14 +3017,25 @@ def _insert_compiled_runtime_capability_assignment(
 def _compiled_main_result_capture(
     is_async: bool,
     *,
-    catch_name_error: bool = False,
+    allow_missing_main: bool = False,
     main_name: str = "main",
 ) -> str:
-    call = f"_geno_run_async({main_name}())" if is_async else f"{main_name}()"
-    assignment = f"__result__ = {call}"
-    if catch_name_error:
-        return f"\n\ntry:\n    {assignment}\nexcept NameError:\n    pass\n"
-    return f"\n\n{assignment}\n"
+    if not allow_missing_main:
+        direct = f"_geno_run_async({main_name}())" if is_async else f"{main_name}()"
+        return f"\n\n__result__ = {direct}\n"
+    # Guard ONLY the entrypoint name lookup.  Wrapping the call itself would
+    # swallow every NameError raised inside the program -- including ones the
+    # runtime prelude causes by naming a builtin the sandbox does not provide,
+    # which silently truncated execution and still exited 0.
+    call = "_geno_run_async(_geno_entry_fn())" if is_async else "_geno_entry_fn()"
+    return (
+        "\n\ntry:\n"
+        f"    _geno_entry_fn = {main_name}\n"
+        "except NameError:\n"
+        "    _geno_entry_fn = None\n"
+        "if _geno_entry_fn is not None:\n"
+        f"    __result__ = {call}\n"
+    )
 
 
 def compile_and_exec(

@@ -292,7 +292,7 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     python_code += _compiled_main_result_capture(
         bool(main_defn and main_defn.is_async),
         main_name="_geno_entry_main" if parsed_modules else "main",
-        catch_name_error=True,
+        allow_missing_main=True,
     )
     return {
         "python_code": python_code,

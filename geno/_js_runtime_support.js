@@ -1976,6 +1976,10 @@ const _GENO_CAPS = (function() {
         const argv = process.argv;
         const caps = new _GENO_SET();
         for (let i = 2; i < argv.length; i++) {
+            // Stop at the program-argument separator.  Everything after `--`
+            // is untrusted program input (it is exactly what cli_args()
+            // returns), so it must never grant a capability to its own host.
+            if (argv[i] === "--") break;
             if (argv[i] === "--cap" && i + 1 < argv.length) {
                 argv[i + 1].split(",").forEach(c => caps.add(c));
                 i++;
