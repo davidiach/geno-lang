@@ -399,7 +399,7 @@ class REPL:
                 # Execute
                 result = self.interpreter.run(program)
                 if result is not None:
-                    print(f"=> {self.interpreter._format_value(result)}")
+                    print(f"=> {self.interpreter.format_display_value(result)}")
                 else:
                     print("Defined.")
 
@@ -407,7 +407,7 @@ class REPL:
                 # Try as expression
                 result = self._eval_expression(source)
                 if result is not None:
-                    print(f"=> {self.interpreter._format_value(result)}")
+                    print(f"=> {self.interpreter.format_display_value(result)}")
 
             self.history.append(source)
 
@@ -481,7 +481,7 @@ end func __repl_eval__
 
             print(f"Loaded {len(program.definitions)} definitions.")
             if result is not None:
-                print(f"=> {self.interpreter._format_value(result)}")
+                print(f"=> {self.interpreter.format_display_value(result)}")
 
         except FileNotFoundError:
             print(f"File not found: {filename}")

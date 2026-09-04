@@ -2180,6 +2180,14 @@ func main() -> Unit
     print(json_to_string(JsonFloat(3)))
     let mixed: List[Float] = [2.5, 1, 3]
     print(to_string(mixed))
+    // Element inference must not depend on element order: an Int first and a
+    // Float later is the same list as the reverse, and both must widen.
+    let int_first: List[Float] = [1, 2.5, 3]
+    print(to_string(int_first))
+    let inferred = [1, 2.5, 3]
+    print(to_string(inferred))
+    let nested_widened = [[1], [2.5]]
+    print(to_string(nested_widened))
     return ()
 end func
 """,

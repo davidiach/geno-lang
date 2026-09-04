@@ -688,7 +688,7 @@ def run_file(
             if run_output:
                 print(run_output, end="")
             if not _is_unit_main_result(result):
-                print(f"=> {interpreter._format_value(result)}")
+                print(f"=> {interpreter.format_display_value(result)}")
 
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)

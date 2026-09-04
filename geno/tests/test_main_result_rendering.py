@@ -34,6 +34,8 @@ RESULT_CASES = [
     pytest.param("Int", "42", "42", id="int"),
     pytest.param("List[String]", '["a", "b"]', '["a", "b"]', id="list_of_string"),
     pytest.param("List[Int]", "[1, 2, 3]", "[1, 2, 3]", id="list_of_int"),
+    pytest.param("String", '"hi"', "hi", id="top_level_string"),
+    pytest.param("List[String]", '["a"]', '["a"]', id="nested_string_stays_quoted"),
 ]
 
 
@@ -106,3 +108,42 @@ def test_geno_run_result_line_matches_the_compiled_backend(
     )
     assert completed.returncode == 0, completed.stderr[-400:]
     assert completed.stdout.strip().splitlines()[-1] == f"=> {expected}"
+
+
+@pytest.mark.parametrize(("return_type", "expression", "expected"), RESULT_CASES)
+def test_geno_run_unsafe_matches_the_compiled_backends(
+    tmp_path: Path, return_type: str, expression: str, expected: str
+) -> None:
+    """`--unsafe` runs the interpreter, and its `=>` line must agree.
+
+    The interpreter's result line called ``_format_value``, which quotes a
+    String at every depth, while both compiled runtimes render a *top-level*
+    String bare (``_geno_format(_top_level=True)``, and ``_stringifyValue``'s
+    ``topLevel`` in the JS runtime).  The same program therefore printed
+    ``=> hi`` compiled and ``=> "hi"`` interpreted.  The interpreter's own
+    ``print`` already applied the top-level rule inline; only the `=>` line
+    missed it.
+    """
+    program = tmp_path / "prog.geno"
+    program.write_text(_program(return_type, expression), encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-m", "geno", "run", "--unsafe", str(program)],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-400:]
+    assert completed.stdout.strip().splitlines()[-1] == f"=> {expected}"
+
+
+def test_interpreter_display_and_diagnostic_formatting_differ_on_purpose() -> None:
+    """A diagnostic keeps its quotes; user-facing output does not."""
+    from geno.interpreter import Interpreter
+
+    interpreter = Interpreter()
+    assert interpreter.format_display_value("hi") == "hi"
+    assert interpreter._format_value("hi") == '"hi"'
+    # Nesting is unaffected: only the top level is bare.
+    assert interpreter.format_display_value(["a", "b"]) == '["a", "b"]'

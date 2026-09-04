@@ -1236,7 +1236,7 @@ class Interpreter:
         themselves.  This avoids duplicate output in ``--unsafe`` mode and
         keeps ``--json`` output clean.
         """
-        output = (value if isinstance(value, str) else self._format_value(value)) + "\n"
+        output = self.format_display_value(value) + "\n"
 
         # Check output limit
         self._output_length += len(output)
@@ -1249,8 +1249,26 @@ class Interpreter:
         return None
 
     def _format_value(self, value: Any) -> str:
-        """Format a value for display."""
+        """Format a value for a diagnostic, quoting strings at every depth."""
         return str(_builtins.format_value(value))
+
+    def format_display_value(self, value: Any) -> str:
+        """Format a value for user-facing output, as the backends' `_geno_format` does.
+
+        A top-level String renders unquoted -- ``hi``, not ``"hi"`` -- while a
+        String nested inside a container stays quoted (``["a", "b"]``).  The
+        distinction matters because ``_format_value`` quotes at every depth,
+        which is what a diagnostic wants ("expected \"a\", got \"b\"") and not
+        what ``print`` or the CLI's ``=>`` result line wants.
+
+        Keeping the rule in one place is the point: ``print`` applied it
+        inline while ``geno run --unsafe``'s result line called
+        ``_format_value`` directly, so the same program printed ``=> hi``
+        compiled and ``=> "hi"`` interpreted.
+        """
+        if isinstance(value, str):
+            return value
+        return self._format_value(value)
 
     # =========================================================================
     # Program Execution
