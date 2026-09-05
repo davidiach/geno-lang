@@ -2188,6 +2188,19 @@ func main() -> Unit
     print(to_string(inferred))
     let nested_widened = [[1], [2.5]]
     print(to_string(nested_widened))
+    let n = 1
+    let negative_first = [-1, 2.5]
+    print(to_string(negative_first))
+    let variable_first = [n, 2.5]
+    print(to_string(variable_first))
+    let arithmetic_first = [1 + 1, 2.5]
+    print(to_string(arithmetic_first))
+    let nested_expressions = [[n, -1], [2.5, 3]]
+    print(to_string(nested_expressions))
+    let ints = [n]
+    let nested_variable = [ints, [2.5]]
+    print(to_string(nested_variable))
+    print(to_string(ints))
     return ()
 end func
 """,

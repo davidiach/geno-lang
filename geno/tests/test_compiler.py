@@ -3616,7 +3616,7 @@ class TestInterpreterCompilerParity:
         end func
         """
         result = compile_and_run(source)
-        assert result == "_None", f"got {result!r}"
+        assert result == "None", f"got {result!r}"
 
     def test_and_returns_bool(self):
         """Compiled 'and' must return a bool, not the operand value."""

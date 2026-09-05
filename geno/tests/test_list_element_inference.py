@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from geno.api import RunConfig, run
+from geno.compiler import compile_to_python
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.typechecker import TypeChecker
@@ -112,3 +114,85 @@ def test_int_literals_carry_the_widened_type_to_the_backends() -> None:
     for element in elements:
         expected = getattr(element, "_expected_runtime_type", None)
         assert isinstance(expected, FloatType), f"{element} lost the widened type"
+
+
+@pytest.mark.parametrize(
+    ("literal", "return_type", "expected"),
+    [
+        ("[-1, 2.5]", "List[Float]", [-1.0, 2.5]),
+        ("[n, 2.5]", "List[Float]", [1.0, 2.5]),
+        ("[1 + 1, 2.5]", "List[Float]", [2.0, 2.5]),
+        (
+            "[[n, -1], [2.5, 3]]",
+            "List[List[Float]]",
+            [[1.0, -1.0], [2.5, 3.0]],
+        ),
+        ("[ints, [2.5]]", "List[List[Float]]", [[1.0], [2.5]]),
+    ],
+)
+def test_inferred_float_lists_materialize_all_int_expressions(
+    literal: str, return_type: str, expected: list
+) -> None:
+    source = (
+        f"func main() -> {return_type}\n"
+        "    let n = 1\n"
+        "    let ints = [n]\n"
+        f"    let xs = {literal}\n"
+        "    return xs\n"
+        "end func\n"
+    )
+    interpreted = run(source)
+    assert interpreted.ok, interpreted.diagnostics
+    namespace = {"__name__": "__test__"}
+    code = compile(compile_to_python(source), "<geno>", "exec", dont_inherit=True)
+    exec(code, namespace)
+    compiled = namespace["main"]()
+
+    for value in (interpreted.value_raw, compiled):
+        assert value == expected
+        leaves = (
+            value
+            if return_type == "List[Float]"
+            else [element for row in value for element in row]
+        )
+        assert all(type(element) is float for element in leaves)
+
+
+def test_nested_list_widening_preserves_the_source_int_list() -> None:
+    source = """
+func main() -> (List[List[Float]], List[Int])
+    let ints = [1]
+    let widened = [ints, [2.5]]
+    return (widened, ints)
+end func
+"""
+    interpreted = run(source)
+    assert interpreted.ok, interpreted.diagnostics
+    namespace = {"__name__": "__test__"}
+    code = compile(compile_to_python(source), "<geno>", "exec", dont_inherit=True)
+    exec(code, namespace)
+
+    for widened, original in (interpreted.value_raw, namespace["main"]()):
+        assert widened == [[1.0], [2.5]]
+        assert type(widened[0][0]) is float
+        assert original == [1]
+        assert type(original[0]) is int
+        assert widened[0] is not original
+
+
+@pytest.mark.parametrize("value,max_bits", [(8, 3), (18446744073709551616, 64)])
+def test_float_literal_promotion_keeps_integer_bit_limit(
+    value: int, max_bits: int
+) -> None:
+    source = f"func main() -> Float\n    return {value}\nend func\n"
+    interpreted = run(source, config=RunConfig(max_integer_bits=max_bits))
+    assert not interpreted.ok
+    assert any(
+        "Integer exceeds maximum size" in diagnostic.message
+        for diagnostic in interpreted.diagnostics
+    )
+    namespace = {"__name__": "__test__", "_GENO_MAX_INTEGER_BITS": max_bits}
+    code = compile(compile_to_python(source), "<geno>", "exec", dont_inherit=True)
+    exec(code, namespace)
+    with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
+        namespace["main"]()

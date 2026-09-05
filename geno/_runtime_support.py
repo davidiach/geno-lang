@@ -248,14 +248,15 @@ def _geno_format(
         return value if _top_level else _geno_quote_string(value)
     if isinstance(value, Constructor):
         fields = _dataclasses_fields(value)
+        constructor_name = "None" if isinstance(value, _None) else type(value).__name__
         if not fields:
-            return type(value).__name__
+            return constructor_name
         field_strs = ", ".join(
             f"{field.name}: "
             f"{_geno_format(getattr(value, field.name), _seen, _top_level=False)}"
             for field in fields
         )
-        return f"{type(value).__name__}({field_strs})"
+        return f"{constructor_name}({field_strs})"
     if isinstance(value, _GenoArray):
         elements = ", ".join(
             _geno_format(item, _seen, _top_level=False) for item in value._elements

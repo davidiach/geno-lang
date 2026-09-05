@@ -19,7 +19,22 @@ One person may fill multiple roles for a small release, but the release owner is
 
 ## Mandatory Gate
 
-Run the canonical release gate from repo root:
+In an activated virtual environment at the repo root, install the hash-locked
+development and release dependencies used by publishing:
+
+```bash
+python3 -m pip install --require-hashes -r requirements-dev.lock
+python3 -m pip install --require-hashes -r requirements-release.lock
+python3 -m pip install --no-deps --no-build-isolation -e .
+```
+
+`requirements-dev.lock` includes the LSP dependencies needed to measure the
+whole production package against the 80% coverage floor. Installing only
+`.[dev]` skips the LSP tests and can leave coverage below that floor. The release
+tools lock targets Linux/Python 3.11; use that environment to reproduce publishing.
+For other local development environments, see the [local CI setup](local-ci.md).
+
+Then run the canonical release gate:
 
 ```bash
 make release-check

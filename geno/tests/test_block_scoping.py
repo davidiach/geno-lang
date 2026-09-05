@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -90,7 +91,7 @@ def _program(body: str) -> str:
 @pytest.mark.parametrize(("body", "expected"), SCOPE_CASES)
 def test_compiled_python_scopes_block_bindings(body: str, expected: int) -> None:
     """This is the lane that was wrong: Python has no block scope."""
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(_program(body)), namespace)
     assert namespace["main"]() == expected
 
@@ -106,7 +107,7 @@ def test_interpreter_and_compiled_python_agree(body: str, expected: int) -> None
     """The divergence itself, stated directly."""
     source = _program(body)
     program = Parser(Lexer(source).tokenize()).parse_program()
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(source), namespace)
     assert Interpreter().run(program) == namespace["main"]()
 
@@ -125,7 +126,7 @@ func helper(p: Int) -> Int
     return p
 end func
 """
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(source), namespace)
     assert namespace["main"]() == 5
 
@@ -141,7 +142,7 @@ def test_shadowed_binding_does_not_collide_with_a_real_user_name() -> None:
         "    end if\n"
         "    return x"
     )
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(source), namespace)
     assert namespace["main"]() == 10
 
@@ -184,7 +185,7 @@ def test_generated_python_is_syntactically_valid_for_deep_nesting() -> None:
     for depth in range(5, 0, -1):
         body += "    " * depth + "end if\n"
     body += "    return x"
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(_program(body)), namespace)
     assert namespace["main"]() == 0
 
@@ -232,7 +233,9 @@ def _run_node(source: str) -> str:
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".mjs", delete=False, encoding="utf-8", newline="\n"
     ) as handle:
-        handle.write(compile_to_js(source))
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        handle.write(code)
         path = handle.name
     try:
         completed = subprocess.run(
@@ -255,7 +258,7 @@ def test_js_backend_runs_a_same_scope_rebind(body: str, expected: int) -> None:
 def test_compiled_python_agrees_on_a_same_scope_rebind(
     body: str, expected: int
 ) -> None:
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(_program(body)), namespace)
     assert namespace["main"]() == expected
 
@@ -275,7 +278,7 @@ def test_a_closure_made_between_two_bindings_sees_the_rebind() -> None:
     return f()
 end func
 """
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(source), namespace)
     assert namespace["main"]() == 2
     assert _run_node(source) == "2"
@@ -303,7 +306,7 @@ func helper(p: Int) -> Int
     return p
 end func
 """
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile_to_python(source), namespace)
     assert namespace["main"]() == 9
     assert _run_node(source) == "9"
@@ -323,3 +326,269 @@ def test_only_a_rebound_name_loses_const() -> None:
     assert "const a = " in body, body
     assert "let b = " in body, body
     assert "const b = " not in body, body
+
+
+@pytest.mark.parametrize("keyword", ["let", "var"])
+@pytest.mark.parametrize("initializer", ["x + 1", "x"])
+def test_shadow_initializer_reads_the_enclosing_binding(
+    keyword: str, initializer: str
+) -> None:
+    source = _program(
+        "    let x: Int = 5\n"
+        "    if true then\n"
+        f"        {keyword} x: Int = {initializer}\n"
+        "        return x\n"
+        "    end if\n"
+        "    return 0"
+    )
+    namespace: dict[str, Any] = {}
+    exec(compile_to_python(source), namespace)
+    program = Parser(Lexer(source).tokenize()).parse_program()
+    assert namespace["main"]() == Interpreter().run(program)
+    if shutil.which("node") is not None:
+        assert _run_node(source) == str(namespace["main"]())
+
+
+REVIEW_SCOPE_CASES = [
+    pytest.param(
+        "    var x: Int = 5\n"
+        "    if true then\n"
+        "        var x: Int = 10\n"
+        "        x = 11\n"
+        "        return x\n"
+        "    end if\n"
+        "    return 0",
+        11,
+        id="assignment_resolves_shadow",
+    ),
+    pytest.param(
+        "    var x: Int = 5\n"
+        "    if true then\n"
+        "        var x: Int = 10\n"
+        "        x = x + 1\n"
+        "    end if\n"
+        "    return x",
+        5,
+        id="arithmetic_assignment_preserves_outer",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    let x__geno_shadow1: Int = 88\n"
+        "    let _temp_1: Int = 99\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "    end if\n"
+        "    return x__geno_shadow1 + _temp_1",
+        187,
+        id="generated_names_cannot_capture_user_bindings",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "        let f = fn() do\n"
+        "            let x: Int = 20\n"
+        "            return x\n"
+        "        end fn\n"
+        "        return f()\n"
+        "    end if\n"
+        "    return 0",
+        20,
+        id="lambda_local_masks_enclosing_override",
+    ),
+    pytest.param(
+        "    for i: Int in [1] do\n"
+        "        let i: Int = 3\n"
+        "        return i\n"
+        "    end for\n"
+        "    return 0",
+        3,
+        id="rebind_iteration_variable",
+    ),
+    pytest.param(
+        "    let (x, y): (Int, Int) = (5, 7)\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "    end if\n"
+        "    return x + y",
+        12,
+        id="destructuring_registers_outer_bindings",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "        match Some(20) with\n"
+        "            | Some(x) when x == 20 -> return x\n"
+        "            | _ -> return 0\n"
+        "        end match\n"
+        "    end if\n"
+        "    return 1",
+        20,
+        id="match_guard_resolves_pattern_binding",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "        return match Some(20) with\n"
+        "            | Some(x) when x == 20 -> x\n"
+        "            | _ -> 0\n"
+        "        end match\n"
+        "    end if\n"
+        "    return 1",
+        20,
+        id="inline_match_masks_enclosing_override",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    match Some(20) with\n"
+        "        | Some(x) -> let y: Int = x\n"
+        "        | _ -> let y: Int = 0\n"
+        "    end match\n"
+        "    return x",
+        5,
+        id="pattern_binding_preserves_outer",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    for x: Int in [1, 2] do\n"
+        "        let y: Int = x\n"
+        "    end for\n"
+        "    return x",
+        5,
+        id="iteration_binding_preserves_outer",
+    ),
+    pytest.param(
+        '    let e: String = "outer"\n'
+        "    try\n"
+        '        throw "inner"\n'
+        "    catch e: String\n"
+        "        let y: String = e\n"
+        "    end try\n"
+        '    if e == "outer" then\n'
+        "        return 5\n"
+        "    end if\n"
+        "    return 0",
+        5,
+        id="catch_binding_preserves_outer",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    let f = fn() do\n"
+        "        if true then\n"
+        "            let x: Int = 20\n"
+        "        end if\n"
+        "        return x\n"
+        "    end fn\n"
+        "    return f()",
+        5,
+        id="lambda_block_shadow_preserves_captured_binding",
+    ),
+    pytest.param(
+        "    let x: Int = 1\n"
+        "    let f = fn() -> x\n"
+        "    let (x, y): (Int, Int) = (3, 2)\n"
+        "    return f() + y",
+        5,
+        id="tuple_rebinding_keeps_closure_live",
+    ),
+    pytest.param(
+        "    let (x, y): (Int, Int) = (1, 2)\n    let x: Int = 3\n    return x + y",
+        5,
+        id="let_rebinds_destructured_name",
+    ),
+    pytest.param(
+        "    match Some(1) with\n"
+        "        | Some(x) ->\n"
+        "            let x: Int = 2\n"
+        "            return x\n"
+        "        | _ -> return 0\n"
+        "    end match",
+        2,
+        id="rebind_pattern_variable",
+    ),
+    pytest.param(
+        "    match Some(1) with\n"
+        "        | Some(x) when x == 1 ->\n"
+        "            let f = fn() -> x\n"
+        "            let x: Int = 2\n"
+        "            return f()\n"
+        "        | _ -> return 0\n"
+        "    end match",
+        2,
+        id="rebind_guarded_pattern_variable_keeps_closure_live",
+    ),
+    pytest.param(
+        "    try\n"
+        '        throw "old"\n'
+        "    catch e: String\n"
+        '        let e: String = "new"\n'
+        '        if e == "new" then\n'
+        "            return 1\n"
+        "        end if\n"
+        "    end try\n"
+        "    return 0",
+        1,
+        id="rebind_catch_variable",
+    ),
+    pytest.param(
+        "    let x: List[Int] = [5]\n"
+        "    for x: Int in x do\n"
+        "        return x\n"
+        "    end for\n"
+        "    return 0",
+        5,
+        id="iteration_initializer_reads_outer_binding",
+    ),
+    pytest.param(
+        "    let x: Int = 5\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "        let xs = [x for x: Int in [1, 2]]\n"
+        "        let ys = [x for x: Int in [1, 2] if x > 1]\n"
+        "        let f = fn(x: Int) -> x\n"
+        "        return xs[0] + ys[0] + f(3)\n"
+        "    end if\n"
+        "    return 0",
+        6,
+        id="lambda_and_comprehension_parameters_mask_shadow",
+    ),
+]
+
+
+@pytest.mark.parametrize(("body", "expected"), REVIEW_SCOPE_CASES)
+def test_review_scope_regressions_agree_with_interpreter(
+    body: str, expected: int
+) -> None:
+    source = _program(body)
+    namespace: dict[str, Any] = {}
+    exec(compile_to_python(source), namespace)
+    program = Parser(Lexer(source).tokenize()).parse_program()
+    assert namespace["main"]() == Interpreter().run(program) == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js not available")
+@pytest.mark.parametrize(("body", "expected"), REVIEW_SCOPE_CASES)
+def test_review_scope_regressions_agree_with_javascript(
+    body: str, expected: int
+) -> None:
+    assert _run_node(_program(body)) == str(expected)
+
+
+def test_destructuring_rebinds_the_current_python_shadow() -> None:
+    source = _program(
+        "    let x: Int = 5\n"
+        "    if true then\n"
+        "        let x: Int = 10\n"
+        "        let (x, y): (Int, Int) = (20, 1)\n"
+        "        return x\n"
+        "    end if\n"
+        "    return 0"
+    )
+    namespace: dict[str, Any] = {}
+    exec(compile_to_python(source), namespace)
+    program = Parser(Lexer(source).tokenize()).parse_program()
+    assert namespace["main"]() == Interpreter().run(program) == 20
+    if shutil.which("node") is not None:
+        assert _run_node(source) == "20"

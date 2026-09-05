@@ -95,7 +95,7 @@ from .sandbox import (
 )
 from .sandbox import TimeoutError as SandboxTimeout
 from .tokens import SourceLocation
-from .types import FloatType
+from .types import FloatType, ListType
 
 # Re-export runtime value types for backward compatibility
 from .values import (
@@ -283,6 +283,21 @@ def _promote_int_to_expected_float(value: Any, expected_type: Any) -> Any:
     if type(value) is int and _expected_runtime_type_is_float(expected_type):
         return float(value)
     return value
+
+
+def _promote_list_element(value: Any, expected_type: Any) -> Any:
+    """Copy nested Float lists when their existing Int values need widening."""
+    leaf_type = expected_type
+    while isinstance(leaf_type, ListType):
+        leaf_type = leaf_type.element_type
+    if not _expected_runtime_type_is_float(leaf_type):
+        return value
+    if isinstance(expected_type, ListType) and isinstance(value, list):
+        return [
+            _promote_list_element(element, expected_type.element_type)
+            for element in value
+        ]
+    return _promote_int_to_expected_float(value, expected_type)
 
 
 # =============================================================================
@@ -1830,7 +1845,14 @@ class Interpreter:
         self._check_collection_size("List", len(expr.elements), expr.location)
         list_result = [self.eval_expr(e, env) for e in expr.elements]
         self._check_collection_limits([list_result], expr.location)
-        return list_result
+        # Widen evaluated Int expressions as well as literals. Check the
+        # original values first so conversion cannot bypass integer limits.
+        return [
+            _promote_list_element(
+                value, getattr(element, "_expected_runtime_type", None)
+            )
+            for value, element in zip(list_result, expr.elements)
+        ]
 
     def _eval_typed_hole(self, expr: TypedHole, env: Environment) -> Any:
         raise RuntimeError(f"Encountered unfilled hole: ?{expr.name}", expr.location)

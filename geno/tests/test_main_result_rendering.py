@@ -35,7 +35,36 @@ RESULT_CASES = [
     pytest.param("List[String]", '["a", "b"]', '["a", "b"]', id="list_of_string"),
     pytest.param("List[Int]", "[1, 2, 3]", "[1, 2, 3]", id="list_of_int"),
     pytest.param("String", '"hi"', "hi", id="top_level_string"),
+    pytest.param("String", '"()"', "()", id="unit_spelling_string"),
     pytest.param("List[String]", '["a"]', '["a"]', id="nested_string_stays_quoted"),
+    pytest.param("(Int, String)", '(1, "a")', '(1, "a")', id="tuple"),
+    pytest.param("Option[Bool]", "Some(true)", "Some(value: true)", id="constructor"),
+    pytest.param("Option[Int]", "None", "None", id="none_constructor"),
+    pytest.param(
+        "List[Option[Bool]]",
+        "[Some(true), None]",
+        "[Some(value: true), None]",
+        id="nested_none",
+    ),
+    pytest.param(
+        "Array[Bool]",
+        "array_from_list([true, false])",
+        "Array([true, false])",
+        id="mutable_array",
+    ),
+    pytest.param(
+        "Map[Int, Bool]",
+        "map_from_list([(1, true)])",
+        "{1: true}",
+        id="integer_map_key",
+    ),
+    pytest.param(
+        "List[Option[Bool]]",
+        "[Some(true)]",
+        "[Some(value: true)]",
+        id="nested_constructor",
+    ),
+    pytest.param("List[Int]", "[]", "[]", id="empty_list"),
 ]
 
 
@@ -147,3 +176,24 @@ def test_interpreter_display_and_diagnostic_formatting_differ_on_purpose() -> No
     assert interpreter._format_value("hi") == '"hi"'
     # Nesting is unaffected: only the top level is bare.
     assert interpreter.format_display_value(["a", "b"]) == '["a", "b"]'
+
+
+@pytest.mark.parametrize(
+    ("return_type", "expression", "expected"),
+    [("Unit", "()", ""), ("String", '""', "=> \n")],
+)
+def test_process_run_distinguishes_unit_from_an_empty_rendered_string(
+    tmp_path: Path, return_type: str, expression: str, expected: str
+) -> None:
+    program = tmp_path / "prog.geno"
+    program.write_text(_program(return_type, expression), encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-m", "geno", "run", str(program)],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-400:]
+    assert completed.stdout == expected

@@ -6,7 +6,7 @@ nox.options.sessions = ["tests", "lint", "typecheck"]
 @nox.session(python=["3.10", "3.11", "3.12", "3.13"])
 def tests(session: nox.Session) -> None:
     """Run the test suite with coverage."""
-    session.install("-e", ".[dev]")
+    session.install("-e", ".[dev,lsp]")
     session.run(
         "pytest",
         "geno/tests/",

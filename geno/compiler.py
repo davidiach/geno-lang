@@ -109,7 +109,7 @@ from .builtin_registry import (
 )
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .types import FloatType, UserType
+from .types import FloatType, ListType, UserType
 
 
 @dataclass
@@ -117,8 +117,7 @@ class _BlockScope:
     """One Geno block scope while compiling a function body.
 
     ``names`` are the Geno names bound directly in this block; ``overrides``
-    maps those that shadow an enclosing binding to the fresh Python name they
-    were renamed to.
+    maps each binding to its Python name, including fresh names for shadows.
     """
 
     names: set[str] = field(default_factory=set)
@@ -375,7 +374,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         # block.  The interpreter and the JS backend both shadow instead
         # (see `test_shadowing`), so nested bindings are renamed here.
         self._block_scopes: list[_BlockScope] = []
-        self._shadow_seq = 0
 
     @contextmanager
     def _function_scope(self, param_names: Iterable[str] = ()) -> Iterator[None]:
@@ -388,7 +386,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         saved = self._block_scopes
         self._block_scopes = []
         try:
-            with self._block_scope(param_names):
+            with self._block_scope():
+                for name in param_names:
+                    self._block_scopes[-1].names.add(name)
+                    self._block_scopes[-1].overrides[name] = self._mangle_name(name)
                 yield
         finally:
             self._block_scopes = saved
@@ -404,10 +405,12 @@ class Compiler(BaseCompiler, ASTVisitor):
         *statements* is unused here — it exists for the JS backend, which
         needs to look ahead for a name the block re-binds.
         """
-        scope = _BlockScope(names=set(bound_names), overrides={})
+        scope = _BlockScope()
         self._block_scopes.append(scope)
         self._name_overrides.append(scope.overrides)
         try:
+            for name in bound_names:
+                self._declare_block_binding(name)
             yield
         finally:
             self._name_overrides.pop()
@@ -428,12 +431,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         if name in current.names:
             return current.overrides.get(name, self._mangle_name(name))
         current.names.add(name)
-        if any(name in scope.names for scope in self._block_scopes[:-1]):
-            self._shadow_seq += 1
-            renamed = f"{self._mangle_name(name)}__geno_shadow{self._shadow_seq}"
+        if any(name in overrides for overrides in self._name_overrides[:-1]):
+            renamed: str = self._fresh_temp()
             current.overrides[name] = renamed
             return renamed
-        return self._mangle_name(name)
+        # A function-local declaration must also mask capture overrides from
+        # an enclosing function, whose scope stack was suspended.
+        compiled_name = self._mangle_name(name)
+        current.overrides[name] = compiled_name
+        return compiled_name
 
     def _compiled_identifier_name(self, name: str) -> str:
         """Resolve an identifier, honoring scoped capture/shadow overrides."""
@@ -466,23 +472,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 yield
         else:
             yield
-
-    def _pattern_bound_names(self, pattern: Pattern) -> set[str]:
-        if isinstance(pattern, VariablePattern):
-            return {pattern.name}
-        if isinstance(pattern, RestPattern):
-            return {pattern.name} if pattern.name is not None else set()
-        if isinstance(pattern, ConstructorPattern):
-            bound: set[str] = set()
-            for subpattern in pattern.subpatterns:
-                bound.update(self._pattern_bound_names(subpattern))
-            return bound
-        if isinstance(pattern, ListPattern):
-            list_bound: set[str] = set()
-            for element in pattern.elements:
-                list_bound.update(self._pattern_bound_names(element))
-            return list_bound
-        return set()
 
     def _collect_loop_var_refs_in_value(
         self,
@@ -1419,52 +1408,51 @@ class Compiler(BaseCompiler, ASTVisitor):
         finally:
             self._try_depth -= 1
         self._dedent()
-        var_name = self._mangle_name(stmt.catch_clause.variable)
-        if is_string_catch:
-            self._writeln(
-                "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
-            )
-            self._indent()
-            self._writeln("if isinstance(__geno_err__, _GenoThrow):")
-            self._indent()
-            self._writeln(f"{var_name} = str(__geno_err__.value)")
-            self._dedent()
-            self._writeln("elif type(__geno_err__) in (RuntimeError, IndexError):")
-            self._indent()
-            self._writeln(f"{var_name} = str(__geno_err__)")
-            self._dedent()
-            self._writeln("else: raise")
-        else:
-            self._writeln("except _GenoThrow as __geno_err__:")
-            self._indent()
-            self._writeln(f"{var_name} = __geno_err__.value")
-        if stmt.catch_clause.body:
-            with self._block_scope([stmt.catch_clause.variable]):
+        with self._block_scope([stmt.catch_clause.variable]):
+            var_name = self._compiled_identifier_name(stmt.catch_clause.variable)
+            if is_string_catch:
+                self._writeln(
+                    "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
+                )
+                self._indent()
+                self._writeln("if isinstance(__geno_err__, _GenoThrow):")
+                self._indent()
+                self._writeln(f"{var_name} = str(__geno_err__.value)")
+                self._dedent()
+                self._writeln("elif type(__geno_err__) in (RuntimeError, IndexError):")
+                self._indent()
+                self._writeln(f"{var_name} = str(__geno_err__)")
+                self._dedent()
+                self._writeln("else: raise")
+            else:
+                self._writeln("except _GenoThrow as __geno_err__:")
+                self._indent()
+                self._writeln(f"{var_name} = __geno_err__.value")
+            if stmt.catch_clause.body:
                 for s in stmt.catch_clause.body:
                     self._compile_statement(s)
-        else:
-            self._writeln("pass")
-        self._dedent()
+            else:
+                self._writeln("pass")
+            self._dedent()
 
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         """Compile for loops while preserving per-iteration lambda captures."""
         iterable = self._compile_expr(stmt.iterable)
-        var = self._mangle_name(stmt.variable)
-        self._writeln(self._for_open(var, iterable))
-        self._indent()
-        self._active_loop_vars.append(stmt.variable)
-        try:
-            with self._with_shadowed_bindings([stmt.variable]):
+        with self._block_scope([stmt.variable]):
+            var = self._compiled_identifier_name(stmt.variable)
+            self._writeln(self._for_open(var, iterable))
+            self._indent()
+            self._active_loop_vars.append(stmt.variable)
+            try:
                 if stmt.body:
-                    with self._block_scope([stmt.variable]):
-                        for s in stmt.body:
-                            self._compile_statement(s)
+                    for s in stmt.body:
+                        self._compile_statement(s)
                 else:
                     self._writeln("pass")
-        finally:
-            self._active_loop_vars.pop()
-        self._dedent()
-        self._emit_block_close()
+            finally:
+                self._active_loop_vars.pop()
+            self._dedent()
+            self._emit_block_close()
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         """Compile a let statement.
@@ -1472,7 +1460,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         Match interpreter semantics: shallow copy for collections (list/dict),
         no copy for immutable primitives (Int, Float, Bool, String, Unit).
         """
-        name = self._declare_block_binding(stmt.name)
         type_annot = stmt.type_annotation
         # Determine copy strategy from the declared type
         type_name = (
@@ -1488,6 +1475,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             stmt_form = self._try_stmt_form_int_rhs(stmt.value)
             if stmt_form is not None:
                 raw, needs_check = stmt_form
+                name = self._declare_block_binding(stmt.name)
                 if type_annot is not None:
                     ann = self._compile_type_annotation(type_annot)
                     self._writeln(f"{name}: '{ann}' = {raw}")
@@ -1497,6 +1485,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
+        name = self._declare_block_binding(stmt.name)
         rhs = f"_geno_deepcopy({value})"
         rhs = self._promote_expr_to_expected_float(
             rhs, getattr(stmt, "_expected_runtime_type", type_annot)
@@ -1515,7 +1504,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         Copy semantics must match let — var only makes the binding mutable,
         not the value.  Array is a reference type and is never copied.
         """
-        name = self._declare_block_binding(stmt.name)
         type_annot = stmt.type_annotation
         type_name = (
             getattr(type_annot, "name", None)
@@ -1530,6 +1518,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             stmt_form = self._try_stmt_form_int_rhs(stmt.value)
             if stmt_form is not None:
                 raw, needs_check = stmt_form
+                name = self._declare_block_binding(stmt.name)
                 if type_annot is not None:
                     ann = self._compile_type_annotation(type_annot)
                     self._writeln(f"{name}: '{ann}' = {raw}")
@@ -1539,6 +1528,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
+        name = self._declare_block_binding(stmt.name)
         rhs = f"_geno_deepcopy({value})"
         rhs = self._promote_expr_to_expected_float(rhs, expected_type)
         if type_annot is not None:
@@ -1610,14 +1600,14 @@ class Compiler(BaseCompiler, ASTVisitor):
             stmt_form = self._try_stmt_form_int_rhs(stmt.value)
             if stmt_form is not None:
                 raw, needs_check = stmt_form
-                name = self._mangle_name(stmt.target)
+                name = self._compiled_identifier_name(stmt.target)
                 self._writeln(f"{name} = {raw}")
                 if needs_check:
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
         value = self._promote_expr_to_expected_float(value, expected_type)
-        self._writeln(f"{self._mangle_name(stmt.target)} = {value}")
+        self._writeln(f"{self._compiled_identifier_name(stmt.target)} = {value}")
 
     # ``_compile_{index_assign,field_assign}_statement`` live on
     # ``BaseCompiler`` — both differ between Python and JS only in the
@@ -1643,24 +1633,27 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
                 self._writeln(f"if not {matched_var} and {cond}:")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"{var_name} = {expr}")
-                if arm.guard is not None:
-                    guard_code = self._compile_expr(arm.guard)
-                    self._writeln(f"if {guard_code}:")
-                    self._indent()
-                    if arm.body:
-                        with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                with self._block_scope():
+                    targets = {
+                        self._mangle_name(name): self._declare_block_binding(name)
+                        for name in sorted(self._pattern_bound_names(arm.pattern))
+                    }
+                    for var_name, expr in bindings:
+                        self._writeln(f"{targets[var_name]} = {expr}")
+                    if arm.guard is not None:
+                        guard_code = self._compile_expr(arm.guard)
+                        self._writeln(f"if {guard_code}:")
+                        self._indent()
+                        if arm.body:
                             for s in arm.body:
                                 self._compile_statement(s)
-                    self._writeln(f"{matched_var} = True")
-                    self._dedent()
-                else:
-                    if arm.body:
-                        with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                        self._writeln(f"{matched_var} = True")
+                        self._dedent()
+                    else:
+                        if arm.body:
                             for s in arm.body:
                                 self._compile_statement(s)
-                    self._writeln(f"{matched_var} = True")
+                        self._writeln(f"{matched_var} = True")
                 self._dedent()
             self._writeln(f"if not {matched_var}:")
             self._indent()
@@ -1677,14 +1670,18 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
                 self._writeln(f"{keyword} {cond}:")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"{var_name} = {expr}")
-                if arm.body:
-                    with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                with self._block_scope():
+                    targets = {
+                        self._mangle_name(name): self._declare_block_binding(name)
+                        for name in sorted(self._pattern_bound_names(arm.pattern))
+                    }
+                    for var_name, expr in bindings:
+                        self._writeln(f"{targets[var_name]} = {expr}")
+                    if arm.body:
                         for s in arm.body:
                             self._compile_statement(s)
-                else:
-                    self._writeln("pass")
+                    else:
+                        self._writeln("pass")
                 self._dedent()
             self._writeln("else:")
             self._indent()
@@ -1777,13 +1774,16 @@ class Compiler(BaseCompiler, ASTVisitor):
                     if fixed_after > 0:
                         bindings.append(
                             (
-                                rest_pat.name,
+                                self._mangle_name(rest_pat.name),
                                 f"{scrutinee}[{fixed_before}:{-fixed_after}]",
                             )
                         )
                     else:
                         bindings.append(
-                            (rest_pat.name, f"{scrutinee}[{fixed_before}:]")
+                            (
+                                self._mangle_name(rest_pat.name),
+                                f"{scrutinee}[{fixed_before}:]",
+                            )
                         )
 
                 # Elements after rest
@@ -1866,7 +1866,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         if expr_type is ListLiteral:
             list_expr = cast(ListLiteral, expr)
-            elements = ", ".join(self._compile_expr(e) for e in list_expr.elements)
+            elements = ", ".join(
+                self._promote_list_element(
+                    self._compile_expr(element),
+                    getattr(element, "_expected_runtime_type", None),
+                )
+                for element in list_expr.elements
+            )
             return f"_check_collection_size([{elements}])"
 
         if expr_type is BinaryOp:
@@ -1962,19 +1968,8 @@ class Compiler(BaseCompiler, ASTVisitor):
         return f"_check_collection_size({value})"
 
     def _compile_expected_float_literal(self, value: int) -> str:
-        """Emit an Int literal that sits in a Float position as a float.
-
-        Values that do not survive the conversion exactly keep the runtime
-        promotion, so the failure surfaces there rather than silently
-        emitting an inexact or infinite literal.
-        """
-        try:
-            promoted = float(value)
-        except OverflowError:
-            return f"_promote_int_to_float({self._compile_int_literal(value)})"
-        if promoted != value:
-            return f"_promote_int_to_float({self._compile_int_literal(value)})"
-        return repr(promoted)
+        """Promote only after checking the original Int against runtime limits."""
+        return f"_promote_int_to_float({self._compile_int_literal(value)})"
 
     def _compile_string_literal(self, value: str) -> str:
         """Emit a string literal with its size check inlined.
@@ -2000,6 +1995,10 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_expr_slowpath(self, expr: Expression) -> str:
         """Compatibility fallback for expression subclasses."""
         if isinstance(expr, IntegerLiteral):
+            if self._expected_runtime_type_is_float(
+                getattr(expr, "_expected_runtime_type", None)
+            ):
+                return self._compile_expected_float_literal(expr.value)
             return self._compile_int_literal(expr.value)
 
         if isinstance(expr, FloatLiteral):
@@ -2015,9 +2014,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return "True" if expr.value else "False"
 
         if isinstance(expr, Identifier):
-            if expr.name in self._active_module_bindings:
-                return self._active_module_bindings[expr.name]
-            return self._mangle_name(expr.name)
+            return self._compiled_identifier_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
             if expr.name in self._active_module_bindings:
@@ -2030,7 +2027,13 @@ class Compiler(BaseCompiler, ASTVisitor):
             return str(expr.name)
 
         if isinstance(expr, ListLiteral):
-            elements = ", ".join(self._compile_expr(e) for e in expr.elements)
+            elements = ", ".join(
+                self._promote_list_element(
+                    self._compile_expr(element),
+                    getattr(element, "_expected_runtime_type", None),
+                )
+                for element in expr.elements
+            )
             return f"_check_collection_size([{elements}])"
 
         if isinstance(expr, BinaryOp):
@@ -2170,6 +2173,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         if self._expected_runtime_type_is_float(expected_type):
             return f"_promote_int_to_float({value})"
         return value
+
+    def _promote_list_element(self, value: str, expected_type: object) -> str:
+        if isinstance(expected_type, ListType):
+            item: str = self._fresh_temp()
+            promoted = self._promote_list_element(item, expected_type.element_type)
+            if promoted != item:
+                return f"[{promoted} for {item} in {value}]"
+            return value
+        return self._promote_expr_to_expected_float(value, expected_type)
 
     @staticmethod
     def _is_indexable_type(expr: Expression) -> bool:
@@ -2843,13 +2855,16 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
 
             return_stmt = arm.body[0]
-            body_expr = self._compile_expr(return_stmt.value)
+            bound_names = sorted(self._pattern_bound_names(arm.pattern))
+            with self._with_shadowed_bindings(bound_names):
+                body_expr = self._compile_expr(return_stmt.value)
             # Wrap with nested lambdas for all bindings (in reverse order)
             for var_name, var_expr in reversed(bindings):
                 body_expr = f"(lambda {var_name}: {body_expr})({var_expr})"
 
             if arm.guard is not None:
-                guard_code = self._compile_expr(arm.guard)
+                with self._with_shadowed_bindings(bound_names):
+                    guard_code = self._compile_expr(arm.guard)
                 if bindings:
                     # Need bindings available for guard evaluation too
                     guard_with_bindings = guard_code

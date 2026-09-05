@@ -576,11 +576,13 @@ class _JSBlockScope:
 
     ``declared`` are the names this block has already declared; ``rebound``
     are the names it declares more than once, which must be introduced with
-    ``let`` so the later occurrences can be plain assignments.
+    ``let`` so the later occurrences can be plain assignments. ``overrides``
+    keeps nested shadows distinct during initializer evaluation.
     """
 
     declared: set[str] = field(default_factory=set)
     rebound: set[str] = field(default_factory=set)
+    overrides: dict[str, str] = field(default_factory=dict)
 
 
 class JSCompiler(BaseCompiler):
@@ -623,13 +625,8 @@ class JSCompiler(BaseCompiler):
         statements: Sequence[Statement] = (),
     ) -> Iterator[None]:
         """Open the outermost block of a function or block-lambda body."""
-        saved = self._js_block_scopes
-        self._js_block_scopes = []
-        try:
-            with self._block_scope(bound_names, statements):
-                yield
-        finally:
-            self._js_block_scopes = saved
+        with self._block_scope(bound_names, statements):
+            yield
 
     @contextmanager
     def _block_scope(
@@ -638,10 +635,12 @@ class JSCompiler(BaseCompiler):
         statements: Sequence[Statement] = (),
     ) -> Iterator[None]:
         """Track the names declared directly in one JavaScript block."""
+        names = set(bound_names)
         self._js_block_scopes.append(
             _JSBlockScope(
-                declared=set(bound_names),
+                declared=names,
                 rebound=self._rebound_names(statements),
+                overrides={name: self._mangle_name(name) for name in names},
             )
         )
         try:
@@ -660,9 +659,15 @@ class JSCompiler(BaseCompiler):
         rebound: set[str] = set()
         for stmt in statements:
             if isinstance(stmt, (LetStatement, VarStatement)):
-                if stmt.name in seen:
-                    rebound.add(stmt.name)
-                seen.add(stmt.name)
+                names = [stmt.name]
+            elif isinstance(stmt, TupleDestructureStatement):
+                names = stmt.names
+            else:
+                continue
+            for name in names:
+                if name in seen:
+                    rebound.add(name)
+                seen.add(name)
         return rebound
 
     def _binding_keyword(self, name: str, keyword: str) -> str:
@@ -680,7 +685,36 @@ class JSCompiler(BaseCompiler):
         if name in scope.declared:
             return ""
         scope.declared.add(name)
+        # Geno resolves an initializer before introducing its binding. Rename
+        # shadows so JavaScript's temporal dead zone cannot capture earlier
+        # references, including the initializer itself.
+        if any(name in outer.declared for outer in self._js_block_scopes[:-1]):
+            scope.overrides[name] = self._fresh_temp()
+        else:
+            scope.overrides[name] = self._mangle_name(name)
         return "let " if name in scope.rebound else f"{keyword} "
+
+    def _compiled_identifier_name(self, name: str) -> str:
+        for scope in reversed(self._js_block_scopes):
+            if name in scope.overrides:
+                return scope.overrides[name]
+        return self._active_module_bindings.get(name, self._mangle_name(name))
+
+    def _compile_for_statement(self, stmt: ForStatement) -> None:
+        iterable = self._compile_expr(stmt.iterable)
+        with self._block_scope(statements=stmt.body):
+            self._binding_keyword(stmt.variable, "let")
+            variable = self._compiled_identifier_name(stmt.variable)
+            self._writeln(self._for_open(variable, iterable))
+            self._indent()
+            for statement in stmt.body:
+                self._compile_statement(statement)
+            self._dedent()
+            self._emit_block_close()
+
+    def _compile_assign_statement(self, stmt: AssignStatement) -> None:
+        value = self._compile_expr(stmt.value)
+        self._writeln(f"{self._compiled_identifier_name(stmt.target)} = {value};")
 
     def _emit_main_result(
         self,
@@ -1180,7 +1214,8 @@ class JSCompiler(BaseCompiler):
         return f"while ({cond}) {{"
 
     def _for_open(self, var: str, iterable: str) -> str:
-        return f"for (const {var} of {iterable}) {{"
+        # A same-scope Geno declaration can rebind the iteration variable.
+        return f"for (let {var} of {iterable}) {{"
 
     def _return_stmt(self, value: str) -> str:
         return f"return {value};"
@@ -1571,7 +1606,7 @@ class JSCompiler(BaseCompiler):
         if is_string_catch:
             self._writeln("if (__geno_err__ instanceof _GenoThrow) {")
             self._indent()
-            self._writeln(f"const {var_name} = String(__geno_err__.value);")
+            self._writeln(f"let {var_name} = String(__geno_err__.value);")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body
             ):
@@ -1583,7 +1618,7 @@ class JSCompiler(BaseCompiler):
                 "&& __geno_err__.constructor === Error) {"
             )
             self._indent()
-            self._writeln(f"const {var_name} = __geno_err__.message;")
+            self._writeln(f"let {var_name} = __geno_err__.message;")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body
             ):
@@ -1595,7 +1630,7 @@ class JSCompiler(BaseCompiler):
             self._writeln(
                 "if (!(__geno_err__ instanceof _GenoThrow)) throw __geno_err__;"
             )
-            self._writeln(f"const {var_name} = __geno_err__.value;")
+            self._writeln(f"let {var_name} = __geno_err__.value;")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body
             ):
@@ -2367,8 +2402,8 @@ class JSCompiler(BaseCompiler):
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         value = self._compile_expr(stmt.value)
-        name = self._mangle_name(stmt.name)
         keyword = self._binding_keyword(stmt.name, "const")
+        name = self._compiled_identifier_name(stmt.name)
         if self._needs_deep_copy(stmt.value, stmt.type_annotation):
             self._writeln(f"{keyword}{name} = _deepCopy({value});")
         else:
@@ -2376,15 +2411,23 @@ class JSCompiler(BaseCompiler):
 
     def _compile_var_statement(self, stmt: VarStatement) -> None:
         value = self._compile_expr(stmt.value)
-        name = self._mangle_name(stmt.name)
         keyword = self._binding_keyword(stmt.name, "let")
+        name = self._compiled_identifier_name(stmt.name)
         if self._needs_deep_copy(stmt.value, stmt.type_annotation):
             self._writeln(f"{keyword}{name} = _deepCopy({value});")
         else:
             self._writeln(f"{keyword}{name} = {value};")
 
-    # ``_compile_tuple_destructure`` lives on ``BaseCompiler``; JS's
-    # emission goes through ``_tuple_destructure_stmt`` below.  #622 slice.
+    def _compile_tuple_destructure(self, stmt: TupleDestructureStatement) -> None:
+        # Destructuring can combine new names with same-scope rebindings.
+        # Evaluate the tuple once before installing any of its bindings.
+        value = self._compile_expr(stmt.value)
+        temporary = self._fresh_temp()
+        self._writeln(f"const {temporary} = {value};")
+        for index, name in enumerate(stmt.names):
+            keyword = self._binding_keyword(name, "let" if stmt.mutable else "const")
+            target = self._compiled_identifier_name(name)
+            self._writeln(f"{keyword}{target} = {temporary}[{index}];")
 
     # ``_compile_{assign,index_assign}_statement`` live on ``BaseCompiler`` —
     # JS differs from Python only in the trailing ``;`` terminator, supplied
@@ -2415,25 +2458,26 @@ class JSCompiler(BaseCompiler):
                 )
                 self._writeln(f"if (!{matched_var} && {cond}) {{")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"const {var_name} = {expr};")
-                if arm.guard is not None:
-                    guard_code = self._compile_expr(arm.guard)
-                    self._writeln(f"if ({guard_code}) {{")
-                    self._indent()
-                    if arm.body:
-                        with self._block_scope(statements=arm.body):
+                with self._block_scope(
+                    self._pattern_bound_names(arm.pattern), arm.body
+                ):
+                    for var_name, expr in bindings:
+                        self._writeln(f"let {var_name} = {expr};")
+                    if arm.guard is not None:
+                        guard_code = self._compile_expr(arm.guard)
+                        self._writeln(f"if ({guard_code}) {{")
+                        self._indent()
+                        if arm.body:
                             for s in arm.body:
                                 self._compile_statement(s)
-                    self._writeln(f"{matched_var} = true;")
-                    self._dedent()
-                    self._writeln("}")
-                else:
-                    if arm.body:
-                        with self._block_scope(statements=arm.body):
+                        self._writeln(f"{matched_var} = true;")
+                        self._dedent()
+                        self._writeln("}")
+                    else:
+                        if arm.body:
                             for s in arm.body:
                                 self._compile_statement(s)
-                    self._writeln(f"{matched_var} = true;")
+                        self._writeln(f"{matched_var} = true;")
                 self._dedent()
                 self._writeln("}")
             self._writeln(f"if (!{matched_var}) {{")
@@ -2454,10 +2498,12 @@ class JSCompiler(BaseCompiler):
                 else:
                     self._writeln(f"}} else if ({cond}) {{")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"const {var_name} = {expr};")
-                if arm.body:
-                    with self._block_scope(statements=arm.body):
+                with self._block_scope(
+                    self._pattern_bound_names(arm.pattern), arm.body
+                ):
+                    for var_name, expr in bindings:
+                        self._writeln(f"let {var_name} = {expr};")
+                    if arm.body:
                         for s in arm.body:
                             self._compile_statement(s)
                 self._dedent()
@@ -2550,13 +2596,16 @@ class JSCompiler(BaseCompiler):
                     if fixed_after > 0:
                         bindings.append(
                             (
-                                rest_pat.name,
+                                self._mangle_name(rest_pat.name),
                                 f"{scrutinee}.slice({fixed_before}, {scrutinee}.length - {fixed_after})",
                             )
                         )
                     else:
                         bindings.append(
-                            (rest_pat.name, f"{scrutinee}.slice({fixed_before})")
+                            (
+                                self._mangle_name(rest_pat.name),
+                                f"{scrutinee}.slice({fixed_before})",
+                            )
                         )
 
                 for i in range(fixed_after):
@@ -2612,8 +2661,6 @@ class JSCompiler(BaseCompiler):
             return "true" if expr.value else "false"
 
         if isinstance(expr, Identifier):
-            if expr.name in self._active_module_bindings:
-                return self._active_module_bindings[expr.name]
             expected_type = getattr(expr, "_expected_runtime_type", None)
             if expr._resolved_builtin_name == "divide" and isinstance(
                 expected_type, FuncType
@@ -2632,7 +2679,7 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     "First-class divide requires a concrete Int or Float function type"
                 )
-            return self._mangle_name(expr.name)
+            return self._compiled_identifier_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
             if expr.name in self._active_module_bindings:
@@ -2700,9 +2747,14 @@ class JSCompiler(BaseCompiler):
             iter_temp = self._fresh_temp()
             result_temp = self._fresh_temp()
             item_temp = self._fresh_temp()
-            if expr.condition is not None:
-                cond = self._compile_expr(expr.condition)
+            with self._block_scope([expr.variable]):
+                cond = (
+                    self._compile_expr(expr.condition)
+                    if expr.condition is not None
+                    else None
+                )
                 elem = self._compile_expr(expr.element_expr)
+            if expr.condition is not None:
                 return (
                     f"(({iter_temp}) => {{ const {result_temp} = []; "
                     f"for (const {var} of {iter_temp}) {{ "
@@ -2714,7 +2766,6 @@ class JSCompiler(BaseCompiler):
                     f"{result_temp}.push({item_temp}); }} }} "
                     f"return _checkCollectionSize({result_temp}); }})({iterable})"
                 )
-            elem = self._compile_expr(expr.element_expr)
             return f"_checkCollectionSize(({iterable}).map(({var}) => {elem}))"
 
         if isinstance(expr, ThrowExpression):
@@ -3171,7 +3222,8 @@ class JSCompiler(BaseCompiler):
             return cast(str, func_name)
         else:
             assert expr.body is not None
-            body = self._compile_expr(expr.body)
+            with self._function_scope(p.name for p in expr.params):
+                body = self._compile_expr(expr.body)
             return f"(({params}) => {body})"
 
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:
@@ -3234,12 +3286,15 @@ class JSCompiler(BaseCompiler):
                 )
 
             return_stmt = arm.body[0]
-            body_expr = self._compile_expr(return_stmt.value)
+            bound_names = self._pattern_bound_names(arm.pattern)
+            with self._block_scope(bound_names):
+                body_expr = self._compile_expr(return_stmt.value)
             for var_name, var_expr in reversed(bindings):
                 body_expr = f"(({var_name}) => {body_expr})({var_expr})"
 
             if arm.guard is not None:
-                guard_code = self._compile_expr(arm.guard)
+                with self._block_scope(bound_names):
+                    guard_code = self._compile_expr(arm.guard)
                 if bindings:
                     guard_with_bindings = guard_code
                     for var_name, var_expr in reversed(bindings):

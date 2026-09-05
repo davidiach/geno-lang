@@ -709,7 +709,7 @@ class BaseCompiler(ABC):
     def _compile_tuple_destructure(self, stmt: TupleDestructureStatement) -> None:
         """Compile ``let/var (a, b, ...) = value``.
 
-        The shared logic is: compile the RHS, mangle each target name,
+        The shared logic is: compile the RHS, declare each target name,
         and hand off to the target-specific ``_tuple_destructure_stmt``
         hook — which knows whether to emit tuple-unpack (Python) or
         array-destructure (JS), and whether the binding is mutable.
@@ -717,8 +717,27 @@ class BaseCompiler(ABC):
         boilerplate (#622 slice).
         """
         value = self._compile_expr(stmt.value)
-        names = ", ".join(self._mangle_name(n) for n in stmt.names)
+        names = ", ".join(self._declare_block_binding(n) for n in stmt.names)
         self._writeln(self._tuple_destructure_stmt(names, value, stmt.mutable))
+
+    def _declare_block_binding(self, name: str) -> str:
+        """Resolve a new binding in the current target-language block."""
+        return self._mangle_name(name)
+
+    def _pattern_bound_names(self, pattern: Pattern) -> set[str]:
+        if isinstance(pattern, VariablePattern):
+            return {pattern.name}
+        if isinstance(pattern, RestPattern):
+            return {pattern.name} if pattern.name is not None else set()
+        if isinstance(pattern, ConstructorPattern):
+            return set().union(
+                *(self._pattern_bound_names(p) for p in pattern.subpatterns)
+            )
+        if isinstance(pattern, ListPattern):
+            return set().union(
+                *(self._pattern_bound_names(p) for p in pattern.elements)
+            )
+        return set()
 
     # =========================================================================
     # Top-level definition compilation
