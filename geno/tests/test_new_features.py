@@ -1315,7 +1315,9 @@ class TestTupleDestructuring:
         end func main
         """
         js = compile_js(source)
-        assert "[x, y]" in js
+        result = run_node_code(js)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "7"
 
     def test_nested_in_function(self):
         source = """
