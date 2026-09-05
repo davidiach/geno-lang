@@ -25,6 +25,10 @@ _builtin_zip: Callable[..., Any] = zip
 _builtin_enumerate: Callable[..., Any] = enumerate
 _builtin_min = min
 _builtin_max = max
+# ``object`` reached without naming it: the builtin is withheld from the
+# sandbox on purpose (see BLOCKED_BUILTINS in geno/sandbox.py), and naming an
+# unavailable builtin raises NameError mid-program.  ``_GENO_MISSING`` is the
+# "argument not supplied" sentinel.
 _GENO_OBJECT = ().__class__.__mro__[-1]
 _GENO_MISSING = _GENO_OBJECT()
 _DECIMAL_INT_RE = _re.compile(r"^-?[0-9]+$")
@@ -90,19 +94,6 @@ U = TypeVar("U")
 K = TypeVar("K")
 V = TypeVar("V")
 E = TypeVar("E")
-
-
-# Sentinels the prelude needs without calling ``object()`` or ``bytes()``:
-# both are withheld from the sandbox on purpose (see BLOCKED_BUILTINS in
-# geno/sandbox.py), and naming an unavailable builtin raises NameError
-# mid-program.
-class _GenoMissing:
-    """Unique sentinel for "argument not supplied"."""
-
-    __slots__ = ()
-
-
-_GENO_MISSING = _GenoMissing()
 
 
 def _geno_seen_contains(seen: tuple[Any, ...], value: Any) -> bool:
@@ -468,7 +459,10 @@ class _GenoThrow(Exception):
 
     def __init__(self, value: Any) -> None:
         self.value = value
-        super().__init__(str(value))
+        # Explicit base call rather than `super()`: `super` is withheld from
+        # the sandbox, and the prelude is written to avoid withheld builtins
+        # rather than the sandbox being widened to admit them.
+        Exception.__init__(self, str(value))
 
 
 class _GenoContractViolation(RuntimeError):
@@ -3577,7 +3571,10 @@ def http_listen(port):
         timeout = 30
 
         def setup(self) -> None:
-            super().setup()
+            # Explicit base calls rather than `super()` here and in `finish`:
+            # `super` is withheld from the sandbox, and naming an unavailable
+            # builtin raises NameError at the point of use.
+            BaseHTTPRequestHandler.setup(self)
             self.request.settimeout(self.timeout)
             self._absolute_request_deadline = threading.Timer(
                 _HTTP_LISTEN_REQUEST_DEADLINE_SECONDS,
@@ -3594,7 +3591,7 @@ def http_listen(port):
 
         def finish(self) -> None:
             try:
-                super().finish()
+                BaseHTTPRequestHandler.finish(self)
             finally:
                 deadline = getattr(self, "_absolute_request_deadline", None)
                 if deadline is not None:

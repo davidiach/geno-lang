@@ -297,9 +297,15 @@ SAFE_BUILTINS = {
     "ZeroDivisionError": ZeroDivisionError,
     "NameError": NameError,
     # Exception classes the runtime prelude names in `except` tuples and
-    # `raise` statements.  Exception classes expose no host capability on
-    # their own, and omitting them made the prelude raise NameError at the
-    # point of use -- which `geno run` then swallowed silently.
+    # `raise` statements.  Omitting them made the prelude raise NameError at
+    # the point of use -- which `geno run` then swallowed silently.  These are
+    # the one deliberate widening: an exception class carries no host
+    # capability.  Everything else the prelude needed was solved by changing
+    # the prelude instead -- it reaches `object` via `().__class__.__mro__`
+    # rather than the withheld builtin, avoids `id` for cycle detection, and
+    # calls `Exception.__init__` directly rather than needing `super`.
+    # `id`, `object`, `bytes`, `pow` and `super` stay out; the withheld set is
+    # pinned by test_worker_prelude_contract.
     "OSError": OSError,
     "FileNotFoundError": FileNotFoundError,
     "OverflowError": OverflowError,
@@ -313,12 +319,6 @@ SAFE_BUILTINS = {
     "iter": iter,
     "next": next,
     "slice": slice,
-    # `super` is needed by the runtime prelude's own exception classes.
-    # `id`, `object`, `bytes` and `pow` stay out by design -- see
-    # BLOCKED_BUILTINS and TestSandboxConstantConsistency.  The prelude is
-    # written to avoid them rather than the sandbox being widened to allow
-    # them; test_worker_prelude_contract enforces that direction.
-    "super": super,
     # __build_class__ deliberately excluded from SAFE_BUILTINS:
     # In non-strict mode, `class Foo: __getattribute__ = ...` bypasses
     # safe_getattr at the C level.  Only compile_and_exec injects it

@@ -3257,10 +3257,23 @@ class TypeChecker(ExhaustivenessMixin):
         # rejected with "expected Int, got Float", even under an explicit
         # `List[Float]` annotation, because the error was raised during
         # inference before the annotation was consulted.
+        # A tie on compatibility is broken toward the more concrete type, so a
+        # fresh type variable from an empty-ish element does not anchor the
+        # list: `[None, Some(1)]` infers List[Option[Int]] just as
+        # `[Some(1), None]` does.
         elem_type = elem_types[0]
         for t in elem_types[1:]:
-            if not self._types_compatible(elem_type, t) and self._types_compatible(
-                t, elem_type
+            forward = self._types_compatible(elem_type, t)
+            backward = self._types_compatible(t, elem_type)
+            if not backward:
+                # `t` cannot subsume the anchor, so it is not a candidate.
+                continue
+            # Adopt `t` when the anchor cannot accept it (`t` is strictly the
+            # wider of the two), or when the two are mutually compatible and
+            # `t` is the more concrete -- which is what stops a fresh type
+            # variable from anchoring the list.
+            if not forward or (
+                self._has_type_vars(elem_type) and not self._has_type_vars(t)
             ):
                 elem_type = t
 

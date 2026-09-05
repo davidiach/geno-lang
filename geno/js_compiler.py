@@ -660,10 +660,51 @@ class JSCompiler(BaseCompiler):
         rebound: set[str] = set()
         for stmt in statements:
             if isinstance(stmt, (LetStatement, VarStatement)):
-                if stmt.name in seen:
-                    rebound.add(stmt.name)
-                seen.add(stmt.name)
+                names: tuple[str, ...] = (stmt.name,)
+            elif isinstance(stmt, TupleDestructureStatement):
+                names = tuple(stmt.names)
+            else:
+                continue
+            for name in names:
+                if name in seen:
+                    rebound.add(name)
+                seen.add(name)
         return rebound
+
+    def _emit_pattern_bindings(
+        self,
+        bindings: list[tuple[str, str]],
+        pattern: Pattern,
+        same_block_body: Sequence[Statement],
+    ) -> None:
+        """Emit a match arm's pattern bindings.
+
+        *bindings* carries already-mangled names, so the Geno names are
+        recovered from the pattern to decide the keyword: a binding the arm
+        body re-binds in the same block must be `let`, not `const`.
+        """
+        geno_by_mangled = {
+            self._mangle_name(name): name for name in self._pattern_bound_names(pattern)
+        }
+        for var_name, expr in bindings:
+            geno_name = geno_by_mangled.get(var_name, var_name)
+            keyword = self._binder_keyword(geno_name, same_block_body)
+            self._writeln(f"{keyword} {var_name} = {expr};")
+
+    def _binder_keyword(self, name: str, statements: Sequence[Statement]) -> str:
+        """Declaration keyword for a binder emitted just before *statements*.
+
+        A `catch` variable and a match pattern binding are emitted as
+        declarations in the same JavaScript block as the body that follows
+        them.  If that body re-binds the name, the rebind compiles to an
+        assignment (see `_binding_keyword`), so the binder has to be `let` --
+        assigning to a `const` is a TypeError, and a second `const` is a
+        SyntaxError.
+        """
+        for stmt in statements:
+            if isinstance(stmt, (LetStatement, VarStatement)) and stmt.name == name:
+                return "let"
+        return "const"
 
     def _binding_keyword(self, name: str, keyword: str) -> str:
         """Return the declaration keyword (with trailing space) for *name*.
@@ -1188,9 +1229,36 @@ class JSCompiler(BaseCompiler):
     def _statement_terminator(self) -> str:
         return ";"
 
-    def _tuple_destructure_stmt(self, names_csv: str, value: str, mutable: bool) -> str:
-        keyword = "let" if mutable else "const"
-        return f"{keyword} [{names_csv}] = {value};"
+    def _tuple_destructure_stmt(
+        self, names: Sequence[str], value: str, mutable: bool
+    ) -> str:
+        """Destructure into *names*, respecting what this block already declared.
+
+        A target the block has already declared cannot be re-declared, so the
+        statement becomes an assignment and any still-undeclared targets are
+        introduced with a bare `let` first.  Without this, `let (a, b) = t`
+        after a `let a` emitted a second `const a` and the module failed to
+        parse.
+        """
+        scope = self._js_block_scopes[-1] if self._js_block_scopes else None
+        mangled = [self._mangle_name(name) for name in names]
+        if scope is None:
+            keyword = "let" if mutable else "const"
+            return f"{keyword} [{', '.join(mangled)}] = {value};"
+
+        already = [name for name in names if name in scope.declared]
+        if not already:
+            rebound = any(name in scope.rebound for name in names)
+            keyword = "let" if (mutable or rebound) else "const"
+            scope.declared.update(names)
+            return f"{keyword} [{', '.join(mangled)}] = {value};"
+
+        fresh = [
+            self._mangle_name(name) for name in names if name not in scope.declared
+        ]
+        scope.declared.update(names)
+        prefix = f"let {', '.join(fresh)}; " if fresh else ""
+        return f"{prefix}[{', '.join(mangled)}] = {value};"
 
     def _emit_block_close(self) -> None:
         self._writeln("}")
@@ -1566,12 +1634,15 @@ class JSCompiler(BaseCompiler):
                 self._compile_statement(s)
         self._dedent()
         var_name = self._mangle_name(stmt.catch_clause.variable)
+        catch_keyword = self._binder_keyword(
+            stmt.catch_clause.variable, stmt.catch_clause.body
+        )
         self._writeln("} catch (__geno_err__) {")
         self._indent()
         if is_string_catch:
             self._writeln("if (__geno_err__ instanceof _GenoThrow) {")
             self._indent()
-            self._writeln(f"const {var_name} = String(__geno_err__.value);")
+            self._writeln(f"{catch_keyword} {var_name} = String(__geno_err__.value);")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body
             ):
@@ -1583,7 +1654,7 @@ class JSCompiler(BaseCompiler):
                 "&& __geno_err__.constructor === Error) {"
             )
             self._indent()
-            self._writeln(f"const {var_name} = __geno_err__.message;")
+            self._writeln(f"{catch_keyword} {var_name} = __geno_err__.message;")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body
             ):
@@ -1595,7 +1666,7 @@ class JSCompiler(BaseCompiler):
             self._writeln(
                 "if (!(__geno_err__ instanceof _GenoThrow)) throw __geno_err__;"
             )
-            self._writeln(f"const {var_name} = __geno_err__.value;")
+            self._writeln(f"{catch_keyword} {var_name} = __geno_err__.value;")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body
             ):
@@ -2415,8 +2486,10 @@ class JSCompiler(BaseCompiler):
                 )
                 self._writeln(f"if (!{matched_var} && {cond}) {{")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"const {var_name} = {expr};")
+                # A guard puts the body in its own nested block, so only an
+                # unguarded arm shares this block with the pattern bindings.
+                same_block_body = () if arm.guard is not None else arm.body
+                self._emit_pattern_bindings(bindings, arm.pattern, same_block_body)
                 if arm.guard is not None:
                     guard_code = self._compile_expr(arm.guard)
                     self._writeln(f"if ({guard_code}) {{")
@@ -2430,7 +2503,9 @@ class JSCompiler(BaseCompiler):
                     self._writeln("}")
                 else:
                     if arm.body:
-                        with self._block_scope(statements=arm.body):
+                        with self._block_scope(
+                            self._pattern_bound_names(arm.pattern), arm.body
+                        ):
                             for s in arm.body:
                                 self._compile_statement(s)
                     self._writeln(f"{matched_var} = true;")
@@ -2454,10 +2529,11 @@ class JSCompiler(BaseCompiler):
                 else:
                     self._writeln(f"}} else if ({cond}) {{")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"const {var_name} = {expr};")
+                self._emit_pattern_bindings(bindings, arm.pattern, arm.body)
                 if arm.body:
-                    with self._block_scope(statements=arm.body):
+                    with self._block_scope(
+                        self._pattern_bound_names(arm.pattern), arm.body
+                    ):
                         for s in arm.body:
                             self._compile_statement(s)
                 self._dedent()

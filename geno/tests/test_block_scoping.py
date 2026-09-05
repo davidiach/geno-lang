@@ -323,3 +323,254 @@ def test_only_a_rebound_name_loses_const() -> None:
     assert "const a = " in body, body
     assert "let b = " in body, body
     assert "const b = " not in body, body
+
+
+# ---------------------------------------------------------------------------
+# Every binder, not just `let`/`var`.
+#
+# The first version of the block-scoping fix routed only `let` and `var`
+# through the scope machinery.  The other binders -- a `for` variable, a
+# `catch` variable, a match pattern, a tuple destructure -- were still emitted
+# under their plain mangled name, which broke two ways at once: the Python
+# backend read them back through an enclosing block's rename (so the arm body
+# saw the wrong variable), and they leaked into the enclosing function scope
+# (so they overwrote a same-named outer binding).  On the JavaScript side the
+# same half-fix turned a legal shadow into an assignment to a `const`.
+#
+# These cases pin all three execution paths together, which is the only way
+# the class of bug shows up at all.
+# ---------------------------------------------------------------------------
+
+BINDER_CASES = [
+    pytest.param(
+        """func main() -> Int
+    let v: Int = 1
+    if true then
+        let v: Int = 2
+        let o: Option[Int] = Some(7)
+        match o with
+        | Some(v) -> return v
+        | None -> return 0
+        end match
+    end if
+    return v
+end func
+""",
+        7,
+        id="match_arm_binding_is_not_read_through_a_rename",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let v: Int = 1
+    let o: Option[Int] = Some(7)
+    match o with
+    | Some(v) -> let z: Int = v
+    | None -> let z: Int = 0
+    end match
+    return v
+end func
+""",
+        1,
+        id="match_pattern_does_not_leak_outward",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let o: Option[Int] = Some(1)
+    match o with
+    | Some(v) ->
+        let v: Int = 9
+        return v
+    | None -> return 0
+    end match
+end func
+""",
+        9,
+        id="match_arm_may_rebind_its_pattern_variable",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let i: Int = 1
+    for i: Int in [7, 8] do
+        let z: Int = i
+    end for
+    return i
+end func
+""",
+        1,
+        id="for_variable_does_not_leak_outward",
+    ),
+    pytest.param(
+        """func main() -> Int
+    var total: Int = 0
+    for i: Int in [1, 2, 3] do
+        let i: Int = 10
+        total = total + i
+    end for
+    return total
+end func
+""",
+        30,
+        id="for_body_may_rebind_the_loop_variable",
+    ),
+    pytest.param(
+        """func main() -> Int
+    var total: Int = 0
+    for i: Int in [1, 2] do
+        for i: Int in [10, 20] do
+            total = total + i
+        end for
+    end for
+    return total
+end func
+""",
+        60,
+        id="nested_loops_may_share_a_variable_name",
+    ),
+    pytest.param(
+        """func main() -> String
+    let e: String = "outer"
+    try
+        throw "boom"
+    catch e: String
+        let z: String = e
+    end try
+    return e
+end func
+""",
+        "outer",
+        id="catch_variable_does_not_leak_outward",
+    ),
+    pytest.param(
+        """func main() -> String
+    let e: String = "outer"
+    if true then
+        let e: String = "block"
+        try
+            throw "boom"
+        catch e: String
+            return e
+        end try
+    end if
+    return e
+end func
+""",
+        "boom",
+        id="catch_variable_is_not_read_through_a_rename",
+    ),
+    pytest.param(
+        """func main() -> String
+    try
+        throw "boom"
+    catch e: String
+        let e: String = "rebound"
+        return e
+    end try
+end func
+""",
+        "rebound",
+        id="catch_body_may_rebind_the_catch_variable",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let a: Int = 1
+    let (a, b): (Int, Int) = (7, 2)
+    return a + b
+end func
+""",
+        9,
+        id="destructure_may_rebind_an_existing_name",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let t: (Int, Int) = (1, 2)
+    let (a, b): (Int, Int) = t
+    let a: Int = 5
+    return a + b
+end func
+""",
+        7,
+        id="a_later_let_may_rebind_a_destructured_name",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let a: Int = 1
+    if true then
+        let (a, b): (Int, Int) = (7, 2)
+        let c: Int = a + b
+    end if
+    return a
+end func
+""",
+        1,
+        id="destructure_does_not_leak_outward",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let x: Int = 1
+    if true then
+        let x: Int = 2
+        let f = fn() do
+            let x: Int = 3
+            return x
+        end fn
+        return f()
+    end if
+    return x
+end func
+""",
+        3,
+        id="block_lambda_binding_is_its_own",
+    ),
+    pytest.param(
+        """func main() -> Int
+    let x: Int = 1
+    if true then
+        let x: Int = 2
+        let f = fn() -> x
+        return f()
+    end if
+    return x
+end func
+""",
+        2,
+        id="closure_reads_the_enclosing_block_binding",
+    ),
+    # Per-iteration capture has to keep working through the block-scope
+    # machinery: the capture rebinds the loop variable to a per-iteration copy
+    # and must win over the block's own resolution of that name, or every
+    # closure ends up sharing the final value.
+    pytest.param(
+        """func main() -> Int
+    let x: Int = 9
+    if true then
+        let x: Int = 8
+        var fs: List[() -> Int] = []
+        for x: Int in [1, 2, 3] do
+            fs = append(fs, fn() -> x)
+        end for
+        return fs[0]() * 100 + fs[1]() * 10 + fs[2]()
+    end if
+    return x
+end func
+""",
+        123,
+        id="per_iteration_capture_survives_a_shadowed_loop_variable",
+    ),
+]
+
+
+@pytest.mark.parametrize(("source", "expected"), BINDER_CASES)
+def test_compiled_python_agrees_with_the_interpreter_on_every_binder(
+    source: str, expected: object
+) -> None:
+    program = Parser(Lexer(source).tokenize()).parse_program()
+    namespace: dict[str, object] = {}
+    exec(compile_to_python(source), namespace)
+    assert namespace["main"]() == expected
+    assert Interpreter().run(program) == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js not available")
+@pytest.mark.parametrize(("source", "expected"), BINDER_CASES)
+def test_compiled_js_agrees_on_every_binder(source: str, expected: object) -> None:
+    assert _run_node(source) == str(expected)

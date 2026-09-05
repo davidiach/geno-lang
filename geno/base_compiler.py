@@ -601,6 +601,34 @@ class BaseCompiler(ABC):
     # Shared control-flow compilation
     # =========================================================================
 
+    def _pattern_bound_names(self, pattern: Pattern) -> set[str]:
+        if isinstance(pattern, VariablePattern):
+            return {pattern.name}
+        if isinstance(pattern, RestPattern):
+            return {pattern.name} if pattern.name is not None else set()
+        if isinstance(pattern, ConstructorPattern):
+            bound: set[str] = set()
+            for subpattern in pattern.subpatterns:
+                bound.update(self._pattern_bound_names(subpattern))
+            return bound
+        if isinstance(pattern, ListPattern):
+            list_bound: set[str] = set()
+            for element in pattern.elements:
+                list_bound.update(self._pattern_bound_names(element))
+            return list_bound
+        return set()
+
+    def _declare_loop_variable(self, variable: str) -> str:
+        """Return the emitted name for a `for` loop variable.
+
+        JavaScript binds it in the loop head, which is its own scope, so the
+        plain mangled name is always right there.  Python has no block scope:
+        the loop variable lands in the function namespace and would overwrite
+        a same-named binding from an enclosing block, so the Python backend
+        overrides this to route the name through its block-scope machinery.
+        """
+        return self._mangle_name(variable)
+
     @contextmanager
     def _block_scope(
         self,
@@ -660,16 +688,16 @@ class BaseCompiler(ABC):
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         """Compile a for loop — shared control-flow logic."""
         iterable = self._compile_expr(stmt.iterable)
-        var = self._mangle_name(stmt.variable)
-        self._writeln(self._for_open(var, iterable))
-        self._indent()
-        if stmt.body:
-            with self._block_scope([stmt.variable], stmt.body):
+        with self._block_scope(statements=stmt.body):
+            var = self._declare_loop_variable(stmt.variable)
+            self._writeln(self._for_open(var, iterable))
+            self._indent()
+            if stmt.body:
                 for s in stmt.body:
                     self._compile_statement(s)
-        else:
-            self._emit_empty_block()
-        self._dedent()
+            else:
+                self._emit_empty_block()
+            self._dedent()
         self._emit_block_close()
 
     def _compile_return_statement(self, stmt: ReturnStatement) -> None:
@@ -717,8 +745,7 @@ class BaseCompiler(ABC):
         boilerplate (#622 slice).
         """
         value = self._compile_expr(stmt.value)
-        names = ", ".join(self._mangle_name(n) for n in stmt.names)
-        self._writeln(self._tuple_destructure_stmt(names, value, stmt.mutable))
+        self._writeln(self._tuple_destructure_stmt(stmt.names, value, stmt.mutable))
 
     # =========================================================================
     # Top-level definition compilation
@@ -833,8 +860,13 @@ class BaseCompiler(ABC):
         """
 
     @abstractmethod
-    def _tuple_destructure_stmt(self, names_csv: str, value: str, mutable: bool) -> str:
-        """Return the full line that destructures *value* into *names_csv*.
+    def _tuple_destructure_stmt(
+        self, names: Sequence[str], value: str, mutable: bool
+    ) -> str:
+        """Return the full line that destructures *value* into *names*.
+
+        *names* are Geno names, not yet mangled, so each backend can route
+        them through its own block-scope rules before emitting.
 
         Python: ``"({names_csv}) = {value}"`` (tuple unpacking; both
         ``let`` and ``var`` share the same emission — Python has no

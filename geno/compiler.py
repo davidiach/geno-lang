@@ -116,13 +116,22 @@ from .types import FloatType, UserType
 class _BlockScope:
     """One Geno block scope while compiling a function body.
 
-    ``names`` are the Geno names bound directly in this block; ``overrides``
-    maps those that shadow an enclosing binding to the fresh Python name they
-    were renamed to.
+    ``names`` are the Geno names bound directly in this block.  ``overrides``
+    maps each of them to the Python name actually emitted -- the renamed one
+    when the binding shadows an enclosing block, otherwise the plain mangled
+    name.  Recording the plain case too is what keeps a binder that is *not*
+    renamed (a `for` variable, a `catch` variable, a match pattern) from being
+    read back through an enclosing block's rename.
+
+    ``is_function_boundary`` marks the outermost scope of a function or block
+    lambda.  A Python ``def`` is already a scope, so a binding inside one never
+    needs renaming against blocks outside it -- but those outer blocks stay
+    visible for *reads*, because a closure still sees the enclosing binding.
     """
 
     names: set[str] = field(default_factory=set)
     overrides: dict[str, str] = field(default_factory=dict)
+    is_function_boundary: bool = False
 
 
 # Names defined in the runtime prelude that must not be shadowed by user code.
@@ -379,48 +388,88 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     @contextmanager
     def _function_scope(self, param_names: Iterable[str] = ()) -> Iterator[None]:
-        """Open the outermost scope of a function or lambda body.
+        """Open the outermost scope of a function or block-lambda body.
 
-        A Python ``def``/``lambda`` already introduces a real scope, so an
-        inner body starts from a clean stack: a `let` inside it shadows an
-        outer binding through Python's own scoping and needs no renaming.
+        The enclosing scopes stay on the stack so a closure can still *read*
+        an outer block's binding, but they are hidden from the shadow check:
+        a Python ``def`` is already a scope, so a binding here never needs
+        renaming against blocks outside it.
         """
-        saved = self._block_scopes
-        self._block_scopes = []
-        try:
-            with self._block_scope(param_names):
-                yield
-        finally:
-            self._block_scopes = saved
+        with self._block_scope(param_names, is_function_boundary=True):
+            yield
 
     @contextmanager
     def _block_scope(
         self,
         bound_names: Iterable[str] = (),
         statements: Sequence[Statement] = (),
+        *,
+        is_function_boundary: bool = False,
     ) -> Iterator[None]:
         """Open a nested Geno block scope (an if/while/for/match/try body).
+
+        *bound_names* are binders this block emits under their plain mangled
+        name -- a `for` variable, a `catch` variable, a match pattern.  They
+        are recorded as identity overrides so the body reads back the name
+        that was actually emitted rather than an enclosing block's rename.
 
         *statements* is unused here — it exists for the JS backend, which
         needs to look ahead for a name the block re-binds.
         """
-        scope = _BlockScope(names=set(bound_names), overrides={})
+        names = set(bound_names)
+        scope = _BlockScope(
+            names=names,
+            overrides={name: self._mangle_name(name) for name in names},
+            is_function_boundary=is_function_boundary,
+        )
         self._block_scopes.append(scope)
-        self._name_overrides.append(scope.overrides)
         try:
             yield
         finally:
-            self._name_overrides.pop()
             self._block_scopes.pop()
+
+    def _visible_block_scopes(self) -> list["_BlockScope"]:
+        """Scopes the shadow check may look at: back to the function boundary."""
+        for index in range(len(self._block_scopes) - 1, -1, -1):
+            if self._block_scopes[index].is_function_boundary:
+                return self._block_scopes[index:]
+        return self._block_scopes
+
+    def _emit_pattern_bindings(
+        self, bindings: list[tuple[str, str]], pattern: Pattern
+    ) -> None:
+        """Emit a match arm's pattern bindings inside the arm's block scope.
+
+        *bindings* carries already-mangled names, so the Geno names are
+        recovered from the pattern and routed through the block-scope
+        machinery: a pattern variable shadowing an enclosing block's binding
+        has to be renamed, or it overwrites it in Python's function namespace.
+        """
+        geno_by_mangled = {
+            self._mangle_name(name): name for name in self._pattern_bound_names(pattern)
+        }
+        for var_name, expr in bindings:
+            geno_name = geno_by_mangled.get(var_name)
+            emitted = (
+                self._declare_block_binding(geno_name)
+                if geno_name is not None
+                else var_name
+            )
+            self._writeln(f"{emitted} = {expr}")
+
+    def _declare_loop_variable(self, variable: str) -> str:
+        """Rename a `for` variable that shadows an enclosing block's binding."""
+        return self._declare_block_binding(variable)
 
     def _declare_block_binding(self, name: str) -> str:
         """Return the Python name a `let`/`var` in the current block binds.
 
-        A binding that shadows one from an *enclosing* block gets a fresh
-        name, registered as an override so later references in this block
-        resolve to it.  Re-binding in the *same* block keeps the existing
-        name, matching the interpreter and the Python backend, which both
-        treat that as a rebind rather than a new binding.
+        A binding that shadows one from an *enclosing* block of the same
+        function gets a fresh name.  Either way the result is recorded as an
+        override, so every later read in this block resolves to the name that
+        was actually emitted.  Re-binding in the *same* block keeps the
+        existing name: the interpreter and the Python backend both treat that
+        as a rebind rather than a new binding.
         """
         if not self._block_scopes:
             return self._mangle_name(name)
@@ -428,17 +477,34 @@ class Compiler(BaseCompiler, ASTVisitor):
         if name in current.names:
             return current.overrides.get(name, self._mangle_name(name))
         current.names.add(name)
-        if any(name in scope.names for scope in self._block_scopes[:-1]):
+        enclosing = self._visible_block_scopes()[:-1]
+        if any(name in scope.names for scope in enclosing):
             self._shadow_seq += 1
-            renamed = f"{self._mangle_name(name)}__geno_shadow{self._shadow_seq}"
-            current.overrides[name] = renamed
-            return renamed
-        return self._mangle_name(name)
+            resolved = f"{self._mangle_name(name)}__geno_shadow{self._shadow_seq}"
+        else:
+            resolved = self._mangle_name(name)
+        current.overrides[name] = resolved
+        return resolved
 
     def _compiled_identifier_name(self, name: str) -> str:
-        """Resolve an identifier, honoring scoped capture/shadow overrides."""
+        """Resolve an identifier, honoring scoped capture/shadow overrides.
+
+        ``_name_overrides`` is the lambda *capture* mechanism -- a per-iteration
+        copy of a loop variable, bound as a default argument on a factory --
+        and it wins, because it is the innermost rebinding of that name.
+
+        Block scopes come next, innermost out, and are consulted across
+        function boundaries so a closure still reads an enclosing block's
+        binding.  They are kept out of ``_name_overrides`` deliberately:
+        letting block renames into that stack made an enclosing block's rename
+        beat a binder the current block had emitted under its plain name.
+        """
         for overrides in reversed(self._name_overrides):
             resolved = overrides.get(name)
+            if resolved is not None:
+                return resolved
+        for scope in reversed(self._block_scopes):
+            resolved = scope.overrides.get(name)
             if resolved is not None:
                 return resolved
         module_binding = self._active_module_bindings.get(name)
@@ -466,23 +532,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 yield
         else:
             yield
-
-    def _pattern_bound_names(self, pattern: Pattern) -> set[str]:
-        if isinstance(pattern, VariablePattern):
-            return {pattern.name}
-        if isinstance(pattern, RestPattern):
-            return {pattern.name} if pattern.name is not None else set()
-        if isinstance(pattern, ConstructorPattern):
-            bound: set[str] = set()
-            for subpattern in pattern.subpatterns:
-                bound.update(self._pattern_bound_names(subpattern))
-            return bound
-        if isinstance(pattern, ListPattern):
-            list_bound: set[str] = set()
-            for element in pattern.elements:
-                list_bound.update(self._pattern_bound_names(element))
-            return list_bound
-        return set()
 
     def _collect_loop_var_refs_in_value(
         self,
@@ -987,9 +1036,14 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _statement_terminator(self) -> str:
         return ""
 
-    def _tuple_destructure_stmt(self, names_csv: str, value: str, mutable: bool) -> str:
+    def _tuple_destructure_stmt(
+        self, names: Sequence[str], value: str, mutable: bool
+    ) -> str:
         # Python has no ``let``/``const`` distinction at binding time —
-        # tuple unpacking is the same for both ``let`` and ``var``.
+        # tuple unpacking is the same for both ``let`` and ``var``.  Each
+        # target is declared through the block-scope machinery so one that
+        # shadows an enclosing block's binding is renamed.
+        names_csv = ", ".join(self._declare_block_binding(n) for n in names)
         return f"({names_csv}) = {value}"
 
     def _emit_empty_block(self) -> None:
@@ -1419,51 +1473,56 @@ class Compiler(BaseCompiler, ASTVisitor):
         finally:
             self._try_depth -= 1
         self._dedent()
-        var_name = self._mangle_name(stmt.catch_clause.variable)
-        if is_string_catch:
-            self._writeln(
-                "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
-            )
-            self._indent()
-            self._writeln("if isinstance(__geno_err__, _GenoThrow):")
-            self._indent()
-            self._writeln(f"{var_name} = str(__geno_err__.value)")
-            self._dedent()
-            self._writeln("elif type(__geno_err__) in (RuntimeError, IndexError):")
-            self._indent()
-            self._writeln(f"{var_name} = str(__geno_err__)")
-            self._dedent()
-            self._writeln("else: raise")
-        else:
-            self._writeln("except _GenoThrow as __geno_err__:")
-            self._indent()
-            self._writeln(f"{var_name} = __geno_err__.value")
-        if stmt.catch_clause.body:
-            with self._block_scope([stmt.catch_clause.variable]):
+        # The catch variable is declared inside the handler's scope so that a
+        # name shadowing an enclosing block is renamed, as a `let` would be.
+        with self._block_scope(statements=stmt.catch_clause.body):
+            var_name = self._declare_block_binding(stmt.catch_clause.variable)
+            if is_string_catch:
+                self._writeln(
+                    "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
+                )
+                self._indent()
+                self._writeln("if isinstance(__geno_err__, _GenoThrow):")
+                self._indent()
+                self._writeln(f"{var_name} = str(__geno_err__.value)")
+                self._dedent()
+                self._writeln("elif type(__geno_err__) in (RuntimeError, IndexError):")
+                self._indent()
+                self._writeln(f"{var_name} = str(__geno_err__)")
+                self._dedent()
+                self._writeln("else: raise")
+            else:
+                self._writeln("except _GenoThrow as __geno_err__:")
+                self._indent()
+                self._writeln(f"{var_name} = __geno_err__.value")
+            if stmt.catch_clause.body:
                 for s in stmt.catch_clause.body:
                     self._compile_statement(s)
-        else:
-            self._writeln("pass")
-        self._dedent()
+            else:
+                self._writeln("pass")
+            self._dedent()
 
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         """Compile for loops while preserving per-iteration lambda captures."""
         iterable = self._compile_expr(stmt.iterable)
-        var = self._mangle_name(stmt.variable)
-        self._writeln(self._for_open(var, iterable))
-        self._indent()
-        self._active_loop_vars.append(stmt.variable)
-        try:
-            with self._with_shadowed_bindings([stmt.variable]):
-                if stmt.body:
-                    with self._block_scope([stmt.variable]):
+        # The loop variable is declared inside the body's scope: Python has no
+        # block scope, so a `for i` that shadows an enclosing `let i` has to be
+        # renamed exactly as that `let` would be.
+        with self._block_scope(statements=stmt.body):
+            var = self._declare_loop_variable(stmt.variable)
+            self._writeln(self._for_open(var, iterable))
+            self._indent()
+            self._active_loop_vars.append(stmt.variable)
+            try:
+                with self._with_shadowed_bindings([stmt.variable]):
+                    if stmt.body:
                         for s in stmt.body:
                             self._compile_statement(s)
-                else:
-                    self._writeln("pass")
-        finally:
-            self._active_loop_vars.pop()
-        self._dedent()
+                    else:
+                        self._writeln("pass")
+            finally:
+                self._active_loop_vars.pop()
+            self._dedent()
         self._emit_block_close()
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
@@ -1643,24 +1702,22 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
                 self._writeln(f"if not {matched_var} and {cond}:")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"{var_name} = {expr}")
-                if arm.guard is not None:
-                    guard_code = self._compile_expr(arm.guard)
-                    self._writeln(f"if {guard_code}:")
-                    self._indent()
-                    if arm.body:
-                        with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                with self._block_scope(statements=arm.body):
+                    self._emit_pattern_bindings(bindings, arm.pattern)
+                    if arm.guard is not None:
+                        guard_code = self._compile_expr(arm.guard)
+                        self._writeln(f"if {guard_code}:")
+                        self._indent()
+                        if arm.body:
                             for s in arm.body:
                                 self._compile_statement(s)
-                    self._writeln(f"{matched_var} = True")
-                    self._dedent()
-                else:
-                    if arm.body:
-                        with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                        self._writeln(f"{matched_var} = True")
+                        self._dedent()
+                    else:
+                        if arm.body:
                             for s in arm.body:
                                 self._compile_statement(s)
-                    self._writeln(f"{matched_var} = True")
+                        self._writeln(f"{matched_var} = True")
                 self._dedent()
             self._writeln(f"if not {matched_var}:")
             self._indent()
@@ -1677,14 +1734,13 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
                 self._writeln(f"{keyword} {cond}:")
                 self._indent()
-                for var_name, expr in bindings:
-                    self._writeln(f"{var_name} = {expr}")
-                if arm.body:
-                    with self._block_scope(self._pattern_bound_names(arm.pattern)):
+                with self._block_scope(statements=arm.body):
+                    self._emit_pattern_bindings(bindings, arm.pattern)
+                    if arm.body:
                         for s in arm.body:
                             self._compile_statement(s)
-                else:
-                    self._writeln("pass")
+                    else:
+                        self._writeln("pass")
                 self._dedent()
             self._writeln("else:")
             self._indent()
@@ -1967,7 +2023,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         Values that do not survive the conversion exactly keep the runtime
         promotion, so the failure surfaces there rather than silently
         emitting an inexact or infinite literal.
+
+        A literal large enough for `_compile_int_literal` to guard keeps that
+        guard even when the conversion *is* exact: emitting a bare float
+        constant would let the Float position bypass the integer-bits limit
+        the same literal is subject to in an Int position, and the
+        interpreter checks the bits before promoting either way.
         """
+        if value.bit_length() > _RAW_INT_LITERAL_MAX_BITS:
+            return f"_promote_int_to_float({self._compile_int_literal(value)})"
         try:
             promoted = float(value)
         except OverflowError:

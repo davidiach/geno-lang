@@ -112,3 +112,26 @@ def test_int_literals_carry_the_widened_type_to_the_backends() -> None:
     for element in elements:
         expected = getattr(element, "_expected_runtime_type", None)
         assert isinstance(expected, FloatType), f"{element} lost the widened type"
+
+
+# A fresh type variable must not anchor the list either.  `None` types as
+# `Option[fresh]`, which is compatible with `Option[Int]` in both directions,
+# so a fold that only moves toward a strictly wider type never left it --
+# making the Option case order-dependent in exactly the way the Int/Float
+# case had been.  Ties are now broken toward the more concrete type.
+OPTION_ORDERS = [
+    pytest.param("[Some(1), None]", id="concrete_first"),
+    pytest.param("[None, Some(1)]", id="type_var_first"),
+    pytest.param("[None, Some(1), None]", id="type_var_outside"),
+]
+
+
+@pytest.mark.parametrize("literal", OPTION_ORDERS)
+def test_option_element_inference_is_order_independent(literal: str) -> None:
+    assert _check(_in_main(f"    let xs = {literal}")) == []
+
+
+def test_a_list_of_only_type_variables_still_cannot_be_inferred() -> None:
+    """Tie-breaking must not invent a concrete type that is not there."""
+    errors = _check(_in_main("    let xs = [None, None]"))
+    assert errors, "an all-None list has no concrete element type"

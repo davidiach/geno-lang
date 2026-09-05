@@ -93,6 +93,32 @@ def test_prelude_names_no_builtin_the_sandbox_withholds() -> None:
     )
 
 
+# Builtins that must stay out of the sandbox no matter what the prelude needs.
+# `id` discloses memory addresses; `object` enables class creation through
+# `type()`; `bytes` is in BLOCKED_BUILTINS; `pow` allows unbounded modular
+# exponentiation; `super` reaches base-class machinery from user classes.
+WITHHELD_BUILTINS = ("id", "object", "bytes", "pow", "super")
+
+
+@pytest.mark.parametrize("name", WITHHELD_BUILTINS)
+def test_sandbox_still_withholds_the_dangerous_builtins(name: str) -> None:
+    """Pin the *direction* of the fix, which the check above cannot.
+
+    ``test_prelude_names_no_builtin_the_sandbox_withholds`` compares two sets,
+    so adding the name to ``SAFE_BUILTINS`` satisfies it just as well as
+    removing it from the prelude.  That is the wrong repair, so the withheld
+    set is asserted directly here.
+    """
+    from geno.sandbox import SAFE_BUILTINS
+
+    assert name not in SAFE_BUILTINS, (
+        f"`{name}` was added to SAFE_BUILTINS. If the prelude needs it, change "
+        "the prelude: it reaches `object` via `().__class__.__mro__`, compares "
+        "identity instead of using `id`, and calls `Exception.__init__` "
+        "directly instead of `super`."
+    )
+
+
 def test_entrypoint_capture_guards_only_the_name_lookup() -> None:
     """The generated capture must not wrap the call itself in try/except."""
     emitted = _compiled_main_result_capture(False, allow_missing_main=True)
