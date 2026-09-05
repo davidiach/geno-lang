@@ -232,8 +232,7 @@ def test_workflow_surface_reports_shard_plan_regressions(tmp_path: Path) -> None
         1,
     )
     workflow = workflow.replace(
-        "        python scripts/pytest_shard.py --validate-plan-manifests "
-        '"${plan_files[@]}"\n',
+        '          --validate-plan-manifests "${plan_files[@]}" \\\n',
         "",
         1,
     )
@@ -248,11 +247,123 @@ def test_workflow_surface_reports_shard_plan_regressions(tmp_path: Path) -> None
     assert "hosted coverage shard job missing shard plan manifest output" in errors
     assert "hosted coverage shard job missing nonempty shard plan guard" in errors
     assert (
-        "hosted coverage shard job missing paired coverage and shard plan artifact "
-        "upload" in errors
+        "hosted coverage shard job missing paired coverage, shard plan, and timing "
+        "artifact upload" in errors
     )
     assert (
         "hosted coverage report job missing shard plan agreement validation" in errors
+    )
+
+
+def test_workflow_surface_reports_shard_timing_regressions(
+    tmp_path: Path,
+) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow = (ratchets.ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = workflow.replace(
+        "          --timing-manifest coverage-data/shard-timing.${{ matrix.shard }}.json "
+        "\\\n",
+        "",
+        1,
+    )
+    workflow = workflow.replace(
+        "        test -s coverage-data/shard-timing.${{ matrix.shard }}.json\n",
+        "",
+        1,
+    )
+    workflow = workflow.replace(
+        "          coverage-data/shard-timing.${{ matrix.shard }}.json\n",
+        "",
+        1,
+    )
+    workflow = workflow.replace("        retention-days: 14\n", "", 1)
+    workflow = workflow.replace("        overwrite: true\n", "", 1)
+    workflow = workflow.replace("          --allow-mixed-attempts \\\n", "", 1)
+    workflow = workflow.replace(
+        '          --timing-manifests "${timing_files[@]}"\n',
+        "",
+        1,
+    )
+    workflow = workflow.replace(
+        "        name: coverage-data-${{ matrix.shard }}\n",
+        "        name: mistyped-coverage-${{ matrix.shard }}\n",
+        1,
+    )
+    workflow = workflow.replace(
+        "        pattern: coverage-data-*\n",
+        "        pattern: mistyped-coverage-*\n",
+        1,
+    )
+    workflow = workflow.replace(
+        "        path: coverage-data\n",
+        "        path: mistyped-coverage\n",
+        1,
+    )
+    workflow = workflow.replace(
+        "find coverage-data -maxdepth 1 -type f -name 'shard-timing.*.json' -print",
+        "find coverage-data -maxdepth 1 -type f -name 'mistyped-timing.*.json' -print",
+        1,
+    )
+    workflow = workflow.replace(
+        "find coverage-data -maxdepth 1 -type f -name 'shard-plan.*.json' -print",
+        "find coverage-data -maxdepth 1 -type f -name 'mistyped-plan.*.json' -print",
+        1,
+    )
+    workflow = workflow.replace(
+        "find coverage-data -maxdepth 1 -type f -name 'coverage.*' -print",
+        "find coverage-data -maxdepth 1 -type f -name 'mistyped-coverage.*' -print",
+        1,
+    )
+    upload_action = (
+        "      uses: actions/upload-artifact@"
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n"
+    )
+    workflow = workflow.replace(upload_action, upload_action * 2, 1)
+    (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
+    (tmp_path / "Makefile").write_text(
+        (ratchets.ROOT / "Makefile").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    errors = ratchets.check_workflow_surface(tmp_path)
+
+    assert "hosted coverage shard job missing shard timing manifest output" in errors
+    assert "hosted coverage shard job missing nonempty shard timing guard" in errors
+    assert (
+        "hosted coverage shard job missing paired coverage, shard plan, and timing "
+        "artifact upload" in errors
+    )
+    assert "hosted coverage shard job missing timing evidence retention" in errors
+    assert (
+        "hosted coverage shard job missing coverage artifact replacement on retry"
+        in errors
+    )
+    assert (
+        "hosted coverage report job missing coverage validation across partial retries"
+        in errors
+    )
+    assert (
+        "hosted coverage shard job missing retry-stable coverage artifact "
+        "producer name" in errors
+    )
+    assert "hosted coverage shard job must use one artifact upload action" in errors
+    assert (
+        "hosted coverage report job missing retry-stable coverage artifact "
+        "consumer pattern" in errors
+    )
+    assert (
+        "hosted coverage report job missing coverage artifact download path" in errors
+    )
+    assert "hosted coverage report job missing exact shard plan artifact glob" in errors
+    assert (
+        "hosted coverage report job missing exact shard timing artifact glob" in errors
+    )
+    assert "hosted coverage report job missing exact coverage artifact glob" in errors
+    assert (
+        "hosted coverage report job missing shard timing agreement validation" in errors
     )
 
 
