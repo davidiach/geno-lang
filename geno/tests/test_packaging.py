@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import Mock
 
 import yaml  # type: ignore[import-untyped]
 
@@ -59,6 +60,43 @@ def test_package_discovery_excludes_test_suite():
 
     assert "geno.tests*" in package_find["exclude"]
     assert _pyproject()["tool"]["setuptools"]["include-package-data"] is False
+
+
+def test_nox_coverage_session_installs_lsp_before_measuring():
+    import noxfile
+
+    session = Mock()
+    noxfile.tests(session)
+
+    session.install.assert_called_once_with("-e", ".[dev,lsp]")
+    assert "--cov-fail-under=80" in session.run.call_args.args
+    assert [call[0] for call in session.mock_calls] == ["install", "run"]
+
+
+def test_coverage_measurement_environments_include_lsp():
+    repo_root = Path(__file__).resolve().parents[2]
+    ci = yaml.safe_load(
+        (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    coverage_job = ci["jobs"]["coverage-shard"]
+    install = _step_by_name(coverage_job, "Install dependencies")["run"]
+    assert 'python -m pip install -e ".[dev,lsp]"' in install
+    assert _step_names(coverage_job).index("Install dependencies") < _step_names(
+        coverage_job
+    ).index("Run coverage shard")
+
+    release_job = _publish_workflow_jobs()["release-check"]
+    release_install = _step_by_name(release_job, "Install dependencies")["run"]
+    assert (
+        "python -m pip install --require-hashes -r requirements-dev.lock"
+        in release_install
+    )
+    assert _step_names(release_job).index("Install dependencies") < _step_names(
+        release_job
+    ).index("Run release gate")
+    dev_lock = (repo_root / "requirements-dev.lock").read_text(encoding="utf-8")
+    for package in ("pygls", "lsprotocol"):
+        assert re.search(rf"^{package}==", dev_lock, re.MULTILINE)
 
 
 def test_publish_workflow_hash_locks_build_tools_and_validates_metadata():

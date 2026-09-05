@@ -12,6 +12,19 @@ but local validation catches most issues before review.
 
 ## Commands
 
+Before running `full`, `release`, or `make coverage`, install the development
+and LSP extras in the active virtual environment:
+
+```bash
+python3 -m pip install -e ".[dev,lsp]"
+```
+
+These commands enforce 80% coverage of production code, including the LSP
+server. Without the LSP extra, its tests skip and the coverage gate can fail.
+The local CI wrapper uses the active environment and does not install extras.
+Use `python` instead of `python3` on Windows. For a release environment matching
+publishing, follow the hash-locked setup in the [release runbook](release-runbook.md).
+
 The entrypoint is:
 
 ```bash

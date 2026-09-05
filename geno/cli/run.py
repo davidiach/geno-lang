@@ -225,18 +225,21 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         "max_collection_size",
         "max_integer_bits",
     }
-    if set(request) != expected_keys:
+    if set(request) - {"render_result"} != expected_keys:
         raise ValueError("invalid process-run request fields")
 
     filename = request["filename"]
     target = request["target"]
     check_examples = request["check_examples"]
+    render_result = request.get("render_result", False)
     if not isinstance(filename, str) or not filename or "\x00" in filename:
         raise ValueError("invalid process-run filename")
     if target is not None and not isinstance(target, str):
         raise ValueError("invalid process-run target")
     if not isinstance(check_examples, bool):
         raise ValueError("invalid process-run example setting")
+    if not isinstance(render_result, bool):
+        raise ValueError("invalid process-run result rendering setting")
 
     from ..ast_nodes import FunctionDef
     from ..compiler import (
@@ -292,8 +295,17 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     python_code += _compiled_main_result_capture(
         bool(main_defn and main_defn.is_async),
         main_name="_geno_entry_main" if parsed_modules else "main",
-        catch_name_error=True,
+        allow_missing_main=True,
     )
+    if render_result:
+        # Format while values still have their Geno types. JSON transport
+        # turns tuples into lists and map keys into strings; its fallback
+        # also renders constructors and mutable containers using Python repr.
+        # Keep None for Unit/missing main so the CLI can suppress that line.
+        python_code += (
+            "\nif _geno_entry_fn is not None and __result__ is not None:\n"
+            "    __result__ = _geno_format(__result__)\n"
+        )
     return {
         "python_code": python_code,
         "runtime_capabilities": sorted(DEFAULT_ALLOWED_CAPABILITIES),
@@ -526,6 +538,7 @@ def run_file(
                 "filename": filename,
                 "target": target,
                 "check_examples": check_examples,
+                "render_result": True,
                 "timeout": timeout,
                 "max_recursion_depth": max_recursion_depth,
                 "max_output_length": max_output_length,
@@ -683,7 +696,7 @@ def run_file(
             if run_output:
                 print(run_output, end="")
             if not _is_unit_main_result(result):
-                print(f"=> {interpreter._format_value(result)}")
+                print(f"=> {interpreter.format_display_value(result)}")
 
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)

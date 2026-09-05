@@ -128,8 +128,22 @@ quote-style = "double"
 [tool.coverage.run]
 patch = ["subprocess"]
 omit = [
-    # This test file is entirely gated on optional LSP dependencies.
-    "geno/tests/test_lsp.py",
+    # Measure the product, not the suite.  `--cov=geno` otherwise includes
+    # `geno/tests/` -- ~54% of measured statements, ~98% covered by virtue of
+    # having been executed -- which inflates the headline figure and lets
+    # production coverage fall a long way before the gate notices.
+    "geno/tests/*",
+]
+
+[tool.coverage.report]
+# `[run] omit` governs what is measured; it does not govern what a bare
+# `coverage report` prints.  CI combines the shard data files and then runs
+# `coverage report --fail-under=80` directly (.github/workflows/ci.yml), which
+# re-enumerates the source tree and lists every unmeasured test file at 0%.
+# Without this the gate saw 34% and failed even though production coverage was
+# 82%.  Keep the two lists identical.
+omit = [
+    "geno/tests/*",
 ]
 
 [tool.mypy]

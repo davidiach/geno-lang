@@ -2150,6 +2150,92 @@ end func
         id="match_expr_user_variant",
     ),
     pytest.param(
+        # --- An Int literal in a Float position is a Float value ---
+        # float_print_whole_values covers literals that are already Float.
+        # These are Int literals the typechecker widens to Float via
+        # _expected_runtime_type: call arguments, container elements, tuple
+        # slots, constructor fields, Option payloads and JSON values.  The JS
+        # backend renders them from static type, so a Python-side Int here
+        # made the same program print `3` on one backend and `3.0` on the
+        # other -- reaching machine-readable output through json_to_string.
+        """\
+type Wrap = Wrap(v: Float)
+
+func show(x: Float) -> String
+    example (1.0) -> "1.0"
+    return to_string(x)
+end func show
+
+func main() -> Unit
+    print(show(3))
+    let xs: List[Float] = [1, 2]
+    print(to_string(xs))
+    let nested: List[List[Float]] = [[1], [2]]
+    print(to_string(nested))
+    let t: (Float, Float) = (1, 2)
+    print(to_string(t))
+    print(to_string(Wrap(5)))
+    let o: Option[Float] = Some(7)
+    print(to_string(o))
+    print(json_to_string(JsonFloat(3)))
+    let mixed: List[Float] = [2.5, 1, 3]
+    print(to_string(mixed))
+    // Element inference must not depend on element order: an Int first and a
+    // Float later is the same list as the reverse, and both must widen.
+    let int_first: List[Float] = [1, 2.5, 3]
+    print(to_string(int_first))
+    let inferred = [1, 2.5, 3]
+    print(to_string(inferred))
+    let nested_widened = [[1], [2.5]]
+    print(to_string(nested_widened))
+    let n = 1
+    let negative_first = [-1, 2.5]
+    print(to_string(negative_first))
+    let variable_first = [n, 2.5]
+    print(to_string(variable_first))
+    let arithmetic_first = [1 + 1, 2.5]
+    print(to_string(arithmetic_first))
+    let nested_expressions = [[n, -1], [2.5, 3]]
+    print(to_string(nested_expressions))
+    let ints = [n]
+    let nested_variable = [ints, [2.5]]
+    print(to_string(nested_variable))
+    print(to_string(ints))
+    return ()
+end func
+""",
+        id="int_literal_in_float_position",
+    ),
+    pytest.param(
+        # --- Geno blocks scope their bindings on every backend ---
+        # Python scopes per function, not per block, so a `let` inside an `if`
+        # used to overwrite the outer binding and the compiled program
+        # returned the inner value.  The interpreter and JS both shadow.
+        """\
+func main() -> Unit
+    let x: Int = 5
+    if true then
+        let x: Int = 10
+        print(x)
+    end if
+    print(x)
+    var y: Int = 1
+    while y < 2 do
+        let x: Int = 99
+        y = y + 1
+    end while
+    print(x)
+    // A same-scope rebind is a rebind on every backend.  This emitted two
+    // `const` declarations on JS, so the program was a SyntaxError there.
+    let z: Int = 1
+    let z: Int = 2
+    print(z)
+    return ()
+end func
+""",
+        id="block_scoped_bindings",
+    ),
+    pytest.param(
         # --- Float printing keeps the fractional part across backends ---
         # Floats and JS numbers share one runtime representation, so whole-valued
         # floats must be formatted via static type info, not a runtime check.

@@ -3249,16 +3249,41 @@ class TypeChecker(ExhaustivenessMixin):
         elem_types = [self._check_expression(e, env) for e in expr.elements]
         if any(isinstance(t, NeverType) for t in elem_types):
             return NeverType()
-        first_type = elem_types[0]
 
-        for i, t in enumerate(elem_types[1:], 1):
-            if not self._types_compatible(first_type, t):
+        # Widen to the element type every other element is compatible with,
+        # rather than anchoring on the first.  Int widens to Float but not the
+        # reverse, so anchoring made inference order-dependent: `[2.5, 1, 3]`
+        # inferred List[Float] while `[1, 2.5, 3]` -- the same list -- was
+        # rejected with "expected Int, got Float", even under an explicit
+        # `List[Float]` annotation, because the error was raised during
+        # inference before the annotation was consulted.
+        elem_type = elem_types[0]
+        for t in elem_types[1:]:
+            if not self._types_compatible(elem_type, t) and self._types_compatible(
+                t, elem_type
+            ):
+                elem_type = t
+
+        for i, t in enumerate(elem_types):
+            if not self._types_compatible(elem_type, t):
                 self._error(
-                    f"List element type mismatch: expected {first_type}, got {t}",
+                    f"List element type mismatch: expected {elem_type}, got {t}",
                     expr.elements[i].location,
                 )
 
-        return ListType(first_type)
+        # An Int literal in a Float list must reach the backends as a Float,
+        # exactly as it does under an explicit annotation, or an inferred
+        # List[Float] would render as `[1, 2.5, 3]` instead of
+        # `[1.0, 2.5, 3.0]`.  Recording the settled element type on every
+        # element (rather than only the Float ones) also covers nesting --
+        # `[[1], [2.5]]` -- because `_record_expected_runtime_type` recurses
+        # through list literals.  Every consumer of the annotation gates on
+        # `_expected_runtime_type_is_float`, so recording a non-Float type is
+        # inert.
+        for element in expr.elements:
+            self._record_expected_runtime_type(element, elem_type)
+
+        return ListType(elem_type)
 
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""

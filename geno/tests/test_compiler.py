@@ -18,6 +18,7 @@ import geno.compiler as compiler_module
 from geno.compiler import (
     CompileError,
     Compiler,
+    _compiled_main_guard,
     _insert_compiled_runtime_capability_assignment,
     _strip_runtime_prelude_imports,
     _trusted_runtime_prelude_line_count,
@@ -51,11 +52,12 @@ def _compiled_runtime_env(
 def _compiled_python_process_result(source: str, max_collection_size: int = 10):
     python_code = _strip_runtime_prelude_imports(compile_to_python(source))
     trusted_prelude_line_count = _trusted_runtime_prelude_line_count(python_code)
-    main_guard = (
-        "\n\nif __name__ == '__main__':\n"
-        "    result = main()\n"
-        "    if result is not None:\n"
-        "        print(result)\n"
+    # Use the compiler's own definition: a hand-copied literal here silently
+    # stops matching when the emitted guard changes, and the helper then
+    # returns None instead of the program's result.
+    main_guard = _compiled_main_guard(is_async=False)
+    assert main_guard in python_code, (
+        "compiled output no longer ends with the __main__ guard"
     )
     python_code = python_code.replace(main_guard, "\n\n__result__ = main()\n")
     sandbox = ProcessSandbox(
@@ -3614,7 +3616,7 @@ class TestInterpreterCompilerParity:
         end func
         """
         result = compile_and_run(source)
-        assert result == "_None", f"got {result!r}"
+        assert result == "None", f"got {result!r}"
 
     def test_and_returns_bool(self):
         """Compiled 'and' must return a bool, not the operand value."""

@@ -296,11 +296,29 @@ SAFE_BUILTINS = {
     "AttributeError": AttributeError,
     "ZeroDivisionError": ZeroDivisionError,
     "NameError": NameError,
+    # Exception classes the runtime prelude names in `except` tuples and
+    # `raise` statements.  Exception classes expose no host capability on
+    # their own, and omitting them made the prelude raise NameError at the
+    # point of use -- which `geno run` then swallowed silently.
+    "OSError": OSError,
+    "FileNotFoundError": FileNotFoundError,
+    "OverflowError": OverflowError,
+    "RecursionError": RecursionError,
+    "ImportError": ImportError,
+    "UnicodeError": UnicodeError,
+    "UnicodeDecodeError": UnicodeDecodeError,
+    "UnicodeEncodeError": UnicodeEncodeError,
     # Other safe operations
     "hash": hash,
     "iter": iter,
     "next": next,
     "slice": slice,
+    # `super` is needed by the runtime prelude's own exception classes.
+    # `id`, `object`, `bytes` and `pow` stay out by design -- see
+    # BLOCKED_BUILTINS and TestSandboxConstantConsistency.  The prelude is
+    # written to avoid them rather than the sandbox being widened to allow
+    # them; test_worker_prelude_contract enforces that direction.
+    "super": super,
     # __build_class__ deliberately excluded from SAFE_BUILTINS:
     # In non-strict mode, `class Foo: __getattribute__ = ...` bypasses
     # safe_getattr at the C level.  Only compile_and_exec injects it

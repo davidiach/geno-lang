@@ -92,23 +92,46 @@ V = TypeVar("V")
 E = TypeVar("E")
 
 
+# Sentinels the prelude needs without calling ``object()`` or ``bytes()``:
+# both are withheld from the sandbox on purpose (see BLOCKED_BUILTINS in
+# geno/sandbox.py), and naming an unavailable builtin raises NameError
+# mid-program.
+class _GenoMissing:
+    """Unique sentinel for "argument not supplied"."""
+
+    __slots__ = ()
+
+
+_GENO_MISSING = _GenoMissing()
+
+
+def _geno_seen_contains(seen: tuple[Any, ...], value: Any) -> bool:
+    """Identity membership test over the containers enclosing ``value``.
+
+    Used for cycle detection instead of a set of ``id()`` values: ``id`` is
+    deliberately absent from the sandbox because it discloses memory
+    addresses.  ``seen`` holds only the current path's ancestors, so it is as
+    long as the nesting depth rather than the size of the data.
+    """
+    return any(candidate is value for candidate in seen)
+
+
 # =============================================================================
 # Geno-canonical value formatting
 # =============================================================================
 
 
-def _geno_sort_key(value: Any, _seen: set[int] | None = None) -> tuple[Any, ...]:
+def _geno_sort_key(value: Any, _seen: tuple[Any, ...] | None = None) -> tuple[Any, ...]:
     if _seen is None:
-        _seen = set()
+        _seen = ()
 
     if isinstance(
         value,
         (list, dict, tuple, _GenoArray, _GenoMutableMap, _GenoVec, _GenoSet),
     ):
-        obj_id = id(value)
-        if obj_id in _seen:
+        if _geno_seen_contains(_seen, value):
             return (98, "cycle")
-        _seen = _seen | {obj_id}
+        _seen = _seen + (value,)
 
     if value is None:
         return (0,)
@@ -188,12 +211,12 @@ def _geno_quote_string(value: str) -> str:
 
 def _geno_format(
     value: Any,
-    _seen: set[int] | None = None,
+    _seen: tuple[Any, ...] | None = None,
     *,
     _top_level: bool = True,
 ) -> str:
     if _seen is None:
-        _seen = set()
+        _seen = ()
 
     container_types = (list, dict, tuple)
     runtime_container_types = (
@@ -203,8 +226,7 @@ def _geno_format(
         _GenoSet,
     )
     if isinstance(value, container_types + runtime_container_types):
-        obj_id = id(value)
-        if obj_id in _seen:
+        if _geno_seen_contains(_seen, value):
             if isinstance(value, _GenoArray):
                 return "Array([...])"
             if isinstance(value, _GenoMutableMap):
@@ -216,7 +238,7 @@ def _geno_format(
             if isinstance(value, dict):
                 return "{...}"
             return "[...]" if isinstance(value, list) else "(...)"
-        _seen = _seen | {obj_id}
+        _seen = _seen + (value,)
 
     if value is None:
         return "()"
@@ -226,14 +248,15 @@ def _geno_format(
         return value if _top_level else _geno_quote_string(value)
     if isinstance(value, Constructor):
         fields = _dataclasses_fields(value)
+        constructor_name = "None" if isinstance(value, _None) else type(value).__name__
         if not fields:
-            return type(value).__name__
+            return constructor_name
         field_strs = ", ".join(
             f"{field.name}: "
             f"{_geno_format(getattr(value, field.name), _seen, _top_level=False)}"
             for field in fields
         )
-        return f"{type(value).__name__}({field_strs})"
+        return f"{constructor_name}({field_strs})"
     if isinstance(value, _GenoArray):
         elements = ", ".join(
             _geno_format(item, _seen, _top_level=False) for item in value._elements
@@ -3854,6 +3877,11 @@ def _geno_parse_caps():
     caps: set = set()
     i = 1
     while i < len(argv):
+        # Stop at the program-argument separator.  Everything after `--` is
+        # untrusted program input (it is exactly what cli_args() returns), so
+        # it must never be able to grant a capability to its own host.
+        if argv[i] == "--":
+            break
         if argv[i] == "--cap" and i + 1 < len(argv):
             caps.update(argv[i + 1].split(","))
             i += 2
@@ -4253,7 +4281,7 @@ def _create_validated_http_connection(
 
     infos = _resolve_validated_http_addresses(hostname, port, fn_name)
     last_error = None
-    global_default_timeout = getattr(_socket, "_GLOBAL_DEFAULT_TIMEOUT", object())
+    global_default_timeout = getattr(_socket, "_GLOBAL_DEFAULT_TIMEOUT", _GENO_MISSING)
     for family, socktype, proto, _canonname, sockaddr in infos:
         sock = _socket.socket(family, socktype, proto)
         try:
