@@ -805,7 +805,7 @@ def _load_shard_timing_manifest(path: Path, plan: ShardPlan) -> ShardTimingManif
 
 
 def validate_shard_timing_manifests(
-    paths: Sequence[Path], plan: ShardPlan
+    paths: Sequence[Path], plan: ShardPlan, *, allow_mixed_attempts: bool = False
 ) -> list[ShardTimingManifest]:
     """Validate timing telemetry against the exact agreed shard plan."""
     if len(paths) != plan["shard_count"]:
@@ -820,7 +820,9 @@ def validate_shard_timing_manifests(
         (
             manifest["provenance"]["commit_sha"],
             manifest["provenance"]["github_run_id"],
-            manifest["provenance"]["github_run_attempt"],
+            None
+            if allow_mixed_attempts
+            else manifest["provenance"]["github_run_attempt"],
         )
         for manifest in manifests
     }
@@ -839,6 +841,12 @@ def validate_shard_timing_manifests(
 def print_shard_timing_summary(manifests: Sequence[ShardTimingManifest]) -> None:
     """Print stable hosted evidence for the next balance-profile update."""
     print("validated pytest shard timings:", flush=True)
+    attempts = {manifest["provenance"]["github_run_attempt"] for manifest in manifests}
+    if len(attempts) > 1:
+        print(
+            "  mixed CI attempts: valid for coverage, not a comparable timing sample",
+            flush=True,
+        )
     for manifest in manifests:
         executed = sum(file["call_report_count"] for file in manifest["files"])
         skipped = sum(
@@ -849,6 +857,7 @@ def print_shard_timing_summary(manifests: Sequence[ShardTimingManifest]) -> None
             f"{manifest['reported_elapsed_ms']} ms reported, "
             f"{manifest['session_elapsed_ms']} ms session, "
             f"{executed} call reports, {skipped} skipped/xfail, "
+            f"attempt={manifest['provenance']['github_run_attempt']}, "
             f"env={manifest['provenance']['environment_sha256'][:12]}",
             flush=True,
         )
@@ -909,6 +918,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         metavar="PATH",
         help="Validate timing manifests against the agreed shard plan.",
     )
+    parser.add_argument(
+        "--allow-mixed-attempts",
+        action="store_true",
+        help=(
+            "Allow successful shards from retries of the same CI run for coverage. "
+            "Mixed attempts are not a comparable timing sample."
+        ),
+    )
     parser.add_argument("--shard-count", type=int, default=2)
     parser.add_argument(
         "--balance-profile",
@@ -943,6 +960,10 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Collect, partition, and run one pytest shard."""
     args = _parse_args(argv or sys.argv[1:])
+    if args.allow_mixed_attempts and (
+        args.validate_plan_manifests is None or args.timing_manifests is None
+    ):
+        raise SystemExit("--allow-mixed-attempts requires timing validation mode")
     if args.validate_plan_manifests is not None:
         if (
             args.plan_manifest is not None
@@ -960,7 +981,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         timings = None
         if args.timing_manifests is not None:
             try:
-                timings = validate_shard_timing_manifests(args.timing_manifests, plan)
+                timings = validate_shard_timing_manifests(
+                    args.timing_manifests,
+                    plan,
+                    allow_mixed_attempts=args.allow_mixed_attempts,
+                )
             except ValueError as exc:
                 print(f"pytest shard timing validation failed: {exc}", file=sys.stderr)
                 return 1

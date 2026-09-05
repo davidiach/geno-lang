@@ -280,18 +280,20 @@ def test_workflow_surface_reports_shard_timing_regressions(
         1,
     )
     workflow = workflow.replace("        retention-days: 14\n", "", 1)
+    workflow = workflow.replace("        overwrite: true\n", "", 1)
+    workflow = workflow.replace("          --allow-mixed-attempts \\\n", "", 1)
     workflow = workflow.replace(
         '          --timing-manifests "${timing_files[@]}"\n',
         "",
         1,
     )
     workflow = workflow.replace(
-        "        name: coverage-data-${{ github.run_attempt }}-${{ matrix.shard }}\n",
+        "        name: coverage-data-${{ matrix.shard }}\n",
         "        name: mistyped-coverage-${{ matrix.shard }}\n",
         1,
     )
     workflow = workflow.replace(
-        "        pattern: coverage-data-${{ github.run_attempt }}-*\n",
+        "        pattern: coverage-data-*\n",
         "        pattern: mistyped-coverage-*\n",
         1,
     )
@@ -336,12 +338,20 @@ def test_workflow_surface_reports_shard_timing_regressions(
     )
     assert "hosted coverage shard job missing timing evidence retention" in errors
     assert (
-        "hosted coverage shard job missing run-attempt-scoped coverage artifact "
+        "hosted coverage shard job missing coverage artifact replacement on retry"
+        in errors
+    )
+    assert (
+        "hosted coverage report job missing coverage validation across partial retries"
+        in errors
+    )
+    assert (
+        "hosted coverage shard job missing retry-stable coverage artifact "
         "producer name" in errors
     )
     assert "hosted coverage shard job must use one artifact upload action" in errors
     assert (
-        "hosted coverage report job missing run-attempt-scoped coverage artifact "
+        "hosted coverage report job missing retry-stable coverage artifact "
         "consumer pattern" in errors
     )
     assert (

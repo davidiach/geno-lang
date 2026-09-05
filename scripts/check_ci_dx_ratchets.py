@@ -367,9 +367,10 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "test -s coverage-data/shard-timing.${{ matrix.shard }}.json": (
             "nonempty shard timing guard"
         ),
-        "name: coverage-data-${{ github.run_attempt }}-${{ matrix.shard }}": (
-            "run-attempt-scoped coverage artifact producer name"
+        "name: coverage-data-${{ matrix.shard }}": (
+            "retry-stable coverage artifact producer name"
         ),
+        "overwrite: true": "coverage artifact replacement on retry",
         (
             "path: |\n"
             "          coverage-data/coverage.${{ matrix.shard }}\n"
@@ -397,9 +398,8 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "needs: coverage-shard": "coverage shard dependency",
         "needs.coverage-shard.result != 'success'": "coverage shard failure guard",
         "actions/download-artifact@": "coverage artifact download",
-        "pattern: coverage-data-${{ github.run_attempt }}-*": (
-            "run-attempt-scoped coverage artifact consumer pattern"
-        ),
+        "pattern: coverage-data-*": ("retry-stable coverage artifact consumer pattern"),
+        "--allow-mixed-attempts": "coverage validation across partial retries",
         "path: coverage-data": "coverage artifact download path",
         "merge-multiple: true": "coverage artifact merge",
         "expected 3 shard plans": "complete shard plan artifact guard",

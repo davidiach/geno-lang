@@ -553,6 +553,52 @@ def test_shard_timing_validation_rejects_mixed_ci_runs(tmp_path: Path) -> None:
         pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
 
 
+def test_failed_job_retry_preserves_successful_shard_timings(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    plan_paths = _write_plan_manifests(tmp_path)
+    plan = pytest_shard.validate_shard_plan_manifests(plan_paths)
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    # Re-run just the failed leg: the other two uploads remain from attempt 1.
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    manifest["provenance"]["github_run_attempt"] = "2"
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert (
+        pytest_shard.main(
+            [
+                "--validate-plan-manifests",
+                *(str(path) for path in plan_paths),
+                "--timing-manifests",
+                *(str(path) for path in timing_paths),
+                "--allow-mixed-attempts",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "not a comparable timing sample" in output
+    assert "attempt=1" in output
+    assert "attempt=2" in output
+
+
+@pytest.mark.parametrize("field", ["commit_sha", "github_run_id"])
+def test_retry_validation_still_rejects_different_ci_runs(
+    tmp_path: Path, field: str
+) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    manifest["provenance"][field] = "another-run"
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="different CI runs"):
+        pytest_shard.validate_shard_timing_manifests(
+            timing_paths, plan, allow_mixed_attempts=True
+        )
+
+
 def test_shard_timing_validation_rejects_mixed_runtime_environments(
     tmp_path: Path, monkeypatch
 ) -> None:
