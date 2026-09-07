@@ -31,6 +31,55 @@ from geno.typechecker import TypeChecker
 
 
 class TestLinearChain:
+    def test_transitive_stdlib_imports_are_included(self, tmp_path, monkeypatch):
+        std_dir = tmp_path / "std"
+        std_dir.mkdir()
+        (std_dir / "First.geno").write_text("import Second\n")
+        (std_dir / "Second.geno").write_text("import Third\n")
+        (std_dir / "Third.geno").write_text("")
+        entry = tmp_path / "Main.geno"
+        entry.write_text("import First\n")
+        monkeypatch.setattr(dependency_graph, "_STD_DIR", std_dir)
+
+        graph = DependencyGraph.resolve(ProjectGraph.discover(entry))
+
+        assert graph.sorted_modules == ["Third", "Second", "First", "Main"]
+        assert graph.original_sources["Second"] == "import Third\n"
+
+    def test_transitive_stdlib_cycle_is_detected(self, tmp_path, monkeypatch):
+        std_dir = tmp_path / "std"
+        std_dir.mkdir()
+        (std_dir / "First.geno").write_text("import Second\n")
+        (std_dir / "Second.geno").write_text("import First\n")
+        entry = tmp_path / "Main.geno"
+        entry.write_text("import First\n")
+        monkeypatch.setattr(dependency_graph, "_STD_DIR", std_dir)
+
+        with pytest.raises(CircularDependencyError):
+            DependencyGraph.resolve(ProjectGraph.discover(entry))
+
+    def test_transitive_stdlib_override_preserves_project_precedence(
+        self, tmp_path, monkeypatch
+    ):
+        std_dir = tmp_path / "std"
+        std_dir.mkdir()
+        first = std_dir / "First.geno"
+        first.write_text("")
+        (std_dir / "Shared.geno").write_text("import Missing\n")
+        (tmp_path / "geno.toml").write_text('files = ["Main", "Shared"]\n')
+        (tmp_path / "Main.geno").write_text("import First\n")
+        shared = tmp_path / "Shared.geno"
+        shared.write_text("")
+        monkeypatch.setattr(dependency_graph, "_STD_DIR", std_dir)
+
+        graph = DependencyGraph.resolve(
+            ProjectGraph.discover(tmp_path),
+            source_overrides={first: "import Shared\n"},
+        )
+
+        assert graph.sorted_modules == ["Shared", "First", "Main"]
+        assert graph.file_map["Shared"].path == shared
+
     def test_linear_sorted_order(self, tmp_path):
         """A -> B -> C should produce [C, B, A] order."""
         (tmp_path / "geno.toml").write_text('files = ["A", "B", "C"]\n')
@@ -134,6 +183,22 @@ class TestDiamondDependency:
 
 
 class TestCircularImport:
+    def test_cycle_detection_scans_each_adjacency_once(self):
+        class CountedImports(list):
+            scans = 0
+
+            def __iter__(self):
+                self.scans += 1
+                return super().__iter__()
+
+        imports = CountedImports(f"Leaf{i}" for i in range(250))
+        edges = {"Root": imports, **{name: [] for name in imports}}
+        imports.scans = 0
+
+        dependency_graph._detect_cycles(edges)
+
+        assert imports.scans == 1
+
     def test_direct_cycle(self, tmp_path):
         """A -> B -> A raises CircularDependencyError with clean cycle."""
         (tmp_path / "geno.toml").write_text('files = ["A", "B"]\n')

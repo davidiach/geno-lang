@@ -41,6 +41,35 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_source_overrides_do_not_require_reading_source_files(tmp_path, monkeypatch):
+    main = tmp_path / "Main.geno"
+    helper = tmp_path / "Helper.geno"
+    main_source = "import Helper\nfunc main() -> Int\n  return helper(1)\nend func\n"
+    helper_source = (
+        "export func helper(x: Int) -> Int\n"
+        "  example 1 -> 2\n  return x + 1\nend func\n"
+    )
+    main.write_text(main_source)
+    helper.write_text(helper_source)
+    (tmp_path / "geno.toml").write_text(
+        'entrypoint = "Main"\nfiles = ["Main", "Helper"]\n'
+    )
+    original_read_text = Path.read_text
+
+    def unreadable_source(path, *args, **kwargs):
+        if path.suffix == ".geno":
+            raise PermissionError("source file cannot be read")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable_source)
+    context = resolve_project_context(
+        tmp_path, source_overrides={main: main_source, helper: helper_source}
+    )
+
+    assert context.source == main_source
+    assert context.module_sources["Helper"] == helper_source
+
+
 def _write_direct_file_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Create a direct-file project with transitive sibling imports."""
     utils_file = tmp_path / "Utils.geno"

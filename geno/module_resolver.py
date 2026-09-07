@@ -10,6 +10,7 @@ RunConfig.modules / typechecker / interpreter interfaces.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, cast
@@ -136,17 +137,27 @@ def _resolve_module_sources_unlocked(
 
 
 def _resolve_imports(
-    program,
+    program: Program,
     base_dir: Path,
     modules: dict[str, ResolvedModuleSource],
     resolving: set[str] | None = None,
     source_overrides: Mapping[Path, str] | None = None,
 ) -> None:
-    """Recursively resolve imports from a parsed program."""
+    """Resolve imports with explicit DFS frames, independent of Python's stack."""
     if resolving is None:
         resolving = set()
-
-    for defn in program.definitions:
+    pending: list[tuple[Iterator[object], Path, str | None]] = [
+        (iter(program.definitions), base_dir, None)
+    ]
+    while pending:
+        definitions, base_dir, active_key = pending[-1]
+        try:
+            defn = next(definitions)
+        except StopIteration:
+            pending.pop()
+            if active_key is not None:
+                resolving.discard(active_key)
+            continue
         if isinstance(defn, ImportStatement):
             name = defn.module_name
 
@@ -239,15 +250,7 @@ def _resolve_imports(
             tokens = Lexer(source, str(file_path)).tokenize()
             mod_program = Parser(tokens).parse_program()
             mod_base_dir = resolved_file.parent
-            _resolve_imports(
-                mod_program,
-                mod_base_dir,
-                modules,
-                resolving,
-                source_overrides,
-            )
-
-            resolving.discard(storage_key)
+            pending.append((iter(mod_program.definitions), mod_base_dir, storage_key))
 
 
 _STD_DIR = Path(__file__).parent / "std"

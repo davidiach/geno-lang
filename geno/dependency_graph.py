@@ -556,16 +556,23 @@ def _resolve_std_imports(
         Path(path).resolve(): source
         for path, source in (source_overrides or {}).items()
     }
-    std_needed: Set[str] = set()
-    for imports in graph.edges.values():
-        for imp in imports:
-            if imp not in graph.file_map:
-                std_path = _STD_DIR / f"{imp}.geno"
-                if std_path.exists():
-                    std_needed.add(imp)
+    seen: Set[str] = set(graph.file_map)
+    pending: list[str] = []
 
-    for name in std_needed:
+    def enqueue(imports: List[str]) -> None:
+        for name in imports:
+            if name not in seen:
+                seen.add(name)
+                heapq.heappush(pending, name)
+
+    for imports in graph.edges.values():
+        enqueue(imports)
+
+    while pending:
+        name = heapq.heappop(pending)
         std_path = _STD_DIR / f"{name}.geno"
+        if not std_path.is_file():
+            continue
         resolved = ResolvedFile(module_name=name, path=std_path)
         graph.file_map[name] = resolved
 
@@ -580,6 +587,7 @@ def _resolve_std_imports(
         graph.edges[name] = mod_imports
         graph.normalized_sources[name] = source_text
         graph.original_sources[name] = source_text
+        enqueue(mod_imports)
 
 
 def _parse_module(path: Path) -> Tuple[Program, List[str]]:
@@ -652,7 +660,12 @@ def _detect_cycles(edges: Dict[str, List[str]]) -> None:
     """
     WHITE, GRAY, BLACK = 0, 1, 2
     color: Dict[str, int] = dict.fromkeys(edges, WHITE)
-    parent: Dict[str, str | None] = dict.fromkeys(edges)
+    # Filter each adjacency list once. Rebuilding it for every suspended DFS
+    # frame makes a node with d imports cost O(d**2) instead of O(d).
+    adjacency = {
+        name: [neighbor for neighbor in imports if neighbor in edges]
+        for name, imports in edges.items()
+    }
 
     for start in edges:
         if color[start] != WHITE:
@@ -663,7 +676,7 @@ def _detect_cycles(edges: Dict[str, List[str]]) -> None:
             if idx == 0:
                 color[node] = GRAY
 
-            neighbors = [n for n in edges.get(node, []) if n in edges]
+            neighbors = adjacency[node]
             if idx < len(neighbors):
                 stack.append((node, idx + 1))
                 neighbor = neighbors[idx]
@@ -677,7 +690,6 @@ def _detect_cycles(edges: Dict[str, List[str]]) -> None:
                     cycle.reverse()
                     raise CircularDependencyError(cycle)
                 if color[neighbor] == WHITE:
-                    parent[neighbor] = node
                     stack.append((neighbor, 0))
             else:
                 color[node] = BLACK
