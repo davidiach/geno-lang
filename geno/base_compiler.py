@@ -9,6 +9,7 @@ and target-independent compilation methods.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -514,6 +515,46 @@ class BaseCompiler(ABC):
         while result and result[-1] is None:
             result.pop()
         return result
+
+    @staticmethod
+    def _compile_float_literal(value: float) -> str:
+        """Render IEEE non-finite values without target-specific global names."""
+        if math.isnan(value):
+            return "(1e309 - 1e309)"
+        if math.isinf(value):
+            return "-1e309" if value < 0 else "1e309"
+        return str(value)
+
+    def _compile_reordered_call(
+        self,
+        expr: FunctionCall,
+        ordered_args: list[CallArg | None],
+        missing_value: str,
+    ) -> tuple[list[str], list[str], str] | None:
+        """Bind source-order argument values before arranging named parameters.
+
+        The returned expression remains at the original call site, including
+        inside short-circuit expressions and comprehensions. Hoisting argument
+        evaluation into statements would execute effects too early.
+        """
+        concrete_args = [arg for arg in ordered_args if arg is not None]
+        if len(concrete_args) == len(expr.arguments) and all(
+            original is ordered
+            for original, ordered in zip(expr.arguments, concrete_args)
+        ):
+            return None
+
+        function_name = self._fresh_temp()
+        argument_names = {id(arg): self._fresh_temp() for arg in expr.arguments}
+        names = [function_name, *argument_names.values()]
+        values = [self._compile_expr(expr.function)] + [
+            self._compile_expr(arg.value) for arg in expr.arguments
+        ]
+        arguments = ", ".join(
+            missing_value if arg is None else argument_names[id(arg)]
+            for arg in ordered_args
+        )
+        return names, values, f"{function_name}({arguments})"
 
     @staticmethod
     def _call_args_match_param_names(call_args: list, param_names: list[str]) -> bool:

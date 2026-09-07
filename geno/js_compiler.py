@@ -2543,6 +2543,8 @@ class JSCompiler(BaseCompiler):
                         "within the safe integer range"
                     )
                 value_str = f"_checkCollectionSize({value})"
+            elif isinstance(value, float):
+                value_str = self._compile_float_literal(value)
             else:
                 value_str = str(value)
             return (f"_valuesEqual({scrutinee}, {value_str})", bindings)
@@ -2648,7 +2650,7 @@ class JSCompiler(BaseCompiler):
             return f"_checkCollectionSize({expr.value})"
 
         if isinstance(expr, FloatLiteral):
-            return str(expr.value)
+            return self._compile_float_literal(expr.value)
 
         if isinstance(expr, StringLiteral):
             escaped = self._escape_js_string(expr.value)
@@ -2886,6 +2888,13 @@ class JSCompiler(BaseCompiler):
             )
         else:
             ordered_args = list(expr.arguments)
+
+        reordered_call = self._compile_reordered_call(expr, ordered_args, "undefined")
+        if reordered_call is not None:
+            names, values, call = reordered_call
+            parameters = ", ".join(names)
+            arguments = ", ".join(values)
+            return f"(({parameters}) => {call})({arguments})"
 
         concrete_args = [arg for arg in ordered_args if arg is not None]
         if len(concrete_args) == len(ordered_args):
