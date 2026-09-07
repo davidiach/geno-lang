@@ -20,6 +20,7 @@ from geno.project_resolution import (
 from geno.test_runner import run_project_test_suite
 from geno.tests.project_resolution_fixture_helpers import (
     write_dependency_collision_fixture,
+    write_dependency_private_collision_fixture,
 )
 
 try:
@@ -68,6 +69,34 @@ def test_source_overrides_do_not_require_reading_source_files(tmp_path, monkeypa
 
     assert context.source == main_source
     assert context.module_sources["Helper"] == helper_source
+
+
+@pytest.mark.parametrize("with_manifests", [False, True])
+def test_manifest_dependencies_preserve_private_modules_for_direct_files(
+    tmp_path, with_manifests
+):
+    app, alpha_utils, beta_utils = write_dependency_private_collision_fixture(tmp_path)
+    if with_manifests:
+        for helper, entrypoint in ((alpha_utils, "Alpha"), (beta_utils, "Beta")):
+            (helper.parent / "geno.toml").write_text(
+                f'entrypoint = "{entrypoint}"\nfiles = ["{entrypoint}", "Utils"]\n'
+            )
+
+    for path in (tmp_path, app):
+        result = run_path(path)
+        assert result.ok, result.diagnostics
+        assert result.value == 12
+
+    from geno.api import run
+    from geno.lexer import Lexer
+    from geno.module_resolver import resolve_modules
+    from geno.parser import Parser
+
+    source = app.read_text()
+    program = Parser(Lexer(source, str(app)).tokenize()).parse_program()
+    result = run(source, RunConfig(modules=resolve_modules(app, program)))
+    assert result.ok, result.diagnostics
+    assert result.value == 12
 
 
 def _write_direct_file_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:

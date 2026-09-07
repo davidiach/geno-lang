@@ -97,14 +97,29 @@ def resolve_modules(
         dict mapping module name to source code string, including transitive
         imports. Compatible with ``RunConfig(modules=...)``.
     """
-    return {
-        name: resolved.source
-        for name, resolved in resolve_module_sources(
-            source_path,
-            program,
-            source_overrides=source_overrides,
-        ).items()
-    }
+    from .dependency_graph import _rewrite_dependency_imports
+
+    resolved_sources = resolve_module_sources(
+        source_path, program, source_overrides=source_overrides
+    )
+    package_modules: dict[str, dict[str, str]] = {}
+    for resolved in resolved_sources.values():
+        if resolved.package_name is not None:
+            names = package_modules.setdefault(resolved.package_name, {})
+            names[resolved.module_name] = resolved.graph_key
+            names[resolved.path.stem] = resolved.graph_key
+    sources = {}
+    for name, resolved in resolved_sources.items():
+        source = resolved.source
+        if resolved.package_name is not None:
+            parsed = Parser(
+                Lexer(source, str(resolved.path)).tokenize()
+            ).parse_program()
+            _, _, source = _rewrite_dependency_imports(
+                parsed, source, package_modules[resolved.package_name]
+            )
+        sources[name] = source
+    return sources
 
 
 def resolve_module_sources(
@@ -144,6 +159,8 @@ def _resolve_imports(
     source_overrides: Mapping[Path, str] | None = None,
 ) -> None:
     """Resolve imports with explicit DFS frames, independent of Python's stack."""
+    from .package_manager import find_package_owner_root
+
     if resolving is None:
         resolving = set()
     pending: list[tuple[Iterator[object], Path, str | None]] = [
@@ -206,12 +223,16 @@ def _resolve_imports(
             if not any(resolved_file.is_relative_to(r) for r in allowed_roots):
                 raise ModuleResolutionError(name, base_dir, defn.location)
 
-            package_name = _dependency_package_for_path(resolved_file, project_root)
+            # A package's own manifest is the nearest project root while walking
+            # its imports. Retain the installing project's identity so helpers
+            # in two manifested dependencies cannot collapse to one module key.
+            package_owner = find_package_owner_root(base_dir)
+            package_name = _dependency_package_for_path(resolved_file, package_owner)
             graph_name = None
             if (
                 package_name is not None
-                and project_root is not None
-                and _is_inside_dependency_package(base_dir, project_root, package_name)
+                and package_owner is not None
+                and _is_inside_dependency_package(base_dir, package_owner, package_name)
             ):
                 graph_name = dependency_private_graph_name(package_name, name)
             storage_key = graph_name or name
