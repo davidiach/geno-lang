@@ -524,23 +524,39 @@ def _rewrite_dependency_imports(
     lines = source_text.splitlines(keepends=True)
     rewritten_source = False
     imports: List[str] = []
+    definitions: List[_ast_nodes.Definition] = []
 
     for defn in program.definitions:
+        definitions.append(defn)
         if not isinstance(defn, ImportStatement):
             continue
         rewritten_name = package_modules.get(defn.module_name, defn.module_name)
         if rewritten_name != defn.module_name:
+            source_name = rewritten_name
+            if defn.alias is None:
+                # An unaliased import provides both unqualified exports and its
+                # original namespace. An explicit alias alone would hide the
+                # unqualified exports, so retain both import shapes.
+                definitions.append(
+                    ImportStatement(
+                        location=defn.location,
+                        module_name=rewritten_name,
+                        alias=defn.module_name,
+                    )
+                )
+                source_name += f" import {rewritten_name} as {defn.module_name}"
             line_index = defn.location.line - 1
             if 0 <= line_index < len(lines):
                 lines[line_index] = _rewrite_dependency_import_line(
                     lines[line_index],
                     defn.module_name,
-                    rewritten_name,
+                    source_name,
                 )
                 rewritten_source = True
             defn.module_name = rewritten_name
         imports.append(defn.module_name)
 
+    program.definitions = definitions
     if rewritten_source:
         return program, imports, "".join(lines)
     return program, imports, source_text

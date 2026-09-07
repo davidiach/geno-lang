@@ -72,10 +72,23 @@ def test_source_overrides_do_not_require_reading_source_files(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("with_manifests", [False, True])
+@pytest.mark.parametrize("import_style", ["unqualified", "qualified", "alias"])
 def test_manifest_dependencies_preserve_private_modules_for_direct_files(
-    tmp_path, with_manifests
+    tmp_path, with_manifests, import_style
 ):
     app, alpha_utils, beta_utils = write_dependency_private_collision_fixture(tmp_path)
+    if import_style != "unqualified":
+        for helper, entrypoint in ((alpha_utils, "Alpha"), (beta_utils, "Beta")):
+            entry = helper.parent / f"{entrypoint}.geno"
+            source = entry.read_text()
+            namespace = "Local" if import_style == "alias" else "Utils"
+            source = source.replace(
+                f"return {entrypoint.lower()}_helper()",
+                f"return {namespace}.{entrypoint.lower()}_helper()",
+            )
+            if import_style == "alias":
+                source = source.replace("import Utils", "import Utils as Local")
+            entry.write_text(source)
     if with_manifests:
         for helper, entrypoint in ((alpha_utils, "Alpha"), (beta_utils, "Beta")):
             (helper.parent / "geno.toml").write_text(
