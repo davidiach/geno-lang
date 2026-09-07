@@ -27,6 +27,7 @@ let save: (document: Document) => void;
 let close: (document: Document) => void;
 let change: (event: { document: Document }) => void;
 const disposable = { dispose() {} };
+let mockLsp: unknown;
 const vscode = {
   window: { createOutputChannel: () => ({ ...disposable, appendLine() {} }) },
   commands: { registerCommand: () => disposable },
@@ -34,6 +35,7 @@ const vscode = {
     isTrusted: true,
     textDocuments: [],
     getConfiguration: () => ({ get: () => "geno" }),
+    createFileSystemWatcher: () => disposable,
     onDidSaveTextDocument: (callback: typeof save) => { save = callback; return disposable; },
     onDidOpenTextDocument: () => disposable,
     onDidCloseTextDocument: (callback: typeof close) => { close = callback; return disposable; },
@@ -60,7 +62,10 @@ loader._load = function(request, parent, isMain) {
   if (request === "child_process") {
     return { execFile: (_path: string, _args: string[], _opts: unknown, callback: Callback) => callbacks.push(callback) };
   }
-  if (request === "vscode-languageclient/node") throw new Error("LSP unavailable");
+  if (request === "vscode-languageclient/node") {
+    if (mockLsp) return mockLsp;
+    throw new Error("LSP unavailable");
+  }
   return originalLoad.call(this, request, parent, isMain);
 };
 
@@ -124,6 +129,40 @@ async function main(): Promise<void> {
   extension.deactivate();
   complete(new Error("old"));
   assert.strictEqual(diagnostics.size, 0, "deactivation must invalidate callbacks");
+
+  const clients: Array<{ running: boolean; finishStart(): void }> = [];
+  mockLsp = {
+    TransportKind: { stdio: 0 },
+    LanguageClient: class {
+      running = false;
+      finishStart = () => {};
+      constructor() { clients.push(this); }
+      start(): Promise<void> {
+        return new Promise((resolve) => {
+          this.finishStart = () => { this.running = true; resolve(); };
+        });
+      }
+      stop(): Promise<void> { this.running = false; return Promise.resolve(); }
+    },
+  };
+  extension.activate({ subscriptions: [] });
+  await extension.deactivate();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.strictEqual(clients.length, 0, "deactivation before import must prevent startup");
+
+  extension.activate({ subscriptions: [] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.strictEqual(clients.length, 1);
+  await extension.deactivate();
+  extension.activate({ subscriptions: [] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.strictEqual(clients.length, 2);
+  clients[1].finishStart();
+  clients[0].finishStart();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.ok(!clients[0].running, "late cancelled startup must stop its own client");
+  assert.ok(clients[1].running, "older startup must not stop a new activation's client");
+  await extension.deactivate();
   console.log("All extension diagnostics tests passed.");
 }
 

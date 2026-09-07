@@ -11,11 +11,13 @@ let client: any; // LanguageClient (dynamically loaded)
 let outputChannel: vscode.OutputChannel | undefined;
 let executionFeaturesStarted = false;
 let deactivated = false;
+let activationId: symbol | undefined;
 const diagnosticRequests = new Map<string, symbol>();
 const DEFAULT_GENO_SERVER_PATH = "geno";
 
 export function activate(context: vscode.ExtensionContext) {
   deactivated = false;
+  activationId = Symbol("activation");
   outputChannel = vscode.window.createOutputChannel("Geno");
   context.subscriptions.push(outputChannel);
 
@@ -93,8 +95,9 @@ function startExecutionFeatures(context: vscode.ExtensionContext): void {
   executionFeaturesStarted = true;
 
   // Try to start the LSP client first; fall back to execFile-based diagnostics
-  tryStartLSP(context).then((started) => {
-    if (started || deactivated) {
+  const currentActivation = activationId;
+  tryStartLSP(context, currentActivation).then((started) => {
+    if (started || deactivated || activationId !== currentActivation) {
       return; // LSP handles everything
     }
 
@@ -138,6 +141,7 @@ function startExecutionFeatures(context: vscode.ExtensionContext): void {
 
 export function deactivate(): Thenable<void> | undefined {
   deactivated = true;
+  activationId = undefined;
   executionFeaturesStarted = false;
   diagnosticRequests.clear();
   if (diagnosticCollection) {
@@ -154,12 +158,16 @@ export function deactivate(): Thenable<void> | undefined {
 // ---------------------------------------------------------------------------
 
 async function tryStartLSP(
-  context: vscode.ExtensionContext
+  context: vscode.ExtensionContext,
+  currentActivation: symbol | undefined
 ): Promise<boolean> {
   try {
     const { LanguageClient, TransportKind } = await import(
       "vscode-languageclient/node"
     );
+    if (activationId !== currentActivation) {
+      return false;
+    }
 
     const serverOptions = {
       command: getGenoServerPath(),
@@ -177,15 +185,19 @@ async function tryStartLSP(
       synchronize: { fileEvents },
     };
 
-    client = new LanguageClient(
+    const startingClient = new LanguageClient(
       "genoLanguageServer",
       "Geno Language Server",
       serverOptions,
       clientOptions
     );
-
-    await client.start();
-    context.subscriptions.push({ dispose: () => client?.stop() });
+    client = startingClient;
+    await startingClient.start();
+    if (activationId !== currentActivation) {
+      await startingClient.stop();
+      return false;
+    }
+    context.subscriptions.push({ dispose: () => startingClient.stop() });
     return true;
   } catch (error) {
     const failure = lspStartupFailureFromError(error);
