@@ -546,6 +546,76 @@ class TestReplBlockCompletion:
             is False
         )
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'test "works"\nassert true\n',
+            "func f() -> Int\ntry\nreturn 1\ncatch e: String\nreturn 0\nend try\n",
+            "func f() -> Int\nlet x = match 1 with\n| _ -> 1\nend match\n",
+            "/* unclosed block comment\n",
+        ],
+    )
+    def test_incomplete_nested_blocks_keep_reading(self, source):
+        assert REPL._has_unclosed_block(source)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "trait Show\nfunc show(x: Int) -> String\nend trait\n",
+            "func f() -> Int\nexample () -> 1\nif true then return 1 end if\nreturn 0\nend func\n",
+            "/* func fake() -> Int */\n1 + 2",
+            '"""\n// literal comment """',
+            'test "works"\nassert true\nend test',
+            'impl Show for Int\nfunc show(x: Int) -> String\nreturn "ok"\nend func\nend impl',
+            "let xs = [x for x: Int in [1, 2] if x > 0]",
+        ],
+    )
+    def test_complete_blocks_and_literals_return_input(self, source):
+        assert not REPL._has_unclosed_block(source)
+
+
+class TestDefinitionPrefixes:
+    def test_annotation_accumulates_with_following_function(self):
+        repl = make_repl()
+        lines = [
+            '@untested("repl")',
+            "func identity(x: Int) -> Int",
+            "return x",
+            "end func",
+        ]
+        with patch("builtins.input", side_effect=lines):
+            for _ in lines[:-1]:
+                assert repl._read_input() is None
+            source = repl._read_input()
+        assert source == "\n".join(lines)
+        assert "Defined." in repl_execute(repl, source)
+        assert "=> 3" in repl_execute(repl, "identity(3)")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "export func identity(x: Int) -> Int\nexample 1 -> 1\nreturn x\nend func",
+            "async func compute() -> Int\nreturn 1\nend func",
+            '@untested("repl")\nfunc identity(x: Int) -> Int\nreturn x\nend func',
+            "export type Count = Int",
+            "trait Show\nfunc show(x: Int) -> String\nend trait",
+        ],
+    )
+    def test_definition_prefixes_use_program_parser(self, source):
+        repl = make_repl()
+        output = repl_execute(repl, source)
+        assert "Defined." in output
+        assert "Error" not in output
+        assert source in repl.history
+
+    def test_ast_accepts_exported_definition(self):
+        source = (
+            "export func identity(x: Int) -> Int\nexample 1 -> 1\nreturn x\nend func"
+        )
+        output = repl_process(make_repl(), ":ast " + source)
+        assert "FunctionDef" in output
+        assert "Error" not in output
+
 
 class TestReplExecutionBudget:
     """Each REPL input must get a fresh execution budget; the step and output
