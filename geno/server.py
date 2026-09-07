@@ -1312,6 +1312,14 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON value is not allowed: {value}")
 
 
+def _source_utf8_size(source: str, field_name: str) -> int:
+    """Measure source text without letting JSON surrogate escapes abort a request."""
+    try:
+        return len(source.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise RequestError(f"{field_name} must contain valid Unicode text") from exc
+
+
 def _coerce_modules(payload: dict) -> dict[str, str] | None:
     modules = payload.get("modules")
     if modules is None:
@@ -1328,7 +1336,7 @@ def _coerce_modules(payload: dict) -> dict[str, str] | None:
             raise RequestError(
                 f"invalid module name {name!r}: expected a simple PascalCase identifier"
             )
-        source_bytes = len(source.encode("utf-8"))
+        source_bytes = _source_utf8_size(source, f"module {name!r}")
         if source_bytes > MAX_MODULE_SOURCE_BYTES:
             raise RequestError(
                 f"module '{name}' exceeds size limit "
@@ -1405,7 +1413,7 @@ def _build_run_config(
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
+        or (isinstance(timeout, float) and not math.isfinite(timeout))
         or timeout <= 0
     ):
         raise RequestError("'timeout' must be a positive number")
@@ -1467,7 +1475,7 @@ def _parse_run_request_payload(
     return RunRequest(
         source=source,
         filename=filename,
-        source_bytes=len(source.encode("utf-8")),
+        source_bytes=_source_utf8_size(source, "'source'"),
         config=_build_run_config(
             payload,
             collector,
@@ -1486,7 +1494,7 @@ def _parse_constrain_request_payload(payload: dict) -> ConstrainRequest:
         raise RequestError("'prefix' must be a string")
     return ConstrainRequest(
         prefix=prefix,
-        source_bytes=len(prefix.encode("utf-8")),
+        source_bytes=_source_utf8_size(prefix, "'prefix'"),
     )
 
 
@@ -1653,6 +1661,17 @@ def _run_request_worker(
         _apply_worker_resource_limits()
         result_conn.send((_WORKER_READY, None))
         result = runner(source, config=config, filename=filename)
+        # Validate while the result still lives inside the resource-limited
+        # worker. Checking only in the HTTP handler lets an oversized result
+        # allocate and unpickle in the unbounded parent before it is rejected.
+        try:
+            _bounded_json_response_body(_serialize_run_result(result))
+        except ResponseTooLarge:
+            # The collector uses the outcome and totals, not diagnostic codes.
+            # Keep completion metrics without transporting rejected user data.
+            metrics = replace(RunMetrics.from_run_result(result), diagnostic_codes=())
+            result_conn.send(("response_too_large", metrics))
+            return
         result_conn.send(("result", replace(result, value_raw=None)))
     except Exception as exc:  # pragma: no cover - exercised via parent contract
         try:
@@ -1682,7 +1701,13 @@ def _constrain_request_worker(
         sys.dont_write_bytecode = True
         _apply_worker_resource_limits()
         result_conn.send((_WORKER_READY, None))
-        result_conn.send(("result", constrain(prefix)))
+        result = constrain(prefix)
+        try:
+            _bounded_json_response_body(_serialize_constraint_result(result))
+        except ResponseTooLarge:
+            result_conn.send(("response_too_large", result.valid))
+            return
+        result_conn.send(("result", result))
     except Exception as exc:  # pragma: no cover - exercised via parent contract
         try:
             result_conn.send(
@@ -2327,6 +2352,12 @@ def create_handler(
                         constrain_elapsed_ms = (
                             time.monotonic() - constrain_started_at
                         ) * 1000
+                        if status == "response_too_large":
+                            collector.record_constrain_result(
+                                valid=payload,
+                                wall_time_ms=constrain_elapsed_ms,
+                            )
+                            raise ResponseTooLarge("worker response exceeds limit")
                         if status == "result":
                             result = payload
                             collector.record_constrain_result(
@@ -2413,6 +2444,9 @@ def create_handler(
                             run_request.filename,
                             wall_timeout,
                         )
+                        if status == "response_too_large":
+                            collector.record(payload)
+                            raise ResponseTooLarge("worker response exceeds limit")
                         if status == "result":
                             result = payload
                             collector.record_run_result(result)
