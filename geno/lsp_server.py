@@ -991,6 +991,9 @@ class GenoLanguageServer:
         feature(types.TEXT_DOCUMENT_DID_CHANGE)(locked(self.did_change))
         feature(types.TEXT_DOCUMENT_DID_SAVE)(locked(self.did_save))
         feature(types.TEXT_DOCUMENT_DID_CLOSE)(locked(self.did_close))
+        feature(types.WORKSPACE_DID_CHANGE_WATCHED_FILES)(
+            locked(self.did_change_watched_files)
+        )
         feature(types.TEXT_DOCUMENT_HOVER)(locked(self.hover))
         feature(types.TEXT_DOCUMENT_DEFINITION)(locked(self.definition))
         feature(types.TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT)(locked(self.document_highlight))
@@ -1781,6 +1784,28 @@ class GenoLanguageServer:
         self._project_views.pop(uri, None)
         self.server.publish_diagnostics(uri, [])
         self._refresh_open_documents(previous_project_paths=previous_project_paths)
+
+    def did_change_watched_files(
+        self, params: types.DidChangeWatchedFilesParams
+    ) -> None:
+        """Refresh disk-backed project state after source or package changes."""
+        for change in params.changes:
+            path = _uri_to_path_or_none(change.uri)
+            if path is not None and (
+                path.suffix in {".geno", ".gen"}
+                or path.name in {"geno.toml", "geno.lock"}
+            ):
+                break
+        else:
+            return
+
+        # Membership itself may have changed (a new module, a deleted import,
+        # or a dependency installation), so path-keyed invalidation is not enough.
+        # Open buffers remain authoritative through the normal source overrides.
+        self._project_views.clear()
+        self._project_view_cache.clear()
+        self._symbol_table_cache.clear()
+        self._refresh_open_documents()
 
     def formatting(
         self,

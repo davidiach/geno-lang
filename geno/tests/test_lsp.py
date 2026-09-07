@@ -5149,6 +5149,208 @@ class TestDocumentSyncDiagnostics:
         assert "local_0" in labels
 
 
+@pytest.fixture
+def watched_file_project(tmp_path, monkeypatch):
+    manifest = tmp_path / "geno.toml"
+    manifest.write_text('entrypoint = "Main"\nfiles = ["Main", "Utils"]\n')
+    main = tmp_path / "Main.geno"
+    source = "import Utils\nfunc main() -> Int\n  return helper(1)\nend func\n"
+    main.write_text(source)
+    utils = tmp_path / "Utils.geno"
+    utils_source = (
+        "export func helper(x: Int) -> Int\n"
+        "  example 1 -> 2\n  return x + 1\nend func\n"
+    )
+    utils.write_text(utils_source)
+    server = create_server(diag_debounce_sec=0)
+    server.lsp._workspace = Workspace(None, sync_kind=types.TextDocumentSyncKind.Full)
+    published: dict[str, list[types.Diagnostic]] = {}
+    monkeypatch.setattr(
+        server,
+        "publish_diagnostics",
+        lambda uri, diagnostics: published.__setitem__(uri, diagnostics),
+    )
+    did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+    did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=main.as_uri(), language_id="geno", version=1, text=source
+            )
+        )
+    )
+    completion = server.lsp._get_handler(types.TEXT_DOCUMENT_COMPLETION)
+
+    def labels():
+        return {
+            item.label
+            for item in completion(
+                types.CompletionParams(
+                    text_document=types.TextDocumentIdentifier(uri=main.as_uri()),
+                    position=types.Position(line=2, character=2),
+                )
+            ).items
+        }
+
+    return SimpleNamespace(
+        server=server,
+        owner=server._geno_language_server,
+        main=main,
+        utils=utils,
+        utils_source=utils_source,
+        manifest=manifest,
+        labels=labels,
+        published=published,
+    )
+
+
+class TestWatchedFiles:
+    def test_unrelated_events_preserve_cached_project(self, watched_file_project):
+        project = watched_file_project
+        old_view = project.owner._project_views[project.main.as_uri()]
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=(project.main.parent / "README.md").as_uri(),
+                        type=types.FileChangeType.Changed,
+                    )
+                ]
+            )
+        )
+        assert project.owner._project_views[project.main.as_uri()] is old_view
+
+    def test_changed_dependency_refreshes_completions_and_definition(
+        self, watched_file_project
+    ):
+        project = watched_file_project
+        definition = project.server.lsp._get_handler(types.TEXT_DOCUMENT_DEFINITION)
+        params = types.DefinitionParams(
+            text_document=types.TextDocumentIdentifier(uri=project.main.as_uri()),
+            position=types.Position(line=2, character=11),
+        )
+        assert definition(params).range.start.line == 0
+        assert "newer" not in project.labels()
+        project.utils.write_text(
+            "\n\n"
+            + project.utils_source
+            + project.utils_source.replace("helper", "newer")
+        )
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=project.utils.as_uri(), type=types.FileChangeType.Changed
+                    )
+                ]
+            )
+        )
+
+        assert "newer" in project.labels()
+        assert definition(params).range.start.line == 2
+        assert not project.published[project.main.as_uri()]
+
+    def test_deleted_and_recreated_dependency_refreshes_diagnostics(
+        self, watched_file_project
+    ):
+        project = watched_file_project
+        assert "helper" in project.labels()
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        project.utils.unlink()
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=project.utils.as_uri(), type=types.FileChangeType.Deleted
+                    )
+                ]
+            )
+        )
+        assert "helper" not in project.labels()
+        assert project.published[project.main.as_uri()]
+
+        project.utils.write_text(project.utils_source)
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=project.utils.as_uri(), type=types.FileChangeType.Created
+                    )
+                ]
+            )
+        )
+        assert "helper" in project.labels()
+        assert not project.published[project.main.as_uri()]
+
+    @pytest.mark.parametrize("filename", ["geno.toml", "geno.lock"])
+    def test_config_event_rediscovers_project_membership(
+        self, watched_file_project, filename
+    ):
+        project = watched_file_project
+        additional = project.main.parent / "Additional.geno"
+        additional.write_text("")
+        old_view = project.owner._project_view_for_uri(project.main.as_uri())
+        assert str(additional) not in old_view.project_paths
+        project.manifest.write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils", "Additional"]\n'
+        )
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=(project.main.parent / filename).as_uri(),
+                        type=types.FileChangeType.Changed,
+                    )
+                ]
+            )
+        )
+        assert (
+            str(additional)
+            in project.owner._project_view_for_uri(project.main.as_uri()).project_paths
+        )
+
+    def test_disk_event_preserves_unsaved_imported_buffer(self, watched_file_project):
+        project = watched_file_project
+        did_open = project.server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=project.utils.as_uri(),
+                    language_id="geno",
+                    version=1,
+                    text=project.utils_source
+                    + project.utils_source.replace("helper", "buffer_only"),
+                )
+            )
+        )
+        project.utils.write_text(project.utils_source.replace("helper", "disk_only"))
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=project.utils.as_uri(), type=types.FileChangeType.Changed
+                    )
+                ]
+            )
+        )
+        assert "buffer_only" in project.labels()
+        assert "disk_only" not in project.labels()
+        assert not project.published[project.main.as_uri()]
+
+
 class TestProjectViewCaching:
     """Performance-oriented regressions for project view reuse."""
 
