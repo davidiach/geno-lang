@@ -140,7 +140,7 @@ class ComparisonMetrics:
 
     # McNemar's test components
     mcnemar_statistic: float = 0.0
-    mcnemar_pvalue: float = 0.0
+    mcnemar_pvalue: float = 1.0
 
     # Error reduction
     syntax_error_reduction: float = 0.0
@@ -182,7 +182,10 @@ def compare_results(
 
     Assumes results_a and results_b are aligned by problem ID.
     """
-    assert len(results_a) == len(results_b), "Result lists must be same length"
+    if len(results_a) != len(results_b):
+        raise ValueError("Result lists must be same length")
+    if any(a.problem_id != b.problem_id for a, b in zip(results_a, results_b)):
+        raise ValueError("Result lists must align by problem ID")
 
     comparison = ComparisonMetrics()
     comparison.condition_a = condition_a
@@ -192,6 +195,8 @@ def compare_results(
     passed_a = sum(1 for r in results_a if r.all_passed)
     passed_b = sum(1 for r in results_b if r.all_passed)
     n = len(results_a)
+    if n == 0:
+        return comparison
 
     comparison.pass_rate_a = passed_a / n
     comparison.pass_rate_b = passed_b / n

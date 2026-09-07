@@ -220,7 +220,12 @@ class ResultsAnalyzer:
             python_only = 0
             both_fail = 0
 
-            for _pair_key, results in by_problem_trial.items():
+            paired_results = {
+                key: results
+                for key, results in by_problem_trial.items()
+                if "geno" in results and "python" in results
+            }
+            for results in paired_results.values():
                 g_pass = results.get("geno", {}).get("all_passed", False)
                 p_pass = results.get("python", {}).get("all_passed", False)
 
@@ -255,7 +260,7 @@ class ResultsAnalyzer:
                 "n_problems": n,
                 "n_problem_trials": n,
                 "unique_problems": len(
-                    {problem_id for problem_id, _trial in by_problem_trial}
+                    {problem_id for problem_id, _trial in paired_results}
                 ),
                 "geno_pass_rate": g_pass_rate,
                 "python_pass_rate": p_pass_rate,

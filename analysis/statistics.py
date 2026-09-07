@@ -381,11 +381,10 @@ class StatisticalTests:
 
         Returns adjusted p-values and significance decisions.
         """
-        alpha = alpha or self.alpha
+        alpha = self.alpha if alpha is None else alpha
         n_tests = len(p_values)
-        adjusted_alpha = alpha / n_tests
-
-        return [(p, p < adjusted_alpha) for p in p_values]
+        adjusted = [min(1.0, p * n_tests) for p in p_values]
+        return [(p, p < alpha) for p in adjusted]
 
     def fdr_correction(
         self, p_values: List[float], alpha: float | None = None
@@ -395,7 +394,7 @@ class StatisticalTests:
 
         Returns adjusted p-values and significance decisions.
         """
-        alpha = alpha or self.alpha
+        alpha = self.alpha if alpha is None else alpha
         n = len(p_values)
 
         # Sort p-values with original indices
@@ -406,13 +405,11 @@ class StatisticalTests:
         for rank, (idx, p) in enumerate(indexed, 1):
             adjusted[idx] = p * n / rank
 
-        # Enforce monotonicity
+        # Enforce monotonicity in rank order before restoring input order.
         min_so_far = 1.0
-        for i in range(n - 1, -1, -1):
-            if adjusted[i] < min_so_far:
-                min_so_far = adjusted[i]
-            else:
-                adjusted[i] = min_so_far
+        for idx, _p in reversed(indexed):
+            min_so_far = min(min_so_far, adjusted[idx])
+            adjusted[idx] = min_so_far
 
         return [(adj_p, adj_p < alpha) for adj_p in adjusted]
 
