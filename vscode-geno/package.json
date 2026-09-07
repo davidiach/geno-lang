@@ -95,7 +95,7 @@
   "scripts": {
     "check:node": "node ./scripts/check-node-version.js",
     "compile": "tsc -p ./",
-    "test": "npm run check:node && npm run compile && node ./out/shellEscape.test.js && node ./out/lspStatus.test.js",
+    "test": "npm run check:node && npm run compile && node ./out/shellEscape.test.js && node ./out/lspStatus.test.js && node ./out/extension.test.js",
     "watch": "tsc -watch -p ./",
     "package": "npx @vscode/vsce package --dependencies"
   },

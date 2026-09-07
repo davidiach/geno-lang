@@ -10,9 +10,12 @@ let diagnosticCollection: vscode.DiagnosticCollection;
 let client: any; // LanguageClient (dynamically loaded)
 let outputChannel: vscode.OutputChannel | undefined;
 let executionFeaturesStarted = false;
+let deactivated = false;
+const diagnosticRequests = new Map<string, symbol>();
 const DEFAULT_GENO_SERVER_PATH = "geno";
 
 export function activate(context: vscode.ExtensionContext) {
+  deactivated = false;
   outputChannel = vscode.window.createOutputChannel("Geno");
   context.subscriptions.push(outputChannel);
 
@@ -91,7 +94,7 @@ function startExecutionFeatures(context: vscode.ExtensionContext): void {
 
   // Try to start the LSP client first; fall back to execFile-based diagnostics
   tryStartLSP(context).then((started) => {
-    if (started) {
+    if (started || deactivated) {
       return; // LSP handles everything
     }
 
@@ -114,6 +117,17 @@ function startExecutionFeatures(context: vscode.ExtensionContext): void {
     });
     context.subscriptions.push(onOpen);
 
+    context.subscriptions.push(
+      vscode.workspace.onDidCloseTextDocument((document) => {
+        diagnosticRequests.delete(document.uri.toString());
+        diagnosticCollection.delete(document.uri);
+      }),
+      vscode.workspace.onDidChangeTextDocument(({ document }) => {
+        diagnosticRequests.delete(document.uri.toString());
+        diagnosticCollection.delete(document.uri);
+      })
+    );
+
     vscode.workspace.textDocuments.forEach((document) => {
       if (document.languageId === "geno") {
         checkFile(document);
@@ -123,6 +137,9 @@ function startExecutionFeatures(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  deactivated = true;
+  executionFeaturesStarted = false;
+  diagnosticRequests.clear();
   if (diagnosticCollection) {
     diagnosticCollection.dispose();
   }
@@ -150,8 +167,14 @@ async function tryStartLSP(
       transport: TransportKind.stdio,
     };
 
+    const fileEvents = vscode.workspace.createFileSystemWatcher(
+      "**/{*.geno,*.gen,geno.toml,geno.lock}"
+    );
+    context.subscriptions.push(fileEvents);
+
     const clientOptions = {
       documentSelector: [{ scheme: "file", language: "geno" }],
+      synchronize: { fileEvents },
     };
 
     client = new LanguageClient(
@@ -184,16 +207,32 @@ function getGenoServerPath(): string {
 }
 
 function checkFile(document: vscode.TextDocument) {
+  if (document.uri.scheme !== "file" || document.isClosed || document.isDirty) {
+    return;
+  }
   const filePath = document.uri.fsPath;
+  const uri = document.uri.toString();
+  const version = document.version;
+  const request = Symbol(uri);
+  diagnosticRequests.set(uri, request);
 
   execFile(
     getGenoServerPath(),
     ["check", filePath],
     { timeout: 10000 },
     (error, _stdout, stderr) => {
+      if (
+        deactivated ||
+        document.isClosed ||
+        document.version !== version ||
+        diagnosticRequests.get(uri) !== request
+      ) {
+        return;
+      }
+      diagnosticRequests.delete(uri);
       const diagnostics: vscode.Diagnostic[] = [];
 
-      if (error && stderr) {
+      if (error) {
         const lines = stderr.split("\n");
         for (const line of lines) {
           const diagnostic = parseDiagnosticLine(line, document);
@@ -203,7 +242,7 @@ function checkFile(document: vscode.TextDocument) {
         }
 
         if (diagnostics.length === 0) {
-          diagnostics.push(projectDiagnostic(stderr, document));
+          diagnostics.push(projectDiagnostic(stderr.trim() || error.message, document));
         }
       }
 
@@ -259,15 +298,16 @@ function parseDiagnosticLine(
     return null;
   }
 
-  const lineNum = Math.max(0, parseInt(match[1], 10) - 1);
-  const colNum = Math.max(0, parseInt(match[2], 10) - 1);
+  const lineNum = Math.min(document.lineCount - 1, Math.max(0, parseInt(match[1], 10) - 1));
+  const lineLength = document.lineAt(lineNum).text.length;
+  const colNum = Math.min(lineLength, Math.max(0, parseInt(match[2], 10) - 1));
   const message = match[3].trim();
 
   const range = new vscode.Range(
     new vscode.Position(lineNum, colNum),
     new vscode.Position(
       lineNum,
-      document.lineAt(Math.min(lineNum, document.lineCount - 1)).text.length
+      lineLength
     )
   );
 
