@@ -139,6 +139,13 @@ and fail closed with `WorkerSpawnFailed` if a killable child process cannot be
 created. There is no supported thread-timeout fallback for hosted untrusted
 execution.
 
+Hosted workers enforce `GENO_MAX_RESPONSE_BODY_BYTES` before sending results
+back to the server process. Oversized `/run` and `/constrain` results return
+HTTP 413 with a fixed error body, while completion metrics are retained. The
+HTTP handler also checks response size before sending headers. Request source,
+module source, and constraint prefixes must be valid Unicode text; unpaired
+JSON surrogate escapes and out-of-range timeouts return HTTP 400.
+
 ## Production Boundary
 
 The production security boundary is the Geno runtime and sandbox. The benchmark runner's raw Python executor is not a supported production sandbox for untrusted Python and should only be used for local research and evaluation workflows.
