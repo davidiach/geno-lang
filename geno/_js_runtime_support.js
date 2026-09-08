@@ -688,7 +688,9 @@ function _formatValue(value) {
     if (value === null || value === undefined) return '()';
     if (typeof value === 'boolean') return _GENO_STRING(value);
     if (typeof value === 'string') return _reprString(value);
-    if (typeof value === 'number') return _GENO_STRING(value);
+    if (typeof value === 'number') {
+        return _GENO_NUMBER.isFinite(value) ? _GENO_STRING(value) : _formatFloat(value);
+    }
     if (value instanceof GenoArray) return 'Array([' + value._elements.map(_formatValue).join(', ') + '])';
     if (Array.isArray(value)) return '[' + value.map(_formatValue).join(', ') + ']';
     if (value instanceof _GENO_MAP) {
@@ -738,7 +740,9 @@ function _stringifyValue(value, seen, topLevel = true) {
     if (value === null || value === undefined) return "()";
     if (typeof value === 'string') return topLevel ? value : _reprString(value);
     if (typeof value === 'boolean') return _GENO_STRING(value);
-    if (typeof value === 'number') return _GENO_STRING(value);
+    if (typeof value === 'number') {
+        return _GENO_NUMBER.isFinite(value) ? _GENO_STRING(value) : _formatFloat(value);
+    }
     if (value instanceof GenoArray) {
         return "Array([" + value._elements.map(item => _stringifyValue(item, seen, false)).join(", ") + "])";
     }
@@ -778,6 +782,8 @@ function _stringifyValue(value, seen, topLevel = true) {
 }
 
 function _formatFloat(value) {
+    if (_GENO_NUMBER.isNaN(value)) return "nan";
+    if (!_GENO_NUMBER.isFinite(value)) return value < 0 ? "-inf" : "inf";
     if (Object.is(value, -0)) return "-0.0";
     const absValue = _GENO_MATH.abs(value);
     let rendered = (absValue >= 1e16 || (absValue > 0 && absValue < 1e-4))
