@@ -28,9 +28,24 @@ let close: (document: Document) => void;
 let change: (event: { document: Document }) => void;
 const disposable = { dispose() {} };
 let mockLsp: unknown;
+let runFile: () => void;
+const sentCommands: string[] = [];
+const createdTerminals: unknown[] = [];
+let disposedTerminals = 0;
+const terminal = {
+  name: "Geno", state: {} as Record<string, unknown>,
+  show() {},
+  dispose() { disposedTerminals++; },
+  sendText(text: string) { sentCommands.push(text); },
+};
 const vscode = {
-  window: { createOutputChannel: () => ({ ...disposable, appendLine() {} }) },
-  commands: { registerCommand: () => disposable },
+  window: {
+    activeTextEditor: { document: document() },
+    terminals: [terminal],
+    createOutputChannel: () => ({ ...disposable, appendLine() {} }),
+    createTerminal: (options: unknown) => { createdTerminals.push(options); return terminal; },
+  },
+  commands: { registerCommand: (_name: string, callback: () => void) => { runFile = callback; return disposable; } },
   workspace: {
     isTrusted: true,
     textDocuments: [],
@@ -87,6 +102,19 @@ async function main(): Promise<void> {
   };
   extension.activate({ subscriptions: [] });
   await new Promise<void>((resolve) => setImmediate(resolve));
+
+  // VS Code 1.91 has no TerminalState.shell; unknown shells use direct argv.
+  runFile();
+  assert.deepStrictEqual(createdTerminals, [{ name: "Geno", shellPath: "geno", shellArgs: ["run", "/tmp/main.geno"] }]);
+  assert.strictEqual(disposedTerminals, 1);
+  assert.deepStrictEqual(sentCommands, []);
+  terminal.state = { shell: "/bin/zsh" };
+  runFile();
+  assert.deepStrictEqual(sentCommands, ["geno run '/tmp/main.geno'"]);
+  assert.strictEqual(createdTerminals.length, 1, "known shells should reuse the terminal");
+  terminal.state = { shell: null };
+  runFile();
+  assert.strictEqual(createdTerminals.length, 2, "non-string shell information must use direct argv");
 
   const doc = document();
   const key = doc.uri.toString();
