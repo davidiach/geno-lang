@@ -9,7 +9,7 @@ import ast
 import builtins as _python_builtins
 import keyword
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from functools import lru_cache
 from io import StringIO
 from typing import (
@@ -357,6 +357,7 @@ class Compiler(BaseCompiler, ASTVisitor):
     def __init__(self):
         super().__init__()
         self._active_loop_vars: list[str] = []
+        self._loop_capture_names: list[set[str]] = []
         self._name_overrides: list[dict[str, str]] = []
         self._active_module_bindings: dict[str, str] = {}
         # Depth counter: >0 while compiling a comprehension's iterable
@@ -384,7 +385,11 @@ class Compiler(BaseCompiler, ASTVisitor):
         outer binding through Python's own scoping and needs no renaming.
         """
         saved = self._block_scopes
+        saved_loop_captures = self._loop_capture_names
+        saved_loop_vars = self._active_loop_vars
         self._block_scopes = []
+        self._loop_capture_names = []
+        self._active_loop_vars = []
         try:
             with self._block_scope():
                 for name in param_names:
@@ -393,6 +398,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 yield
         finally:
             self._block_scopes = saved
+            self._loop_capture_names = saved_loop_captures
+            self._active_loop_vars = saved_loop_vars
 
     @contextmanager
     def _block_scope(
@@ -431,6 +438,14 @@ class Compiler(BaseCompiler, ASTVisitor):
         if name in current.names:
             return current.overrides.get(name, self._mangle_name(name))
         current.names.add(name)
+        if any(name in captures for captures in self._loop_capture_names):
+            # Each execution of this lexical block owns a distinct binding.
+            # A cell keeps same-iteration rebinding/mutation visible to every
+            # closure, while later loop iterations allocate fresh cells.
+            cell = self._fresh_temp()
+            self._writeln(f"{cell} = [None]")
+            current.overrides[name] = f"{cell}[0]"
+            return current.overrides[name]
         if any(name in overrides for overrides in self._name_overrides[:-1]):
             renamed: str = self._fresh_temp()
             current.overrides[name] = renamed
@@ -472,6 +487,17 @@ class Compiler(BaseCompiler, ASTVisitor):
                 yield
         else:
             yield
+
+    @contextmanager
+    def _comprehension_scope(self, variable: str) -> Iterator[None]:
+        # Comprehension induction bindings are immutable, so capturing their
+        # values at lambda creation is sufficient; statement loops use cells.
+        self._active_loop_vars.append(variable)
+        try:
+            with self._with_shadowed_bindings([variable]):
+                yield
+        finally:
+            self._active_loop_vars.pop()
 
     def _collect_loop_var_refs_in_value(
         self,
@@ -572,6 +598,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 scope.update(stmt.names)
                 continue
             if isinstance(stmt, AssignStatement):
+                if stmt.target in active and stmt.target not in scope:
+                    referenced.add(stmt.target)
                 self._collect_loop_var_refs_in_expr(
                     stmt.value, scope, referenced, active
                 )
@@ -662,10 +690,41 @@ class Compiler(BaseCompiler, ASTVisitor):
             for value in vars(stmt).values():
                 self._collect_loop_var_refs_in_value(value, scope, referenced, active)
 
+    @staticmethod
+    def _loop_lambda_names(statements: Sequence[Statement]) -> set[str]:
+        """Find names whose loop-local bindings may escape through a lambda.
+
+        This is deliberately conservative about shadowing: an extra cell is
+        harmless, while the existing lexical reference walk below determines
+        precisely which bindings each individual lambda captures.
+        """
+        names: set[str] = set()
+        pending: list[tuple[object, bool]] = [(statements, False)]
+        while pending:
+            node, in_lambda = pending.pop()
+            in_lambda = in_lambda or isinstance(node, LambdaExpr)
+            if in_lambda and isinstance(node, Identifier):
+                names.add(node.name)
+            elif in_lambda and isinstance(node, AssignStatement):
+                names.add(node.target)
+            if isinstance(node, (list, tuple)):
+                pending.extend((item, in_lambda) for item in node)
+            elif is_dataclass(node) and not isinstance(node, type):
+                pending.extend(
+                    (getattr(node, item.name), in_lambda) for item in fields(node)
+                )
+        return names
+
     def _captured_loop_vars_in_lambda(self, expr: LambdaExpr) -> list[str]:
         active_loop_vars: list[str] = []
         seen: set[str] = set()
-        for name in self._active_loop_vars:
+        cell_names = {
+            name
+            for scope in self._name_overrides
+            for name in scope
+            if self._compiled_identifier_name(name).endswith("[0]")
+        }
+        for name in [*self._active_loop_vars, *sorted(cell_names)]:
             if name not in seen:
                 active_loop_vars.append(name)
                 seen.add(name)
@@ -1408,13 +1467,16 @@ class Compiler(BaseCompiler, ASTVisitor):
         finally:
             self._try_depth -= 1
         self._dedent()
+        if is_string_catch:
+            self._writeln(
+                "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
+            )
+        else:
+            self._writeln("except _GenoThrow as __geno_err__:")
+        self._indent()
         with self._block_scope([stmt.catch_clause.variable]):
             var_name = self._compiled_identifier_name(stmt.catch_clause.variable)
             if is_string_catch:
-                self._writeln(
-                    "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
-                )
-                self._indent()
                 self._writeln("if isinstance(__geno_err__, _GenoThrow):")
                 self._indent()
                 self._writeln(f"{var_name} = str(__geno_err__.value)")
@@ -1425,8 +1487,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._dedent()
                 self._writeln("else: raise")
             else:
-                self._writeln("except _GenoThrow as __geno_err__:")
-                self._indent()
                 self._writeln(f"{var_name} = __geno_err__.value")
             if stmt.catch_clause.body:
                 for s in stmt.catch_clause.body:
@@ -1435,24 +1495,42 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._writeln("pass")
             self._dedent()
 
+    def _compile_while_statement(self, stmt: WhileStatement) -> None:
+        self._loop_capture_names.append(self._loop_lambda_names(stmt.body))
+        try:
+            super()._compile_while_statement(stmt)
+        finally:
+            self._loop_capture_names.pop()
+
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         """Compile for loops while preserving per-iteration lambda captures."""
         iterable = self._compile_expr(stmt.iterable)
-        with self._block_scope([stmt.variable]):
-            var = self._compiled_identifier_name(stmt.variable)
-            self._writeln(self._for_open(var, iterable))
-            self._indent()
-            self._active_loop_vars.append(stmt.variable)
-            try:
-                if stmt.body:
-                    for s in stmt.body:
-                        self._compile_statement(s)
-                else:
-                    self._writeln("pass")
-            finally:
-                self._active_loop_vars.pop()
-            self._dedent()
-            self._emit_block_close()
+        self._loop_capture_names.append(self._loop_lambda_names(stmt.body))
+        try:
+            with self._block_scope():
+                # Bind inside the body so a captured induction variable also
+                # receives a fresh cell on every iteration.
+                captured = any(
+                    stmt.variable in names for names in self._loop_capture_names
+                )
+                iteration_value = (
+                    self._fresh_temp()
+                    if captured
+                    else self._declare_block_binding(stmt.variable)
+                )
+                self._writeln(self._for_open(iteration_value, iterable))
+                self._indent()
+                if captured:
+                    var = self._declare_block_binding(stmt.variable)
+                    self._writeln(f"{var} = {iteration_value}")
+                for statement in stmt.body:
+                    self._compile_statement(statement)
+                if not stmt.body and not captured:
+                    self._emit_empty_block()
+                self._dedent()
+                self._emit_block_close()
+        finally:
+            self._loop_capture_names.pop()
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         """Compile a let statement.
@@ -1715,6 +1793,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 value = self._emit_python_string_literal(value)
             elif isinstance(value, bool):
                 value = "True" if value else "False"
+            elif isinstance(value, float):
+                value = self._compile_float_literal(value)
             elif isinstance(value, int):
                 # Pattern literals keep the runtime guard unconditionally:
                 # tightened _GENO_MAX_INTEGER_BITS limits must reject them at
@@ -1834,7 +1914,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         if expr_type is FloatLiteral:
             float_expr = cast(FloatLiteral, expr)
-            return str(float_expr.value)
+            return self._compile_float_literal(float_expr.value)
 
         if expr_type is StringLiteral:
             string_expr = cast(StringLiteral, expr)
@@ -1933,7 +2013,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             list_comp = cast(ListComprehension, expr)
             var = self._mangle_name(list_comp.variable)
             iterable = self._compile_comprehension_iterable(list_comp.iterable)
-            with self._with_shadowed_bindings([list_comp.variable]):
+            with self._comprehension_scope(list_comp.variable):
                 elem = self._compile_expr(list_comp.element_expr)
                 if list_comp.condition is not None:
                     cond = self._compile_expr(list_comp.condition)
@@ -2002,7 +2082,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return self._compile_int_literal(expr.value)
 
         if isinstance(expr, FloatLiteral):
-            return str(expr.value)
+            return self._compile_float_literal(expr.value)
 
         if isinstance(expr, StringLiteral):
             return self._compile_string_literal(expr.value)
@@ -2524,6 +2604,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         else:
             ordered_args = list(expr.arguments)
 
+        reordered_call = self._compile_reordered_call(
+            expr, ordered_args, "_GENO_MISSING"
+        )
+        if reordered_call is not None:
+            names, values, call = reordered_call
+            parameters = ", ".join(names)
+            arguments = ", ".join(values)
+            return f"(lambda {parameters}: {call})({arguments})"
+
         concrete_args = [arg for arg in ordered_args if arg is not None]
         if len(concrete_args) == len(ordered_args):
             fast_path = self._compile_builtin_fast_path(func_name, concrete_args)
@@ -2757,17 +2846,24 @@ class Compiler(BaseCompiler, ASTVisitor):
         if captured_loop_vars:
             capture_names = {name: self._fresh_temp() for name in captured_loop_vars}
             factory_name = self._fresh_temp()
-            capture_params = ", ".join(
-                f"{alias}={self._compiled_identifier_name(name)}"
-                for name, alias in capture_names.items()
-            )
+            capture_values = []
+            overrides = {}
+            for name, alias in capture_names.items():
+                resolved = self._compiled_identifier_name(name)
+                if resolved.endswith("[0]"):
+                    capture_values.append(resolved[:-3])
+                    overrides[name] = f"{alias}[0]"
+                else:
+                    capture_values.append(resolved)
+                    overrides[name] = alias
+            capture_params = ", ".join(capture_names.values())
             self._writeln(f"def {factory_name}({capture_params}):")
             self._indent()
-            with self._with_name_overrides(capture_names):
+            with self._with_name_overrides(overrides):
                 lambda_value = self._compile_lambda_direct(expr)
                 self._writeln(f"return {lambda_value}")
             self._dedent()
-            return f"{factory_name}()"
+            return f"{factory_name}({', '.join(capture_values)})"
 
         return self._compile_lambda_direct(expr)
 
@@ -2776,9 +2872,28 @@ class Compiler(BaseCompiler, ASTVisitor):
         params = ", ".join(self._mangle_name(p.name) for p in expr.params)
 
         if expr.block_body is not None:
+            referenced: set[str] = set()
+            outer_names = {name for scope in self._name_overrides for name in scope}
+            self._collect_loop_var_refs_in_statements(
+                expr.block_body,
+                {param.name for param in expr.params},
+                referenced,
+                outer_names,
+            )
+            nonlocals = sorted(
+                {
+                    resolved
+                    for name in referenced
+                    if (resolved := self._compiled_identifier_name(name)).isidentifier()
+                }
+            )
             func_name = self._fresh_temp()
             self._writeln(f"def {func_name}({params}):")
             self._indent()
+            if nonlocals:
+                # Geno assignment resolves an existing outer mutable binding;
+                # Python otherwise creates an uninitialized lambda-local name.
+                self._writeln(f"nonlocal {', '.join(nonlocals)}")
             with self._with_shadowed_bindings([p.name for p in expr.params]):
                 if not expr.block_body:
                     self._writeln("pass")

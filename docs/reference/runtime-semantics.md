@@ -58,6 +58,10 @@ emits that representation followed by a newline, except that a top-level
 `print("hello")` writes `hello`, while strings nested in a constructor or
 collection retain the canonical quoted representation.
 
+Non-finite `Float` values use `inf`, `-inf`, and `nan` in text output and
+`to_string`, including when nested in collections. These display strings do not
+change the separate JSON serialization rules for non-finite numbers.
+
 ## Entrypoint results and imports
 
 Geno 0.4 treats `main()`'s return value as a program result, not as a process
