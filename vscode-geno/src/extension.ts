@@ -33,7 +33,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const filePath = editor.document.uri.fsPath;
     const runTerminal = vscode.window.terminals.find((t) => t.name === "Geno");
-    const terminalShell = runTerminal?.state.shell;
+    // Older supported VS Code versions do not expose the detected shell.
+    const terminalState = runTerminal?.state;
+    const terminalShell = terminalState && "shell" in terminalState &&
+      typeof terminalState.shell === "string" ? terminalState.shell : undefined;
     const genoPath = getGenoServerPath();
     const invocation = buildRunFileInvocation(
       genoPath,
