@@ -1383,8 +1383,20 @@ class GenoLanguageServer:
         if not affected_uris:
             return
 
+        refreshed_views: list[_ProjectView] = []
         for open_uri in affected_uris:
+            open_path = self._open_doc_paths.get(open_uri)
+            if open_path is not None:
+                # Reuse membership discovered earlier in this refresh, including
+                # when a watched config event changed the old membership.
+                for view in refreshed_views:
+                    if str(open_path) in view.project_paths:
+                        self._project_views[open_uri] = view
+                        break
             self._refresh_document_metadata(open_uri)
+            refreshed_view = self._project_views.get(open_uri)
+            if refreshed_view is not None:
+                refreshed_views.append(refreshed_view)
 
         groups: dict[frozenset[str], list[str]] = {}
         for open_uri in affected_uris:
@@ -1802,10 +1814,21 @@ class GenoLanguageServer:
         # Membership itself may have changed (a new module, a deleted import,
         # or a dependency installation), so path-keyed invalidation is not enough.
         # Open buffers remain authoritative through the normal source overrides.
+        previous_paths = {
+            path for view in self._project_views.values() for path in view.project_paths
+        }
         self._project_views.clear()
         self._project_view_cache.clear()
         self._symbol_table_cache.clear()
         self._refresh_open_documents()
+        current_paths = {
+            path for view in self._project_views.values() for path in view.project_paths
+        }
+        # Open files can still have standalone diagnostics after leaving a
+        # project, including when their project view could not be rebuilt.
+        current_paths.update(str(path) for path in self._open_doc_paths.values())
+        for removed_path in previous_paths - current_paths:
+            self.server.publish_diagnostics(Path(removed_path).as_uri(), [])
 
     def formatting(
         self,

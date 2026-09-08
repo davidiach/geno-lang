@@ -5204,6 +5204,91 @@ def watched_file_project(tmp_path, monkeypatch):
 
 
 class TestWatchedFiles:
+    @pytest.mark.parametrize("keep_open", [False, True])
+    def test_removed_member_diagnostics(self, watched_file_project, keep_open):
+        project = watched_file_project
+        additional = project.main.parent / "Additional.geno"
+        source = 'func broken() -> Int\n  example () -> 1\n  return "bad"\nend func\n'
+        additional.write_text(source)
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        event = types.DidChangeWatchedFilesParams(
+            changes=[
+                types.FileEvent(
+                    uri=project.manifest.as_uri(), type=types.FileChangeType.Changed
+                )
+            ]
+        )
+        project.manifest.write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils", "Additional"]\n'
+        )
+        changed(event)
+        assert project.published[additional.as_uri()]
+        if keep_open:
+            did_open = project.server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+            did_open(
+                types.DidOpenTextDocumentParams(
+                    text_document=types.TextDocumentItem(
+                        uri=additional.as_uri(),
+                        language_id="geno",
+                        version=1,
+                        text=source,
+                    )
+                )
+            )
+        project.manifest.write_text('entrypoint = "Main"\nfiles = ["Main", "Utils"]\n')
+        changed(event)
+        assert bool(project.published[additional.as_uri()]) is keep_open
+
+    @pytest.mark.parametrize("change_membership", [False, True])
+    def test_watched_refresh_loads_shared_project_once(
+        self, watched_file_project, monkeypatch, change_membership
+    ):
+        project = watched_file_project
+        did_open = project.server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=project.utils.as_uri(),
+                    language_id="geno",
+                    version=1,
+                    text=project.utils_source,
+                )
+            )
+        )
+        if change_membership:
+            (project.main.parent / "Additional.geno").write_text("")
+            project.manifest.write_text(
+                'entrypoint = "Main"\nfiles = ["Main", "Utils", "Additional"]\n'
+            )
+        calls = 0
+        original = lsp_server._load_project_view
+
+        def counting_load(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(lsp_server, "_load_project_view", counting_load)
+        changed = project.server.lsp._get_handler(
+            types.WORKSPACE_DID_CHANGE_WATCHED_FILES
+        )
+        changed(
+            types.DidChangeWatchedFilesParams(
+                changes=[
+                    types.FileEvent(
+                        uri=(
+                            project.manifest if change_membership else project.utils
+                        ).as_uri(),
+                        type=types.FileChangeType.Changed,
+                    )
+                ]
+            )
+        )
+        assert calls == 1
+        assert not project.published[project.main.as_uri()]
+
     def test_unrelated_events_preserve_cached_project(self, watched_file_project):
         project = watched_file_project
         old_view = project.owner._project_views[project.main.as_uri()]
