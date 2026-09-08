@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import __version__
-from .ast_nodes import ReturnStatement
+from .ast_nodes import ReturnStatement, TestBlock
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES, all_builtin_names
 from .interpreter import Interpreter
 from .interpreter import RuntimeError as GenoRuntimeError
@@ -25,7 +25,16 @@ from .lexer import Lexer, LexerError
 from .parser import ParseError, Parser
 from .typechecker import TypeChecker, TypeError
 
-_DEFINITION_STARTERS = {"FUNC", "TYPE", "ASYNC", "EXPORT", "AT", "TRAIT", "IMPL"}
+_DEFINITION_STARTERS = {
+    "FUNC",
+    "TYPE",
+    "ASYNC",
+    "EXPORT",
+    "AT",
+    "TRAIT",
+    "IMPL",
+    "TEST",
+}
 
 BANNER = f"""
 ╔═══════════════════════════════════════════════════════════════════╗
@@ -310,7 +319,7 @@ class REPL:
         brackets = 0
         closing_keyword = False
         impl_header = False
-        for token in tokens:
+        for index, token in enumerate(tokens):
             word = token.type.name.lower()
             if word == "lbracket":
                 brackets += 1
@@ -323,7 +332,23 @@ class REPL:
                 if blocks:
                     blocks.pop()
                 closing_keyword = True
+            elif word == "fn":
+                # Only block lambdas need an end fn; expression lambdas use ->.
+                # Skip the balanced parameter list, including function types.
+                parentheses = 0
+                for following in tokens[index + 1 :]:
+                    kind = following.type.name
+                    if kind == "LPAREN":
+                        parentheses += 1
+                    elif kind == "RPAREN":
+                        parentheses -= 1
+                    elif parentheses == 0:
+                        if kind == "DO":
+                            blocks.append("fn")
+                        break
             elif word in REPL._BLOCK_OPENERS:
+                if word == "if" and index and tokens[index - 1].type.name == "ELSE":
+                    continue  # An else-if chain shares its final end if.
                 if word == "impl":
                     impl_header = True
                 elif word == "for" and impl_header:
@@ -421,6 +446,15 @@ class REPL:
 
                 # Execute
                 result = self.interpreter.run(program)
+                for definition in program.definitions:
+                    if isinstance(definition, TestBlock):
+                        test_env = self.interpreter.global_env.child()
+                        with self.interpreter._execution_deadline(
+                            self.interpreter.sandbox_config.timeout
+                        ):
+                            for statement in definition.body:
+                                self.interpreter.exec_stmt(statement, test_env)
+                        print(f"Passed: {definition.name}")
                 if result is not None:
                     print(f"=> {self.interpreter.format_display_value(result)}")
                 else:
