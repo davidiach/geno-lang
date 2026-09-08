@@ -10,6 +10,7 @@ from geno.module_resolver import (
     ModuleResolutionError,
     resolve_modules,
 )
+from geno.project_graph import dependency_private_graph_name
 
 
 def _parse(source: str, filename: str = "<test>"):
@@ -323,7 +324,10 @@ class TestDependencyInternalResolution:
         modules = resolve_modules(main_file, program)
         # Both dep modules should be resolved
         assert "MyDep" in modules
-        assert "DepUtils" in modules
+        assert dependency_private_graph_name("my-dep", "DepUtils") in modules
+        result = run(main_source, RunConfig(modules=modules))
+        assert result.ok, result.diagnostics
+        assert result.value == 42
 
     def test_nested_dependency_imports(self, tmp_path):
         """Nested imports within a dependency chain resolve correctly."""
@@ -360,4 +364,7 @@ class TestDependencyInternalResolution:
         program = _parse(app_source, str(app_file))
         modules = resolve_modules(app_file, program)
         assert "Tools" in modules
-        assert "Helpers" in modules
+        assert dependency_private_graph_name("tools", "Helpers") in modules
+        result = run(app_source, RunConfig(modules=modules))
+        assert result.ok, result.diagnostics
+        assert result.value == 7
