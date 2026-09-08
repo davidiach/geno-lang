@@ -546,6 +546,76 @@ class TestReplBlockCompletion:
             is False
         )
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'test "works"\nassert true\n',
+            "func f() -> Int\ntry\nreturn 1\ncatch e: String\nreturn 0\nend try\n",
+            "func f() -> Int\nlet x = match 1 with\n| _ -> 1\nend match\n",
+            "/* unclosed block comment\n",
+        ],
+    )
+    def test_incomplete_nested_blocks_keep_reading(self, source):
+        assert REPL._has_unclosed_block(source)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "trait Show\nfunc show(x: Int) -> String\nend trait\n",
+            "func f() -> Int\nexample () -> 1\nif true then return 1 end if\nreturn 0\nend func\n",
+            "/* func fake() -> Int */\n1 + 2",
+            '"""\n// literal comment """',
+            'test "works"\nassert true\nend test',
+            'impl Show for Int\nfunc show(x: Int) -> String\nreturn "ok"\nend func\nend impl',
+            "let xs = [x for x: Int in [1, 2] if x > 0]",
+        ],
+    )
+    def test_complete_blocks_and_literals_return_input(self, source):
+        assert not REPL._has_unclosed_block(source)
+
+
+class TestDefinitionPrefixes:
+    def test_annotation_accumulates_with_following_function(self):
+        repl = make_repl()
+        lines = [
+            '@untested("repl")',
+            "func identity(x: Int) -> Int",
+            "return x",
+            "end func",
+        ]
+        with patch("builtins.input", side_effect=lines):
+            for _ in lines[:-1]:
+                assert repl._read_input() is None
+            source = repl._read_input()
+        assert source == "\n".join(lines)
+        assert "Defined." in repl_execute(repl, source)
+        assert "=> 3" in repl_execute(repl, "identity(3)")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "export func identity(x: Int) -> Int\nexample 1 -> 1\nreturn x\nend func",
+            "async func compute() -> Int\nreturn 1\nend func",
+            '@untested("repl")\nfunc identity(x: Int) -> Int\nreturn x\nend func',
+            "export type Count = Int",
+            "trait Show\nfunc show(x: Int) -> String\nend trait",
+        ],
+    )
+    def test_definition_prefixes_use_program_parser(self, source):
+        repl = make_repl()
+        output = repl_execute(repl, source)
+        assert "Defined." in output
+        assert "Error" not in output
+        assert source in repl.history
+
+    def test_ast_accepts_exported_definition(self):
+        source = (
+            "export func identity(x: Int) -> Int\nexample 1 -> 1\nreturn x\nend func"
+        )
+        output = repl_process(make_repl(), ":ast " + source)
+        assert "FunctionDef" in output
+        assert "Error" not in output
+
 
 class TestReplExecutionBudget:
     """Each REPL input must get a fresh execution budget; the step and output
@@ -575,3 +645,74 @@ class TestReplExecutionBudget:
             out = repl_execute(repl, 'print("hello from this repl input")')
             assert "Output limit" not in out
         assert repl.interpreter._output_length < 60
+
+
+class TestNestedBlockCompletion:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "let f = fn() do return 1 end fn",
+            "let f = fn() do\nreturn 1\nend fn",
+            "let f = fn() -> 1",
+            "let f = fn(g: (Int) -> Int) do return g(1) end fn",
+            "if true then\nreturn ()\nelse if false then\nreturn ()\nend if",
+        ],
+    )
+    def test_nested_construct_does_not_close_outer_function(self, body):
+        source = "func main() -> Unit\n" + body
+        assert REPL._has_unclosed_block(source)
+        source += "\nreturn ()\nend func"
+        assert not REPL._has_unclosed_block(source)
+        output = repl_execute(make_repl(), source)
+        assert "Error" not in output
+
+    def test_block_lambda_keeps_reading_until_end_fn(self):
+        source = "let f = fn() do\nreturn 1"
+        assert REPL._has_unclosed_block(source)
+        assert not REPL._has_unclosed_block(source + "\nend fn")
+
+    def test_else_if_function_is_returned_and_executed(self):
+        repl = make_repl()
+        lines = [
+            "func choose(x: Int) -> Int",
+            "example 1 -> 1",
+            "if x == 1 then",
+            "return 1",
+            "else if x == 2 then",
+            "return 2",
+            "else",
+            "return 3",
+            "end if",
+            "end func",
+        ]
+        with patch("builtins.input", side_effect=lines):
+            for _ in lines[:-1]:
+                assert repl._read_input() is None
+            source = repl._read_input()
+        assert source == "\n".join(lines)
+        assert "Defined." in repl_execute(repl, source)
+        assert "=> 2" in repl_execute(repl, "choose(2)")
+
+
+class TestReplTestBlocks:
+    def test_test_block_runs_in_existing_environment(self):
+        repl = make_repl()
+        repl_execute(
+            repl,
+            "func identity(x: Int) -> Int\nexample 1 -> 1\nreturn x\nend func",
+        )
+        output = repl_execute(
+            repl, 'test "identity"\nassert identity(2) == 2\nend test'
+        )
+        assert "Passed: identity" in output
+        assert "Error" not in output
+
+    def test_failed_assertion_is_reported(self):
+        output = repl_execute(make_repl(), 'test "fails"\nassert false\nend test')
+        assert "Error" in output
+        assert "Passed:" not in output
+
+    def test_ast_accepts_test_block(self):
+        output = repl_process(make_repl(), ':ast test "works"\nassert true\nend test')
+        assert "TestBlock" in output
+        assert "Error" not in output

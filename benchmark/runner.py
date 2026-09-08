@@ -121,7 +121,10 @@ class EvaluationResult:
     def all_passed(self) -> bool:
         """Check if all tests passed."""
         return (
-            self.visible_passed == self.visible_total
+            self.parsed
+            and self.type_checked
+            and self.visible_total + self.hidden_total > 0
+            and self.visible_passed == self.visible_total
             and self.hidden_passed == self.hidden_total
         )
 
