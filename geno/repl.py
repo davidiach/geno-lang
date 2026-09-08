@@ -17,13 +17,24 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import __version__
-from .ast_nodes import ReturnStatement
+from .ast_nodes import ReturnStatement, TestBlock
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES, all_builtin_names
 from .interpreter import Interpreter
 from .interpreter import RuntimeError as GenoRuntimeError
 from .lexer import Lexer, LexerError
 from .parser import ParseError, Parser
 from .typechecker import TypeChecker, TypeError
+
+_DEFINITION_STARTERS = {
+    "FUNC",
+    "TYPE",
+    "ASYNC",
+    "EXPORT",
+    "AT",
+    "TRAIT",
+    "IMPL",
+    "TEST",
+}
 
 BANNER = f"""
 ╔═══════════════════════════════════════════════════════════════════╗
@@ -78,7 +89,17 @@ class REPL:
     # and never use ``end type``.  Including it made the REPL swallow
     # one-line aliases by waiting forever for an ``end`` that would
     # never come (F-0024 in #663).
-    _BLOCK_OPENERS = {"func", "if", "while", "for", "match", "trait", "impl"}
+    _BLOCK_OPENERS = {
+        "func",
+        "if",
+        "while",
+        "for",
+        "match",
+        "trait",
+        "impl",
+        "try",
+        "test",
+    }
 
     def __init__(self):
         from .sandbox import SandboxConfig
@@ -287,36 +308,63 @@ class REPL:
     @staticmethod
     def _has_unclosed_block(source: str) -> bool:
         """Return True if source has more block openers than 'end' closers."""
-        depth = 0
-        in_triple_quote = False
-        for line in source.splitlines():
-            # Strip line comments before any further analysis
-            code = REPL._strip_comment(line)
-
-            # Remove triple-quoted content, tracking state across lines
-            code, in_triple_quote = REPL._strip_triple_quotes(code, in_triple_quote)
-
-            stripped = code.strip()
-            # Skip empty lines
-            if not stripped:
+        try:
+            tokens = Lexer(source, "<repl>").tokenize()
+        except LexerError as exc:
+            return exc.message in {
+                "Unterminated multi-line string",
+                "Unterminated block comment",
+            }
+        blocks: list[str] = []
+        brackets = 0
+        closing_keyword = False
+        impl_header = False
+        for index, token in enumerate(tokens):
+            word = token.type.name.lower()
+            if word == "lbracket":
+                brackets += 1
+            elif word == "rbracket":
+                brackets = max(0, brackets - 1)
+            if closing_keyword:
+                closing_keyword = False
                 continue
-            first_word = stripped.split()[0] if stripped.split() else ""
-            classification_line = stripped
-            if first_word == "export":
-                classification_line = stripped[len("export") :].lstrip()
-                first_word = (
-                    classification_line.split()[0]
-                    if classification_line.split()
-                    else ""
-                )
-
-            if (
-                first_word == "async" and classification_line.startswith("async func")
-            ) or first_word in REPL._BLOCK_OPENERS:
-                depth += 1
-            elif first_word == "end":
-                depth -= 1
-        return depth > 0 or in_triple_quote
+            if word == "end":
+                if blocks:
+                    blocks.pop()
+                closing_keyword = True
+            elif word == "fn":
+                # Only block lambdas need an end fn; expression lambdas use ->.
+                # Skip the balanced parameter list, including function types.
+                parentheses = 0
+                for following in tokens[index + 1 :]:
+                    kind = following.type.name
+                    if kind == "LPAREN":
+                        parentheses += 1
+                    elif kind == "RPAREN":
+                        parentheses -= 1
+                    elif parentheses == 0:
+                        if kind == "DO":
+                            blocks.append("fn")
+                        break
+            elif word in REPL._BLOCK_OPENERS:
+                if word == "if" and index and tokens[index - 1].type.name == "ELSE":
+                    continue  # An else-if chain shares its final end if.
+                if word == "impl":
+                    impl_header = True
+                elif word == "for" and impl_header:
+                    impl_header = False
+                    continue  # The type in an impl header follows `for`.
+                if word == "func" and blocks and blocks[-1] == "trait":
+                    continue  # Trait methods are signatures, with no end func.
+                if brackets and word in {"for", "if"}:
+                    continue  # List comprehension clauses do not open blocks.
+                blocks.append(word)
+        leading = [token.type.name for token in tokens]
+        if leading and leading[0] == "EXPORT":
+            leading = leading[1:]
+        if leading and leading[0] == "AT" and "FUNC" not in leading:
+            return True  # @untested belongs to the following function definition.
+        return bool(blocks)
 
     def _process_input(self, line: str) -> None:
         """Process a line of input."""
@@ -390,7 +438,7 @@ class REPL:
             parser = Parser(tokens)
 
             # Check if it looks like a definition
-            if tokens and tokens[0].type.name in ("FUNC", "TYPE"):
+            if tokens and tokens[0].type.name in _DEFINITION_STARTERS:
                 program = parser.parse_program()
 
                 # Type check
@@ -398,6 +446,15 @@ class REPL:
 
                 # Execute
                 result = self.interpreter.run(program)
+                for definition in program.definitions:
+                    if isinstance(definition, TestBlock):
+                        test_env = self.interpreter.global_env.child()
+                        with self.interpreter._execution_deadline(
+                            self.interpreter.sandbox_config.timeout
+                        ):
+                            for statement in definition.body:
+                                self.interpreter.exec_stmt(statement, test_env)
+                        print(f"Passed: {definition.name}")
                 if result is not None:
                     print(f"=> {self.interpreter.format_display_value(result)}")
                 else:
@@ -543,7 +600,7 @@ end func __repl_eval__
                 print(f"  {tok}")
 
             parser = Parser(tokens)
-            if tokens[0].type.name in ("FUNC", "TYPE"):
+            if tokens[0].type.name in _DEFINITION_STARTERS:
                 tree = parser.parse_program()
             else:
                 # Wrap bare expression so the parser can handle it

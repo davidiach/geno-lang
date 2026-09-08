@@ -5,6 +5,52 @@ import pytest
 from geno.formatter import format_source
 
 
+class TestMultilineStrings:
+    @pytest.mark.parametrize(
+        "literal",
+        [
+            '"""  alpha  \nend func\n  omega  """',
+            '"""first\n\n   \nlast\n"""',
+            '"""/* comment text\nif true then\n// literal text\n"""',
+            '"""  first  \r\n\tsecond\t"""',
+        ],
+    )
+    def test_literal_contents_survive_formatting(self, literal):
+        from geno.lexer import Lexer
+        from geno.tokens import TokenType
+
+        source = f"func main() -> String\nreturn {literal}\nend func\n"
+        formatted = format_source(source)
+        before = [
+            token.value
+            for token in Lexer(source).tokenize()
+            if token.type == TokenType.STRING
+        ]
+        after = [
+            token.value
+            for token in Lexer(formatted).tokenize()
+            if token.type == TokenType.STRING
+        ]
+
+        assert before == after
+        assert f"    return {literal}\nend func\n" in formatted
+        assert format_source(formatted) == formatted
+
+    def test_multiple_literals_and_comment_delimiters_are_distinct(self):
+        source = (
+            '// triple quotes in comment: """\n'
+            "func main() -> String\n"
+            'return "__geno_format_literal_0__" + """ a \n b """ + """ c \n d """\n'
+            "end func\n"
+        )
+        expected = source.replace("\nreturn ", "\n    return ")
+        assert format_source(source) == expected
+
+    def test_incomplete_multiline_literal_is_left_unchanged(self):
+        source = 'func main() -> String\nreturn """text  \n  unclosed  '
+        assert format_source(source) == source
+
+
 class TestBasicIndentation:
     def test_function_body(self):
         source = (
