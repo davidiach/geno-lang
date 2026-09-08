@@ -13,13 +13,14 @@ import subprocess
 import sys
 import threading
 import time
+from multiprocessing.reduction import ForkingPickler
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
 
 from geno.api import RunConfig, RunResult
-from geno.monitoring import RuntimeMetricsCollector
+from geno.monitoring import RunMetrics, RunOutcome, RuntimeMetricsCollector
 from geno.server import (
     DEFAULT_MAX_STEPS,
     MAX_JSON_NESTING_DEPTH,
@@ -92,6 +93,9 @@ class _PicklingConnection:
     def send(self, payload):
         pickle.dumps(payload)
         self.messages.append(payload)
+
+    def send_bytes(self, payload):
+        self.send(pickle.loads(payload))
 
     def close(self):
         self.closed = True
@@ -1165,6 +1169,56 @@ class TestPostRun:
         data = json.loads(response)
         assert "valid json" in data["error"].lower()
 
+    @pytest.mark.parametrize(
+        "timeout", [10**1000, -(10**1000)], ids=["huge-positive", "huge-negative"]
+    )
+    def test_rejects_integer_timeout_outside_float_range(self, client, timeout):
+        status, response = client.post(
+            "/run", {"source": _VALID_SOURCE, "timeout": timeout}
+        )
+
+        assert status == 400
+        assert "timeout" in json.loads(response)["error"]
+
+    @pytest.mark.parametrize("surrogate", ["\ud800", "\udfff"])
+    @pytest.mark.parametrize("field", ["source", "module", "prefix"])
+    def test_rejects_unpaired_surrogates_as_bad_requests(
+        self, client, surrogate, field
+    ):
+        endpoint = "/constrain" if field == "prefix" else "/run"
+        payload = (
+            {"source": _VALID_SOURCE, "modules": {"Broken": surrogate}}
+            if field == "module"
+            else {field: surrogate}
+        )
+        with (
+            patch(
+                "geno.server._execute_run_with_wall_timeout",
+                side_effect=AssertionError("malformed input must not reach a worker"),
+            ),
+            patch(
+                "geno.server._execute_constrain_with_wall_timeout",
+                side_effect=AssertionError("malformed input must not reach a worker"),
+            ),
+        ):
+            status, response = client.post(endpoint, payload)
+
+        assert status == 400
+        assert "valid Unicode" in json.loads(response)["error"]
+        metrics_status, metrics_body = client.get("/metrics")
+        assert metrics_status == 200
+        assert (
+            'geno_http_post_requests_by_outcome_total{outcome="bad_request"} 1'
+            in metrics_body.decode("utf-8")
+        )
+
+    def test_valid_surrogate_pair_uses_utf8_source_size(self):
+        source = json.loads('"\\ud83d\\ude00"')
+        request = _parse_run_request_payload(
+            {"source": source}, RuntimeMetricsCollector(), set()
+        )
+        assert request.source_bytes == 4
+
     def test_rejects_overflowed_json_timeout_number(self, client):
         body = (
             '{"source": ' + json.dumps(_VALID_SOURCE) + ', "timeout": 1e999}'
@@ -1484,6 +1538,63 @@ class TestInternalServerError:
 
 
 class TestHostedResponseBounds:
+    @pytest.mark.parametrize("remaining", [-1, 0, 1])
+    def test_worker_result_frame_respects_exact_byte_limit(
+        self, monkeypatch, remaining
+    ):
+        import geno.server as srv
+
+        result = RunResult(ok=True, value=42)
+        expected = bytes(ForkingPickler.dumps(("result", result)))
+        monkeypatch.setattr(srv, "MAX_RESPONSE_BODY_BYTES", len(expected) + remaining)
+        frames = []
+
+        class ByteConnection:
+            def send_bytes(self, payload):
+                frames.append(bytes(payload))
+
+        conn = cast(Any, ByteConnection())
+        if remaining < 0:
+            with pytest.raises(srv.ResponseTooLarge):
+                srv._send_bounded_worker_result(conn, result)
+            assert frames == []
+        else:
+            srv._send_bounded_worker_result(conn, result)
+            assert frames == [expected]
+            assert pickle.loads(frames[0]) == ("result", result)
+
+    @pytest.mark.parametrize("worker_kind", ["run", "constrain"])
+    def test_workers_handle_transport_limit_rejection(self, monkeypatch, worker_kind):
+        import geno.server as srv
+        from geno.api import ConstraintResult
+        from geno.constraints import AllowedNext
+
+        def reject_frame(_conn, _result):
+            raise srv.ResponseTooLarge
+
+        monkeypatch.setattr(srv, "_send_bounded_worker_result", reject_frame)
+        monkeypatch.setattr(srv, "_apply_worker_resource_limits", tuple)
+        monkeypatch.setattr(sys, "dont_write_bytecode", False)
+        conn = _PicklingConnection()
+        if worker_kind == "run":
+            srv._run_request_worker(
+                cast(Any, conn),
+                "",
+                RunConfig(),
+                "<test>",
+                runner=lambda *args, **kwargs: RunResult(ok=True, value=42),
+            )
+        else:
+            srv._constrain_request_worker(
+                cast(Any, conn),
+                "",
+                constrain=lambda _: ConstraintResult(AllowedNext(), valid=True),
+            )
+        assert conn.closed
+        assert conn.messages[0] == ("ready", None)
+        assert len(conn.messages) == 2
+        assert conn.messages[1][0] == "response_too_large"
+
     def test_shared_object_amplification_returns_fixed_413_and_metric(
         self, client, monkeypatch
     ):
@@ -1509,6 +1620,82 @@ class TestHostedResponseBounds:
             'geno_http_post_requests_by_outcome_total{outcome="response_too_large"} 1'
             in metrics_body.decode("utf-8")
         )
+
+    @pytest.mark.parametrize("endpoint", ["/run", "/constrain"])
+    def test_worker_response_limit_returns_fixed_413(self, client, endpoint):
+        worker_name = (
+            "_execute_run_with_wall_timeout"
+            if endpoint == "/run"
+            else "_execute_constrain_with_wall_timeout"
+        )
+        metrics = (
+            RunMetrics(
+                outcome=RunOutcome.SUCCESS, ok=True, wall_time_ms=1, steps_used=1
+            )
+            if endpoint == "/run"
+            else True
+        )
+        with patch(
+            f"geno.server.{worker_name}", return_value=("response_too_large", metrics)
+        ):
+            status, body = client.post(
+                endpoint, {"source": _VALID_SOURCE, "prefix": "func "}
+            )
+        assert status == 413
+        assert json.loads(body) == {"error": "response too large"}
+        metrics_status, metrics_body = client.get("/metrics")
+        assert metrics_status == 200
+        metric = (
+            "geno_run_success_total"
+            if endpoint == "/run"
+            else "geno_constrain_valid_total"
+        )
+        assert f"{metric} 1" in metrics_body.decode("utf-8")
+
+    @pytest.mark.parametrize("worker_kind", ["run", "constrain"])
+    @pytest.mark.parametrize(
+        "value", ["x" * 4096, [0.123456789] * 100], ids=["large-string", "floats"]
+    )
+    def test_worker_bounds_result_before_ipc(self, monkeypatch, worker_kind, value):
+        import geno.server as srv
+        from geno.api import ConstraintResult
+        from geno.constraints import AllowedNext
+
+        monkeypatch.setattr(srv, "MAX_RESPONSE_BODY_BYTES", 1024)
+        monkeypatch.setattr(srv, "_apply_worker_resource_limits", tuple)
+        monkeypatch.setattr(sys, "dont_write_bytecode", False)
+        conn = _PicklingConnection()
+        if worker_kind == "run":
+
+            def runner(_source, *, config, filename):
+                return RunResult(ok=True, value=value)
+
+            srv._run_request_worker(
+                cast(Any, conn), _VALID_SOURCE, RunConfig(), "<test>", runner=runner
+            )
+        else:
+
+            def constrain(_prefix):
+                return ConstraintResult(
+                    valid=False,
+                    error=str(value),
+                    unclosed_blocks=(),
+                    allowed_next=AllowedNext(),
+                )
+
+            srv._constrain_request_worker(cast(Any, conn), "func ", constrain=constrain)
+
+        assert conn.closed
+        assert conn.messages[0] == ("ready", None)
+        assert len(conn.messages) == 2
+        status, metrics = conn.messages[1]
+        assert status == "response_too_large"
+        if worker_kind == "run":
+            assert metrics.ok
+            assert metrics.diagnostic_codes == ()
+        else:
+            assert metrics is False
+        assert len(pickle.dumps(conn.messages[1])) < 1024
 
     def test_fixed_413_is_not_subject_to_tiny_operator_limit(self, client, monkeypatch):
         import geno.server as srv
@@ -1744,6 +1931,9 @@ class _FakeChildConn:
         if self._cancelled.is_set():
             return
         self._q.put(value)
+
+    def send_bytes(self, payload):
+        self.send(pickle.loads(payload))
 
     def close(self):
         pass  # Parent and worker share this object in-process; don't disable sends.
