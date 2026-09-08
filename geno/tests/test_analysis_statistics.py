@@ -1,6 +1,7 @@
 """Regression checks for experiment comparisons and multiple testing."""
 
 from itertools import permutations
+from math import nextafter
 
 import pytest
 
@@ -34,6 +35,15 @@ def test_bonferroni_returns_adjusted_probabilities():
     result = StatisticalTests().bonferroni_correction([0.01, 0.04, 0.9])
     assert [p for p, _ in result] == pytest.approx([0.03, 0.12, 1.0])
     assert [reject for _, reject in result] == [True, False, False]
+
+
+def test_bonferroni_preserves_strict_cutoff_despite_rounding():
+    alpha = 0.05
+    cutoff = alpha / 19
+    values = [nextafter(cutoff, 0.0), cutoff, nextafter(cutoff, 1.0)] + [1.0] * 16
+    result = StatisticalTests().bonferroni_correction(values, alpha=alpha)
+    assert [reject for _, reject in result[:3]] == [True, False, False]
+    assert [p for p, _ in result] == [min(1.0, p * 19) for p in values]
 
 
 @pytest.mark.parametrize("method", ["bonferroni_correction", "fdr_correction"])
@@ -82,3 +92,20 @@ def test_analysis_uses_only_complete_language_pairs():
     assert comparison["n_problem_trials"] == comparison["unique_problems"] == 1
     assert comparison["geno_pass_rate"] == comparison["python_pass_rate"] == 1.0
     assert comparison["contingency"]["geno_only"] == 0
+
+
+@pytest.mark.parametrize("language", ["geno", "python"])
+def test_analysis_omits_models_without_complete_pairs(language):
+    analyzer = ResultsAnalyzer(
+        {
+            "generation_results": [
+                {"model": "paired", "problem_id": "P1", "language": "geno"},
+                {"model": "paired", "problem_id": "P1", "language": "python"},
+                {"model": "unpaired", "problem_id": "P1", "language": language},
+            ],
+            "evaluation_results": [{"all_passed": True}] * 3,
+        }
+    )
+    analyzer.load_data()
+    analyzer._compute_primary_comparison()
+    assert set(analyzer.analysis_results.primary_comparison) == {"paired"}

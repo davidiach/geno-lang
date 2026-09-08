@@ -383,8 +383,10 @@ class StatisticalTests:
         """
         alpha = self.alpha if alpha is None else alpha
         n_tests = len(p_values)
-        adjusted = [min(1.0, p * n_tests) for p in p_values]
-        return [(p, p < alpha) for p in adjusted]
+        if n_tests == 0:
+            return []
+        adjusted_alpha = alpha / n_tests
+        return [(min(1.0, p * n_tests), p < adjusted_alpha) for p in p_values]
 
     def fdr_correction(
         self, p_values: List[float], alpha: float | None = None

@@ -225,6 +225,8 @@ class ResultsAnalyzer:
                 for key, results in by_problem_trial.items()
                 if "geno" in results and "python" in results
             }
+            if not paired_results:
+                continue
             for results in paired_results.values():
                 g_pass = results.get("geno", {}).get("all_passed", False)
                 p_pass = results.get("python", {}).get("all_passed", False)
