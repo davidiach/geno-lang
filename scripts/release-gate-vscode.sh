@@ -65,6 +65,7 @@ forbidden = {
     "extension/node_modules/typescript/package.json",
     "extension/out/lspStatus.test.js",
     "extension/out/shellEscape.test.js",
+    "extension/out/extension.test.js",
     "extension/scripts/check-node-version.js",
 }
 present = sorted(forbidden & names)
