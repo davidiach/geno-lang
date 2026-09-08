@@ -1274,8 +1274,9 @@ class TestProjectResolutionConsistency:
         assert latest[app_file.as_uri()] == []
 
     @pytest.mark.skipif(not HAS_PYGLS, reason="pygls not installed")
+    @pytest.mark.parametrize("watched_refresh", [False, True])
     def test_overlay_type_errors_stay_consistent_between_api_and_lsp(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, watched_refresh
     ):
         """Overlay-introduced transitive type errors surface on both API and LSP."""
         (
@@ -1351,6 +1352,18 @@ class TestProjectResolutionConsistency:
                 )
             )
         )
+
+        if watched_refresh:
+            changed = server.lsp._get_handler(types.WORKSPACE_DID_CHANGE_WATCHED_FILES)
+            changed(
+                types.DidChangeWatchedFilesParams(
+                    changes=[
+                        types.FileEvent(
+                            uri=alt_file.as_uri(), type=types.FileChangeType.Changed
+                        )
+                    ]
+                )
+            )
 
         latest = {uri: diags for uri, diags in published}
         assert latest[app_file.as_uri()]

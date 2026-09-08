@@ -1369,6 +1369,7 @@ class GenoLanguageServer:
         self,
         focus_uri: str | None = None,
         previous_project_paths: frozenset[str] = frozenset(),
+        reuse_refreshed_views: bool = False,
     ) -> None:
         """Republish diagnostics for the affected open documents only."""
         if not self._open_docs:
@@ -1383,20 +1384,25 @@ class GenoLanguageServer:
         if not affected_uris:
             return
 
-        refreshed_views: list[_ProjectView] = []
+        from geno.project_graph import _find_project_root
+
+        refreshed_views: dict[Path, _ProjectView] = {}
         for open_uri in affected_uris:
             open_path = self._open_doc_paths.get(open_uri)
-            if open_path is not None:
-                # Reuse membership discovered earlier in this refresh, including
-                # when a watched config event changed the old membership.
-                for view in refreshed_views:
-                    if str(open_path) in view.project_paths:
-                        self._project_views[open_uri] = view
-                        break
+            project_root = (
+                _find_project_root(open_path)
+                if reuse_refreshed_views and open_path is not None
+                else None
+            )
+            # Only manifest projects share a validation entrypoint. Direct-file
+            # projects can overlap while requiring distinct diagnostics.
+            view = refreshed_views.get(project_root) if project_root else None
+            if view is not None and str(open_path) in view.project_paths:
+                self._project_views[open_uri] = view
             self._refresh_document_metadata(open_uri)
             refreshed_view = self._project_views.get(open_uri)
-            if refreshed_view is not None:
-                refreshed_views.append(refreshed_view)
+            if refreshed_view is not None and project_root is not None:
+                refreshed_views[project_root] = refreshed_view
 
         groups: dict[frozenset[str], list[str]] = {}
         for open_uri in affected_uris:
@@ -1820,7 +1826,7 @@ class GenoLanguageServer:
         self._project_views.clear()
         self._project_view_cache.clear()
         self._symbol_table_cache.clear()
-        self._refresh_open_documents()
+        self._refresh_open_documents(reuse_refreshed_views=True)
         current_paths = {
             path for view in self._project_views.values() for path in view.project_paths
         }
