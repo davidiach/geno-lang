@@ -800,7 +800,8 @@ def _normalize_source_overrides(
 
 def _read_source(path: Path, source_overrides: Mapping[Path, str]) -> str:
     """Return source for *path*, preferring in-memory overrides."""
-    return source_overrides.get(path.resolve(), path.read_text(encoding="utf-8"))
+    override = source_overrides.get(path.resolve())
+    return override if override is not None else path.read_text(encoding="utf-8")
 
 
 def _with_baseline_dependency_modules(
@@ -959,15 +960,16 @@ def _read_file_context(
         )
 
     overrides = dict(source_overrides or {})
-    source = dependency_graph.normalized_sources.get(
-        module_name,
-        _read_source(module_file.path, overrides),
-    )
+
+    def graph_source(name: str) -> str:
+        normalized = dependency_graph.normalized_sources.get(name)
+        if normalized is not None:
+            return normalized
+        return _read_source(dependency_graph.file_map[name].path, overrides)
+
+    source = graph_source(module_name)
     graph_module_sources = {
-        name: dependency_graph.normalized_sources.get(
-            name,
-            _read_source(dependency_graph.file_map[name].path, overrides),
-        )
+        name: graph_source(name)
         for name in dependency_graph.sorted_modules
         if name != module_name and name in dependency_graph.file_map
     }

@@ -93,6 +93,10 @@ def _read_bounded_regular_text(
     if path.is_symlink() and not allow_symlink:
         raise ValueError(f"{label} must not be a symbolic link: {path}")
     flags = os.O_RDONLY
+    # Open FIFOs without waiting for a writer so the descriptor-level regular
+    # file check below can reject them. This also covers a replacement racing
+    # with a path-level check, and does not change regular-file reads.
+    flags |= getattr(os, "O_NONBLOCK", 0)
     if not allow_symlink and hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

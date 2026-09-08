@@ -991,6 +991,9 @@ class GenoLanguageServer:
         feature(types.TEXT_DOCUMENT_DID_CHANGE)(locked(self.did_change))
         feature(types.TEXT_DOCUMENT_DID_SAVE)(locked(self.did_save))
         feature(types.TEXT_DOCUMENT_DID_CLOSE)(locked(self.did_close))
+        feature(types.WORKSPACE_DID_CHANGE_WATCHED_FILES)(
+            locked(self.did_change_watched_files)
+        )
         feature(types.TEXT_DOCUMENT_HOVER)(locked(self.hover))
         feature(types.TEXT_DOCUMENT_DEFINITION)(locked(self.definition))
         feature(types.TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT)(locked(self.document_highlight))
@@ -1366,6 +1369,7 @@ class GenoLanguageServer:
         self,
         focus_uri: str | None = None,
         previous_project_paths: frozenset[str] = frozenset(),
+        reuse_refreshed_views: bool = False,
     ) -> None:
         """Republish diagnostics for the affected open documents only."""
         if not self._open_docs:
@@ -1380,8 +1384,25 @@ class GenoLanguageServer:
         if not affected_uris:
             return
 
+        from geno.project_graph import _find_project_root
+
+        refreshed_views: dict[Path, _ProjectView] = {}
         for open_uri in affected_uris:
+            open_path = self._open_doc_paths.get(open_uri)
+            project_root = (
+                _find_project_root(open_path)
+                if reuse_refreshed_views and open_path is not None
+                else None
+            )
+            # Only manifest projects share a validation entrypoint. Direct-file
+            # projects can overlap while requiring distinct diagnostics.
+            view = refreshed_views.get(project_root) if project_root else None
+            if view is not None and str(open_path) in view.project_paths:
+                self._project_views[open_uri] = view
             self._refresh_document_metadata(open_uri)
+            refreshed_view = self._project_views.get(open_uri)
+            if refreshed_view is not None and project_root is not None:
+                refreshed_views[project_root] = refreshed_view
 
         groups: dict[frozenset[str], list[str]] = {}
         for open_uri in affected_uris:
@@ -1781,6 +1802,39 @@ class GenoLanguageServer:
         self._project_views.pop(uri, None)
         self.server.publish_diagnostics(uri, [])
         self._refresh_open_documents(previous_project_paths=previous_project_paths)
+
+    def did_change_watched_files(
+        self, params: types.DidChangeWatchedFilesParams
+    ) -> None:
+        """Refresh disk-backed project state after source or package changes."""
+        for change in params.changes:
+            path = _uri_to_path_or_none(change.uri)
+            if path is not None and (
+                path.suffix in {".geno", ".gen"}
+                or path.name in {"geno.toml", "geno.lock"}
+            ):
+                break
+        else:
+            return
+
+        # Membership itself may have changed (a new module, a deleted import,
+        # or a dependency installation), so path-keyed invalidation is not enough.
+        # Open buffers remain authoritative through the normal source overrides.
+        previous_paths = {
+            path for view in self._project_views.values() for path in view.project_paths
+        }
+        self._project_views.clear()
+        self._project_view_cache.clear()
+        self._symbol_table_cache.clear()
+        self._refresh_open_documents(reuse_refreshed_views=True)
+        current_paths = {
+            path for view in self._project_views.values() for path in view.project_paths
+        }
+        # Open files can still have standalone diagnostics after leaving a
+        # project, including when their project view could not be rebuilt.
+        current_paths.update(str(path) for path in self._open_doc_paths.values())
+        for removed_path in previous_paths - current_paths:
+            self.server.publish_diagnostics(Path(removed_path).as_uri(), [])
 
     def formatting(
         self,

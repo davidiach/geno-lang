@@ -7,6 +7,9 @@ so comments and blank lines are preserved.
 
 from __future__ import annotations
 
+from .lexer import Lexer, LexerError
+from .tokens import TokenType
+
 # Keywords that open a new indentation block (followed by "end <kw>")
 _BLOCK_OPENERS = {"func", "if", "while", "for", "match", "try", "trait", "impl", "test"}
 
@@ -19,6 +22,46 @@ _MID_BLOCK = {"else", "catch"}
 
 def format_source(source: str) -> str:
     """Format Geno source code. Returns the formatted string."""
+    if '"""' not in source:
+        return _format_lines(source)
+    try:
+        tokens = Lexer(source).tokenize()
+    except LexerError:
+        # An incomplete literal has no safe closing span. Keep editor buffers
+        # unchanged until the lexer can identify their contents unambiguously.
+        return source
+
+    line_offsets = [0]
+    for line in source.split("\n"):
+        line_offsets.append(line_offsets[-1] + len(line) + 1)
+    prefix = "__geno_format_literal_"
+    while prefix in source:
+        prefix += "_"
+    literals: list[tuple[str, str]] = []
+    parts: list[str] = []
+    cursor = 0
+    for token in tokens:
+        if token.type != TokenType.STRING:
+            continue
+        start = line_offsets[token.location.line - 1] + token.location.column - 1
+        if not source.startswith('"""', start):
+            continue
+        # Triple strings contain raw text: the token value has exactly the
+        # source length between the opening and closing three-quote delimiters.
+        end = start + len(token.value) + 6
+        placeholder = f'"{prefix}{len(literals)}__"'
+        parts.extend((source[cursor:start], placeholder))
+        literals.append((placeholder, source[start:end]))
+        cursor = end
+    parts.append(source[cursor:])
+    formatted = _format_lines("".join(parts))
+    for placeholder, literal in literals:
+        formatted = formatted.replace(placeholder, literal)
+    return formatted
+
+
+def _format_lines(source: str) -> str:
+    """Apply indentation with multiline literal contents protected by the caller."""
     lines = source.split("\n")
     result: list[str] = []
     depth = 0

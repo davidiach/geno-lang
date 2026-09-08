@@ -6,6 +6,7 @@ Tests for the package manager (manifest, lockfile, install/add/update)
 import contextlib
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -45,6 +46,35 @@ from geno.package_manager import (
 # =========================================================================
 # Manifest tests
 # =========================================================================
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is unavailable")
+@pytest.mark.parametrize(
+    ("filename", "module", "reader"),
+    [
+        ("geno.toml", "geno.manifest", "parse_manifest"),
+        ("geno.lock", "geno.lockfile", "parse_lockfile"),
+    ],
+)
+def test_project_config_rejects_fifo_without_blocking(
+    tmp_path, filename, module, reader
+):
+    config = tmp_path / filename
+    os.mkfifo(config)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"from {module} import {reader}; from pathlib import Path; "
+            f"{reader}(Path({str(config)!r}))",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "must be a regular file" in result.stderr
 
 
 class TestManifestParse:

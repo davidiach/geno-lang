@@ -20,6 +20,7 @@ from geno.project_resolution import (
 from geno.test_runner import run_project_test_suite
 from geno.tests.project_resolution_fixture_helpers import (
     write_dependency_collision_fixture,
+    write_dependency_private_collision_fixture,
 )
 
 try:
@@ -39,6 +40,76 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=15,
     )
+
+
+def test_source_overrides_do_not_require_reading_source_files(tmp_path, monkeypatch):
+    main = tmp_path / "Main.geno"
+    helper = tmp_path / "Helper.geno"
+    main_source = "import Helper\nfunc main() -> Int\n  return helper(1)\nend func\n"
+    helper_source = (
+        "export func helper(x: Int) -> Int\n"
+        "  example 1 -> 2\n  return x + 1\nend func\n"
+    )
+    main.write_text(main_source)
+    helper.write_text(helper_source)
+    (tmp_path / "geno.toml").write_text(
+        'entrypoint = "Main"\nfiles = ["Main", "Helper"]\n'
+    )
+    original_read_text = Path.read_text
+
+    def unreadable_source(path, *args, **kwargs):
+        if path.suffix == ".geno":
+            raise PermissionError("source file cannot be read")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable_source)
+    context = resolve_project_context(
+        tmp_path, source_overrides={main: main_source, helper: helper_source}
+    )
+
+    assert context.source == main_source
+    assert context.module_sources["Helper"] == helper_source
+
+
+@pytest.mark.parametrize("with_manifests", [False, True])
+@pytest.mark.parametrize("import_style", ["unqualified", "qualified", "alias"])
+def test_manifest_dependencies_preserve_private_modules_for_direct_files(
+    tmp_path, with_manifests, import_style
+):
+    app, alpha_utils, beta_utils = write_dependency_private_collision_fixture(tmp_path)
+    if import_style != "unqualified":
+        for helper, entrypoint in ((alpha_utils, "Alpha"), (beta_utils, "Beta")):
+            entry = helper.parent / f"{entrypoint}.geno"
+            source = entry.read_text()
+            namespace = "Local" if import_style == "alias" else "Utils"
+            source = source.replace(
+                f"return {entrypoint.lower()}_helper()",
+                f"return {namespace}.{entrypoint.lower()}_helper()",
+            )
+            if import_style == "alias":
+                source = source.replace("import Utils", "import Utils as Local")
+            entry.write_text(source)
+    if with_manifests:
+        for helper, entrypoint in ((alpha_utils, "Alpha"), (beta_utils, "Beta")):
+            (helper.parent / "geno.toml").write_text(
+                f'entrypoint = "{entrypoint}"\nfiles = ["{entrypoint}", "Utils"]\n'
+            )
+
+    for path in (tmp_path, app):
+        result = run_path(path)
+        assert result.ok, result.diagnostics
+        assert result.value == 12
+
+    from geno.api import run
+    from geno.lexer import Lexer
+    from geno.module_resolver import resolve_modules
+    from geno.parser import Parser
+
+    source = app.read_text()
+    program = Parser(Lexer(source, str(app)).tokenize()).parse_program()
+    result = run(source, RunConfig(modules=resolve_modules(app, program)))
+    assert result.ok, result.diagnostics
+    assert result.value == 12
 
 
 def _write_direct_file_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -1203,8 +1274,9 @@ class TestProjectResolutionConsistency:
         assert latest[app_file.as_uri()] == []
 
     @pytest.mark.skipif(not HAS_PYGLS, reason="pygls not installed")
+    @pytest.mark.parametrize("watched_refresh", [False, True])
     def test_overlay_type_errors_stay_consistent_between_api_and_lsp(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, watched_refresh
     ):
         """Overlay-introduced transitive type errors surface on both API and LSP."""
         (
@@ -1280,6 +1352,18 @@ class TestProjectResolutionConsistency:
                 )
             )
         )
+
+        if watched_refresh:
+            changed = server.lsp._get_handler(types.WORKSPACE_DID_CHANGE_WATCHED_FILES)
+            changed(
+                types.DidChangeWatchedFilesParams(
+                    changes=[
+                        types.FileEvent(
+                            uri=alt_file.as_uri(), type=types.FileChangeType.Changed
+                        )
+                    ]
+                )
+            )
 
         latest = {uri: diags for uri, diags in published}
         assert latest[app_file.as_uri()]

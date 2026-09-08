@@ -240,12 +240,13 @@ _EXPECTED_BUILTIN_ERRORS = (
 
 
 class _ModuleNamespace:
-    """Sentinel for module namespace access in the interpreter."""
+    """A module namespace bound in the importing module's lexical environment."""
 
-    __slots__ = ("name",)
+    __slots__ = ("members", "name")
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, members: dict[str, Closure]):
         self.name = name
+        self.members = members
 
 
 def _int_trunc_divmod(a: int, b: int) -> tuple[int, int]:
@@ -342,7 +343,6 @@ class Interpreter:
         self.global_env = Environment()
         self.type_defs: dict[str, TypeDef] = {}
         self.functions: dict[str, FunctionDef] = {}
-        self._module_namespaces: dict[str, dict[str, Closure]] = {}
         self.check_examples = check_examples
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.max_recursion_depth = (
@@ -1409,12 +1409,15 @@ class Interpreter:
         modules: dict[str, "Program"],
         resolved: set[str],
         module_imports: dict[str, tuple[dict[str, Closure], dict[str, FunctionDef]]],
+        import_env: Environment | None = None,
     ) -> None:
         """Resolve an import statement by loading module definitions."""
+        if import_env is None:
+            import_env = self.global_env
         name = import_stmt.module_name
         if name in resolved:
             if name in module_imports:
-                self._apply_module_import(import_stmt, module_imports[name])
+                self._apply_module_import(import_stmt, module_imports[name], import_env)
             return
         if name not in modules:
             raise RuntimeError(
@@ -1424,6 +1427,10 @@ class Interpreter:
 
         resolved.add(name)
         mod_program = modules[name]
+        # Functions retain this module's imports even after another module
+        # binds the same alias. Lexical environments also carry the namespace
+        # through returned lambdas, callbacks, defaults and nested calls.
+        module_env = self.global_env.child()
 
         # Recursively resolve imports within the module
         for defn in mod_program.definitions:
@@ -1433,7 +1440,9 @@ class Interpreter:
                         f"Circular import detected: module '{name}' imports itself",
                         defn.location,
                     )
-                self._resolve_module_import(defn, modules, resolved, module_imports)
+                self._resolve_module_import(
+                    defn, modules, resolved, module_imports, module_env
+                )
 
         # Determine if module uses explicit exports
         has_exports = any(
@@ -1464,30 +1473,33 @@ class Interpreter:
                 closure = Closure(
                     params=defn.params,
                     body=defn.body,
-                    env=self.global_env,
+                    env=module_env,
                     name=defn.name,
                     specs=defn.specs,
                     is_async=defn.is_async,
                 )
+                module_env.bind(defn.name, closure)
                 module_ns[defn.name] = closure
                 module_functions[defn.name] = defn
         module_import = (module_ns, module_functions)
         module_imports[name] = module_import
-        self._apply_module_import(import_stmt, module_import)
+        self._apply_module_import(import_stmt, module_import, import_env)
 
     def _apply_module_import(
         self,
         import_stmt: ImportStatement,
         module_import: tuple[dict[str, Closure], dict[str, FunctionDef]],
+        import_env: Environment,
     ) -> None:
         """Apply an already loaded module using this import statement's shape."""
         module_ns, module_functions = module_import
         ns_name = import_stmt.alias or import_stmt.module_name
-        self._module_namespaces[ns_name] = dict(module_ns)
+        import_env.bind(ns_name, _ModuleNamespace(ns_name, dict(module_ns)))
         if import_stmt.alias is None:
             for func_name, closure in module_ns.items():
                 self.functions[func_name] = module_functions[func_name]
                 self.global_env.bind(func_name, closure)
+                import_env.bind(func_name, closure)
 
     @contextmanager
     def _execution_deadline(self, timeout: float | None) -> Generator[None, None, None]:
@@ -1550,12 +1562,16 @@ class Interpreter:
         for name, func_def in self.functions.items():
             for example in func_def.specs.examples:
                 try:
-                    # Evaluate input
-                    input_val = self.eval_expr(example.input_expr, self.global_env)
-                    expected = self.eval_expr(example.output_expr, self.global_env)
+                    # Examples resolve names in the defining module, just like
+                    # the function body and its default arguments.
+                    func = self.global_env.lookup(name)
+                    example_env = (
+                        func.env if isinstance(func, Closure) else self.global_env
+                    )
+                    input_val = self.eval_expr(example.input_expr, example_env)
+                    expected = self.eval_expr(example.output_expr, example_env)
 
                     # Call function with input
-                    func = self.global_env.lookup(name)
                     actual = self._call_function(
                         func,
                         example_call_args(
@@ -1873,8 +1889,9 @@ class Interpreter:
                     return ConstructorValue(expr.name, {})
 
         # Check if it's a module namespace
-        if expr.name in self._module_namespaces:
-            return _ModuleNamespace(expr.name)
+        namespace = env.lookup(expr.name)
+        if isinstance(namespace, _ModuleNamespace):
+            return namespace
 
         raise RuntimeError(f"Unknown constructor: {expr.name}", expr.location)
 
@@ -2494,7 +2511,7 @@ class Interpreter:
         target = self.eval_expr(expr.target, env)
 
         if isinstance(target, _ModuleNamespace):
-            ns = self._module_namespaces.get(target.name, {})
+            ns = target.members
             if expr.field_name in ns:
                 return ns[expr.field_name]
             raise RuntimeError(
