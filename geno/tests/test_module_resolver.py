@@ -112,6 +112,24 @@ class TestSourceOverrides:
 class TestCircularImportDetection:
     """Cycles must be detected and raised."""
 
+    @pytest.mark.parametrize("cyclic", [False, True])
+    def test_deep_import_chain_does_not_use_python_recursion(self, tmp_path, cyclic):
+        depth = 1050
+        for index in range(depth):
+            following = f"import M{index + 1}\n" if index < depth - 1 else ""
+            if cyclic and index == depth - 1:
+                following = "import M0\n"
+            (tmp_path / f"M{index}.geno").write_text(following)
+        entry = tmp_path / "Main.geno"
+        entry.write_text("import M0\n")
+        program = _parse(entry.read_text())
+
+        if cyclic:
+            with pytest.raises(CircularImportError, match="M0"):
+                resolve_modules(entry, program)
+        else:
+            assert len(resolve_modules(entry, program)) == depth
+
     def test_indirect_cycle_a_b_c_a(self, tmp_path):
         (tmp_path / "A.geno").write_text(
             "import B\nfunc a_fn(x: Int) -> Int\n    return 1\nend func\n"
