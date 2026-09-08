@@ -26,6 +26,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
+from multiprocessing.reduction import ForkingPickler
 from socketserver import TCPServer
 from typing import AbstractSet, Any, Iterator, cast
 from urllib.parse import urlsplit
@@ -1648,6 +1649,16 @@ def _apply_worker_resource_limits() -> tuple[str, ...]:
     return tuple(applied)
 
 
+def _send_bounded_worker_result(result_conn: Connection, result: Any) -> None:
+    """Bound the complete result frame and send those exact serialized bytes."""
+    payload = ForkingPickler.dumps(("result", result))
+    if len(payload) > MAX_RESPONSE_BODY_BYTES:
+        raise ResponseTooLarge
+    # Connection.recv() decodes this same format. Avoid Connection.send(),
+    # which would serialize the object again after the size check.
+    result_conn.send_bytes(payload)
+
+
 def _run_request_worker(
     result_conn: Connection,
     source: str,
@@ -1666,13 +1677,13 @@ def _run_request_worker(
         # allocate and unpickle in the unbounded parent before it is rejected.
         try:
             _bounded_json_response_body(_serialize_run_result(result))
+            _send_bounded_worker_result(result_conn, replace(result, value_raw=None))
         except ResponseTooLarge:
             # The collector uses the outcome and totals, not diagnostic codes.
             # Keep completion metrics without transporting rejected user data.
             metrics = replace(RunMetrics.from_run_result(result), diagnostic_codes=())
             result_conn.send(("response_too_large", metrics))
             return
-        result_conn.send(("result", replace(result, value_raw=None)))
     except Exception as exc:  # pragma: no cover - exercised via parent contract
         try:
             result_conn.send(
@@ -1704,10 +1715,10 @@ def _constrain_request_worker(
         result = constrain(prefix)
         try:
             _bounded_json_response_body(_serialize_constraint_result(result))
+            _send_bounded_worker_result(result_conn, result)
         except ResponseTooLarge:
             result_conn.send(("response_too_large", result.valid))
             return
-        result_conn.send(("result", result))
     except Exception as exc:  # pragma: no cover - exercised via parent contract
         try:
             result_conn.send(

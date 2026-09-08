@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from multiprocessing.reduction import ForkingPickler
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -92,6 +93,9 @@ class _PicklingConnection:
     def send(self, payload):
         pickle.dumps(payload)
         self.messages.append(payload)
+
+    def send_bytes(self, payload):
+        self.send(pickle.loads(payload))
 
     def close(self):
         self.closed = True
@@ -1534,6 +1538,63 @@ class TestInternalServerError:
 
 
 class TestHostedResponseBounds:
+    @pytest.mark.parametrize("remaining", [-1, 0, 1])
+    def test_worker_result_frame_respects_exact_byte_limit(
+        self, monkeypatch, remaining
+    ):
+        import geno.server as srv
+
+        result = RunResult(ok=True, value=42)
+        expected = bytes(ForkingPickler.dumps(("result", result)))
+        monkeypatch.setattr(srv, "MAX_RESPONSE_BODY_BYTES", len(expected) + remaining)
+        frames = []
+
+        class ByteConnection:
+            def send_bytes(self, payload):
+                frames.append(bytes(payload))
+
+        conn = cast(Any, ByteConnection())
+        if remaining < 0:
+            with pytest.raises(srv.ResponseTooLarge):
+                srv._send_bounded_worker_result(conn, result)
+            assert frames == []
+        else:
+            srv._send_bounded_worker_result(conn, result)
+            assert frames == [expected]
+            assert pickle.loads(frames[0]) == ("result", result)
+
+    @pytest.mark.parametrize("worker_kind", ["run", "constrain"])
+    def test_workers_handle_transport_limit_rejection(self, monkeypatch, worker_kind):
+        import geno.server as srv
+        from geno.api import ConstraintResult
+        from geno.constraints import AllowedNext
+
+        def reject_frame(_conn, _result):
+            raise srv.ResponseTooLarge
+
+        monkeypatch.setattr(srv, "_send_bounded_worker_result", reject_frame)
+        monkeypatch.setattr(srv, "_apply_worker_resource_limits", tuple)
+        monkeypatch.setattr(sys, "dont_write_bytecode", False)
+        conn = _PicklingConnection()
+        if worker_kind == "run":
+            srv._run_request_worker(
+                cast(Any, conn),
+                "",
+                RunConfig(),
+                "<test>",
+                runner=lambda *args, **kwargs: RunResult(ok=True, value=42),
+            )
+        else:
+            srv._constrain_request_worker(
+                cast(Any, conn),
+                "",
+                constrain=lambda _: ConstraintResult(AllowedNext(), valid=True),
+            )
+        assert conn.closed
+        assert conn.messages[0] == ("ready", None)
+        assert len(conn.messages) == 2
+        assert conn.messages[1][0] == "response_too_large"
+
     def test_shared_object_amplification_returns_fixed_413_and_metric(
         self, client, monkeypatch
     ):
@@ -1870,6 +1931,9 @@ class _FakeChildConn:
         if self._cancelled.is_set():
             return
         self._q.put(value)
+
+    def send_bytes(self, payload):
+        self.send(pickle.loads(payload))
 
     def close(self):
         pass  # Parent and worker share this object in-process; don't disable sends.
