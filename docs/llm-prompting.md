@@ -23,6 +23,9 @@ Key syntax rules:
 - Use `Option[T]` instead of null, `Result[T, E]` for errors
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
+- Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,
+  `format`, `type`, `list`, `str`, ...) — these are reserved runtime names and
+  are rejected when the program is compiled
 ```
 
 ## Common LLM Mistakes
@@ -109,15 +112,14 @@ end func
 
 ### 7. Zero-arg example syntax
 
-Wrong:
+Both forms are accepted for a function that takes no parameters:
 ```
+example () -> 42
 example -> 42
 ```
 
-Correct:
-```
-example () -> 42
-```
+Do not write the input as a value the function never takes — the example input
+must match the parameter list.
 
 ### 8. Using `get(list, index)` instead of bracket indexing
 
@@ -161,6 +163,43 @@ Correct:
 for i: Int in range(0, 10) do
   println(i)
 end for
+```
+
+### 11. Reserved runtime names
+
+`geno check`, `geno test`, and `geno run` all reject bindings that would shadow
+the compiled runtime. The names come from the backend's host builtins, so
+`len`, `id`, `map`, `abs`, `format`, `type`, `list`, `print`, and `str` are not
+usable as function, parameter, or local names.
+
+Wrong:
+```
+func trim_to(s: String, len: Int) -> String
+```
+
+Correct:
+```
+func trim_to(s: String, count: Int) -> String
+```
+
+### 12. Destructuring tuples in `match`
+
+Tuple patterns are supported in match arms, so a pair does not need to be
+let-destructured first:
+```
+match split_once(line, ":") with
+    | Some((key, value)) -> return key
+    | None -> return ""
+end match
+```
+
+### 13. Multiline sum types
+
+Variant lists may span lines, and a leading `|` is allowed:
+```
+type Tx =
+    | Deposit(amount: Int)
+    | Withdraw(amount: Int)
 ```
 
 ## Prompting Patterns

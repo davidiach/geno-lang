@@ -16,6 +16,7 @@ from .ast_nodes import (
     MatchArm,
     Pattern,
     RestPattern,
+    TuplePattern,
     VariablePattern,
     WildcardPattern,
 )
@@ -70,13 +71,27 @@ class ExhaustivenessMixin:
             )
             return
 
+        if isinstance(scrutinee_type, TupleType):
+            arity = len(scrutinee_type.element_types)
+            if self._tuple_patterns_are_exhaustive(patterns, arity):
+                return
+            tuple_missing = self._find_missing_pattern_vectors(
+                [scrutinee_type], [[pattern] for pattern in patterns], location, limit=3
+            )
+            if tuple_missing:
+                rendered = ", ".join(
+                    self._render_pattern_vector(vector) for vector in tuple_missing
+                )
+                self._error(f"Non-exhaustive patterns: missing {rendered}", location)
+            return
+
         # Finite types (Bool, Option, Result, ADTs) get full case analysis below.
-        # Non-finite types (Int, Float, String, List, Tuple) cannot be exhaustively
+        # Non-finite types (Int, Float, String, List) cannot be exhaustively
         # enumerated, so require a catch-all arm. Unknown types are left unchecked.
         if not self._supports_exhaustiveness(scrutinee_type):
             if isinstance(
                 scrutinee_type,
-                (IntType, FloatType, StringType, TupleType),
+                (IntType, FloatType, StringType),
             ):
                 self._error(
                     f"Non-exhaustive patterns: match on {scrutinee_type} "
@@ -142,6 +157,24 @@ class ExhaustivenessMixin:
             return False
 
         return all(length in fixed_lengths for length in range(min_rest_length))
+
+    def _tuple_patterns_are_exhaustive(
+        self, patterns: list[Pattern], arity: int
+    ) -> bool:
+        """Return whether the tuple patterns cover every value of the tuple type.
+
+        Every value of a tuple type has exactly the type's arity, so a single
+        pattern of that arity whose elements are all catch-alls already matches
+        every possible value. A constrained element (a literal, say) leaves
+        values uncovered, so such patterns do not count toward coverage and the
+        full matrix analysis decides instead.
+        """
+        return any(
+            isinstance(pattern, TuplePattern)
+            and len(pattern.elements) == arity
+            and all(self._is_catchall_pattern(element) for element in pattern.elements)
+            for pattern in patterns
+        )
 
     def _constructor_cases_for_type(
         self, t: Type
@@ -348,6 +381,31 @@ class ExhaustivenessMixin:
                         if len(missing_list) >= limit:
                             return missing_list
                 return missing_list
+
+        if isinstance(first_type, TupleType):
+            arity = len(first_type.element_types)
+            specialized_tuple: list[list[Pattern]] = []
+            for row in rows:
+                first, tail = row[0], row[1:]
+                if self._is_catchall_pattern(first):
+                    specialized_tuple.append(
+                        [WildcardPattern(location=location) for _ in range(arity)]
+                        + list(tail)
+                    )
+                elif isinstance(first, TuplePattern) and len(first.elements) == arity:
+                    specialized_tuple.append(list(first.elements) + list(tail))
+            missing_tuples: list[list[str]] = []
+            for vector in self._find_missing_pattern_vectors(
+                list(first_type.element_types) + rest_types,
+                specialized_tuple,
+                location,
+                limit=limit,
+            ):
+                head = "(" + ", ".join(vector[:arity]) + ")"
+                missing_tuples.append([head] + vector[arity:])
+                if len(missing_tuples) >= limit:
+                    break
+            return missing_tuples
 
         cases = self._constructor_cases_for_type(first_type)
         if cases is not None:

@@ -229,14 +229,16 @@ class TestRunTestSuite:
 
     def test_to_dict(self, tmp_path):
         f = tmp_path / "test.geno"
+        # `id` is a Python host intrinsic and so a reserved runtime name; the
+        # default `geno run` rejects it, so the fixture uses a runnable name.
         f.write_text(
-            "func id(x: Int) -> Int\n"
+            "func identity(x: Int) -> Int\n"
             "    example 42 -> 42\n"
             "    return x\n"
             "end func\n\n"
             '@untested("entry point")\n'
             "func main() -> Int\n"
-            "    return id(42)\n"
+            "    return identity(42)\n"
             "end func\n"
         )
         result = run_test_suite([f])

@@ -77,6 +77,7 @@ from .ast_nodes import (
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TuplePattern,
     TypeAlias,
     TypeDef,
     TypedHole,
@@ -2565,6 +2566,22 @@ class JSCompiler(BaseCompiler):
                     cond = f"({cond}) && ({sub_cond})"
                 bindings.extend(sub_bindings)
 
+            return (cond, bindings)
+
+        if isinstance(pattern, TuplePattern):
+            # Tuples lower to plain JS arrays, so only the fixed arity is
+            # checked here; the typechecker keeps lists and tuples apart.
+            cond = (
+                f"Array.isArray({scrutinee}) "
+                f"&& {scrutinee}.length === {len(pattern.elements)}"
+            )
+            for i, elem_pat in enumerate(pattern.elements):
+                sub_cond, sub_bindings = self._compile_pattern_condition(
+                    elem_pat, f"{scrutinee}[{i}]"
+                )
+                if sub_cond != "true":
+                    cond = f"({cond}) && ({sub_cond})"
+                bindings.extend(sub_bindings)
             return (cond, bindings)
 
         if isinstance(pattern, ListPattern):

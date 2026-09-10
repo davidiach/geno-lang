@@ -121,7 +121,7 @@
       "notes": [
         "Every function must have at least one example clause (except main, async, app helpers)",
         "Named arguments are required when a function has 3+ required parameters or a call supplies 3+ arguments; range is positional-only",
-        "Zero-arg examples use: example () -> value"
+        "Zero-arg examples use: example () -> value (or example -> value)"
       ]
     },
     "lambda": {
@@ -133,7 +133,7 @@
       "mutable": "var name[: Type] = expr",
       "notes": ["Local let/var type annotations are optional when the initializer type is unambiguous", "var for mutable bindings (NOT let mut)"]
     },
-    "type_definition": "type Name[T] = Variant1(field: Type) | Variant2(x: Int, y: String)",
+    "type_definition": "type Name[T] = Variant1(field: Type) | Variant2(x: Int, y: String) (variants may span lines, with an optional leading '|')",
     "trait": "trait Name\\n  func method(self: Self, ...) -> Type\\nend trait",
     "impl": "impl TraitName for Type\\n  func method(self: Type, ...) -> Type\\n    body\\n  end func\\nend impl",
     "if_else": "if condition then\\n  body\\nelse\\n  body\\nend if",
@@ -155,6 +155,7 @@
     "constructor": "Some(x)",
     "literal": "0, \"hello\", true",
     "list": "[], [x], [x, y, z]",
+    "tuple": "(a, b), (x, _, z)",
     "rest": "...rest, ..."
   },
 

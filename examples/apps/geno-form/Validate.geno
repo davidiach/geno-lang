@@ -21,22 +21,22 @@ func validate_field(field: FieldDef, value: FieldValue) -> List[FieldError]
 
     // Min length check (for strings)
     if field.min_length > 0 then
-        let len: Int = match value with
+        let text_length: Int = match value with
             | StringVal(v) -> length(v)
             | _ -> 0
         end match
-        if len > 0 and len < field.min_length then
+        if text_length > 0 and text_length < field.min_length then
             errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_length) + " characters"))
         end if
     end if
 
     // Max length check
     if field.max_length > 0 then
-        let len: Int = match value with
+        let text_length: Int = match value with
             | StringVal(v) -> length(v)
             | _ -> 0
         end match
-        if len > field.max_length then
+        if text_length > field.max_length then
             errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_length) + " characters"))
         end if
     end if

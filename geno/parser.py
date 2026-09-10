@@ -437,11 +437,15 @@ class Parser(
         location = self._current().location
         self._expect(TokenType.EXAMPLE)
 
-        # Parse comma-separated input expressions until we hit ARROW
+        # Parse comma-separated input expressions until we hit ARROW.
+        # `example -> output` is the zero-argument form, equivalent to
+        # `example () -> output`: a nullary function has no input to write, and
+        # examples are mandatory, so accept the bare arrow as well.
         inputs: list[Expression] = []
-        inputs.append(self._parse_expression())
-        while self._match(TokenType.COMMA):
+        if not self._check(TokenType.ARROW):
             inputs.append(self._parse_expression())
+            while self._match(TokenType.COMMA):
+                inputs.append(self._parse_expression())
 
         self._expect(TokenType.ARROW)
         output_expr = self._parse_expression()

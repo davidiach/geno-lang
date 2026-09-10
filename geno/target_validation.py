@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Mapping
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 if TYPE_CHECKING:
     from .ast_nodes import Program
     from .dependency_graph import DependencyGraph
     from .target_profile import TargetProfile
+
+
+#: Target whose backend the default ``geno run`` lowers through. Programs with
+#: no declared target are still executed by that backend, so target-less
+#: surfaces validate against it to stay consistent with ``geno run``.
+DEFAULT_RUN_TARGET = "python-cli"
 
 
 class TargetValidationError(Exception):
@@ -134,4 +140,60 @@ def validate_project_for_target(
         return
     raise RuntimeError(
         f"Target '{profile.target}' has no compiler backend in target metadata."
+    )
+
+
+def _has_entrypoint(programs: Iterable[Program]) -> bool:
+    """Report whether any module defines a runnable ``main`` function."""
+    from .ast_nodes import FunctionDef
+
+    return any(
+        isinstance(definition, FunctionDef) and definition.name == "main"
+        for program in programs
+        for definition in program.definitions
+    )
+
+
+def validate_default_run_lowering(dependency_graph: DependencyGraph) -> None:
+    """Validate a target-less project against the default ``geno run`` backend.
+
+    Without a declared target, ``geno check``/``geno test`` skipped backend
+    lowering entirely, so a program using a reserved runtime name (say a
+    parameter called ``len``) passed both and then failed the default
+    ``geno run``, which compiles to Python (#70). Validating here keeps those
+    surfaces in agreement.
+
+    Library modules that define no ``main`` are never executed by ``geno run``,
+    and standalone lowering reserves more names than project lowering does, so
+    they stay exempt rather than being rejected for a program role they do not
+    have.
+    """
+    from .target_profile import TargetProfile
+
+    programs = [
+        dependency_graph.parsed[module]
+        for module in dependency_graph.sorted_modules
+        if module in dependency_graph.parsed
+    ]
+    if not _has_entrypoint(programs):
+        return
+    validate_project_for_target(
+        dependency_graph, TargetProfile.load(DEFAULT_RUN_TARGET)
+    )
+
+
+def validate_default_run_lowering_for_program(
+    program: Program,
+    modules: Mapping[str, Program] | None = None,
+) -> None:
+    """Validate one target-less program against the default ``geno run`` backend."""
+    from .target_profile import TargetProfile
+
+    module_programs = dict(modules or {})
+    if not _has_entrypoint([program, *module_programs.values()]):
+        return
+    validate_program_collection_for_target(
+        program,
+        module_programs,
+        TargetProfile.load(DEFAULT_RUN_TARGET),
     )

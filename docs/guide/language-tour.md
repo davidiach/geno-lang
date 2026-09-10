@@ -89,6 +89,16 @@ type Shape = Circle(radius: Float)
            | Triangle(base: Float, height: Float)
 ```
 
+A leading `|` before the first variant is also accepted, which reads better for
+larger domain models:
+
+```geno
+type Tx =
+    | Deposit(amount: Int)
+    | Withdraw(amount: Int)
+    | Audit
+```
+
 Constructors are called by name:
 
 ```geno
@@ -110,6 +120,22 @@ func area(s: Shape) -> Float
     end match
 end func
 ```
+
+Tuples can be destructured directly in a match arm:
+
+```geno
+func describe(point: (Int, Int)) -> String
+    example (0, 0) -> "origin"
+    match point with
+        | (0, 0) -> return "origin"
+        | (x, y) -> return to_string(x) + "," + to_string(y)
+    end match
+end func
+```
+
+A tuple pattern must have the same number of elements as the tuple type. Since
+every tuple has that fixed arity, an arm like `| (x, y) ->` already covers every
+value and needs no default arm.
 
 ## Option and Result
 

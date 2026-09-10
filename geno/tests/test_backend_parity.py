@@ -906,6 +906,46 @@ def _assert_expected_backend_outputs(
 
 PARITY_PROGRAMS = [
     pytest.param(
+        # --- Tuple patterns in match arms ---
+        """\
+func pick(p: (Int, String)) -> String
+    example (1, "a") -> "a1"
+    match p with
+        | (a, b) -> return b + to_string(a)
+    end match
+end func
+
+func classify(p: (Bool, Bool)) -> String
+    example (true, true) -> "both"
+    match p with
+        | (true, true) -> return "both"
+        | (true, false) -> return "first"
+        | (false, true) -> return "second"
+        | (false, false) -> return "neither"
+    end match
+end func
+
+func total(o: Option[(Int, Int)]) -> Int
+    example Some((2, 3)) -> 5
+    example None -> 0
+    match o with
+        | Some((a, b)) -> return a + b
+        | None -> return 0
+    end match
+end func
+
+func main() -> Unit
+    print(pick((1, "a")))
+    print(classify((true, false)))
+    print(classify((false, false)))
+    print(total(Some((2, 3))))
+    print(total(None))
+    return ()
+end func
+""",
+        id="tuple_patterns",
+    ),
+    pytest.param(
         # --- Arithmetic ---
         """\
 func main() -> Unit

@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tuple patterns in `match` arms**: `| (a, b) -> ...` now parses, type checks, and runs on the interpreter and both backends, including nested forms such as `| Some((key, value)) ->`. Because every value of a tuple type has that type's arity, an arm whose elements are all variables or wildcards is exhaustive and needs no default arm; mismatched arity, non-tuple scrutinees, and single-element tuple patterns are rejected with targeted diagnostics. (#79)
+- **Leading `|` before the first ADT variant**: Sum-type definitions may now begin their variant list with a bar, so idiomatic multiline domain models parse. This — not a one-physical-line requirement — was what rejected multiline sum types. (#78)
+- **Bare-arrow zero-argument examples**: `example -> value` is now accepted alongside `example () -> value` and produces an identical AST; example inputs are still arity-checked against the parameter list. (#71)
+
 ### Changed
 
+- **Target-less checks validate the default run backend**: `geno check` and `geno test` on a program with no declared target now validate lowering through the backend the default `geno run` uses, so a suite can no longer pass for a program that cannot run. Library modules that define no `main` are never executed by `geno run` and stay exempt, since standalone lowering reserves more names than project lowering. (#70)
 - **Interpreter collection caps are now interpreter-local**: Builtins installed on an `Interpreter` enforce only that interpreter's `SandboxConfig.max_collection_size`. The process-wide `geno.builtins.set_max_collection_size` cap no longer tightens (or is clobbered by) live interpreters; it now governs only direct module-level builtin calls. Embedders that relied on the global setter to constrain interpreters should pass the limit via `SandboxConfig` instead.
+
+### Fixed
+
+- **Sandboxed compile diagnostics**: The default process-isolated `geno run` reported backend rejections as `Compiler Error: the isolated frontend failed safely (CompileError)`, hiding the only actionable text. Compile errors now surface the same message the `geno compile` path prints. (#69)
+- **`geno-form` example runs again**: Two local bindings named `len` shadowed a reserved runtime name, so the shipped app failed the default `geno run`.
 
 ## [0.4.3] - 2026-08-01
 
