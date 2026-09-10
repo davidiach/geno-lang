@@ -136,12 +136,30 @@ func safe_divide(a: Int, b: Int) -> Result[Int, String]
 end func
 ```
 
+### Parsing Returns Option, Not Result
+
+`parse_int` and `parse_float` return `Option[Int]` and `Option[Float]`, not
+`Result`. Match on `Some`/`None` (not `Ok`/`Err`), and wrap the value in
+`Ok`/`Err` yourself when a caller needs a `Result`:
+
+```geno
+// parse_int returns Option[Int], not Result: match on Some/None
+func parse_port(arg: String) -> Result[Int, String]
+    example "8080" -> Ok(8080)
+    example "eighty" -> Err("not a number: eighty")
+    match parse_int(arg) with
+        | None -> return Err("not a number: " + arg)
+        | Some(n) -> return Ok(n)
+    end match
+end func
+```
+
 ### The ? Propagation Operator
 
 ```geno
 func process(data: Option[String]) -> Option[Int]
     let s: String = data?         // returns None if data is None
-    return parse_int(s)
+    return parse_int(s)           // Option[Int], so it can be returned directly
 end func
 ```
 

@@ -17,7 +17,7 @@ def _geno_snippet(path: str, snippet_no: int) -> str:
     return matches[snippet_no - 1].group(1)
 
 
-def _geno_snippet_after_heading(path: str, heading: str) -> str:
+def _geno_snippet_after_heading(path: str, heading: str, snippet_no: int = 1) -> str:
     text = (ROOT / path).read_text(encoding="utf-8")
     heading_match = re.search(rf"^{re.escape(heading)}\s*$", text, re.M)
     assert heading_match is not None
@@ -27,9 +27,9 @@ def _geno_snippet_after_heading(path: str, heading: str) -> str:
     if next_heading is not None:
         section = section[: next_heading.start()]
 
-    match = re.search(r"```geno\s*\n(.*?)\n```", section, re.S)
-    assert match is not None
-    return match.group(1)
+    matches = list(re.finditer(r"```geno\s*\n(.*?)\n```", section, re.S))
+    assert len(matches) >= snippet_no
+    return matches[snippet_no - 1].group(1)
 
 
 def test_guide_walkthrough_snippets_parse():
@@ -64,3 +64,20 @@ def test_readme_opening_example_executes_with_examples_enabled():
         )
         == "excellent"
     )
+
+
+def test_parse_int_option_snippets_execute_with_examples_enabled():
+    # Regression for #77: docs must show parse_int/parse_float as Option, not
+    # Result, and the shown Some/None matches must actually run.
+    for path, heading, snippet_no in [
+        ("docs/guide/language-tour.md", "### Parsing Returns Option, Not Result", 1),
+        ("docs/reference/common-pitfalls.md", "## 6. No Null — Use Option[T]", 3),
+    ]:
+        code = _geno_snippet_after_heading(path, heading, snippet_no)
+        assert "match parse_int(" in code
+        assert "| Some(" in code and "| None" in code
+        assert "| Ok(" not in code and "| Err(" not in code
+        source = f"{path}#{heading}"
+        program = Parser(Lexer(code, source).tokenize()).parse_program()
+        TypeChecker().check_program(program)
+        interpret(code, source, check_examples=True)

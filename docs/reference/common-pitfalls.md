@@ -121,6 +121,21 @@ func greet_user(id: Int) -> Option[String]
 end func
 ```
 
+Built-in parsers follow the same convention: `parse_int` returns
+`Option[Int]` and `parse_float` returns `Option[Float]`, not `Result`. Match
+on `Some`/`None` rather than `Ok`/`Err`:
+
+```geno
+func parse_or_zero(text: String) -> Int
+    example "42" -> 42
+    example "abc" -> 0
+    match parse_int(text) with
+        | Some(n) -> return n
+        | None -> return 0
+    end match
+end func
+```
+
 ## 7. Non-Exhaustive Pattern Matching
 
 ```
