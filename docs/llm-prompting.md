@@ -21,6 +21,7 @@ Key syntax rules:
 - Every function needs at least one `example` clause
 - Functions with 3+ parameters require named arguments at call sites
 - Use `Option[T]` instead of null, `Result[T, E]` for errors
+- `parse_int` / `parse_float` return `Option` (`Some(n)` / `None`), not `Result`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 ```
@@ -163,6 +164,35 @@ for i: Int in range(0, 10) do
 end for
 ```
 
+### 11. Matching `parse_int` / `parse_float` as `Result`
+
+`parse_int` returns `Option[Int]` and `parse_float` returns `Option[Float]`.
+They never produce `Ok`/`Err`, so a `Result`-style match fails to typecheck.
+
+Wrong:
+```
+match parse_int(arg) with
+  | Ok(n) -> return n
+  | Err(e) -> return 0
+end match
+```
+
+Correct:
+```
+match parse_int(arg) with
+  | Some(n) -> return n
+  | None -> return 0
+end match
+```
+
+To surface a parse failure as a `Result`, wrap the branches yourself:
+```
+match parse_int(arg) with
+  | Some(n) -> return Ok(n)
+  | None -> return Err("not a number: " + arg)
+end match
+```
+
 ## Prompting Patterns
 
 ### Generate a function
@@ -205,6 +235,7 @@ Fix this Geno code. Common issues to check:
 - `then` after `if`, `do` after `for`/`while`
 - `end func`/`end if`/`end for`/`end while` block terminators
 - `stop` not `end` as parameter name (keyword conflict)
+- `parse_int`/`parse_float` return `Option`: match `Some`/`None`, not `Ok`/`Err`
 ```
 
 ## Machine-Readable Specification
