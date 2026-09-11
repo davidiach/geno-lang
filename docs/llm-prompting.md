@@ -202,6 +202,35 @@ type Tx =
     | Withdraw(amount: Int)
 ```
 
+### 14. Matching `parse_int` / `parse_float` as `Result`
+
+`parse_int` returns `Option[Int]` and `parse_float` returns `Option[Float]`.
+They never produce `Ok`/`Err`, so a `Result`-style match fails to typecheck.
+
+Wrong:
+```
+match parse_int(arg) with
+  | Ok(n) -> return n
+  | Err(e) -> return 0
+end match
+```
+
+Correct:
+```
+match parse_int(arg) with
+  | Some(n) -> return n
+  | None -> return 0
+end match
+```
+
+To surface a parse failure as a `Result`, wrap the branches yourself:
+```
+match parse_int(arg) with
+  | Some(n) -> return Ok(n)
+  | None -> return Err("not a number: " + arg)
+end match
+```
+
 ## Prompting Patterns
 
 ### Generate a function
