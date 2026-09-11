@@ -342,6 +342,10 @@ def run_project_test_suite(
     from .project_resolution import ProjectResolutionError, resolve_project_context
     from .sandbox import SandboxError
     from .target_profile import TargetProfile, resolve_manifest_targets
+    from .target_validation import (
+        TargetValidationError,
+        validate_default_run_lowering,
+    )
     from .typechecker import TypeChecker, TypeError
     from .values import GenoRuntimeError, GenoThrowError
 
@@ -388,10 +392,17 @@ def run_project_test_suite(
             )
             checker = TypeChecker(target_profile=target_profile)
             checker.check_project_graph(dg)
+            if target_profile is None:
+                # A target-less suite is still run by the default `geno run`,
+                # which lowers through the Python backend. Validate that here so
+                # examples cannot pass for a program that cannot run (#70).
+                validate_default_run_lowering(dg)
     except ValueError as e:
         return _project_error_result(f"Manifest Error: {e}")
     except TypeError as e:
         return _project_error_result(f"Type Error: {e}")
+    except TargetValidationError as e:
+        return _project_error_result(f"Compile Error: {e.backend_message}")
 
     # Load all modules into a shared interpreter in topological order.
     # execute_main=False because the test runner only needs definitions
@@ -490,6 +501,10 @@ def _test_file(
     from .parser import ParseError, ParseErrors, Parser
     from .project_resolution import ProjectResolutionError, resolve_file_context
     from .target_profile import TargetProfile, resolve_manifest_targets
+    from .target_validation import (
+        TargetValidationError,
+        validate_default_run_lowering_for_program,
+    )
     from .typechecker import TypeChecker
 
     sandbox_config = sandbox_config or default_test_sandbox_config()
@@ -523,6 +538,13 @@ def _test_file(
             )
             checker = TypeChecker(target_profile=target_profile)
             checker.check_program(program, modules=parsed_modules)
+            if target_profile is None:
+                # A target-less file is still run by the default `geno run`,
+                # which lowers through the Python backend. Validate that here so
+                # examples cannot pass for a program that cannot run (#70).
+                validate_default_run_lowering_for_program(
+                    program, parsed_modules, entrypoint_name=context.module_name
+                )
 
         # Count examples (apply filter)
         harnesses = extract_harnesses(program)
@@ -605,6 +627,12 @@ def _test_file(
         return FileTestResult(
             path=str(filepath),
             error=f"Parse Error: {e}",
+            elapsed_ms=(time.monotonic() - file_start) * 1000,
+        )
+    except TargetValidationError as e:
+        return FileTestResult(
+            path=str(filepath),
+            error=f"Compile Error: {e.backend_message}",
             elapsed_ms=(time.monotonic() - file_start) * 1000,
         )
     except Exception as e:

@@ -69,6 +69,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TuplePattern,
     TypeAlias,
     TypeAnnotation,
     TypeDef,
@@ -2060,7 +2061,7 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(pattern, ConstructorPattern):
             for subpattern in pattern.subpatterns:
                 self._validate_no_result_binding_in_pattern(subpattern)
-        elif isinstance(pattern, ListPattern):
+        elif isinstance(pattern, (ListPattern, TuplePattern)):
             for element in pattern.elements:
                 self._validate_no_result_binding_in_pattern(element)
 
@@ -4491,6 +4492,14 @@ class TypeChecker(ExhaustivenessMixin):
                         env,
                     )
             return
+        if isinstance(pattern, TuplePattern):
+            if not isinstance(expected_type, TupleType):
+                return
+            for elem_pattern, elem_type in zip(
+                pattern.elements, expected_type.element_types
+            ):
+                self._bind_pattern_effect_env(elem_pattern, elem_type, env)
+            return
         if not isinstance(pattern, ConstructorPattern):
             return
 
@@ -4611,6 +4620,25 @@ class TypeChecker(ExhaustivenessMixin):
             else:
                 self._error(
                     f"List pattern used with non-list type: {expected_type}",
+                    pattern.location,
+                    ErrorCode.TYPE_PATTERN_MISMATCH,
+                )
+        elif isinstance(pattern, TuplePattern):
+            if isinstance(expected_type, TupleType):
+                if len(pattern.elements) != len(expected_type.element_types):
+                    self._error(
+                        f"Tuple pattern expects {len(expected_type.element_types)} "
+                        f"elements, got {len(pattern.elements)}",
+                        pattern.location,
+                        ErrorCode.TYPE_PATTERN_MISMATCH,
+                    )
+                for elem_pattern, elem_type in zip(
+                    pattern.elements, expected_type.element_types
+                ):
+                    self._check_pattern(elem_pattern, elem_type, env, pattern.location)
+            else:
+                self._error(
+                    f"Tuple pattern used with non-tuple type: {expected_type}",
                     pattern.location,
                     ErrorCode.TYPE_PATTERN_MISMATCH,
                 )

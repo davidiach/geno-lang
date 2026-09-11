@@ -484,6 +484,16 @@ class ListPattern(Pattern):
 
 
 @dataclass
+class TuplePattern(Pattern):
+    """Tuple pattern: (a, b), (x, _, z)"""
+
+    elements: list[Pattern]
+
+    def accept(self, visitor: "ASTVisitor") -> Any:
+        return visitor.visit_tuple_pattern(self)
+
+
+@dataclass
 class RestPattern(Pattern):
     """Rest/spread pattern in list matching: ...rest or ..."""
 
@@ -1026,6 +1036,9 @@ class ASTVisitor(ABC):
         pass
 
     def visit_list_pattern(self, node: ListPattern) -> None:
+        pass
+
+    def visit_tuple_pattern(self, node: "TuplePattern") -> None:
         pass
 
     def visit_rest_pattern(self, node: "RestPattern") -> None:

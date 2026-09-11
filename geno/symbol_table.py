@@ -44,6 +44,7 @@ from .ast_nodes import (
     TraitDef,
     TryStatement,
     TupleDestructureStatement,
+    TuplePattern,
     TypeAlias,
     TypeAnnotation,
     TypeDef,
@@ -611,6 +612,11 @@ class SymbolTableBuilder:
             # may bind variables into the arm scope.  Previously the
             # resolver ignored list patterns entirely and the bindings
             # were invisible to rename / go-to-definition (F-0019).
+            for elem in pattern.elements:
+                self._bind_pattern(elem, scope)
+        elif isinstance(pattern, TuplePattern):
+            # ``(a, b)``: each element is a pattern that may bind into the
+            # arm scope, exactly like a list pattern's elements.
             for elem in pattern.elements:
                 self._bind_pattern(elem, scope)
         elif isinstance(pattern, RestPattern):

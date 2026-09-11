@@ -18,10 +18,12 @@ check and checks that name an execution target.
 4. A project with multiple manifest targets is checked against every declared
    target. An explicit check target selects one target, but the manifest is
    still parsed and target names are validated so typos fail closed.
-5. A check with no explicit target and no manifest target remains a permissive,
-   target-agnostic language check. It does not promise that either compiler
-   backend can lower the program. This preserves the existing embedding and
-   interpreter-oriented behavior.
+5. With no explicit or manifest target, `geno check`, `geno test`, and editor
+   diagnostics validate Python lowering when the selected entrypoint defines
+   `main`, matching default `geno run`. Libraries without an entrypoint `main`
+   remain permissive, even if an imported module defines one. Targetless
+   `geno.api.check()` remains a language check with no compiler-lowering promise
+   to preserve embedding and interpreter-oriented behavior.
 6. `geno compile --target python|js` keeps its backend selector. If a manifest
    declares compatible execution targets, compilation checks those profiles;
    otherwise it uses the legacy defaults (`python-cli` or `node-cli`). An

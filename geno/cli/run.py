@@ -317,11 +317,13 @@ def _format_process_frontend_error(filename: str, error: BaseException) -> str:
     """Format a frontend failure without leaking a worker traceback."""
     from io import StringIO
 
+    from ..compiler import CompileError
     from ..dependency_graph import (
         CircularDependencyError,
         DependencyGraphError,
         NameCollisionError,
     )
+    from ..js_compiler import JSCompileError
     from ..lexer import LexerError
     from ..parser import ParseError, ParseErrors
     from ..project_graph import ProjectGraphError
@@ -362,6 +364,11 @@ def _format_process_frontend_error(filename: str, error: BaseException) -> str:
         return f"Parse Error: {error}{_format_source_snippet(error.location)}"
     if isinstance(error, GenoTypeError):
         return f"Type Error: {error}{_format_source_snippet(error.location)}"
+    if isinstance(error, (CompileError, JSCompileError)):
+        # Backend rejections (reserved runtime names, unsupported constructs)
+        # carry the only actionable text, so surface the same message the
+        # `geno compile` path prints instead of the opaque frontend fallback.
+        return f"Compile Error: {error}"
     if isinstance(error, SecurityViolation):
         return f"Security Error: {error}"
     if isinstance(error, (TimeoutError, StepLimitExceeded)):

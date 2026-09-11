@@ -86,6 +86,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TuplePattern,
     TypeAnnotation,
     TypeDef,
     TypedHole,
@@ -1822,6 +1823,22 @@ class Compiler(BaseCompiler, ASTVisitor):
                     cond = f"({cond}) and ({sub_cond})"
                 bindings.extend(sub_bindings)
 
+            return (cond, bindings)
+
+        if isinstance(pattern, TuplePattern):
+            # Compiled tuples are Python tuples, so the arity check is exact and
+            # never aliases a list of the same length.
+            cond = (
+                f"isinstance({scrutinee}, tuple) "
+                f"and len({scrutinee}) == {len(pattern.elements)}"
+            )
+            for i, elem_pat in enumerate(pattern.elements):
+                sub_cond, sub_bindings = self._compile_pattern_condition(
+                    elem_pat, f"{scrutinee}[{i}]"
+                )
+                if sub_cond != "True":
+                    cond = f"({cond}) and ({sub_cond})"
+                bindings.extend(sub_bindings)
             return (cond, bindings)
 
         if isinstance(pattern, ListPattern):

@@ -40,6 +40,24 @@ class TypeParserMixin(ParserBase):
 
         self._expect(TokenType.ASSIGN)
 
+        # Optional leading '|' before the first variant, so the idiomatic
+        # functional layout parses:
+        #     type Tx =
+        #         | Deposit(amount: Int)
+        #         | Withdraw(amount: Int)
+        # A leading bar only ever introduces variants, so it also settles the
+        # alias-vs-ADT disambiguation below.
+        if self._match(TokenType.BAR):
+            variants = [self._parse_type_variant()]
+            while self._match(TokenType.BAR):
+                variants.append(self._parse_type_variant())
+            return TypeDef(
+                location=location,
+                name=name,
+                type_params=type_params,
+                variants=variants,
+            )
+
         # Disambiguate: type alias vs algebraic data type
         # Alias if RHS starts with '(' (function type) or 'TypeId[' (parameterized type)
         if self._check(TokenType.LPAREN):

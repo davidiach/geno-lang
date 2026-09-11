@@ -13,6 +13,7 @@ from .ast_nodes import (
     LiteralPattern,
     Pattern,
     RestPattern,
+    TuplePattern,
     VariablePattern,
     WildcardPattern,
 )
@@ -76,6 +77,21 @@ class PatternParserMixin(ParserBase):
                     "List pattern may contain at most one rest ('...') element"
                 )
             return ListPattern(location=location, elements=elements)
+
+        # Tuple pattern: (a, b), (x, _, z)
+        if self._match(TokenType.LPAREN):
+            tuple_elements: list[Pattern] = []
+            if not self._check(TokenType.RPAREN):
+                tuple_elements.append(self._parse_pattern())
+                while self._match(TokenType.COMMA):
+                    tuple_elements.append(self._parse_pattern())
+            self._expect(TokenType.RPAREN)
+            if len(tuple_elements) < 2:
+                raise self._error(
+                    "Tuple pattern needs at least two elements (e.g. '(a, b)'); "
+                    "bind the whole value with a plain name instead"
+                )
+            return TuplePattern(location=location, elements=tuple_elements)
 
         # Constructor pattern: SomeConstructor or SomeConstructor(p1, p2)
         if self._check(TokenType.TYPE_IDENTIFIER):

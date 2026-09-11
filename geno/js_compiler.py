@@ -77,6 +77,7 @@ from .ast_nodes import (
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TuplePattern,
     TypeAlias,
     TypeDef,
     TypedHole,
@@ -2461,7 +2462,8 @@ class JSCompiler(BaseCompiler):
                 with self._block_scope(
                     self._pattern_bound_names(arm.pattern), arm.body
                 ):
-                    for var_name, expr in bindings:
+                    # Repeated names keep the last binding, like the interpreter.
+                    for var_name, expr in dict(bindings).items():
                         self._writeln(f"let {var_name} = {expr};")
                     if arm.guard is not None:
                         guard_code = self._compile_expr(arm.guard)
@@ -2501,7 +2503,8 @@ class JSCompiler(BaseCompiler):
                 with self._block_scope(
                     self._pattern_bound_names(arm.pattern), arm.body
                 ):
-                    for var_name, expr in bindings:
+                    # Repeated names keep the last binding, like the interpreter.
+                    for var_name, expr in dict(bindings).items():
                         self._writeln(f"let {var_name} = {expr};")
                     if arm.body:
                         for s in arm.body:
@@ -2565,6 +2568,22 @@ class JSCompiler(BaseCompiler):
                     cond = f"({cond}) && ({sub_cond})"
                 bindings.extend(sub_bindings)
 
+            return (cond, bindings)
+
+        if isinstance(pattern, TuplePattern):
+            # Tuples lower to plain JS arrays, so only the fixed arity is
+            # checked here; the typechecker keeps lists and tuples apart.
+            cond = (
+                f"Array.isArray({scrutinee}) "
+                f"&& {scrutinee}.length === {len(pattern.elements)}"
+            )
+            for i, elem_pat in enumerate(pattern.elements):
+                sub_cond, sub_bindings = self._compile_pattern_condition(
+                    elem_pat, f"{scrutinee}[{i}]"
+                )
+                if sub_cond != "true":
+                    cond = f"({cond}) && ({sub_cond})"
+                bindings.extend(sub_bindings)
             return (cond, bindings)
 
         if isinstance(pattern, ListPattern):

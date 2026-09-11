@@ -43,8 +43,11 @@ targets = ["python-cli", "node-cli"]
 
 An explicit `geno check --target TARGET` checks one execution target, while
 still validating every target name in the manifest so typos fail closed. With
-no explicit or manifest target, `geno check` remains a target-agnostic language
-check and does not guarantee that either compiler can lower the program.
+no explicit or manifest target, `geno check`, `geno test`, and editor diagnostics
+validate Python lowering when the selected entrypoint defines `main`, matching
+the default `geno run`. Libraries without their own `main` remain permissive;
+an imported `main` does not make a library runnable. Targetless `geno.api.check()`
+remains an interpreter-oriented language check without a lowering guarantee.
 
 `geno compile --target python|js` retains its output-backend selector. It checks
 the compatible execution profiles declared by the manifest, falling back to

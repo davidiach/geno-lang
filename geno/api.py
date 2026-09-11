@@ -961,6 +961,7 @@ def check(
     target: str | None = None,
     *,
     _module_name: str | None = None,
+    _check_default_run: bool = False,
 ) -> CheckResult:
     """
     Parse and type-check Geno source code without executing it.
@@ -981,6 +982,7 @@ def check(
     from .target_profile import TargetProfile
     from .target_validation import (
         TargetValidationError,
+        validate_default_run_lowering_for_program,
         validate_program_collection_for_target,
     )
     from .typechecker import TypeChecker
@@ -1051,15 +1053,19 @@ def check(
                 mod_checker = TypeChecker(target_profile=target_profile)
                 mod_checker.check_program(mod_ast, modules=other_mods or None)
         checker.check_program(program, modules=parsed_modules)
+        entrypoint_name = _module_name
+        if entrypoint_name is None and filename and not filename.startswith("<"):
+            entrypoint_name = Path(filename).stem or None
         if target_profile is not None:
-            entrypoint_name = _module_name
-            if entrypoint_name is None and filename and not filename.startswith("<"):
-                entrypoint_name = Path(filename).stem or None
             validate_program_collection_for_target(
                 program,
                 parsed_modules or {},
                 target_profile,
                 entrypoint_name=entrypoint_name,
+            )
+        elif _check_default_run:
+            validate_default_run_lowering_for_program(
+                program, parsed_modules, entrypoint_name=entrypoint_name
             )
     except TargetValidationError as e:
         _finalize_timing(timing, "typecheck_ms", t_tc, t0)

@@ -48,6 +48,7 @@ from .ast_nodes import (
     TraitMethodSig,
     TryStatement,
     TupleDestructureStatement,
+    TuplePattern,
     TypeAlias,
     TypeDef,
     TypeIdentifier,
@@ -370,7 +371,7 @@ class BaseCompiler(ABC):
             elif isinstance(pattern, ConstructorPattern):
                 for subpattern in pattern.subpatterns:
                     check_pattern(subpattern)
-            elif isinstance(pattern, ListPattern):
+            elif isinstance(pattern, (ListPattern, TuplePattern)):
                 for element in pattern.elements:
                     check_pattern(element)
 
@@ -774,7 +775,7 @@ class BaseCompiler(ABC):
             return set().union(
                 *(self._pattern_bound_names(p) for p in pattern.subpatterns)
             )
-        if isinstance(pattern, ListPattern):
+        if isinstance(pattern, (ListPattern, TuplePattern)):
             return set().union(
                 *(self._pattern_bound_names(p) for p in pattern.elements)
             )

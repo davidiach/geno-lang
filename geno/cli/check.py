@@ -29,6 +29,7 @@ def check_file(filename: str, target: str | None = None):
         from ..target_profile import TargetProfile, resolve_manifest_targets
         from ..target_validation import (
             TargetValidationError,
+            validate_default_run_lowering,
             validate_project_for_target,
         )
 
@@ -47,6 +48,11 @@ def check_file(filename: str, target: str | None = None):
                 checked = checker.check_project_graph(dg)
                 if target_profile is not None:
                     validate_project_for_target(dg, target_profile)
+                else:
+                    # No declared target: the default `geno run` still lowers
+                    # through the Python backend, so validate against it rather
+                    # than reporting success for a program that cannot run.
+                    validate_default_run_lowering(dg)
             except (TypeError, TargetValidationError) as e:
                 target_errors.append((target_name, e))
 
@@ -54,7 +60,7 @@ def check_file(filename: str, target: str | None = None):
             for target_name, error in target_errors:
                 if isinstance(error, TargetValidationError):
                     label = (
-                        "Target Error"
+                        "Compile Error"
                         if target_name is None
                         else f"Target Error (target: {target_name})"
                     )

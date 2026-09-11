@@ -67,6 +67,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TuplePattern,
     TypeAlias,
     TypeDef,
     TypedHole,
@@ -2800,6 +2801,21 @@ class Interpreter:
                 bindings.update(sub_bindings)
 
             return bindings
+
+        if isinstance(pattern, TuplePattern):
+            # Tuples are fixed-arity, so a matching pattern must have the same
+            # length; the typechecker already rejects mismatched arities, and
+            # this keeps the interpreter safe for untyped/dynamic values.
+            if not isinstance(value, tuple) or len(value) != len(pattern.elements):
+                return None
+
+            tuple_bindings: dict[str, Any] = {}
+            for elem_pat, elem_val in zip(pattern.elements, value):
+                sub_bindings = self._match_pattern(elem_pat, elem_val)
+                if sub_bindings is None:
+                    return None
+                tuple_bindings.update(sub_bindings)
+            return tuple_bindings
 
         if isinstance(pattern, ListPattern):
             if not isinstance(value, list):

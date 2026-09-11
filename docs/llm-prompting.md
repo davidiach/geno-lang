@@ -21,9 +21,11 @@ Key syntax rules:
 - Every function needs at least one `example` clause
 - Functions with 3+ parameters require named arguments at call sites
 - Use `Option[T]` instead of null, `Result[T, E]` for errors
-- `parse_int` / `parse_float` return `Option` (`Some(n)` / `None`), not `Result`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
+- Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,
+  `format`, `type`, `list`, `str`, ...) — these are reserved runtime names and
+  are rejected when the program is compiled
 ```
 
 ## Common LLM Mistakes
@@ -110,15 +112,14 @@ end func
 
 ### 7. Zero-arg example syntax
 
-Wrong:
+Both forms are accepted for a function that takes no parameters:
 ```
+example () -> 42
 example -> 42
 ```
 
-Correct:
-```
-example () -> 42
-```
+Do not write the input as a value the function never takes — the example input
+must match the parameter list.
 
 ### 8. Using `get(list, index)` instead of bracket indexing
 
@@ -164,7 +165,45 @@ for i: Int in range(0, 10) do
 end for
 ```
 
-### 11. Matching `parse_int` / `parse_float` as `Result`
+### 11. Reserved runtime names
+
+`geno check`, `geno test`, editor diagnostics, and the default `geno run` reject
+bindings that would shadow the compiled runtime in programs whose entrypoint
+defines `main`. Targetless library checks remain permissive. The names come from the backend's host builtins, so
+`len`, `id`, `map`, `abs`, `format`, `type`, `list`, `print`, and `str` are not
+usable as function, parameter, or local names.
+
+Wrong:
+```
+func trim_to(s: String, len: Int) -> String
+```
+
+Correct:
+```
+func trim_to(s: String, count: Int) -> String
+```
+
+### 12. Destructuring tuples in `match`
+
+Tuple patterns are supported in match arms, so a pair does not need to be
+let-destructured first:
+```
+match split_once(line, ":") with
+    | Some((key, value)) -> return key
+    | None -> return ""
+end match
+```
+
+### 13. Multiline sum types
+
+Variant lists may span lines, and a leading `|` is allowed:
+```
+type Tx =
+    | Deposit(amount: Int)
+    | Withdraw(amount: Int)
+```
+
+### 14. Matching `parse_int` / `parse_float` as `Result`
 
 `parse_int` returns `Option[Int]` and `parse_float` returns `Option[Float]`.
 They never produce `Ok`/`Err`, so a `Result`-style match fails to typecheck.
@@ -235,7 +274,6 @@ Fix this Geno code. Common issues to check:
 - `then` after `if`, `do` after `for`/`while`
 - `end func`/`end if`/`end for`/`end while` block terminators
 - `stop` not `end` as parameter name (keyword conflict)
-- `parse_int`/`parse_float` return `Option`: match `Some`/`None`, not `Ok`/`Err`
 ```
 
 ## Machine-Readable Specification
