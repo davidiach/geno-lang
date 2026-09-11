@@ -4195,6 +4195,62 @@ class TestSemanticInvariants:
 class TestDocumentSyncDiagnostics:
     """Notification-driven diagnostics regressions."""
 
+    @pytest.mark.parametrize("kind", ["virtual", "standalone", "manifest", "imports"])
+    @pytest.mark.parametrize("runnable", [False, True])
+    def test_targetless_default_run_diagnostics(
+        self, tmp_path, monkeypatch, kind, runnable
+    ):
+        source = (
+            "func widen(len: Int) -> Int\n"
+            "  example 2 -> 4\n"
+            "  return len * 2\n"
+            "end func\n"
+        )
+        if runnable:
+            source += "func main() -> Int\n  return widen(2)\nend func\n"
+        main_file = tmp_path / "Main.geno"
+        if kind == "manifest":
+            (tmp_path / "geno.toml").write_text(
+                'entrypoint = "Main"\nfiles = ["Main"]\n'
+            )
+        elif kind == "imports":
+            source = "import Demo\n" + source
+            (tmp_path / "Demo.geno").write_text(
+                "func main() -> Int\n  return 0\nend func\n"
+            )
+        uri = "untitled:Main.geno" if kind == "virtual" else main_file.as_uri()
+        if kind != "virtual":
+            # Check the unsaved buffer, even when the disk source is valid.
+            main_file.write_text(source.replace("len", "count"))
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None, sync_kind=types.TextDocumentSyncKind.Full
+        )
+        published: dict[str, list[types.Diagnostic]] = {}
+        monkeypatch.setattr(
+            server,
+            "publish_diagnostics",
+            lambda u, ds: published.__setitem__(u, list(ds)),
+        )
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri,
+                    language_id="geno",
+                    version=1,
+                    text=source,
+                )
+            )
+        )
+        messages = [diag.message for diag in published[uri]]
+        if runnable:
+            assert any("reserved runtime name" in message for message in messages), (
+                messages
+            )
+        else:
+            assert messages == []
+
     def test_did_open_uses_unsaved_source_for_manifest_project(
         self, tmp_path, monkeypatch
     ):

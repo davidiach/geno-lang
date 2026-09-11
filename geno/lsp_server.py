@@ -1441,7 +1441,7 @@ class GenoLanguageServer:
 
             file_path = _uri_to_path_or_none(uri)
             if file_path is None:
-                result = geno.check(source, filename=uri)
+                result = geno.check(source, filename=uri, _check_default_run=True)
                 virtual_diags = [_to_lsp_diagnostic(d) for d in result.diagnostics]
                 self.server.publish_diagnostics(uri, virtual_diags)
                 all_symbols, _ = _extract_completion_symbols(source)
@@ -1461,6 +1461,7 @@ class GenoLanguageServer:
                 )
                 from geno.target_validation import (
                     TargetValidationError,
+                    validate_default_run_lowering,
                     validate_project_for_target,
                 )
 
@@ -1488,6 +1489,8 @@ class GenoLanguageServer:
                             checker.check_project_graph(dg)
                             if manifest_target_profile is not None:
                                 validate_project_for_target(dg, manifest_target_profile)
+                            else:
+                                validate_default_run_lowering(dg)
                         except (
                             TargetValidationError,
                             GenoTypeError,
@@ -1561,6 +1564,7 @@ class GenoLanguageServer:
                 )
                 from geno.target_validation import (
                     TargetValidationError,
+                    validate_default_run_lowering,
                     validate_project_for_target,
                 )
 
@@ -1586,6 +1590,8 @@ class GenoLanguageServer:
                             checker.check_project_graph(dg)
                             if target_profile is not None:
                                 validate_project_for_target(dg, target_profile)
+                            else:
+                                validate_default_run_lowering(dg)
                         except (
                             TargetValidationError,
                             GenoTypeError,
@@ -1653,6 +1659,7 @@ class GenoLanguageServer:
                         modules=context.merged_module_sources(),
                         target=target_name,
                         _module_name=context.module_name,
+                        _check_default_run=True,
                     )
                     if not result.ok:
                         lsp_diags.extend(
@@ -1690,7 +1697,7 @@ class GenoLanguageServer:
             _logger.debug("Project-level diagnostics failed for %s", uri, exc_info=True)
 
         # Single-file fallback — also uses geno.check() for consistency
-        result = geno.check(source, filename=uri)
+        result = geno.check(source, filename=uri, _check_default_run=True)
         lsp_diags = [_to_lsp_diagnostic(d) for d in result.diagnostics]
         self.server.publish_diagnostics(uri, lsp_diags)
 

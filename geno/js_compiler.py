@@ -2462,7 +2462,8 @@ class JSCompiler(BaseCompiler):
                 with self._block_scope(
                     self._pattern_bound_names(arm.pattern), arm.body
                 ):
-                    for var_name, expr in bindings:
+                    # Repeated names keep the last binding, like the interpreter.
+                    for var_name, expr in dict(bindings).items():
                         self._writeln(f"let {var_name} = {expr};")
                     if arm.guard is not None:
                         guard_code = self._compile_expr(arm.guard)
@@ -2502,7 +2503,8 @@ class JSCompiler(BaseCompiler):
                 with self._block_scope(
                     self._pattern_bound_names(arm.pattern), arm.body
                 ):
-                    for var_name, expr in bindings:
+                    # Repeated names keep the last binding, like the interpreter.
+                    for var_name, expr in dict(bindings).items():
                         self._writeln(f"let {var_name} = {expr};")
                     if arm.body:
                         for s in arm.body:

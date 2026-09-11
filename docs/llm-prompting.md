@@ -167,8 +167,9 @@ end for
 
 ### 11. Reserved runtime names
 
-`geno check`, `geno test`, and `geno run` all reject bindings that would shadow
-the compiled runtime. The names come from the backend's host builtins, so
+`geno check`, `geno test`, editor diagnostics, and the default `geno run` reject
+bindings that would shadow the compiled runtime in programs whose entrypoint
+defines `main`. Targetless library checks remain permissive. The names come from the backend's host builtins, so
 `len`, `id`, `map`, `abs`, `format`, `type`, `list`, `print`, and `str` are not
 usable as function, parameter, or local names.
 

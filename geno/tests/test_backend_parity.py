@@ -946,6 +946,50 @@ end func
         id="tuple_patterns",
     ),
     pytest.param(
+        """\
+func pick(p: (Int, Int)) -> Int
+    example (1, 2) -> 2
+    match p with
+        | (value, value) -> return value
+    end match
+end func
+
+func guarded(p: Option[(Int, Int)]) -> Int
+    example Some((1, 2)) -> 2
+    example None -> 0
+    match p with
+        | Some((value, value)) when value == 2 -> return value
+        | _ -> return 0
+    end match
+end func
+
+func nested(p: (List[Int], Int)) -> Int
+    example ([1], 2) -> 2
+    match p with
+        | ([value], value) -> return value
+        | _ -> return 0
+    end match
+end func
+
+func expression(p: (Int, Int)) -> Int
+    example (1, 2) -> 2
+    return match p with
+        | (value, value) -> value
+    end match
+end func
+
+func main() -> Unit
+    print(pick((1, 2)))
+    print(guarded(Some((1, 2))))
+    print(guarded(None))
+    print(nested(([1], 2)))
+    print(expression((1, 2)))
+    return ()
+end func
+""",
+        id="repeated_tuple_bindings",
+    ),
+    pytest.param(
         # --- Arithmetic ---
         """\
 func main() -> Unit

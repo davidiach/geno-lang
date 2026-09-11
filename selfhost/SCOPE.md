@@ -33,6 +33,19 @@ Builtin gaps are ordered with pure host-independent groups first
 browser-target groups. This keeps the next selfhost parity burn-down biased
 toward deterministic frontend/runtime work.
 
+## Syntax gaps within recognized keywords
+
+The canonical Python frontend also supports these forms that the experimental
+selfhost parser does not yet implement:
+
+- Bare zero-argument examples (`example -> value`); use `example () -> value`.
+- A leading `|` before the first sum-type variant; omit that initial bar.
+- Tuple patterns in match arms, including nested tuple patterns. Tuple `let`
+  destructuring is also outside the current selfhost parser subset.
+
+These are parser/interpreter gaps, so the keyword and builtin parity checks do
+not detect them. Canonical frontend and backend tests cover the new forms.
+
 ## What selfhost is NOT (yet)
 
 - **Not a compiler**: There is no code-generation backend. The selfhost does not

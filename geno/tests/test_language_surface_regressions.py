@@ -355,3 +355,48 @@ class TestReservedRuntimeNameAgreement:
         assert _run_geno("check", str(path)).returncode == 0
         assert _run_geno("run", str(path)).returncode == 0
         assert run_test_suite([path]).success
+
+
+@pytest.mark.parametrize("manifest", [False, True])
+def test_imported_main_does_not_turn_library_into_runnable_project(tmp_path, manifest):
+    from geno.test_runner import run_project_test_suite
+
+    source = "import Demo\n" + _RESERVED_NAME_SOURCE.split("func main()")[0]
+    path = _write(tmp_path, source, name="Lib.geno")
+    _write(tmp_path, "func main() -> Int\n  return 0\nend func\n", name="Demo.geno")
+    if manifest:
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Lib"\nfiles = ["Lib", "Demo"]\n'
+        )
+    result = _run_geno("check", str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    suite = run_project_test_suite(tmp_path) if manifest else run_test_suite([path])
+    assert suite.success, suite.file_results
+
+
+def test_default_test_lowering_preserves_entrypoint_module_name(tmp_path):
+    path = _write(
+        tmp_path,
+        "import Helper\nfunc main() -> Int\n  return 0\nend func\n",
+        name="Constructor.geno",
+    )
+    _write(
+        tmp_path,
+        "func helper() -> Int\n  example () -> 0\n  return 0\nend func\n",
+        name="Helper.geno",
+    )
+    suite = run_test_suite([path])
+    assert not suite.success
+    assert "reserved runtime module name" in (suite.file_results[0].error or "")
+
+
+def test_directory_without_manifest_validates_selected_main(tmp_path):
+    from geno.test_runner import run_project_test_suite
+
+    _write(tmp_path, _RESERVED_NAME_SOURCE)
+    result = _run_geno("check", str(tmp_path))
+    assert result.returncode != 0
+    assert "reserved runtime name" in result.stdout + result.stderr
+    suite = run_project_test_suite(tmp_path)
+    assert not suite.success
+    assert "reserved runtime name" in (suite.file_results[0].error or "")

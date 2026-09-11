@@ -542,7 +542,9 @@ def _test_file(
                 # A target-less file is still run by the default `geno run`,
                 # which lowers through the Python backend. Validate that here so
                 # examples cannot pass for a program that cannot run (#70).
-                validate_default_run_lowering_for_program(program, parsed_modules)
+                validate_default_run_lowering_for_program(
+                    program, parsed_modules, entrypoint_name=context.module_name
+                )
 
         # Count examples (apply filter)
         harnesses = extract_harnesses(program)

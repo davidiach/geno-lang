@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Callable, Mapping
 
 if TYPE_CHECKING:
     from .ast_nodes import Program
@@ -143,13 +143,12 @@ def validate_project_for_target(
     )
 
 
-def _has_entrypoint(programs: Iterable[Program]) -> bool:
-    """Report whether any module defines a runnable ``main`` function."""
+def _has_entrypoint(program: Program) -> bool:
+    """Report whether the entrypoint module defines a runnable ``main`` function."""
     from .ast_nodes import FunctionDef
 
     return any(
         isinstance(definition, FunctionDef) and definition.name == "main"
-        for program in programs
         for definition in program.definitions
     )
 
@@ -170,12 +169,10 @@ def validate_default_run_lowering(dependency_graph: DependencyGraph) -> None:
     """
     from .target_profile import TargetProfile
 
-    programs = [
-        dependency_graph.parsed[module]
-        for module in dependency_graph.sorted_modules
-        if module in dependency_graph.parsed
-    ]
-    if not _has_entrypoint(programs):
+    entrypoint = dependency_graph.project.entrypoint or (
+        dependency_graph.sorted_modules[-1] if dependency_graph.sorted_modules else None
+    )
+    if entrypoint is None or not _has_entrypoint(dependency_graph.parsed[entrypoint]):
         return
     validate_project_for_target(
         dependency_graph, TargetProfile.load(DEFAULT_RUN_TARGET)
@@ -185,15 +182,18 @@ def validate_default_run_lowering(dependency_graph: DependencyGraph) -> None:
 def validate_default_run_lowering_for_program(
     program: Program,
     modules: Mapping[str, Program] | None = None,
+    *,
+    entrypoint_name: str | None = None,
 ) -> None:
     """Validate one target-less program against the default ``geno run`` backend."""
     from .target_profile import TargetProfile
 
     module_programs = dict(modules or {})
-    if not _has_entrypoint([program, *module_programs.values()]):
+    if not _has_entrypoint(program):
         return
     validate_program_collection_for_target(
         program,
         module_programs,
         TargetProfile.load(DEFAULT_RUN_TARGET),
+        entrypoint_name=entrypoint_name,
     )
