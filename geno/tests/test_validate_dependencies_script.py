@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -237,6 +238,22 @@ jobs:
 
 def test_current_dependency_surfaces_pass_validation():
     assert validate_dependency_surfaces() == []
+
+
+def test_node_typings_match_minimum_supported_runtime():
+    extension = validate_dependencies.ROOT / "vscode-geno"
+    manifest = json.loads((extension / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((extension / "package-lock.json").read_text(encoding="utf-8"))
+    minimum = re.match(r">=(\d+)(?:\.\d+){0,2}(?:\s|$)", manifest["engines"]["node"])
+    assert minimum, "Declare the minimum supported Node runtime explicitly"
+    major = minimum.group(1)
+    # A caret keeps minor/patch typings updates within the oldest supported major.
+    assert re.fullmatch(
+        rf"\^{major}\.\d+\.\d+", manifest["devDependencies"]["@types/node"]
+    )
+    assert (
+        lock["packages"]["node_modules/@types/node"]["version"].split(".")[0] == major
+    )
 
 
 def test_release_gate_pipeline_requires_tag_history_and_main_ancestry():

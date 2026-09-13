@@ -18,6 +18,9 @@ updates:
     ignore:
       - dependency-name: "@types/vscode"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Match the minimum Node engine; raise the typings major deliberately.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     schedule:
       interval: "weekly"
     target-branch: "main"
