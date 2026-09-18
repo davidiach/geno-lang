@@ -8,6 +8,7 @@ Verifies type annotations and catches type errors before runtime.
 
 from __future__ import annotations
 
+import re as _re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -266,6 +267,9 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+_STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
+
+
 def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> str:
     """Return ' Did you mean: X?' suffix if a close match exists, else ''."""
     best, best_dist = None, max_dist + 1
@@ -276,6 +280,53 @@ def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> st
     if best is not None and best_dist <= max_dist:
         return f" Did you mean '{best}'?"
     return ""
+
+
+def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
+    """Map each standard-library function name to the modules defining it.
+
+    Derived from the shipped ``std/*.geno`` sources rather than a hand-kept
+    table, so the hints cannot drift as the standard library changes.
+    """
+    global _STDLIB_FUNCTION_MODULES
+    if _STDLIB_FUNCTION_MODULES is not None:
+        return _STDLIB_FUNCTION_MODULES
+
+    index: dict[str, list[str]] = {}
+    pattern = _re.compile(r"^func\s+([A-Za-z_]\w*)\s*\(", _re.MULTILINE)
+    try:
+        sources = sorted((Path(__file__).parent / "std").glob("*.geno"))
+    except OSError:  # pragma: no cover - unreadable install tree
+        sources = []
+    for path in sources:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:  # pragma: no cover - unreadable module
+            continue
+        for name in pattern.findall(text):
+            modules = index.setdefault(name, [])
+            if path.stem not in modules:
+                modules.append(path.stem)
+
+    _STDLIB_FUNCTION_MODULES = {name: tuple(modules) for name, modules in index.items()}
+    return _STDLIB_FUNCTION_MODULES
+
+
+def _suggest_import(name: str, imported: Iterable[str]) -> str:
+    """Return a ' import X' hint when a standard module defines ``name``.
+
+    Forgetting the import for a helper that feels built in (``char_at``,
+    ``sqrt``, ``chunk``) is a common first failure, and 'Undefined function'
+    alone does not point at the fix.
+    """
+    already = set(imported)
+    modules = [m for m in _stdlib_function_modules().get(name, ()) if m not in already]
+    if not modules:
+        return ""
+    if len(modules) == 1:
+        return f" Did you forget to 'import {modules[0]}'?"
+    listed = ", ".join(f"'import {module}'" for module in modules)
+    return f" It is defined in {listed}; import the one you mean."
 
 
 # =============================================================================
@@ -323,6 +374,7 @@ class TypeChecker(ExhaustivenessMixin):
         self._trait_self_type_depth = 0
         self._target_profile = target_profile
         self._target_rejected: dict[str, str] = {}
+        self._imported_module_names: set[str] = set()
         self._fresh_tv_counter: int = 0
 
         # Module namespace for qualified imports: alias/name → {symbol: Type}
@@ -898,6 +950,12 @@ class TypeChecker(ExhaustivenessMixin):
         """
         self.errors = []
         self._resolved_type_cache.clear()
+
+        self._imported_module_names = {
+            defn.module_name
+            for defn in program.definitions
+            if isinstance(defn, ImportStatement)
+        }
 
         # Resolve imports: load type defs and function sigs from modules
         if modules is not None:
@@ -3553,7 +3611,9 @@ class TypeChecker(ExhaustivenessMixin):
             and env.lookup(identifier_func.name) is None
             and identifier_func.name not in self._target_rejected
         ):
-            hint = _suggest_name(identifier_func.name, self._env_names(env))
+            hint = _suggest_import(
+                identifier_func.name, self._imported_module_names
+            ) or _suggest_name(identifier_func.name, self._env_names(env))
             self._error(
                 f"Undefined function: {identifier_func.name}{hint}",
                 expr.location,
