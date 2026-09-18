@@ -205,6 +205,21 @@ def _browser_capability_bootstrap() -> str:
     return f"globalThis.__GENO_CAPS = {_json.dumps(caps)};\n"
 
 
+def _browser_canvas_prologue() -> str:
+    """Return the JS that binds the canvas before any Geno app code runs.
+
+    The drawing and mouse builtins in the runtime prelude are guarded on
+    ``_geno_canvas``/``_geno_ctx`` being defined, so a build that omits this
+    prologue silently no-ops every draw call and never attaches the mouse
+    listeners. Both the single-file and directory builds emit it.
+    """
+    return (
+        "const _geno_canvas = document.getElementById('geno-canvas');\n"
+        "const _geno_ctx = _geno_canvas.getContext('2d');\n"
+        f"{_browser_capability_bootstrap()}"
+    )
+
+
 def _offset_source_map_lines(source_map_json: str, line_delta: int) -> str:
     """Offset generated source-map lines by prepending empty mapping lines."""
     if line_delta <= 0:
@@ -3569,6 +3584,56 @@ def _to_esm(js_code: str, program: Program, *, include_node_preamble: bool) -> s
     return js_code
 
 
+def _canvas_shell_markup(
+    *, title: str, width: int, height: int, body_script: str
+) -> str:
+    """Return the browser shell HTML wrapping a Geno canvas app.
+
+    Shared by the single-file and directory builds so the two cannot drift.
+
+    The shell is responsive: the canvas keeps the logical ``width``/``height``
+    the program draws with, while CSS scales the element down to fit the
+    viewport at its original aspect ratio. ``width: min(...)`` constrains both
+    axes at once, so the whole playfield stays on screen in a window shorter or
+    narrower than the canvas instead of overflowing off the top and bottom.
+    The third bound is the canvas's own pixel width, so responsiveness only
+    ever scales an oversized canvas down: a small canvas keeps its intrinsic
+    size on a large screen rather than being blown up and blurred.
+    ``box-sizing: border-box`` keeps the 1px border inside that budget (hence
+    the ``+ 2px``, so the drawing surface itself renders 1:1), and the viewport
+    meta makes the same scaling apply on mobile. Mouse coordinates stay in
+    logical canvas units; the runtime rescales them by the element's rendered
+    size.
+    """
+    safe_title = _html.escape(title)
+    safe_width = _coerce_canvas_dimension(width, "width")
+    safe_height = _coerce_canvas_dimension(height, "height")
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{safe_title}</title>
+<style>
+html, body {{ margin: 0; height: 100%; }}
+body {{ background: #111; display: flex; justify-content: center; align-items: center; }}
+canvas {{
+  display: block;
+  box-sizing: border-box;
+  border: 1px solid #333;
+  aspect-ratio: {safe_width} / {safe_height};
+  width: min(100vw, calc(100vh * {safe_width} / {safe_height}), calc({safe_width}px + 2px));
+  height: auto;
+}}
+</style>
+</head>
+<body>
+<canvas id="geno-canvas" width="{safe_width}" height="{safe_height}"></canvas>
+{body_script}
+</body>
+</html>"""
+
+
 def _wrap_html(
     js_code: str,
     width: int = 800,
@@ -3577,15 +3642,7 @@ def _wrap_html(
     source_map_json: str | None = None,
 ) -> str:
     """Wrap compiled JS code in a self-contained HTML shell with Canvas."""
-    safe_title = _html.escape(title)
-    safe_width = _coerce_canvas_dimension(width, "width")
-    safe_height = _coerce_canvas_dimension(height, "height")
-    browser_bootstrap = _browser_capability_bootstrap()
-    script_prefix = (
-        "const _geno_canvas = document.getElementById('geno-canvas');\n"
-        "const _geno_ctx = _geno_canvas.getContext('2d');\n"
-        f"{browser_bootstrap}"
-    )
+    script_prefix = _browser_canvas_prologue()
     sm_comment = ""
     if source_map_json:
         source_map_json = _offset_source_map_lines(
@@ -3595,21 +3652,12 @@ def _wrap_html(
         sm_comment = (
             f"\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,{b64}\n"
         )
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{safe_title}</title>
-<style>
-body {{ margin: 0; background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; }}
-canvas {{ border: 1px solid #333; }}
-</style>
-</head>
-<body>
-<canvas id="geno-canvas" width="{safe_width}" height="{safe_height}"></canvas>
-<script>{script_prefix}{js_code}{sm_comment}</script>
-</body>
-</html>"""
+    return _canvas_shell_markup(
+        title=title,
+        width=width,
+        height=height,
+        body_script=f"<script>{script_prefix}{js_code}{sm_comment}</script>",
+    )
 
 
 def compile_to_html(
