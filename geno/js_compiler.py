@@ -3596,10 +3596,14 @@ def _canvas_shell_markup(
     viewport at its original aspect ratio. ``width: min(...)`` constrains both
     axes at once, so the whole playfield stays on screen in a window shorter or
     narrower than the canvas instead of overflowing off the top and bottom.
-    ``box-sizing: border-box`` keeps the 1px border inside that budget, and the
-    viewport meta makes the same scaling apply on mobile. Mouse coordinates
-    stay in logical canvas units; the runtime rescales them by the element's
-    rendered size.
+    The third bound is the canvas's own pixel width, so responsiveness only
+    ever scales an oversized canvas down: a small canvas keeps its intrinsic
+    size on a large screen rather than being blown up and blurred.
+    ``box-sizing: border-box`` keeps the 1px border inside that budget (hence
+    the ``+ 2px``, so the drawing surface itself renders 1:1), and the viewport
+    meta makes the same scaling apply on mobile. Mouse coordinates stay in
+    logical canvas units; the runtime rescales them by the element's rendered
+    size.
     """
     safe_title = _html.escape(title)
     safe_width = _coerce_canvas_dimension(width, "width")
@@ -3618,7 +3622,7 @@ canvas {{
   box-sizing: border-box;
   border: 1px solid #333;
   aspect-ratio: {safe_width} / {safe_height};
-  width: min(100vw, calc(100vh * {safe_width} / {safe_height}));
+  width: min(100vw, calc(100vh * {safe_width} / {safe_height}), calc({safe_width}px + 2px));
   height: auto;
 }}
 </style>

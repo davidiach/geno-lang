@@ -565,13 +565,20 @@ class TestResponsiveCanvasShell:
         assert 'name="viewport"' in html
         assert "aspect-ratio: 1280 / 720" in html
         # Constrains both axes at once so a short window cannot crop it.
-        assert "min(100vw, calc(100vh * 1280 / 720))" in html
+        assert "min(100vw, calc(100vh * 1280 / 720), calc(1280px + 2px))" in html
+
+    def test_shell_never_upscales_a_canvas_past_its_intrinsic_size(self):
+        """Responsiveness scales oversized canvases down only. Without the
+        intrinsic-width bound a 320x200 app fills a desktop screen, blurred."""
+        html = compile_to_html(APP_SOURCE, width=320, height=200)
+        # The +2px covers the border, so the drawing surface renders 1:1.
+        assert "calc(320px + 2px)" in html
 
     def test_directory_shell_matches_single_file(self, tmp_path):
         index_html, _app_js = _build_directory_app(tmp_path)
         assert 'name="viewport"' in index_html
         assert "aspect-ratio: 1280 / 720" in index_html
-        assert "min(100vw, calc(100vh * 1280 / 720))" in index_html
+        assert "min(100vw, calc(100vh * 1280 / 720), calc(1280px + 2px))" in index_html
         assert 'width="1280"' in index_html
 
     def test_mouse_coordinates_rescale_to_logical_canvas_units(self):

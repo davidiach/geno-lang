@@ -312,20 +312,37 @@ def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
     return _STDLIB_FUNCTION_MODULES
 
 
-def _suggest_import(name: str, imported: Iterable[str]) -> str:
-    """Return a ' import X' hint when a standard module defines ``name``.
+def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
+    """Return an import hint when a standard module defines ``name``.
 
     Forgetting the import for a helper that feels built in (``char_at``,
     ``sqrt``, ``chunk``) is a common first failure, and 'Undefined function'
     alone does not point at the fix.
+
+    ``imported`` maps each already-imported module to its alias, or to None
+    when imported plainly. A plain import puts the name in scope unqualified,
+    so it cannot be what is missing and is left out of the hint. An aliased
+    import exposes only the qualified form, so the fix there is to qualify the
+    call rather than to import the module again.
     """
-    already = set(imported)
-    modules = [m for m in _stdlib_function_modules().get(name, ()) if m not in already]
-    if not modules:
+    qualified: list[str] = []
+    to_import: list[str] = []
+    for module in _stdlib_function_modules().get(name, ()):
+        if module not in imported:
+            to_import.append(module)
+            continue
+        alias = imported[module]
+        if alias is not None:
+            qualified.append(f"{alias}.{name}")
+
+    if qualified:
+        listed = " or ".join(f"'{form}'" for form in qualified)
+        return f" Did you mean {listed}?"
+    if not to_import:
         return ""
-    if len(modules) == 1:
-        return f" Did you forget to 'import {modules[0]}'?"
-    listed = ", ".join(f"'import {module}'" for module in modules)
+    if len(to_import) == 1:
+        return f" Did you forget to 'import {to_import[0]}'?"
+    listed = ", ".join(f"'import {module}'" for module in to_import)
     return f" It is defined in {listed}; import the one you mean."
 
 
@@ -374,7 +391,7 @@ class TypeChecker(ExhaustivenessMixin):
         self._trait_self_type_depth = 0
         self._target_profile = target_profile
         self._target_rejected: dict[str, str] = {}
-        self._imported_module_names: set[str] = set()
+        self._imported_module_names: dict[str, str | None] = {}
         self._fresh_tv_counter: int = 0
 
         # Module namespace for qualified imports: alias/name → {symbol: Type}
@@ -952,7 +969,7 @@ class TypeChecker(ExhaustivenessMixin):
         self._resolved_type_cache.clear()
 
         self._imported_module_names = {
-            defn.module_name
+            defn.module_name: defn.alias
             for defn in program.definitions
             if isinstance(defn, ImportStatement)
         }

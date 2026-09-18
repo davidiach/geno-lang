@@ -2808,16 +2808,49 @@ class TestMissingImportHints:
     def test_ambiguous_name_lists_every_defining_module(self):
         from geno.typechecker import _suggest_import
 
-        hint = _suggest_import("flatten", [])
+        hint = _suggest_import("flatten", {})
         assert "import List" in hint
         assert "import Option" in hint
 
     def test_no_hint_when_every_defining_module_is_imported(self):
         from geno.typechecker import _suggest_import
 
-        assert _suggest_import("flatten", ["List", "Option"]) == ""
+        assert _suggest_import("flatten", {"List": None, "Option": None}) == ""
 
     def test_no_hint_for_a_name_no_std_module_defines(self):
         from geno.typechecker import _suggest_import
 
-        assert _suggest_import("definitely_not_a_std_function", []) == ""
+        assert _suggest_import("definitely_not_a_std_function", {}) == ""
+
+
+class TestImportHintsWithAliases:
+    """An aliased import exposes only the qualified name, so the hint must
+    point at that rather than going silent."""
+
+    def test_aliased_import_suggests_the_qualified_form(self):
+        error = expect_type_error(
+            "import String as S\n\n"
+            "func initial(s: String) -> String\n"
+            '    example "hi" -> "h"\n'
+            "    return char_at(s, 0)\n"
+            "end func\n"
+        )
+        assert "Did you mean 'S.char_at'?" in str(error)
+
+    def test_plain_import_still_suppresses_the_hint(self):
+        from geno.typechecker import _suggest_import
+
+        assert _suggest_import("char_at", {"String": None}) == ""
+
+    def test_alias_hint_prefers_qualifying_over_importing_again(self):
+        from geno.typechecker import _suggest_import
+
+        hint = _suggest_import("char_at", {"String": "S"})
+        assert "S.char_at" in hint
+        assert "import String" not in hint
+
+    def test_unimported_module_is_unaffected_by_an_unrelated_alias(self):
+        from geno.typechecker import _suggest_import
+
+        hint = _suggest_import("chunk", {"String": "S"})
+        assert "import List" in hint
