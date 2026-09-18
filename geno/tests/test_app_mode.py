@@ -480,3 +480,112 @@ class TestJSAppMode:
         """
         js = compile_to_js(source)
         assert "Object.freeze({...p, x:" not in js
+
+
+# =============================================================================
+# Browser shell: focus recovery (#94) and responsive canvas (#95)
+# =============================================================================
+
+
+APP_SOURCE = """
+type State = State(x: Int)
+
+func init() -> State
+    return State(0)
+end func init
+
+func update(state: State, dt: Float) -> State
+    if is_key_down("d") then return State(state.x + 1) end if
+    if is_mouse_down() then return State(mouse_x()) end if
+    return state
+end func update
+
+func render(state: State) -> Unit
+    clear_screen("#000000")
+    return ()
+end func render
+"""
+
+
+def _build_directory_app(tmp_path):
+    """Run `geno build` in directory mode; return (index.html, app.js) text."""
+    from geno.cli.build import build_app
+
+    src = tmp_path / "Main.geno"
+    src.write_text(APP_SOURCE, encoding="utf-8")
+    out = tmp_path / "dist"
+    build_app(str(src), output=str(out), width=1280, height=720)
+    return (
+        (out / "index.html").read_text(encoding="utf-8"),
+        (out / "app.js").read_text(encoding="utf-8"),
+    )
+
+
+class TestFocusLossInputRecovery:
+    """#94: held input must not survive the page losing focus."""
+
+    def test_single_file_registers_focus_loss_handlers(self):
+        html = compile_to_html(APP_SOURCE, width=800, height=600)
+        assert "addEventListener('blur'" in html
+        assert "visibilitychange" in html
+        assert "pagehide" in html
+
+    def test_directory_build_registers_focus_loss_handlers(self, tmp_path):
+        _index, app_js = _build_directory_app(tmp_path)
+        assert "addEventListener('blur'" in app_js
+        assert "visibilitychange" in app_js
+
+    def test_keyboard_reset_survives_tree_shaking_without_the_mouse(self):
+        """The prelude is tree-shaken per section, so a keyboard-only program
+        drops the mouse section. The key reset must not be trapped inside it."""
+        from geno.js_compiler import _tree_shake_prelude
+
+        shaken = _tree_shake_prelude("is_key_down('d'); is_key_pressed('d');")
+        assert "_geno_keys_down.clear()" in shaken
+        assert "addEventListener('blur'" in shaken
+        # Guard the premise: the mouse section really was dropped.
+        assert "_geno_canvas.addEventListener('mousedown'" not in shaken
+
+    def test_mouse_reset_survives_tree_shaking_without_the_keyboard(self):
+        from geno.js_compiler import _tree_shake_prelude
+
+        shaken = _tree_shake_prelude("is_mouse_down(); mouse_x();")
+        assert "_geno_mouse_down = false" in shaken
+        assert "addEventListener('blur'" in shaken
+
+
+class TestResponsiveCanvasShell:
+    """#95: the shell must fit the viewport and keep logical coordinates."""
+
+    def test_single_file_shell_is_responsive(self):
+        html = compile_to_html(APP_SOURCE, width=1280, height=720)
+        # Logical resolution the program draws with is unchanged.
+        assert 'width="1280"' in html
+        assert 'height="720"' in html
+        assert 'name="viewport"' in html
+        assert "aspect-ratio: 1280 / 720" in html
+        # Constrains both axes at once so a short window cannot crop it.
+        assert "min(100vw, calc(100vh * 1280 / 720))" in html
+
+    def test_directory_shell_matches_single_file(self, tmp_path):
+        index_html, _app_js = _build_directory_app(tmp_path)
+        assert 'name="viewport"' in index_html
+        assert "aspect-ratio: 1280 / 720" in index_html
+        assert "min(100vw, calc(100vh * 1280 / 720))" in index_html
+        assert 'width="1280"' in index_html
+
+    def test_mouse_coordinates_rescale_to_logical_canvas_units(self):
+        html = compile_to_html(APP_SOURCE, width=1280, height=720)
+        # CSS scaling means the rendered box differs from the drawing surface.
+        assert "_geno_canvas.width / shownWidth" in html
+        assert "_geno_canvas.height / shownHeight" in html
+
+    def test_directory_build_binds_the_canvas(self, tmp_path):
+        """Drawing and mouse builtins are guarded on these bindings; without
+        them a directory build renders a blank canvas and ignores the mouse."""
+        _index, app_js = _build_directory_app(tmp_path)
+        assert "const _geno_canvas = document.getElementById('geno-canvas')" in app_js
+        assert "const _geno_ctx = _geno_canvas.getContext('2d')" in app_js
+        assert app_js.index("_geno_ctx = _geno_canvas") < app_js.index(
+            "function _geno_clear_pressed_keys"
+        )

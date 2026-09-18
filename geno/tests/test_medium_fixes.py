@@ -35,6 +35,30 @@ class TestWriteTextOutput:
         write_text_output(str(target), "hello")
         assert target.read_text(encoding="utf-8") == "hello"
 
+    def test_create_parents_makes_nested_missing_directories(self, tmp_path):
+        """#97: opting in creates every missing parent, not just the last."""
+        from geno.cli._util import write_text_output
+
+        target = tmp_path / "not-created" / "site" / "game.html"
+        write_text_output(str(target), "<html></html>", create_parents=True)
+        assert target.read_text(encoding="utf-8") == "<html></html>"
+
+    def test_create_parents_reports_parent_that_is_a_regular_file(
+        self, tmp_path, capsys
+    ):
+        """#97: parent creation failures stay output errors, not tracebacks."""
+        from geno.cli._util import write_text_output
+
+        blocker = tmp_path / "blocker"
+        blocker.write_text("i am a file", encoding="utf-8")
+        target = blocker / "nested" / "out.html"
+        with pytest.raises(SystemExit) as exc_info:
+            write_text_output(str(target), "content", create_parents=True)
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "cannot write output file" in err
+        assert "Traceback" not in err
+
 
 class TestLspLoggingEnablement:
     """M-14: `geno lsp` must configure logging so internal-failure records are
