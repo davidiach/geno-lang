@@ -1,8 +1,10 @@
-"""Entrypoint execution form and type aliases visible from an entry program."""
+"""Entrypoint discovery, execution form, and declared result classification."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from .ast_nodes import (
@@ -11,9 +13,51 @@ from .ast_nodes import (
     ImportStatement,
     LambdaExpr,
     Program,
+    SimpleType,
     TypeAlias,
+    TypeAnnotation,
     TypeDef,
 )
+from .types import IntType, Type, UnitType
+
+# Type names the language owns.  An alias can never redefine one, so a name in
+# this set terminates alias resolution.
+_BUILTIN_TYPE_NAMES = frozenset(
+    {
+        "Array",
+        "Async",
+        "Bool",
+        "Float",
+        "Int",
+        "List",
+        "Map",
+        "MutableMap",
+        "Option",
+        "Result",
+        "Set",
+        "String",
+        "Tuple",
+        "Unit",
+        "Vec",
+    }
+)
+
+
+def find_entrypoint_main(program: Program) -> FunctionDef | None:
+    """Return *program*'s own ``main``, or ``None``.
+
+    Only a ``main`` declared in the selected entry program is executable
+    entrypoint state.  A ``main`` reached through an import is an ordinary
+    function, so import discovery never changes entrypoint ownership.
+    """
+    return next(
+        (
+            defn
+            for defn in program.definitions
+            if isinstance(defn, FunctionDef) and defn.name == "main"
+        ),
+        None,
+    )
 
 
 def visible_type_aliases(
@@ -125,3 +169,197 @@ def is_async_execution_form(defn: FunctionDef) -> bool:
         # can become an asynchronous form without the modifier.
         return False
     return _awaits_directly(defn.body)
+
+
+class EntrypointResultKind(Enum):
+    """How an executable host must treat the selected entrypoint's result."""
+
+    MISSING = "missing"
+    UNIT = "unit"
+    INT = "int"
+    OTHER = "other"
+
+
+@dataclass(frozen=True)
+class _ScopedTypeAlias:
+    """A type alias paired with the aliases visible where it was declared."""
+
+    definition: TypeAlias
+    scope: Mapping[str, _ScopedTypeAlias]
+
+
+def _exported_aliases(program: Program) -> list[TypeAlias]:
+    """Return the aliases *program* publishes to a plain (unaliased) import."""
+    has_exports = any(
+        isinstance(defn, (FunctionDef, TypeAlias, TypeDef)) and defn.exported
+        for defn in program.definitions
+    )
+    return [
+        defn
+        for defn in program.definitions
+        if isinstance(defn, TypeAlias) and (not has_exports or defn.exported)
+    ]
+
+
+def _visible_scoped_type_aliases(
+    program: Program,
+    modules: Mapping[str, Program] | None,
+) -> Mapping[str, _ScopedTypeAlias]:
+    """Build the entry alias environment without losing defining scopes.
+
+    An alias imported into the entry program may target another alias that is
+    visible only in the module that declared it, so each alias carries the
+    scope it was written in rather than being flattened into one namespace.
+    """
+    module_programs = modules or {}
+    scope_cache: dict[int, dict[str, _ScopedTypeAlias]] = {}
+
+    def scope_for(current: Program) -> dict[str, _ScopedTypeAlias]:
+        scope_key = id(current)
+        cached = scope_cache.get(scope_key)
+        if cached is not None:
+            return cached
+
+        scope: dict[str, _ScopedTypeAlias] = {}
+        scope_cache[scope_key] = scope
+        resolved: set[str] = set()
+
+        def resolve_import(import_stmt: ImportStatement) -> None:
+            module_name = import_stmt.module_name
+            imported_program = module_programs.get(module_name)
+            if module_name not in resolved:
+                resolved.add(module_name)
+                if imported_program is not None:
+                    for defn in imported_program.definitions:
+                        if isinstance(defn, ImportStatement):
+                            resolve_import(defn)
+            if import_stmt.alias is None and imported_program is not None:
+                imported_scope = scope_for(imported_program)
+                for alias_def in _exported_aliases(imported_program):
+                    scope[alias_def.name] = _ScopedTypeAlias(alias_def, imported_scope)
+
+        for defn in current.definitions:
+            if isinstance(defn, ImportStatement):
+                resolve_import(defn)
+        for defn in current.definitions:
+            if isinstance(defn, TypeAlias):
+                scope[defn.name] = _ScopedTypeAlias(defn, scope)
+        return scope
+
+    return scope_for(program)
+
+
+def _resolve_bound_annotation(
+    annotation: TypeAnnotation,
+    bindings: Mapping[str, TypeAnnotation],
+    seen_names: frozenset[str] = frozenset(),
+) -> TypeAnnotation:
+    """Substitute enclosing alias bindings throughout a simple type."""
+    if not isinstance(annotation, SimpleType):
+        return annotation
+    if not annotation.type_params:
+        if annotation.name not in bindings or annotation.name in seen_names:
+            return annotation
+        return _resolve_bound_annotation(
+            bindings[annotation.name],
+            bindings,
+            seen_names | {annotation.name},
+        )
+    return SimpleType(
+        location=annotation.location,
+        name=annotation.name,
+        type_params=[
+            _resolve_bound_annotation(type_param, bindings, seen_names)
+            for type_param in annotation.type_params
+        ],
+    )
+
+
+def _scoped_annotation_type_name(
+    annotation: TypeAnnotation | None,
+    aliases: Mapping[str, _ScopedTypeAlias],
+    bindings: Mapping[str, TypeAnnotation] | None = None,
+    seen_aliases: frozenset[int] = frozenset(),
+    seen_bindings: frozenset[str] = frozenset(),
+) -> str | None:
+    """Resolve *annotation* through aliases to the builtin type name it names.
+
+    Returns ``None`` for anything that is not an unparameterized builtin: a
+    parameterized type, a user-defined type, or an alias cycle.
+    """
+    if not isinstance(annotation, SimpleType):
+        return None
+
+    active_bindings = bindings or {}
+    if (
+        not annotation.type_params
+        and annotation.name in active_bindings
+        and annotation.name not in seen_bindings
+    ):
+        return _scoped_annotation_type_name(
+            active_bindings[annotation.name],
+            aliases,
+            active_bindings,
+            seen_aliases,
+            seen_bindings | {annotation.name},
+        )
+    if annotation.name in _BUILTIN_TYPE_NAMES:
+        return None if annotation.type_params else annotation.name
+
+    scoped_alias = aliases.get(annotation.name)
+    if scoped_alias is None or id(scoped_alias.definition) in seen_aliases:
+        return None
+    resolved_args = [
+        _resolve_bound_annotation(type_param, active_bindings)
+        for type_param in annotation.type_params
+    ]
+    alias_bindings = dict(active_bindings)
+    alias_bindings.update(
+        zip(scoped_alias.definition.type_params, resolved_args, strict=False)
+    )
+    return _scoped_annotation_type_name(
+        scoped_alias.definition.target_type,
+        scoped_alias.scope,
+        alias_bindings,
+        seen_aliases | {id(scoped_alias.definition)},
+        frozenset(),
+    )
+
+
+def classify_entrypoint_result(
+    program: Program,
+    modules: Mapping[str, Program] | None = None,
+) -> EntrypointResultKind:
+    """Classify the selected entrypoint's declared result for an executable host.
+
+    Classification reads the resolved static return annotation, so an alias
+    imported into the entry program resolves to what it names, and an
+    ``async main() -> Int`` classifies on its inner ``Int``.  A synchronous
+    ``main`` that returns an async value without awaiting it keeps its declared
+    ``Async[...]`` type and is neither ``INT`` nor ``UNIT``.
+
+    The typechecker records the resolved type on each function it checks, which
+    is authoritative when it is present.  Compilation with type checking turned
+    off has no such record, so the declared annotation is resolved directly.
+    """
+    main_def = find_entrypoint_main(program)
+    if main_def is None:
+        return EntrypointResultKind.MISSING
+
+    resolved_return_type = main_def.__dict__.get("_resolved_return_type")
+    if isinstance(resolved_return_type, Type):
+        if isinstance(resolved_return_type, IntType):
+            return EntrypointResultKind.INT
+        if isinstance(resolved_return_type, UnitType):
+            return EntrypointResultKind.UNIT
+        return EntrypointResultKind.OTHER
+
+    type_name = _scoped_annotation_type_name(
+        main_def.return_type,
+        _visible_scoped_type_aliases(program, modules),
+    )
+    if type_name == "Int":
+        return EntrypointResultKind.INT
+    if type_name == "Unit":
+        return EntrypointResultKind.UNIT
+    return EntrypointResultKind.OTHER
