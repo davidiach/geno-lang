@@ -139,3 +139,116 @@ def test_lock_setup_error_does_not_weaken_privacy_validation(tmp_path, monkeypat
         resolve_project_context(str(main))
 
     assert "owned by another user" in str(exc_info.value)
+
+
+# =============================================================================
+# Sibling-module import hints and project syntax errors (#74)
+# =============================================================================
+
+
+_LIB_SRC = (
+    "func double(n: Int) -> Int\n    example 2 -> 4\n    return n * 2\nend func\n"
+)
+
+
+def _two_file_project(tmp_path: Path, main_src: str) -> Path:
+    """A manifest declaring two modules, as `geno init` lays one out."""
+    (tmp_path / "geno.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        'entrypoint = "Main"\nfiles = ["Lib", "Main"]\n'
+    )
+    (tmp_path / "Lib.geno").write_text(_LIB_SRC)
+    main = tmp_path / "Main.geno"
+    main.write_text(main_src)
+    return main
+
+
+def test_sibling_module_in_files_is_named_in_the_undefined_function_error(tmp_path):
+    """`files` declares the module but does not import it, and the bare
+    'Undefined function' never said which module had the name."""
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func main() -> Int\n    example -> 8\n    return double(4)\nend func\n",
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "Undefined function: double" in messages
+    assert "import Lib" in messages
+
+
+def test_aliased_sibling_import_suggests_the_qualified_form(tmp_path):
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "import Lib as L\n\n"
+        "func main() -> Int\n    example -> 8\n    return double(4)\nend func\n",
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "L.double" in messages
+
+
+def test_plain_sibling_import_brings_the_name_into_scope(tmp_path):
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "import Lib\n\n"
+        "func main() -> Int\n    example -> 8\n    return double(4)\nend func\n",
+    )
+    assert check_path(main).ok
+
+
+def test_a_module_is_never_offered_as_an_import_of_itself(tmp_path):
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func helper() -> Int\n    example -> 1\n    return 1\nend func\n"
+        "func main() -> Int\n    example -> 1\n    return helper_typo()\nend func\n",
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "import Main" not in messages
+
+
+def test_syntax_error_in_a_project_module_is_a_diagnostic_not_a_traceback(tmp_path):
+    """Project resolution parses every module, so a syntax error escaped the
+    entrypoint parse guard entirely — `run --json` emitted no JSON at all."""
+    from geno.api import run_path
+
+    (tmp_path / "geno.toml").write_text(
+        '[project]\nname = "broken"\nversion = "0.1.0"\n'
+    )
+    main = tmp_path / "Main.geno"
+    main.write_text("func main() -> Int\n    example -> 1\n    return [1,\nend func\n")
+
+    result = run_path(main)
+
+    assert not result.ok
+    assert result.diagnostics
+    assert all(d.code is not None for d in result.diagnostics)
+
+
+def test_project_syntax_error_reaches_check_path_too(tmp_path):
+    from geno.api import check_path
+
+    (tmp_path / "geno.toml").write_text(
+        '[project]\nname = "broken"\nversion = "0.1.0"\n'
+    )
+    main = tmp_path / "Main.geno"
+    main.write_text("func main() -> Int\n    example -> 1\n    return [1,\nend func\n")
+
+    result = check_path(main)
+
+    assert not result.ok
+    assert result.diagnostics

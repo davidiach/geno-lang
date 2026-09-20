@@ -34,6 +34,8 @@ from .capabilities import normalize_capability_values
 from .dependency_graph import DependencyGraphError
 from .diagnostics import Diagnostic, ErrorCode, Severity
 from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
+from .lexer import LexerError
+from .parser_base import ParseError, ParseErrors
 from .project_graph import ProjectGraphError
 from .project_resolution import (
     ProjectResolutionError,
@@ -366,6 +368,30 @@ def _make_diagnostic(exc, default_code: ErrorCode) -> Diagnostic:
         severity=Severity.ERROR,
         location=getattr(exc, "location", None),
     )
+
+
+_PROJECT_SYNTAX_ERRORS = (ParseErrors, ParseError, LexerError)
+
+
+def _project_parse_diagnostics(exc: Exception) -> list[Diagnostic]:
+    """Render a syntax error raised while resolving a project.
+
+    Project resolution parses every module in the dependency graph, so a lexer
+    or parser error in any of them escapes from ``resolve_project_context``
+    rather than from the entrypoint parse each caller already guards. That left
+    it uncaught: ``--json`` wrote no JSON at all and let a Python traceback
+    reach stderr, which is the one output shape an agent harness cannot read.
+    """
+    errors = exc.errors if isinstance(exc, ParseErrors) else [exc]
+    return [
+        _make_diagnostic(
+            err,
+            ErrorCode.LEX_UNEXPECTED_CHAR
+            if isinstance(err, LexerError)
+            else ErrorCode.PARSE_UNEXPECTED_TOKEN,
+        )
+        for err in errors
+    ]
 
 
 def _make_config_diagnostic(message: str) -> Diagnostic:
@@ -883,6 +909,16 @@ def run_path(path: str, config: RunConfig | None = None) -> RunResult:
             for name, resolved_file in resolved.dependency_graph.file_map.items()
         }
         module_paths.update(merged_inputs.module_paths)
+    except _PROJECT_SYNTAX_ERRORS as exc:
+        timing.total_ms = (time.perf_counter() - t0) * 1000
+        return _emit_monitoring_hook(
+            cfg,
+            RunResult(
+                ok=False,
+                diagnostics=_project_parse_diagnostics(exc),
+                timing=timing,
+            ),
+        )
     except (
         FileNotFoundError,
         DependencyGraphError,
@@ -1113,6 +1149,13 @@ def check_path(
             for name, resolved_file in resolved.dependency_graph.file_map.items()
         }
         module_paths.update(merged_inputs.module_paths)
+    except _PROJECT_SYNTAX_ERRORS as exc:
+        timing.total_ms = (time.perf_counter() - t0) * 1000
+        return CheckResult(
+            ok=False,
+            diagnostics=_project_parse_diagnostics(exc),
+            timing=timing,
+        )
     except (
         FileNotFoundError,
         DependencyGraphError,

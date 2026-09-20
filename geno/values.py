@@ -41,7 +41,23 @@ class GenoRuntimeError(Exception):
 
 
 class ContractViolationError(GenoRuntimeError):
-    """Uncatchable contract violation from requires/ensures clauses."""
+    """Uncatchable contract violation from requires/ensures clauses.
+
+    ``call_depth`` is the interpreter call depth the violation was raised at,
+    when the raiser knows it. Example verification uses it to tell a
+    precondition that rejected the example's own input (depth 1) from one a
+    nested call tripped, which are different authoring mistakes.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        location: SourceLocation | None = None,
+        error_code: Any | None = None,
+        call_depth: int | None = None,
+    ) -> None:
+        super().__init__(message, location, error_code)
+        self.call_depth = call_depth
 
 
 class GenoThrowError(Exception):

@@ -12,7 +12,7 @@ import re as _re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Union, cast
+from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Sequence, Union, cast
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -267,6 +267,7 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+_FUNC_DEF_PATTERN = _re.compile(r"^func\s+([A-Za-z_]\w*)\s*\(", _re.MULTILINE)
 _STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
 
 
@@ -282,6 +283,19 @@ def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> st
     return ""
 
 
+def _named_argument_example(func_name: str, param_names: Sequence[str]) -> str:
+    """Return ': f(a: ..., b: ...)' showing the call this rule wants.
+
+    'use named arguments (e.g., param_name: value)' states the rule but not
+    the labels, which are the part the caller is missing — spelling them out
+    turns a lookup into a rewrite (#64).
+    """
+    if not param_names or not all(param_names):
+        return " (e.g., param_name: value)"
+    rendered = ", ".join(f"{param}: ..." for param in param_names)
+    return f": {func_name}({rendered})"
+
+
 def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
     """Map each standard-library function name to the modules defining it.
 
@@ -293,7 +307,6 @@ def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
         return _STDLIB_FUNCTION_MODULES
 
     index: dict[str, list[str]] = {}
-    pattern = _re.compile(r"^func\s+([A-Za-z_]\w*)\s*\(", _re.MULTILINE)
     try:
         sources = sorted((Path(__file__).parent / "std").glob("*.geno"))
     except OSError:  # pragma: no cover - unreadable install tree
@@ -303,7 +316,7 @@ def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
             text = path.read_text(encoding="utf-8")
         except OSError:  # pragma: no cover - unreadable module
             continue
-        for name in pattern.findall(text):
+        for name in _FUNC_DEF_PATTERN.findall(text):
             modules = index.setdefault(name, [])
             if path.stem not in modules:
                 modules.append(path.stem)
@@ -312,12 +325,66 @@ def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
     return _STDLIB_FUNCTION_MODULES
 
 
-def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
-    """Return an import hint when a standard module defines ``name``.
+def _project_function_modules(
+    filename: str,
+    cache: dict[str, dict[str, tuple[str, ...]]],
+) -> dict[str, tuple[str, ...]]:
+    """Map function names to the sibling project modules that define them.
 
-    Forgetting the import for a helper that feels built in (``char_at``,
-    ``sqrt``, ``chunk``) is a common first failure, and 'Undefined function'
-    alone does not point at the fix.
+    A manifest's ``files`` list declares which modules make up the project but
+    does not bring their declarations into scope, so calling a sibling's
+    function without ``import Lib`` fails with a bare 'Undefined function'
+    and no mention of the module that has it (#74).
+
+    Derived from the declared sources the same way the standard-library index
+    is, and keyed by the calling file so a module is never offered as an
+    import of itself.
+
+    ``cache`` belongs to one TypeChecker rather than the module: the standard
+    library cannot change under a running process but a project's own sources
+    can, and a long-lived one (the LSP, ``geno watch``) would otherwise keep
+    hinting from the sources as they were at the first undefined name.
+    """
+    cached = cache.get(filename)
+    if cached is not None:
+        return cached
+
+    index: dict[str, list[str]] = {}
+    try:
+        from .project_graph import ProjectGraph, ProjectGraphError
+
+        source = Path(filename)
+        try:
+            graph = ProjectGraph.discover(source)
+        except ProjectGraphError:  # pragma: no cover - unusable manifest
+            graph = None
+        if graph is not None and graph.root is not None:
+            current = source.resolve()
+            for resolved in graph.files:
+                if resolved.is_dependency or resolved.path.resolve() == current:
+                    continue
+                try:
+                    text = resolved.path.read_text(encoding="utf-8")
+                except OSError:  # pragma: no cover - unreadable sibling
+                    continue
+                for name in _FUNC_DEF_PATTERN.findall(text):
+                    modules = index.setdefault(name, [])
+                    if resolved.module_name not in modules:
+                        modules.append(resolved.module_name)
+    except (OSError, ValueError):  # pragma: no cover - unresolvable path
+        index = {}
+
+    built = {name: tuple(modules) for name, modules in index.items()}
+    cache[filename] = built
+    return built
+
+
+def _import_hint(
+    name: str,
+    imported: Mapping[str, str | None],
+    defining_modules: Iterable[str],
+) -> str:
+    """Phrase the import hint for the modules that define ``name``.
 
     ``imported`` maps each already-imported module to its alias, or to None
     when imported plainly. A plain import puts the name in scope unqualified,
@@ -327,7 +394,7 @@ def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
     """
     qualified: list[str] = []
     to_import: list[str] = []
-    for module in _stdlib_function_modules().get(name, ()):
+    for module in defining_modules:
         if module not in imported:
             to_import.append(module)
             continue
@@ -344,6 +411,33 @@ def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
         return f" Did you forget to 'import {to_import[0]}'?"
     listed = ", ".join(f"'import {module}'" for module in to_import)
     return f" It is defined in {listed}; import the one you mean."
+
+
+def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
+    """Return an import hint when a standard module defines ``name``.
+
+    Forgetting the import for a helper that feels built in (``char_at``,
+    ``sqrt``, ``chunk``) is a common first failure, and 'Undefined function'
+    alone does not point at the fix.
+    """
+    return _import_hint(name, imported, _stdlib_function_modules().get(name, ()))
+
+
+def _suggest_project_import(
+    name: str,
+    location: SourceLocation | None,
+    imported: Mapping[str, str | None],
+    cache: dict[str, dict[str, tuple[str, ...]]],
+) -> str:
+    """Return an import hint when a sibling project module defines ``name``."""
+    if location is None:
+        return ""
+    filename = location.filename
+    if not filename or filename.startswith("<"):
+        return ""
+    return _import_hint(
+        name, imported, _project_function_modules(filename, cache).get(name, ())
+    )
 
 
 # =============================================================================
@@ -392,6 +486,7 @@ class TypeChecker(ExhaustivenessMixin):
         self._target_profile = target_profile
         self._target_rejected: dict[str, str] = {}
         self._imported_module_names: dict[str, str | None] = {}
+        self._project_module_index: dict[str, dict[str, tuple[str, ...]]] = {}
         self._fresh_tv_counter: int = 0
 
         # Module namespace for qualified imports: alias/name → {symbol: Type}
@@ -3628,11 +3723,22 @@ class TypeChecker(ExhaustivenessMixin):
             and env.lookup(identifier_func.name) is None
             and identifier_func.name not in self._target_rejected
         ):
-            hint = _suggest_import(
-                identifier_func.name, self._imported_module_names
-            ) or _suggest_name(identifier_func.name, self._env_names(env))
+            hint = (
+                _suggest_import(identifier_func.name, self._imported_module_names)
+                or _suggest_project_import(
+                    identifier_func.name,
+                    expr.location,
+                    self._imported_module_names,
+                    self._project_module_index,
+                )
+                or _suggest_name(identifier_func.name, self._env_names(env))
+            )
+            # Every hint form is a sentence of its own, so the name needs a
+            # stop before it: without one the two run together as
+            # "Undefined function: char_at Did you forget to 'import String'?".
+            # Only when a hint follows — a bare message keeps house style.
             self._error(
-                f"Undefined function: {identifier_func.name}{hint}",
+                f"Undefined function: {identifier_func.name}{'.' if hint else ''}{hint}",
                 expr.location,
                 ErrorCode.TYPE_UNDEFINED_FUNC,
             )
@@ -3693,7 +3799,8 @@ class TypeChecker(ExhaustivenessMixin):
                 )
                 self._error(
                     f"Function '{func_name}' has {len(func_type.param_types)} parameters; "
-                    f"use named arguments for clarity (e.g., param_name: value)",
+                    f"use named arguments for clarity"
+                    f"{_named_argument_example(func_name, param_names)}",
                     expr.location,
                 )
 
