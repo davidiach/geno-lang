@@ -299,6 +299,19 @@ let evens: List[Int] = filter(nums, fn(x: Int) -> x % 2 == 0)
 let total: Int = fold(nums, 0, fn(acc: Int, x: Int) -> acc + x)
 ```
 
+Replacing one element returns a new list rather than mutating in place.
+`set_at` is a prelude builtin, so it needs no import:
+
+```geno
+let nums: List[Int] = [1, 2, 3, 4, 5]
+let patched: List[Int] = set_at(list: nums, index: 2, value: 99)  // [1, 2, 99, 4, 5]
+// nums is unchanged
+```
+
+It raises if the index is out of range. Algorithms that write to the same
+collection repeatedly -- in-place sorts and the like -- are usually clearer with
+`Vec[T]` and `vec_set`, covered under Mutable Collections below.
+
 ### List Comprehensions
 
 A concise syntax for transforming and filtering lists:

@@ -232,6 +232,97 @@ match parse_int(arg) with
 end match
 ```
 
+### 15. Naming a local `result` in a function with `ensures`
+
+In a function with an `ensures` clause, `result` names the return value. A local
+binding of the same name is rejected, because `ensures result` would be
+ambiguous. Accumulators are the usual place this bites; name them `acc` or `out`.
+
+Wrong:
+```
+func total(n: Int) -> Int
+    ensures result >= 0
+    example (3) -> 3
+
+    var result: Int = 0
+    var i: Int = 0
+    while i < n do
+        result = result + i
+        i = i + 1
+    end while
+    return result
+end func
+```
+
+```
+Type Error: `result` is reserved in functions with ensures clauses; rename this
+binding so `ensures result` unambiguously refers to the return value
+```
+
+Correct:
+```
+func total(n: Int) -> Int
+    ensures result >= 0
+    example (3) -> 3
+
+    var acc: Int = 0
+    var i: Int = 0
+    while i < n do
+        acc = acc + i
+        i = i + 1
+    end while
+    return acc
+end func
+```
+
+A function without `ensures` may use `result` as an ordinary name.
+
+### 16. Updating one element of a list
+
+Lists are immutable, but replacing an element does not mean rebuilding the list
+by hand. `set_at` is a prelude builtin -- no import -- and returns a new list:
+
+```
+set_at(list: List[T], index: Int, value: T) -> List[T]
+```
+
+Wrong -- rebuilding around the index:
+```
+func swap(xs: List[Int], i: Int, j: Int) -> List[Int]
+    example ([1, 2, 3], 0, 2) -> [3, 2, 1]
+    var out: List[Int] = []
+    var k: Int = 0
+    while k < length(xs) do
+        if k == i then
+            out = append(out, xs[j])
+        else
+            if k == j then
+                out = append(out, xs[i])
+            else
+                out = append(out, xs[k])
+            end if
+        end if
+        k = k + 1
+    end while
+    return out
+end func
+```
+
+Correct:
+```
+func swap(xs: List[Int], i: Int, j: Int) -> List[Int]
+    example ([1, 2, 3], 0, 2) -> [3, 2, 1]
+    let a: Int = xs[i]
+    let b: Int = xs[j]
+    return set_at(list: set_at(list: xs, index: i, value: b), index: j, value: a)
+end func
+```
+
+`set_at` has three parameters, so its call sites need named arguments. It raises
+if the index is out of range. For code that mutates in a loop rather than
+threading a new list through each step, `Vec[T]` and `vec_set` are the better
+fit.
+
 ## Prompting Patterns
 
 ### Generate a function
