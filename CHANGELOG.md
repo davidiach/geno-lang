@@ -7,21 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-20
+
 ### Added
 
 - **Tuple patterns in `match` arms**: `| (a, b) -> ...` now parses, type checks, and runs on the interpreter and both backends, including nested forms such as `| Some((key, value)) ->`. Because every value of a tuple type has that type's arity, an arm whose elements are all variables or wildcards is exhaustive and needs no default arm; mismatched arity, non-tuple scrutinees, and single-element tuple patterns are rejected with targeted diagnostics. (#79)
 - **Leading `|` before the first ADT variant**: Sum-type definitions may now begin their variant list with a bar, so idiomatic multiline domain models parse. This — not a one-physical-line requirement — was what rejected multiline sum types. (#78)
 - **Bare-arrow zero-argument examples**: `example -> value` is now accepted alongside `example () -> value` and produces an identical AST; example inputs are still arity-checked against the parameter list. (#71)
+- **CLI latency ratchets**: `benchmarks/cli_latency.py` times six frozen CLI scenarios and `make perf-ratchets` enforces them against `perf-budgets.toml` in the weekly scheduled-quality workflow. (#48)
+- **Hosted header-read budget**: `GENO_HEADER_TIMEOUT_SECONDS` (default 5s) bounds reading a request head independently of the full request budget. (#61)
 
 ### Changed
 
 - **Target-less checks validate the default run backend**: `geno check` and `geno test` on a program with no declared target now validate lowering through the backend the default `geno run` uses, so a suite can no longer pass for a program that cannot run. Library modules that define no `main` are never executed by `geno run` and stay exempt, since standalone lowering reserves more names than project lowering. (#70)
 - **Interpreter collection caps are now interpreter-local**: Builtins installed on an `Interpreter` enforce only that interpreter's `SandboxConfig.max_collection_size`. The process-wide `geno.builtins.set_max_collection_size` cap no longer tightens (or is clobbered by) live interpreters; it now governs only direct module-level builtin calls. Embedders that relied on the global setter to constrain interpreters should pass the limit via `SandboxConfig` instead.
+- **Entrypoint results render in Geno syntax**: Compiled Python and the `geno run` result line now format `main()`'s value through the Geno formatter instead of Python's `repr`, so a `Bool` displays as `true` and a `List[String]` as `["a", "b"]`, matching the JavaScript backend. (#61)
+- **Non-finite float display**: `inf`, `-inf`, and `nan` now render identically in text output and `to_string` across the interpreter and both backends, including nested in collections. JSON serialization rules for non-finite numbers are unchanged. (#89)
+- **Faster `geno run` startup**: The default isolated `geno run` no longer imports the lexer, parser, typechecker, and dependency graph in the parent process, which the worker owns; `run-hello` drops about 15% and `run-medium` about 7%. (#48)
 
 ### Fixed
 
 - **Sandboxed compile diagnostics**: The default process-isolated `geno run` reported backend rejections as `Compiler Error: the isolated frontend failed safely (CompileError)`, hiding the only actionable text. Compile errors now surface the same message the `geno compile` path prints. (#69)
 - **`geno-form` example runs again**: Two local bindings named `len` shadowed a reserved runtime name, so the shipped app failed the default `geno run`.
+- **Silent truncation in `geno run`**: The entrypoint guard wrapped the whole `main()` call in `except NameError: pass`, so a `NameError` raised inside a program stopped execution mid-run while the CLI still exited 0. The guard now covers only the entrypoint name lookup, and the runtime prelude no longer names builtins the sandbox withholds. (#61)
+- **Call evaluation order and closure bindings**: Named-argument calls now evaluate their arguments in source order rather than parameter order, and a lambda that assigns to an enclosing `var` updates that binding, in compiled Python and JavaScript as in the interpreter. (#89)
+- **Import resolution at scale**: Deep import chains resolve without rebuilding the graph, source snapshots and private import namespaces survive normalization, imported namespaces are scoped to their module environment, manifested package identities are preserved in direct imports, and LSP project caches refresh after watched-file changes without losing diagnostics. (#88)
+- **Formatter and REPL**: The formatter preserves multiline string literals, and the REPL completes multi-line and nested definitions, including test definitions, instead of ending them at the first blank line. (#90)
+- **VS Code diagnostics and launch reporting**: Stale fallback diagnostics are discarded, language-server launch failures are reported instead of failing silently, and startup is cancelled across deactivation. (#86)
+- **VS Code API compatibility**: The extension keeps working against VS Code 1.91 after the `@types/vscode` bump. (#83)
+- **Experiment analysis**: Statistical corrections, valid experiment pairings, unavailable comparisons, and strict significance cutoffs are preserved in the benchmark and experiment analysis tooling. (#85)
+- **Coverage gate**: The 80% floor now measures production code only; `geno/tests/*` is omitted in both the run and report phases, and the coverage shards install the LSP extra so `geno/lsp_server.py` is actually exercised. (#61)
+- **Documentation**: The guide and pitfalls reference now state that `parse_int` and `parse_float` return `Option`, not `Result`. (#93)
+
+### Security
+
+- **Capability grants from untrusted arguments**: Both standalone compiled runtimes scanned the entire argv for `--cap`, including everything after `--`, so a program forwarding untrusted arguments could grant itself `env`, `fs`, `process`, or `http`. Both parsers now stop at the first `--`, matching `cli_args()`. This is a documented-behavior tightening permitted for a patch release because the previous behavior allowed a capability bypass. (#61)
+- **Half-open connection exhaustion**: Reading a request head shared the full 30s request budget, so `MAX_CONNECTIONS` partially-sent headers made every endpoint, including `/healthz` and `/metrics`, unreachable with no log line or counter. Head reads now have their own shorter budget and refused connections are counted and warned about. (#61)
+- **Hosted input validation and result bounds**: Workers enforce `GENO_MAX_RESPONSE_BODY_BYTES` before sending results over IPC and oversized `/run` and `/constrain` results return HTTP 413; request source, module source, and constraint prefixes must be valid Unicode, and unpaired JSON surrogate escapes and out-of-range timeouts return HTTP 400. (#87)
+- **Dependency maintenance**: Updated `cryptography` in the release lock and the VS Code extension's transitive `js-yaml`, `qs`, and `undici` dependencies. (#42, #49, #52, #99, #100)
 
 ## [0.4.3] - 2026-08-01
 
