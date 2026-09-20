@@ -384,7 +384,7 @@
     "python_targets": ["python-cli", "python-hosted"],
     "javascript_targets": ["node-cli", "browser"],
     "manifest_behavior": "checks every declared target; explicit target still validates manifest spelling",
-    "targetless_behavior": "permissive language check with no backend-lowering guarantee",
+    "targetless_behavior": "geno check, geno test, and editor diagnostics validate Python lowering when the entrypoint module defines main, matching the default geno run; entrypoints without main and the geno.check() embedding API stay permissive with no backend-lowering guarantee",
     "validation_effects": "in-memory only; writes no artifact, executes no code, grants no capabilities",
     "browser_artifact_command": "geno build"
   },
