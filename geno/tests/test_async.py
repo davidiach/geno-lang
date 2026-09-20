@@ -4,13 +4,22 @@ Tests for async/await in the Geno language
 """
 
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+import pytest
+
 import geno
+from geno.ast_nodes import FunctionDef
 from geno.compiler import compile_to_python
+from geno.entrypoint import is_async_execution_form
 from geno.js_compiler import compile_to_js
+from geno.parser import parse
+from geno.tests._script_runner import run_node_code, run_python_code
+
+HAS_NODE = shutil.which("node") is not None
 
 
 def run(source: str):
@@ -292,3 +301,165 @@ end func
         js_code = compile_to_js(source)
         assert "async () =>" in js_code
         assert "await main()" in js_code
+
+
+# ---------------------------------------------------------------------------
+# `await` inside a synchronous `main`
+#
+# The typechecker accepts `await` directly inside any `main`, with or without
+# an `async` modifier (TypeChecker._check_await_expr).  Such an entrypoint is
+# an asynchronous execution form: a host that lowers it synchronously emits
+# `await` outside an async function, which neither backend accepts.
+# ---------------------------------------------------------------------------
+
+SYNC_MAIN_WITH_AWAIT = """
+async func twice(x: Int) -> Int
+  return x * 2
+end func
+
+func main() -> Unit
+  let doubled: Int = await twice(21)
+  print(doubled)
+end func
+"""
+
+SYNC_MAIN_RETURNING_ASYNC = """
+async func twice(x: Int) -> Int
+  return x * 2
+end func
+
+func main() -> Async[Int]
+  return twice(21)
+end func
+"""
+
+
+def _entry_function(source: str, name: str = "main") -> FunctionDef:
+    """Parse *source* and return its own definition of *name*."""
+    return next(
+        defn
+        for defn in parse(source).definitions
+        if isinstance(defn, FunctionDef) and defn.name == name
+    )
+
+
+class TestSyncMainWithAwait:
+    """A synchronous `main` that awaits is lowered and awaited exactly once."""
+
+    def test_python_compiler_emits_async_main_and_asyncio_run(self):
+        py_code = compile_to_python(SYNC_MAIN_WITH_AWAIT)
+        assert "async def main" in py_code
+        assert "asyncio.run(main())" in py_code
+
+    def test_js_compiler_emits_async_main_and_awaited_entry(self):
+        js_code = compile_to_js(SYNC_MAIN_WITH_AWAIT)
+        assert "async function main" in js_code
+        assert "await main()" in js_code
+
+    def test_compiled_python_runs(self):
+        completed = run_python_code(
+            compile_to_python(SYNC_MAIN_WITH_AWAIT),
+            python_executable=sys.executable,
+            args=["--cap", "print"],
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout == "42\n"
+
+    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+    def test_compiled_node_runs(self):
+        completed = run_node_code(
+            compile_to_js(SYNC_MAIN_WITH_AWAIT), args=["--cap", "print"]
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout == "42\n"
+
+    def test_ensures_on_an_awaiting_main_runs_on_both_backends(self):
+        """The ensures body helper must be async too, and its call awaited."""
+        source = """
+async func twice(x: Int) -> Int
+  return x * 2
+end func
+
+func main() -> Int
+  ensures result > 0
+  let doubled: Int = await twice(21)
+  print(doubled)
+  return doubled
+end func
+"""
+        completed = run_python_code(
+            compile_to_python(source),
+            python_executable=sys.executable,
+            args=["--cap", "print"],
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "42" in completed.stdout
+
+        if HAS_NODE:
+            completed = run_node_code(compile_to_js(source), args=["--cap", "print"])
+            assert completed.returncode == 0, completed.stderr
+            assert "42" in completed.stdout
+
+    def test_sync_main_returning_an_async_value_is_not_awaited(self):
+        """Returning an async value without awaiting keeps `main` synchronous."""
+        py_code = compile_to_python(SYNC_MAIN_RETURNING_ASYNC)
+        assert "async def main" not in py_code
+        assert "asyncio.run" not in py_code
+
+        js_code = compile_to_js(SYNC_MAIN_RETURNING_ASYNC)
+        assert "async function main" not in js_code
+        assert "await main()" not in js_code
+
+
+class TestIsAsyncExecutionForm:
+    """Unit coverage for the shared async-execution-form predicate."""
+
+    def test_async_modifier_is_an_async_form(self):
+        source = """
+async func work() -> Int
+  return 1
+end func
+"""
+        assert is_async_execution_form(_entry_function(source, "work"))
+
+    def test_plain_function_is_not_an_async_form(self):
+        source = """
+func work() -> Int
+  example () -> 1
+  return 1
+end func
+"""
+        assert not is_async_execution_form(_entry_function(source, "work"))
+
+    def test_main_awaiting_in_its_own_body_is_an_async_form(self):
+        assert is_async_execution_form(_entry_function(SYNC_MAIN_WITH_AWAIT))
+
+    def test_main_returning_an_async_value_is_not_an_async_form(self):
+        assert not is_async_execution_form(_entry_function(SYNC_MAIN_RETURNING_ASYNC))
+
+    def test_non_main_awaiting_is_not_an_async_form(self):
+        """`await` outside async/main is a type error, so parse without checking."""
+        source = """
+async func twice(x: Int) -> Int
+  return x * 2
+end func
+
+func helper() -> Int
+  return await twice(21)
+end func
+"""
+        assert not is_async_execution_form(_entry_function(source, "helper"))
+
+    def test_await_inside_a_nested_lambda_is_not_the_enclosing_form(self):
+        """A lambda owns its own async scope, so its `await` does not escape."""
+        source = """
+async func twice(x: Int) -> Int
+  return x * 2
+end func
+
+func main() -> Unit
+  let f = fn() -> await twice(21)
+  print(f())
+end func
+"""
+        assert not is_async_execution_form(_entry_function(source))

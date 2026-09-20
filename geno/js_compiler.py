@@ -90,7 +90,7 @@ from .ast_nodes import (
     WildcardPattern,
     WithExpr,
 )
-from .entrypoint import visible_type_aliases
+from .entrypoint import is_async_execution_form, visible_type_aliases
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -891,10 +891,7 @@ class JSCompiler(BaseCompiler):
                 ),
                 None,
             )
-            main_is_async = any(
-                isinstance(d, FunctionDef) and d.name == "main" and d.is_async
-                for d in program.definitions
-            )
+            main_is_async = main_def is not None and is_async_execution_form(main_def)
             if has_main:
                 self._writeln()
                 if esm:
@@ -1115,10 +1112,7 @@ class JSCompiler(BaseCompiler):
                 ),
                 None,
             )
-            main_is_async = any(
-                isinstance(d, FunctionDef) and d.name == "main" and d.is_async
-                for d in ep_program.definitions
-            )
+            main_is_async = main_def is not None and is_async_execution_form(main_def)
 
         is_app_mode = {"init", "update", "render"}.issubset(
             func_names
@@ -1469,7 +1463,7 @@ class JSCompiler(BaseCompiler):
             param_parts.append(part)
         params = ", ".join(param_parts)
         func_name = self._mangle_name(defn.name)
-        async_prefix = "async " if defn.is_async else ""
+        async_prefix = "async " if is_async_execution_form(defn) else ""
         if self._emit_function_assignments:
             self._writeln(
                 f"var {func_name} = {async_prefix}function {func_name}({params}) {{"
@@ -1525,7 +1519,7 @@ class JSCompiler(BaseCompiler):
         if has_ensures:
             self._dedent()
             self._writeln("}")
-            await_body = "await " if defn.is_async else ""
+            await_body = "await " if is_async_execution_form(defn) else ""
             self._writeln(f"const result = {await_body}{body_helper}();")
             for ens in defn.specs.ensures:
                 if isinstance(ens.condition, BooleanLiteral):
