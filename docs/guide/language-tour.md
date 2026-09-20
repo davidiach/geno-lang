@@ -37,6 +37,27 @@ end func
 
 Example clauses serve as both documentation and tests. They are verified at runtime.
 
+### Float Examples
+
+`Float` examples are compared with a small tolerance rather than exactly, so an
+expected value does not have to be the exact binary literal a run would print.
+The tolerance is a relative `1e-9`, which is enough to absorb binary
+floating-point representation noise -- roughly, round to **at least ten
+significant digits**:
+
+```geno
+func ratio(a: Float, b: Float) -> Float
+    example (160.0, 7.0) -> 22.85714286       // passes -- 10 significant digits
+    return a / b
+end func
+```
+
+`22.8571428` (nine digits) fails, and so does a convenience rounding like
+`22.857`. The tolerance deliberately does not stretch that far: an example that
+passed on a value correct to only four digits would hide a real error rather
+than catch it. When an expected value is awkward to write by hand, prefer `Int`
+arithmetic -- cents rather than fractional currency, for instance.
+
 ### Named Parameters
 
 Functions with 3 or more parameters require named arguments at the call site:

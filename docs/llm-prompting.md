@@ -323,6 +323,41 @@ if the index is out of range. For code that mutates in a loop rather than
 threading a new list through each step, `Vec[T]` and `vec_set` are the better
 fit.
 
+### 17. Float `example` values and how close is close enough
+
+`Float` examples are compared with a relative tolerance of `1e-9`, not exactly, so
+the exact binary literal a run prints is not required -- but a convenience
+rounding is not enough either. Round to **at least ten significant digits**.
+
+Wrong -- the value is right to five digits, which is not close enough:
+```
+func ratio(a: Float, b: Float) -> Float
+    example (160.0, 7.0) -> 22.857
+    return a / b
+end func
+```
+
+Correct:
+```
+func ratio(a: Float, b: Float) -> Float
+    example (160.0, 7.0) -> 22.85714286
+    return a / b
+end func
+```
+
+The boundary is exactly where the tolerance puts it: for `160.0 / 7.0`,
+`22.8571428` (nine digits) fails and `22.85714286` (ten) passes. The tolerance
+absorbs binary representation noise and nothing more -- it is deliberately too
+tight to accept a hand-rounded decimal, because an example that passed on a value
+correct to only four digits would hide an error instead of catching it.
+
+Two things that avoid the problem entirely:
+
+- Prefer `Int` arithmetic where the domain allows it. Money is the common case:
+  work in cents and the expected values are exact.
+- Take the expected value from a real run rather than computing it mentally, then
+  keep ten or more digits of it.
+
 ## Prompting Patterns
 
 ### Generate a function
