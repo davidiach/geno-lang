@@ -358,6 +358,79 @@ Two things that avoid the problem entirely:
 - Take the expected value from a real run rather than computing it mentally, then
   keep ten or more digits of it.
 
+### 18. `requires` and `Err` examples on the same function
+
+A `requires` clause is checked before the body runs, so a function cannot both
+contract its happy path and example its rejection path. An `example` whose
+expected value is `Err(...)` for an input the precondition excludes fails: the
+precondition rejects the input before the body can return the `Err`.
+
+Wrong -- `requires` and the `Err` example contradict each other:
+```
+func to_roman(n: Int) -> Result[String, String]
+    requires n >= 1
+    example (1) -> Ok("I")
+    example (0) -> Err("out of range")
+
+    if n < 1 then
+        return Err("out of range")
+    end if
+    return Ok("I")
+end func
+```
+
+Correct -- keep the public `Result` API free of preconditions and validate in
+the body, and put `requires` on the in-range helper it calls:
+```
+func roman_digit(n: Int) -> String
+    requires n >= 1
+    example (1) -> "I"
+    return "I"
+end func
+
+func to_roman(n: Int) -> Result[String, String]
+    example (1) -> Ok("I")
+    example (0) -> Err("out of range")
+
+    if n < 1 then
+        return Err("out of range")
+    end if
+    return Ok(roman_digit(n))
+end func
+```
+
+The rule of thumb: a function that returns `Result` validates its own input, so
+it takes no `requires`. A helper that assumes valid input takes the `requires`
+and is never called with anything else.
+
+### 19. Multi-file projects still need `import`
+
+Listing a module in `geno.toml` makes it part of the project. It does not bring
+its declarations into scope. Every module that uses another module's functions
+imports it, and a missing import fails at the call site -- where the name is
+used, not where the module is declared.
+
+Given `files = ["Lib", "Main"]` in `geno.toml` and a `double` defined in
+`Lib.geno`, this fails:
+```
+func main() -> Int
+    return double(4)
+end func
+```
+
+Correct:
+```
+import Lib
+
+func main() -> Int
+    return double(4)
+end func
+```
+
+A plain `import Lib` puts the module's functions in scope unqualified, so
+`double(4)` works. The qualified form `Lib.double(4)` is also valid and is worth
+preferring when two modules define the same name.
+
 ## Prompting Patterns
 
 ### Generate a function
