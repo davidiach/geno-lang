@@ -75,6 +75,7 @@ does the `geno.check()` embedding API unless a target is selected explicitly.
 - **Entrypoint results render in Geno syntax**: Compiled Python and the `geno run` result line now format `main()`'s value through the Geno formatter instead of Python's `repr`, so a `Bool` displays as `true` and a `List[String]` as `["a", "b"]`, matching the JavaScript backend. (#61)
 - **Non-finite float display**: `inf`, `-inf`, and `nan` now render identically in text output and `to_string` across the interpreter and both backends, including nested in collections. JSON serialization rules for non-finite numbers are unchanged. (#89)
 - **Faster `geno run` startup**: The default isolated `geno run` no longer imports the lexer, parser, typechecker, and dependency graph in the parent process, which the worker owns; `run-hello` drops about 15% and `run-medium` about 7%. (#48)
+- **VS Code extension build runtime**: Building and packaging the extension now requires Node.js 22 or 24, matching the VSCE 4 toolchain. The supported VS Code API remains unchanged. (#104)
 
 ### Fixed
 
@@ -94,6 +95,10 @@ does the `geno.check()` embedding API unless a target is selected explicitly.
 - **Experiment analysis**: Statistical corrections, valid experiment pairings, unavailable comparisons, and strict significance cutoffs are preserved in the benchmark and experiment analysis tooling. (#85)
 - **Coverage gate**: The 80% floor now measures production code only; `geno/tests/*` is omitted in both the run and report phases, and the coverage shards install the LSP extra so `geno/lsp_server.py` is actually exercised. (#61)
 - **Documentation**: The guide and pitfalls reference now state that `parse_int` and `parse_float` return `Option`, not `Result`. (#93)
+- **Await in synchronous entrypoints**: A `main` without an `async` modifier can now await in its body or executable contracts on both compiled backends and the process-isolated CLI, matching interpreter behavior for ordinary entrypoint execution. (#108)
+- **Browser apps**: Single-file and directory builds share canvas initialization and responsive sizing without enlarging small canvases. Scaled pointer coordinates and input resets after focus or visibility loss prevent misplaced pointers and stuck controls. Builds create missing output parents, and package-lock setup failures produce actionable diagnostics. (#102)
+- **Actionable diagnostics**: Missing standard-library and project imports, named arguments, function examples, and examples rejected by preconditions now explain the relevant correction. Import hints respect aliases and exported declarations. (#102, #107)
+- **Authoring guidance**: Guides explain reserved `result` bindings, immutable list updates, preconditions, module imports, and preserving full precision in Float examples while comparison paths remain inconsistent. (#109)
 
 ### Security
 
