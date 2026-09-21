@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Module-level constants**: A `let` written outside any function now binds a constant every function in the file can read, replacing the duplicated literals and `@untested` helper functions the pattern used to need. The initializer is restricted to literal forms — a number, string or boolean, a negated number, or a list or tuple of those — so a module still executes nothing when it is imported; a call, an operator expression or a reference to another binding is rejected at parse time. `var` is rejected at module level, `export let` is not supported yet, and constants are private to the declaring module. Names follow the `snake_case` variable convention. (#72)
+
 ## [0.4.4] - 2026-09-20
 
 ### Compatibility
