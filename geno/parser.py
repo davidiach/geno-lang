@@ -17,6 +17,7 @@ from .ast_nodes import (
     FunctionDef,
     ImplDef,
     ImportStatement,
+    ModuleConstant,
     Parameter,
     Program,
     RequiresClause,
@@ -26,7 +27,9 @@ from .ast_nodes import (
     TraitDef,
     TraitMethodSig,
     TupleExpr,
+    constant_initializer_error,
 )
+from .diagnostics import ErrorCode
 from .parser_base import (
     ParseError,
     ParseErrors,
@@ -148,10 +151,62 @@ class Parser(
             if is_exported:
                 raise self._error("'export' cannot be used with 'test'")
             return self._parse_test_block()
+        elif self._check(TokenType.LET):
+            if untested_reason is not None:
+                raise self._error("@untested annotation is only valid on functions")
+            if is_exported:
+                raise self._error(
+                    "'export' on module constants is not yet supported; "
+                    "return the value from an exported function instead"
+                )
+            return self._parse_module_constant()
+        elif self._check(TokenType.VAR):
+            raise self._error(
+                "Module-level bindings must be immutable; use 'let' instead of 'var'"
+            )
         else:
             raise self._error(
-                f"Expected 'func', 'type', 'trait', 'impl', 'test', 'export', or 'import', got {token_type_to_str(self._current().type)}"
+                f"Expected 'func', 'type', 'trait', 'impl', 'test', 'let', 'export', or 'import', got {token_type_to_str(self._current().type)}"
             )
+
+    def _parse_module_constant(self) -> ModuleConstant:
+        """Parse a module-level constant: let NAME[: Type] = <literal>"""
+        location = self._current().location
+        self._expect(TokenType.LET)
+        if self._check(TokenType.LPAREN):
+            raise self._error(
+                "Tuple destructuring is not supported for module constants; "
+                "bind each name with its own 'let'"
+            )
+        if self._check(TokenType.TYPE_IDENTIFIER):
+            raise ParseError(
+                f"Module constant '{self._current().value}' must be named in "
+                f"snake_case; PascalCase and UPPER_CASE names are reserved for "
+                f"types and constructors",
+                self._current().location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+            )
+        name = self._expect(TokenType.IDENTIFIER, "Expected a name after 'let'").value
+        type_annotation = None
+        if self._match(TokenType.COLON):
+            type_annotation = self._parse_type()
+        self._expect(TokenType.ASSIGN)
+        value = self._parse_expression()
+        reason = constant_initializer_error(value)
+        if reason is not None:
+            raise ParseError(
+                f"Module constant '{name}' must be initialized by a literal, "
+                f"but found {reason}. Move the computation into a function and "
+                f"call it where the value is needed.",
+                value.location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+            )
+        return ModuleConstant(
+            location=location,
+            name=str(name),
+            type_annotation=type_annotation,
+            value=value,
+        )
 
     def _parse_untested_annotation(self) -> str:
         """Parse: @untested("reason string")"""

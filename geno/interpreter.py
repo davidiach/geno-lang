@@ -53,6 +53,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     LiteralPattern,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -1380,6 +1381,8 @@ class Interpreter:
                 if isinstance(defn, ImportStatement):
                     self._resolve_module_import(defn, modules, resolved, module_imports)
 
+        self._bind_module_constants(program, self.global_env)
+
         # First pass: collect type and function definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
@@ -1513,6 +1516,11 @@ class Interpreter:
                 self.type_defs[defn.name] = defn
                 for variant in defn.variants:
                     self._constructor_to_type[variant.name] = defn.name
+
+        # Module constants stay private to the module: they are bound in the
+        # module's own environment, which its closures capture, and are never
+        # added to the importer's scope.
+        self._bind_module_constants(mod_program, module_env)
 
         # Register function definitions from module
         module_ns: dict[str, Closure] = {}
@@ -3028,6 +3036,17 @@ class Interpreter:
         )
         value = self._deep_copy_value(value)
         env.bind(stmt.name, value, mutable=False)
+
+    def _bind_module_constants(self, program: Program, env: Environment) -> None:
+        """Bind every module-level constant of *program* into *env*."""
+        for defn in program.definitions:
+            if not isinstance(defn, ModuleConstant):
+                continue
+            value = self.eval_expr(defn.value, env)
+            value = _promote_int_to_expected_float(
+                value, getattr(defn, "_expected_runtime_type", defn.type_annotation)
+            )
+            env.bind(defn.name, self._deep_copy_value(value), mutable=False)
 
     def _exec_var(self, stmt: VarStatement, env: Environment) -> None:
         """Execute a var statement."""

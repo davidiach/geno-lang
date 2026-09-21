@@ -3,9 +3,11 @@
 import re
 from pathlib import Path
 
+import pytest
+
 from geno.interpreter import interpret
 from geno.lexer import Lexer
-from geno.parser import Parser
+from geno.parser import ParseError, Parser
 from geno.typechecker import TypeChecker
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,3 +83,22 @@ def test_parse_int_option_snippets_execute_with_examples_enabled():
         program = Parser(Lexer(code, source).tokenize()).parse_program()
         TypeChecker().check_program(program)
         interpret(code, source, check_examples=True)
+
+
+def test_module_constant_snippet_executes_with_examples_enabled():
+    # Regression for #72: the tour's module-constant example must run, and the
+    # rejection it documents must be the diagnostic the parser actually emits.
+    path = "docs/guide/language-tour.md"
+    heading = "### Module Constants"
+    code = _geno_snippet_after_heading(path, heading, 1)
+    source = f"{path}#{heading}"
+
+    program = Parser(Lexer(code, source).tokenize()).parse_program()
+    TypeChecker().check_program(program)
+    assert interpret(code, source, check_examples=True) == "roman <number> uses M"
+
+    rejected = "let limit = max_size() + 1\n"
+    with pytest.raises(ParseError) as excinfo:
+        Parser(Lexer(rejected, source).tokenize()).parse_program()
+    assert "must be initialized by a literal" in str(excinfo.value)
+    assert "an operator expression" in str(excinfo.value)

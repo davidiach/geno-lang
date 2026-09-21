@@ -63,6 +63,7 @@ from .ast_nodes import (
     LiteralPattern,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -849,6 +850,8 @@ class JSCompiler(BaseCompiler):
             direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
         )
 
+        self._compile_module_constants(program)
+
         # Compile all definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
@@ -1081,6 +1084,8 @@ class JSCompiler(BaseCompiler):
             # First pass: collect definitions
             self._register_import_alias_param_names(program)
             collect_definitions(program, into=self._definition_index)
+
+            self._compile_module_constants(program)
 
             # Compile definitions
             for defn in program.definitions:
@@ -2409,6 +2414,18 @@ class JSCompiler(BaseCompiler):
             f"(({result}) => _checkCollectionSize({result}))"
             f"({json_string})))({value})"
         )
+
+    def _compile_module_constants(self, program: Program) -> None:
+        """Emit module-level constants ahead of every other definition."""
+        for defn in program.definitions:
+            if not isinstance(defn, ModuleConstant):
+                continue
+            value = self._compile_expr(defn.value)
+            name = self._mangle_name(defn.name)
+            if self._needs_deep_copy(defn.value, defn.type_annotation):
+                self._writeln(f"const {name} = _deepCopy({value});")
+            else:
+                self._writeln(f"const {name} = {value};")
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         value = self._compile_expr(stmt.value)

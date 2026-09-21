@@ -72,6 +72,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     LiteralPattern,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -809,6 +810,8 @@ class Compiler(BaseCompiler, ASTVisitor):
             direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
         )
 
+        self._compile_module_constants(program)
+
         # Compile all definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
@@ -963,6 +966,8 @@ class Compiler(BaseCompiler, ASTVisitor):
             # First pass: collect definitions
             self._register_import_alias_param_names(program)
             collect_definitions(program, into=self._definition_index)
+
+            self._compile_module_constants(program)
 
             # Compile definitions
             for defn in program.definitions:
@@ -1535,6 +1540,22 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._emit_block_close()
         finally:
             self._loop_capture_names.pop()
+
+    def _compile_module_constants(self, program: Program) -> None:
+        """Emit module-level constants ahead of every other definition."""
+        for defn in program.definitions:
+            if not isinstance(defn, ModuleConstant):
+                continue
+            name = self._mangle_name(defn.name)
+            rhs = self._promote_expr_to_expected_float(
+                self._compile_expr(defn.value),
+                getattr(defn, "_expected_runtime_type", defn.type_annotation),
+            )
+            if defn.type_annotation is not None:
+                ann = self._compile_type_annotation(defn.type_annotation)
+                self._writeln(f"{name}: '{ann}' = {rhs}")
+            else:
+                self._writeln(f"{name} = {rhs}")
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         """Compile a let statement.

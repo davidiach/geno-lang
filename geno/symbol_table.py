@@ -34,6 +34,7 @@ from .ast_nodes import (
     MatchArm,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Program,
     RestPattern,
@@ -388,6 +389,15 @@ class SymbolTableBuilder:
                 if private_only and (not has_explicit_exports or exported):
                     continue
                 sym = SymbolDef(defn.name, defn.location, "type")
+                scope.bind(defn.name, sym)
+                if record:
+                    self.table.definitions.append(sym)
+            elif isinstance(defn, ModuleConstant):
+                # Module constants are never exported, so they belong to the
+                # module's own scope and never to its export scope.
+                if exported_only:
+                    continue
+                sym = SymbolDef(defn.name, defn.location, "variable")
                 scope.bind(defn.name, sym)
                 if record:
                     self.table.definitions.append(sym)

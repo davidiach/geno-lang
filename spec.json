@@ -131,7 +131,11 @@
     "let_binding": {
       "immutable": "let name[: Type] = expr",
       "mutable": "var name[: Type] = expr",
-      "notes": ["Local let/var type annotations are optional when the initializer type is unambiguous", "var for mutable bindings (NOT let mut)"]
+      "notes": ["Local let/var type annotations are optional when the initializer type is unambiguous", "var for mutable bindings (NOT let mut)", "Module-level let binds a compile-time constant; see syntax.module_constant"]
+    },
+    "module_constant": {
+      "template": "let name[: Type] = literal",
+      "notes": ["Declared at module level, outside any function, and always immutable: 'var' is rejected there", "The initializer must be a literal, a negated numeric literal, or a list or tuple of those; calls, operators, f-strings and references to other bindings are rejected", "Names follow the snake_case variable convention", "Private to the declaring module: 'export let' is not supported and an importing module does not see the name"]
     },
     "type_definition": "type Name[T] = Variant1(field: Type) | Variant2(x: Int, y: String) (variants may span lines, with an optional leading '|')",
     "trait": "trait Name\\n  func method(self: Self, ...) -> Type\\nend trait",

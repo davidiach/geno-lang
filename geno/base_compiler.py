@@ -37,6 +37,7 @@ from .ast_nodes import (
     ListComprehension,
     ListPattern,
     MatchArm,
+    ModuleConstant,
     Parameter,
     Pattern,
     Program,
@@ -281,6 +282,8 @@ class BaseCompiler(ABC):
                         f"{defn.trait_name}_{impl_method.name}_{defn.target_type}",
                         "implementation helper",
                     )
+            elif isinstance(defn, ModuleConstant):
+                reject(defn.name, "module constant")
             elif isinstance(defn, ImportStatement) and defn.alias:
                 reject(defn.alias, "import alias")
 
