@@ -38,6 +38,10 @@ func widen(len: Int) -> Int
     example 2 -> 4
     return len * 2
 end func
+
+func main() -> Int
+    return widen(2)
+end func
 ```
 
 Accepted:
@@ -46,6 +50,10 @@ Accepted:
 func widen(count: Int) -> Int
     example 2 -> 4
     return count * 2
+end func
+
+func main() -> Int
+    return widen(2)
 end func
 ```
 
