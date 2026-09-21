@@ -24,6 +24,7 @@ def test_identifier_call_resolves_default_and_parameter_metadata() -> None:
     assert info.default_lookup_name == "blend"
     assert info.default_count == 1
     assert info.param_names == ("red", "green", "blue")
+    assert info.callee_display == "blend"
 
 
 def test_qualified_module_call_resolves_named_argument_metadata() -> None:
@@ -37,6 +38,9 @@ def test_qualified_module_call_resolves_named_argument_metadata() -> None:
     assert info.default_lookup_name is None
     assert info.default_count == 2
     assert info.param_names == ("value", "lo", "hi")
+    # Defaults are looked up per module, so there is no single lookup name —
+    # but a diagnostic that rewrites the call still needs the source form.
+    assert info.callee_display == "Math.clamp"
 
 
 def test_unknown_or_dynamic_call_target_has_no_named_argument_metadata() -> None:
@@ -49,3 +53,4 @@ def test_unknown_or_dynamic_call_target_has_no_named_argument_metadata() -> None
     assert info.default_lookup_name is None
     assert info.default_count == 0
     assert info.param_names == ()
+    assert info.callee_display is None

@@ -232,6 +232,205 @@ match parse_int(arg) with
 end match
 ```
 
+### 15. Naming a local `result` in a function with `ensures`
+
+In a function with an `ensures` clause, `result` names the return value. A local
+binding of the same name is rejected, because `ensures result` would be
+ambiguous. Accumulators are the usual place this bites; name them `acc` or `out`.
+
+Wrong:
+```
+func total(n: Int) -> Int
+    ensures result >= 0
+    example (3) -> 3
+
+    var result: Int = 0
+    var i: Int = 0
+    while i < n do
+        result = result + i
+        i = i + 1
+    end while
+    return result
+end func
+```
+
+```
+Type Error: `result` is reserved in functions with ensures clauses; rename this
+binding so `ensures result` unambiguously refers to the return value
+```
+
+Correct:
+```
+func total(n: Int) -> Int
+    ensures result >= 0
+    example (3) -> 3
+
+    var acc: Int = 0
+    var i: Int = 0
+    while i < n do
+        acc = acc + i
+        i = i + 1
+    end while
+    return acc
+end func
+```
+
+A function without `ensures` may use `result` as an ordinary name.
+
+### 16. Updating one element of a list
+
+Lists are immutable, but replacing an element does not mean rebuilding the list
+by hand. `set_at` is a prelude builtin -- no import -- and returns a new list:
+
+```
+set_at(list: List[T], index: Int, value: T) -> List[T]
+```
+
+Wrong -- rebuilding around the index:
+```
+func swap(xs: List[Int], i: Int, j: Int) -> List[Int]
+    example ([1, 2, 3], 0, 2) -> [3, 2, 1]
+    var out: List[Int] = []
+    var k: Int = 0
+    while k < length(xs) do
+        if k == i then
+            out = append(out, xs[j])
+        else
+            if k == j then
+                out = append(out, xs[i])
+            else
+                out = append(out, xs[k])
+            end if
+        end if
+        k = k + 1
+    end while
+    return out
+end func
+```
+
+Correct:
+```
+func swap(xs: List[Int], i: Int, j: Int) -> List[Int]
+    example ([1, 2, 3], 0, 2) -> [3, 2, 1]
+    let a: Int = xs[i]
+    let b: Int = xs[j]
+    return set_at(list: set_at(list: xs, index: i, value: b), index: j, value: a)
+end func
+```
+
+`set_at` has three parameters, so its call sites need named arguments. It raises
+if the index is out of range. For code that mutates in a loop rather than
+threading a new list through each step, `Vec[T]` and `vec_set` are the better
+fit.
+
+### 17. Float `example` values and how close is close enough
+
+`Float` examples allow small rounding differences, but a convenience rounding
+can still fail. **Keep the full value printed by a real run.**
+
+Wrong -- right to five digits, which is nowhere near close enough:
+```
+func ratio(a: Float, b: Float) -> Float
+    example (160.0, 7.0) -> 22.857
+    return a / b
+end func
+```
+
+Correct:
+```
+func ratio(a: Float, b: Float) -> Float
+    example (160.0, 7.0) -> 22.857142857142858
+    return a / b
+end func
+```
+
+The comparison paths currently differ: `geno test` uses the interpreter's
+relative tolerance with a small absolute floor, while `run_harness_from_source`
+and `run_harness_from_compiled` use an absolute tolerance. A fixed number of
+significant digits cannot guarantee that a rounded expectation passes both,
+especially as the value grows. For example, rounding `16000000.0 / 7.0` to
+`2285714.28571` keeps twelve significant digits and passes interpreter example
+verification, but fails both harness functions. Preserve the full value,
+`2285714.285714286`, instead.
+
+The reliable habit is not to compute the expected value mentally at all. Run the
+function, take the value it prints, and keep it. Where the domain allows it,
+prefer `Int` arithmetic instead and sidestep the question -- money is the common
+case, since working in cents makes every expected value exact.
+
+### 18. `requires` and `Err` examples on the same function
+
+A `requires` clause is checked before the body runs, so a function cannot both
+contract its happy path and example its rejection path. An `example` whose
+expected value is `Err(...)` for an input the precondition excludes fails: the
+precondition rejects the input before the body can return the `Err`.
+
+Wrong -- `requires` and the `Err` example contradict each other:
+```
+func to_roman(n: Int) -> Result[String, String]
+    requires n >= 1
+    example (1) -> Ok("I")
+    example (0) -> Err("out of range")
+
+    if n < 1 then
+        return Err("out of range")
+    end if
+    return Ok("I")
+end func
+```
+
+Correct -- keep the public `Result` API free of preconditions and validate in
+the body, and put `requires` on the in-range helper it calls:
+```
+func roman_digit(n: Int) -> String
+    requires n >= 1
+    example (1) -> "I"
+    return "I"
+end func
+
+func to_roman(n: Int) -> Result[String, String]
+    example (1) -> Ok("I")
+    example (0) -> Err("out of range")
+
+    if n < 1 then
+        return Err("out of range")
+    end if
+    return Ok(roman_digit(n))
+end func
+```
+
+The rule of thumb: a function that returns `Result` validates its own input, so
+it takes no `requires`. A helper that assumes valid input takes the `requires`
+and is never called with anything else.
+
+### 19. Multi-file projects still need `import`
+
+Listing a module in `geno.toml` makes it part of the project. It does not bring
+its declarations into scope. Every module that uses another module's functions
+imports it, and a missing import fails at the call site -- where the name is
+used, not where the module is declared.
+
+Given `files = ["Lib", "Main"]` in `geno.toml` and a `double` defined in
+`Lib.geno`, this fails:
+```
+func main() -> Int
+    return double(4)
+end func
+```
+
+Correct:
+```
+import Lib
+
+func main() -> Int
+    return double(4)
+end func
+```
+
+A plain `import Lib` puts the module's functions in scope unqualified, so
+`double(4)` works. The qualified form `Lib.double(4)` is also valid and is worth
+preferring when two modules define the same name.
+
 ## Prompting Patterns
 
 ### Generate a function

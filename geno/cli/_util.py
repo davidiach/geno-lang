@@ -51,13 +51,29 @@ def report_deep_nesting_error(filename: str) -> None:
     sys.exit(1)
 
 
-def write_text_output(path: str | Path, content: str) -> None:
+def write_text_output(
+    path: str | Path, content: str, *, create_parents: bool = False
+) -> None:
     """Write generated output, reporting write failures clearly.
 
     A failure writing the *output* file (missing directory, permission denied,
     disk full) is reported as an output error and exits 1 — never as a raw
     traceback and never mislabeled as the input 'File not found' (M-08).
+
+    ``create_parents`` opts a caller into creating the output file's missing
+    parent directories first, the way directory-producing commands already do.
+    It stays opt-in so commands that treat a missing directory as a user error
+    keep reporting it. Parent creation failures (permission denied, a parent
+    that is a regular file) are reported through the same output-error path.
     """
+    if create_parents:
+        parent = Path(path).parent
+        try:
+            if str(parent):
+                parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"Error: cannot write output file {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
     try:
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(content)

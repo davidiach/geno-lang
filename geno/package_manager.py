@@ -98,6 +98,26 @@ _TRANSACTION_LOCKFILE_SUFFIX = ".lock.next"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+class PackageLockSetupError(RuntimeError):
+    """Raised when the private package-lock state directory cannot be prepared.
+
+    This is an environment problem (a read-only or foreign-owned state
+    directory, a sandbox that forbids chmod), not a problem with the user's
+    program, so callers report it as a setup diagnostic instead of letting a
+    raw traceback escape.
+    """
+
+
+def _lock_setup_error(directory: Path, reason: str) -> PackageLockSetupError:
+    """Build a setup diagnostic naming the directory and the supported fix."""
+    return PackageLockSetupError(
+        f"cannot prepare the package lock directory {directory}: {reason}. "
+        "Geno needs a private, user-owned directory for package lock and "
+        "journal state. Set XDG_RUNTIME_DIR to a writable directory that you "
+        "own with mode 0700, or make the path above satisfy those conditions."
+    )
+
+
 def _thread_lock_for(root: Path) -> threading.RLock:
     with _PROJECT_THREAD_LOCKS_GUARD:
         return _PROJECT_THREAD_LOCKS.setdefault(root, threading.RLock())
@@ -142,20 +162,26 @@ def _secure_lock_directory() -> Path:
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as exc:
-        raise RuntimeError(
-            f"Could not create secure package lock directory: {directory}"
-        ) from exc
+        raise _lock_setup_error(directory, str(exc)) from exc
     if directory.is_symlink() or not directory.is_dir():
-        raise RuntimeError(f"Package lock directory is not secure: {directory}")
-    info = directory.stat()
+        raise _lock_setup_error(directory, "it is a symlink or not a directory")
+    try:
+        info = directory.stat()
+    except OSError as exc:
+        raise _lock_setup_error(directory, str(exc)) from exc
     if uid is not None:
         if info.st_uid != uid:
-            raise RuntimeError(
-                f"Package lock directory is owned by another user: {directory}"
-            )
-        os.chmod(directory, 0o700)
-        if stat.S_IMODE(directory.stat().st_mode) != 0o700:
-            raise RuntimeError(f"Package lock directory is not private: {directory}")
+            raise _lock_setup_error(directory, "it is owned by another user")
+        # Tighten the mode rather than trusting it. A sandbox may forbid the
+        # chmod outright; that is a setup failure, never a reason to relax the
+        # privacy requirement or fall back to unrelated lock state.
+        try:
+            os.chmod(directory, 0o700)
+            mode = stat.S_IMODE(directory.stat().st_mode)
+        except OSError as exc:
+            raise _lock_setup_error(directory, str(exc)) from exc
+        if mode != 0o700:
+            raise _lock_setup_error(directory, "it is not private (mode 0700)")
     return directory.resolve()
 
 

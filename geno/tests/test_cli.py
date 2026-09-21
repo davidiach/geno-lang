@@ -195,6 +195,36 @@ end func main
             finally:
                 os.unlink(f.name)
 
+    def test_run_sync_main_containing_await(self, tmp_path):
+        """A synchronous `main` that awaits runs on both execution lanes.
+
+        The default lane compiles in the isolated worker, so it is the only
+        cover for the entrypoint capture that `_prepare_process_run` emits.
+        """
+        source = tmp_path / "await_main.geno"
+        source.write_text(
+            "async func twice(x: Int) -> Int\n"
+            "    return x * 2\n"
+            "end func\n"
+            "\n"
+            '@untested("entry point")\n'
+            "func main() -> Unit\n"
+            "    print(await twice(21))\n"
+            "    return ()\n"
+            "end func main\n",
+            encoding="utf-8",
+        )
+
+        for extra_args in ([], ["--unsafe"]):
+            result = subprocess.run(
+                [sys.executable, "-m", "geno", "run", *extra_args, str(source)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            assert "42" in result.stdout
+
     @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin stability check")
     def test_run_simple_program_repeated_on_darwin(self):
         """Default CLI workers must have stable Darwin VM headroom."""

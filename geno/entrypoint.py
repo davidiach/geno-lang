@@ -1,10 +1,63 @@
-"""Type aliases visible from a selected entry program."""
+"""Entrypoint discovery, execution form, and declared result classification."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
-from .ast_nodes import FunctionDef, ImportStatement, Program, TypeAlias, TypeDef
+from .ast_nodes import (
+    AwaitExpr,
+    FunctionDef,
+    ImportStatement,
+    LambdaExpr,
+    Program,
+    SimpleType,
+    TypeAlias,
+    TypeAnnotation,
+    TypeDef,
+)
+from .types import IntType, Type, UnitType
+
+# Type names the language owns.  An alias can never redefine one, so a name in
+# this set terminates alias resolution.
+_BUILTIN_TYPE_NAMES = frozenset(
+    {
+        "Array",
+        "Async",
+        "Bool",
+        "Float",
+        "Int",
+        "List",
+        "Map",
+        "MutableMap",
+        "Option",
+        "Result",
+        "Set",
+        "String",
+        "Tuple",
+        "Unit",
+        "Vec",
+    }
+)
+
+
+def find_entrypoint_main(program: Program) -> FunctionDef | None:
+    """Return *program*'s own ``main``, or ``None``.
+
+    Only a ``main`` declared in the selected entry program is executable
+    entrypoint state.  A ``main`` reached through an import is an ordinary
+    function, so import discovery never changes entrypoint ownership.
+    """
+    return next(
+        (
+            defn
+            for defn in program.definitions
+            if isinstance(defn, FunctionDef) and defn.name == "main"
+        ),
+        None,
+    )
 
 
 def visible_type_aliases(
@@ -47,3 +100,279 @@ def visible_type_aliases(
         if isinstance(defn, TypeAlias):
             aliases[defn.name] = defn
     return aliases
+
+
+# Annotation fields carry type syntax, never an expression, so the walk below
+# skips them the way the compiler's own body scans do.
+_NON_EXPRESSION_FIELDS = frozenset(
+    {
+        "location",
+        "type_annotation",
+        "param_type",
+        "return_type",
+        "var_type",
+        "hole_type",
+    }
+)
+
+
+def _awaits_directly(nodes: Iterable[Any]) -> bool:
+    """Return whether *nodes* await outside any nested function scope."""
+    field_cache: dict[type, tuple[str, ...]] = {}
+    stack: list[Any] = list(nodes)
+
+    while stack:
+        node = stack.pop()
+        if isinstance(node, AwaitExpr):
+            return True
+        # A lambda or nested function owns its own async scope, so an `await`
+        # inside one says nothing about the function being classified.
+        if isinstance(node, (LambdaExpr, FunctionDef)):
+            continue
+        node_type = type(node)
+        if node_type is list or node_type is tuple:
+            stack.extend(node)
+            continue
+        if not hasattr(node, "__dict__"):
+            continue
+
+        field_names = field_cache.get(node_type)
+        if field_names is None:
+            field_names = tuple(
+                name
+                for name in vars(node)
+                if not name.startswith("_") and name not in _NON_EXPRESSION_FIELDS
+            )
+            field_cache[node_type] = field_names
+
+        for field_name in field_names:
+            child = getattr(node, field_name)
+            if child is not None:
+                stack.append(child)
+
+    return False
+
+
+def _executable_contract_expressions(defn: FunctionDef) -> list[Any]:
+    """Return the contract conditions compiled into *defn*'s own scope.
+
+    Both backends emit ``requires`` and ``ensures`` checks inside the function,
+    so an ``await`` in one lands in the same scope as the body's statements.
+    ``TypeChecker._check_specs`` runs while ``main`` is still the enclosing
+    function, so it accepts an ``await`` there.  Example clauses are
+    verification data rather than emitted code, so they are not part of the
+    function's execution form.
+    """
+    specs = defn.specs
+    if specs is None:
+        return []
+    # Kept as two comprehensions: unpacking both lists into one tuple widens
+    # the element type to ASTNode, which does not carry `condition`.
+    conditions: list[Any] = [clause.condition for clause in specs.requires]
+    conditions.extend(clause.condition for clause in specs.ensures)
+    return conditions
+
+
+def is_async_execution_form(defn: FunctionDef) -> bool:
+    """Return whether *defn* must be lowered and awaited as an async function.
+
+    A function declared ``async`` is one.  So is a synchronous ``main`` that
+    awaits anywhere the backends emit into its own scope: its body, or a
+    ``requires`` or ``ensures`` condition.  ``TypeChecker._check_await_expr``
+    accepts ``await`` in all of those inside any ``main`` without an ``async``
+    modifier, and lowering such a ``main`` synchronously emits ``await``
+    outside an async function, which neither backend accepts.
+    """
+    if defn.is_async:
+        return True
+    if defn.name != "main":
+        # `await` anywhere else is already a type error, so no other function
+        # can become an asynchronous form without the modifier.
+        return False
+    return _awaits_directly(
+        (*(defn.body or ()), *_executable_contract_expressions(defn))
+    )
+
+
+class EntrypointResultKind(Enum):
+    """How an executable host must treat the selected entrypoint's result."""
+
+    MISSING = "missing"
+    UNIT = "unit"
+    INT = "int"
+    OTHER = "other"
+
+
+@dataclass(frozen=True)
+class _ScopedTypeAlias:
+    """A type alias paired with the aliases visible where it was declared."""
+
+    definition: TypeAlias
+    scope: Mapping[str, _ScopedTypeAlias]
+
+
+@dataclass(frozen=True)
+class _BoundAnnotation:
+    """A generic argument paired with the environment it was written in."""
+
+    annotation: TypeAnnotation
+    scope: Mapping[str, _ScopedTypeAlias]
+    bindings: Mapping[str, _BoundAnnotation]
+
+
+def _exported_aliases(program: Program) -> list[TypeAlias]:
+    """Return the aliases *program* publishes to a plain (unaliased) import."""
+    has_exports = any(
+        isinstance(defn, (FunctionDef, TypeAlias, TypeDef)) and defn.exported
+        for defn in program.definitions
+    )
+    return [
+        defn
+        for defn in program.definitions
+        if isinstance(defn, TypeAlias) and (not has_exports or defn.exported)
+    ]
+
+
+def _visible_scoped_type_aliases(
+    program: Program,
+    modules: Mapping[str, Program] | None,
+) -> Mapping[str, _ScopedTypeAlias]:
+    """Build the entry alias environment without losing defining scopes.
+
+    An alias imported into the entry program may target another alias that is
+    visible only in the module that declared it, so each alias carries the
+    scope it was written in rather than being flattened into one namespace.
+    """
+    module_programs = modules or {}
+    scope_cache: dict[int, dict[str, _ScopedTypeAlias]] = {}
+
+    def scope_for(current: Program) -> dict[str, _ScopedTypeAlias]:
+        scope_key = id(current)
+        cached = scope_cache.get(scope_key)
+        if cached is not None:
+            return cached
+
+        scope: dict[str, _ScopedTypeAlias] = {}
+        scope_cache[scope_key] = scope
+        resolved: set[str] = set()
+
+        def resolve_import(import_stmt: ImportStatement) -> None:
+            module_name = import_stmt.module_name
+            imported_program = module_programs.get(module_name)
+            if module_name not in resolved:
+                resolved.add(module_name)
+                if imported_program is not None:
+                    for defn in imported_program.definitions:
+                        if isinstance(defn, ImportStatement):
+                            resolve_import(defn)
+            if import_stmt.alias is None and imported_program is not None:
+                imported_scope = scope_for(imported_program)
+                for alias_def in _exported_aliases(imported_program):
+                    scope[alias_def.name] = _ScopedTypeAlias(alias_def, imported_scope)
+
+        for defn in current.definitions:
+            if isinstance(defn, ImportStatement):
+                resolve_import(defn)
+        for defn in current.definitions:
+            if isinstance(defn, TypeAlias):
+                scope[defn.name] = _ScopedTypeAlias(defn, scope)
+        return scope
+
+    return scope_for(program)
+
+
+def _scoped_annotation_type_name(
+    annotation: TypeAnnotation | None,
+    aliases: Mapping[str, _ScopedTypeAlias],
+    bindings: Mapping[str, _BoundAnnotation] | None = None,
+    seen_aliases: frozenset[int] = frozenset(),
+) -> str | None:
+    """Resolve *annotation* through aliases to the builtin type name it names.
+
+    Returns ``None`` for anything that is not an unparameterized builtin: a
+    parameterized type, a user-defined type, or an alias cycle.
+
+    A generic argument is not resolved where it is used.  ``Identity[Status]``
+    passes an argument written in the entry program to an alias whose body is
+    read in the module that declared it, and ``Status`` may be visible only in
+    the entry program.  So each argument is bound to the scope *and* the
+    argument environment it was written in, and resolving a type parameter
+    steps back out into that environment rather than staying in the alias's.
+    That also makes a parameter applied to itself safe, as in
+    ``type Wrap[T] = Id[T]``: ``Id``'s ``T`` binds to the caller's ``T``, which
+    is looked up in the strictly enclosing environment, so the chain always
+    walks outward and terminates.
+    """
+    if not isinstance(annotation, SimpleType):
+        return None
+
+    if not annotation.type_params and bindings is not None:
+        bound = bindings.get(annotation.name)
+        if bound is not None:
+            return _scoped_annotation_type_name(
+                bound.annotation,
+                bound.scope,
+                bound.bindings,
+                seen_aliases,
+            )
+    if annotation.name in _BUILTIN_TYPE_NAMES:
+        return None if annotation.type_params else annotation.name
+
+    scoped_alias = aliases.get(annotation.name)
+    if scoped_alias is None or id(scoped_alias.definition) in seen_aliases:
+        return None
+    # The alias body can only name the alias's own parameters, so its argument
+    # environment replaces the caller's rather than extending it.
+    alias_bindings = {
+        type_param: _BoundAnnotation(argument, aliases, bindings or {})
+        for type_param, argument in zip(
+            scoped_alias.definition.type_params,
+            annotation.type_params,
+            strict=False,
+        )
+    }
+    return _scoped_annotation_type_name(
+        scoped_alias.definition.target_type,
+        scoped_alias.scope,
+        alias_bindings,
+        seen_aliases | {id(scoped_alias.definition)},
+    )
+
+
+def classify_entrypoint_result(
+    program: Program,
+    modules: Mapping[str, Program] | None = None,
+) -> EntrypointResultKind:
+    """Classify the selected entrypoint's declared result for an executable host.
+
+    Classification reads the resolved static return annotation, so an alias
+    imported into the entry program resolves to what it names, and an
+    ``async main() -> Int`` classifies on its inner ``Int``.  A synchronous
+    ``main`` that returns an async value without awaiting it keeps its declared
+    ``Async[...]`` type and is neither ``INT`` nor ``UNIT``.
+
+    The typechecker records the resolved type on each function it checks, which
+    is authoritative when it is present.  Compilation with type checking turned
+    off has no such record, so the declared annotation is resolved directly.
+    """
+    main_def = find_entrypoint_main(program)
+    if main_def is None:
+        return EntrypointResultKind.MISSING
+
+    resolved_return_type = main_def.__dict__.get("_resolved_return_type")
+    if isinstance(resolved_return_type, Type):
+        if isinstance(resolved_return_type, IntType):
+            return EntrypointResultKind.INT
+        if isinstance(resolved_return_type, UnitType):
+            return EntrypointResultKind.UNIT
+        return EntrypointResultKind.OTHER
+
+    type_name = _scoped_annotation_type_name(
+        main_def.return_type,
+        _visible_scoped_type_aliases(program, modules),
+    )
+    if type_name == "Int":
+        return EntrypointResultKind.INT
+    if type_name == "Unit":
+        return EntrypointResultKind.UNIT
+    return EntrypointResultKind.OTHER

@@ -7,6 +7,7 @@ entrypoint" flow so command surfaces and API wrappers do not drift apart.
 
 from __future__ import annotations
 
+import contextlib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -1035,16 +1036,33 @@ def _resolve_requested_file_project(
     )
 
 
+@contextlib.contextmanager
+def _package_locks_for(requested_path: Path):
+    """Hold the package transaction locks, reporting setup failures cleanly.
+
+    Preparing the private lock/journal directory can fail for environment
+    reasons (a read-only or foreign-owned state directory, a sandbox that
+    forbids chmod). Surface that as a resolution error so every CLI command
+    reports a diagnostic instead of leaking a raw traceback, rather than
+    bypassing locking or switching to unrelated temporary state.
+    """
+    from .package_manager import PackageLockSetupError, _package_transaction_locks
+
+    try:
+        with _package_transaction_locks(requested_path):
+            yield
+    except PackageLockSetupError as exc:
+        raise ProjectResolutionError(str(exc)) from exc
+
+
 def resolve_file_context(
     start_path: str | Path,
     source_override: str | None = None,
     source_overrides: Mapping[str | Path, str] | None = None,
 ) -> ResolvedFileContext:
     """Resolve a file without observing a partial dependency publication."""
-    from .package_manager import _package_transaction_locks
-
     requested_path = Path(start_path)
-    with _package_transaction_locks(requested_path):
+    with _package_locks_for(requested_path):
         if not requested_path.exists():
             raise _missing_path_error(start_path)
         if not requested_path.is_file():
@@ -1099,10 +1117,8 @@ def resolve_project_context(
     source_overrides: Mapping[str | Path, str] | None = None,
 ) -> ResolvedProjectContext:
     """Resolve a project without observing a partial dependency publication."""
-    from .package_manager import _package_transaction_locks
-
     requested_path = Path(start_path)
-    with _package_transaction_locks(requested_path):
+    with _package_locks_for(requested_path):
         if not requested_path.exists():
             raise _missing_path_error(start_path)
         return _resolve_project_context_unlocked(
