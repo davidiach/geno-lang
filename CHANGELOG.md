@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.4] - 2026-09-20
 
+### Compatibility
+
+This release takes one deliberate exception to the rule in
+`docs/operations/compatibility-policy.md` that a patch preserves documented
+source behavior. The target-less check change below (#70) rejects programs that
+0.4.3 accepted: with no declared target and an entry module that defines `main`,
+`geno check` and `geno test` now validate lowering through the Python backend,
+so a name that backend reserves is reported there instead of passing.
+
+The exception is taken because the old behavior withheld a guarantee rather than
+made one. 0.4.3 published target-less checks as a "permissive language check
+with no backend-lowering guarantee", and the practical effect was that `geno
+check` and `geno test` reported success for programs the default `geno run`
+could not execute. Every program the new rule rejects was already failing at run
+time with the same diagnostic; what changes is when the author is told. No
+program that ran on 0.4.3 stops running on 0.4.4, and the frozen conformance
+corpus is unchanged.
+
+Migration: rename the binding or parameter that collides. The diagnostic names
+the identifier — `'len' is a reserved runtime name and cannot be used as a
+function parameter name`.
+
+Rejected from 0.4.4:
+
+```geno
+func widen(len: Int) -> Int
+    example 2 -> 4
+    return len * 2
+end func
+```
+
+Accepted:
+
+```geno
+func widen(count: Int) -> Int
+    example 2 -> 4
+    return count * 2
+end func
+```
+
+Library modules that define no `main` are unaffected and stay permissive, as
+does the `geno.check()` embedding API unless a target is selected explicitly.
+
 ### Added
 
 - **Tuple patterns in `match` arms**: `| (a, b) -> ...` now parses, type checks, and runs on the interpreter and both backends, including nested forms such as `| Some((key, value)) ->`. Because every value of a tuple type has that type's arity, an arm whose elements are all variables or wildcards is exhaustive and needs no default arm; mismatched arity, non-tuple scrutinees, and single-element tuple patterns are rejected with targeted diagnostics. (#79)
