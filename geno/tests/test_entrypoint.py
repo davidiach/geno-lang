@@ -200,6 +200,62 @@ class TestClassifyFromAnnotation:
         entry = parse("import Codes\nfunc main() -> Status\n  return 2\nend func\n")
         assert classify_entrypoint_result(entry, modules) is EntrypointResultKind.INT
 
+    def test_generic_argument_resolves_in_the_scope_it_was_written_in(self):
+        """An imported generic alias must not read its argument in its own scope.
+
+        `Identity` is declared in `Lib`, so its body is resolved there, but the
+        argument `Status` is written in the entry program and is visible only
+        there.  Resolving the argument after the scope switch loses it.  The
+        typechecked path answers INT, so the annotation path must agree.
+        """
+        source = (
+            "import Lib\n"
+            "type Status = Int\n"
+            "func main() -> Identity[Status]\n  return 2\nend func\n"
+        )
+        library = "export type Identity[T] = T\n"
+
+        unchecked = parse(source)
+        assert (
+            classify_entrypoint_result(unchecked, {"Lib": parse(library)})
+            is EntrypointResultKind.INT
+        )
+
+        checked, modules = parse(source), {"Lib": parse(library)}
+        TypeChecker().check_program(checked, modules=modules)
+        assert classify_entrypoint_result(checked, modules) is EntrypointResultKind.INT
+
+    def test_generic_argument_keeps_the_callers_meaning_of_a_shadowed_name(self):
+        """The caller's `Status` is the argument, even though `Lib` has one too."""
+        modules = {
+            "Lib": parse("export type Identity[T] = T\nexport type Status = String\n")
+        }
+        entry = parse(
+            "import Lib\n"
+            "type Status = Int\n"
+            "func main() -> Identity[Status]\n  return 2\nend func\n"
+        )
+        assert classify_entrypoint_result(entry, modules) is EntrypointResultKind.INT
+
+    def test_generic_alias_applied_to_its_own_parameter(self):
+        """`Id[T]` inside `Wrap[T]` binds `Id`'s `T` to the caller's, not itself."""
+        source = (
+            "type Id[T] = T\n"
+            "type Wrap[T] = Id[T]\n"
+            "func main() -> Wrap[Int]\n  return 2\nend func\n"
+        )
+        assert classify_entrypoint_result(parse(source)) is EntrypointResultKind.INT
+
+    def test_generic_argument_nested_in_another_alias_application(self):
+        """A parameter reached through a nested application still resolves."""
+        source = (
+            "type Id[T] = T\n"
+            "type Box[T] = T\n"
+            "type Loop[T] = Id[Box[T]]\n"
+            "func main() -> Loop[Int]\n  return 2\nend func\n"
+        )
+        assert classify_entrypoint_result(parse(source)) is EntrypointResultKind.INT
+
 
 class TestEntrypointOwnership:
     def test_imported_main_is_not_the_entrypoint(self):

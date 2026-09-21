@@ -211,6 +211,15 @@ class _ScopedTypeAlias:
     scope: Mapping[str, _ScopedTypeAlias]
 
 
+@dataclass(frozen=True)
+class _BoundAnnotation:
+    """A generic argument paired with the environment it was written in."""
+
+    annotation: TypeAnnotation
+    scope: Mapping[str, _ScopedTypeAlias]
+    bindings: Mapping[str, _BoundAnnotation]
+
+
 def _exported_aliases(program: Program) -> list[TypeAlias]:
     """Return the aliases *program* publishes to a plain (unaliased) import."""
     has_exports = any(
@@ -272,80 +281,61 @@ def _visible_scoped_type_aliases(
     return scope_for(program)
 
 
-def _resolve_bound_annotation(
-    annotation: TypeAnnotation,
-    bindings: Mapping[str, TypeAnnotation],
-    seen_names: frozenset[str] = frozenset(),
-) -> TypeAnnotation:
-    """Substitute enclosing alias bindings throughout a simple type."""
-    if not isinstance(annotation, SimpleType):
-        return annotation
-    if not annotation.type_params:
-        if annotation.name not in bindings or annotation.name in seen_names:
-            return annotation
-        return _resolve_bound_annotation(
-            bindings[annotation.name],
-            bindings,
-            seen_names | {annotation.name},
-        )
-    return SimpleType(
-        location=annotation.location,
-        name=annotation.name,
-        type_params=[
-            _resolve_bound_annotation(type_param, bindings, seen_names)
-            for type_param in annotation.type_params
-        ],
-    )
-
-
 def _scoped_annotation_type_name(
     annotation: TypeAnnotation | None,
     aliases: Mapping[str, _ScopedTypeAlias],
-    bindings: Mapping[str, TypeAnnotation] | None = None,
+    bindings: Mapping[str, _BoundAnnotation] | None = None,
     seen_aliases: frozenset[int] = frozenset(),
-    seen_bindings: frozenset[str] = frozenset(),
 ) -> str | None:
     """Resolve *annotation* through aliases to the builtin type name it names.
 
     Returns ``None`` for anything that is not an unparameterized builtin: a
     parameterized type, a user-defined type, or an alias cycle.
+
+    A generic argument is not resolved where it is used.  ``Identity[Status]``
+    passes an argument written in the entry program to an alias whose body is
+    read in the module that declared it, and ``Status`` may be visible only in
+    the entry program.  So each argument is bound to the scope *and* the
+    argument environment it was written in, and resolving a type parameter
+    steps back out into that environment rather than staying in the alias's.
+    That also makes a parameter applied to itself safe, as in
+    ``type Wrap[T] = Id[T]``: ``Id``'s ``T`` binds to the caller's ``T``, which
+    is looked up in the strictly enclosing environment, so the chain always
+    walks outward and terminates.
     """
     if not isinstance(annotation, SimpleType):
         return None
 
-    active_bindings = bindings or {}
-    if (
-        not annotation.type_params
-        and annotation.name in active_bindings
-        and annotation.name not in seen_bindings
-    ):
-        return _scoped_annotation_type_name(
-            active_bindings[annotation.name],
-            aliases,
-            active_bindings,
-            seen_aliases,
-            seen_bindings | {annotation.name},
-        )
+    if not annotation.type_params and bindings is not None:
+        bound = bindings.get(annotation.name)
+        if bound is not None:
+            return _scoped_annotation_type_name(
+                bound.annotation,
+                bound.scope,
+                bound.bindings,
+                seen_aliases,
+            )
     if annotation.name in _BUILTIN_TYPE_NAMES:
         return None if annotation.type_params else annotation.name
 
     scoped_alias = aliases.get(annotation.name)
     if scoped_alias is None or id(scoped_alias.definition) in seen_aliases:
         return None
-    resolved_args = [
-        _resolve_bound_annotation(type_param, active_bindings)
-        for type_param in annotation.type_params
-    ]
-    alias_bindings = dict(active_bindings)
-    alias_bindings.update(
-        zip(scoped_alias.definition.type_params, resolved_args, strict=False)
-    )
+    # The alias body can only name the alias's own parameters, so its argument
+    # environment replaces the caller's rather than extending it.
+    alias_bindings = {
+        type_param: _BoundAnnotation(argument, aliases, bindings or {})
+        for type_param, argument in zip(
+            scoped_alias.definition.type_params,
+            annotation.type_params,
+            strict=False,
+        )
+    }
     return _scoped_annotation_type_name(
         scoped_alias.definition.target_type,
         scoped_alias.scope,
         alias_bindings,
         seen_aliases | {id(scoped_alias.definition)},
-        frozenset(),
     )
 
 
