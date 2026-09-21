@@ -325,11 +325,11 @@ fit.
 
 ### 17. Float `example` values and how close is close enough
 
-`Float` examples are compared with a relative tolerance of `1e-9`, not exactly, so
-the exact binary literal a run prints is not required -- but a convenience
-rounding is not enough either. Round to **at least ten significant digits**.
+`Float` examples are compared with a small tolerance rather than exactly, so the
+exact binary literal a run prints is not required -- but a convenience rounding
+is not enough either. **Keep at least twelve significant digits.**
 
-Wrong -- the value is right to five digits, which is not close enough:
+Wrong -- right to five digits, which is nowhere near close enough:
 ```
 func ratio(a: Float, b: Float) -> Float
     example (160.0, 7.0) -> 22.857
@@ -340,23 +340,19 @@ end func
 Correct:
 ```
 func ratio(a: Float, b: Float) -> Float
-    example (160.0, 7.0) -> 22.85714286
+    example (160.0, 7.0) -> 22.8571428571
     return a / b
 end func
 ```
 
-The boundary is exactly where the tolerance puts it: for `160.0 / 7.0`,
-`22.8571428` (nine digits) fails and `22.85714286` (ten) passes. The tolerance
-absorbs binary representation noise and nothing more -- it is deliberately too
-tight to accept a hand-rounded decimal, because an example that passed on a value
-correct to only four digits would hide an error instead of catching it.
+Do not tune an expected value down to the last digit that happens to pass. The
+tolerance is small and more than one comparator is involved, so a value sitting
+just inside it is fragile. Twelve digits clears every path with room to spare.
 
-Two things that avoid the problem entirely:
-
-- Prefer `Int` arithmetic where the domain allows it. Money is the common case:
-  work in cents and the expected values are exact.
-- Take the expected value from a real run rather than computing it mentally, then
-  keep ten or more digits of it.
+The reliable habit is not to compute the expected value mentally at all. Run the
+function, take the value it prints, and keep it. Where the domain allows it,
+prefer `Int` arithmetic instead and sidestep the question -- money is the common
+case, since working in cents makes every expected value exact.
 
 ### 18. `requires` and `Err` examples on the same function
 
