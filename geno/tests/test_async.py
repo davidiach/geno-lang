@@ -333,6 +333,46 @@ func main() -> Async[Int]
 end func
 """
 
+# A `requires` or `ensures` condition is emitted inside the function by both
+# backends, and the typechecker accepts `await` there because specs are checked
+# while `main` is still the enclosing function.  An example clause is
+# verification data, not emitted code, so it does not change the lowering.
+ENSURES_AWAIT_MAIN = """
+async func floor_value() -> Int
+  return 1
+end func
+
+func main() -> Int
+  ensures result > await floor_value()
+  print(2)
+  return 2
+end func
+"""
+
+REQUIRES_AWAIT_MAIN = """
+async func floor_value() -> Int
+  return 1
+end func
+
+func main() -> Int
+  requires (await floor_value()) > 0
+  print(2)
+  return 2
+end func
+"""
+
+EXAMPLE_AWAIT_MAIN = """
+async func floor_value() -> Int
+  return 1
+end func
+
+func main() -> Int
+  example () -> await floor_value()
+  print(2)
+  return 2
+end func
+"""
+
 
 def _entry_function(source: str, name: str = "main") -> FunctionDef:
     """Parse *source* and return its own definition of *name*."""
@@ -400,6 +440,41 @@ end func
             assert completed.returncode == 0, completed.stderr
             assert "42" in completed.stdout
 
+    @pytest.mark.parametrize(
+        ("source", "clause"),
+        [
+            pytest.param(ENSURES_AWAIT_MAIN, "ensures", id="ensures"),
+            pytest.param(REQUIRES_AWAIT_MAIN, "requires", id="requires"),
+        ],
+    )
+    def test_await_in_a_contract_clause_runs_on_both_backends(
+        self, source: str, clause: str
+    ):
+        """A contract condition is emitted inside the function, so it counts."""
+        py_code = compile_to_python(source)
+        assert "async def main" in py_code, f"{clause} did not force an async main"
+
+        completed = run_python_code(
+            py_code, python_executable=sys.executable, args=["--cap", "print"]
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "2" in completed.stdout
+
+        if HAS_NODE:
+            completed = run_node_code(compile_to_js(source), args=["--cap", "print"])
+            assert completed.returncode == 0, completed.stderr
+            assert "2" in completed.stdout
+
+    def test_await_only_in_an_example_clause_keeps_main_synchronous(self):
+        """Examples are verification data, never emitted into the function."""
+        py_code = compile_to_python(EXAMPLE_AWAIT_MAIN)
+        assert "async def main" not in py_code
+
+        completed = run_python_code(
+            py_code, python_executable=sys.executable, args=["--cap", "print"]
+        )
+        assert completed.returncode == 0, completed.stderr
+
     def test_sync_main_returning_an_async_value_is_not_awaited(self):
         """Returning an async value without awaiting keeps `main` synchronous."""
         py_code = compile_to_python(SYNC_MAIN_RETURNING_ASYNC)
@@ -449,6 +524,19 @@ func helper() -> Int
 end func
 """
         assert not is_async_execution_form(_entry_function(source, "helper"))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(ENSURES_AWAIT_MAIN, id="ensures"),
+            pytest.param(REQUIRES_AWAIT_MAIN, id="requires"),
+        ],
+    )
+    def test_await_in_a_contract_clause_is_an_async_form(self, source: str):
+        assert is_async_execution_form(_entry_function(source))
+
+    def test_await_only_in_an_example_clause_is_not_an_async_form(self):
+        assert not is_async_execution_form(_entry_function(EXAMPLE_AWAIT_MAIN))
 
     def test_await_inside_a_nested_lambda_is_not_the_enclosing_form(self):
         """A lambda owns its own async scope, so its `await` does not escape."""

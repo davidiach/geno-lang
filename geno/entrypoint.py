@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .ast_nodes import (
@@ -72,10 +72,10 @@ _NON_EXPRESSION_FIELDS = frozenset(
 )
 
 
-def _awaits_directly(body: Sequence[Any] | None) -> bool:
-    """Return whether *body* awaits outside any nested function scope."""
+def _awaits_directly(nodes: Iterable[Any]) -> bool:
+    """Return whether *nodes* await outside any nested function scope."""
     field_cache: dict[type, tuple[str, ...]] = {}
-    stack: list[Any] = list(body or [])
+    stack: list[Any] = list(nodes)
 
     while stack:
         node = stack.pop()
@@ -109,14 +109,35 @@ def _awaits_directly(body: Sequence[Any] | None) -> bool:
     return False
 
 
+def _executable_contract_expressions(defn: FunctionDef) -> list[Any]:
+    """Return the contract conditions compiled into *defn*'s own scope.
+
+    Both backends emit ``requires`` and ``ensures`` checks inside the function,
+    so an ``await`` in one lands in the same scope as the body's statements.
+    ``TypeChecker._check_specs`` runs while ``main`` is still the enclosing
+    function, so it accepts an ``await`` there.  Example clauses are
+    verification data rather than emitted code, so they are not part of the
+    function's execution form.
+    """
+    specs = defn.specs
+    if specs is None:
+        return []
+    # Kept as two comprehensions: unpacking both lists into one tuple widens
+    # the element type to ASTNode, which does not carry `condition`.
+    conditions: list[Any] = [clause.condition for clause in specs.requires]
+    conditions.extend(clause.condition for clause in specs.ensures)
+    return conditions
+
+
 def is_async_execution_form(defn: FunctionDef) -> bool:
     """Return whether *defn* must be lowered and awaited as an async function.
 
     A function declared ``async`` is one.  So is a synchronous ``main`` that
-    awaits in its own body: ``TypeChecker._check_await_expr`` accepts ``await``
-    directly inside any ``main`` without an ``async`` modifier, and lowering
-    such a ``main`` synchronously emits ``await`` outside an async function,
-    which neither backend accepts.
+    awaits anywhere the backends emit into its own scope: its body, or a
+    ``requires`` or ``ensures`` condition.  ``TypeChecker._check_await_expr``
+    accepts ``await`` in all of those inside any ``main`` without an ``async``
+    modifier, and lowering such a ``main`` synchronously emits ``await``
+    outside an async function, which neither backend accepts.
     """
     if defn.is_async:
         return True
@@ -124,4 +145,6 @@ def is_async_execution_form(defn: FunctionDef) -> bool:
         # `await` anywhere else is already a type error, so no other function
         # can become an asynchronous form without the modifier.
         return False
-    return _awaits_directly(defn.body)
+    return _awaits_directly(
+        (*(defn.body or ()), *_executable_contract_expressions(defn))
+    )
