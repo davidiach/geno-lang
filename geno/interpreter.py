@@ -3047,6 +3047,12 @@ class Interpreter:
                 value, getattr(defn, "_expected_runtime_type", defn.type_annotation)
             )
             env.bind(defn.name, self._deep_copy_value(value), mutable=False)
+            if env is self.global_env:
+                # In this module the name is a constant, not a function, even
+                # if an import brought a function of that name into scope.
+                # Example verification looks functions up by name, so a stale
+                # entry would make it call the constant.
+                self.functions.pop(defn.name, None)
 
     def _exec_var(self, stmt: VarStatement, env: Environment) -> None:
         """Execute a var statement."""

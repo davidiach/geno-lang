@@ -1036,6 +1036,14 @@ class JSCompiler(BaseCompiler):
             program = dep_graph.parsed[mod_name]
             runtime_exports = module_runtime_exports[mod_name]
             own_export_names = set(runtime_exports)
+            # A module constant is a local top-level name, so an imported name
+            # it collides with must not be re-emitted beside it: the local one
+            # wins, as it does for a locally defined function.
+            own_local_names = own_export_names | {
+                defn.name
+                for defn in program.definitions
+                if isinstance(defn, ModuleConstant)
+            }
             imported_runtime_names: dict[str, str] = {}
             ambiguous_imported_names: set[str] = set()
             active_module_bindings = {
@@ -1061,7 +1069,7 @@ class JSCompiler(BaseCompiler):
                 if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
                 for export_name in module_runtime_exports.get(defn.module_name, []):
-                    if export_name in own_export_names:
+                    if export_name in own_local_names:
                         continue
                     if export_name in imported_runtime_names:
                         ambiguous_imported_names.add(export_name)

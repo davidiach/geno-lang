@@ -283,7 +283,18 @@ class BaseCompiler(ABC):
                         "implementation helper",
                     )
             elif isinstance(defn, ModuleConstant):
-                reject(defn.name, "module constant")
+                # A constant is emitted as an immutable binding, so a collision
+                # with a prelude name is a redeclaration error rather than the
+                # silent shadowing a function declaration gets. The mangled
+                # name is what collides, but the source name is what to report.
+                if (
+                    defn.name in global_reserved_names
+                    or self._mangle_name(defn.name) in global_reserved_names
+                ):
+                    raise error_type(
+                        f"'{defn.name}' is a reserved runtime name and cannot "
+                        f"be used as a module constant name"
+                    )
             elif isinstance(defn, ImportStatement) and defn.alias:
                 reject(defn.alias, "import alias")
 
@@ -302,6 +313,16 @@ class BaseCompiler(ABC):
             if collisions := function_names & self.trait_dispatch.keys():
                 name = min(collisions)
                 raise error_type(f"Function '{name}' conflicts with a trait dispatcher")
+            constant_names = {
+                defn.name
+                for defn in program.definitions
+                if isinstance(defn, ModuleConstant)
+            }
+            if collisions := constant_names & self.trait_dispatch.keys():
+                name = min(collisions)
+                raise error_type(
+                    f"Module constant '{name}' conflicts with a trait dispatcher"
+                )
 
         def validate_reference(value: object) -> None:
             if isinstance(value, Identifier):

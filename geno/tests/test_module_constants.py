@@ -246,6 +246,62 @@ class TestExecution:
         assert "module constant" in str(excinfo.value)
 
 
+class TestNameCollisions:
+    """Every top-level name a backend emits beside a constant must not clash.
+
+    Python silently rebinds a colliding top-level name and JavaScript refuses
+    to parse a second ``const``, so each of these has to be rejected before
+    codegen rather than discovered at run time.
+    """
+
+    TRAIT_PROGRAM = (
+        "let describe = 7\n"
+        "\n"
+        "trait Describable\n"
+        "    func describe(self: Self) -> String\n"
+        "end trait\n"
+        "\n"
+        "type Circle = Circle(radius: Float)\n"
+        "\n"
+        "impl Describable for Circle\n"
+        "    func describe(self: Circle) -> String\n"
+        '        example Circle(5.0) -> "circle"\n'
+        '        return "circle"\n'
+        "    end func\n"
+        "end impl\n"
+        "\n"
+        "func main() -> Int\n"
+        "    return describe\n"
+        "end func\n"
+    )
+
+    def test_typechecker_rejects_a_trait_dispatcher_collision(self):
+        with pytest.raises(GenoTypeError) as excinfo:
+            _check(self.TRAIT_PROGRAM)
+        assert "conflicts with a trait dispatcher" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        ("compile_fn", "error_type"),
+        [(compile_to_python, CompileError), (compile_to_js, JSCompileError)],
+    )
+    def test_backends_reject_a_trait_dispatcher_collision_without_typechecking(
+        self, compile_fn, error_type
+    ):
+        with pytest.raises(error_type) as excinfo:
+            compile_fn(self.TRAIT_PROGRAM, "<test>", typecheck=False)
+        assert "conflicts with a trait dispatcher" in str(excinfo.value)
+
+    @pytest.mark.parametrize("compile_fn", [compile_to_python, compile_to_js])
+    def test_a_prelude_name_is_rejected_under_either_spelling(self, compile_fn):
+        # 'print' is reserved in the Python prelude under its own name and in
+        # the JavaScript prelude as the mangled 'print_'. Both are rejected,
+        # and both name the identifier the author actually wrote.
+        source = "let print = 1\n\nfunc main() -> Int\n    return print\nend func\n"
+        with pytest.raises((CompileError, JSCompileError)) as excinfo:
+            compile_fn(source, "<test>")
+        assert "'print' is a reserved runtime name" in str(excinfo.value)
+
+
 class TestTooling:
     def test_the_formatter_round_trips_a_module_constant(self):
         formatted = format_source(USAGE_PROGRAM)
@@ -291,6 +347,31 @@ class TestModulePrivacy:
         result = self._geno(["run", "App.geno"], project)
         assert result.returncode == 0, result.stderr
         assert "lib:5" in result.stdout
+
+    def test_a_constant_wins_over_an_imported_name_it_shadows(self, project):
+        # A locally defined function already shadows an imported name of the
+        # same spelling; a constant has to behave the same way, on every path.
+        (project / "App.geno").write_text(
+            "import Lib\n"
+            "\n"
+            "let label = 7\n"
+            "\n"
+            "func main() -> Int\n"
+            "    return label\n"
+            "end func\n"
+        )
+        run_result = self._geno(["run", "App.geno"], project)
+        assert run_result.returncode == 0, run_result.stderr
+        assert "7" in run_result.stdout
+
+        js_path = project / "app.js"
+        compile_result = self._geno(
+            ["compile", "App.geno", "--target", "js", "-o", str(js_path)], project
+        )
+        assert compile_result.returncode == 0, compile_result.stderr
+        node_result = run_node_code(js_path.read_text())
+        assert node_result.returncode == 0, node_result.stderr
+        assert node_result.stdout.strip() == "7"
 
     def test_an_importing_module_does_not_see_the_constant(self, project):
         (project / "App.geno").write_text(

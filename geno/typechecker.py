@@ -2910,6 +2910,18 @@ class TypeChecker(ExhaustivenessMixin):
             )
             return
 
+        if defn.name in self.trait_methods:
+            # Both backends emit a trait dispatcher as a top-level function of
+            # the method's name, which would overwrite the constant in Python
+            # and fail to parse in JavaScript.
+            self._error(
+                f"Module constant '{defn.name}' conflicts with a trait "
+                f"dispatcher of the same name",
+                defn.location,
+                ErrorCode.TYPE_DUPLICATE_DEFINITION,
+            )
+            return
+
         errors_before = len(self.errors)
         actual_type = self._check_expression(defn.value, self.global_env)
 
