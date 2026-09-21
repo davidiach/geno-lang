@@ -931,7 +931,7 @@ _RELEASE_SETUP_PYTHON_OPTIONS = {
     ),
 }
 _RELEASE_SETUP_NODE_OPTIONS = {
-    "node-version": "20",
+    "node-version": "22",
     "cache": "npm",
     "cache-dependency-path": "vscode-geno/package-lock.json",
 }

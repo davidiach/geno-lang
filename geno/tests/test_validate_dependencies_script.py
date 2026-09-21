@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from scripts import validate_dependencies
 from scripts.validate_dependencies import validate_dependency_surfaces
@@ -187,7 +188,7 @@ jobs:
             requirements-release.lock
       - uses: actions/setup-node@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: vscode-geno/package-lock.json
       - name: Install dependencies
@@ -254,6 +255,25 @@ def test_node_typings_match_minimum_supported_runtime():
     assert (
         lock["packages"]["node_modules/@types/node"]["version"].split(".")[0] == major
     )
+
+
+@pytest.mark.parametrize("workflow_name", ["ci.yml", "publish.yml"])
+def test_extension_build_jobs_use_minimum_supported_node(workflow_name: str):
+    root = validate_dependencies.ROOT
+    manifest = json.loads(
+        (root / "vscode-geno" / "package.json").read_text(encoding="utf-8")
+    )
+    minimum = re.match(r">=(\d+)(?:\.\d+){0,2}(?:\s|$)", manifest["engines"]["node"])
+    assert minimum, "Declare the minimum supported Node runtime explicitly"
+    workflow = yaml.safe_load(
+        (root / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+    )
+    node_step = next(
+        step
+        for step in workflow["jobs"]["release-check"]["steps"]
+        if step.get("uses", "").startswith("actions/setup-node@")
+    )
+    assert str(node_step["with"]["node-version"]) == minimum.group(1)
 
 
 def test_release_gate_pipeline_requires_tag_history_and_main_ancestry():
