@@ -108,6 +108,7 @@ from .builtin_registry import (
     python_backend_builtin_helper_names,
     python_backend_builtin_name_map,
 )
+from .entrypoint import is_async_execution_form
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
 from .types import FloatType, ListType, UserType
@@ -831,7 +832,9 @@ class Compiler(BaseCompiler, ASTVisitor):
                 main_defn = d
                 break
         if main_defn is not None:
-            self.output.write(_compiled_main_guard(is_async=bool(main_defn.is_async)))
+            self.output.write(
+                _compiled_main_guard(is_async=is_async_execution_form(main_defn))
+            )
 
         return str(self.output.getvalue())
 
@@ -1003,7 +1006,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         if main_defn is not None:
             self.output.write(
                 _compiled_main_guard(
-                    is_async=bool(main_defn.is_async),
+                    is_async=is_async_execution_form(main_defn),
                     main_name="_geno_entry_main",
                 )
             )
@@ -1231,7 +1234,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         params = ", ".join(param_parts)
         ret_type = self._compile_type_annotation(defn.return_type)
         func_name = self._mangle_name(defn.name)
-        async_prefix = "async " if defn.is_async else ""
+        async_prefix = "async " if is_async_execution_form(defn) else ""
         self._writeln(f"{async_prefix}def {func_name}({params}) -> '{ret_type}':")
 
         self._indent()
@@ -1287,7 +1290,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             # When the enclosing function is async the helper must also be
             # async — otherwise an `await` inside the body compiles to
             # invalid Python (issue #666).
-            helper_prefix = "async " if defn.is_async else ""
+            helper_prefix = "async " if is_async_execution_form(defn) else ""
             self._writeln(f"{helper_prefix}def {body_helper}():")
             self._indent()
 
@@ -1318,7 +1321,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._dedent()
             # Call the body and capture result. For async enclosing
             # functions the helper is async too, so the call must be awaited.
-            call_prefix = "await " if defn.is_async else ""
+            call_prefix = "await " if is_async_execution_form(defn) else ""
             self._writeln(f"result = {call_prefix}{body_helper}()")
             if self._expected_runtime_type_is_float(defn.return_type):
                 self._writeln("result = _promote_int_to_float(result)")

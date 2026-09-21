@@ -906,6 +906,26 @@ def _assert_expected_backend_outputs(
 
 PARITY_PROGRAMS = [
     pytest.param(
+        # --- await inside a synchronous main ---
+        """\
+async func twice(x: Int) -> Int
+    return x * 2
+end func
+
+async func describe(x: Int) -> String
+    return "n=" + to_string(x)
+end func
+
+func main() -> Unit
+    let doubled: Int = await twice(21)
+    print(doubled)
+    print(await describe(doubled))
+    print(await twice(await twice(3)))
+end func
+""",
+        id="await_in_sync_main",
+    ),
+    pytest.param(
         # --- Tuple patterns in match arms ---
         """\
 func pick(p: (Int, String)) -> String

@@ -248,6 +248,7 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         _strip_runtime_prelude_imports,
         _trusted_runtime_prelude_line_count,
     )
+    from ..entrypoint import is_async_execution_form
     from ..sandbox import SandboxConfig
 
     resolved_run = _resolve_run_program(filename, target)
@@ -293,7 +294,7 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         None,
     )
     python_code += _compiled_main_result_capture(
-        bool(main_defn and main_defn.is_async),
+        bool(main_defn is not None and is_async_execution_form(main_defn)),
         main_name="_geno_entry_main" if parsed_modules else "main",
         allow_missing_main=True,
     )
