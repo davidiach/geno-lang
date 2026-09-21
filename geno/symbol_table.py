@@ -414,6 +414,12 @@ class SymbolTableBuilder:
                 self._resolve_function(defn, scope)
             elif isinstance(defn, TypeAlias):
                 self._resolve_type_annotation(defn.target_type, scope)
+            elif isinstance(defn, ModuleConstant):
+                # The initializer is a literal and names nothing, but the
+                # annotation can name a user type, which rename and
+                # find-references have to see.
+                if defn.type_annotation is not None:
+                    self._resolve_type_annotation(defn.type_annotation, scope)
             elif isinstance(defn, TypeDef):
                 for variant in defn.variants:
                     for _field_name, field_type in variant.fields:

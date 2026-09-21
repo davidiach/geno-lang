@@ -58,7 +58,13 @@ def extract_completion_symbols(
     source: str,
 ) -> tuple[list[CompletionSymbol], list[CompletionSymbol]]:
     """Extract top-level completion symbols with kinds and export visibility."""
-    from geno.ast_nodes import FunctionDef, TraitDef, TypeAlias, TypeDef
+    from geno.ast_nodes import (
+        FunctionDef,
+        ModuleConstant,
+        TraitDef,
+        TypeAlias,
+        TypeDef,
+    )
     from geno.lexer import Lexer
     from geno.parser import Parser
     from geno.parser_base import ParseError as _ParseError
@@ -123,6 +129,10 @@ def extract_completion_symbols(
                             variant.name,
                             "constructor",
                         )
+            elif isinstance(defn, ModuleConstant):
+                # Private to its own module, so it completes in this file and
+                # never appears among the exported symbols.
+                _append_symbol(all_symbols, all_seen, defn.name, "variable")
             elif isinstance(defn, TraitDef):
                 _append_symbol(all_symbols, all_seen, defn.name, "trait")
                 if not has_explicit_exports or exported:
@@ -160,6 +170,13 @@ def extract_completion_symbols(
     all_names: list[CompletionSymbol] = []
     exported_names: list[CompletionSymbol] = []
     has_exports = False
+    # A module constant is unindented, so this cannot match a local binding.
+    # Collected separately because constants are never exported, and the
+    # no-explicit-exports fallback below copies everything in all_names.
+    constant_names = [
+        CompletionSymbol(name=match.group(1), kind="variable")
+        for match in re.finditer(r"^let\s+([a-z_]\w*)", source, re.MULTILINE)
+    ]
     for match in re.finditer(
         r"^(?:(export)\s+)?(?:@\w+\([^)]*\)\s+)?(func|type|trait)\s+(\w+)",
         source,
@@ -179,6 +196,7 @@ def extract_completion_symbols(
             exported_names.append(CompletionSymbol(name=name, kind=kind))
     if not has_exports:
         exported_names = list(all_names)
+    all_names.extend(constant_names)
     return all_names, exported_names
 
 

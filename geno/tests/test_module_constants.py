@@ -8,6 +8,8 @@ which is the property that keeps this feature independent of the entrypoint
 work in proposal 0001.
 """
 
+import contextlib
+import io
 import subprocess
 import sys
 
@@ -20,7 +22,9 @@ from geno.formatter import format_source
 from geno.interpreter import interpret
 from geno.js_compiler import JSCompileError, compile_to_js
 from geno.lexer import Lexer
+from geno.lsp_completions import extract_completion_symbols
 from geno.parser import ParseError, ParseErrors, Parser
+from geno.repl import REPL
 from geno.symbol_table import build_symbol_table
 from geno.tests._script_runner import run_node_code, run_python_code
 from geno.typechecker import TypeChecker
@@ -49,6 +53,13 @@ USAGE_PROGRAM = (
 
 def _parse(source, filename="<test>"):
     return Parser(Lexer(source, filename).tokenize()).parse_program()
+
+
+def _repl_execute(repl, source):
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        repl._execute(source)
+    return buffer.getvalue()
 
 
 def _check(source, filename="<test>"):
@@ -313,6 +324,53 @@ class TestTooling:
         kinds = {defn.name: defn.kind for defn in table.definitions}
         assert kinds["usage"] == "variable"
         assert kinds["numerals"] == "variable"
+
+    def test_the_symbol_table_resolves_a_type_annotation_on_a_constant(self):
+        # The initializer is a literal and names nothing, but the annotation
+        # can name a user type, which rename and find-references have to see.
+        source = "type Count = Int\n\nlet default_count: Count = 1\n"
+        table = build_symbol_table(_parse(source), "<test>")
+        count_def = next(d for d in table.definitions if d.name == "Count")
+        assert [ref.name for ref in table.refs_for_def(count_def)] == ["Count"]
+
+    def test_completion_offers_the_constant_without_exporting_it(self):
+        source = "let answer = 42\n\nfunc main() -> Int\n    return answer\nend func\n"
+        all_symbols, exported = extract_completion_symbols(source)
+        assert ("answer", "variable") in {(s.name, s.kind) for s in all_symbols}
+        assert "answer" not in {s.name for s in exported}
+        assert "main" in {s.name for s in exported}
+
+    def test_completion_keeps_the_constant_private_beside_an_export(self):
+        source = (
+            "let secret = 1\n\n"
+            "export func pub() -> Int\n"
+            "    example () -> 1\n"
+            "    return secret\n"
+            "end func\n"
+        )
+        all_symbols, exported = extract_completion_symbols(source)
+        assert "secret" in {s.name for s in all_symbols}
+        assert {s.name for s in exported} == {"pub"}
+
+    def test_completion_regex_fallback_keeps_the_constant_private(self):
+        # An unterminated string defeats the lexer, so completion falls back to
+        # the regex scanner; the constant must not leak into the exports there
+        # either, where a file with no `export` keyword exports everything.
+        source = 'let answer = 42\n\nfunc main() -> String\n    return "oops\n'
+        all_symbols, exported = extract_completion_symbols(source)
+        assert "answer" in {s.name for s in all_symbols}
+        assert {s.name for s in exported} == {"main"}
+
+    def test_the_repl_evaluates_a_module_constant(self):
+        repl = REPL()
+        assert "Defined." in _repl_execute(repl, "let answer = 42")
+        assert "42" in _repl_execute(repl, "answer")
+
+    def test_the_repl_reports_a_module_level_var_as_a_language_error(self):
+        # VAR reaches the parser's "module-level bindings must be immutable"
+        # diagnostic instead of being read as a bare expression.
+        output = _repl_execute(REPL(), "var answer = 42")
+        assert "immutable" in output
 
 
 class TestModulePrivacy:

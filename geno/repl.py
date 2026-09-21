@@ -34,6 +34,11 @@ _DEFINITION_STARTERS = {
     "TRAIT",
     "IMPL",
     "TEST",
+    # A module-level binding is a definition too. VAR is here so that `var x =
+    # 1` reaches the parser's "module-level bindings must be immutable"
+    # diagnostic instead of being read as an expression.
+    "LET",
+    "VAR",
 }
 
 BANNER = f"""
