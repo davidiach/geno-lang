@@ -302,6 +302,56 @@ def _promote_list_element(value: Any, expected_type: Any) -> Any:
     return _promote_int_to_expected_float(value, expected_type)
 
 
+_REJECTION_CONSTRUCTORS = ("Err", "None")
+
+
+def _explain_rejection_example(
+    name: str,
+    expected: Any,
+    violation: ContractViolationError,
+) -> str | None:
+    """Explain a ``requires`` clause that rejects its own ``Err`` example.
+
+    A function cannot both contract its happy path with ``requires`` and
+    document its rejection path with ``example bad_input -> Err(...)``: the
+    precondition is checked before the body runs, so the example can never
+    reach the ``Err`` the author wrote (#73). The bare "requires clause
+    evaluated to false" reads as a broken example rather than as the design
+    conflict it is, which costs a repair loop to work out.
+
+    The replacement keeps the "Precondition failed for X:" prefix the
+    contract checks raise with: ``geno test`` classifies a violation as a
+    ``requires`` failure from that prefix, so dropping it would trade the
+    explanation for a report that no longer says which clause was violated.
+
+    Returns the replacement message, or ``None`` to leave *violation*
+    untouched — this only claims the case it can actually explain.
+    """
+    expected_message = (
+        f"Precondition failed for {name}: requires clause evaluated to false"
+    )
+    if violation.message != expected_message:
+        # A different precondition failure — a nested call's, or the '?'
+        # propagation variant — is not this conflict.
+        return None
+    if violation.call_depth != 1:
+        # Depth 1 is the call this example made. Deeper means the body ran and
+        # a nested call was rejected, so the example's own input was fine.
+        return None
+    if not isinstance(expected, ConstructorValue):
+        return None
+    if expected.constructor not in _REJECTION_CONSTRUCTORS:
+        return None
+
+    return (
+        f"Precondition failed for {name}: this example expects "
+        f"{expected.constructor}, but a requires clause "
+        f"rejected the input before the body ran, so the example "
+        f"can never reach it. Either drop the requires clause and validate in "
+        f"the body, or keep it and example only inputs that satisfy it."
+    )
+
+
 # =============================================================================
 # Interpreter
 # =============================================================================
@@ -1573,18 +1623,28 @@ class Interpreter:
                     expected = self.eval_expr(example.output_expr, example_env)
 
                     # Call function with input
-                    actual = self._call_function(
-                        func,
-                        example_call_args(
-                            input_val,
-                            param_count=len(func_def.params),
-                            required_count=sum(
-                                1
-                                for param in func_def.params
-                                if param.default_value is None
+                    try:
+                        actual = self._call_function(
+                            func,
+                            example_call_args(
+                                input_val,
+                                param_count=len(func_def.params),
+                                required_count=sum(
+                                    1
+                                    for param in func_def.params
+                                    if param.default_value is None
+                                ),
                             ),
-                        ),
-                    )
+                        )
+                    except ContractViolationError as violation:
+                        explained = _explain_rejection_example(
+                            name, expected, violation
+                        )
+                        if explained is None:
+                            raise
+                        raise ContractViolationError(
+                            explained, example.location
+                        ) from None
 
                     # Compare
                     if not self._values_equal(
@@ -2435,6 +2495,7 @@ class Interpreter:
                     f"Precondition failed for {func.name or 'function'}: "
                     f"requires clause evaluated to false",
                     req.condition.location,
+                    call_depth=len(self._call_stack),
                 )
 
     def _check_ensures(self, func: Closure, env: Environment, result: Any) -> None:

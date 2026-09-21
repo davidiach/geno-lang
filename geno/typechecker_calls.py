@@ -20,6 +20,12 @@ class CallParameterInfo:
     default_lookup_name: str | None
     default_count: int
     param_names: tuple[str, ...]
+    #: The callee as it is written at the call site, when it can be named at
+    #: all: ``f`` for a direct call, ``M.f`` for a call through an imported
+    #: module. ``default_lookup_name`` cannot stand in for it — that one is
+    #: deliberately None for a module call, because defaults are looked up per
+    #: module — and a diagnostic that rewrites the call needs the source form.
+    callee_display: str | None = None
 
 
 def resolve_call_parameter_info(
@@ -39,6 +45,7 @@ def resolve_call_parameter_info(
             default_lookup_name=function.name,
             default_count=func_default_counts.get(function.name, 0),
             param_names=tuple(func_param_names.get(function.name, ())),
+            callee_display=function.name,
         )
 
     if isinstance(function, FieldAccess):
@@ -50,6 +57,7 @@ def resolve_call_parameter_info(
                 default_lookup_name=None,
                 default_count=module_defaults.get(function.field_name, 0),
                 param_names=tuple(module_params.get(function.field_name, ())),
+                callee_display=f"{target_name}.{function.field_name}",
             )
 
     return CallParameterInfo(default_lookup_name=None, default_count=0, param_names=())

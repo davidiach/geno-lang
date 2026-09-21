@@ -31,7 +31,8 @@ def build_app(
     from ..js_compiler import (
         JSCompileError,
         JSCompiler,
-        _browser_capability_bootstrap,
+        _browser_canvas_prologue,
+        _canvas_shell_markup,
         _coerce_canvas_dimension,
         _offset_source_map_lines,
         compile_project_to_html,
@@ -85,7 +86,7 @@ def build_app(
             if output is None:
                 output = (pg.entrypoint or pg.files[0].module_name) + ".html"
 
-            write_text_output(output, html)
+            write_text_output(output, html, create_parents=True)
             print(f"Built to {output}")
         else:
             # Directory output: dist/ with index.html and app.js
@@ -103,13 +104,16 @@ def build_app(
                     if rf:
                         sources_content[str(rf.path)] = dg.original_sources[mod_name]
 
-            # Write app.js, optionally with source map reference
-            browser_bootstrap = _browser_capability_bootstrap()
+            # Write app.js, optionally with source map reference.
+            # The canvas prologue must precede the compiled code: the drawing
+            # and mouse builtins are guarded on `_geno_canvas`/`_geno_ctx`, so
+            # without it every draw call and mouse listener silently no-ops.
+            browser_prologue = _browser_canvas_prologue()
             js_path = dist_dir / "app.js"
             source_map_comment = (
                 "\n//# sourceMappingURL=app.js.map\n" if source_map else ""
             )
-            write_text_output(js_path, browser_bootstrap + js_code + source_map_comment)
+            write_text_output(js_path, browser_prologue + js_code + source_map_comment)
 
             if source_map:
                 # Write source map
@@ -119,29 +123,18 @@ def build_app(
                 )
                 map_path = dist_dir / "app.js.map"
                 sm_json = _offset_source_map_lines(
-                    sm_json, browser_bootstrap.count("\n")
+                    sm_json, browser_prologue.count("\n")
                 )
                 write_text_output(map_path, sm_json)
 
-            # Write index.html referencing app.js
-            import html as _html_mod
-
-            safe_title = _html_mod.escape(title)
-            index_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{safe_title}</title>
-<style>
-body {{ margin: 0; background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; }}
-canvas {{ border: 1px solid #333; }}
-</style>
-</head>
-<body>
-<canvas id="geno-canvas" width="{safe_width}" height="{safe_height}"></canvas>
-<script src="app.js"></script>
-</body>
-</html>"""
+            # Write index.html referencing app.js, through the same shell the
+            # single-file build uses so the two cannot drift.
+            index_html = _canvas_shell_markup(
+                title=title,
+                width=safe_width,
+                height=safe_height,
+                body_script='<script src="app.js"></script>',
+            )
             index_path = dist_dir / "index.html"
             write_text_output(index_path, index_html)
 

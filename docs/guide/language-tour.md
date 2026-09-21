@@ -37,6 +37,28 @@ end func
 
 Example clauses serve as both documentation and tests. They are verified at runtime.
 
+### Float Examples
+
+`Float` examples allow small rounding differences, but the safest habit is to
+**keep the full value printed by a real run**:
+
+```geno
+func ratio(a: Float, b: Float) -> Float
+    example (160.0, 7.0) -> 22.857142857142858
+    return a / b
+end func
+```
+
+A convenience rounding like `22.857` fails. The tolerance deliberately does not
+stretch that far: an example that passed on a value correct to only four digits
+would hide a real error rather than catch it.
+
+The interpreter and the separate test harness currently use different
+tolerances, so a fixed count of significant digits does not guarantee that both
+accept a rounded value. Take the expected value from a real run and preserve
+all its digits. When the domain allows it, prefer `Int` arithmetic instead:
+cents rather than fractional currency, for instance.
+
 ### Named Parameters
 
 Functions with 3 or more parameters require named arguments at the call site:
@@ -298,6 +320,19 @@ let doubled: List[Int] = map(nums, fn(x: Int) -> x * 2)
 let evens: List[Int] = filter(nums, fn(x: Int) -> x % 2 == 0)
 let total: Int = fold(nums, 0, fn(acc: Int, x: Int) -> acc + x)
 ```
+
+Replacing one element returns a new list rather than mutating in place.
+`set_at` is a prelude builtin, so it needs no import:
+
+```geno
+let nums: List[Int] = [1, 2, 3, 4, 5]
+let patched: List[Int] = set_at(list: nums, index: 2, value: 99)  // [1, 2, 99, 4, 5]
+// nums is unchanged
+```
+
+It raises if the index is out of range. Algorithms that write to the same
+collection repeatedly -- in-place sorts and the like -- are usually clearer with
+`Vec[T]` and `vec_set`, covered under Mutable Collections below.
 
 ### List Comprehensions
 

@@ -1566,6 +1566,27 @@ if (typeof document !== 'undefined') {
     document.addEventListener('keyup', function(e) {
         _geno_keys_down.delete(e.key);
     });
+    // A key released while the page is unfocused never delivers its `keyup`
+    // here, so held state would survive the switch and resume stale movement
+    // when the player returns. Drop it whenever focus or visibility is lost.
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            _geno_keys_down.clear();
+            _geno_keys_pressed.clear();
+        }
+    });
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('blur', function() {
+        _geno_keys_down.clear();
+        _geno_keys_pressed.clear();
+    });
+    // `pagehide` covers mobile/bfcache transitions that never fire `blur`.
+    window.addEventListener('pagehide', function() {
+        _geno_keys_down.clear();
+        _geno_keys_pressed.clear();
+    });
 }
 
 function is_key_down(key) {
@@ -1591,9 +1612,19 @@ let _geno_mouse_clicked = false;
 
 if (typeof document !== 'undefined' && typeof _geno_canvas !== 'undefined') {
     _geno_canvas.addEventListener('mousemove', function(e) {
+        // The shell scales the canvas with CSS to fit the viewport, so the
+        // rendered box and the drawing surface differ. Report logical canvas
+        // coordinates regardless: subtract the border, then rescale by the
+        // ratio between the two. Both scales are 1 when nothing is scaled.
         const rect = _geno_canvas.getBoundingClientRect();
-        _geno_mouse_x = _GENO_MATH.floor(e.clientX - rect.left);
-        _geno_mouse_y = _GENO_MATH.floor(e.clientY - rect.top);
+        const borderX = _geno_canvas.clientLeft || 0;
+        const borderY = _geno_canvas.clientTop || 0;
+        const shownWidth = _geno_canvas.clientWidth;
+        const shownHeight = _geno_canvas.clientHeight;
+        const scaleX = shownWidth > 0 ? _geno_canvas.width / shownWidth : 1;
+        const scaleY = shownHeight > 0 ? _geno_canvas.height / shownHeight : 1;
+        _geno_mouse_x = _GENO_MATH.floor((e.clientX - rect.left - borderX) * scaleX);
+        _geno_mouse_y = _GENO_MATH.floor((e.clientY - rect.top - borderY) * scaleY);
     });
     _geno_canvas.addEventListener('mousedown', function(e) {
         _geno_mouse_down = true;
@@ -1602,6 +1633,24 @@ if (typeof document !== 'undefined' && typeof _geno_canvas !== 'undefined') {
     _geno_canvas.addEventListener('mouseup', function(e) {
         _geno_mouse_down = false;
     });
+    // As with keys: a button released off-page never reports `mouseup` here,
+    // which would leave the app dragging or firing after focus returns.
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            _geno_mouse_down = false;
+            _geno_mouse_clicked = false;
+        }
+    });
+    if (typeof window !== 'undefined') {
+        window.addEventListener('blur', function() {
+            _geno_mouse_down = false;
+            _geno_mouse_clicked = false;
+        });
+        window.addEventListener('pagehide', function() {
+            _geno_mouse_down = false;
+            _geno_mouse_clicked = false;
+        });
+    }
 }
 
 function mouse_x() {

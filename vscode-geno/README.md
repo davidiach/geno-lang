@@ -20,12 +20,13 @@ Syntax highlighting and error diagnostics for the [Geno](https://github.com/davi
 > **Not yet published.** The extension is an unreleased development preview and is not on the
 > VS Code Marketplace. The packaged `.vsix` includes the runtime LSP client.
 
-Package and install a `.vsix` locally:
+Building and packaging requires Node.js 22–24 (VSCE 4 requires Node.js 22 or
+newer). Package and install a `.vsix` locally:
 
 ```bash
 cd vscode-geno
 npm ci
 npm run compile
 npm run package
-code --install-extension geno-0.4.3.vsix
+code --install-extension geno-0.4.4.vsix
 ```

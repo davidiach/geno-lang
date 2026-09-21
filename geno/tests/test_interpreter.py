@@ -1412,3 +1412,123 @@ class TestBindingCopySemantics:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# =============================================================================
+# requires clauses that reject their own Err examples (#73)
+# =============================================================================
+
+
+class TestRejectionExampleDiagnostics:
+    """A `requires` clause runs before the body, so it also rejects the
+    example that documents the rejection path. 'requires clause evaluated to
+    false' reads as a broken example rather than as that design conflict."""
+
+    _ROMAN = (
+        "func to_roman(n: Int) -> Result[String, String]\n"
+        "    requires n >= 1\n"
+        '    example 1 -> Ok("I")\n'
+        '    example 0 -> Err("out of range")\n'
+        "    if n < 1 then\n"
+        '        return Err("out of range")\n'
+        "    end if\n"
+        '    return Ok("I")\n'
+        "end func to_roman\n"
+    )
+
+    def test_err_example_blocked_by_requires_explains_the_conflict(self):
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            run_program(self._ROMAN, check_examples=True)
+
+        message = str(exc_info.value)
+        assert "expects Err" in message
+        assert "requires clause" in message
+        assert "requires clause evaluated to false" not in message
+
+    def test_explanation_keeps_the_precondition_prefix(self):
+        """``geno test`` classifies a violation as a ``requires`` failure from
+        the 'Precondition failed for X:' prefix, so the explanation replaces
+        the rest of the message and not the prefix."""
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            run_program(self._ROMAN, check_examples=True)
+
+        assert "Precondition failed for to_roman:" in str(exc_info.value)
+
+    def test_none_example_blocked_by_requires_is_explained_too(self):
+        source = (
+            "func head(xs: List[Int]) -> Option[Int]\n"
+            "    requires length(xs) >= 1\n"
+            "    example [7] -> Some(7)\n"
+            "    example [] -> None\n"
+            "    if length(xs) == 0 then\n"
+            "        return None\n"
+            "    end if\n"
+            "    return Some(xs[0])\n"
+            "end func head\n"
+        )
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            run_program(source, check_examples=True)
+
+        assert "expects None" in str(exc_info.value)
+
+    def test_plain_precondition_failure_keeps_its_own_message(self):
+        """Only the Err/None shape is explained; everything else is untouched."""
+        source = (
+            "func half(n: Int) -> Int\n"
+            "    requires n >= 10\n"
+            "    example 2 -> 1\n"
+            "    return n / 2\n"
+            "end func half\n"
+        )
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            run_program(source, check_examples=True)
+
+        assert "requires clause evaluated to false" in str(exc_info.value)
+
+    def test_nested_rejection_is_not_blamed_on_the_example(self):
+        """A recursive call tripping the contract is a different mistake: the
+        example's own input satisfied it, so the explanation must not fire."""
+        source = (
+            "func countdown(n: Int) -> Result[Int, String]\n"
+            "    requires n >= 1\n"
+            "    example 1 -> Ok(0)\n"
+            '    example 2 -> Err("went under")\n'
+            "    if n == 1 then\n"
+            "        return Ok(0)\n"
+            "    end if\n"
+            "    return countdown(n - 2)\n"
+            "end func countdown\n"
+        )
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            run_program(source, check_examples=True)
+
+        message = str(exc_info.value)
+        assert "requires clause evaluated to false" in message
+        assert "expects Err" not in message
+
+    def test_propagation_variant_keeps_its_own_message(self):
+        """'requires cannot use ?' shares the message prefix but not the cause."""
+        from geno.interpreter import _explain_rejection_example
+        from geno.values import ConstructorValue, ContractViolationError
+
+        violation = ContractViolationError(
+            "Precondition failed for f: requires clause cannot use '?' to "
+            "propagate None/Err",
+            None,
+            call_depth=1,
+        )
+        expected = ConstructorValue("Err", {"error": "x"})
+        assert _explain_rejection_example("f", expected, violation) is None
+
+    def test_err_example_without_requires_still_passes(self):
+        source = (
+            "func to_roman(n: Int) -> Result[String, String]\n"
+            '    example 1 -> Ok("I")\n'
+            '    example 0 -> Err("out of range")\n'
+            "    if n < 1 then\n"
+            '        return Err("out of range")\n'
+            "    end if\n"
+            '    return Ok("I")\n'
+            "end func to_roman\n"
+        )
+        run_program(source, check_examples=True)
