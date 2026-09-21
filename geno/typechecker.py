@@ -8,7 +8,6 @@ Verifies type annotations and catches type errors before runtime.
 
 from __future__ import annotations
 
-import re as _re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -267,19 +266,6 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-# Keep the prefixes here in lockstep with the top-level declaration forms
-# ``Parser._parse_definition`` accepts: 'export', an '@annotation', and 'async'
-# may all precede 'func'.
-_FUNC_DEF_PATTERN = _re.compile(
-    r"^(?P<export>export\s+)?(?:@\w+\([^)]*\)\s+)?(?:async\s+)?"
-    r"func\s+(?P<name>[A-Za-z_]\w*)\s*\(",
-    _re.MULTILINE,
-)
-# A module that marks anything 'export' exposes only what it marks; one that
-# marks nothing exposes everything. Types and aliases count towards that
-# switch as well as functions, so this looks for the keyword rather than for
-# an exported function.
-_EXPORT_DECL_PATTERN = _re.compile(r"^export\s", _re.MULTILINE)
 _STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
 
 
@@ -322,14 +308,23 @@ def _importable_function_names(source: str) -> list[str]:
     import that leaves the error exactly where it was, only without a hint the
     second time round.
     """
-    names: list[str] = []
-    exported: list[str] = []
-    for match in _FUNC_DEF_PATTERN.finditer(source):
-        name = match.group("name")
-        names.append(name)
-        if match.group("export"):
-            exported.append(name)
-    return exported if _EXPORT_DECL_PATTERN.search(source) else names
+    from .lexer import LexerError
+    from .parser import parse
+    from .parser_base import ParseError, ParseErrors
+
+    try:
+        program = parse(source)
+    except (LexerError, ParseError, ParseErrors, RecursionError):
+        # Hints are advisory: an invalid sibling must not replace the original
+        # undefined-function diagnostic with a failure while building a hint.
+        return []
+
+    has_exports = TypeChecker._program_has_explicit_exports(program)
+    return [
+        defn.name
+        for defn in program.definitions
+        if isinstance(defn, FunctionDef) and (not has_exports or defn.exported)
+    ]
 
 
 def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:

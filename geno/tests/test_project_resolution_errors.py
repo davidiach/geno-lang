@@ -328,6 +328,91 @@ def test_private_sibling_function_is_not_offered(tmp_path):
     assert "import Lib" not in messages
 
 
+@pytest.mark.parametrize(
+    "declaration",
+    ["    export type Marker = Marker(value: Int)", "    export type Marker = Int"],
+)
+def test_indented_export_keeps_sibling_functions_private(tmp_path, declaration):
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func main() -> Int\n    return double(2)\nend func\n",
+        lib_src=declaration + "\n" + _LIB_SRC,
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "Undefined function: double" in messages
+    assert "import Lib" not in messages
+
+
+def test_indented_exported_sibling_function_is_offered(tmp_path):
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func main() -> Int\n    return public_double(2)\nend func\n",
+        lib_src=_EXPORTING_LIB_SRC.replace("export func", "    export func"),
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    assert any("import Lib" in diagnostic.message for diagnostic in result.diagnostics)
+    main.write_text("import Lib\n" + main.read_text())
+    assert check_path(main).ok
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/*\nexport func fake(n: Int) -> Int\n*/\n" + _LIB_SRC,
+        'func text() -> String\n    return """\n'
+        'export func fake(n: Int) -> Int\n"""\nend func\n' + _LIB_SRC,
+    ],
+)
+def test_import_hints_ignore_declarations_in_comments_and_strings(source):
+    from geno.typechecker import _importable_function_names
+
+    names = _importable_function_names(source)
+    assert "double" in names
+    assert "fake" not in names
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["func broken(\n", 'func one() -> String\n return "unfinished\nend func\n'],
+)
+def test_invalid_sibling_source_does_not_break_advisory_import_hints(source):
+    from geno.typechecker import _importable_function_names
+
+    assert _importable_function_names(source) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "phase"),
+    [
+        ("func broken(\n", "PARSE_"),
+        ('func one() -> String\n return "unfinished\nend func\n', "LEX_"),
+    ],
+)
+def test_imported_sibling_syntax_errors_are_still_reported(tmp_path, source, phase):
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "import Lib\nfunc main() -> Int\n    return 0\nend func\n",
+        lib_src=source,
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    assert any(
+        diagnostic.code.name.startswith(phase) for diagnostic in result.diagnostics
+    )
+
+
 def test_module_without_exports_still_offers_every_function(tmp_path):
     """No export keyword anywhere means the whole module is public, which is
     what the plain-`func` fixtures above rely on."""
