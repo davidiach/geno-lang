@@ -801,3 +801,59 @@ class TestTestErrorDetail:
             "Internal error while running tests" in rec.message
             for rec in caplog.records
         )
+
+
+class TestRejectionExampleExplanation:
+    """`geno test` runs examples itself rather than through
+    ``Interpreter._verify_examples``, so the requires-rejects-its-own-example
+    explanation has to reach this path too (#73)."""
+
+    _ROMAN = (
+        "func to_roman(n: Int) -> Result[String, String]\n"
+        "    requires n >= 1\n"
+        '    example 1 -> Ok("I")\n'
+        '    example 0 -> Err("out of range")\n'
+        "    if n < 1 then\n"
+        '        return Err("out of range")\n'
+        "    end if\n"
+        '    return Ok("I")\n'
+        "end func to_roman\n"
+    )
+
+    def test_conflict_is_explained_in_the_test_report(self, tmp_path):
+        f = tmp_path / "roman.geno"
+        f.write_text(self._ROMAN)
+
+        harness_result = _first_harness_result(run_test_suite([f]))
+
+        assert harness_result.failed == 1
+        message = harness_result.violations[0].message
+        assert "expects Err" in message
+        assert "requires clause evaluated to false" not in message
+
+    def test_violation_is_still_classified_as_a_requires_failure(self, tmp_path):
+        """The explanation keeps the 'Precondition failed for X:' prefix that
+        ``_classify_runtime_failure`` reads, so the report still separates a
+        contract violation from a plain wrong-answer example."""
+        f = tmp_path / "roman.geno"
+        f.write_text(self._ROMAN)
+
+        harness_result = _first_harness_result(run_test_suite([f]))
+
+        assert harness_result.violations[0].kind == "requires"
+
+    def test_unrelated_precondition_failure_is_untouched(self, tmp_path):
+        f = tmp_path / "half.geno"
+        f.write_text(
+            "func half(n: Int) -> Int\n"
+            "    requires n >= 10\n"
+            "    example 2 -> 1\n"
+            "    return n / 2\n"
+            "end func half\n"
+        )
+
+        harness_result = _first_harness_result(run_test_suite([f]))
+
+        violation = harness_result.violations[0]
+        assert violation.kind == "requires"
+        assert "requires clause evaluated to false" in violation.message

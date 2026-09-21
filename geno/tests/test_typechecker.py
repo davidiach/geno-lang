@@ -2902,6 +2902,16 @@ class TestNamedArgumentDiagnostic:
         assert _named_argument_example("f", []) == " (e.g., param_name: value)"
         assert _named_argument_example("f", ["a", ""]) == " (e.g., param_name: value)"
 
+    def test_placeholder_is_kept_when_the_callee_cannot_be_named(self):
+        """Without a callee to render there is nothing to rewrite into, so the
+        rule is stated rather than illustrated with an uncallable expression."""
+        from geno.typechecker import _named_argument_example
+
+        assert (
+            _named_argument_example(None, ["a", "b", "c"])
+            == " (e.g., param_name: value)"
+        )
+
 
 class TestUndefinedFunctionPunctuation:
     """Each hint is its own sentence, so it needs a stop after the name."""

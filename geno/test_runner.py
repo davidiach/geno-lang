@@ -125,7 +125,8 @@ def _run_examples(
     silently skip them since impl methods are stored separately from
     top-level function closures.
     """
-    from .values import _UNBOUND
+    from .interpreter import _explain_rejection_example
+    from .values import _UNBOUND, ContractViolationError
 
     for harness in harnesses:
         func = _resolve_harness_callable(interp, harness)
@@ -156,18 +157,34 @@ def _run_examples(
                     input_val = interp.eval_expr(example.input_expr, interp.global_env)
                     expected = interp.eval_expr(example.output_expr, interp.global_env)
 
-                    actual = interp._call_function(
-                        func,
-                        example_call_args(
-                            input_val,
-                            param_count=len(harness.param_names),
-                            required_count=sum(
-                                1
-                                for param in getattr(func, "params", [])
-                                if param.default_value is None
-                            ),
+                    call_args = example_call_args(
+                        input_val,
+                        param_count=len(harness.param_names),
+                        required_count=sum(
+                            1
+                            for param in getattr(func, "params", [])
+                            if param.default_value is None
                         ),
                     )
+                    try:
+                        actual = interp._call_function(func, call_args)
+                    except ContractViolationError as violation:
+                        # This path runs examples itself rather than going
+                        # through ``Interpreter._verify_examples``, so the
+                        # requires-rejects-its-own-example explanation (#73)
+                        # has to be applied here too or ``geno test`` reports
+                        # the bare "evaluated to false" that `geno run` no
+                        # longer does.
+                        explained = _explain_rejection_example(
+                            getattr(func, "name", None) or harness.base_name,
+                            expected,
+                            violation,
+                        )
+                        if explained is None:
+                            raise
+                        raise ContractViolationError(
+                            explained, example.location
+                        ) from None
 
                 if interp._values_equal(actual, expected, approximate_floats=True):
                     result.passed += 1

@@ -151,13 +151,13 @@ _LIB_SRC = (
 )
 
 
-def _two_file_project(tmp_path: Path, main_src: str) -> Path:
+def _two_file_project(tmp_path: Path, main_src: str, lib_src: str = _LIB_SRC) -> Path:
     """A manifest declaring two modules, as `geno init` lays one out."""
     (tmp_path / "geno.toml").write_text(
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
         'entrypoint = "Main"\nfiles = ["Lib", "Main"]\n'
     )
-    (tmp_path / "Lib.geno").write_text(_LIB_SRC)
+    (tmp_path / "Lib.geno").write_text(lib_src)
     main = tmp_path / "Main.geno"
     main.write_text(main_src)
     return main
@@ -252,3 +252,129 @@ def test_project_syntax_error_reaches_check_path_too(tmp_path):
 
     assert not result.ok
     assert result.diagnostics
+
+
+# =============================================================================
+# Export visibility in the sibling-module hint
+# =============================================================================
+
+
+_EXPORTING_LIB_SRC = (
+    "export func public_double(n: Int) -> Int\n"
+    "    example 2 -> 4\n"
+    "    return n * 2\n"
+    "end func\n"
+    "\n"
+    "func private_helper(n: Int) -> Int\n"
+    "    example 2 -> 3\n"
+    "    return n + 1\n"
+    "end func\n"
+)
+
+
+def test_exported_sibling_function_is_offered(tmp_path):
+    """A module that exports exposes only what it exports, and the exported
+    name is exactly the one the hint exists for."""
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func main() -> Int\n    example -> 8\n    return public_double(4)\nend func\n",
+        lib_src=_EXPORTING_LIB_SRC,
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "Undefined function: public_double" in messages
+    assert "import Lib" in messages
+
+
+def test_following_the_hint_resolves_the_error(tmp_path):
+    """The hint is only worth printing if the import it names is the fix."""
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "import Lib\n\nfunc main() -> Int\n    example -> 8\n"
+        "    return public_double(4)\nend func\n",
+        lib_src=_EXPORTING_LIB_SRC,
+    )
+    assert check_path(main).ok
+
+
+def test_private_sibling_function_is_not_offered(tmp_path):
+    """Importing the module would not bring a non-exported name into scope, so
+    naming it sends the caller to an import that leaves the error in place."""
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func main() -> Int\n    example -> 3\n"
+        "    return private_helper(2)\nend func\n",
+        lib_src=_EXPORTING_LIB_SRC,
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "Undefined function: private_helper" in messages
+    assert "import Lib" not in messages
+
+
+def test_module_without_exports_still_offers_every_function(tmp_path):
+    """No export keyword anywhere means the whole module is public, which is
+    what the plain-`func` fixtures above rely on."""
+    from geno.api import check_path
+
+    main = _two_file_project(
+        tmp_path,
+        "func main() -> Int\n    example -> 8\n    return double(4)\nend func\n",
+    )
+    result = check_path(main)
+
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "import Lib" in messages
+
+
+def test_async_and_annotated_declarations_are_indexed(tmp_path):
+    """'export', '@untested' and 'async' may all precede 'func'."""
+    from geno.typechecker import _importable_function_names
+
+    source = (
+        "export func plain(n: Int) -> Int\n"
+        "    return n\n"
+        "end func\n"
+        "export async func fetched(url: String) -> String\n"
+        "    return url\n"
+        "end func\n"
+        'export @untested("no harness") func annotated(n: Int) -> Int\n'
+        "    return n\n"
+        "end func\n"
+        "func hidden(n: Int) -> Int\n"
+        "    return n\n"
+        "end func\n"
+    )
+
+    assert _importable_function_names(source) == ["plain", "fetched", "annotated"]
+
+
+def test_qualified_call_names_its_module_in_the_named_argument_rule(tmp_path):
+    """The 3+-parameter rule renders the call the caller should write, and a
+    call through an imported module has to keep its qualifier to parse."""
+    from geno.api import check_path
+
+    main = tmp_path / "Main.geno"
+    main.write_text(
+        "import String as S\n\n"
+        "func take(s: String) -> String\n"
+        '    example "hello world" -> "hello"\n'
+        "    return S.substring(s, 0, 5)\n"
+        "end func\n"
+    )
+    result = check_path(main)
+
+    assert not result.ok
+    messages = " ".join(d.message for d in result.diagnostics)
+    assert "S.substring(text: ..., start: ..., stop: ...)" in messages
+    assert "function(" not in messages

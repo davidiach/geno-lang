@@ -267,7 +267,19 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-_FUNC_DEF_PATTERN = _re.compile(r"^func\s+([A-Za-z_]\w*)\s*\(", _re.MULTILINE)
+# Keep the prefixes here in lockstep with the top-level declaration forms
+# ``Parser._parse_definition`` accepts: 'export', an '@annotation', and 'async'
+# may all precede 'func'.
+_FUNC_DEF_PATTERN = _re.compile(
+    r"^(?P<export>export\s+)?(?:@\w+\([^)]*\)\s+)?(?:async\s+)?"
+    r"func\s+(?P<name>[A-Za-z_]\w*)\s*\(",
+    _re.MULTILINE,
+)
+# A module that marks anything 'export' exposes only what it marks; one that
+# marks nothing exposes everything. Types and aliases count towards that
+# switch as well as functions, so this looks for the keyword rather than for
+# an exported function.
+_EXPORT_DECL_PATTERN = _re.compile(r"^export\s", _re.MULTILINE)
 _STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
 
 
@@ -283,17 +295,41 @@ def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> st
     return ""
 
 
-def _named_argument_example(func_name: str, param_names: Sequence[str]) -> str:
+def _named_argument_example(func_name: str | None, param_names: Sequence[str]) -> str:
     """Return ': f(a: ..., b: ...)' showing the call this rule wants.
 
     'use named arguments (e.g., param_name: value)' states the rule but not
     the labels, which are the part the caller is missing — spelling them out
     turns a lookup into a rewrite (#64).
+
+    ``func_name`` is the callee as written, so a call through a module alias
+    renders as ``S.substring(...)``. Without a name for it there is nothing to
+    rewrite into, and the rule is stated the old way rather than illustrated
+    with a call that would not parse.
     """
-    if not param_names or not all(param_names):
+    if not func_name or not param_names or not all(param_names):
         return " (e.g., param_name: value)"
     rendered = ", ".join(f"{param}: ..." for param in param_names)
     return f": {func_name}({rendered})"
+
+
+def _importable_function_names(source: str) -> list[str]:
+    """Return the function names *source* exposes to a module that imports it.
+
+    ``_resolve_import`` binds every top-level function when a module exports
+    nothing and only the exported ones when it exports anything. A hint has to
+    apply the same rule: naming a private function would send the caller to an
+    import that leaves the error exactly where it was, only without a hint the
+    second time round.
+    """
+    names: list[str] = []
+    exported: list[str] = []
+    for match in _FUNC_DEF_PATTERN.finditer(source):
+        name = match.group("name")
+        names.append(name)
+        if match.group("export"):
+            exported.append(name)
+    return exported if _EXPORT_DECL_PATTERN.search(source) else names
 
 
 def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
@@ -316,7 +352,7 @@ def _stdlib_function_modules() -> dict[str, tuple[str, ...]]:
             text = path.read_text(encoding="utf-8")
         except OSError:  # pragma: no cover - unreadable module
             continue
-        for name in _FUNC_DEF_PATTERN.findall(text):
+        for name in _importable_function_names(text):
             modules = index.setdefault(name, [])
             if path.stem not in modules:
                 modules.append(path.stem)
@@ -367,7 +403,7 @@ def _project_function_modules(
                     text = resolved.path.read_text(encoding="utf-8")
                 except OSError:  # pragma: no cover - unreadable sibling
                     continue
-                for name in _FUNC_DEF_PATTERN.findall(text):
+                for name in _importable_function_names(text):
                     modules = index.setdefault(name, [])
                     if resolved.module_name not in modules:
                         modules.append(resolved.module_name)
@@ -3794,13 +3830,12 @@ class TypeChecker(ExhaustivenessMixin):
         if required_param_count >= 3:
             positional_count = sum(1 for arg in arguments if arg.name is None)
             if positional_count > 0:
-                func_name = (
-                    identifier_func.name if identifier_func is not None else "function"
-                )
+                callee_display = call_param_info.callee_display
                 self._error(
-                    f"Function '{func_name}' has {len(func_type.param_types)} parameters; "
+                    f"Function '{callee_display or 'function'}' has "
+                    f"{len(func_type.param_types)} parameters; "
                     f"use named arguments for clarity"
-                    f"{_named_argument_example(func_name, param_names)}",
+                    f"{_named_argument_example(callee_display, param_names)}",
                     expr.location,
                 )
 

@@ -319,6 +319,11 @@ def _explain_rejection_example(
     evaluated to false" reads as a broken example rather than as the design
     conflict it is, which costs a repair loop to work out.
 
+    The replacement keeps the "Precondition failed for X:" prefix the
+    contract checks raise with: ``geno test`` classifies a violation as a
+    ``requires`` failure from that prefix, so dropping it would trade the
+    explanation for a report that no longer says which clause was violated.
+
     Returns the replacement message, or ``None`` to leave *violation*
     untouched — this only claims the case it can actually explain.
     """
@@ -339,8 +344,9 @@ def _explain_rejection_example(
         return None
 
     return (
-        f"This example expects {expected.constructor}, but a requires clause "
-        f"of {name} rejected the input before the body ran, so the example "
+        f"Precondition failed for {name}: this example expects "
+        f"{expected.constructor}, but a requires clause "
+        f"rejected the input before the body ran, so the example "
         f"can never reach it. Either drop the requires clause and validate in "
         f"the body, or keep it and example only inputs that satisfy it."
     )

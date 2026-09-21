@@ -1445,6 +1445,15 @@ class TestRejectionExampleDiagnostics:
         assert "requires clause" in message
         assert "requires clause evaluated to false" not in message
 
+    def test_explanation_keeps_the_precondition_prefix(self):
+        """``geno test`` classifies a violation as a ``requires`` failure from
+        the 'Precondition failed for X:' prefix, so the explanation replaces
+        the rest of the message and not the prefix."""
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            run_program(self._ROMAN, check_examples=True)
+
+        assert "Precondition failed for to_roman:" in str(exc_info.value)
+
     def test_none_example_blocked_by_requires_is_explained_too(self):
         source = (
             "func head(xs: List[Int]) -> Option[Int]\n"
