@@ -75,7 +75,7 @@ does the `geno.check()` embedding API unless a target is selected explicitly.
 - **Entrypoint results render in Geno syntax**: Compiled Python and the `geno run` result line now format `main()`'s value through the Geno formatter instead of Python's `repr`, so a `Bool` displays as `true` and a `List[String]` as `["a", "b"]`, matching the JavaScript backend. (#61)
 - **Non-finite float display**: `inf`, `-inf`, and `nan` now render identically in text output and `to_string` across the interpreter and both backends, including nested in collections. JSON serialization rules for non-finite numbers are unchanged. (#89)
 - **Faster `geno run` startup**: The default isolated `geno run` no longer imports the lexer, parser, typechecker, and dependency graph in the parent process, which the worker owns; `run-hello` drops about 15% and `run-medium` about 7%. (#48)
-- **VS Code extension build runtime**: Building and packaging the extension now requires Node.js 22 or 24, matching the VSCE 4 toolchain. The supported VS Code API remains unchanged. (#104)
+- **VS Code extension build runtime**: Building and packaging the extension now requires Node.js 22–24, matching the VSCE 4 toolchain. The supported VS Code API remains unchanged. (#104)
 
 ### Fixed
 
