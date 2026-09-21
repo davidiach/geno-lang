@@ -39,13 +39,12 @@ Example clauses serve as both documentation and tests. They are verified at runt
 
 ### Float Examples
 
-`Float` examples are compared with a small tolerance rather than exactly, so an
-expected value does not have to be the exact binary literal a run would print.
-The tolerance is small, so keep **at least twelve significant digits**:
+`Float` examples allow small rounding differences, but the safest habit is to
+**keep the full value printed by a real run**:
 
 ```geno
 func ratio(a: Float, b: Float) -> Float
-    example (160.0, 7.0) -> 22.8571428571
+    example (160.0, 7.0) -> 22.857142857142858
     return a / b
 end func
 ```
@@ -54,10 +53,11 @@ A convenience rounding like `22.857` fails. The tolerance deliberately does not
 stretch that far: an example that passed on a value correct to only four digits
 would hide a real error rather than catch it.
 
-Take the expected value from a real run rather than rounding one by hand, and do
-not trim it to the fewest digits that pass -- a value sitting just inside the
-tolerance is fragile. When an expected value is awkward to write out, prefer
-`Int` arithmetic instead: cents rather than fractional currency, for instance.
+The interpreter and the separate test harness currently use different
+tolerances, so a fixed count of significant digits does not guarantee that both
+accept a rounded value. Take the expected value from a real run and preserve
+all its digits. When the domain allows it, prefer `Int` arithmetic instead:
+cents rather than fractional currency, for instance.
 
 ### Named Parameters
 

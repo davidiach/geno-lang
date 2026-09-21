@@ -325,9 +325,8 @@ fit.
 
 ### 17. Float `example` values and how close is close enough
 
-`Float` examples are compared with a small tolerance rather than exactly, so the
-exact binary literal a run prints is not required -- but a convenience rounding
-is not enough either. **Keep at least twelve significant digits.**
+`Float` examples allow small rounding differences, but a convenience rounding
+can still fail. **Keep the full value printed by a real run.**
 
 Wrong -- right to five digits, which is nowhere near close enough:
 ```
@@ -340,14 +339,19 @@ end func
 Correct:
 ```
 func ratio(a: Float, b: Float) -> Float
-    example (160.0, 7.0) -> 22.8571428571
+    example (160.0, 7.0) -> 22.857142857142858
     return a / b
 end func
 ```
 
-Do not tune an expected value down to the last digit that happens to pass. The
-tolerance is small and more than one comparator is involved, so a value sitting
-just inside it is fragile. Twelve digits clears every path with room to spare.
+The comparison paths currently differ: `geno test` uses the interpreter's
+relative tolerance with a small absolute floor, while `run_harness_from_source`
+and `run_harness_from_compiled` use an absolute tolerance. A fixed number of
+significant digits cannot guarantee that a rounded expectation passes both,
+especially as the value grows. For example, rounding `16000000.0 / 7.0` to
+`2285714.28571` keeps twelve significant digits and passes interpreter example
+verification, but fails both harness functions. Preserve the full value,
+`2285714.285714286`, instead.
 
 The reliable habit is not to compute the expected value mentally at all. Run the
 function, take the value it prints, and keep it. Where the domain allows it,
