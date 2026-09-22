@@ -34,7 +34,7 @@ class TestCreateProject:
         assert (project / "geno.toml").exists()
         assert (project / "Lib.geno").exists()
         toml_content = (project / "geno.toml").read_text()
-        assert "entrypoint" not in toml_content
+        assert 'entrypoint = "Lib"' in toml_content
 
     def test_unknown_template(self, tmp_path):
         project = tmp_path / "bad"

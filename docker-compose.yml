@@ -31,7 +31,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import sys, urllib.request; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200 else sys.exit(1)",
+          "import sys, urllib.request; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status == 200 else sys.exit(1)",
         ]
       interval: 30s
       timeout: 5s

@@ -3429,7 +3429,7 @@ class TestStartupChecks:
             body = resp.read()
             conn.close()
 
-            assert resp.status == 200
+            assert resp.status == 503
             data = json.loads(body)
             assert data["status"] == "failed"
             startup_check = next(

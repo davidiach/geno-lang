@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from .ast_nodes import Expression, FieldAccess, Identifier
+from .types import TypeEnv
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,9 @@ def resolve_call_parameter_info(
     module_param_names: Mapping[str, Mapping[str, Sequence[str]]],
     func_default_counts: Mapping[str, int] | None = None,
     module_default_counts: Mapping[str, Mapping[str, int]] | None = None,
+    *,
+    lexical_env: TypeEnv | None = None,
+    global_env: TypeEnv | None = None,
 ) -> CallParameterInfo:
     """Resolve default and named-argument metadata for a call target."""
 
@@ -41,6 +45,12 @@ def resolve_call_parameter_info(
     module_default_counts = module_default_counts or {}
 
     if isinstance(function, Identifier):
+        if (
+            lexical_env is not None
+            and global_env is not None
+            and lexical_env.binding_scope(function.name) is not global_env
+        ):
+            return CallParameterInfo(None, 0, (), function.name)
         return CallParameterInfo(
             default_lookup_name=function.name,
             default_count=func_default_counts.get(function.name, 0),
@@ -51,6 +61,14 @@ def resolve_call_parameter_info(
     if isinstance(function, FieldAccess):
         target_name = getattr(function.target, "name", None)
         if isinstance(target_name, str):
+            if (
+                lexical_env is not None
+                and global_env is not None
+                and lexical_env.binding_scope(target_name) is not global_env
+            ):
+                return CallParameterInfo(
+                    None, 0, (), f"{target_name}.{function.field_name}"
+                )
             module_params = module_param_names.get(target_name, {})
             module_defaults = module_default_counts.get(target_name, {})
             return CallParameterInfo(

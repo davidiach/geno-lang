@@ -378,9 +378,16 @@ class Compiler(BaseCompiler, ASTVisitor):
         # block.  The interpreter and the JS backend both shadow instead
         # (see `test_shadowing`), so nested bindings are renamed here.
         self._block_scopes: list[_BlockScope] = []
+        self._nonlocal_param_names: set[str] = set()
 
     @contextmanager
-    def _function_scope(self, param_names: Iterable[str] = ()) -> Iterator[None]:
+    def _function_scope(
+        self,
+        param_names: Iterable[str] = (),
+        statements: Sequence[Statement] = (),
+        *,
+        nonlocal_params: Iterable[str] = (),
+    ) -> Iterator[None]:
         """Open the outermost scope of a function or lambda body.
 
         A Python ``def``/``lambda`` already introduces a real scope, so an
@@ -390,19 +397,25 @@ class Compiler(BaseCompiler, ASTVisitor):
         saved = self._block_scopes
         saved_loop_captures = self._loop_capture_names
         saved_loop_vars = self._active_loop_vars
+        saved_nonlocals = self._nonlocal_param_names
         self._block_scopes = []
         self._loop_capture_names = []
         self._active_loop_vars = []
+        self._nonlocal_param_names = {
+            self._mangle_name(name) for name in nonlocal_params
+        }
         try:
             with self._block_scope():
                 for name in param_names:
                     self._block_scopes[-1].names.add(name)
                     self._block_scopes[-1].overrides[name] = self._mangle_name(name)
+                self._initialize_module_constant_shadows(statements)
                 yield
         finally:
             self._block_scopes = saved
             self._loop_capture_names = saved_loop_captures
             self._active_loop_vars = saved_loop_vars
+            self._nonlocal_param_names = saved_nonlocals
 
     @contextmanager
     def _block_scope(
@@ -421,10 +434,26 @@ class Compiler(BaseCompiler, ASTVisitor):
         try:
             for name in bound_names:
                 self._declare_block_binding(name)
+            self._initialize_module_constant_shadows(statements)
             yield
         finally:
             self._name_overrides.pop()
             self._block_scopes.pop()
+
+    def _initialize_module_constant_shadows(
+        self, statements: Sequence[Statement]
+    ) -> None:
+        for name in sorted(self._direct_binding_names(statements)):
+            outer = self._active_module_bindings.get(name)
+            if (
+                name in self._module_constant_names
+                and self._compiled_identifier_name(name) == outer
+            ):
+                # Module constants are immutable. Initialize the eventual
+                # local cell with the outer value so closures created before
+                # the declaration still observe its later same-scope rebind.
+                target = self._declare_block_binding(name)
+                self._writeln(f"{target} = {outer}")
 
     def _declare_block_binding(self, name: str) -> str:
         """Return the Python name a `let`/`var` in the current block binds.
@@ -480,11 +509,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     @contextmanager
     def _with_shadowed_bindings(self, names: list[str]) -> Iterator[None]:
-        shadowed = {
-            name: self._mangle_name(name)
-            for name in names
-            if any(name in scope for scope in self._name_overrides)
-        }
+        shadowed = {name: self._mangle_name(name) for name in names}
         if shadowed:
             with self._with_name_overrides(shadowed):
                 yield
@@ -1285,7 +1310,10 @@ class Compiler(BaseCompiler, ASTVisitor):
                 raise CompileError(
                     f"`requires false` on {defn.name} makes the function uncallable"
                 )
-            cond = self._compile_expr(req.condition)
+            with self._with_name_overrides(
+                {p.name: self._mangle_name(p.name) for p in defn.params}
+            ):
+                cond = self._compile_expr(req.condition)
             self._writeln(f"if not ({cond}):")
             self._indent()
             self._writeln(
@@ -1308,6 +1336,11 @@ class Compiler(BaseCompiler, ASTVisitor):
             helper_prefix = "async " if is_async_execution_form(defn) else ""
             self._writeln(f"{helper_prefix}def {body_helper}():")
             self._indent()
+            if defn.params:
+                # The helper implements the same invocation frame. Rebinding
+                # a parameter must update the value observed by postconditions.
+                names = ", ".join(self._mangle_name(p.name) for p in defn.params)
+                self._writeln(f"nonlocal {names}")
 
         # Only wrap in try/except for ? operator propagation when the
         # function actually uses the ? operator. This avoids exception-
@@ -1321,7 +1354,11 @@ class Compiler(BaseCompiler, ASTVisitor):
         if not defn.body:
             self._writeln("pass")
         else:
-            with self._function_scope(p.name for p in defn.params):
+            with self._function_scope(
+                (p.name for p in defn.params),
+                defn.body,
+                nonlocal_params=(p.name for p in defn.params) if has_ensures else (),
+            ):
                 for stmt in defn.body:
                     self._compile_statement(stmt)
 
@@ -1351,7 +1388,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                     )
                 # The implicit result binding belongs only to the contract;
                 # the body can still read a module constant named result.
-                with self._with_name_overrides({"result": result_name}):
+                contract_bindings = {
+                    p.name: self._mangle_name(p.name) for p in defn.params
+                }
+                contract_bindings["result"] = result_name
+                with self._with_name_overrides(contract_bindings):
                     cond = self._compile_expr(ens.condition)
                 self._writeln(f"if not ({cond}):")
                 self._indent()
@@ -1468,8 +1509,11 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_field_assign_statement(self, stmt: FieldAssignStatement) -> None:
         """Compile field assignment against frozen Python constructor dataclasses."""
         target = self._compile_expr(stmt.target)
-        value = self._compile_expr(stmt.value)
+        value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(f"_object_setattr({target}, {stmt.field_name!r}, {value})")
+
+    def _snapshot_value(self, value: str) -> str:
+        return f"_geno_deepcopy({value})"
 
     def _compile_try_statement(self, stmt: TryStatement) -> None:
         """Compile a try/catch statement to Python try/except."""
@@ -1546,6 +1590,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 if captured:
                     var = self._declare_block_binding(stmt.variable)
                     self._writeln(f"{var} = {iteration_value}")
+                self._initialize_module_constant_shadows(stmt.body)
                 for statement in stmt.body:
                     self._compile_statement(statement)
                 if not stmt.body and not captured:
@@ -1557,25 +1602,34 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_module_constants(self, program: Program) -> None:
         """Emit module-level constants ahead of every other definition."""
+        self._module_constant_names = {
+            defn.name
+            for defn in program.definitions
+            if isinstance(defn, ModuleConstant)
+        }
         for defn in program.definitions:
             if not isinstance(defn, ModuleConstant):
                 continue
+            # Constants have their own identity so a host language's local
+            # declaration hoisting cannot capture earlier lexical references.
             name = self._mangle_name(defn.name)
+            identity = self._fresh_temp()
             rhs = self._promote_expr_to_expected_float(
                 self._compile_expr(defn.value),
                 getattr(defn, "_expected_runtime_type", defn.type_annotation),
             )
+            self._active_module_bindings[defn.name] = identity
             if defn.type_annotation is not None:
                 ann = self._compile_type_annotation(defn.type_annotation)
                 self._writeln(f"{name}: '{ann}' = {rhs}")
             else:
                 self._writeln(f"{name} = {rhs}")
+            self._writeln(f"{identity} = {name}")
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         """Compile a let statement.
 
-        Match interpreter semantics: shallow copy for collections (list/dict),
-        no copy for immutable primitives (Int, Float, Bool, String, Unit).
+        Snapshot value containers while preserving explicit mutable references.
         """
         type_annot = stmt.type_annotation
         # Determine copy strategy from the declared type
@@ -1593,7 +1647,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             if stmt_form is not None:
                 raw, needs_check = stmt_form
                 name = self._declare_block_binding(stmt.name)
-                if type_annot is not None:
+                if type_annot is not None and name not in self._nonlocal_param_names:
                     ann = self._compile_type_annotation(type_annot)
                     self._writeln(f"{name}: '{ann}' = {raw}")
                 else:
@@ -1607,7 +1661,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         rhs = self._promote_expr_to_expected_float(
             rhs, getattr(stmt, "_expected_runtime_type", type_annot)
         )
-        if type_annot is not None:
+        if type_annot is not None and name not in self._nonlocal_param_names:
             ann = self._compile_type_annotation(type_annot)
             # Quote annotations to match function signatures and ADT fields,
             # preventing forward-reference issues with user-defined types.
@@ -1636,7 +1690,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             if stmt_form is not None:
                 raw, needs_check = stmt_form
                 name = self._declare_block_binding(stmt.name)
-                if type_annot is not None:
+                if type_annot is not None and name not in self._nonlocal_param_names:
                     ann = self._compile_type_annotation(type_annot)
                     self._writeln(f"{name}: '{ann}' = {raw}")
                 else:
@@ -1648,7 +1702,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         name = self._declare_block_binding(stmt.name)
         rhs = f"_geno_deepcopy({value})"
         rhs = self._promote_expr_to_expected_float(rhs, expected_type)
-        if type_annot is not None:
+        if type_annot is not None and name not in self._nonlocal_param_names:
             ann = self._compile_type_annotation(type_annot)
             # Quote annotations to match function signatures and ADT fields,
             # preventing forward-reference issues with user-defined types.
@@ -1664,8 +1718,13 @@ class Compiler(BaseCompiler, ASTVisitor):
             value, (ConstructorCall, TypeIdentifier, WithExpr)
         )
 
-    # ``_compile_tuple_destructure`` lives on ``BaseCompiler``; Python's
-    # emission goes through ``_tuple_destructure_stmt`` below.  #622 slice.
+    def _compile_tuple_destructure(self, stmt: TupleDestructureStatement) -> None:
+        value = self._compile_expr(stmt.value)
+        temporary = self._fresh_temp()
+        self._writeln(f"{temporary} = {value}")
+        for index, name in enumerate(stmt.names):
+            target = self._declare_block_binding(name)
+            self._writeln(f"{target} = _geno_deepcopy({temporary}[{index}])")
 
     def _compile_return_statement(self, stmt: ReturnStatement) -> None:
         value = self._compile_expr(stmt.value)
@@ -1723,6 +1782,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._writeln_int_bits_check(name)
                 return
         value = self._compile_expr(stmt.value)
+        value = f"_geno_deepcopy({value})"
         value = self._promote_expr_to_expected_float(value, expected_type)
         self._writeln(f"{self._compiled_identifier_name(stmt.target)} = {value}")
 
@@ -2240,53 +2300,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         raise CompileError(f"Unsupported expression node: {type(expr).__name__}")
 
     @staticmethod
-    def _uses_propagate(defn) -> bool:
-        """Check if a function body contains a ? (propagate) expression."""
-        from .ast_nodes import PropagateExpr
-
-        field_cache: dict[type, tuple[str, ...]] = {}
-        stack: list[object] = list(defn.body or [])
-
-        while stack:
-            node = stack.pop()
-            node_type = type(node)
-            if isinstance(node, PropagateExpr):
-                return True
-            if node_type is list:
-                stack.extend(reversed(cast(list[object], node)))
-                continue
-            if node_type is tuple:
-                stack.extend(reversed(cast(tuple[object, ...], node)))
-                continue
-            if not hasattr(node, "__dict__"):
-                continue
-
-            field_names = field_cache.get(node_type)
-            if field_names is None:
-                field_names = tuple(
-                    name
-                    for name in vars(node)
-                    if not name.startswith("_")
-                    and name
-                    not in {
-                        "location",
-                        "type_annotation",
-                        "param_type",
-                        "return_type",
-                        "var_type",
-                        "hole_type",
-                    }
-                )
-                field_cache[node_type] = field_names
-
-            for field_name in reversed(field_names):
-                child = getattr(node, field_name)
-                if child is not None:
-                    stack.append(child)
-
-        return False
-
-    @staticmethod
     def _is_float_type(expr: Expression) -> bool:
         """Check if a typechecked expression has Float type."""
         from .types import FloatType
@@ -2670,7 +2683,9 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         concrete_args = [arg for arg in ordered_args if arg is not None]
         if len(concrete_args) == len(ordered_args):
-            fast_path = self._compile_builtin_fast_path(func_name, concrete_args)
+            fast_path = self._compile_builtin_fast_path(
+                expr._resolved_builtin_name, concrete_args
+            )
             if fast_path is not None:
                 return fast_path
 
@@ -2926,11 +2941,12 @@ class Compiler(BaseCompiler, ASTVisitor):
         """Compile a lambda without adding loop-capture wrappers."""
         params = ", ".join(self._mangle_name(p.name) for p in expr.params)
 
-        if expr.block_body is not None:
+        uses_propagate = self._uses_propagate(expr)
+        if expr.block_body is not None or uses_propagate:
             referenced: set[str] = set()
             outer_names = {name for scope in self._name_overrides for name in scope}
             self._collect_loop_var_refs_in_statements(
-                expr.block_body,
+                expr.block_body or [],
                 {param.name for param in expr.params},
                 referenced,
                 outer_names,
@@ -2949,15 +2965,30 @@ class Compiler(BaseCompiler, ASTVisitor):
                 # Geno assignment resolves an existing outer mutable binding;
                 # Python otherwise creates an uninitialized lambda-local name.
                 self._writeln(f"nonlocal {', '.join(nonlocals)}")
+            if uses_propagate:
+                self._writeln("try:")
+                self._indent()
             with self._with_shadowed_bindings([p.name for p in expr.params]):
-                if not expr.block_body:
+                if expr.block_body is None:
+                    assert expr.body is not None
+                    self._writeln(f"return {self._compile_expr(expr.body)}")
+                elif not expr.block_body:
                     self._writeln("pass")
                 else:
                     # A block lambda compiles to a nested `def`, which is a
                     # real Python scope, so its body starts a fresh stack.
-                    with self._function_scope(p.name for p in expr.params):
+                    with self._function_scope(
+                        (p.name for p in expr.params), expr.block_body
+                    ):
                         for stmt in expr.block_body:
                             self._compile_statement(stmt)
+            if uses_propagate:
+                self._dedent()
+                temporary = self._fresh_temp()
+                self._writeln(f"except _PropagateReturn as {temporary}:")
+                self._indent()
+                self._writeln(f"return {temporary}.value")
+                self._dedent()
             self._dedent()
             return cast(str, func_name)
         else:

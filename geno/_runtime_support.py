@@ -347,7 +347,7 @@ def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any
         copied_dict: dict[Any, Any] = {}
         memo += [(value, copied_dict)]
         for key, nested_value in value.items():
-            copied_dict[key] = _geno_deepcopy(nested_value, memo)
+            copied_dict[_geno_deepcopy(key, memo)] = _geno_deepcopy(nested_value, memo)
         return copied_dict
 
     if isinstance(value, tuple):
@@ -1424,7 +1424,7 @@ def array_new(size, default):
         raise RuntimeError(
             f"Array size exceeds limit ({size} > {_MAX_COLLECTION_SIZE})"
         )
-    return _GenoArray([default] * size)
+    return _GenoArray([_geno_deepcopy(default) for _ in range(size)])
 
 
 def array_from_list(lst):
@@ -1434,7 +1434,7 @@ def array_from_list(lst):
         raise RuntimeError(
             f"Array size exceeds limit ({len(lst)} > {_MAX_COLLECTION_SIZE})"
         )
-    return _GenoArray(list(lst))
+    return _GenoArray([_geno_deepcopy(item) for item in lst])
 
 
 def array_get(arr, index):
@@ -1454,7 +1454,7 @@ def array_set(arr, index, value):
         raise RuntimeError("array_set index must be an integer")
     if index < 0 or index >= len(arr):
         raise RuntimeError(f"array_set index {index} out of bounds (length {len(arr)})")
-    arr[index] = value
+    arr[index] = _geno_deepcopy(value)
     return None
 
 
@@ -1474,14 +1474,14 @@ def array_fill(arr, value):
     if not isinstance(arr, _GenoArray):
         raise RuntimeError(f"array_fill expects array, got {type(arr).__name__}")
     for i in range(len(arr._elements)):
-        arr._elements[i] = value
+        arr._elements[i] = _geno_deepcopy(value)
     return None
 
 
 def array_copy(arr):
     if not isinstance(arr, _GenoArray):
         raise RuntimeError(f"array_copy expects array, got {type(arr).__name__}")
-    return _GenoArray(list(arr._elements))
+    return _GenoArray([_geno_deepcopy(item) for item in arr._elements])
 
 
 # =============================================================================
@@ -1511,7 +1511,7 @@ def mutable_map_set(m, key, value):
         raise RuntimeError("mutable_map_set expects MutableMap")
     if key not in m._data:
         _check_collection_kind("MutableMap", len(m._data) + 1)
-    m._data[key] = value
+    m._data[_geno_deepcopy(key)] = _geno_deepcopy(value)
     return None
 
 
@@ -1577,7 +1577,7 @@ def vec_push(v, item):
     if not isinstance(v, _GenoVec):
         raise RuntimeError("vec_push expects Vec")
     _check_collection_kind("Vec", len(v) + 1)
-    v._elements.append(item)
+    v._elements.append(_geno_deepcopy(item))
     return None
 
 
@@ -1598,7 +1598,7 @@ def vec_set(v, index, value):
         raise RuntimeError("vec_set index must be integer")
     if index < 0 or index >= len(v):
         raise RuntimeError(f"vec_set index {index} out of bounds")
-    v._elements[index] = value
+    v._elements[index] = _geno_deepcopy(value)
     return None
 
 
@@ -1627,7 +1627,7 @@ def vec_from_list(lst):
     if not isinstance(lst, list):
         raise RuntimeError("vec_from_list expects list")
     _check_collection_kind("Vec", len(lst))
-    return _GenoVec(list(lst))
+    return _GenoVec([_geno_deepcopy(item) for item in lst])
 
 
 # =============================================================================
@@ -1659,7 +1659,7 @@ def set_from_list(lst):
     for item in lst:
         if item not in data:
             _check_collection_kind("Set", len(data) + 1)
-        data.add(item)
+        data.add(_geno_deepcopy(item))
     return _GenoSet(data)
 
 
@@ -1668,7 +1668,7 @@ def set_add(s, item):
         raise RuntimeError("set_add expects Set")
     if item not in s._data:
         _check_collection_kind("Set", len(s._data) + 1)
-    s._data.add(item)
+    s._data.add(_geno_deepcopy(item))
     return None
 
 
@@ -1877,7 +1877,7 @@ def _safe_index_set(target, index, value):
             ) from None
         if is_new_key:
             _check_collection_kind("MutableMap", len(target._data) + 1)
-        target._data[index] = value
+        target._data[_geno_deepcopy(index)] = value
         return None
 
     if isinstance(target, dict):
@@ -1889,7 +1889,7 @@ def _safe_index_set(target, index, value):
             ) from None
         if is_new_key:
             _check_collection_kind("Map", len(target) + 1)
-        target[index] = value
+        target[_geno_deepcopy(index)] = value
         return None
 
     try:

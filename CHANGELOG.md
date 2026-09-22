@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Module-level constants**: A `let` written outside any function now binds a constant every function in the file can read, replacing the duplicated literals and `@untested` helper functions the pattern used to need. The initializer is restricted to literal forms — a number, string or boolean, a negated number, or a list or tuple of those — so a module still executes nothing when it is imported; a call, an operator expression or a reference to another binding is rejected at parse time. `var` is rejected at module level, `export let` is not supported yet, and constants are private to the declaring module. Names follow the `snake_case` variable convention. (#72)
 
+### Fixed
+
+- **Binding and closure soundness**: Same-scope redeclarations retain their type and effect contract, while existing same-type closure rebinding remains observable. A later `let` clears prior `var` mutability. Local function values resolve their own call metadata, lambdas use an independent control-flow context, and duplicate constructor fields are rejected.
+- **Effect inference**: Parameter defaults, assignment targets and indices, and normalized named trait arguments contribute their effects consistently to the checked function signature.
+- **Backend value and scope parity**: Record reassignment and destructuring preserve snapshots while explicit mutable collections keep reference semantics. Module constants remain readable through local and parameter shadowing, and Python postconditions no longer break parameter rebinding.
+- **Callback and numeric parity**: Compiler optimizations require the resolved builtin identity, preserving shadowed callbacks. Ordered comparisons involving NaN now agree across all three execution engines.
+- **Project and editor workflows**: Generated libraries are consumable by the documented import, explicit-file checks retain manifest module mappings, bundles use canonical file discovery, and rename includes reverse importers and converts protocol positions for non-BMP text.
+- **Quality gates**: Differential fuzzing grants its required print capability and fails on crashes, timeouts, missing required backends, or wrong results. CI explicitly requires Node. Runtime benchmark scoring checks correctness before timing and retains failed workloads in the denominator. Analysis and experiment reports share McNemar statistics and chi-square survival calculations; Student t tails and intervals now use the same distribution rather than inconsistent approximations.
+- **JSON execution capabilities**: `geno run --json` now honors its documented fail-closed default. Programs that print must pass `--cap print`; JSON mode continues to use the in-process embedding API.
+- **Hosted lifecycle**: Shutdown drains active handlers and workers within a bounded grace period. Readiness checks exercise the hosted worker and return HTTP 503 on failure; `/readyz` and `/livez` distinguish readiness from liveness, and container probes use readiness.
+
 ## [0.4.4] - 2026-09-20
 
 ### Compatibility

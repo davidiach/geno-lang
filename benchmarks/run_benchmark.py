@@ -63,7 +63,7 @@ Problem = Tuple[str, str, Callable, Callable[[Any], Callable]]
 _PROBLEMS: List[Problem] = []
 
 
-def _reg(name: str, geno_src: str, hw_fn: Callable, call_builder: Callable = None):
+def _reg(name: str, geno_src: str, hw_fn: Callable, call_builder: Callable | None = None):
     """Register a benchmark problem.
 
     *hw_fn*: zero-arg callable giving the hand-written result.
@@ -3158,7 +3158,7 @@ _PROBLEMS[-1] = ("77_sum_abs_diff", _PROBLEMS[-1][1], _py_sum_abs_diff, _PROBLEM
 
 
 def run_benchmarks(verbose: bool = False) -> bool:
-    """Run all benchmarks and print results.  Returns True if ≥80 % pass ≤2×."""
+    """Require correct results everywhere and ≥80 % of eligible cases at ≤2×."""
     print(f"\nGeno vs Python Benchmark Suite  ({len(_PROBLEMS)} problems)")
     print("=" * 72)
     print(f"{'#':>3}  {'Problem':<28} {'Geno (ms)':>10} {'Python (ms)':>11} {'Ratio':>7} {'Pass':>5}")
@@ -3168,11 +3168,22 @@ def run_benchmarks(verbose: bool = False) -> bool:
     passed = 0
     skipped = 0
     errors = 0
+    mismatches = 0
 
     for idx, (name, geno_src, hw_fn, call_builder) in enumerate(_PROBLEMS, 1):
         try:
             ns = _compile_geno(geno_src)
             geno_fn = call_builder(ns)
+
+            # Validate all workloads before timing, including ones too short
+            # to measure. Dropped work must never earn a faster passing score.
+            g_result = geno_fn()
+            h_result = hw_fn()
+            if g_result != h_result:
+                mismatches += 1
+                print(f"{idx:3}  {name:<28} {'MISMATCH':>10} {'':>11} {'':>7} {'FAIL':>5}")
+                print(f"     MISMATCH: geno={g_result!r} python={h_result!r}")
+                continue
 
             t_geno = _time_fn(geno_fn)
             t_hw = _time_fn(hw_fn)
@@ -3188,12 +3199,6 @@ def run_benchmarks(verbose: bool = False) -> bool:
                     passed += 1
                 status = "OK" if ok else "SLOW"
                 print(f"{idx:3}  {name:<28} {t_geno*1000:10.2f} {t_hw*1000:11.2f} {ratio:7.2f}x {status:>5}")
-                if verbose:
-                    g_result = geno_fn()
-                    h_result = hw_fn()
-                    if g_result != h_result:
-                        print(f"     ⚠ MISMATCH: geno={g_result} python={h_result}")
-
         except Exception as e:
             errors += 1
             print(f"{idx:3}  {name:<28} {'ERROR':>10} {'':>11} {'':>7} {'ERR':>5}")
@@ -3202,20 +3207,25 @@ def run_benchmarks(verbose: bool = False) -> bool:
 
     print("-" * 72)
     total_measured = len(ratios)
-    pass_pct = (passed / total_measured * 100) if total_measured else 0
+    # Errors and wrong answers remain in the denominator. Only successfully
+    # validated cases below the declared timing floor are ineligible.
+    total_eligible = len(_PROBLEMS) - skipped
+    pass_pct = (passed / total_eligible * 100) if total_eligible else 0
     median_ratio = statistics.median(ratios) if ratios else 0
     mean_ratio = statistics.mean(ratios) if ratios else 0
     p90 = sorted(ratios)[int(len(ratios) * 0.9)] if ratios else 0
 
     print(f"\nResults: {total_measured} measured, {passed} passed (≤2×), "
-          f"{total_measured - passed} slow, {skipped} skipped, {errors} errors")
+          f"{total_measured - passed} slow, {skipped} skipped, "
+          f"{mismatches} mismatches, {errors} errors")
+    print(f"Correctness: {len(_PROBLEMS) - errors - mismatches}/{len(_PROBLEMS)} problems")
     print(f"Pass rate: {pass_pct:.1f}% (target: ≥80%)")
     print(f"Median ratio: {median_ratio:.2f}x")
     print(f"Mean ratio:   {mean_ratio:.2f}x")
     print(f"P90 ratio:    {p90:.2f}x")
 
-    success = pass_pct >= 80.0
-    print(f"\n{'PASS' if success else 'FAIL'}: {'≥' if success else '<'}80% of problems within 2× of hand-written Python")
+    success = errors == 0 and mismatches == 0 and pass_pct >= 80.0
+    print(f"\n{'PASS' if success else 'FAIL'}: requires all problems correct and ≥80% within 2× of hand-written Python")
     return success
 
 

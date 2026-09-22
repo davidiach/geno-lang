@@ -236,6 +236,7 @@ def save_failure(diff: DiffResult) -> Path:
                 "stdout": b.stdout,
                 "stderr": b.stderr,
                 "success": b.success,
+                "available": b.available,
                 "elapsed_s": b.elapsed_s,
             }
             for b in diff.backends

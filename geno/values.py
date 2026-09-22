@@ -243,6 +243,8 @@ class Environment:
             if self.mutable is None:
                 self.mutable = set()
             self.mutable.add(name)
+        elif self.mutable is not None:
+            self.mutable.discard(name)
 
     def assign(self, name: str, value: Any) -> bool:
         """Assign to an existing mutable variable."""

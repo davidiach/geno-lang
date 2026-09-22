@@ -14,7 +14,6 @@ import time
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from functools import partial
-from types import MappingProxyType
 from typing import Any, cast
 
 from . import builtins as _builtins
@@ -100,6 +99,7 @@ from .tokens import SourceLocation
 from .types import FloatType, ListType
 
 # Re-export runtime value types for backward compatibility
+from .value_copy import copy_value
 from .values import (
     _UNBOUND,
     ArrayValue,
@@ -3017,44 +3017,7 @@ class Interpreter:
 
     @staticmethod
     def _deep_copy_value(value: Any, memo: dict[int, Any] | None = None) -> Any:
-        """Deep-copy value containers while preserving explicit reference types."""
-        if memo is None:
-            memo = {}
-
-        if isinstance(value, list):
-            value_id = id(value)
-            if value_id in memo:
-                return memo[value_id]
-            copied_list: list[Any] = []
-            memo[value_id] = copied_list
-            copied_list.extend(Interpreter._deep_copy_value(v, memo) for v in value)
-            return copied_list
-        if isinstance(value, dict):
-            value_id = id(value)
-            if value_id in memo:
-                return memo[value_id]
-            copied_dict: dict[Any, Any] = {}
-            memo[value_id] = copied_dict
-            for key, nested_value in value.items():
-                copied_dict[key] = Interpreter._deep_copy_value(nested_value, memo)
-            return copied_dict
-        if isinstance(value, tuple):
-            return tuple(Interpreter._deep_copy_value(v, memo) for v in value)
-        if isinstance(value, ConstructorValue):
-            value_id = id(value)
-            if value_id in memo:
-                return memo[value_id]
-            copied_ctor = ConstructorValue(value.constructor, {})
-            memo[value_id] = copied_ctor
-            new_fields = {
-                k: Interpreter._deep_copy_value(v, memo)
-                for k, v in value.fields.items()
-            }
-            object.__setattr__(copied_ctor, "_fields", MappingProxyType(new_fields))
-            return copied_ctor
-        # Scalars and explicit reference types (Array/Vec/MutableMap/Set/Closure/etc.)
-        # intentionally preserve identity across bindings.
-        return value
+        return copy_value(value, memo)
 
     def _exec_let(self, stmt: LetStatement, env: Environment) -> None:
         """Execute a let statement."""
@@ -3102,7 +3065,7 @@ class Interpreter:
                 stmt.location,
             )
         for name, elem in zip(stmt.names, value):
-            env.bind(name, elem, mutable=stmt.mutable)
+            env.bind(name, self._deep_copy_value(elem), mutable=stmt.mutable)
 
     def _exec_assign(self, stmt: AssignStatement, env: Environment) -> None:
         """Execute an assignment."""
@@ -3110,6 +3073,7 @@ class Interpreter:
         value = _promote_int_to_expected_float(
             value, getattr(stmt, "_expected_runtime_type", None)
         )
+        value = self._deep_copy_value(value)
         if not env.assign(stmt.target, value):
             raise RuntimeError(
                 f"Cannot assign to '{stmt.target}': not mutable or not defined",
@@ -3120,7 +3084,7 @@ class Interpreter:
         """Execute an index assignment: arr[i] = value."""
         target = self.eval_expr(stmt.target, env)
         index = self.eval_expr(stmt.index, env)
-        value = self.eval_expr(stmt.value, env)
+        value = self._deep_copy_value(self.eval_expr(stmt.value, env))
         self._check_collection_limits([index, value], stmt.location)
 
         if isinstance(target, ArrayValue):
@@ -3153,7 +3117,7 @@ class Interpreter:
                 self._check_collection_size(
                     "MutableMap", len(target._data) + 1, stmt.location
                 )
-            target._data[index] = value
+            target._data[self._deep_copy_value(index)] = value
         else:
             raise RuntimeError(
                 f"Cannot use index assignment on {type(target).__name__}",
@@ -3163,7 +3127,7 @@ class Interpreter:
     def _exec_field_assign(self, stmt: FieldAssignStatement, env: Environment) -> None:
         """Execute a field assignment: obj.field = value."""
         target = self.eval_expr(stmt.target, env)
-        value = self.eval_expr(stmt.value, env)
+        value = self._deep_copy_value(self.eval_expr(stmt.value, env))
 
         if isinstance(target, ConstructorValue):
             if stmt.field_name in target.fields:

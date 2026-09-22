@@ -120,6 +120,7 @@ The JS backend emits standalone JavaScript that includes the runtime prelude. It
 | Entry point | Trust level | Intended use |
 |---|---|---|
 | `geno.api.run()` | **Production embedding API** -- in-process interpreter with cooperative timeout and capability gating | Host-controlled embedding where the caller owns process isolation |
+| `geno run --json` | **In-process CLI** -- embedding API with cooperative timeout; capabilities must be granted explicitly | JSON results for trusted code or a caller-managed worker |
 | `geno.server` (`POST /run`) | **Production hosted boundary** -- delegates to `geno.api.run()` in a child process with hard wall-clock timeout | HTTP API for untrusted hosted execution |
 | `geno.server` (`POST /constrain`) | **Production** -- validates prefixes in a child process with hard wall-clock timeout and returns allowed-next-token guidance | HTTP API for hosted constrained decoding |
 | `compile_and_exec()` | **Build-time / trusted** -- optional timeout, no process isolation | Tests, tooling, trusted callers only |

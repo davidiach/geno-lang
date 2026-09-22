@@ -24,6 +24,7 @@ class BackendResult:
     stderr: str
     success: bool
     elapsed_s: float
+    available: bool = True
 
 
 @dataclass
@@ -33,7 +34,7 @@ class DiffResult:
     source: str
     oracle: str | None  # expected stdout from generator, if available
     backends: list[BackendResult] = field(default_factory=list)
-    match: bool = True
+    match: bool = False
     error: str | None = None
 
 
@@ -55,7 +56,7 @@ def _run_interpreter(
 
     t0 = time.monotonic()
     try:
-        config = RunConfig(timeout=timeout, max_steps=max_steps)
+        config = RunConfig(timeout=timeout, max_steps=max_steps, capabilities={"print"})
         result = run(source, config=config)
         elapsed = time.monotonic() - t0
         if result.ok:
@@ -108,7 +109,7 @@ def _run_compiled_python(source: str, timeout: float = 10.0) -> BackendResult:
             f.flush()
             tmp_path = f.name
         proc = subprocess.run(
-            [sys.executable, tmp_path],
+            [sys.executable, tmp_path, "--cap", "print"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -162,6 +163,7 @@ def _run_compiled_js(source: str, timeout: float = 10.0) -> BackendResult:
             stderr="node not available",
             success=False,
             elapsed_s=0.0,
+            available=False,
         )
     from geno.js_compiler import compile_to_js
 
@@ -184,7 +186,7 @@ def _run_compiled_js(source: str, timeout: float = 10.0) -> BackendResult:
             f.flush()
             tmp_path = f.name
         proc = subprocess.run(
-            ["node", tmp_path],
+            ["node", tmp_path, "--cap", "print"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -247,6 +249,7 @@ def run_all_backends(
     subprocess_timeout: float = 10.0,
     max_steps: int | None = 100_000,
     include_js: bool = True,
+    require_js: bool = False,
 ) -> DiffResult:
     """Run source through all backends and compare outputs.
 
@@ -257,6 +260,7 @@ def run_all_backends(
         subprocess_timeout: Subprocess timeout for compiled backends.
         max_steps: Interpreter step limit.
         include_js: Whether to include the JS backend.
+        require_js: Fail if Node.js is unavailable (for Node-enabled CI).
 
     Returns:
         DiffResult with comparison details.
@@ -270,52 +274,40 @@ def run_all_backends(
     compiled_py = _run_compiled_python(source, timeout=subprocess_timeout)
     result.backends.append(compiled_py)
 
-    if include_js:
+    if include_js or require_js:
         compiled_js = _run_compiled_js(source, timeout=subprocess_timeout)
         result.backends.append(compiled_js)
 
-    # Collect successful outputs
+    # Every available backend is required. A crash must never improve parity
+    # by silently removing that implementation from the comparison.
+    errors = [
+        f"{b.name} failed: {b.stderr}"
+        for b in result.backends
+        if b.available and (not b.success or b.stdout is None)
+    ]
+    if require_js and any(not b.available for b in result.backends):
+        errors.append("Required JavaScript backend is unavailable: node not available")
     successful = [b for b in result.backends if b.success and b.stdout is not None]
     if len(successful) < 2:
-        # Not enough backends succeeded for a meaningful comparison.
-        # If only one succeeded and we have an oracle, compare against that.
-        if len(successful) == 1 and oracle is not None:
-            actual = _normalize_output(successful[0].stdout)  # type: ignore[arg-type]
-            expected = _normalize_output(oracle)
-            if actual != expected:
-                result.match = False
-                result.error = (
-                    f"Only {successful[0].name} succeeded; "
-                    f"output differs from oracle.\n"
-                    f"  {successful[0].name}: {actual!r}\n"
-                    f"  oracle: {expected!r}"
+        errors.append("Fewer than two backends executed successfully")
+
+    # Check every successful output, including the single-survivor case.
+    if successful:
+        reference_name = "oracle" if oracle is not None else successful[0].name
+        reference_out = _normalize_output(
+            oracle if oracle is not None else successful[0].stdout or ""
+        )
+        for backend in successful:
+            actual = _normalize_output(backend.stdout or "")
+            if actual != reference_out:
+                errors.append(
+                    f"Output mismatch between {reference_name} and {backend.name}.\n"
+                    f"  {reference_name}: {reference_out!r}\n"
+                    f"  {backend.name}: {actual!r}"
                 )
-        return result
 
-    # Compare all successful backends pairwise
-    reference_name = successful[0].name
-    reference_out = _normalize_output(successful[0].stdout)  # type: ignore[arg-type]
-    for other in successful[1:]:
-        other_out = _normalize_output(other.stdout)  # type: ignore[arg-type]
-        if reference_out != other_out:
-            result.match = False
-            result.error = (
-                f"Output mismatch between {reference_name} and {other.name}.\n"
-                f"  {reference_name}: {reference_out!r}\n"
-                f"  {other.name}: {other_out!r}"
-            )
-            return result
-
-    # If oracle is available, compare against it too
-    if oracle is not None:
-        expected = _normalize_output(oracle)
-        if reference_out != expected:
-            result.match = False
-            result.error = (
-                f"All backends agree but differ from oracle.\n"
-                f"  backends: {reference_out!r}\n"
-                f"  oracle: {expected!r}"
-            )
-            return result
+    result.match = not errors
+    if errors:
+        result.error = "\n".join(errors)
 
     return result

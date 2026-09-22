@@ -440,6 +440,7 @@ class RuntimeMetricsCollector:
         self._started_at = time.monotonic()
         self._lock = threading.Lock()
         self._startup_errors: list[str] = []
+        self._worker_health: HealthCheck | None = None
         self._http_post_requests = 0
         self._http_post_requests_by_endpoint: dict[str, int] = {}
         self._http_post_requests_by_status: dict[str, int] = {}
@@ -469,6 +470,16 @@ class RuntimeMetricsCollector:
         """Record startup check failures for health reporting."""
         with self._lock:
             self._startup_errors = list(errors)
+
+    def record_worker_health(self, error: str | None = None) -> None:
+        """Record an observed hosted worker outcome, independently of user errors."""
+        with self._lock:
+            self._worker_health = HealthCheck(
+                name="hosted_worker",
+                status="fail" if error else "pass",
+                detail=error
+                or "resource-limited hosted worker started and handled execution",
+            )
 
     def record(self, metrics: RunMetrics) -> None:
         with self._lock:
@@ -602,6 +613,7 @@ class RuntimeMetricsCollector:
         checks: list[HealthCheck] = []
         with self._lock:
             startup_errors = list(self._startup_errors)
+            worker_health = self._worker_health
         if startup_errors:
             checks.append(
                 HealthCheck(
@@ -618,23 +630,18 @@ class RuntimeMetricsCollector:
                     detail="all startup checks passed",
                 )
             )
-        checks.extend(
-            [
-                HealthCheck(
-                    name="runtime_api",
-                    status="pass",
-                    detail="geno.run() remains the supported production entry point",
+        if worker_health is not None:
+            checks.append(worker_health)
+        checks.append(
+            HealthCheck(
+                name="metrics_collector",
+                status="pass",
+                detail=(
+                    f"observed_http_post_requests={snapshot.http_post_requests}, "
+                    f"observed_runs={snapshot.total_runs}, "
+                    f"observed_constrain_requests={snapshot.constrain_requests}"
                 ),
-                HealthCheck(
-                    name="metrics_collector",
-                    status="pass",
-                    detail=(
-                        f"observed_http_post_requests={snapshot.http_post_requests}, "
-                        f"observed_runs={snapshot.total_runs}, "
-                        f"observed_constrain_requests={snapshot.constrain_requests}"
-                    ),
-                ),
-            ]
+            )
         )
         if snapshot.last_benchmark_validation is not None:
             benchmark = snapshot.last_benchmark_validation
