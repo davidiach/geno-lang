@@ -1058,11 +1058,6 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     f"Imported module '{collision}' conflicts with a local export"
                 )
-            self._validate_reserved_local_names(
-                program,
-                active_module_bindings.keys(),
-                JSCompileError,
-            )
             self._active_module_bindings = active_module_bindings
 
             for defn in program.definitions:
@@ -1078,6 +1073,13 @@ class JSCompiler(BaseCompiler):
 
             for ambiguous in ambiguous_imported_names:
                 imported_runtime_names.pop(ambiguous, None)
+
+            self._validate_reserved_local_names(
+                program,
+                active_module_bindings.keys(),
+                JSCompileError,
+                imported_names=imported_runtime_names.keys(),
+            )
 
             self._write(f"\n\n// === Module: {mod_name} ===\n")
             self._writeln(f"const {module_bindings[mod_name]} = (() => {{")
@@ -1548,7 +1550,8 @@ class JSCompiler(BaseCompiler):
             self._dedent()
             self._writeln("}")
             await_body = "await " if is_async_execution_form(defn) else ""
-            self._writeln(f"const result = {await_body}{body_helper}();")
+            result_name = self._fresh_temp()
+            self._writeln(f"const {result_name} = {await_body}{body_helper}();")
             for ens in defn.specs.ensures:
                 if isinstance(ens.condition, BooleanLiteral):
                     if ens.condition.value:
@@ -1556,18 +1559,22 @@ class JSCompiler(BaseCompiler):
                     raise JSCompileError(
                         f"`ensures false` on {defn.name} makes the function unusable"
                     )
-                cond = self._compile_expr(ens.condition)
+                # Limit the implicit result binding to the contract, while
+                # allowing lambdas inside it to shadow that binding normally.
+                with self._block_scope(["result"]):
+                    self._js_block_scopes[-1].overrides["result"] = result_name
+                    cond = self._compile_expr(ens.condition)
                 self._writeln(f"if (!({cond})) {{")
                 self._indent()
                 self._writeln(
                     f"throw new _GenoContractViolation("
                     f"`Postcondition failed for {defn.name}: "
                     f"ensures clause evaluated to false "
-                    f"(result was ${{_formatValue(result)}})`);"
+                    f"(result was ${{_formatValue({result_name})}})`);"
                 )
                 self._dedent()
                 self._writeln("}")
-            self._writeln("return result;")
+            self._writeln(f"return {result_name};")
 
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")

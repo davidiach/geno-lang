@@ -1362,77 +1362,83 @@ class Interpreter:
             SandboxTimeout: If execution exceeds timeout
             RuntimeError: For runtime errors
         """
-        # Resolve imports first
-        entrypoint_main = next(
-            (
-                defn
-                for defn in program.definitions
-                if isinstance(defn, FunctionDef) and defn.name == "main"
-            ),
-            None,
-        )
-
-        if modules is not None:
-            resolved: set[str] = set()
-            module_imports: dict[
-                str, tuple[dict[str, Closure], dict[str, FunctionDef]]
-            ] = {}
-            for defn in program.definitions:
-                if isinstance(defn, ImportStatement):
-                    self._resolve_module_import(defn, modules, resolved, module_imports)
-
-        self._bind_module_constants(program, self.global_env)
-
-        # First pass: collect type and function definitions
-        for defn in program.definitions:
-            if isinstance(defn, TypeDef):
-                # Remove stale constructor entries if type is being redefined
-                old_def = self.type_defs.get(defn.name)
-                if old_def is not None:
-                    for v in old_def.variants:
-                        self._constructor_to_type.pop(v.name, None)
-                self.type_defs[defn.name] = defn
-                for variant in defn.variants:
-                    self._constructor_to_type[variant.name] = defn.name
-            elif isinstance(defn, FunctionDef):
-                self.functions[defn.name] = defn
-                closure = Closure(
-                    params=defn.params,
-                    body=defn.body,
-                    env=self.global_env,
-                    name=defn.name,
-                    specs=defn.specs,
-                    is_async=defn.is_async,
-                )
-                self.global_env.bind(defn.name, closure)
-
-        # Second pass: process trait impls
-        for defn in program.definitions:
-            if isinstance(defn, ImplDef):
-                method_closures: dict[str, Closure] = {}
-                for method in defn.methods:
-                    method_closures[method.name] = Closure(
-                        params=method.params,
-                        body=method.body,
-                        env=self.global_env,
-                        name=method.name,
-                        specs=method.specs,
-                    )
-                self.trait_impls[(defn.trait_name, defn.target_type)] = method_closures
-                # Register each trait method name for dispatch
-                for method in defn.methods:
-                    self.trait_method_names.add(method.name)
-                    self.trait_method_param_names[(defn.trait_name, method.name)] = [
-                        param.name for param in method.params
-                    ]
-
         # Ensure Python's recursion limit can accommodate the Geno depth.
         # A bare Geno call uses ~4-5 Python frames, but try/catch and match
         # paths chain ~8 (issue #650). 12 gives headroom on every path so
         # the Geno-level check fires before Python's RecursionError.
         needed = self.max_recursion_depth * 12 + 100
         with _raised_recursion_limit(needed):
+            # Constant initializers execute too, including during imports.
+            # Charge initialization, examples and main to one deadline.
             with self._execution_deadline(self.sandbox_config.timeout):
+                # Resolve imports first
+                entrypoint_main = next(
+                    (
+                        defn
+                        for defn in program.definitions
+                        if isinstance(defn, FunctionDef) and defn.name == "main"
+                    ),
+                    None,
+                )
+
+                if modules is not None:
+                    resolved: set[str] = set()
+                    module_imports: dict[
+                        str, tuple[dict[str, Closure], dict[str, FunctionDef]]
+                    ] = {}
+                    for defn in program.definitions:
+                        if isinstance(defn, ImportStatement):
+                            self._resolve_module_import(
+                                defn, modules, resolved, module_imports
+                            )
+
+                self._bind_module_constants(program, self.global_env)
+
+                # First pass: collect type and function definitions
+                for defn in program.definitions:
+                    if isinstance(defn, TypeDef):
+                        # Remove stale constructor entries if type is being redefined
+                        old_def = self.type_defs.get(defn.name)
+                        if old_def is not None:
+                            for v in old_def.variants:
+                                self._constructor_to_type.pop(v.name, None)
+                        self.type_defs[defn.name] = defn
+                        for variant in defn.variants:
+                            self._constructor_to_type[variant.name] = defn.name
+                    elif isinstance(defn, FunctionDef):
+                        self.functions[defn.name] = defn
+                        closure = Closure(
+                            params=defn.params,
+                            body=defn.body,
+                            env=self.global_env,
+                            name=defn.name,
+                            specs=defn.specs,
+                            is_async=defn.is_async,
+                        )
+                        self.global_env.bind(defn.name, closure)
+
+                # Second pass: process trait impls
+                for defn in program.definitions:
+                    if isinstance(defn, ImplDef):
+                        method_closures: dict[str, Closure] = {}
+                        for method in defn.methods:
+                            method_closures[method.name] = Closure(
+                                params=method.params,
+                                body=method.body,
+                                env=self.global_env,
+                                name=method.name,
+                                specs=method.specs,
+                            )
+                        self.trait_impls[(defn.trait_name, defn.target_type)] = (
+                            method_closures
+                        )
+                        # Register each trait method name for dispatch
+                        for method in defn.methods:
+                            self.trait_method_names.add(method.name)
+                            self.trait_method_param_names[
+                                (defn.trait_name, method.name)
+                            ] = [param.name for param in method.params]
+
                 # Verify examples if enabled. Steps spent verifying examples
                 # count against the same max_steps budget as `main` so the
                 # advertised bound is a single honest global cap — otherwise
@@ -1504,11 +1510,10 @@ class Interpreter:
             for d in mod_program.definitions
         )
 
-        # Register type definitions from module
+        # Imported function bodies still need private constructors. Visibility
+        # is checked by the typechecker; runtime type tables retain all types.
         for defn in mod_program.definitions:
             if isinstance(defn, TypeDef):
-                if has_exports and not defn.exported:
-                    continue
                 old_def = self.type_defs.get(defn.name)
                 if old_def is not None:
                     for v in old_def.variants:
@@ -1522,13 +1527,13 @@ class Interpreter:
         # added to the importer's scope.
         self._bind_module_constants(mod_program, module_env)
 
-        # Register function definitions from module
+        # Every function belongs to the module's lexical scope, including
+        # private helpers and recursive calls. Only public functions enter
+        # the namespace and unqualified bindings offered to the importer.
         module_ns: dict[str, Closure] = {}
         module_functions: dict[str, FunctionDef] = {}
         for defn in mod_program.definitions:
             if isinstance(defn, FunctionDef):
-                if has_exports and not defn.exported:
-                    continue
                 closure = Closure(
                     params=defn.params,
                     body=defn.body,
@@ -1538,8 +1543,31 @@ class Interpreter:
                     is_async=defn.is_async,
                 )
                 module_env.bind(defn.name, closure)
+                if has_exports and not defn.exported:
+                    continue
                 module_ns[defn.name] = closure
                 module_functions[defn.name] = defn
+
+        # Trait methods called by imported functions must also capture their
+        # defining module's constants, helpers and imported namespaces.
+        for defn in mod_program.definitions:
+            if isinstance(defn, ImplDef):
+                method_closures: dict[str, Closure] = {}
+                for method in defn.methods:
+                    method_closures[method.name] = Closure(
+                        params=method.params,
+                        body=method.body,
+                        env=module_env,
+                        name=method.name,
+                        specs=method.specs,
+                    )
+                self.trait_impls[(defn.trait_name, defn.target_type)] = method_closures
+                for method in defn.methods:
+                    self.trait_method_names.add(method.name)
+                    self.trait_method_param_names[(defn.trait_name, method.name)] = [
+                        param.name for param in method.params
+                    ]
+
         module_import = (module_ns, module_functions)
         module_imports[name] = module_import
         self._apply_module_import(import_stmt, module_import, import_env)

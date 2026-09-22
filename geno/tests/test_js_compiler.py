@@ -2199,9 +2199,12 @@ class TestJSCompilerSpecs:
         end func
         """
         js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
         helper_match = re.search(r"async function (_temp_\d+)\(\)", js_code)
         assert helper_match is not None
-        assert f"const result = await {helper_match.group(1)}();" in js_code
+        assert re.search(
+            rf"const _temp_\d+ = await {helper_match.group(1)}\(\);", js_code
+        )
         assert compile_and_run_js(source) == "1"
 
 

@@ -939,11 +939,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 raise CompileError(
                     f"Imported module '{collision}' conflicts with a local export"
                 )
-            self._validate_reserved_local_names(
-                program,
-                active_module_bindings.keys(),
-                CompileError,
-            )
             self._active_module_bindings = active_module_bindings
 
             for defn in program.definitions:
@@ -959,6 +954,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             for ambiguous in ambiguous_imported_names:
                 imported_runtime_names.pop(ambiguous, None)
+
+            self._validate_reserved_local_names(
+                program,
+                active_module_bindings.keys(),
+                CompileError,
+                imported_names=imported_runtime_names.keys(),
+            )
 
             self.output.write(f"\n\n# === Module: {mod_name} ===\n")
             factory_name = f"_geno_module_{self._mangle_name(mod_name)}"
@@ -1335,9 +1337,10 @@ class Compiler(BaseCompiler, ASTVisitor):
             # Call the body and capture result. For async enclosing
             # functions the helper is async too, so the call must be awaited.
             call_prefix = "await " if is_async_execution_form(defn) else ""
-            self._writeln(f"result = {call_prefix}{body_helper}()")
+            result_name = self._fresh_temp()
+            self._writeln(f"{result_name} = {call_prefix}{body_helper}()")
             if self._expected_runtime_type_is_float(defn.return_type):
-                self._writeln("result = _promote_int_to_float(result)")
+                self._writeln(f"{result_name} = _promote_int_to_float({result_name})")
             # Check ensures clauses
             for ens in defn.specs.ensures:
                 if isinstance(ens.condition, BooleanLiteral):
@@ -1346,14 +1349,17 @@ class Compiler(BaseCompiler, ASTVisitor):
                     raise CompileError(
                         f"`ensures false` on {defn.name} makes the function unusable"
                     )
-                cond = self._compile_expr(ens.condition)
+                # The implicit result binding belongs only to the contract;
+                # the body can still read a module constant named result.
+                with self._with_name_overrides({"result": result_name}):
+                    cond = self._compile_expr(ens.condition)
                 self._writeln(f"if not ({cond}):")
                 self._indent()
                 self._writeln(
-                    f'raise _GenoContractViolation(f"Postcondition failed for {defn.name}: ensures clause evaluated to false (result was {{result}})")'
+                    f'raise _GenoContractViolation(f"Postcondition failed for {defn.name}: ensures clause evaluated to false (result was {{{result_name}}})")'
                 )
                 self._dedent()
-            self._writeln("return result")
+            self._writeln(f"return {result_name}")
 
         self._dedent()
 

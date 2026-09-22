@@ -373,10 +373,34 @@ class BaseCompiler(ABC):
         program: Program,
         reserved_names: Collection[str],
         error_type: type[Exception],
+        imported_names: Collection[str] = (),
     ) -> None:
-        """Reject local user bindings that would shadow backend runtime helpers."""
+        """Protect runtime helpers and constants from emitted-name collisions."""
+
+        constant_names: dict[str, str] = {}
+
+        def check_constant_collision(name: str | None) -> None:
+            if name is None:
+                return
+            emitted_name = self._mangle_name(name)
+            constant = constant_names.get(emitted_name)
+            if constant is not None and constant != name:
+                raise error_type(
+                    f"Module constant '{constant}' conflicts with '{name}': "
+                    f"both compile to '{emitted_name}'"
+                )
+
+        for defn in program.definitions:
+            if isinstance(defn, ModuleConstant):
+                check_constant_collision(defn.name)
+                constant_names[self._mangle_name(defn.name)] = defn.name
+        for imported_name in imported_names:
+            check_constant_collision(imported_name)
 
         def check_name(name: str | None, kind: str) -> None:
+            # Same-spelled locals may shadow constants. A distinct source
+            # name that mangles to the constant would capture its references.
+            check_constant_collision(name)
             if name is not None and name in reserved_names:
                 raise error_type(
                     f"'{name}' is a reserved runtime name and cannot be used "
@@ -463,12 +487,14 @@ class BaseCompiler(ABC):
 
         for defn in program.definitions:
             if isinstance(defn, FunctionDef):
+                check_constant_collision(defn.name)
                 visit_function(defn)
             elif isinstance(defn, ImplDef):
                 for impl_method in defn.methods:
                     visit_function(impl_method)
             elif isinstance(defn, TraitDef):
                 for trait_method in defn.methods:
+                    check_constant_collision(trait_method.name)
                     visit_trait_method(trait_method)
 
     def _register_module_param_names(self, module_name: str, program) -> None:

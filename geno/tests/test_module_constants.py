@@ -438,3 +438,264 @@ class TestModulePrivacy:
         result = self._geno(["check", "App.geno"], project)
         assert result.returncode != 0
         assert "Undefined variable: prefix" in (result.stdout + result.stderr)
+
+    @pytest.mark.parametrize("aliased", [False, True])
+    @pytest.mark.parametrize("constant_last", [False, True])
+    def test_project_tests_use_the_owning_module_scope(
+        self, tmp_path, aliased, constant_last
+    ):
+        from geno.test_runner import run_project_test_suite
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App", "Lib"]\n'
+        )
+        for module, value in [("Lib", "lib"), ("App", "app")]:
+            constant = f'let prefix = "{value}"\n'
+            source = (
+                "export func label() -> String\n"
+                "    example () -> prefix\n"
+                f'    example () -> "{value}"\n'
+                "    return prefix\n"
+                "end func\n"
+            )
+            source = source + constant if constant_last else constant + source
+            source += (
+                'test "own module bindings"\n'
+                f'    assert prefix == "{value}"\n'
+                f'    assert label() == "{value}"\n'
+                "end test\n"
+            )
+            if module == "App":
+                namespace = "L" if aliased else "Lib"
+                source = ("import Lib as L\n" if aliased else "import Lib\n") + source
+                source += (
+                    'test "imported function retains its module"\n'
+                    f'    assert {namespace}.label() == "lib"\n'
+                    "end test\n"
+                )
+            (tmp_path / f"{module}.geno").write_text(source)
+
+        result = run_project_test_suite(tmp_path)
+
+        assert result.success, result.to_dict()
+        assert result.passed == result.total == 7
+
+    def test_project_module_scopes_share_the_step_budget(self, tmp_path):
+        from geno.sandbox import SandboxConfig
+        from geno.test_runner import run_project_test_suite, run_test_suite
+
+        source = (
+            "let limit = 5\n"
+            'test "bounded work"\n'
+            "    var total = 0\n"
+            "    for n: Int in range(0, limit) do\n"
+            "        total = total + n\n"
+            "    end for\n"
+            "    assert total == 10\n"
+            "end test\n"
+        )
+        paths = [tmp_path / f"{name}.geno" for name in ["First", "Second", "Third"]]
+        for path in paths:
+            path.write_text(source)
+            single = run_test_suite(
+                [path], sandbox_config=SandboxConfig(timeout=5.0, max_steps=50)
+            )
+            assert single.success, single.to_dict()
+
+        (tmp_path / "geno.toml").write_text('files = ["First", "Second", "Third"]\n')
+        result = run_project_test_suite(
+            tmp_path, sandbox_config=SandboxConfig(timeout=5.0, max_steps=50)
+        )
+
+        assert not result.success
+        assert result.passed == 1
+        assert result.failed == 2
+        assert result.total == 3
+        assert any(
+            "Step limit exceeded" in violation.message
+            for file_result in result.file_results
+            if file_result.harness_result is not None
+            for violation in file_result.harness_result.violations
+        )
+
+    @pytest.mark.parametrize("call", ["answer()", "Lib.answer()", "L.answer()"])
+    @pytest.mark.parametrize("helper_first", [False, True])
+    def test_imported_private_helpers_keep_their_module_scope(
+        self, tmp_path, call, helper_first
+    ):
+        from geno.api import run_path
+        from geno.test_runner import run_project_test_suite
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App", "Lib", "Base", "Other"]\n'
+        )
+        for name, value in [("Base", 1), ("Other", 100)]:
+            (tmp_path / f"{name}.geno").write_text(
+                "func value() -> Int\n"
+                f"    example () -> {value}\n"
+                f"    return {value}\n"
+                "end func\n"
+            )
+        helper = (
+            "func private_help(n: Int) -> Int\n"
+            "    example 2 -> 42\n"
+            "    if n == 0 then\n"
+            "        return offset + Local.value()\n"
+            "    end if\n"
+            "    return private_help(n - 1)\n"
+            "end func\n"
+        )
+        public = (
+            "export func answer() -> Int\n"
+            "    example () -> 42\n"
+            "    return private_help(2)\n"
+            "end func\n"
+        )
+        (tmp_path / "Lib.geno").write_text(
+            "import Base as Local\nlet offset = 41\n"
+            + (helper + public if helper_first else public + helper)
+        )
+        (tmp_path / "App.geno").write_text(
+            ("import Lib as L\n" if call.startswith("L.") else "import Lib\n")
+            + "import Other as Local\n"
+            "let offset = 100\n"
+            "func private_help(n: Int) -> Int\n"
+            "    example 2 -> 99\n"
+            "    return 99\n"
+            "end func\n"
+            "func read_answer() -> Int\n"
+            "    example () -> 42\n"
+            f"    return {call}\n"
+            "end func\n"
+            'test "imported private helper"\n'
+            "    assert read_answer() == 42\n"
+            "end test\n"
+            "func main() -> Int\n"
+            "    return read_answer()\n"
+            "end func\n"
+        )
+
+        suite = run_project_test_suite(tmp_path)
+        assert suite.success, suite.to_dict()
+        result = run_path(str(tmp_path))
+        assert result.ok, result.diagnostics
+        assert result.value == 42
+
+    @pytest.mark.parametrize(
+        "definitions, expression",
+        [
+            ("type Private = Private(number: Int)\n", "Private(offset).number + 1"),
+            (
+                "trait Value\n"
+                "    func value(self: Self) -> Int\n"
+                "end trait\n"
+                "type Item = Item(number: Int)\n"
+                "impl Value for Item\n"
+                "    func value(self: Item) -> Int\n"
+                "        example Item(1) -> 42\n"
+                "        return self.number + offset\n"
+                "    end func\n"
+                "end impl\n",
+                "value(Item(1))",
+            ),
+        ],
+    )
+    def test_imported_functions_keep_private_runtime_definitions(
+        self, tmp_path, definitions, expression
+    ):
+        from geno.api import run_path
+        from geno.test_runner import run_project_test_suite
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App", "Lib"]\n'
+        )
+        (tmp_path / "Lib.geno").write_text(
+            "let offset = 41\n" + definitions + "export func answer() -> Int\n"
+            "    example () -> 42\n"
+            f"    return {expression}\n"
+            "end func\n"
+        )
+        (tmp_path / "App.geno").write_text(
+            "import Lib\n"
+            "let offset = 100\n"
+            "func read_answer() -> Int\n"
+            "    example () -> 42\n"
+            "    return answer()\n"
+            "end func\n"
+            'test "imported definitions"\n'
+            "    assert answer() == 42\n"
+            "end test\n"
+            "func main() -> Int\n"
+            "    return answer()\n"
+            "end func\n"
+        )
+
+        suite = run_project_test_suite(tmp_path)
+        assert suite.success, suite.to_dict()
+        result = run_path(str(tmp_path))
+        assert result.ok, result.diagnostics
+        assert result.value == 42
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["private_help()", "Lib.private_help()", "L.private_help()", "Private(42)"],
+    )
+    def test_imported_private_runtime_definitions_remain_inaccessible(self, expression):
+        from geno.interpreter import Interpreter
+        from geno.interpreter import RuntimeError as GenoRuntimeError
+
+        library = _parse(
+            "let offset = 42\n"
+            "type Private = Private(number: Int)\n"
+            "func private_help() -> Int\n"
+            "    example () -> 42\n"
+            "    return offset\n"
+            "end func\n"
+            "export func answer() -> Int\n"
+            "    example () -> 42\n"
+            "    return private_help()\n"
+            "end func\n"
+        )
+        program = _parse(
+            ("import Lib as L\n" if expression.startswith("L.") else "import Lib\n")
+            + "func main() -> Int\n"
+            f"    return {expression}\n"
+            "end func\n"
+        )
+        with pytest.raises(GenoTypeError, match=r"private_help|Private"):
+            TypeChecker().check_program(program, modules={"Lib": library})
+        if "private_help" in expression:
+            with pytest.raises(GenoRuntimeError, match="private_help"):
+                Interpreter(check_examples=False).run(program, modules={"Lib": library})
+
+    def test_project_module_scopes_share_the_output_budget(self, tmp_path):
+        from geno.sandbox import SandboxConfig
+        from geno.test_runner import run_project_test_suite, run_test_suite
+
+        source = (
+            'let message = "abcd"\n'
+            'test "bounded output"\n'
+            "    print(message)\n"
+            "end test\n"
+        )
+        for name in ["First", "Second"]:
+            path = tmp_path / f"{name}.geno"
+            path.write_text(source)
+            single = run_test_suite(
+                [path], sandbox_config=SandboxConfig(max_output_length=6)
+            )
+            assert single.success, single.to_dict()
+
+        (tmp_path / "geno.toml").write_text('files = ["First", "Second"]\n')
+        result = run_project_test_suite(
+            tmp_path, sandbox_config=SandboxConfig(max_output_length=6)
+        )
+
+        assert not result.success
+        assert result.passed == result.failed == 1
+        assert any(
+            "Output" in violation.message
+            for file_result in result.file_results
+            if file_result.harness_result is not None
+            for violation in file_result.harness_result.violations
+        )
