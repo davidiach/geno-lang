@@ -53,6 +53,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     MatchArm,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -507,6 +508,8 @@ class TypeChecker(ExhaustivenessMixin):
         self._lambda_return_types: list[Type] | None = None
         self.errors: list[TypeError] = []
         self._user_defined_names: set[str] = set()
+        # Module-level constants: name -> type, rebuilt per check_program.
+        self._module_constants: dict[str, Type] = {}
         self._constructor_to_type: dict[str, str] = {}
         self._loop_depth: int = 0
         self._is_app_mode: bool = False
@@ -1146,6 +1149,13 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(defn, TraitDef):
                 self._collect_trait_def(defn)
 
+        # Module constants bind before any function body is checked, so a
+        # function can refer to one no matter where it appears in the file.
+        self._module_constants = {}
+        for defn in program.definitions:
+            if isinstance(defn, ModuleConstant):
+                self._check_module_constant(defn)
+
         # Second pass: collect function signatures and process impl blocks.
         # Keep the first signature when a name is repeated so later passes do
         # not silently type-check calls against whichever definition happened
@@ -1156,6 +1166,14 @@ class TypeChecker(ExhaustivenessMixin):
                 if defn.name in seen_function_names:
                     self._error(
                         f"Duplicate function definition: '{defn.name}'",
+                        defn.location,
+                        ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                    )
+                    continue
+                if defn.name in self._module_constants:
+                    self._error(
+                        f"Function '{defn.name}' conflicts with the module "
+                        f"constant of the same name",
                         defn.location,
                         ErrorCode.TYPE_DUPLICATE_DEFINITION,
                     )
@@ -2881,6 +2899,57 @@ class TypeChecker(ExhaustivenessMixin):
                 )
             # Type inference: use the type of the RHS expression
             env.bind(stmt.name, actual_type, mutable=False)
+
+    def _check_module_constant(self, defn: ModuleConstant) -> None:
+        """Type check a module-level constant and bind it in module scope."""
+        if defn.name in self._module_constants:
+            self._error(
+                f"Duplicate module constant: '{defn.name}'",
+                defn.location,
+                ErrorCode.TYPE_DUPLICATE_DEFINITION,
+            )
+            return
+
+        if defn.name in self.trait_methods:
+            # Both backends emit a trait dispatcher as a top-level function of
+            # the method's name, which would overwrite the constant in Python
+            # and fail to parse in JavaScript.
+            self._error(
+                f"Module constant '{defn.name}' conflicts with a trait "
+                f"dispatcher of the same name",
+                defn.location,
+                ErrorCode.TYPE_DUPLICATE_DEFINITION,
+            )
+            return
+
+        errors_before = len(self.errors)
+        actual_type = self._check_expression(defn.value, self.global_env)
+
+        if defn.type_annotation is not None:
+            declared_type = self._resolve_type(defn.type_annotation)
+            defn._expected_runtime_type = declared_type
+            self._record_expected_runtime_type(defn.value, declared_type)
+            if not self._types_strictly_compatible(declared_type, actual_type):
+                self._error(
+                    f"Type mismatch in 'let {defn.name}': declared type "
+                    f"{declared_type}, but the value has type {actual_type}",
+                    defn.location,
+                )
+            constant_type = declared_type
+        else:
+            if len(self.errors) == errors_before and (
+                self._contains_any(actual_type) or self._has_type_vars(actual_type)
+            ):
+                self._error(
+                    f"Cannot infer a concrete type for 'let {defn.name}' from "
+                    f"{actual_type}; add an explicit type annotation",
+                    defn.location,
+                )
+            constant_type = actual_type
+
+        self._module_constants[defn.name] = constant_type
+        self.global_env.bind(defn.name, constant_type, mutable=False)
+        self._user_defined_names.add(defn.name)
 
     def _check_var_statement(self, stmt: VarStatement, env: TypeEnv) -> None:
         """Type check a var statement."""

@@ -63,6 +63,7 @@ from .ast_nodes import (
     LiteralPattern,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -849,6 +850,8 @@ class JSCompiler(BaseCompiler):
             direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
         )
 
+        self._compile_module_constants(program)
+
         # Compile all definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
@@ -1033,6 +1036,14 @@ class JSCompiler(BaseCompiler):
             program = dep_graph.parsed[mod_name]
             runtime_exports = module_runtime_exports[mod_name]
             own_export_names = set(runtime_exports)
+            # A module constant is a local top-level name, so an imported name
+            # it collides with must not be re-emitted beside it: the local one
+            # wins, as it does for a locally defined function.
+            own_local_names = own_export_names | {
+                defn.name
+                for defn in program.definitions
+                if isinstance(defn, ModuleConstant)
+            }
             imported_runtime_names: dict[str, str] = {}
             ambiguous_imported_names: set[str] = set()
             active_module_bindings = {
@@ -1047,18 +1058,13 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     f"Imported module '{collision}' conflicts with a local export"
                 )
-            self._validate_reserved_local_names(
-                program,
-                active_module_bindings.keys(),
-                JSCompileError,
-            )
             self._active_module_bindings = active_module_bindings
 
             for defn in program.definitions:
                 if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
                 for export_name in module_runtime_exports.get(defn.module_name, []):
-                    if export_name in own_export_names:
+                    if export_name in own_local_names:
                         continue
                     if export_name in imported_runtime_names:
                         ambiguous_imported_names.add(export_name)
@@ -1067,6 +1073,13 @@ class JSCompiler(BaseCompiler):
 
             for ambiguous in ambiguous_imported_names:
                 imported_runtime_names.pop(ambiguous, None)
+
+            self._validate_reserved_local_names(
+                program,
+                active_module_bindings.keys(),
+                JSCompileError,
+                imported_names=imported_runtime_names.keys(),
+            )
 
             self._write(f"\n\n// === Module: {mod_name} ===\n")
             self._writeln(f"const {module_bindings[mod_name]} = (() => {{")
@@ -1081,6 +1094,8 @@ class JSCompiler(BaseCompiler):
             # First pass: collect definitions
             self._register_import_alias_param_names(program)
             collect_definitions(program, into=self._definition_index)
+
+            self._compile_module_constants(program)
 
             # Compile definitions
             for defn in program.definitions:
@@ -1535,7 +1550,8 @@ class JSCompiler(BaseCompiler):
             self._dedent()
             self._writeln("}")
             await_body = "await " if is_async_execution_form(defn) else ""
-            self._writeln(f"const result = {await_body}{body_helper}();")
+            result_name = self._fresh_temp()
+            self._writeln(f"const {result_name} = {await_body}{body_helper}();")
             for ens in defn.specs.ensures:
                 if isinstance(ens.condition, BooleanLiteral):
                     if ens.condition.value:
@@ -1543,18 +1559,22 @@ class JSCompiler(BaseCompiler):
                     raise JSCompileError(
                         f"`ensures false` on {defn.name} makes the function unusable"
                     )
-                cond = self._compile_expr(ens.condition)
+                # Limit the implicit result binding to the contract, while
+                # allowing lambdas inside it to shadow that binding normally.
+                with self._block_scope(["result"]):
+                    self._js_block_scopes[-1].overrides["result"] = result_name
+                    cond = self._compile_expr(ens.condition)
                 self._writeln(f"if (!({cond})) {{")
                 self._indent()
                 self._writeln(
                     f"throw new _GenoContractViolation("
                     f"`Postcondition failed for {defn.name}: "
                     f"ensures clause evaluated to false "
-                    f"(result was ${{_formatValue(result)}})`);"
+                    f"(result was ${{_formatValue({result_name})}})`);"
                 )
                 self._dedent()
                 self._writeln("}")
-            self._writeln("return result;")
+            self._writeln(f"return {result_name};")
 
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
@@ -2409,6 +2429,18 @@ class JSCompiler(BaseCompiler):
             f"(({result}) => _checkCollectionSize({result}))"
             f"({json_string})))({value})"
         )
+
+    def _compile_module_constants(self, program: Program) -> None:
+        """Emit module-level constants ahead of every other definition."""
+        for defn in program.definitions:
+            if not isinstance(defn, ModuleConstant):
+                continue
+            value = self._compile_expr(defn.value)
+            name = self._mangle_name(defn.name)
+            if self._needs_deep_copy(defn.value, defn.type_annotation):
+                self._writeln(f"const {name} = _deepCopy({value});")
+            else:
+                self._writeln(f"const {name} = {value};")
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         value = self._compile_expr(stmt.value)

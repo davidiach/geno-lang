@@ -349,8 +349,8 @@ def run_project_test_suite(
     """Run tests using ProjectGraph.
 
     Accepts a directory (with or without geno.toml) or a single .geno file.
-    All modules are parsed and loaded into a shared interpreter so that
-    cross-module dependencies resolve correctly during test execution.
+    Each module is tested in its own interpreter with its declared imports,
+    so private bindings and identically named helpers retain module scope.
     Examples from ALL modules (not just the entrypoint) are tested.
     """
     from .dependency_graph import DependencyGraphError
@@ -421,27 +421,39 @@ def run_project_test_suite(
     except TargetValidationError as e:
         return _project_error_result(f"Compile Error: {e.backend_message}")
 
-    # Load all modules into a shared interpreter in topological order.
-    # execute_main=False because the test runner only needs definitions
-    # registered — it exercises examples directly, not main().
-    interp = Interpreter(check_examples=False, sandbox_config=sandbox_config)
     parsed_modules = {name: dg.parsed[name] for name in dg.sorted_modules}
     all_programs = []
+    suite_steps = 0
+    suite_output_length = 0
     for mod_name in dg.sorted_modules:
         program = dg.parsed[mod_name]
+        # Loading every module into one global environment lets later modules
+        # overwrite the private constants and helpers that earlier tests use.
+        # Load the module under test as the entry module instead; its imports
+        # still resolve through their own lexical environments. Carry counters
+        # forward so isolation does not grant each module a fresh suite budget.
+        interp = Interpreter(check_examples=False, sandbox_config=sandbox_config)
+        interp.steps = suite_steps
+        interp._output_length = suite_output_length
         try:
             interp.run(program, modules=parsed_modules, execute_main=False)
         except runtime_load_errors as e:
             return _project_error_result(f"Runtime Error: {e}")
-        all_programs.append((mod_name, program))
+        suite_steps = interp.steps
+        suite_output_length = interp._output_length
+        all_programs.append((mod_name, program, interp))
 
     import time
 
-    # Test examples from every module
+    # Load all contexts before testing, as before: exhaustion during a test
+    # should fail subsequent tests rather than turn module loading into a
+    # project error that discards the results already collected.
     suite = SuiteResult()
-    for mod_name, program in all_programs:
+    for mod_name, program, interp in all_programs:
         resolved_file = dg.file_map.get(mod_name)
         file_path = str(resolved_file.path) if resolved_file else mod_name
+        interp.steps = suite_steps
+        interp._output_length = suite_output_length
 
         harnesses = extract_harnesses(program)
         if filter_pattern:
@@ -494,6 +506,8 @@ def run_project_test_suite(
                 )
 
         result.untested = untested_funcs
+        suite_steps = interp.steps
+        suite_output_length = interp._output_length
         mod_elapsed_ms = (time.monotonic() - mod_start) * 1000
         suite.file_results.append(
             FileTestResult(

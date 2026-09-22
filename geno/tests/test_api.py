@@ -1454,6 +1454,92 @@ class TestHostCallbacks:
 class TestTimeoutBehavior:
     """Timeout handling should not leave background work running."""
 
+    @pytest.fixture
+    def counted_execution_clock(self, monkeypatch):
+        """Advance a fake clock by one millisecond per evaluated expression."""
+        from geno.interpreter import Interpreter
+
+        ticks = 0
+        original_eval = Interpreter.eval_expr
+
+        def timed_eval(interpreter, expr, env):
+            nonlocal ticks
+            ticks += 1
+            return original_eval(interpreter, expr, env)
+
+        monkeypatch.setattr(time, "perf_counter", lambda: ticks / 1000)
+        monkeypatch.setattr(Interpreter, "eval_expr", timed_eval)
+
+    @pytest.mark.parametrize("imported", [False, True])
+    def test_timeout_covers_module_constant_initialization(
+        self, counted_execution_clock, imported
+    ):
+        constant = "let values = [" + ",".join(["1"] * 600) + "]\n"
+        source = "func main() -> Int\n    return 1\nend func\n"
+        modules = None
+        if imported:
+            source = "import Constants\n" + source
+            modules = {"Constants": constant}
+        else:
+            source = constant + source
+
+        result = run(source, config=RunConfig(timeout=0.25, modules=modules))
+
+        assert not result.ok
+        assert any(d.code == ErrorCode.SANDBOX_TIMEOUT for d in result.diagnostics)
+
+    def test_imports_constants_and_main_share_one_timeout(
+        self, counted_execution_clock
+    ):
+        # Each phase takes less than 250ms, but together they exceed it.
+        imported = "let imported_values = [" + ",".join(["1"] * 64) + "]\n"
+        own = "let own_values = [" + ",".join(["1"] * 64) + "]\n"
+        body = "let body_values = [" + ",".join(["1"] * 192) + "]\n"
+        source = (
+            "import Constants\n"
+            + own
+            + "func main() -> Int\n"
+            + body
+            + "    return body_values[0]\nend func\n"
+        )
+
+        result = run(
+            source,
+            config=RunConfig(timeout=0.25, modules={"Constants": imported}),
+        )
+
+        assert not result.ok
+        assert any(d.code == ErrorCode.SANDBOX_TIMEOUT for d in result.diagnostics)
+
+    def test_loading_without_main_still_bounds_constant_initialization(
+        self, counted_execution_clock
+    ):
+        from geno.interpreter import Interpreter
+        from geno.parser import parse
+        from geno.sandbox import SandboxConfig
+        from geno.sandbox import TimeoutError as SandboxTimeout
+
+        source = "let values = [" + ",".join(["1"] * 600) + "]\n"
+        interpreter = Interpreter(sandbox_config=SandboxConfig(timeout=0.25))
+
+        with pytest.raises(SandboxTimeout, match="Execution timed out"):
+            interpreter.run(parse(source), execute_main=False)
+        assert interpreter._deadline is None
+
+    def test_loading_constants_without_main_preserves_the_loaded_bindings(
+        self, counted_execution_clock
+    ):
+        from geno.interpreter import Interpreter
+        from geno.parser import parse
+        from geno.sandbox import SandboxConfig
+
+        source = 'let answer = 42\nfunc main() -> Int\n    throw "called"\nend func\n'
+        interpreter = Interpreter(sandbox_config=SandboxConfig(timeout=0.25))
+
+        assert interpreter.run(parse(source), execute_main=False) is None
+        assert interpreter.global_env.lookup("answer") == 42
+        assert interpreter._deadline is None
+
     def test_sleep_ms_rejects_duration_beyond_active_deadline(self, monkeypatch):
         from geno._serve import install_clock_callbacks
         from geno.interpreter import Interpreter

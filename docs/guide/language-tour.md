@@ -22,6 +22,54 @@ var total = 0
 
 `let` bindings are immutable; use `var` when you need mutation.
 
+### Module Constants
+
+A `let` written outside any function declares a module constant, which every
+function in the file can read. Use it for usage strings, lookup tables and other
+fixed values you would otherwise duplicate or wrap in a helper function:
+
+```geno
+let usage: String = "roman <number>"
+let numerals: List[String] = ["I", "V", "X", "L", "C", "D", "M"]
+
+func help_text() -> String
+    example () -> "roman <number>"
+    return usage
+end func
+
+func largest_numeral() -> String
+    example () -> "M"
+    return numerals[6]
+end func
+
+func main() -> String
+    return help_text() + " uses " + largest_numeral()
+end func
+```
+
+The initializer must be a literal: a number, string or boolean, a negated
+number, or a list or tuple of those. A call, an operator expression or a
+reference to another binding is rejected, so a module never runs code when it is
+imported:
+
+```text
+let limit = max_size() + 1
+    ^
+Module constant 'limit' must be initialized by a literal, but found an operator
+expression. Move the computation into a function and call it where the value is
+needed.
+```
+
+Three more rules follow from that:
+
+- Module constants are immutable. `var` at module level is rejected.
+- They are named in `snake_case`, like any other binding. `let USAGE` is a parse
+  error, because leading-uppercase names are reserved for types and
+  constructors.
+- They are private to their own file. `export let` is not supported, and an
+  importing module does not see the name. Return the value from an exported
+  function when another module needs it.
+
 ## Functions
 
 Function parameters and return values require type annotations. Functions also

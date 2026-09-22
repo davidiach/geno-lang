@@ -72,6 +72,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     LiteralPattern,
     MatchExpr,
     MatchStatement,
+    ModuleConstant,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -809,6 +810,8 @@ class Compiler(BaseCompiler, ASTVisitor):
             direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
         )
 
+        self._compile_module_constants(program)
+
         # Compile all definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
@@ -914,6 +917,14 @@ class Compiler(BaseCompiler, ASTVisitor):
             program = dep_graph.parsed[mod_name]
             runtime_exports = module_runtime_exports[mod_name]
             own_export_names = set(runtime_exports)
+            # A module constant is a local top-level name, so an imported name
+            # it collides with must not be re-emitted beside it: the local one
+            # wins, as it does for a locally defined function.
+            own_local_names = own_export_names | {
+                defn.name
+                for defn in program.definitions
+                if isinstance(defn, ModuleConstant)
+            }
             imported_runtime_names: dict[str, str] = {}
             ambiguous_imported_names: set[str] = set()
             active_module_bindings = {
@@ -928,18 +939,13 @@ class Compiler(BaseCompiler, ASTVisitor):
                 raise CompileError(
                     f"Imported module '{collision}' conflicts with a local export"
                 )
-            self._validate_reserved_local_names(
-                program,
-                active_module_bindings.keys(),
-                CompileError,
-            )
             self._active_module_bindings = active_module_bindings
 
             for defn in program.definitions:
                 if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
                 for export_name in module_runtime_exports.get(defn.module_name, []):
-                    if export_name in own_export_names:
+                    if export_name in own_local_names:
                         continue
                     if export_name in imported_runtime_names:
                         ambiguous_imported_names.add(export_name)
@@ -948,6 +954,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             for ambiguous in ambiguous_imported_names:
                 imported_runtime_names.pop(ambiguous, None)
+
+            self._validate_reserved_local_names(
+                program,
+                active_module_bindings.keys(),
+                CompileError,
+                imported_names=imported_runtime_names.keys(),
+            )
 
             self.output.write(f"\n\n# === Module: {mod_name} ===\n")
             factory_name = f"_geno_module_{self._mangle_name(mod_name)}"
@@ -963,6 +976,8 @@ class Compiler(BaseCompiler, ASTVisitor):
             # First pass: collect definitions
             self._register_import_alias_param_names(program)
             collect_definitions(program, into=self._definition_index)
+
+            self._compile_module_constants(program)
 
             # Compile definitions
             for defn in program.definitions:
@@ -1322,9 +1337,10 @@ class Compiler(BaseCompiler, ASTVisitor):
             # Call the body and capture result. For async enclosing
             # functions the helper is async too, so the call must be awaited.
             call_prefix = "await " if is_async_execution_form(defn) else ""
-            self._writeln(f"result = {call_prefix}{body_helper}()")
+            result_name = self._fresh_temp()
+            self._writeln(f"{result_name} = {call_prefix}{body_helper}()")
             if self._expected_runtime_type_is_float(defn.return_type):
-                self._writeln("result = _promote_int_to_float(result)")
+                self._writeln(f"{result_name} = _promote_int_to_float({result_name})")
             # Check ensures clauses
             for ens in defn.specs.ensures:
                 if isinstance(ens.condition, BooleanLiteral):
@@ -1333,14 +1349,17 @@ class Compiler(BaseCompiler, ASTVisitor):
                     raise CompileError(
                         f"`ensures false` on {defn.name} makes the function unusable"
                     )
-                cond = self._compile_expr(ens.condition)
+                # The implicit result binding belongs only to the contract;
+                # the body can still read a module constant named result.
+                with self._with_name_overrides({"result": result_name}):
+                    cond = self._compile_expr(ens.condition)
                 self._writeln(f"if not ({cond}):")
                 self._indent()
                 self._writeln(
-                    f'raise _GenoContractViolation(f"Postcondition failed for {defn.name}: ensures clause evaluated to false (result was {{result}})")'
+                    f'raise _GenoContractViolation(f"Postcondition failed for {defn.name}: ensures clause evaluated to false (result was {{{result_name}}})")'
                 )
                 self._dedent()
-            self._writeln("return result")
+            self._writeln(f"return {result_name}")
 
         self._dedent()
 
@@ -1535,6 +1554,22 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._emit_block_close()
         finally:
             self._loop_capture_names.pop()
+
+    def _compile_module_constants(self, program: Program) -> None:
+        """Emit module-level constants ahead of every other definition."""
+        for defn in program.definitions:
+            if not isinstance(defn, ModuleConstant):
+                continue
+            name = self._mangle_name(defn.name)
+            rhs = self._promote_expr_to_expected_float(
+                self._compile_expr(defn.value),
+                getattr(defn, "_expected_runtime_type", defn.type_annotation),
+            )
+            if defn.type_annotation is not None:
+                ann = self._compile_type_annotation(defn.type_annotation)
+                self._writeln(f"{name}: '{ann}' = {rhs}")
+            else:
+                self._writeln(f"{name} = {rhs}")
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         """Compile a let statement.

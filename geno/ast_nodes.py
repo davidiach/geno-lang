@@ -804,6 +804,79 @@ class ImportStatement(Definition):
         return visitor.visit_import_statement(self)
 
 
+_NON_CONSTANT_FORMS: dict[str, str] = {
+    "Identifier": "a reference to another binding",
+    "TypeIdentifier": "a reference to another binding",
+    "FunctionCall": "a function call",
+    "ConstructorCall": "a constructor call",
+    "FStringExpr": "an interpolated string",
+    "ListComprehension": "a list comprehension",
+    "BinaryOp": "an operator expression",
+    "UnaryOp": "an operator expression",
+    "LambdaExpr": "a lambda",
+    "MatchExpr": "a match expression",
+    "IndexAccess": "an index access",
+    "FieldAccess": "a field access",
+    "Pipeline": "a pipeline",
+    "AwaitExpr": "an await expression",
+    "ThrowExpression": "a throw expression",
+    "PropagateExpr": "error propagation",
+    "WithExpr": "a functional update",
+    "TypedHole": "a typed hole",
+}
+
+
+def constant_initializer_error(expr: Expression) -> str | None:
+    """
+    Describe why *expr* cannot initialize a module constant, or None if it can.
+
+    Only literal forms are allowed: the scalar literals, a negated numeric
+    literal, and lists or tuples of those. Anything else could observe or
+    change program state, which would mean a module runs code when imported.
+    """
+    if isinstance(expr, (IntegerLiteral, FloatLiteral, StringLiteral, BooleanLiteral)):
+        return None
+    if isinstance(expr, UnaryOp):
+        if expr.operator == "-" and isinstance(
+            expr.operand, (IntegerLiteral, FloatLiteral)
+        ):
+            return None
+        return _NON_CONSTANT_FORMS["UnaryOp"]
+    if isinstance(expr, (ListLiteral, TupleExpr)):
+        for element in expr.elements:
+            error = constant_initializer_error(element)
+            if error is not None:
+                return error
+        return None
+    return _NON_CONSTANT_FORMS.get(
+        type(expr).__name__, f"{type(expr).__name__} is not a literal"
+    )
+
+
+@dataclass
+class ModuleConstant(Definition):
+    """
+    Module-level constant: let NAME[: Type] = <literal>
+
+    The initializer is restricted to literal forms (see
+    ``constant_initializer_error``) so the binding folds at compile time and a
+    module never executes code when it is imported.
+    """
+
+    name: str
+    type_annotation: TypeAnnotation | None
+    value: Expression
+
+    # Set by the typechecker so both backends and the interpreter can promote
+    # an Int literal bound to a declared Float, as a local `let` does.
+    _expected_runtime_type: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def accept(self, visitor: "ASTVisitor") -> Any:
+        return visitor.visit_module_constant(self)
+
+
 @dataclass
 class TypeVariant:
     """A variant in a type definition: Some(value: T)"""
@@ -1111,6 +1184,9 @@ class ASTVisitor(ABC):
         pass
 
     def visit_import_statement(self, node: ImportStatement) -> None:
+        pass
+
+    def visit_module_constant(self, node: "ModuleConstant") -> None:
         pass
 
     def visit_trait_def(self, node: "TraitDef") -> None:
