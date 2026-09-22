@@ -195,6 +195,38 @@ def test_rename_refuses_partial_project_edits_but_keeps_local_renames(tmp_path):
     assert "return helper(count)" in updated
 
 
+@pytest.mark.parametrize("error", [OSError("unreadable"), ValueError("bad manifest")])
+def test_rename_refuses_expected_project_loading_errors(tmp_path, monkeypatch, error):
+    from geno import lsp_server
+
+    main, utils = _project(tmp_path)
+    server, _ = _server({main: main.read_text(), utils: utils.read_text()})
+
+    def fail_loading(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(lsp_server, "_load_validation_project", fail_loading)
+    assert _rename(server, utils, 0, 13) is None
+
+
+def test_rename_completeness_does_not_mask_programming_errors(tmp_path, monkeypatch):
+    pytest.importorskip("lsprotocol")
+    from lsprotocol import types
+
+    from geno import lsp_server
+
+    main, utils = _project(tmp_path)
+    server, _ = _server({main: main.read_text(), utils: utils.read_text()})
+
+    def fail_loading(*args, **kwargs):
+        raise AttributeError("unexpected programming error")
+
+    monkeypatch.setattr(lsp_server, "_load_validation_project", fail_loading)
+    wrapper = server.lsp._get_handler(types.TEXT_DOCUMENT_RENAME).__self__
+    with pytest.raises(AttributeError, match="unexpected programming error"):
+        wrapper._rename_project_is_complete(utils.as_uri(), utils.read_text())
+
+
 @pytest.mark.parametrize(
     ("encoding", "codec", "unit", "reference_column"),
     [

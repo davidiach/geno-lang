@@ -2705,6 +2705,12 @@ class GenoLanguageServer:
         project has parse errors. That view remains useful for local symbols,
         but cannot establish all references to a potentially exported symbol.
         """
+        from geno.dependency_graph import DependencyGraphError
+        from geno.lexer import LexerError
+        from geno.package_manager import PackageLockSetupError
+        from geno.parser_base import ParseError, ParseErrors
+        from geno.project_graph import ProjectGraphError
+
         file_path = _uri_to_path_or_none(uri)
         if file_path is None:
             return True
@@ -2712,7 +2718,16 @@ class GenoLanguageServer:
             _load_validation_project(
                 file_path, source, self._source_overrides_from_open_documents()
             )
-        except Exception:
+        except (
+            LexerError,
+            ParseError,
+            ParseErrors,
+            ProjectGraphError,
+            DependencyGraphError,
+            PackageLockSetupError,
+            OSError,
+            ValueError,  # Manifest validation/TOML and Unicode decoding failures.
+        ):
             _logger.debug("Project rename index is incomplete", exc_info=True)
             return False
         return True
