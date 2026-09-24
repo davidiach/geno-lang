@@ -12,6 +12,7 @@ from scripts.run_conformance import (
     DEFAULT_MANIFEST,
     ManifestError,
     load_manifest,
+    main,
     retained_manifest_paths,
     run_suite,
 )
@@ -110,3 +111,35 @@ def test_v04_javascript_contracts_pass() -> None:
     assert results
     assert all(result.status == "passed" for result in results), results
     assert {result.target for result in results} == {"js"}
+
+
+def _only_in_one_corpus() -> str:
+    """Return a case id that exactly one retained corpus defines."""
+    id_sets = [
+        {case.id for case in load_manifest(path).cases}
+        for path in retained_manifest_paths()
+    ]
+    exclusive = set().union(*id_sets) - set.intersection(*id_sets)
+    assert exclusive, "expected at least one corpus-specific case"
+    return sorted(exclusive)[0]
+
+
+def test_case_filter_accepts_an_id_only_one_retained_corpus_defines() -> None:
+    """`--case` is validated against the union, not each corpus in turn.
+
+    A form introduced in the current series has no case in the retained
+    previous one, so validating per corpus would reject a legitimate id.
+    """
+    case_id = _only_in_one_corpus()
+
+    assert main(["--all-retained", "--case", case_id, "--target", "checker"]) == 0
+
+
+def test_case_filter_still_rejects_an_id_no_corpus_defines() -> None:
+    assert main(["--all-retained", "--case", "no-such-case"]) == 2
+
+
+def test_run_suite_rejects_an_unknown_id_for_a_single_manifest() -> None:
+    """The single-corpus contract is unchanged: strict by default."""
+    with pytest.raises(ValueError, match="unknown case ids: no-such-case"):
+        run_suite(load_manifest(), case_ids=frozenset({"no-such-case"}))

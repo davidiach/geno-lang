@@ -88,7 +88,7 @@
   },
 
   "diagnostics": {
-    "stability": "Published error-code meanings are stable within the 0.4 language series.",
+    "stability": "Published error-code meanings are stable within a language series, and are never repurposed across series; a code retains its meaning for every series this specification still retains.",
     "fallbacks": ["E100", "E200", "E300", "E499"],
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
