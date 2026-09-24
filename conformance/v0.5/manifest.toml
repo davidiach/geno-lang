@@ -1,0 +1,49 @@
+schema_version = 1
+language_version = "0.5"
+description = "Geno 0.5 source and diagnostic compatibility corpus"
+
+# Seed corpus. Most of these carry forward core 0.4 semantics that proposal 0001
+# does not change, so `--all-retained` keeps meaning something while the 0.5
+# entrypoint work lands. The exception is module-constants, which is a 0.5-only
+# form: #72 was held back from 0.4.4 because it is a language feature, so v0.4
+# cannot carry it. The exit-semantics cases the proposal calls for arrive with
+# the runner change that can express an expected process status.
+
+[[cases]]
+id = "arithmetic-control-flow"
+path = "programs/arithmetic_control_flow.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "3\n2\n55\n"
+
+[[cases]]
+id = "adt-pattern-matching"
+path = "programs/adt_pattern_matching.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "75\n12\n9\n"
+
+[[cases]]
+id = "option-result"
+path = "programs/option_result.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "10\n-1\n5\n-1\n"
+
+[[cases]]
+id = "module-constants"
+path = "programs/module_constants.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "geno:1\nV\n7\n"
+
+[[cases]]
+id = "diagnostic-type-mismatch"
+path = "programs/diagnostic_type_mismatch.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]

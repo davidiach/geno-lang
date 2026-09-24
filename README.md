@@ -119,8 +119,8 @@ Geno is immutable by default and includes:
 The [Language Tour](docs/guide/language-tour.md) explains these features with
 runnable examples. Target-specific behavior is documented in
 [Portable Runtime Semantics](docs/reference/runtime-semantics.md).
-The [Language Specification](docs/spec/v0.4.md) defines the normative 0.4
-contract.
+The [Language Specification](docs/spec/v0.5.md) defines the normative 0.5
+contract; [v0.4](docs/spec/v0.4.md) remains frozen for the 0.4 series.
 
 ## Examples
 

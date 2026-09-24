@@ -15,7 +15,7 @@
 - [Embedding API](reference/embedding-api.md) -- use Geno as a Python library
 - [Portable Runtime Semantics](reference/runtime-semantics.md) -- cross-backend numbers, copies, maps, and output
 - [LLM Prompting Guide](llm-prompting.md) -- system prompts and common LLM mistakes
-- [Language Specification (v0.4)](spec/v0.4.md) -- normative syntax and semantics
+- [Language Specification (v0.5)](spec/v0.5.md) -- normative syntax and semantics; [v0.4](spec/v0.4.md) is the frozen contract for the 0.4 series
 - [Supported Targets](SUPPORTED_TARGETS.md) -- compilation targets and builtin availability
 - [Benchmark Results](benchmark/results.md) -- published Geno-vs-Python results or current publication status
 
