@@ -626,6 +626,9 @@ def test_mixed_runtime_environment_error_names_the_differing_fact(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A bare "different runtime environments" leaves nothing to act on."""
+    # Pin both sides: on a hosted runner the ambient image version can already
+    # be the one this test sets, leaving nothing to differ.
+    monkeypatch.setenv(pytest_shard._RUNNER_IMAGE_VERSION_ENV, "20260907.300.1")
     plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
     timing_paths = _write_timing_manifests(tmp_path, plan)
     manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
