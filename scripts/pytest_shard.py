@@ -15,7 +15,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Mapping, Sequence, TypedDict
+from typing import Mapping, Sequence, TypedDict, cast
 
 import pytest
 
@@ -29,6 +29,15 @@ _TIMING_MEASUREMENT = "sum-pytest-report-phase-durations-ms"
 _TIMING_PHASES = ("setup", "call", "teardown")
 _RUNNER_IMAGE_OS_ENV = "ImageOS"
 _RUNNER_IMAGE_VERSION_ENV = "ImageVersion"
+_ENVIRONMENT_KEYS = (
+    "runner_os",
+    "runner_arch",
+    "runner_image_os",
+    "runner_image_version",
+    "python_version",
+    "pytest_version",
+    "coverage_version",
+)
 
 COVERAGE_BALANCE_PROFILE = "coverage-ubuntu-py311"
 # The remaining hosted files average 54.82 ms per collected node after the
@@ -442,15 +451,7 @@ def _parse_timing_provenance(value: object, source: Path) -> TimingProvenance:
     if not isinstance(value, dict):
         raise ValueError(f"{source}: timing provenance must be a JSON object")
     identity_keys = {"commit_sha", "github_run_id", "github_run_attempt"}
-    environment_keys = {
-        "runner_os",
-        "runner_arch",
-        "runner_image_os",
-        "runner_image_version",
-        "python_version",
-        "pytest_version",
-        "coverage_version",
-    }
+    environment_keys = set(_ENVIRONMENT_KEYS)
     expected_keys = identity_keys | environment_keys | {"environment_sha256"}
     if set(value) != expected_keys:
         raise ValueError(
@@ -805,7 +806,11 @@ def _load_shard_timing_manifest(path: Path, plan: ShardPlan) -> ShardTimingManif
 
 
 def validate_shard_timing_manifests(
-    paths: Sequence[Path], plan: ShardPlan, *, allow_mixed_attempts: bool = False
+    paths: Sequence[Path],
+    plan: ShardPlan,
+    *,
+    allow_mixed_attempts: bool = False,
+    allow_mixed_images: bool = False,
 ) -> list[ShardTimingManifest]:
     """Validate timing telemetry against the exact agreed shard plan."""
     if len(paths) != plan["shard_count"]:
@@ -828,14 +833,36 @@ def validate_shard_timing_manifests(
     }
     if len(run_identities) != 1:
         raise ValueError("shard timing manifests come from different CI runs")
-    environment_fingerprints = {
-        manifest["provenance"]["environment_sha256"] for manifest in manifests
-    }
-    if len(environment_fingerprints) != 1:
+    compared_keys = tuple(
+        key
+        for key in _ENVIRONMENT_KEYS
+        if not (allow_mixed_images and key == "runner_image_version")
+    )
+    facts = [_environment_facts(manifest) for manifest in manifests]
+    if len({tuple(fact[key] for key in compared_keys) for fact in facts}) != 1:
         raise ValueError(
-            "shard timing manifests come from different runtime environments"
+            "shard timing manifests come from different runtime environments: "
+            + _describe_environment_differences(facts, compared_keys)
         )
     return sorted(manifests, key=lambda manifest: manifest["shard_index"])
+
+
+def _environment_facts(manifest: ShardTimingManifest) -> dict[str, str]:
+    """Read the environment half of provenance by name rather than by field."""
+    provenance = cast(Mapping[str, str], manifest["provenance"])
+    return {key: provenance[key] for key in _ENVIRONMENT_KEYS}
+
+
+def _describe_environment_differences(
+    facts: Sequence[Mapping[str, str]], compared_keys: Sequence[str]
+) -> str:
+    """Name the facts that actually differ, so the failure is actionable."""
+    described = []
+    for key in compared_keys:
+        values = sorted({fact[key] for fact in facts})
+        if len(values) > 1:
+            described.append(f"{key}={'/'.join(values)}")
+    return ", ".join(described)
 
 
 def print_shard_timing_summary(manifests: Sequence[ShardTimingManifest]) -> None:
@@ -845,6 +872,14 @@ def print_shard_timing_summary(manifests: Sequence[ShardTimingManifest]) -> None
     if len(attempts) > 1:
         print(
             "  mixed CI attempts: valid for coverage, not a comparable timing sample",
+            flush=True,
+        )
+    images = {manifest["provenance"]["runner_image_version"] for manifest in manifests}
+    if len(images) > 1:
+        print(
+            "  mixed runner images "
+            f"({'/'.join(sorted(images))}): "
+            "valid for coverage, not a comparable timing sample",
             flush=True,
         )
     for manifest in manifests:
@@ -926,6 +961,15 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "Mixed attempts are not a comparable timing sample."
         ),
     )
+    parser.add_argument(
+        "--allow-mixed-images",
+        action="store_true",
+        help=(
+            "Allow shards whose runners came from different hosted image "
+            "versions of the same image. GitHub rolls new images out mid-run, "
+            "so this is normal; it is not a comparable timing sample."
+        ),
+    )
     parser.add_argument("--shard-count", type=int, default=2)
     parser.add_argument(
         "--balance-profile",
@@ -960,10 +1004,13 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Collect, partition, and run one pytest shard."""
     args = _parse_args(argv or sys.argv[1:])
-    if args.allow_mixed_attempts and (
-        args.validate_plan_manifests is None or args.timing_manifests is None
-    ):
+    in_timing_validation_mode = (
+        args.validate_plan_manifests is not None and args.timing_manifests is not None
+    )
+    if args.allow_mixed_attempts and not in_timing_validation_mode:
         raise SystemExit("--allow-mixed-attempts requires timing validation mode")
+    if args.allow_mixed_images and not in_timing_validation_mode:
+        raise SystemExit("--allow-mixed-images requires timing validation mode")
     if args.validate_plan_manifests is not None:
         if (
             args.plan_manifest is not None
@@ -985,6 +1032,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.timing_manifests,
                     plan,
                     allow_mixed_attempts=args.allow_mixed_attempts,
+                    allow_mixed_images=args.allow_mixed_images,
                 )
             except ValueError as exc:
                 print(f"pytest shard timing validation failed: {exc}", file=sys.stderr)

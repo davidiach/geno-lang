@@ -1,5 +1,6 @@
 """Tests for scripts/pytest_shard.py."""
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -9,6 +10,14 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import pytest_shard
+
+
+def _environment_sha256(provenance: dict[str, str]) -> str:
+    """Re-sign provenance a test edited, so parsing reaches the comparison."""
+    environment = {key: provenance[key] for key in pytest_shard._ENVIRONMENT_KEYS}
+    return hashlib.sha256(
+        json.dumps(environment, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _write_plan_manifests(
@@ -611,6 +620,72 @@ def test_shard_timing_validation_rejects_mixed_runtime_environments(
 
     with pytest.raises(ValueError, match="different runtime environments"):
         pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+
+def test_mixed_runtime_environment_error_names_the_differing_fact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A bare "different runtime environments" leaves nothing to act on."""
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    monkeypatch.setenv(pytest_shard._RUNNER_IMAGE_VERSION_ENV, "20260920.314.1")
+    manifest["provenance"] = pytest_shard._timing_provenance()
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"runner_image_version=.*20260920\.314\.1"):
+        pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+
+def test_hosted_image_rollout_preserves_shard_timings(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Shards of one run can start on either side of an image rollout."""
+    monkeypatch.setenv(pytest_shard._RUNNER_IMAGE_VERSION_ENV, "20260907.300.1")
+    plan_paths = _write_plan_manifests(tmp_path)
+    plan = pytest_shard.validate_shard_plan_manifests(plan_paths)
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    monkeypatch.setenv(pytest_shard._RUNNER_IMAGE_VERSION_ENV, "20260920.314.1")
+    manifest["provenance"] = pytest_shard._timing_provenance()
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert (
+        pytest_shard.main(
+            [
+                "--validate-plan-manifests",
+                *(str(path) for path in plan_paths),
+                "--timing-manifests",
+                *(str(path) for path in timing_paths),
+                "--allow-mixed-images",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "mixed runner images" in output
+    assert "not a comparable timing sample" in output
+
+
+@pytest.mark.parametrize(
+    "field", ["runner_os", "runner_arch", "runner_image_os", "python_version"]
+)
+def test_image_rollout_allowance_still_rejects_other_differences(
+    tmp_path: Path, field: str
+) -> None:
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
+    manifest["provenance"][field] = "elsewhere"
+    manifest["provenance"]["environment_sha256"] = _environment_sha256(
+        manifest["provenance"]
+    )
+    timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"different runtime environments: {field}="):
+        pytest_shard.validate_shard_timing_manifests(
+            timing_paths, plan, allow_mixed_images=True
+        )
 
 
 def test_shard_timing_validation_rejects_filename_index_mismatch(
