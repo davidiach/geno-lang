@@ -421,3 +421,63 @@ def test_a_compiled_runtime_error_is_matched_by_class_and_stderr(
     results = run_suite(load_manifest(manifest), target="python")
 
     assert [result.status for result in results] == ["passed"], results
+
+
+@pytest.mark.parametrize("target", ["cli-process", "cli-direct"])
+def test_the_cli_lanes_report_an_int_result_as_the_status(
+    tmp_path: Path, target: str
+) -> None:
+    """Both `geno run` lanes are child processes, so the status is observable."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=[target],
+        expected_stdout="",
+        expected_exit_status=3,
+    )
+
+    results = run_suite(load_manifest(manifest), target=target)
+
+    assert [result.status for result in results] == ["passed"], results
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_the_node_esm_lane_reports_an_int_result_as_the_status(
+    tmp_path: Path,
+) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["js-esm"],
+        expected_stdout="",
+        expected_exit_status=3,
+    )
+
+    results = run_suite(load_manifest(manifest), target="js-esm", require_node=True)
+
+    assert [result.status for result in results] == ["passed"], results
+
+
+def test_every_declared_target_has_a_runner() -> None:
+    """A target in ALL_TARGETS with no runner would silently KeyError mid-suite."""
+    from scripts.run_conformance import ALL_TARGETS
+
+    for target in ALL_TARGETS:
+        assert main(["--all-retained", "--target", target, "--case", "no-such"]) == 2
+
+
+def test_v05_exit_status_cases_cover_every_executable_boundary() -> None:
+    """The contract is that all of them agree, so each case must run on all."""
+    manifest = load_manifest(retained_manifest_paths()[-1])
+    exit_cases = [case for case in manifest.cases if case.id.startswith("exit-status-")]
+
+    assert exit_cases
+    for case in exit_cases:
+        assert set(case.targets) == {
+            "interpreter",
+            "cli-process",
+            "cli-direct",
+            "python",
+            "js",
+            "js-esm",
+        }, case.id

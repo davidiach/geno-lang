@@ -49,7 +49,14 @@ expected_stdout = "geno:1\nV\n7\n"
 id = "exit-status-unit"
 path = "programs/exit_status_unit.geno"
 kind = "run"
-targets = ["interpreter", "python", "js"]
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
 capabilities = ["print"]
 expected_stdout = "unit entrypoint\n"
 expected_exit_status = 0
@@ -58,7 +65,14 @@ expected_exit_status = 0
 id = "exit-status-int"
 path = "programs/exit_status_int.geno"
 kind = "run"
-targets = ["interpreter", "python", "js"]
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
 expected_stdout = ""
 expected_exit_status = 3
 
@@ -66,7 +80,14 @@ expected_exit_status = 3
 id = "exit-status-int-wraps"
 path = "programs/exit_status_int_wraps.geno"
 kind = "run"
-targets = ["interpreter", "python", "js"]
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
 expected_stdout = ""
 expected_exit_status = 2
 
@@ -74,7 +95,14 @@ expected_exit_status = 2
 id = "exit-status-int-negative"
 path = "programs/exit_status_int_negative.geno"
 kind = "run"
-targets = ["interpreter", "python", "js"]
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
 expected_stdout = ""
 expected_exit_status = 255
 
@@ -82,7 +110,14 @@ expected_exit_status = 255
 id = "exit-status-output-before-result"
 path = "programs/exit_status_output_before_result.geno"
 kind = "run"
-targets = ["interpreter", "python", "js"]
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
 capabilities = ["print"]
 expected_stdout = "work done\n"
 expected_exit_status = 3
