@@ -18,6 +18,13 @@ description = "Geno 0.5 source and diagnostic compatibility corpus"
 # host that prints a trace beside it fails.  `expected_json_value` is the JSON
 # text of the `geno run --json` envelope's `value`, which stays *un*normalized:
 # 258 is still 258 there while the process exits 2.
+#
+# Two entrypoint requirements deliberately stay in `geno/tests/test_exit_semantics.py`
+# instead of here, because a case cannot state them: a synchronous `main` that
+# returns an un-awaited `Async[Int]` is displayed, and its rendering is a host's
+# own coroutine repr rather than stable text; and entry-module ownership needs a
+# second module on disk, which the single-source `python` and `js` lanes do not
+# compile.
 
 [[cases]]
 id = "arithmetic-control-flow"
@@ -142,6 +149,79 @@ expected_stdout = "work done\n"
 expected_exit_status = 3
 expected_stderr = ""
 expected_json_value = "3"
+
+[[cases]]
+id = "exit-status-aliased-int"
+path = "programs/exit_status_aliased_int.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 4
+expected_stderr = ""
+expected_json_value = "4"
+
+[[cases]]
+id = "exit-status-async-main"
+path = "programs/exit_status_async_main.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 5
+expected_stderr = ""
+expected_json_value = "5"
+
+[[cases]]
+id = "exit-status-await-in-sync-main"
+path = "programs/exit_status_await_in_sync_main.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 6
+expected_stderr = ""
+expected_json_value = "6"
+
+[[cases]]
+id = "runtime-error-out-of-bounds"
+path = "programs/runtime_error_out_of_bounds.geno"
+kind = "run"
+# Every lane that owns a real stderr, which is what this case is about. The
+# `interpreter` lane returns diagnostics to its caller as data because it is an
+# embedding boundary, and `cli-json` reports them inside the envelope, so
+# neither has the channel `expected_stderr_contains` reads.
+targets = [
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["Index 2 out of bounds"]
 
 [[cases]]
 id = "diagnostic-type-mismatch"

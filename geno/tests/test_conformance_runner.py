@@ -702,6 +702,48 @@ def test_every_declared_target_has_a_runner() -> None:
         assert main(["--all-retained", "--target", target, "--case", "no-such"]) == 2
 
 
+def test_v05_covers_the_whole_declared_result_table() -> None:
+    """Spec 4.1.1 classifies on the resolved return type, so each form is a case.
+
+    An alias, an `async main` and a synchronous `main` that awaits all resolve to
+    `Int`, and a corpus that carried only the literal form would not show that.
+    """
+    manifest = load_manifest(retained_manifest_paths()[-1])
+    case_ids = {case.id for case in manifest.cases}
+
+    assert {
+        "exit-status-unit",
+        "exit-status-int",
+        "exit-status-int-wraps",
+        "exit-status-int-negative",
+        "exit-status-output-before-result",
+        "exit-status-aliased-int",
+        "exit-status-async-main",
+        "exit-status-await-in-sync-main",
+        "runtime-error-out-of-bounds",
+    } <= case_ids, sorted(case_ids)
+
+
+def test_the_runtime_error_case_covers_every_lane_owning_a_stderr() -> None:
+    """The `expected_exit_class` contract, on each boundary that has the channel.
+
+    The `interpreter` lane hands diagnostics back to its caller as data because
+    it is an embedding boundary, and `cli-json` reports them inside the envelope,
+    so neither can satisfy a stderr expectation.
+    """
+    manifest = load_manifest(retained_manifest_paths()[-1])
+    error_cases = [
+        case for case in manifest.cases if case.expected_exit_class == "nonzero"
+    ]
+
+    assert error_cases
+    for case in error_cases:
+        assert set(case.targets) == set(RUNTIME_TARGETS) - {
+            "interpreter",
+            "cli-json",
+        }, case.id
+
+
 def test_v05_exit_status_cases_cover_every_executable_boundary() -> None:
     """The contract is that all of them agree, so each case must run on all."""
     manifest = load_manifest(retained_manifest_paths()[-1])
