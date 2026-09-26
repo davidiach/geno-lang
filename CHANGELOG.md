@@ -36,6 +36,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process boundary. The compiler selects that from the target profile, so a
   bundler's `process` polyfill cannot turn a browser artifact's displayed result
   into an exit status.
+- The self-hosted CLI in `selfhost/Main.geno` applies the same contract at its
+  own boundary: an inner program's `Int` result becomes the status `cmd_run`
+  returns, normalized once, and every other kind stays success with the value
+  left unprinted, which is what that adapter has always done.
+- `conformance/v0.5` now carries this contract rather than pytest alone. The
+  corpus runner gained schema 2 -- `expected_exit_status`, `expected_stderr` and
+  `expected_stderr_contains`, `expected_exit_class` and `expected_json_value` --
+  and runs seven executable boundaries: the in-process embedding lane, the three
+  `geno run` lanes, standalone compiled Python, the Node script and directly
+  executed Node ESM. Nine cases cover the whole section 4.1.1 result table,
+  including a type alias for `Int`, an `async main` and a synchronous `main` that
+  awaits, since classification reads the resolved return type. Schema 1 keeps
+  loading, so the frozen `conformance/v0.4` corpus is untouched, and a run whose
+  target selection matches no case is now an error instead of an empty pass.
+
+### Migration
+
+A `main() -> Int` whose integer was there to be *seen* prints it and returns
+`Unit` instead:
+
+```geno
+func main() -> Int
+    return double(21)
+end func
+```
+
+becomes
+
+```geno
+func main() -> Unit
+    print(double(21))
+    return ()
+end func
+```
+
+`print` takes an `Int` directly and emits the same digits the `=> 42` line used
+to, so `geno run` needs `--cap print` for it where the displayed result needed
+nothing. A program that meant its integer as a *status* keeps `main() -> Int` and
+stops reading stdout for it: the value is what the shell reports as `$?`, modulo
+256. Anything parsing `=> N` out of `geno run`'s output needs one of those two
+changes; `geno run --json` is unaffected, because its envelope still carries the
+raw value.
 
 ## [0.5.0-rc.0] - 2026-09-24
 

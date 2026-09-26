@@ -43,12 +43,43 @@ in at least one preceding minor release. Longer periods may be chosen for widely
 used APIs. Deprecation warnings must name the replacement and intended removal
 version when known.
 
+## Recorded Breaking Changes
+
+### 0.5: `main()`'s result is the process exit status
+
+A successful `main() -> Int` no longer prints a `=> N` line. Its result becomes
+the host's exit status, normalized modulo 256, at every executable boundary. This
+breaks anything that read `=> N` from stdout, or that expected status 0 from a
+program whose `main` returns a nonzero `Int`. It meets the five conditions above:
+
+1. accepted proposal
+   `docs/proposals/0001-executable-entrypoint-exit-semantics.md` records the
+   motivation and the alternatives considered;
+2. the impact is stated in `docs/spec/v0.5.md` section 4.1.1,
+   `docs/deploy/cli.md` and `docs/reference/runtime-semantics.md`;
+3. `CHANGELOG.md` carries the migration example;
+4. `conformance/v0.4` is retained unchanged and the new expectations live in
+   `conformance/v0.5`, whose schema 2 states an exit status, the stderr channel
+   and the `geno run --json` envelope's raw value; and
+5. the release owner records it in release evidence per
+   `docs/operations/release-runbook.md`.
+
+Nothing that is not a process boundary changed: `geno.api.run()`,
+`compile_and_exec()`, the generic sandbox and the hosted server return the raw
+result and never terminate their caller, and importing a generated Python or
+Node ESM artifact stays inert. Browser-targeted JavaScript keeps displaying an
+`Int` result, because it has no process to give a status to.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It
 contains valid programs with exact stdout contracts and invalid programs with
 stable diagnostic-code contracts. The runner checks positive cases before
-executing them and compares behavior across every declared backend.
+executing them and compares behavior across every declared backend. From the
+v0.5 corpus on it compares stdout, stderr and the exit status across every
+declared executable boundary, which includes the three `geno run` lanes and
+directly executed Node ESM, and it refuses a run whose target selection matches
+no case rather than reporting an empty pass.
 
 Run it from the repository root:
 
@@ -60,9 +91,9 @@ Node.js is optional for local single-backend work. Release and scheduled
 evidence must use `--require-node`; silently omitting a declared production
 backend is not a passing all-target run.
 
-When v0.5 adds a new corpus, the v0.4 corpus remains in the repository. Release
-qualification runs both the current corpus and at least the immediately
-preceding minor corpus. Cases may be corrected only when the original fixture
+`conformance/v0.5/manifest.toml` is the current corpus and the v0.4 corpus
+remains in the repository unchanged. Release qualification runs both the current
+corpus and at least the immediately preceding minor corpus. Cases may be corrected only when the original fixture
 was internally inconsistent; such corrections require a proposal and a
 changelog entry.
 

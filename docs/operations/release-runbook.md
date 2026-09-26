@@ -149,6 +149,23 @@ If the release includes hosted execution, also verify:
 - denied capabilities still fail closed
 - required host callbacks are installed in the target environment
 
+From 0.5 on, the entrypoint exit contract is part of the smoke pass, from
+installed artifacts rather than the working tree (proposal 0001, Rollout):
+
+- a `main() -> Unit` program exits 0
+- a `main() -> Int` returning 2 exits 2, printing whatever it printed before the
+  result and no `=> 2` line
+- `return 258` exits 2 and `return 0 - 1` exits 255
+- an uncaught runtime error exits nonzero with a diagnostic
+- `geno.run()` on the same `Int` program returns the raw value and leaves the
+  calling process running
+- the installed Python and Node artifacts report the same status as `geno run`
+
+```bash
+printf 'func main() -> Int\n    return 258\nend func\n' > /tmp/status.geno
+geno run /tmp/status.geno; test "$?" -eq 2 || echo "FAIL: expected status 2"
+```
+
 ## Rollback Procedure
 
 Never rewrite public `main` history for rollback. Use a revert or a forward fix.

@@ -109,10 +109,20 @@ Browser-targeted ESM has no process boundary, so it keeps displaying an `Int`
 result. That choice is made from the compile target's profile, not by looking for
 a `process` global at runtime, so a bundler's polyfill cannot change it.
 
+Classification reads the entrypoint's *resolved* return type, so a type alias for
+`Int`, an `async main() -> Int` and a synchronous `main` that awaits all report a
+status. A synchronous `main` declared `Async[Int]` that returns without awaiting
+keeps that declared type: it is displayed and exits 0 rather than being awaited on
+the program's behalf.
+
 Only `main` declared in the selected entry program is invoked. Embedding APIs
 such as `geno.api.run()` return the value in `RunResult` and never terminate the
 host process. Importing generated Python or Node ESM defines and exports the
 program without invoking `main` or exiting the importer.
+
+The self-hosted CLI in `selfhost/Main.geno` applies the same normalization at its
+own boundary: an inner program's `Int` result becomes the status that CLI returns,
+and every other result kind is success with the value left unprinted.
 
 ## Runtime implementations
 
