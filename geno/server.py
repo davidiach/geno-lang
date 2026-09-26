@@ -36,7 +36,7 @@ from .api import RunConfig, constrain_prefix, run
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES
 from .capabilities import CapabilityParseError, normalize_capability_values
 from .execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
-from .monitoring import RunMetrics, RunOutcome, RuntimeMetricsCollector
+from .monitoring import HealthCheck, RunMetrics, RunOutcome, RuntimeMetricsCollector
 from .version_support import is_supported_python, unsupported_python_message
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,9 @@ if DEFAULT_MAX_STEPS > MAX_STEPS:
     raise ValueError("GENO_DEFAULT_MAX_STEPS must be <= GENO_MAX_STEPS")
 WORKER_STARTUP_GRACE_SECONDS: float = _env_positive_float(
     "GENO_WORKER_STARTUP_GRACE_SECONDS", 10.0
+)
+SHUTDOWN_GRACE_SECONDS: float = _env_non_negative_float(
+    "GENO_SHUTDOWN_GRACE_SECONDS", 5.0
 )
 WORKER_MAX_MEMORY_BYTES: int = _env_non_negative_int(
     "GENO_WORKER_MAX_MEMORY_BYTES", DEFAULT_PROCESS_MAX_MEMORY_BYTES
@@ -453,20 +456,24 @@ def _run_startup_checks() -> list[str]:
         errors.append(unsupported_python_message())
 
     try:
-        from .api import RunConfig as _RC
-        from .api import run as _api_run
-
-        _result = _api_run(
-            "func id(x: Int) -> Int\n    example 1 -> 1\n    return x\nend func id",
-            config=_RC(timeout=5.0),
+        status, result = _execute_run_with_wall_timeout(
+            "func main() -> Int\n    return 42\nend func",
+            RunConfig(timeout=2.0, max_steps=100, capabilities=set()),
+            "<hosted-startup-check>",
+            wall_timeout=2.0,
         )
-        if not _result.ok:
+        if status != "result":
             errors.append(
-                "Sandbox self-test failed: "
-                + "; ".join(d.message for d in _result.diagnostics)
+                f"Hosted worker self-test failed ({status}): "
+                + (str(result.get("message", "")) if isinstance(result, dict) else "")
+            )
+        elif not result.ok or result.value != 42:
+            errors.append(
+                "Hosted worker self-test failed: "
+                + ("; ".join(d.message for d in result.diagnostics) or "wrong result")
             )
     except Exception as exc:  # pragma: no cover
-        errors.append(f"Sandbox self-test raised {type(exc).__name__}: {exc}")
+        errors.append(f"Hosted worker self-test raised {type(exc).__name__}: {exc}")
 
     return errors
 
@@ -1773,21 +1780,40 @@ def _recv_worker_message(
         return _worker_exit_error(worker)
 
 
+def _execution_worker_outcome(message: tuple[str, Any]) -> tuple[str, Any]:
+    """Distinguish workload exits from failure to establish the worker boundary."""
+    status, payload = message
+    if status == "error" and isinstance(payload, dict):
+        return status, {**payload, "phase": "execution"}
+    return message
+
+
 def _execute_worker_with_wall_timeout(
     target,
     args: tuple,
     wall_timeout: float,
     *,
     startup_grace: float = WORKER_STARTUP_GRACE_SECONDS,
+    worker_owner: _BoundedThreadingHTTPServer | None = None,
 ):
     """Run a worker with separate startup and execution timeout budgets."""
     parent_conn = None
     child_conn = None
+    worker = None
     try:
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe(duplex=False)
         worker = ctx.Process(target=target, args=(child_conn, *args))
-        worker.start()
+        if worker_owner is None:
+            worker.start()
+        elif not worker_owner.start_worker(worker):
+            parent_conn.close()
+            child_conn.close()
+            return "error", {
+                "type": "ServerShuttingDown",
+                "message": "server shutdown grace period expired",
+                "traceback": "",
+            }
     except (OSError, PermissionError) as exc:
         logger.error(
             "Failed to spawn killable worker process; refusing unsafe fallback: %s",
@@ -1829,26 +1855,31 @@ def _execute_worker_with_wall_timeout(
             worker.join(timeout=1.0)
             if worker.is_alive():
                 _stop_worker(worker)
-            return result
+            return _execution_worker_outcome(result)
 
         if not worker.is_alive():
             if parent_conn.poll(timeout=0.1):
                 try:
-                    return parent_conn.recv()
+                    return _execution_worker_outcome(parent_conn.recv())
                 except EOFError:
                     pass
             worker.join(timeout=0.1)
-            return _worker_exit_error(worker)
+            return _execution_worker_outcome(_worker_exit_error(worker))
 
         if worker.is_alive():
             _stop_worker(worker)
             return "timeout", None
 
         worker.join(timeout=0.1)
-        return _worker_exit_error(worker)
+        return _execution_worker_outcome(_worker_exit_error(worker))
     finally:
         if parent_conn is not None:
             parent_conn.close()
+        if worker is not None:
+            if worker.is_alive():
+                _stop_worker(worker)
+            if worker_owner is not None:
+                worker_owner.forget_worker(worker)
 
 
 def _execute_run_with_wall_timeout(
@@ -1857,12 +1888,15 @@ def _execute_run_with_wall_timeout(
     filename: str,
     wall_timeout: float,
     runner=run,
+    *,
+    worker_owner: _BoundedThreadingHTTPServer | None = None,
 ):
     """Run geno.run() in a killable child process with a hard wall-clock timeout."""
     return _execute_worker_with_wall_timeout(
         _run_request_worker,
         (source, _subprocess_run_config(config), filename, runner),
         wall_timeout,
+        worker_owner=worker_owner,
     )
 
 
@@ -1870,12 +1904,15 @@ def _execute_constrain_with_wall_timeout(
     prefix: str,
     wall_timeout: float,
     constrain=constrain_prefix,
+    *,
+    worker_owner: _BoundedThreadingHTTPServer | None = None,
 ):
     """Run geno.constrain_prefix() in a killable child process with a hard timeout."""
     return _execute_worker_with_wall_timeout(
         _constrain_request_worker,
         (prefix, constrain),
         wall_timeout,
+        worker_owner=worker_owner,
     )
 
 
@@ -2070,8 +2107,29 @@ def create_handler(
         )
         return False
 
+    def _record_worker_outcome(status: str, payload: Any) -> None:
+        execution_error = (
+            isinstance(payload, dict) and payload.get("phase") == "execution"
+        )
+        if status == "startup_timeout" or (status == "error" and not execution_error):
+            detail = (
+                payload.get("message", status) if isinstance(payload, dict) else status
+            )
+            collector.record_worker_health(f"Hosted worker failed: {detail}")
+        else:
+            # User diagnostics, execution limits and oversized results still
+            # demonstrate that the hosted boundary started and handled the job.
+            collector.record_worker_health()
+
     def _health_response_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-        report = cast(dict[str, Any], collector.health_report().to_dict())
+        extra_checks = []
+        if getattr(handler.server, "draining", False):
+            extra_checks.append(
+                HealthCheck("request_drain", "fail", "server is shutting down")
+            )
+        report = cast(
+            dict[str, Any], collector.health_report(extra_checks=extra_checks).to_dict()
+        )
         if api_key is None or _check_auth(handler):
             return report
         return {"status": report.get("status", "unknown")}
@@ -2094,7 +2152,7 @@ def create_handler(
         # GENO_ALLOWED_HOSTS by sending "Host: 127.0.0.1" — the TCP peer address is
         # unspoofable, unlike the Host header.
         if (
-            handler.path == "/healthz"
+            handler.path in {"/healthz", "/readyz", "/livez"}
             and _peer_is_loopback(handler)
             and _host_header_is_loopback(host_header)
         ):
@@ -2198,11 +2256,21 @@ def create_handler(
                     return
                 self._serve_playground()
                 return
-            if self.path == "/healthz":
+            if self.path == "/livez":
                 _json_response(
                     self,
                     HTTPStatus.OK,
-                    _health_response_body(self),
+                    {"status": "ok"},
+                )
+                return
+            if self.path in {"/healthz", "/readyz"}:
+                report = _health_response_body(self)
+                _json_response(
+                    self,
+                    HTTPStatus.SERVICE_UNAVAILABLE
+                    if report["status"] == "failed"
+                    else HTTPStatus.OK,
+                    report,
                 )
                 return
             if self.path == "/metrics":
@@ -2358,8 +2426,15 @@ def create_handler(
                         )
                         constrain_started_at = time.monotonic()
                         status, payload = _execute_constrain_with_wall_timeout(
-                            constrain_request.prefix, constrain_wall_timeout
+                            constrain_request.prefix,
+                            constrain_wall_timeout,
+                            worker_owner=(
+                                self.server
+                                if isinstance(self.server, _BoundedThreadingHTTPServer)
+                                else None
+                            ),
                         )
+                        _record_worker_outcome(status, payload)
                         constrain_elapsed_ms = (
                             time.monotonic() - constrain_started_at
                         ) * 1000
@@ -2454,7 +2529,13 @@ def create_handler(
                             run_request.config,
                             run_request.filename,
                             wall_timeout,
+                            worker_owner=(
+                                self.server
+                                if isinstance(self.server, _BoundedThreadingHTTPServer)
+                                else None
+                            ),
                         )
+                        _record_worker_outcome(status, payload)
                         if status == "response_too_large":
                             collector.record(payload)
                             raise ResponseTooLarge("worker response exceeds limit")
@@ -2584,7 +2665,7 @@ def create_handler(
 
 
 class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
-    """Threading HTTP server with admission control before thread creation."""
+    """Bound admission, then drain requests and cancel owned workers on close."""
 
     daemon_threads = True
 
@@ -2592,14 +2673,84 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self,
         *args: Any,
         max_connections: int = MAX_CONNECTIONS,
+        shutdown_grace: float = SHUTDOWN_GRACE_SECONDS,
         **kwargs: Any,
     ) -> None:
+        if not math.isfinite(shutdown_grace) or shutdown_grace < 0:
+            raise ValueError("shutdown_grace must be finite and non-negative")
         self._connection_slots = _CONNECTION_SEMAPHORE_FACTORY(max_connections)
         self._max_connections = max_connections
         self.rejected_connections = 0
         self._rejection_lock = threading.Lock()
         self._last_rejection_warning = 0.0
+        self._drain_condition = threading.Condition()
+        self._active_requests: set[Any] = set()
+        self._workers: set[BaseProcess] = set()
+        self._shutdown_grace = shutdown_grace
+        self.draining = False
+        self._cancel_workers = False
         super().__init__(*args, **kwargs)
+
+    def start_worker(self, worker: BaseProcess) -> bool:
+        """Register a child atomically with shutdown's cancellation snapshot."""
+        with self._drain_condition:
+            if self._cancel_workers:
+                return False
+            worker.start()
+            self._workers.add(worker)
+            return True
+
+    def forget_worker(self, worker: BaseProcess) -> None:
+        with self._drain_condition:
+            self._workers.discard(worker)
+            self._drain_condition.notify_all()
+
+    def shutdown(self) -> None:
+        with self._drain_condition:
+            self.draining = True
+        super().shutdown()
+
+    def server_close(self) -> None:
+        with self._drain_condition:
+            self.draining = True
+        super().server_close()
+        deadline = time.monotonic() + self._shutdown_grace
+        with self._drain_condition:
+            while self._active_requests:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._drain_condition.wait(remaining)
+            self._cancel_workers = True
+            workers = tuple(self._workers)
+            requests = tuple(self._active_requests)
+
+        # Cancel the entire remaining batch before joining any one child. A
+        # single shared two-second budget keeps shutdown independent of load.
+        cleanup_deadline = time.monotonic() + 2.0
+        for request in requests:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.close_request(request)
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+        terminate_deadline = cleanup_deadline - 1.0
+        for worker in workers:
+            worker.join(timeout=max(0.0, terminate_deadline - time.monotonic()))
+        for worker in workers:
+            if worker.is_alive():
+                worker.kill()
+        for worker in workers:
+            worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        with self._drain_condition:
+            while self._active_requests:
+                remaining = cleanup_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._drain_condition.wait(remaining)
 
     def _record_rejected_connection(self) -> None:
         """Count a refused connection and warn, at most once per interval."""
@@ -2635,9 +2786,18 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._record_rejected_connection()
             self.shutdown_request(request)
             return
+        with self._drain_condition:
+            if self.draining:
+                self._connection_slots.release()
+                self.shutdown_request(request)
+                return
+            self._active_requests.add(request)
         try:
             super().process_request(request, client_address)
         except BaseException:
+            with self._drain_condition:
+                self._active_requests.discard(request)
+                self._drain_condition.notify_all()
             self._connection_slots.release()
             raise
 
@@ -2645,6 +2805,9 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            with self._drain_condition:
+                self._active_requests.discard(request)
+                self._drain_condition.notify_all()
             self._connection_slots.release()
 
 
@@ -2692,6 +2855,11 @@ def create_server(
         startup_errors = _run_startup_checks()
     if startup_errors:
         collector.record_startup_errors(startup_errors)
+        collector.record_worker_health("hosted startup checks failed")
+    elif startup_errors is None:
+        collector.record_worker_health("hosted startup checks have not run")
+    else:
+        collector.record_worker_health()
     server = _BoundedThreadingHTTPServer(
         (host, port),
         create_handler(
@@ -2869,7 +3037,8 @@ def main(argv: list[str] | None = None) -> None:
     _configure_logging()
     parser = argparse.ArgumentParser(
         description=(
-            "Run the Geno hosted runtime with /healthz, /metrics, /run, and /constrain"
+            "Run the Geno hosted runtime with /readyz, /livez, /healthz, "
+            "/metrics, /run, and /constrain"
         ),
     )
     parser.add_argument("--host", default="127.0.0.1")

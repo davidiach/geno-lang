@@ -41,6 +41,7 @@ jobs:
       - name: Run deep differential fuzzing
         env:
           GENO_FUZZ_DEEP: '1'
+          GENO_FUZZ_REQUIRE_NODE: '1'
         run: >-
           python -m pytest geno/tests/test_differential_fuzzing.py
           -q --tb=short --timeout=900

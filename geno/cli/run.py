@@ -486,11 +486,7 @@ def run_file(
                 "max_output_length": max_output_length,
                 "max_collection_size": max_collection_size,
                 "max_integer_bits": max_integer_bits,
-                "capabilities": (
-                    capabilities
-                    if capabilities is not None
-                    else set(DEFAULT_ALLOWED_CAPABILITIES)
-                ),
+                "capabilities": capabilities,
                 "target": target,
                 "check_examples": check_examples,
             }

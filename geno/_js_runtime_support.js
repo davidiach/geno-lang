@@ -414,7 +414,7 @@ function array_new(size, def_val) {
     if (size > _MAX_COLLECTION_SIZE) {
         throw new Error(`Array size exceeds limit (${size} > ${_MAX_COLLECTION_SIZE})`);
     }
-    return new GenoArray(Array(size).fill(def_val));
+    return new GenoArray(Array.from({length: size}, () => _deepCopy(def_val)));
 }
 
 function array_from_list(lst) {
@@ -422,7 +422,7 @@ function array_from_list(lst) {
     if (lst.length > _MAX_COLLECTION_SIZE) {
         throw new Error(`Array size exceeds limit (${lst.length} > ${_MAX_COLLECTION_SIZE})`);
     }
-    return new GenoArray([...lst]);
+    return new GenoArray(lst.map(_deepCopy));
 }
 
 function array_get(arr, index) {
@@ -436,7 +436,7 @@ function array_set(arr, index, value) {
     if (!(arr instanceof GenoArray)) throw new Error("array_set expects array");
     if (!_GENO_NUMBER.isInteger(index)) throw new Error("array_set index must be an integer");
     if (index < 0 || index >= arr.length) throw new Error("array_set index " + index + " out of bounds (length " + arr.length + ")");
-    arr._elements[index] = value;
+    arr._elements[index] = _deepCopy(value);
     return null;
 }
 
@@ -651,6 +651,9 @@ function _compareGenoValues(left, right) {
 
 function _compareOrderedValues(left, right) {
     if (typeof left === 'number' && typeof right === 'number') {
+        // An unordered result must remain false for every relational operator.
+        // Sorting uses its separate total-order comparator above.
+        if (_GENO_NUMBER.isNaN(left) || _GENO_NUMBER.isNaN(right)) return _GENO_NUMBER.NaN;
         return left < right ? -1 : left > right ? 1 : 0;
     }
     if (typeof left === 'string' && typeof right === 'string') {
@@ -1028,7 +1031,7 @@ function _safe_index_set(target, index, value) {
         if (_mapFindKey(target._data, index) === _MAP_MISSING) {
             _checkCollectionKind("MutableMap", target._data.size + 1);
         }
-        _mapSet(target._data, index, value);
+        _mapSet(target._data, _deepCopy(index), value);
         return;
     }
     if (Array.isArray(target)) {
@@ -1042,7 +1045,7 @@ function _safe_index_set(target, index, value) {
         if (_mapFindKey(target, index) === _MAP_MISSING) {
             _checkCollectionKind("Map", target.size + 1);
         }
-        _mapSet(target, index, value);
+        _mapSet(target, _deepCopy(index), value);
         return;
     }
     throw new Error("Cannot assign to index of " + typeof target);
@@ -1473,13 +1476,13 @@ function is_permutation(lst1, lst2) {
 
 function array_fill(arr, value) {
     if (!(arr instanceof GenoArray)) throw new Error("array_fill expects array");
-    arr._elements.fill(value);
+    for (let i = 0; i < arr.length; i += 1) arr._elements[i] = _deepCopy(value);
     return null;
 }
 
 function array_copy(arr) {
     if (!(arr instanceof GenoArray)) throw new Error("array_copy expects array");
-    return new GenoArray([...arr._elements]);
+    return new GenoArray(arr._elements.map(_deepCopy));
 }
 
 // =============================================================================
@@ -1717,7 +1720,7 @@ function mutable_map_set(m, key, value) {
     if (_mapFindKey(m._data, key) === _MAP_MISSING) {
         _checkCollectionKind("MutableMap", m._data.size + 1);
     }
-    _mapSet(m._data, key, value);
+    _mapSet(m._data, _deepCopy(key), _deepCopy(value));
     return null;
 }
 
@@ -1766,7 +1769,7 @@ function vec_new() {
 function vec_push(v, item) {
     if (!(v instanceof GenoVec)) throw new Error("vec_push expects Vec");
     _checkCollectionKind("Vec", v.length + 1);
-    v._elements.push(item);
+    v._elements.push(_deepCopy(item));
     return null;
 }
 
@@ -1781,7 +1784,7 @@ function vec_set(v, index, value) {
     if (!(v instanceof GenoVec)) throw new Error("vec_set expects Vec");
     if (!_GENO_NUMBER.isInteger(index)) throw new Error("vec_set index must be integer");
     if (index < 0 || index >= v.length) throw new Error("vec_set index " + index + " out of bounds (length " + v.length + ")");
-    v._elements[index] = value;
+    v._elements[index] = _deepCopy(value);
     return null;
 }
 
@@ -1805,7 +1808,7 @@ function vec_to_list(v) {
 function vec_from_list(lst) {
     if (!Array.isArray(lst)) throw new Error("vec_from_list expects list");
     _checkCollectionKind("Vec", lst.length);
-    return new GenoVec([...lst]);
+    return new GenoVec(lst.map(_deepCopy));
 }
 
 // =============================================================================
@@ -1836,7 +1839,7 @@ function set_from_list(lst) {
         if (!data.has(key)) {
             _checkCollectionKind("Set", data.size + 1);
         }
-        data.set(key, item);
+        data.set(key, _deepCopy(item));
     }
     return new GenoSet(data);
 }
@@ -1847,7 +1850,7 @@ function set_add(s, item) {
     if (!s._data.has(key)) {
         _checkCollectionKind("Set", s._data.size + 1);
     }
-    s._data.set(key, item);
+    s._data.set(key, _deepCopy(item));
     return null;
 }
 

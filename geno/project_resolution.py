@@ -810,6 +810,7 @@ def _with_baseline_dependency_modules(
     focus_file: ResolvedFile,
     focus_program: Program,
     source_overrides: Mapping[Path, str],
+    available_project: ProjectGraph | None = None,
 ) -> dict[str, ResolvedModuleSource]:
     """Keep on-disk dependency modules that a non-focus override redirected away.
 
@@ -833,6 +834,7 @@ def _with_baseline_dependency_modules(
             focus_file.path,
             focus_program,
             source_overrides=focus_only or None,
+            project=available_project,
         )
     except (
         CircularImportError,
@@ -866,6 +868,7 @@ def _maybe_expand_single_file_project(
     *,
     expand_single_file: bool = False,
     source_overrides: Mapping[Path, str] | None = None,
+    available_project: ProjectGraph | None = None,
 ) -> tuple[ProjectGraph, DependencyGraph, str]:
     """Expand a single-file graph with sibling imports resolved from disk."""
     if not (expand_single_file and requested_path.is_file()):
@@ -882,6 +885,7 @@ def _maybe_expand_single_file_project(
             focus_file.path,
             dependency_graph.parsed[focus_module],
             source_overrides=source_overrides,
+            project=available_project,
         )
     except (CircularImportError, ModuleResolutionError) as exc:
         raise ProjectResolutionError(str(exc)) from exc
@@ -893,12 +897,15 @@ def _maybe_expand_single_file_project(
             focus_file,
             dependency_graph.parsed[focus_module],
             source_overrides or {},
+            available_project,
         )
 
     if not resolved_imports:
         return project, dependency_graph, focus_module
 
-    existing_files = {rf.path.resolve(): rf for rf in project.files}
+    existing_files = {
+        rf.path.resolve(): rf for rf in (available_project or project).files
+    }
 
     def _existing_file(candidate_path: Path) -> ResolvedFile | None:
         resolved_candidate = candidate_path.resolve()
@@ -1081,6 +1088,7 @@ def _resolve_file_context_unlocked(
 ) -> ResolvedFileContext:
     """Resolve a file while its package transaction lock is already held."""
     project = ProjectGraph.discover(requested_path)
+    available_project = project
     project, module_name, expand_single_file = _resolve_requested_file_project(
         requested_path, project
     )
@@ -1101,6 +1109,7 @@ def _resolve_file_context_unlocked(
         module_name,
         expand_single_file=expand_single_file,
         source_overrides=normalized_overrides or None,
+        available_project=available_project,
     )
     return _read_file_context(
         requested_path,
@@ -1136,6 +1145,7 @@ def _resolve_project_context_unlocked(
     """Resolve a project while its package transaction lock is already held."""
 
     project = ProjectGraph.discover(requested_path)
+    available_project = project
     requested_module_name: str | None = None
     expand_single_file = False
     if requested_path.is_file():
@@ -1174,6 +1184,7 @@ def _resolve_project_context_unlocked(
         entrypoint,
         expand_single_file=expand_single_file,
         source_overrides=normalized_overrides or None,
+        available_project=available_project,
     )
     file_context = _read_file_context(
         requested_path,

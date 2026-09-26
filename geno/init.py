@@ -278,6 +278,7 @@ _TEMPLATES: Dict[str, Dict[str, str]] = {
         "geno.toml": (
             'name = "{name}"\n'
             'version = "0.1.0"\n'
+            'entrypoint = "Lib"\n'
             'targets = ["python-cli", "node-cli"]\n'
             'files = [\n    "Lib",\n]\n'
             "\n"
@@ -335,8 +336,8 @@ _TEMPLATES: Dict[str, Dict[str, str]] = {
             "Then import in your Geno code:\n"
             "\n"
             "```\n"
-            "import Lib\n"
-            "let x: Int = Lib.double(5)\n"
+            "import {module_name}\n"
+            "let x: Int = {module_name}.double(5)\n"
             "```\n"
         ),
     },
@@ -400,6 +401,7 @@ def create_project(project_path: Path, template: str = "minimal") -> List[str]:
 
     project_path.mkdir(parents=True, exist_ok=True)
     project_name = project_path.resolve().name
+    from .manifest import kebab_to_pascal
 
     created = []
     for filename, content in _TEMPLATES[template].items():
@@ -407,7 +409,9 @@ def create_project(project_path: Path, template: str = "minimal") -> List[str]:
         # Create subdirectories if needed (e.g. .github/workflows/)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         if filename == "geno.toml" or filename == "README.md":
-            content = content.format(name=project_name)
+            content = content.format(
+                name=project_name, module_name=kebab_to_pascal(project_name)
+            )
         filepath.write_text(content, encoding="utf-8")
         created.append(str(project_path / filename))
 

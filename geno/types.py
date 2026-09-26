@@ -314,6 +314,11 @@ class TypeEnv:
     bindings: dict[str, Type] = field(default_factory=dict)
     parent: Optional["TypeEnv"] = None
     mutable_vars: set[str] = field(default_factory=set)
+    # A closure can capture an outer binding before this live frame acquires a
+    # local of the same name. Later declarations must preserve that contract.
+    captured_types: dict[str, Type] = field(default_factory=dict)
+    captured_global_calls: set[str] = field(default_factory=set)
+    captured_mutations: set[str] = field(default_factory=set)
 
     def lookup(self, name: str) -> Type | None:
         """Look up a name in the environment."""
@@ -323,11 +328,21 @@ class TypeEnv:
             return self.parent.lookup(name)
         return None
 
+    def binding_scope(self, name: str) -> Optional["TypeEnv"]:
+        """Return the scope owning the nearest binding, preserving its identity."""
+        if name in self.bindings:
+            return self
+        if self.parent:
+            return self.parent.binding_scope(name)
+        return None
+
     def bind(self, name: str, type_: Type, mutable: bool = False) -> None:
         """Bind a name to a type."""
         self.bindings[name] = type_
         if mutable:
             self.mutable_vars.add(name)
+        else:
+            self.mutable_vars.discard(name)
 
     def is_mutable(self, name: str) -> bool:
         """Check whether the nearest enclosing binding of ``name`` is mutable.

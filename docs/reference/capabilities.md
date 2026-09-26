@@ -83,8 +83,11 @@ keeps its legacy ungated behavior. Use `--cap` to restrict it.
 
 ### JSON mode (`geno run --json`)
 
-Uses the embedding API. If you omit `--cap`, gated builtins are denied by
-default. Grant each required capability explicitly.
+Uses the embedding API in the current process, with cooperative timeout checks.
+If you omit `--cap`, gated builtins are denied by default. Grant each required
+capability explicitly, for example `geno run myfile.geno --json --cap print`.
+Use the hosted server or a caller-managed worker process when JSON results are
+needed for untrusted code; JSON mode itself does not provide process isolation.
 
 ### Server (`geno serve`)
 

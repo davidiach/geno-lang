@@ -15,6 +15,7 @@ from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from io import StringIO
+from typing import cast
 
 from ._definition_index import DefinitionIndex
 from .ast_nodes import (
@@ -137,6 +138,7 @@ class BaseCompiler(ABC):
         self._module_param_names: dict[str, dict[str, list[str]]] = {}
         self._constructor_to_variant: dict[str, TypeVariant] = {}
         self._reserved_temp_names: set[str] = set()
+        self._module_constant_names: set[str] = set()
         self._definition_index = DefinitionIndex(
             type_defs=self.type_defs,
             type_aliases=self.type_aliases,
@@ -785,7 +787,7 @@ class BaseCompiler(ABC):
         identical across targets except for the trailing terminator."""
         target = self._compile_expr(stmt.target)
         index = self._compile_expr(stmt.index)
-        value = self._compile_expr(stmt.value)
+        value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(
             f"_safe_index_set({target}, {index}, {value}){self._statement_terminator()}"
         )
@@ -793,10 +795,14 @@ class BaseCompiler(ABC):
     def _compile_field_assign_statement(self, stmt: FieldAssignStatement) -> None:
         """Compile ``target.field = value``."""
         target = self._compile_expr(stmt.target)
-        value = self._compile_expr(stmt.value)
+        value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(
             f"{target}.{stmt.field_name} = {value}{self._statement_terminator()}"
         )
+
+    def _snapshot_value(self, value: str) -> str:
+        """Apply the target's value-transfer helper; reference types stay shared."""
+        raise NotImplementedError
 
     def _compile_tuple_destructure(self, stmt: TupleDestructureStatement) -> None:
         """Compile ``let/var (a, b, ...) = value``.
@@ -815,6 +821,72 @@ class BaseCompiler(ABC):
     def _declare_block_binding(self, name: str) -> str:
         """Resolve a new binding in the current target-language block."""
         return self._mangle_name(name)
+
+    @staticmethod
+    def _direct_binding_names(statements: Sequence[Statement]) -> set[str]:
+        """Return declarations owned by this block, excluding nested scopes."""
+        names: set[str] = set()
+        for stmt in statements:
+            if isinstance(stmt, (LetStatement, VarStatement)):
+                names.add(stmt.name)
+            elif isinstance(stmt, TupleDestructureStatement):
+                names.update(stmt.names)
+        return names
+
+    @staticmethod
+    def _uses_propagate(defn: FunctionDef | LambdaExpr) -> bool:
+        """Check if a function body contains a ? (propagate) expression."""
+        from .ast_nodes import PropagateExpr
+
+        field_cache: dict[type, tuple[str, ...]] = {}
+        body = (
+            defn.block_body
+            if isinstance(defn, LambdaExpr) and defn.block_body is not None
+            else defn.body
+        )
+        stack: list[object] = [body]
+
+        while stack:
+            node = stack.pop()
+            node_type = type(node)
+            if isinstance(node, LambdaExpr):
+                # A nested lambda owns its propagation boundary.
+                continue
+            if isinstance(node, PropagateExpr):
+                return True
+            if node_type is list:
+                stack.extend(reversed(cast(list[object], node)))
+                continue
+            if node_type is tuple:
+                stack.extend(reversed(cast(tuple[object, ...], node)))
+                continue
+            if not hasattr(node, "__dict__"):
+                continue
+
+            field_names = field_cache.get(node_type)
+            if field_names is None:
+                field_names = tuple(
+                    name
+                    for name in vars(node)
+                    if not name.startswith("_")
+                    and name
+                    not in {
+                        "location",
+                        "type_annotation",
+                        "param_type",
+                        "return_type",
+                        "var_type",
+                        "hole_type",
+                    }
+                )
+                field_cache[node_type] = field_names
+
+            for field_name in reversed(field_names):
+                child = getattr(node, field_name)
+                if child is not None:
+                    stack.append(child)
+
+        return False
 
     def _pattern_bound_names(self, pattern: Pattern) -> set[str]:
         if isinstance(pattern, VariablePattern):

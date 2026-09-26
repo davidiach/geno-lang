@@ -202,33 +202,21 @@ def bundle_project(config_path: str, output: str | None = None):
             print(f"Error: Config file not found: {config_path}", file=sys.stderr)
             sys.exit(1)
 
-        from ..manifest import parse_manifest
+        from ..dependency_graph import DependencyGraph
+        from ..project_graph import ProjectGraph
+        from ..project_resolution import _package_locks_for
 
-        manifest = parse_manifest(config_file)
-        entrypoint = manifest.entrypoint or "Main"
-        file_list = manifest.files
-        base_dir = config_file.parent
-
-        modules: dict[str, str] = {}
-        resolved_base = base_dir.resolve()
-        for filepath in file_list:
-            full_path = base_dir / filepath
-            try:
-                resolved_path = full_path.resolve()
-                resolved_path.relative_to(resolved_base)
-            except ValueError:
-                print(
-                    f"Error: File path escapes project directory: {filepath}",
-                    file=sys.stderr,
+        with _package_locks_for(config_file):
+            project = ProjectGraph.discover(config_file, manifest_path=config_file)
+            entrypoint = project.entrypoint or "Main"
+            graph = DependencyGraph.resolve(project)
+            if entrypoint not in graph.file_map:
+                raise ValueError(
+                    f"Entrypoint module '{entrypoint}' not found in project files"
                 )
-                sys.exit(1)
-            if not full_path.exists():
-                print(f"Error: File not found: {full_path}", file=sys.stderr)
-                sys.exit(1)
-            # Module name is the filename stem (e.g., Utils.geno -> Utils)
-            module_name = full_path.stem
-            with open(resolved_path, encoding="utf-8") as f:
-                modules[module_name] = f.read()
+            modules = {
+                name: graph.normalized_sources[name] for name in graph.sorted_modules
+            }
 
         artifact = {
             "version": "1",

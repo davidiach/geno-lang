@@ -34,10 +34,20 @@ whatever version the tree currently declares, not only at tag time.
 
 ### Notes
 
-No runtime, compiler or CLI behavior changes in this entry beyond #72, which
-landed separately. `geno run` and both backends still display an `Int` result
-and exit 0; the observable entrypoint change lands with the CLI and backend
-work.
+The 0.5 specification scaffolding does not implement the executable entrypoint
+change. `geno run` and both backends still display an `Int` result and exit 0;
+the observable entrypoint change lands with the CLI and backend work.
+
+### Fixed
+
+- **Binding and closure soundness**: Same-scope redeclarations retain their type and effect contract, while existing same-type closure rebinding remains observable. A later `let` clears prior `var` mutability. Local function values resolve their own call metadata, lambdas use an independent control-flow context, and duplicate constructor fields are rejected.
+- **Effect inference**: Parameter defaults, assignment targets and indices, and normalized named trait arguments contribute their effects consistently to the checked function signature.
+- **Backend value and scope parity**: Record reassignment and destructuring preserve snapshots while explicit mutable collections keep reference semantics. Module constants remain readable through local and parameter shadowing, and Python postconditions no longer break parameter rebinding.
+- **Callback and numeric parity**: Compiler optimizations require the resolved builtin identity, preserving shadowed callbacks. Ordered comparisons involving NaN now agree across all three execution engines.
+- **Project and editor workflows**: Generated libraries are consumable by the documented import, explicit-file checks retain manifest module mappings, bundles use canonical file discovery, and rename includes reverse importers and converts protocol positions for non-BMP text.
+- **Quality gates**: Differential fuzzing grants its required print capability and fails on crashes, timeouts, missing required backends, or wrong results. CI explicitly requires Node. Runtime benchmark scoring checks correctness before timing and retains failed workloads in the denominator. Analysis and experiment reports share McNemar statistics and chi-square survival calculations; Student t tails and intervals now use the same distribution rather than inconsistent approximations.
+- **JSON execution capabilities**: `geno run --json` now honors its documented fail-closed default. Programs that print must pass `--cap print`; JSON mode continues to use the in-process embedding API.
+- **Hosted lifecycle**: Shutdown drains active handlers and workers within a bounded grace period. Readiness checks exercise the hosted worker and return HTTP 503 on failure; `/readyz` and `/livez` distinguish readiness from liveness, and container probes use readiness.
 
 ## [0.4.4] - 2026-09-20
 

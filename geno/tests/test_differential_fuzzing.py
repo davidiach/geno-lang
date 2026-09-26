@@ -39,6 +39,7 @@ except (ImportError, AttributeError):
 
 HAS_NODE = shutil.which("node") is not None
 IS_DEEP = os.environ.get("GENO_FUZZ_DEEP", "") == "1"
+REQUIRE_NODE = os.environ.get("GENO_FUZZ_REQUIRE_NODE", "") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -71,11 +72,8 @@ if HYPOTHESIS_AVAILABLE:
                 oracle=program.expected_output,
                 timeout=5.0,
                 include_js=HAS_NODE,
+                require_js=REQUIRE_NODE,
             )
-            successful = [b for b in result.backends if b.success]
-            if len(successful) < 2:
-                # Not enough backends for a meaningful comparison — skip
-                return
             assert result.match, (
                 f"Divergence detected:\n{result.error}\n\nSource:\n{program.source}"
             )
@@ -89,10 +87,9 @@ class TestSeedCorpusParity:
         seeds = load_seed_corpus()
         assert len(seeds) > 0, "Seed corpus is empty"
         for i, source in enumerate(seeds):
-            result = run_all_backends(source, timeout=5.0, include_js=HAS_NODE)
-            successful = [b for b in result.backends if b.success]
-            if len(successful) < 2:
-                continue
+            result = run_all_backends(
+                source, timeout=5.0, include_js=HAS_NODE, require_js=REQUIRE_NODE
+            )
             assert result.match, (
                 f"Seed program {i} diverged:\n{result.error}\n\nSource:\n{source}"
             )
@@ -108,11 +105,12 @@ class TestFailureRegressions:
             pytest.skip("No failure corpus files found")
         for i, (source, oracle) in enumerate(failures):
             result = run_all_backends(
-                source, oracle=oracle, timeout=5.0, include_js=HAS_NODE
+                source,
+                oracle=oracle,
+                timeout=5.0,
+                include_js=HAS_NODE,
+                require_js=REQUIRE_NODE,
             )
-            successful = [b for b in result.backends if b.success]
-            if len(successful) < 2:
-                continue
             assert result.match, (
                 f"Regression in failure {i}:\n{result.error}\n\nSource:\n{source}"
             )

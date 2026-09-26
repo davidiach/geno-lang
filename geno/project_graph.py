@@ -104,19 +104,26 @@ class ProjectGraph:
         return [f.module_name for f in self.files]
 
     @classmethod
-    def discover(cls, start_path: Path) -> ProjectGraph:
+    def discover(
+        cls, start_path: Path, *, manifest_path: Path | None = None
+    ) -> ProjectGraph:
         """Discover a project starting from a file or directory path.
 
         If start_path points to a single .geno file without a geno.toml
         in any parent directory, returns a single-file project graph.
 
         If a geno.toml is found, parses it and resolves all declared files
-        and dependencies.
+        and dependencies. An explicit ``manifest_path`` uses that manifest and
+        its containing directory instead of searching parents.
         """
         start_path = start_path.resolve()
 
         # Find project root
-        root = _find_project_root(start_path)
+        root = (
+            manifest_path.resolve().parent
+            if manifest_path is not None
+            else _find_project_root(start_path)
+        )
 
         if root is None:
             # Single-file fallback
@@ -165,7 +172,7 @@ class ProjectGraph:
         # Parse manifest
         from .manifest import kebab_to_pascal, parse_manifest
 
-        manifest_path = root / "geno.toml"
+        manifest_path = manifest_path or root / "geno.toml"
         manifest = parse_manifest(manifest_path)
 
         # Resolve project files

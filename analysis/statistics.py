@@ -10,6 +10,95 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 
+def chi_square_survival(x: float, df: int) -> float:
+    """Chi-square upper tail for positive integer degrees of freedom.
+
+    Integer/half-integer incomplete gamma recurrences avoid the inaccurate
+    normal approximation, in particular the significance boundary at df=1.
+    """
+    if df <= 0:
+        raise ValueError("degrees of freedom must be positive")
+    if math.isnan(x):
+        return math.nan
+    if x <= 0:
+        return 1.0
+    if math.isinf(x):
+        return 0.0
+    z = x / 2
+    if z == 0:
+        return 1.0
+    shape = 0.5 if df % 2 else 1.0
+    first = math.erfc(math.sqrt(z)) if df % 2 else math.exp(-z)
+    terms = [first]
+    while shape < df / 2:
+        terms.append(math.exp(shape * math.log(z) - z - math.lgamma(shape + 1)))
+        shape += 1
+    return min(1.0, math.fsum(terms))
+
+
+def mcnemar_statistic_pvalue(
+    a_only: int, b_only: int, continuity_correction: bool = True
+) -> tuple[float, float]:
+    """Shared McNemar chi-square policy for experiment metrics and reports."""
+    if a_only < 0 or b_only < 0:
+        raise ValueError("discordant counts must be nonnegative")
+    discordant = a_only + b_only
+    if not discordant:
+        return 0.0, 1.0
+    difference = abs(a_only - b_only)
+    if continuity_correction:
+        difference = max(0, difference - 1)
+    statistic = difference**2 / discordant
+    return statistic, chi_square_survival(statistic, 1)
+
+
+def _beta_fraction(a: float, b: float, x: float) -> float:
+    """Evaluate the incomplete beta continued fraction using Lentz's method."""
+    tiny = 1e-300
+    c = 1.0
+    d = 1 - (a + b) * x / (a + 1)
+    if abs(d) < tiny:
+        d = tiny
+    d = 1 / d
+    value = d
+    for m in range(1, 1001):
+        even = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m))
+        odd = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))
+        for coefficient in (even, odd):
+            d = 1 + coefficient * d
+            c = 1 + coefficient / c
+            if abs(d) < tiny:
+                d = tiny
+            if abs(c) < tiny:
+                c = tiny
+            d = 1 / d
+            delta = d * c
+            value *= delta
+        if abs(delta - 1) <= 4e-15:
+            return value
+    raise ArithmeticError("Incomplete beta continued fraction did not converge")
+
+
+def _regularized_beta(x: float, a: float, b: float) -> float:
+    """Regularized incomplete beta, choosing the stable continued-fraction tail."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    factor = math.exp(
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    if x < (a + 1) / (a + b + 2):
+        result = factor * _beta_fraction(a, b, x) / a
+    else:
+        result = 1 - factor * _beta_fraction(b, a, 1 - x) / b
+    return min(1.0, max(0.0, result))
+
+
 @dataclass
 class TestResult:
     """Result of a statistical test."""
@@ -88,14 +177,7 @@ class StatisticalTests:
                 interpretation="No discordant pairs; cannot compute test.",
             )
 
-        # Chi-square statistic
-        if continuity_correction:
-            chi2 = (abs(b - c) - 1) ** 2 / (b + c)
-        else:
-            chi2 = (b - c) ** 2 / (b + c)
-
-        # P-value from chi-square distribution with df=1
-        p_value = self._chi2_sf(chi2, df=1)
+        chi2, p_value = mcnemar_statistic_pvalue(b, c, continuity_correction)
 
         # Effect size: Cohen's g
         cohens_g = (b - c) / (b + c)
@@ -420,41 +502,52 @@ class StatisticalTests:
     # ==========================================================================
 
     def _chi2_sf(self, x: float, df: int) -> float:
-        """Survival function for chi-square distribution (approximate)."""
-        # Using Wilson-Hilferty approximation for chi-square CDF
-        if x <= 0:
-            return 1.0
+        """Survival function for chi-square distribution."""
         if df <= 0:
-            return 0.0
-
-        # Transform to approximate normal
-        z = ((x / df) ** (1 / 3) - (1 - 2 / (9 * df))) / math.sqrt(2 / (9 * df))
-        return self._normal_sf(z)
+            return 1.0
+        return chi_square_survival(x, df)
 
     def _t_sf(self, x: float, df: int) -> float:
-        """Survival function for t-distribution (approximate)."""
-        # Using approximation that works reasonably for df > 3
+        """Student t upper tail via the regularized incomplete beta function."""
         if df <= 0:
-            return 0.5
-        if df > 100:
-            return self._normal_sf(x)
-
-        # Simple approximation
-        z = x * (1 - 1 / (4 * df)) / math.sqrt(1 + x**2 / (2 * df))
-        return self._normal_sf(z)
+            raise ValueError("degrees of freedom must be positive")
+        if math.isnan(x):
+            return math.nan
+        if df == 1:
+            return math.atan2(1.0, x) / math.pi
+        squared = x * x
+        if squared < df:
+            tail = 0.5 - 0.5 * _regularized_beta(squared / (df + squared), 0.5, df / 2)
+        else:
+            tail = 0.5 * _regularized_beta(df / (df + squared), df / 2, 0.5)
+        return tail if x >= 0 else 1 - tail
 
     def _t_ppf(self, p: float, df: int) -> float:
-        """Percent point function for t-distribution (approximate)."""
-        if df > 100:
-            return self._normal_ppf(p)
-
-        # Simple approximation using normal PPF
-        z = self._normal_ppf(p)
-        return z * math.sqrt(1 + z**2 / (2 * df)) / (1 - 1 / (4 * df))
+        """Invert the same t distribution used for p-values and intervals."""
+        if df <= 0:
+            raise ValueError("degrees of freedom must be positive")
+        if p <= 0:
+            return -math.inf
+        if p >= 1:
+            return math.inf
+        if p == 0.5:
+            return 0.0
+        tail_probability = min(p, 1 - p)
+        low, high = 0.0, 1.0
+        while self._t_sf(high, df) > tail_probability:
+            high *= 2
+        for _ in range(100):
+            middle = (low + high) / 2
+            if self._t_sf(middle, df) > tail_probability:
+                low = middle
+            else:
+                high = middle
+        quantile = (low + high) / 2
+        return quantile if p > 0.5 else -quantile
 
     def _normal_sf(self, x: float) -> float:
         """Survival function for standard normal distribution."""
-        return 0.5 * (1 - math.erf(x / math.sqrt(2)))
+        return 0.5 * math.erfc(x / math.sqrt(2))
 
     def _normal_ppf(self, p: float) -> float:
         """Percent point function for standard normal distribution."""

@@ -18,7 +18,7 @@ from typing import Mapping, cast
 from .ast_nodes import ImportStatement, Program
 from .lexer import Lexer
 from .parser import Parser
-from .project_graph import dependency_private_graph_name
+from .project_graph import ProjectGraph, ResolvedFile, dependency_private_graph_name
 
 _logger = logging.getLogger(__name__)
 
@@ -126,6 +126,8 @@ def resolve_module_sources(
     source_path: Path,
     program: Program,
     source_overrides: Mapping[Path, str] | None = None,
+    *,
+    project: ProjectGraph | None = None,
 ) -> dict[str, ResolvedModuleSource]:
     """Return resolved module sources without observing partial package updates."""
     from .package_manager import _package_transaction_locks
@@ -133,7 +135,7 @@ def resolve_module_sources(
     base_dir = source_path.parent.resolve()
     with _package_transaction_locks(base_dir):
         return _resolve_module_sources_unlocked(
-            base_dir, program, source_overrides=source_overrides
+            base_dir, program, source_overrides=source_overrides, project=project
         )
 
 
@@ -141,13 +143,16 @@ def _resolve_module_sources_unlocked(
     base_dir: Path,
     program: Program,
     source_overrides: Mapping[Path, str] | None = None,
+    project: ProjectGraph | None = None,
 ) -> dict[str, ResolvedModuleSource]:
     overrides = {
         Path(path).resolve(): source
         for path, source in (source_overrides or {}).items()
     }
     modules: dict[str, ResolvedModuleSource] = {}
-    _resolve_imports(program, base_dir, modules, source_overrides=overrides)
+    _resolve_imports(
+        program, base_dir, modules, source_overrides=overrides, project=project
+    )
     return modules
 
 
@@ -157,12 +162,24 @@ def _resolve_imports(
     modules: dict[str, ResolvedModuleSource],
     resolving: set[str] | None = None,
     source_overrides: Mapping[Path, str] | None = None,
+    project: ProjectGraph | None = None,
 ) -> None:
     """Resolve imports with explicit DFS frames, independent of Python's stack."""
     from .package_manager import find_package_owner_root
 
     if resolving is None:
         resolving = set()
+    # Keep the manifest's validated locations without parsing unrelated files.
+    # Dependency-private names are visible only inside their own package.
+    public_files: dict[str, ResolvedFile] = {}
+    package_files: dict[str, dict[str, ResolvedFile]] = {}
+    for resolved in project.files if project is not None else []:
+        if resolved.graph_name is None:
+            public_files[resolved.module_name] = resolved
+        if resolved.package_name is not None:
+            names = package_files.setdefault(resolved.package_name, {})
+            names[resolved.module_name] = resolved
+            names[resolved.path.stem] = resolved
     pending: list[tuple[Iterator[object], Path, str | None]] = [
         (iter(program.definitions), base_dir, None)
     ]
@@ -182,8 +199,21 @@ def _resolve_imports(
             if "/" in name or "\\" in name or ".." in name:
                 raise ModuleResolutionError(name, base_dir, defn.location)
 
-            file_path = base_dir / f"{name}.geno"
-            if file_path.exists():
+            owner_root = find_package_owner_root(base_dir)
+            importing_package = (
+                modules[active_key].package_name
+                if active_key is not None
+                else _dependency_package_for_path(base_dir, owner_root)
+            )
+            declared_file = package_files.get(importing_package or "", {}).get(
+                name
+            ) or public_files.get(name)
+            file_path = (
+                declared_file.path if declared_file else base_dir / f"{name}.geno"
+            )
+            if declared_file is not None:
+                pass  # Canonical manifest path, already validated by discovery.
+            elif file_path.exists():
                 exact_path = _find_exact_case(name, base_dir)
                 if exact_path is None:
                     case_path = _find_case_insensitive(
@@ -215,6 +245,8 @@ def _resolve_imports(
             resolved_file = file_path.resolve()
             project_root = _find_project_root(base_dir)
             allowed_roots = [base_dir.resolve(), _STD_DIR.resolve()]
+            if declared_file is not None and project is not None and project.root:
+                allowed_roots.append(project.root.resolve())
             if project_root:
                 modules_root = project_root / "geno_modules"
                 if modules_root.is_symlink():
@@ -226,10 +258,13 @@ def _resolve_imports(
             # A package's own manifest is the nearest project root while walking
             # its imports. Retain the installing project's identity so helpers
             # in two manifested dependencies cannot collapse to one module key.
-            package_owner = find_package_owner_root(base_dir)
+            package_owner = owner_root
             package_name = _dependency_package_for_path(resolved_file, package_owner)
             graph_name = None
-            if (
+            if declared_file is not None:
+                package_name = declared_file.package_name
+                graph_name = declared_file.graph_name
+            elif (
                 package_name is not None
                 and package_owner is not None
                 and _is_inside_dependency_package(base_dir, package_owner, package_name)
@@ -257,7 +292,7 @@ def _resolve_imports(
                 else resolved_file.read_text(encoding="utf-8")
             )
             modules[storage_key] = ResolvedModuleSource(
-                module_name=name,
+                module_name=declared_file.module_name if declared_file else name,
                 path=resolved_file,
                 source=source,
                 is_dependency=package_name is not None,
