@@ -27,6 +27,12 @@ from .._serve import (
 )
 from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
 from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
+
+# A leaf module by design: the parent side of the process-isolated lane needs
+# the modulo, and `geno.entrypoint` would drag `ast_nodes` and `types` into a
+# process that exists to spawn the worker. Classification is imported lazily,
+# inside the two paths that already hold the frontend.
+from ..exit_status import exit_status_for_int_result
 from ._util import (
     _format_source_snippet,
     _print_error,
@@ -146,6 +152,92 @@ def _is_unit_main_result(value: Any) -> bool:
     return value is None or (type(value) is tuple and not value)
 
 
+def _main_result_exit_status(value: Any, kind: Any) -> int | None:
+    """Return the status ``geno run`` must exit with, or ``None`` for zero.
+
+    Only a declared ``Int`` entrypoint sets a status; ``Unit``, a missing
+    ``main`` and any other declared type leave the process to exit normally.
+    ``None`` therefore means "nothing to say", not "exit 0 explicitly", which
+    is what lets the callers below return it straight up to ``SystemExit``.
+
+    The value is only ever read here, never rewritten: what crosses an
+    embedding boundary or appears in ``--json`` stays the raw result.
+    """
+    from ..entrypoint import EntrypointResultKind
+
+    if kind is not EntrypointResultKind.INT:
+        return None
+    # A checked `Int` is a Python int, and `bool` is excluded because
+    # `isinstance(True, int)` holds while `Bool` is its own Geno type.
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return exit_status_for_int_result(value)
+
+
+def _process_run_result_envelope(kind: Any) -> str:
+    """Emit the worker tail reporting display text and exit status together.
+
+    The isolated worker owns this lane's whole frontend, so the parent cannot
+    classify ``main`` itself and the classification is baked in here, where it
+    is already known. Both halves the specification requires cross the channel:
+    the display string, formatted while values still carry their Geno types,
+    and the exit status, already reduced into range.
+
+    ``__result__`` is unbound when the program has no ``main``, so a branch that
+    reads it tests ``_geno_entry_fn`` first; the silent branch overwrites
+    ``__result__`` outright and never reads it.
+    """
+    from ..entrypoint import EntrypointResultKind
+
+    if kind is EntrypointResultKind.INT:
+        # An `Int` result is the status and is never displayed, so it needs no
+        # formatting -- but it does need reducing before it crosses. The channel
+        # is JSON, and `max_integer_bits` admits an `Int` of roughly 10_000
+        # digits while CPython refuses to render one wider than 4_300, so a
+        # valid program returning a large result would die in the transport
+        # rather than exiting with a status. Reducing here keeps every integer
+        # the language accepts on the contract; the parent still applies
+        # `exit_status_for_int_result`, which agrees with this and stays the one
+        # definition of the modulo.
+        return (
+            "\nif _geno_entry_fn is None:\n"
+            "    __result__ = {'status': None, 'display': None}\n"
+            "else:\n"
+            "    __result__ = {'status': __result__ % 256, 'display': None}\n"
+        )
+    if kind is EntrypointResultKind.OTHER:
+        # JSON transport turns tuples into lists and map keys into strings, and
+        # its fallback renders constructors and mutable containers with Python
+        # repr, so the display string is built here rather than in the parent.
+        return (
+            "\nif _geno_entry_fn is None or __result__ is None:\n"
+            "    __result__ = {'status': None, 'display': None}\n"
+            "else:\n"
+            "    __result__ = {'status': None, 'display': _geno_format(__result__)}\n"
+        )
+    # `Unit` and a missing `main` are silent and exit 0.
+    return "\n__result__ = {'status': None, 'display': None}\n"
+
+
+def _read_process_run_envelope(result: Any) -> tuple[int | None, str | None]:
+    """Read the worker envelope written by :func:`_process_run_result_envelope`.
+
+    Anything else is treated as having neither a status nor a display line: the
+    worker cannot reach that state, and inventing a status from a shape this
+    lane did not emit would be the one failure mode worth avoiding here.
+    """
+    if not isinstance(result, dict):
+        return None, None
+    status_value = result.get("status")
+    display = result.get("display")
+    status = (
+        exit_status_for_int_result(status_value)
+        if isinstance(status_value, int) and not isinstance(status_value, bool)
+        else None
+    )
+    return status, display if isinstance(display, str) else None
+
+
 def _explicit_fs_roots_for_run(
     filename: str,
     project_root,
@@ -248,7 +340,7 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         _strip_runtime_prelude_imports,
         _trusted_runtime_prelude_line_count,
     )
-    from ..entrypoint import is_async_execution_form
+    from ..entrypoint import classify_entrypoint_result, is_async_execution_form
     from ..sandbox import SandboxConfig
 
     resolved_run = _resolve_run_program(filename, target)
@@ -299,13 +391,8 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         allow_missing_main=True,
     )
     if render_result:
-        # Format while values still have their Geno types. JSON transport
-        # turns tuples into lists and map keys into strings; its fallback
-        # also renders constructors and mutable containers using Python repr.
-        # Keep None for Unit/missing main so the CLI can suppress that line.
-        python_code += (
-            "\nif _geno_entry_fn is not None and __result__ is not None:\n"
-            "    __result__ = _geno_format(__result__)\n"
+        python_code += _process_run_result_envelope(
+            classify_entrypoint_result(program, parsed_modules)
         )
     return {
         "python_code": python_code,
@@ -409,12 +496,18 @@ def run_file(
     target: str | None = None,
     json_output: bool = False,
     program_args: list[str] | None = None,
-):
+) -> int | None:
     """Run a Geno source file.
 
     By default, compiles to Python and runs in ProcessSandbox for hard timeouts.
     Use --unsafe to run with the direct interpreter (no process isolation).
     Use --json to get structured JSON output via the embedding API.
+
+    Returns the process exit status a declared ``Int`` ``main`` asks for, or
+    ``None`` when there is nothing to say and the process should exit 0. A
+    normal nonzero result is returned rather than raised, so the caller exits
+    without a traceback and buffered output is already on its way out. Errors
+    keep exiting 1 through ``sys.exit`` as they always have.
     """
     import json as json_mod
 
@@ -512,10 +605,13 @@ def run_file(
             result = api_run_path(filename, cfg)
         finally:
             _restore_cli_args_env()
+        # The envelope keeps the raw result: 258 stays 258 in `value` while the
+        # process exits 2, and a normal nonzero result leaves `ok` true with an
+        # empty stderr and no diagnostics.
         print(_format_json_run_output(result))
         if not result.ok:
             sys.exit(1)
-        return
+        return _main_result_exit_status(result.value_raw, result.entrypoint_kind)
 
     if run_mode == "process":
         # The isolated worker owns this path's entire frontend: it resolves,
@@ -580,11 +676,14 @@ def run_file(
                 else:
                     _print_runtime_error(RuntimeError(error))
                 sys.exit(1)
+            # Captured output is printed before the status is returned, so a
+            # nonzero exit never costs the program its output.
             if run_output:
                 print(run_output, end="")
-            if not _is_unit_main_result(result):
-                print(f"=> {result}")
-            return
+            status, display = _read_process_run_envelope(result)
+            if display is not None:
+                print(f"=> {display}")
+            return status
         except FileNotFoundError:
             print(f"Error: File not found: {filename}", file=sys.stderr)
             sys.exit(1)
@@ -607,7 +706,7 @@ def run_file(
             # Unreachable today (the reporter exits), but this branch now sits
             # above the interpreter path rather than inside its try block, so
             # falling through would run the program unsandboxed.
-            return
+            return None
         except RuntimeError as e:
             _print_runtime_error(e)
             sys.exit(1)
@@ -643,6 +742,7 @@ def run_file(
         if run_mode == "unsafe":
             # Direct interpreter (no process isolation)
             from ..api import _apply_capabilities
+            from ..entrypoint import classify_entrypoint_result
             from ..interpreter import Interpreter
 
             sandbox_kwargs: dict[str, Any] = {
@@ -696,11 +796,17 @@ def run_file(
                 result = interpreter.run(program, modules=parsed_modules)
             finally:
                 _restore_cli_args_env()
+            status = _main_result_exit_status(
+                result, classify_entrypoint_result(program, parsed_modules)
+            )
             run_output = interpreter.get_output()
             if run_output:
                 print(run_output, end="")
-            if not _is_unit_main_result(result):
+            # An `Int` result is the status, so displaying it too would print
+            # the number the process is about to exit with.
+            if status is None and not _is_unit_main_result(result):
                 print(f"=> {interpreter.format_display_value(result)}")
+            return status
 
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)
@@ -761,3 +867,7 @@ def run_file(
     except RuntimeError as e:
         _print_runtime_error(e)
         sys.exit(1)
+
+    # Only `report_deep_nesting_error` reaches here without returning, and it
+    # exits; every other path above returns its own status.
+    return None

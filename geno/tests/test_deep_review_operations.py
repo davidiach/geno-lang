@@ -45,8 +45,15 @@ def test_json_cli_requires_explicit_capabilities(
     granted = subprocess.run(
         [*command, "--cap", capability], capture_output=True, text=True, timeout=15
     )
-    assert granted.returncode == 0, granted.stdout + granted.stderr
-    assert json.loads(granted.stdout)["ok"]
+    payload = json.loads(granted.stdout)
+    assert payload["ok"], granted.stdout + granted.stderr
+    # A granted run succeeds, and under docs/spec/v0.5.md 4.1.1 its status is
+    # `main`'s result rather than 0 whenever that result is an `Int`. Both
+    # `Int` expressions here return a value chosen at runtime, so the status is
+    # pinned against the value the envelope reports rather than a literal.
+    assert granted.returncode == (
+        0 if return_type == "Unit" else payload["value"] % 256
+    ), granted.stdout + granted.stderr
 
 
 @contextmanager

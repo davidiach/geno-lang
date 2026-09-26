@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`geno run` honors a `main() -> Int` result as its exit status.** The result
+  is normalized modulo 256, so `return 2` exits 2, `return 258` exits 2 and
+  `return 0 - 1` exits 255, and it is no longer printed as a `=> 2` line. All
+  three lanes agree: the default process-isolated run, `--unsafe`, and `--json`.
+  Output written before the result still arrives, and a normal nonzero status
+  carries no traceback and no diagnostics. `main() -> Unit`, a missing `main`
+  and any other declared return type keep exiting 0, and a non-`Int` result is
+  still displayed. This implements section 4.1.1 of `docs/spec/v0.5.md` and is
+  a breaking change for anything reading `=> N` from stdout or expecting 0 from
+  a program whose `main` returns a nonzero `Int`. (proposal 0001, #105)
+- `geno run --json` keeps reporting the **raw** value: `258` stays `258` in the
+  envelope while the process exits `2`, with `ok` true and no diagnostics.
+  Nothing that is not a process boundary gained a status: `geno.api.run()`,
+  `compile_and_exec()`, the generic `ProcessSandbox` and the hosted server
+  return the raw result and never terminate their caller. `RunResult` gained
+  `entrypoint_kind` so a caller that *is* a boundary can derive a status
+  without resolving the program again.
+- The standalone compiled Python, Node script and Node ESM backends still print
+  an `Int` result and exit 0; that half of the contract follows separately.
+
 ## [0.5.0-rc.0] - 2026-09-24
 
 Development pre-release opening the 0.5 series. Not published; the version is

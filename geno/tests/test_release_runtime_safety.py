@@ -106,12 +106,12 @@ def _run_cli(tmp_path, source: str, *args: str) -> subprocess.CompletedProcess[s
     ("source", "expected"),
     [
         (
-            """func main() -> Int\n    return clock_now()\nend func\n""",
+            """func main() -> Unit\n    print(to_string(value: clock_now()))\nend func\n""",
             None,
         ),
         (
-            """func main() -> Int\n    return random_int(min: 1, max: 1)\nend func\n""",
-            "=> 1",
+            """func main() -> Unit\n    print(to_string(value: random_int(min: 1, max: 1)))\nend func\n""",
+            "1",
         ),
     ],
 )
@@ -127,17 +127,17 @@ def test_default_process_run_supports_its_default_capabilities(
 
 
 def test_default_process_run_supports_pure_json_builtin(tmp_path) -> None:
-    source = """func main() -> Int
+    source = """func main() -> Unit
     match json_parse(text: "42") with
-        | Ok(JsonInt(value)) -> return value
-        | _ -> return 0
+        | Ok(JsonInt(value)) -> print(to_string(value: value))
+        | _ -> print("unparsed")
     end match
 end func
 """
     result = _run_cli(tmp_path, source, "--no-check-examples")
 
     assert result.returncode == 0, result.stderr
-    assert "=> 42" in result.stdout
+    assert "42" in result.stdout
 
 
 @pytest.mark.parametrize(
