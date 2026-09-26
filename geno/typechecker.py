@@ -506,6 +506,8 @@ class TypeChecker(ExhaustivenessMixin):
         self._in_async_function: bool = False
         self._in_main_function: bool = False
         self._lambda_return_types: list[Type] | None = None
+        self._lambda_propagation_types: list[Type] | None = None
+        self._lambda_capture_env: TypeEnv | None = None
         self.errors: list[TypeError] = []
         self._user_defined_names: set[str] = set()
         # Module-level constants: name -> type, rebuilt per check_program.
@@ -1696,7 +1698,16 @@ class TypeChecker(ExhaustivenessMixin):
 
         for variant in defn.variants:
             fields: list[tuple[str, Type]] = []
+            seen_fields: set[str] = set()
             for field_name, field_type_annot in variant.fields:
+                if field_name in seen_fields:
+                    self._error(
+                        f"Duplicate field name '{field_name}' in constructor "
+                        f"'{variant.name}'",
+                        variant.location,
+                        ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                    )
+                seen_fields.add(field_name)
                 field_type = self._resolve_type(field_type_annot, defn.type_params)
                 fields.append((field_name, field_type))
             variants[variant.name] = fields
@@ -2431,10 +2442,27 @@ class TypeChecker(ExhaustivenessMixin):
     def _infer_function_effects(
         self, defn: FunctionDef, env: TypeEnv
     ) -> frozenset[str]:
-        """Infer effects from specs plus the function body."""
-        effects: set[str] = set(self._infer_specs_effects(defn, env))
-        effects |= self._infer_body_effects(defn.body, env)
-        return frozenset(effects)
+        """Infer effects from defaults, specs, and the function body.
+
+        Defaults run in the declaration's global scope. Include their effects
+        conservatively in the signature, even at calls supplying every argument.
+        """
+        # Effect inference may revisit an unannotated initializer to learn its
+        # type. That visit needs this function's context even during the global
+        # signature-stabilization pass, where no function is otherwise active.
+        with self._function_context(
+            self._resolve_type(defn.return_type),
+            is_async=defn.is_async,
+            is_main=defn.name == "main",
+        ):
+            effects: set[str] = set(self._infer_specs_effects(defn, env))
+            for param in defn.params:
+                if param.default_value is not None:
+                    effects |= self._infer_expr_effects(
+                        param.default_value, self.global_env
+                    )
+            effects |= self._infer_body_effects(defn.body, env)
+            return frozenset(effects)
 
     def _infer_specs_effects(self, defn: FunctionDef, env: TypeEnv) -> frozenset[str]:
         """Infer effects from requires and ensures clauses."""
@@ -2467,6 +2495,10 @@ class TypeChecker(ExhaustivenessMixin):
             (AssignStatement, FieldAssignStatement, IndexAssignStatement),
         ):
             effects.add("mutation")
+            if isinstance(stmt, (FieldAssignStatement, IndexAssignStatement)):
+                effects |= self._infer_expr_effects(stmt.target, env)
+            if isinstance(stmt, IndexAssignStatement):
+                effects |= self._infer_expr_effects(stmt.index, env)
             effects |= self._infer_expr_effects(stmt.value, env)
         elif isinstance(stmt, VarStatement):
             effects.add("mutation")
@@ -2515,6 +2547,8 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(stmt, AssertStatement):
             effects |= self._infer_expr_effects(stmt.expression, env)
         elif isinstance(stmt, TupleDestructureStatement):
+            if stmt.mutable:
+                effects.add("mutation")
             effects |= self._infer_expr_effects(stmt.value, env)
             tuple_type = self._resolve_type(stmt.type_annotation)
             if isinstance(tuple_type, TupleType):
@@ -2526,27 +2560,40 @@ class TypeChecker(ExhaustivenessMixin):
     def _trait_dispatch_effects(
         self, expr: FunctionCall, env: TypeEnv
     ) -> frozenset[str]:
-        """Resolve effects for a trait-dispatch call from the first argument type."""
+        """Use the same lexical dispatch and receiver ordering as call checking."""
+        resolved = self._resolve_trait_call(expr, env)
+        return resolved[0].effects if resolved is not None else frozenset()
+
+    def _resolve_trait_call(
+        self, expr: FunctionCall, env: TypeEnv
+    ) -> tuple[FuncType, list[str], list[CallArg | None]] | None:
+        """Resolve a trait implementation using normalized receiver arguments."""
         callee = expr.function
-        if not isinstance(callee, Identifier) or callee.name not in self.trait_methods:
-            return frozenset()
-        if not expr.arguments:
-            return frozenset()
+        if (
+            not isinstance(callee, Identifier)
+            or callee.name not in self.trait_methods
+            or env.binding_scope(callee.name) is not self.global_env
+            or not expr.arguments
+        ):
+            return None
 
-        first_arg_type = self._check_expression(expr.arguments[0].value, env)
-        if not isinstance(first_arg_type, UserType):
-            return frozenset()
-
-        resolved_type_name = self._constructor_to_type.get(
-            first_arg_type.name, first_arg_type.name
-        )
-        effects: set[str] = set()
         for trait_name, _trait_def in self.trait_methods[callee.name]:
+            param_names = self._trait_method_param_names(trait_name, callee.name) or []
+            ordered_args = self._try_reorder_call_args(expr.arguments, param_names)
+            if not ordered_args or ordered_args[0] is None:
+                continue
+            receiver_type = self._check_expression(ordered_args[0].value, env)
+            if not isinstance(receiver_type, UserType):
+                continue
+            resolved_type_name = self._constructor_to_type.get(
+                receiver_type.name, receiver_type.name
+            )
             method_types = self.impl_registry.get((trait_name, resolved_type_name))
             if method_types is None or callee.name not in method_types:
                 continue
-            effects |= method_types[callee.name].effects
-        return frozenset(effects)
+            self._record_captured_binding(callee.name, env)
+            return method_types[callee.name], param_names, ordered_args
+        return None
 
     def _infer_expr_effects(self, expr: Expression, env: TypeEnv) -> set[str]:
         """Infer effects from an expression."""
@@ -2590,9 +2637,9 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(expr, IfStatement):
             # If-expression
             effects |= self._infer_expr_effects(expr.condition, env)
-            effects |= self._infer_body_effects(expr.then_body, env)
+            effects |= self._infer_body_effects(expr.then_body, env.child())
             if expr.else_body:
-                effects |= self._infer_body_effects(expr.else_body, env)
+                effects |= self._infer_body_effects(expr.else_body, env.child())
 
         elif isinstance(expr, MatchExpr):
             effects |= self._infer_expr_effects(expr.scrutinee, env)
@@ -2872,6 +2919,47 @@ class TypeChecker(ExhaustivenessMixin):
         for s in catch.body:
             self._check_statement(s, catch_env)
 
+    def _bind_local(
+        self,
+        name: str,
+        type_: Type,
+        env: TypeEnv,
+        location: SourceLocation,
+        *,
+        mutable: bool = False,
+    ) -> None:
+        """Keep a same-block live binding's type invariant across redeclarations.
+
+        Closures retain this cell, including its function effect contract.
+        Shadowing may use another type until a closure captures that scope's
+        existing lookup; replacing it afterward invalidates the closure.
+        """
+        previous = env.bindings.get(name)
+        if not mutable and name in env.captured_mutations:
+            self._error(
+                f"Cannot make '{name}' immutable after a closure captured it "
+                "for mutation",
+                location,
+            )
+        if previous is None:
+            previous = env.captured_types.get(name)
+            if name in env.captured_global_calls:
+                self._error(
+                    f"Cannot shadow global callable '{name}' after a closure "
+                    "captured it; declare the local binding before the closure",
+                    location,
+                )
+        if previous is not None and not (
+            self._types_strictly_compatible(previous, type_)
+            and self._types_strictly_compatible(type_, previous)
+        ):
+            self._error(
+                f"Cannot rebind '{name}' in the same scope from {previous} to "
+                f"{type_}; existing bindings must retain their type and effects",
+                location,
+            )
+        env.bind(name, type_, mutable=mutable)
+
     def _check_let_statement(self, stmt: LetStatement, env: TypeEnv) -> None:
         """Type check a let statement."""
         errors_before = len(self.errors)
@@ -2887,7 +2975,7 @@ class TypeChecker(ExhaustivenessMixin):
                     f"but the value has type {actual_type}",
                     stmt.location,
                 )
-            env.bind(stmt.name, declared_type, mutable=False)
+            self._bind_local(stmt.name, declared_type, env, stmt.location)
         else:
             if len(self.errors) == errors_before and (
                 self._contains_any(actual_type) or self._has_type_vars(actual_type)
@@ -2898,7 +2986,7 @@ class TypeChecker(ExhaustivenessMixin):
                     stmt.location,
                 )
             # Type inference: use the type of the RHS expression
-            env.bind(stmt.name, actual_type, mutable=False)
+            self._bind_local(stmt.name, actual_type, env, stmt.location)
 
     def _check_module_constant(self, defn: ModuleConstant) -> None:
         """Type check a module-level constant and bind it in module scope."""
@@ -2949,6 +3037,10 @@ class TypeChecker(ExhaustivenessMixin):
 
         self._module_constants[defn.name] = constant_type
         self.global_env.bind(defn.name, constant_type, mutable=False)
+        # A function value does not inherit the hidden builtin's parameter names
+        # or defaults merely because the constant has the same spelling.
+        self.func_param_names.pop(defn.name, None)
+        self.func_default_counts.pop(defn.name, None)
         self._user_defined_names.add(defn.name)
 
     def _check_var_statement(self, stmt: VarStatement, env: TypeEnv) -> None:
@@ -2966,7 +3058,7 @@ class TypeChecker(ExhaustivenessMixin):
                     f"but the value has type {actual_type}",
                     stmt.location,
                 )
-            env.bind(stmt.name, declared_type, mutable=True)
+            self._bind_local(stmt.name, declared_type, env, stmt.location, mutable=True)
         else:
             if len(self.errors) == errors_before and (
                 self._contains_any(actual_type) or self._has_type_vars(actual_type)
@@ -2977,7 +3069,7 @@ class TypeChecker(ExhaustivenessMixin):
                     stmt.location,
                 )
             # Type inference: use the type of the RHS expression
-            env.bind(stmt.name, actual_type, mutable=True)
+            self._bind_local(stmt.name, actual_type, env, stmt.location, mutable=True)
 
     def _check_tuple_destructure(
         self, stmt: TupleDestructureStatement, env: TypeEnv
@@ -3010,7 +3102,7 @@ class TypeChecker(ExhaustivenessMixin):
             return
 
         for name, elem_type in zip(stmt.names, declared_type.element_types):
-            env.bind(name, elem_type, mutable=stmt.mutable)
+            self._bind_local(name, elem_type, env, stmt.location, mutable=stmt.mutable)
 
     def _check_assign_statement(self, stmt: AssignStatement, env: TypeEnv) -> None:
         """Type check an assignment statement."""
@@ -3032,6 +3124,7 @@ class TypeChecker(ExhaustivenessMixin):
             )
             return
 
+        self._record_captured_binding(stmt.target, env, require_mutable=True)
         value_type = self._check_expression(stmt.value, env)
         stmt._expected_runtime_type = var_type
         self._record_expected_runtime_type(stmt.value, var_type)
@@ -3062,6 +3155,8 @@ class TypeChecker(ExhaustivenessMixin):
             )
             return
 
+        if root_name is not None:
+            self._record_captured_binding(root_name, env, require_mutable=True)
         if isinstance(target_type, ArrayType):
             if not isinstance(index_type, IntType):
                 self._error(f"Array index must be Int, got {index_type}", stmt.location)
@@ -3128,6 +3223,8 @@ class TypeChecker(ExhaustivenessMixin):
             )
             return
 
+        if root_name is not None:
+            self._record_captured_binding(root_name, env, require_mutable=True)
         value_type = self._check_expression(stmt.value, env)
 
         field_types, missing_variants = self._resolved_variant_field_types(
@@ -3463,9 +3560,37 @@ class TypeChecker(ExhaustivenessMixin):
                 ErrorCode.TYPE_UNDEFINED_VAR,
             )
             return AnyType()
+        self._record_captured_binding(expr.name, env)
         if self._identifier_resolves_to_builtin(expr.name, env):
             expr._resolved_builtin_name = expr.name
         return type_
+
+    def _record_captured_binding(
+        self, name: str, env: TypeEnv, *, require_mutable: bool = False
+    ) -> None:
+        """Constrain future locals inserted into a closure's live parent frames."""
+        binding_scope = env.binding_scope(name)
+        if binding_scope is None or self._lambda_capture_env is None:
+            return
+        intermediate_scopes: list[TypeEnv] = []
+        scope: TypeEnv | None = self._lambda_capture_env
+        while scope is not None and scope is not binding_scope:
+            intermediate_scopes.append(scope)
+            scope = scope.parent
+        if scope is None:
+            # A parameter or local inside the lambda, not a captured binding.
+            return
+        type_ = binding_scope.bindings[name]
+        if require_mutable:
+            for captured_scope in [*intermediate_scopes, binding_scope]:
+                captured_scope.captured_mutations.add(name)
+        for intermediate in intermediate_scopes:
+            intermediate.captured_types.setdefault(name, type_)
+            if binding_scope is self.global_env and isinstance(type_, FuncType):
+                # Global callables carry names/defaults and builtin/trait
+                # dispatch metadata absent from FuncType. Preserving only the
+                # structural type cannot make a later first shadow safe.
+                intermediate.captured_global_calls.add(name)
 
     def _identifier_resolves_to_builtin(self, name: str, env: TypeEnv) -> bool:
         """Return True when an identifier still refers to a builtin function."""
@@ -3709,6 +3834,7 @@ class TypeChecker(ExhaustivenessMixin):
         ):
             builtin_name = identifier_func.name
             expr._resolved_builtin_name = builtin_name
+            self._record_captured_binding(identifier_func.name, env)
 
         # Special case: range accepts 2 or 3 arguments
         if builtin_name == "range" and len(arguments) in (2, 3):
@@ -3737,86 +3863,42 @@ class TypeChecker(ExhaustivenessMixin):
                 )
             return _INT_TYPE
 
-        # Trait method dispatch: resolve based on first argument's concrete type
-        if (
-            identifier_func is not None
-            and identifier_func.name in self.trait_methods
-            and arguments
-        ):
+        # Type checking and effect inference resolve the same lexical receiver.
+        trait_call = self._resolve_trait_call(expr, env)
+        if trait_call is not None:
+            impl_func_type, trait_param_names, ordered_trait_args = trait_call
+            assert identifier_func is not None
             method_name = identifier_func.name
-            has_named_args = any(arg.name for arg in arguments)
-            for trait_name, _trait_def in self.trait_methods[method_name]:
-                trait_param_names = (
-                    self._trait_method_param_names(trait_name, method_name) or []
-                )
-                if has_named_args:
-                    ordered_trait_args = self._try_reorder_call_args(
-                        arguments, trait_param_names
-                    )
-                    if ordered_trait_args is None:
-                        continue
-                else:
-                    ordered_trait_args = list(arguments)
-
-                if not ordered_trait_args or ordered_trait_args[0] is None:
-                    continue
-
-                first_arg_type = self._check_expression(
-                    ordered_trait_args[0].value, env
+            positional_count = sum(1 for arg in arguments if arg.name is None)
+            if len(impl_func_type.param_types) >= 3 and positional_count > 0:
+                self._error(
+                    f"Function '{method_name}' has {len(impl_func_type.param_types)} parameters; use named arguments for clarity (e.g., param_name: value)",
+                    expr.location,
                 )
 
-                # Find the concrete type name from the first argument
-                resolved_type_name: str | None = None
-                if isinstance(first_arg_type, UserType):
-                    resolved_type_name = first_arg_type.name
-                    # If this is a constructor name, find its parent type
-                    parent = self._constructor_to_type.get(resolved_type_name)
-                    if parent is not None:
-                        resolved_type_name = parent
-
-                if resolved_type_name is None:
-                    continue
-
-                key = (trait_name, resolved_type_name)
-                if (
-                    key not in self.impl_registry
-                    or method_name not in self.impl_registry[key]
-                ):
-                    continue
-
-                impl_func_type = self.impl_registry[key][method_name]
-                positional_count = sum(1 for arg in arguments if arg.name is None)
-                if len(impl_func_type.param_types) >= 3 and positional_count > 0:
+            if len(arguments) != len(impl_func_type.param_types):
+                self._error(
+                    f"'{method_name}' expects {len(impl_func_type.param_types)} argument(s), but {len(arguments)} were provided",
+                    expr.location,
+                    ErrorCode.TYPE_WRONG_ARITY,
+                )
+            for i, expected_type in enumerate(impl_func_type.param_types):
+                call_arg = ordered_trait_args[i]
+                if call_arg is None:
                     self._error(
-                        f"Function '{method_name}' has {len(impl_func_type.param_types)} parameters; use named arguments for clarity (e.g., param_name: value)",
-                        expr.location,
-                    )
-
-                if len(arguments) != len(impl_func_type.param_types):
-                    self._error(
-                        f"'{method_name}' expects {len(impl_func_type.param_types)} argument(s), but {len(arguments)} were provided",
+                        f"Missing argument for parameter '{trait_param_names[i]}'",
                         expr.location,
                         ErrorCode.TYPE_WRONG_ARITY,
                     )
-                for i, expected_type in enumerate(impl_func_type.param_types):
-                    call_arg: CallArg | None = (
-                        ordered_trait_args[i] if i < len(ordered_trait_args) else None
+                    continue
+                arg_type = self._check_expression(call_arg.value, env)
+                self._record_expected_runtime_type(call_arg.value, expected_type)
+                if not self._types_compatible(expected_type, arg_type):
+                    self._error(
+                        f"Argument {i + 1} type mismatch: expected {expected_type}, got {arg_type}",
+                        call_arg.value.location,
                     )
-                    if call_arg is None:
-                        self._error(
-                            f"Missing argument for parameter '{trait_param_names[i]}'",
-                            expr.location,
-                            ErrorCode.TYPE_WRONG_ARITY,
-                        )
-                        continue
-                    arg_type = self._check_expression(call_arg.value, env)
-                    self._record_expected_runtime_type(call_arg.value, expected_type)
-                    if not self._types_compatible(expected_type, arg_type):
-                        self._error(
-                            f"Argument {i + 1} type mismatch: expected {expected_type}, got {arg_type}",
-                            call_arg.value.location,
-                        )
-                return impl_func_type.return_type
+            return impl_func_type.return_type
 
         if (
             identifier_func is not None
@@ -3861,6 +3943,8 @@ class TypeChecker(ExhaustivenessMixin):
             self._module_param_names,
             self.func_default_counts,
             self._module_default_counts,
+            lexical_env=env,
+            global_env=self.global_env,
         )
         func_name_for_defaults = call_param_info.default_lookup_name
         num_defaults = call_param_info.default_count
@@ -4260,6 +4344,18 @@ class TypeChecker(ExhaustivenessMixin):
         """Type check the ? propagation operator."""
         operand_type = self._check_expression(expr.operand, env)
 
+        if self._lambda_propagation_types is not None and isinstance(
+            operand_type, (OptionType, ResultType)
+        ):
+            # A lambda's return type is inferred after its body. Keep its own
+            # propagation obligations instead of consulting an outer function.
+            self._lambda_propagation_types.append(operand_type)
+            return (
+                operand_type.value_type
+                if isinstance(operand_type, OptionType)
+                else operand_type.ok_type
+            )
+
         if self.current_return_type is None:
             self._error("'?' operator used outside of a function", expr.location)
             return AnyType()
@@ -4538,32 +4634,104 @@ class TypeChecker(ExhaustivenessMixin):
 
         return current_type
 
+    @contextmanager
+    def _function_context(
+        self,
+        return_type: Type,
+        *,
+        is_async: bool = False,
+        is_main: bool = False,
+    ) -> Iterator[None]:
+        """Isolate return, propagation, loop, and async state for a function."""
+        old_context = (
+            self.current_return_type,
+            self._lambda_return_types,
+            self._lambda_propagation_types,
+            self._lambda_capture_env,
+            self._loop_depth,
+            self._in_async_function,
+            self._in_main_function,
+        )
+        self.current_return_type = return_type
+        self._lambda_return_types = None
+        self._lambda_propagation_types = None
+        self._lambda_capture_env = None
+        self._loop_depth = 0
+        self._in_async_function = is_async
+        self._in_main_function = is_main
+        try:
+            yield
+        finally:
+            (
+                self.current_return_type,
+                self._lambda_return_types,
+                self._lambda_propagation_types,
+                self._lambda_capture_env,
+                self._loop_depth,
+                self._in_async_function,
+                self._in_main_function,
+            ) = old_context
+
     def _check_lambda(self, expr: LambdaExpr, env: TypeEnv) -> Type:
-        """Type check a lambda expression (expression or block form)."""
+        """Infer a lambda's own return/propagation contract in a fresh context."""
+        with self._function_context(UnitType()):
+            self._lambda_propagation_types = []
+            self._lambda_capture_env = env
+            function_type = self._check_lambda_body(expr, env)
+            return_type = function_type.return_type
+            substitutions: dict[str, Type] = {}
+            for propagated in self._lambda_propagation_types:
+                if isinstance(propagated, OptionType):
+                    if not isinstance(return_type, OptionType):
+                        self._error(
+                            f"'?' on {propagated} requires enclosing lambda to "
+                            f"return Option type, but it returns {return_type}",
+                            expr.location,
+                        )
+                elif isinstance(propagated, ResultType):
+                    if not isinstance(return_type, ResultType):
+                        self._error(
+                            f"'?' on {propagated} requires enclosing lambda to "
+                            f"return Result type, but it returns {return_type}",
+                            expr.location,
+                        )
+                    elif not self._types_compatible_with_subs(
+                        return_type.err_type, propagated.err_type, substitutions
+                    ):
+                        self._error(
+                            "Error type mismatch in '?': lambda returns "
+                            f"{return_type} but '?' propagates {propagated.err_type}",
+                            expr.location,
+                        )
+            return FuncType(
+                function_type.param_types,
+                self._apply_substitutions(return_type, substitutions),
+                function_type.effects,
+            )
+
+    def _check_lambda_body(self, expr: LambdaExpr, env: TypeEnv) -> FuncType:
         lambda_env = env.child()
+        effect_env = env.child()
         param_types: list[Type] = []
 
         for param in expr.params:
+            if param.name in lambda_env.bindings:
+                self._error(
+                    f"Duplicate parameter name '{param.name}'",
+                    param.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
             param_type = self._resolve_type(param.param_type)
             param_types.append(param_type)
             lambda_env.bind(param.name, param_type)
+            effect_env.bind(param.name, param_type)
 
         if expr.block_body is not None:
-            # Block lambda: type-check body, collecting return types
-            old_return_type = self.current_return_type
-            old_collecting = self._lambda_return_types
-
-            # Use a dummy return type so _check_return_statement doesn't
-            # error with "Return outside of function", and collect actual types
-            self.current_return_type = UnitType()
             self._lambda_return_types = []
-
             for stmt in expr.block_body:
                 self._check_statement(stmt, lambda_env)
-
             return_types = self._lambda_return_types
-            self._lambda_return_types = old_collecting
-            self.current_return_type = old_return_type
+            self._lambda_return_types = None
 
             if not return_types:
                 return_type: Type = UnitType()
@@ -4587,13 +4755,13 @@ class TypeChecker(ExhaustivenessMixin):
                         expr.location,
                     )
 
-            lambda_effects = self._infer_body_effects(expr.block_body, lambda_env)
+            lambda_effects = self._infer_body_effects(expr.block_body, effect_env)
             return FuncType(tuple(param_types), return_type, lambda_effects)
-        else:
-            assert expr.body is not None
-            body_type = self._check_expression(expr.body, lambda_env)
-            lambda_effects = frozenset(self._infer_expr_effects(expr.body, lambda_env))
-            return FuncType(tuple(param_types), body_type, lambda_effects)
+
+        assert expr.body is not None
+        body_type = self._check_expression(expr.body, lambda_env)
+        lambda_effects = frozenset(self._infer_expr_effects(expr.body, effect_env))
+        return FuncType(tuple(param_types), body_type, lambda_effects)
 
     def _check_constructor_call(self, expr: ConstructorCall, env: TypeEnv) -> Type:
         """Type check a constructor call."""
@@ -4826,7 +4994,7 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(pattern, WildcardPattern):
             pass
         elif isinstance(pattern, VariablePattern):
-            env.bind(pattern.name, expected_type)
+            self._bind_local(pattern.name, expected_type, env, pattern.location)
         elif isinstance(pattern, LiteralPattern):
             literal_type = self._literal_type(pattern.value)
             if not self._types_strictly_compatible(expected_type, literal_type):
@@ -4892,7 +5060,12 @@ class TypeChecker(ExhaustivenessMixin):
                     if isinstance(elem_pattern, RestPattern):
                         # Rest pattern binds to List[T]
                         if elem_pattern.name is not None:
-                            env.bind(elem_pattern.name, expected_type)
+                            self._bind_local(
+                                elem_pattern.name,
+                                expected_type,
+                                env,
+                                elem_pattern.location,
+                            )
                     else:
                         self._check_pattern(
                             elem_pattern,
@@ -4928,7 +5101,7 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(pattern, RestPattern):
             # Rest pattern at top level (shouldn't happen, but handle gracefully)
             if pattern.name is not None:
-                env.bind(pattern.name, expected_type)
+                self._bind_local(pattern.name, expected_type, env, pattern.location)
 
     def _literal_type(self, value) -> Type:
         """Get the type of a literal value."""

@@ -117,6 +117,8 @@ def test_geno_run_json_keeps_the_raw_value_and_exits_with_the_status(
         tmp_path,
         _source("Int", 'print("report-ready")\nreturn 2'),
         "--json",
+        "--cap",
+        "print",
     )
 
     assert result.returncode == 2

@@ -650,6 +650,8 @@ class JSCompiler(BaseCompiler):
         self,
         bound_names: Iterable[str] = (),
         statements: Sequence[Statement] = (),
+        *,
+        initialize_module_shadows: bool = True,
     ) -> Iterator[None]:
         """Track the names declared directly in one JavaScript block."""
         names = set(bound_names)
@@ -661,9 +663,26 @@ class JSCompiler(BaseCompiler):
             )
         )
         try:
+            if initialize_module_shadows:
+                self._initialize_module_constant_shadows(statements)
             yield
         finally:
             self._js_block_scopes.pop()
+
+    def _initialize_module_constant_shadows(
+        self, statements: Sequence[Statement]
+    ) -> None:
+        for name in sorted(self._direct_binding_names(statements)):
+            outer = self._active_module_bindings.get(name)
+            if (
+                name in self._module_constant_names
+                and self._compiled_identifier_name(name) == outer
+            ):
+                # Preserve a live local cell for closures made before the
+                # eventual declaration, without a temporal dead zone.
+                keyword = self._binding_keyword(name, "let")
+                target = self._compiled_identifier_name(name)
+                self._writeln(f"{keyword}{target} = {outer};")
 
     @staticmethod
     def _rebound_names(statements: Sequence[Statement]) -> set[str]:
@@ -719,11 +738,12 @@ class JSCompiler(BaseCompiler):
 
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         iterable = self._compile_expr(stmt.iterable)
-        with self._block_scope(statements=stmt.body):
+        with self._block_scope(statements=stmt.body, initialize_module_shadows=False):
             self._binding_keyword(stmt.variable, "let")
             variable = self._compiled_identifier_name(stmt.variable)
             self._writeln(self._for_open(variable, iterable))
             self._indent()
+            self._initialize_module_constant_shadows(stmt.body)
             for statement in stmt.body:
                 self._compile_statement(statement)
             self._dedent()
@@ -731,7 +751,12 @@ class JSCompiler(BaseCompiler):
 
     def _compile_assign_statement(self, stmt: AssignStatement) -> None:
         value = self._compile_expr(stmt.value)
+        if self._needs_deep_copy(stmt.value, None):
+            value = f"_deepCopy({value})"
         self._writeln(f"{self._compiled_identifier_name(stmt.target)} = {value};")
+
+    def _snapshot_value(self, value: str) -> str:
+        return f"_deepCopy({value})"
 
     def _emit_main_result(
         self,
@@ -1510,7 +1535,8 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     f"`requires false` on {defn.name} makes the function uncallable"
                 )
-            cond = self._compile_expr(req.condition)
+            with self._block_scope(p.name for p in defn.params):
+                cond = self._compile_expr(req.condition)
             self._writeln(f"if (!({cond})) {{")
             self._indent()
             self._writeln(
@@ -1561,7 +1587,7 @@ class JSCompiler(BaseCompiler):
                     )
                 # Limit the implicit result binding to the contract, while
                 # allowing lambdas inside it to shadow that binding normally.
-                with self._block_scope(["result"]):
+                with self._block_scope([*(p.name for p in defn.params), "result"]):
                     self._js_block_scopes[-1].overrides["result"] = result_name
                     cond = self._compile_expr(ens.condition)
                 self._writeln(f"if (!({cond})) {{")
@@ -2432,15 +2458,25 @@ class JSCompiler(BaseCompiler):
 
     def _compile_module_constants(self, program: Program) -> None:
         """Emit module-level constants ahead of every other definition."""
+        self._module_constant_names = {
+            defn.name
+            for defn in program.definitions
+            if isinstance(defn, ModuleConstant)
+        }
         for defn in program.definitions:
             if not isinstance(defn, ModuleConstant):
                 continue
             value = self._compile_expr(defn.value)
+            # Keep module identities distinct from all local/parameter names,
+            # including references evaluated before a local shadow is bound.
             name = self._mangle_name(defn.name)
+            identity = self._fresh_temp()
+            self._active_module_bindings[defn.name] = identity
             if self._needs_deep_copy(defn.value, defn.type_annotation):
                 self._writeln(f"const {name} = _deepCopy({value});")
             else:
                 self._writeln(f"const {name} = {value};")
+            self._writeln(f"const {identity} = {name};")
 
     def _compile_let_statement(self, stmt: LetStatement) -> None:
         value = self._compile_expr(stmt.value)
@@ -2469,7 +2505,7 @@ class JSCompiler(BaseCompiler):
         for index, name in enumerate(stmt.names):
             keyword = self._binding_keyword(name, "let" if stmt.mutable else "const")
             target = self._compiled_identifier_name(name)
-            self._writeln(f"{keyword}{target} = {temporary}[{index}];")
+            self._writeln(f"{keyword}{target} = _deepCopy({temporary}[{index}]);")
 
     # ``_compile_{assign,index_assign}_statement`` live on ``BaseCompiler`` —
     # JS differs from Python only in the trailing ``;`` terminator, supplied
@@ -3007,7 +3043,7 @@ class JSCompiler(BaseCompiler):
             builtin_name in {"map", "list_map"}
             and len(call_args) == 2
             and isinstance(call_args[1].value, Identifier)
-            and call_args[1].value.name == "to_string"
+            and call_args[1].value._resolved_builtin_name == "to_string"
         ):
             list_type = getattr(call_args[0].value, "_resolved_type", None)
             if isinstance(list_type, ListType):
@@ -3028,7 +3064,7 @@ class JSCompiler(BaseCompiler):
             builtin_name == "list_group_by"
             and len(call_args) == 2
             and isinstance(call_args[1].value, Identifier)
-            and call_args[1].value.name == "to_string"
+            and call_args[1].value._resolved_builtin_name == "to_string"
         ):
             list_type = getattr(call_args[0].value, "_resolved_type", None)
             if isinstance(list_type, ListType):
@@ -3070,7 +3106,7 @@ class JSCompiler(BaseCompiler):
             builtin_name == "option_map"
             and len(call_args) == 2
             and isinstance(call_args[1].value, Identifier)
-            and call_args[1].value.name == "to_string"
+            and call_args[1].value._resolved_builtin_name == "to_string"
         ):
             option_type = getattr(call_args[0].value, "_resolved_type", None)
             if isinstance(option_type, OptionType):
@@ -3093,7 +3129,7 @@ class JSCompiler(BaseCompiler):
             builtin_name in {"result_map", "result_map_err"}
             and len(call_args) == 2
             and isinstance(call_args[1].value, Identifier)
-            and call_args[1].value.name == "to_string"
+            and call_args[1].value._resolved_builtin_name == "to_string"
         ):
             result_type = getattr(call_args[0].value, "_resolved_type", None)
             if isinstance(result_type, ResultType):
@@ -3126,7 +3162,7 @@ class JSCompiler(BaseCompiler):
             builtin_name == "map_map_values"
             and len(call_args) == 2
             and isinstance(call_args[1].value, Identifier)
-            and call_args[1].value.name == "to_string"
+            and call_args[1].value._resolved_builtin_name == "to_string"
         ):
             map_type = getattr(call_args[0].value, "_resolved_type", None)
             if isinstance(map_type, MapType):
@@ -3279,13 +3315,34 @@ class JSCompiler(BaseCompiler):
     def _compile_lambda(self, expr: LambdaExpr) -> str:
         params = ", ".join(self._mangle_name(p.name) for p in expr.params)
 
-        if expr.block_body is not None:
+        uses_propagate = self._uses_propagate(expr)
+        if expr.block_body is not None or uses_propagate:
             func_name = self._fresh_temp()
             self._writeln(f"const {func_name} = (({params}) => {{")
             self._indent()
-            with self._function_scope((p.name for p in expr.params), expr.block_body):
-                for stmt in expr.block_body:
-                    self._compile_statement(stmt)
+            if uses_propagate:
+                self._writeln("try {")
+                self._indent()
+            with self._function_scope(
+                (p.name for p in expr.params), expr.block_body or []
+            ):
+                if expr.block_body is None:
+                    assert expr.body is not None
+                    self._writeln(f"return {self._compile_expr(expr.body)};")
+                else:
+                    for stmt in expr.block_body:
+                        self._compile_statement(stmt)
+            if uses_propagate:
+                self._dedent()
+                temporary = self._fresh_temp()
+                self._writeln(f"}} catch ({temporary}) {{")
+                self._indent()
+                self._writeln(
+                    f"if ({temporary} instanceof _PropagateReturn) return {temporary}.value;"
+                )
+                self._writeln(f"throw {temporary};")
+                self._dedent()
+                self._writeln("}")
             self._dedent()
             self._writeln("});")
             return cast(str, func_name)

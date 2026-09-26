@@ -247,7 +247,10 @@ def test_incremental_mutators_do_not_rewalk_existing_target(
 
     assert all(target not in roots for roots in checked_roots)
     assert any(inserted in roots for roots in checked_roots)
-    assert target._elements[-1] is inserted
+    assert target._elements[-1] == inserted
+    assert target._elements[-1] is not inserted
+    inserted[0].append(4)
+    assert target._elements[-1] == [[1, 2, 3]]
 
 
 def test_incremental_mutators_still_reject_oversized_nested_values() -> None:

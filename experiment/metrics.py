@@ -8,6 +8,7 @@ Defines metrics for analyzing benchmark results.
 import math
 from dataclasses import dataclass, field
 
+from analysis.statistics import mcnemar_statistic_pvalue
 from benchmark.runner import ErrorCategory, EvaluationResult
 
 
@@ -229,14 +230,9 @@ def compare_results(
     b = comparison.n_a_only  # A succeeds, B fails
     c = comparison.n_b_only  # B succeeds, A fails
 
-    if b + c > 0:
-        comparison.mcnemar_statistic = (abs(b - c) - 1) ** 2 / (b + c)
-        # Approximate p-value using chi-squared survival function (1 df).
-        # For 1 df: chi2_sf(x, 1) = erfc(sqrt(x/2)) = erfc(sqrt(x) / sqrt(2)).
-        # This avoids a scipy dependency.
-        comparison.mcnemar_pvalue = math.erfc(
-            math.sqrt(comparison.mcnemar_statistic) / math.sqrt(2)
-        )
+    comparison.mcnemar_statistic, comparison.mcnemar_pvalue = mcnemar_statistic_pvalue(
+        b, c
+    )
 
     # Error reduction analysis
     def count_error(results, category):

@@ -52,18 +52,38 @@ call hosted endpoints from a browser.
 
 | Endpoint      | Method | Description                             |
 |---------------|--------|-----------------------------------------|
-| `/healthz`    | GET    | Health check — returns `ok`             |
+| `/readyz`     | GET    | Readiness check; HTTP 503 when checks fail |
+| `/healthz`    | GET    | Compatibility alias for readiness       |
+| `/livez`      | GET    | Liveness check; HTTP 200 while serving   |
 | `/metrics`    | GET    | Prometheus-format metrics               |
 | `/run`        | POST   | Execute Geno source, returns JSON result |
 | `/constrain`  | POST   | Validate a Geno prefix and return allowed-next-token guidance |
 
-`/healthz` is intentionally public for load balancers. When `GENO_API_KEY` is
-configured, unauthenticated health checks return only the overall status; send
+Health endpoints are intentionally public for load balancers. When `GENO_API_KEY`
+is configured, unauthenticated readiness checks return only the overall status; send
 the same API-key headers to receive the full diagnostic health payload. Metrics
 require API-key auth by default when `GENO_API_KEY` is configured. Set
 `GENO_REQUIRE_AUTH_FOR_METRICS=0` only when a trusted proxy already protects
 `/metrics`, and set `GENO_REQUIRE_AUTH_FOR_PLAYGROUND=1` to require auth for
 `/` and `/playground`.
+
+Startup checks execute a small program in the same resource-limited worker
+process used by `/run`. Readiness reflects those checks and worker infrastructure
+health without spawning a worker for each probe. A user program error or
+resource limit reached after worker startup does not make a healthy server
+unready. A successful later request clears a transient worker failure; recorded
+startup-check failures require a restart after correcting the cause. Use
+`/readyz` for traffic admission and `/livez` to determine whether the HTTP server
+is alive. Normal startup refuses failed checks; `GENO_SKIP_STARTUP_CHECKS` is an
+explicit operator override.
+
+### Graceful shutdown
+
+On SIGTERM or keyboard interrupt the server stops accepting connections and
+allows active requests to finish for `GENO_SHUTDOWN_GRACE_SECONDS` (default 5
+seconds). At the deadline it closes remaining request sockets and terminates
+their workers, with at most 2 additional seconds for cleanup. Configure the
+deployment's termination grace period to exceed both budgets.
 
 ### POST /run
 
@@ -180,7 +200,7 @@ spec:
             - containerPort: 8000
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: 8000
               httpHeaders:
                 - name: Host
@@ -189,7 +209,7 @@ spec:
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 8000
               httpHeaders:
                 - name: Host
@@ -226,7 +246,7 @@ spec:
 1. Push Docker image to ECR
 2. Create a task definition with port 8000 and use the image's Python health
    check: `python -c "import sys, urllib.request; sys.exit(0 if `
-   `urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status `
+   `urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status `
    `== 200 else 1)"`.
 3. Create a Network Load Balancer with a TCP target-group health check on port
    8000. An ALB's HTTP health check uses the target's private IP in `Host`, which
@@ -260,7 +280,7 @@ app = "geno-server"
   force_https = true
 
 [[http_service.checks]]
-  path = "/healthz"
+  path = "/readyz"
   interval = 10000
   timeout = 2000
 
@@ -272,7 +292,7 @@ app = "geno-server"
 fly deploy
 ```
 Replace `geno.example.com` in the managed-platform examples with the exact
-public hostname clients use. Local loopback `/healthz` probes may use the bound
+public hostname clients use. Local loopback health probes may use the bound
 loopback Host value; managed probes must send an explicitly allowed Host. Every
 execution endpoint requires an allowed Host value.
 
@@ -293,7 +313,7 @@ environment with:
 - **API key authentication**: Required for non-loopback bindings. Set
   `GENO_API_KEY` env var. Accepts `Authorization: Bearer <key>` or
   `X-API-Key: <key>` headers. Uses constant-time comparison.
-- **GET endpoint auth controls**: `/healthz` stays public, but authenticated
+- **GET endpoint auth controls**: Health endpoints stay public, but authenticated
   deployments expose only the overall status unless callers provide a valid API
   key. `/metrics` requires API-key auth by default when `GENO_API_KEY` is set;
   use `GENO_REQUIRE_AUTH_FOR_METRICS=0` only behind a trusted protected metrics
@@ -336,12 +356,13 @@ server reads these operator knobs (all optional; defaults in parentheses):
 | --- | --- |
 | `GENO_TRUSTED_PROXY` | Immediate upstream proxy address; enables strict `X-Forwarded-For` client-IP trust and `X-Forwarded-Proto` scheme trust (unset — peer IP and connection scheme used) |
 | `GENO_ALLOWED_ENV_NAMES` / `GENO_ALLOWED_ENV_PREFIXES` | Allowlist for the `env` capability; without one, granting `env` on `/run` is rejected |
-| `GENO_SKIP_STARTUP_CHECKS` | Skip fail-closed startup checks (`/healthz` then reports checks as skipped) |
+| `GENO_SKIP_STARTUP_CHECKS` | Skip fail-closed startup checks (readiness reports those checks as skipped) |
 | `GENO_MAX_REQUEST_BODY_BYTES` | Cap on `/run` and `/constrain` request body size |
 | `GENO_MAX_REQUEST_HEADER_BYTES` | Aggregate request-line and header size cap before request dispatch (64 KiB) |
 | `GENO_MAX_RESPONSE_BODY_BYTES` | Maximum serialized JSON response body (8 MiB); oversized results receive a fixed `413` response |
 | `GENO_MAX_JSON_NESTING_DEPTH` | Maximum object/array nesting depth accepted in JSON request bodies (128) |
 | `GENO_REQUEST_TIMEOUT_SECONDS` | Per-request wall-clock ceiling |
+| `GENO_SHUTDOWN_GRACE_SECONDS` | Time allowed for active requests to finish before forced cleanup (5 seconds) |
 | `GENO_DEFAULT_MAX_STEPS` / `GENO_MAX_STEPS` | Default and hard cap for interpreter steps |
 | `GENO_MAX_MODULES` / `GENO_MAX_MODULE_SOURCE_BYTES` | Multi-module submission limits |
 | `GENO_CONSTRAIN_WALL_CLOCK_SECONDS` | Wall-clock ceiling for `/constrain` |

@@ -28,17 +28,47 @@ larger integers and enforce the separately configurable `max_integer_bits`
 limit (33,219 bits by default). Keep values inside the portable range when the
 same program must run on every backend.
 
+Ordered comparisons with a `nan` Float operand (`<`, `<=`, `>`, and `>=`)
+are always `false`, including comparisons between two NaN values.
+
 ## Values and copies
 
 Primitive values, immutable collections, and user-defined constructor values
 have value semantics. Rebinding an existing constructor value creates a
 snapshot: later field assignment through a mutable binding does not modify the
-previous binding. A `with` expression also creates an independent value, and
-its result may be bound with `var` and mutated.
+previous binding. This applies to declarations, later assignments, and
+destructuring bindings, including records nested inside immutable collections.
+A `with` expression also creates an independent value, and its result may be
+bound with `var` and mutated.
 
 `Array`, `Vec`, `Set`, and `MutableMap` are explicit mutable reference types.
 Assignments of these collections share their underlying storage. Construct a
 new collection when independent mutable storage is required.
+
+## Bindings and closures
+
+A declaration that reuses a name in the same lexical scope updates the existing
+binding. Its type and effect contract must remain unchanged so previously
+checked closures stay valid; a captured binding observes later same-type
+rebindings. The latest declaration determines mutability: `var x = 1` followed
+by `let x = 2` makes subsequent assignment to `x` invalid. If an existing closure
+writes that binding, the immutable redeclaration is rejected because it would
+invalidate the closure's checked assignment.
+
+A declaration in a nested block creates a separate binding. Module constants
+may be shadowed by function parameters and local bindings; initializers and
+parameter defaults resolve names in their enclosing scope before introducing
+the new binding.
+
+Declaring a local callable after a closure has already resolved that name to a
+global callable is rejected: parameter names, defaults, and builtin dispatch
+must keep the identity used when the closure was checked. Declare the local
+callable before the closure to capture it instead.
+
+Each lambda has its own return, loop, and asynchronous context. Propagation
+with `?` returns from that lambda and requires its inferred return type to be
+the corresponding `Option` or `Result`; it cannot borrow the enclosing
+function's return contract or escape to an enclosing loop.
 
 ## Maps
 

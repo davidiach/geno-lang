@@ -80,6 +80,7 @@ from geno.lsp_diagnostics import (
 from geno.lsp_diagnostics import (
     to_lsp_diagnostic as _to_lsp_diagnostic,
 )
+from geno.lsp_positions import convert_positions
 from geno.tokens import KEYWORDS, SourceLocation
 
 _logger = logging.getLogger(__name__)
@@ -201,7 +202,7 @@ def _symbol_range_from_source(
     line_1_based: int,
     fallback_column_1_based: int,
 ) -> types.Range:
-    """Return a best-effort LSP range for a symbol name on one source line."""
+    """Return a code-point range, converted to client units at the boundary."""
     line_index = max(line_1_based - 1, 0)
     lines = source.splitlines()
     if line_index >= len(lines):
@@ -848,11 +849,14 @@ def _build_symbol_table_for_document(
     source: str,
     source_overrides: Mapping[Path, str] | None = None,
 ) -> SymbolTable | None:
-    """Build a symbol table for a file plus its imported modules."""
+    """Build a project-wide symbol table, including reverse importers."""
+    from geno.ast_nodes import Program
+    from geno.dependency_graph import DependencyGraphError
     from geno.lexer import Lexer, LexerError
     from geno.parser import Parser
     from geno.parser_base import ParseError as _ParseError
     from geno.parser_base import ParseErrors as _ParseErrors
+    from geno.project_graph import ProjectGraphError
     from geno.project_resolution import ProjectResolutionError, resolve_file_context
     from geno.symbol_table import build_symbol_table
 
@@ -861,6 +865,8 @@ def _build_symbol_table_for_document(
         _ParseError,
         _ParseErrors,
         ProjectResolutionError,
+        ProjectGraphError,
+        DependencyGraphError,
         OSError,
         UnicodeError,
     )
@@ -868,6 +874,20 @@ def _build_symbol_table_for_document(
     try:
         tokens = Lexer(source, filename).tokenize()
         program = Parser(tokens).parse_program()
+        _project, _overrides, graph = _load_validation_project(
+            file_path, source, source_overrides or {}
+        )
+        if graph is not None and any(
+            resolved.path.resolve() == file_path.resolve()
+            for resolved in graph.file_map.values()
+        ):
+            # Include the focused document exactly once, under its canonical
+            # module name, so importers share its definition identities.
+            return build_symbol_table(
+                Program(location=program.location, definitions=[]),
+                filename,
+                graph.parsed,
+            )
         context = resolve_file_context(
             file_path,
             source_override=source,
@@ -978,10 +998,49 @@ class GenoLanguageServer:
         @wraps(handler)
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
             with self._state_lock:
-                return handler(*args, **kwargs)
+                # Document synchronization belongs to pygls, which already
+                # interprets its ranges in the negotiated encoding.
+                if handler.__name__.startswith("did_"):
+                    return handler(*args, **kwargs)
+                uri = (
+                    getattr(getattr(args[0], "text_document", None), "uri", None)
+                    if args
+                    else None
+                )
+                converted_args = tuple(
+                    self._convert_positions(arg, uri=uri, to_client=False)
+                    for arg in args
+                )
+                result = handler(*converted_args, **kwargs)
+                return self._convert_positions(result, uri=uri, to_client=True)
 
         _wrapped.__self__ = self  # type: ignore[attr-defined]
         return _wrapped
+
+    def _position_source(self, uri: str) -> str | None:
+        """Read the same open-buffer view used by semantic analysis."""
+        source = self._open_docs.get(uri)
+        if source is not None:
+            return source
+        path = _uri_to_path_or_none(uri)
+        return self._read_project_source(str(path)) if path is not None else None
+
+    def _convert_positions(
+        self, value: Any, *, uri: str | None, to_client: bool
+    ) -> Any:
+        encoding = self.server.workspace.position_encoding or "utf-16"
+        return convert_positions(
+            value,
+            self._position_source,
+            uri=uri,
+            encoding=encoding,
+            to_client=to_client,
+        )
+
+    def _send_diagnostics(self, uri: str, diagnostics: list[Any]) -> None:
+        self.server.publish_diagnostics(
+            uri, self._convert_positions(diagnostics, uri=uri, to_client=True)
+        )
 
     def _register_handlers(self) -> None:
         """Register LSP feature handlers on the underlying pygls server."""
@@ -1443,7 +1502,7 @@ class GenoLanguageServer:
             if file_path is None:
                 result = geno.check(source, filename=uri, _check_default_run=True)
                 virtual_diags = [_to_lsp_diagnostic(d) for d in result.diagnostics]
-                self.server.publish_diagnostics(uri, virtual_diags)
+                self._send_diagnostics(uri, virtual_diags)
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
                 return
@@ -1503,11 +1562,11 @@ class GenoLanguageServer:
                             target_errors, uri
                         )
                         for err_uri, diagnostics in grouped_diags.items():
-                            self.server.publish_diagnostics(err_uri, diagnostics)
+                            self._send_diagnostics(err_uri, diagnostics)
                         for rf in project.files:
                             mod_uri = rf.path.as_uri()
                             if mod_uri not in grouped_diags:
-                                self.server.publish_diagnostics(mod_uri, [])
+                                self._send_diagnostics(mod_uri, [])
                         all_symbols, _ = _extract_completion_symbols(source)
                         self._doc_cache[uri] = (source, all_symbols)
                         return
@@ -1526,11 +1585,11 @@ class GenoLanguageServer:
                 ) as e:
                     grouped_diags = _diagnostics_by_uri_from_exception(e, uri)
                     for err_uri, diagnostics in grouped_diags.items():
-                        self.server.publish_diagnostics(err_uri, diagnostics)
+                        self._send_diagnostics(err_uri, diagnostics)
                     for rf in project.files:
                         mod_uri = rf.path.as_uri()
                         if mod_uri not in grouped_diags:
-                            self.server.publish_diagnostics(mod_uri, [])
+                            self._send_diagnostics(mod_uri, [])
                     all_symbols, _ = _extract_completion_symbols(source)
                     self._doc_cache[uri] = (source, all_symbols)
                     return
@@ -1538,7 +1597,7 @@ class GenoLanguageServer:
                 # No errors — clear diagnostics for all project files
                 for rf in project.files:
                     mod_uri = rf.path.as_uri()
-                    self.server.publish_diagnostics(mod_uri, [])
+                    self._send_diagnostics(mod_uri, [])
 
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
@@ -1604,11 +1663,11 @@ class GenoLanguageServer:
                             target_errors, uri
                         )
                         for err_uri, diagnostics in grouped_diags.items():
-                            self.server.publish_diagnostics(err_uri, diagnostics)
+                            self._send_diagnostics(err_uri, diagnostics)
                         for rf in context.project.files:
                             mod_uri = rf.path.as_uri()
                             if mod_uri not in grouped_diags:
-                                self.server.publish_diagnostics(mod_uri, [])
+                                self._send_diagnostics(mod_uri, [])
                         all_symbols, _ = _extract_completion_symbols(source)
                         self._doc_cache[uri] = (source, all_symbols)
                         return
@@ -1627,11 +1686,11 @@ class GenoLanguageServer:
                 ) as e:
                     grouped_diags = _diagnostics_by_uri_from_exception(e, uri)
                     for err_uri, diagnostics in grouped_diags.items():
-                        self.server.publish_diagnostics(err_uri, diagnostics)
+                        self._send_diagnostics(err_uri, diagnostics)
                     for rf in context.project.files:
                         mod_uri = rf.path.as_uri()
                         if mod_uri not in grouped_diags:
-                            self.server.publish_diagnostics(mod_uri, [])
+                            self._send_diagnostics(mod_uri, [])
                     all_symbols, _ = _extract_completion_symbols(source)
                     self._doc_cache[uri] = (source, all_symbols)
                     return
@@ -1639,7 +1698,7 @@ class GenoLanguageServer:
                 # No errors — clear diagnostics for all project files
                 for rf in context.project.files:
                     mod_uri = rf.path.as_uri()
-                    self.server.publish_diagnostics(mod_uri, [])
+                    self._send_diagnostics(mod_uri, [])
 
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
@@ -1665,31 +1724,31 @@ class GenoLanguageServer:
                         lsp_diags.extend(
                             _to_lsp_diagnostic(d) for d in result.diagnostics
                         )
-                self.server.publish_diagnostics(uri, lsp_diags)
+                self._send_diagnostics(uri, lsp_diags)
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
                 return
         except DependencyGraphError as e:
             diag = _error_diagnostic(str(e))
-            self.server.publish_diagnostics(uri, [diag])
+            self._send_diagnostics(uri, [diag])
             all_symbols, _ = _extract_completion_symbols(source)
             self._doc_cache[uri] = (source, all_symbols)
             return
         except _ProjectGraphError as e:
             diag = _error_diagnostic(str(e))
-            self.server.publish_diagnostics(uri, [diag])
+            self._send_diagnostics(uri, [diag])
             all_symbols, _ = _extract_completion_symbols(source)
             self._doc_cache[uri] = (source, all_symbols)
             return
         except ProjectResolutionError as e:
             diag = _error_diagnostic(str(e))
-            self.server.publish_diagnostics(uri, [diag])
+            self._send_diagnostics(uri, [diag])
             all_symbols, _ = _extract_completion_symbols(source)
             self._doc_cache[uri] = (source, all_symbols)
             return
         except ValueError as e:
             diag = _error_diagnostic(str(e))
-            self.server.publish_diagnostics(uri, [diag])
+            self._send_diagnostics(uri, [diag])
             all_symbols, _ = _extract_completion_symbols(source)
             self._doc_cache[uri] = (source, all_symbols)
             return
@@ -1699,7 +1758,7 @@ class GenoLanguageServer:
         # Single-file fallback — also uses geno.check() for consistency
         result = geno.check(source, filename=uri, _check_default_run=True)
         lsp_diags = [_to_lsp_diagnostic(d) for d in result.diagnostics]
-        self.server.publish_diagnostics(uri, lsp_diags)
+        self._send_diagnostics(uri, lsp_diags)
 
         # Extract user-defined names for completion
         all_symbols, _ = _extract_completion_symbols(source)
@@ -1807,7 +1866,7 @@ class GenoLanguageServer:
         self._open_doc_lsp_versions.pop(uri, None)
         self._doc_cache.pop(uri, None)
         self._project_views.pop(uri, None)
-        self.server.publish_diagnostics(uri, [])
+        self._send_diagnostics(uri, [])
         self._refresh_open_documents(previous_project_paths=previous_project_paths)
 
     def did_change_watched_files(
@@ -1841,7 +1900,7 @@ class GenoLanguageServer:
         # project, including when their project view could not be rebuilt.
         current_paths.update(str(path) for path in self._open_doc_paths.values())
         for removed_path in previous_paths - current_paths:
-            self.server.publish_diagnostics(Path(removed_path).as_uri(), [])
+            self._send_diagnostics(Path(removed_path).as_uri(), [])
 
     def formatting(
         self,
@@ -1864,7 +1923,7 @@ class GenoLanguageServer:
                     start=types.Position(line=0, character=0),
                     end=types.Position(
                         line=len(source_lines) - 1,
-                        character=len(source_lines[-1].encode("utf-16-le")) // 2,
+                        character=len(source_lines[-1]),
                     ),
                 ),
                 new_text=formatted,
@@ -2639,6 +2698,40 @@ class GenoLanguageServer:
             )
         return loc_uri, location_range
 
+    def _rename_project_is_complete(self, uri: str, source: str) -> bool:
+        """Refuse project edits when unresolved files could hide references.
+
+        Semantic lookup deliberately falls back to a single document while a
+        project has parse errors. That view remains useful for local symbols,
+        but cannot establish all references to a potentially exported symbol.
+        """
+        from geno.dependency_graph import DependencyGraphError
+        from geno.lexer import LexerError
+        from geno.package_manager import PackageLockSetupError
+        from geno.parser_base import ParseError, ParseErrors
+        from geno.project_graph import ProjectGraphError
+
+        file_path = _uri_to_path_or_none(uri)
+        if file_path is None:
+            return True
+        try:
+            _load_validation_project(
+                file_path, source, self._source_overrides_from_open_documents()
+            )
+        except (
+            LexerError,
+            ParseError,
+            ParseErrors,
+            ProjectGraphError,
+            DependencyGraphError,
+            PackageLockSetupError,
+            OSError,
+            ValueError,  # Manifest validation/TOML and Unicode decoding failures.
+        ):
+            _logger.debug("Project rename index is incomplete", exc_info=True)
+            return False
+        return True
+
     def rename(self, params: types.RenameParams) -> types.WorkspaceEdit | None:
         uri = params.text_document.uri
         doc = self.server.workspace.get_text_document(uri)
@@ -2672,6 +2765,10 @@ class GenoLanguageServer:
         result = self._semantic_locations(uri, doc.source, line, char, word=old_name)
         if result:
             defn, locs = result
+            if defn.kind not in {"variable", "parameter"} and not (
+                self._rename_project_is_complete(uri, doc.source)
+            ):
+                return None
             changes: dict[str, list[types.TextEdit]] = {}
             for loc in locs:
                 target = self._semantic_location_target(uri, doc.source, defn.name, loc)
@@ -2686,6 +2783,8 @@ class GenoLanguageServer:
             return types.WorkspaceEdit(changes=changes) if changes else None
 
         # Fallback to text-based rename
+        if not self._rename_project_is_complete(uri, doc.source):
+            return None
         changes = {}
         edits = _find_word_occurrences(doc.source, old_name, new_name)
         if edits:

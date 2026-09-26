@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any, Callable
 
+from .value_copy import copy_value
 from .values import (
     ArrayValue,
     BuiltinFunction,
@@ -692,7 +693,7 @@ def builtin_array_new(
     limit = _effective_max_collection_size(max_collection_size)
     if size > limit:
         raise RuntimeError(f"Array size exceeds limit ({size} > {limit})")
-    return ArrayValue([default] * size)
+    return ArrayValue([copy_value(default) for _ in range(size)])
 
 
 def builtin_array_from_list(
@@ -702,7 +703,7 @@ def builtin_array_from_list(
     limit = _effective_max_collection_size(max_collection_size)
     if len(lst) > limit:
         raise RuntimeError(f"Array size exceeds limit ({len(lst)} > {limit})")
-    return ArrayValue(list(lst))
+    return ArrayValue([copy_value(item) for item in lst])
 
 
 def builtin_array_get(arr: ArrayValue, index: int) -> Any:
@@ -722,7 +723,7 @@ def builtin_array_set(arr: ArrayValue, index: int, value: Any) -> None:
         raise RuntimeError("array_set index must be an integer")
     if index < 0 or index >= len(arr):
         raise RuntimeError(f"array_set index {index} out of bounds (length {len(arr)})")
-    arr[index] = value
+    arr[index] = copy_value(value)
     return None
 
 
@@ -1071,14 +1072,14 @@ def builtin_array_fill(arr: ArrayValue, value: Any) -> None:
     if not isinstance(arr, ArrayValue):
         raise RuntimeError("array_fill expects array")
     for i in range(len(arr)):
-        arr[i] = value
+        arr[i] = copy_value(value)
     return None
 
 
 def builtin_array_copy(arr: ArrayValue) -> ArrayValue:
     if not isinstance(arr, ArrayValue):
         raise RuntimeError("array_copy expects array")
-    return ArrayValue(list(arr._elements))
+    return ArrayValue([copy_value(item) for item in arr._elements])
 
 
 # =============================================================================
@@ -1103,7 +1104,7 @@ def builtin_mutable_map_set(
     if key not in m._data:
         limit = _effective_max_collection_size(max_collection_size)
         _check_collection_size("MutableMap", len(m._data) + 1, limit)
-    m._data[key] = value
+    m._data[copy_value(key)] = copy_value(value)
     return None
 
 
@@ -1156,7 +1157,7 @@ def builtin_vec_push(
         raise RuntimeError("vec_push expects Vec")
     limit = _effective_max_collection_size(max_collection_size)
     _check_collection_size("Vec", len(v) + 1, limit)
-    v._elements.append(item)
+    v._elements.append(copy_value(item))
     return None
 
 
@@ -1177,7 +1178,7 @@ def builtin_vec_set(v: VecValue, index: int, value: Any) -> None:
         raise RuntimeError("vec_set index must be integer")
     if index < 0 or index >= len(v):
         raise RuntimeError(f"vec_set index {index} out of bounds (length {len(v)})")
-    v._elements[index] = value
+    v._elements[index] = copy_value(value)
     return None
 
 
@@ -1205,7 +1206,7 @@ def builtin_vec_from_list(lst: list[Any]) -> VecValue:
     if not isinstance(lst, list):
         raise RuntimeError("vec_from_list expects list")
     v = VecValue()
-    object.__setattr__(v, "_elements", list(lst))
+    object.__setattr__(v, "_elements", [copy_value(item) for item in lst])
     return v
 
 
@@ -1235,7 +1236,7 @@ def builtin_set_from_list(
     s = SetValue()
     for item in lst:
         _require_hashable("set_from_list", item, "items")
-    data = set(lst)
+    data = {copy_value(item) for item in lst}
     limit = _effective_max_collection_size(max_collection_size)
     if len(data) > limit:
         raise RuntimeError(f"Set size exceeds limit ({len(data)} > {limit})")
@@ -1252,7 +1253,7 @@ def builtin_set_add(
     if item not in s._data:
         limit = _effective_max_collection_size(max_collection_size)
         _check_collection_size("Set", len(s._data) + 1, limit)
-    s._data.add(item)
+    s._data.add(copy_value(item))
     return None
 
 
