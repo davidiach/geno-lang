@@ -109,7 +109,11 @@ from .builtin_registry import (
     python_backend_builtin_helper_names,
     python_backend_builtin_name_map,
 )
-from .entrypoint import is_async_execution_form
+from .entrypoint import (
+    EntrypointResultKind,
+    classify_entrypoint_result,
+    is_async_execution_form,
+)
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
 from .types import FloatType, ListType, UserType
@@ -861,7 +865,10 @@ class Compiler(BaseCompiler, ASTVisitor):
                 break
         if main_defn is not None:
             self.output.write(
-                _compiled_main_guard(is_async=is_async_execution_form(main_defn))
+                _compiled_main_guard(
+                    is_async=is_async_execution_form(main_defn),
+                    kind=classify_entrypoint_result(program),
+                )
             )
 
         return str(self.output.getvalue())
@@ -1048,6 +1055,9 @@ class Compiler(BaseCompiler, ASTVisitor):
                 _compiled_main_guard(
                     is_async=is_async_execution_form(main_defn),
                     main_name="_geno_entry_main",
+                    kind=classify_entrypoint_result(
+                        dep_graph.parsed[entrypoint], dep_graph.parsed
+                    ),
                 )
             )
 
@@ -3341,21 +3351,52 @@ def _insert_compiled_runtime_capability_assignment(
     return assignment + python_code
 
 
-def _compiled_main_guard(*, is_async: bool, main_name: str = "main") -> str:
-    """Return the ``__main__`` guard emitted after a compiled program.
+def _compiled_main_guard_opening(*, is_async: bool, main_name: str = "main") -> str:
+    """Return the guard's opening, through the call to ``main``.
 
-    Emitters and the consumers that rewrite this block share this one
-    definition: a hand-copied literal that drifts from the emitted text turns
-    a `.replace()` into a silent no-op rather than an error.
+    Everything that varies with the entrypoint's declared result sits after
+    this, so the consumers that rewrite the guard can find it by this stable
+    prefix. Matching the whole block instead would make adding a result kind
+    turn their `.replace()` into a silent no-op -- the guard would survive into
+    code exec'd under a different ``__name__``, where it never runs, and the
+    result would go missing rather than an error being raised.
     """
     call = f"asyncio.run({main_name}())" if is_async else f"{main_name}()"
     lines = ["\n\nif __name__ == '__main__':\n"]
     if is_async:
         lines.append("    import asyncio\n")
     lines.append(f"    result = {call}\n")
-    lines.append("    if result is not None:\n")
-    lines.append("        print(_geno_format(result))\n")
     return "".join(lines)
+
+
+def _compiled_main_guard(
+    *,
+    is_async: bool,
+    main_name: str = "main",
+    kind: EntrypointResultKind = EntrypointResultKind.OTHER,
+) -> str:
+    """Return the ``__main__`` guard emitted after a compiled program.
+
+    Emitters and the consumers that rewrite this block share this one
+    definition, through ``_compiled_main_guard_opening``.
+    """
+    opening = _compiled_main_guard_opening(is_async=is_async, main_name=main_name)
+    if kind is EntrypointResultKind.INT:
+        # docs/spec/v0.5.md 4.1.1: an `Int` result is the process's status, not
+        # its output, so it is never displayed. `geno/exit_status.py` holds the
+        # one definition of the modulo, but a standalone artifact must not
+        # import geno, so the expression is inlined here; Python's `%` floors,
+        # which is exactly what that module documents, so a negative result
+        # normalizes the same way in both places. `SystemExit` rather than
+        # `os._exit` so buffered output still flushes on the way out.
+        return opening + "    raise SystemExit(result % 256)\n"
+    # `Unit` already arrives as `None` and so prints nothing, which is the
+    # behaviour the specification asks for; every other kind keeps its display.
+    return (
+        opening
+        + "    if result is not None:\n"
+        + "        print(_geno_format(result))\n"
+    )
 
 
 def _compiled_main_result_capture(
@@ -3443,18 +3484,18 @@ def compile_and_exec(
             trusted_prelude_line_count = _trusted_runtime_prelude_line_count(exec_code)
             # Replace the __name__ guard with a direct __result__
             # assignment so the process sandbox captures the return value.
-            _MAIN_GUARD = _compiled_main_guard(is_async=False)
-            _ASYNC_MAIN_GUARD = _compiled_main_guard(is_async=True)
-            if _ASYNC_MAIN_GUARD in exec_code:
-                exec_code = exec_code.replace(
-                    _ASYNC_MAIN_GUARD,
-                    _compiled_main_result_capture(is_async=True),
-                )
-            elif _MAIN_GUARD in exec_code:
-                exec_code = exec_code.replace(
-                    _MAIN_GUARD,
-                    _compiled_main_result_capture(is_async=False),
-                )
+            # Match the guard's opening, not the whole block: its tail varies
+            # with the entrypoint's declared result, and the guard is always
+            # the last thing an emitter writes, so replacing from the opening
+            # to the end of the module is both sufficient and kind-agnostic.
+            for guard_is_async in (True, False):
+                guard_opening = _compiled_main_guard_opening(is_async=guard_is_async)
+                guard_at = exec_code.find(guard_opening)
+                if guard_at != -1:
+                    exec_code = exec_code[:guard_at] + _compiled_main_result_capture(
+                        is_async=guard_is_async
+                    )
+                    break
 
             process_config = ProcessSandboxConfig(
                 timeout=timeout,
