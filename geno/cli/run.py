@@ -181,8 +181,7 @@ def _process_run_result_envelope(kind: Any) -> str:
     classify ``main`` itself and the classification is baked in here, where it
     is already known. Both halves the specification requires cross the channel:
     the display string, formatted while values still carry their Geno types,
-    and the raw ``Int``, which the parent normalizes so one definition of the
-    modulo serves every lane.
+    and the exit status, already reduced into range.
 
     ``__result__`` is unbound when the program has no ``main``, so a branch that
     reads it tests ``_geno_entry_fn`` first; the silent branch overwrites
@@ -192,12 +191,19 @@ def _process_run_result_envelope(kind: Any) -> str:
 
     if kind is EntrypointResultKind.INT:
         # An `Int` result is the status and is never displayed, so it needs no
-        # formatting -- it crosses as the integer the program returned.
+        # formatting -- but it does need reducing before it crosses. The channel
+        # is JSON, and `max_integer_bits` admits an `Int` of roughly 10_000
+        # digits while CPython refuses to render one wider than 4_300, so a
+        # valid program returning a large result would die in the transport
+        # rather than exiting with a status. Reducing here keeps every integer
+        # the language accepts on the contract; the parent still applies
+        # `exit_status_for_int_result`, which agrees with this and stays the one
+        # definition of the modulo.
         return (
             "\nif _geno_entry_fn is None:\n"
             "    __result__ = {'status': None, 'display': None}\n"
             "else:\n"
-            "    __result__ = {'status': __result__, 'display': None}\n"
+            "    __result__ = {'status': __result__ % 256, 'display': None}\n"
         )
     if kind is EntrypointResultKind.OTHER:
         # JSON transport turns tuples into lists and map keys into strings, and

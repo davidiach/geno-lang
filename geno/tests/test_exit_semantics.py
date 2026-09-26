@@ -98,6 +98,33 @@ def test_every_lane_normalizes_an_out_of_range_result(
     assert result.stderr == ""
 
 
+@pytest.mark.parametrize("mode_args", [_MODE_ARGS[0], _MODE_ARGS[1]])
+def test_a_result_too_wide_to_print_still_reports_its_status(
+    tmp_path: Path, mode_args: tuple[str, ...]
+) -> None:
+    """A valid ``Int`` can be far wider than CPython will render as a string.
+
+    ``max_integer_bits`` admits roughly 10_000 digits, while ``str()`` refuses
+    an integer past 4_300, so any lane that renders or serializes the result
+    before reducing it dies in transport instead of exiting.  ``2 ** 16000 + 7``
+    is 4_817 digits, comfortably either side of both limits.
+
+    ``--json`` is absent deliberately: its envelope reports the raw value, and
+    serializing that hits the same limit.  That is a defect in the envelope
+    rather than in the exit contract, it predates this change, and fixing it
+    means deciding how the envelope should represent such a value.
+    """
+    result = _run_cli(
+        tmp_path,
+        "func main() -> Int\n    return 2 ** 16000 + 7\nend func\n",
+        *mode_args,
+    )
+
+    assert result.returncode == 7, result.stderr
+    assert result.stderr == ""
+    assert result.stdout == ""
+
+
 # ---------------------------------------------------------------------------
 # The raw value never gets normalized
 # ---------------------------------------------------------------------------
