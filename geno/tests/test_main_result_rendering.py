@@ -67,6 +67,13 @@ RESULT_CASES = [
     pytest.param("List[Int]", "[]", "[]", id="empty_list"),
 ]
 
+# `geno run` no longer prints an `Int` result: it is the process exit status
+# (docs/spec/v0.5.md 4.1.1). The compiled backends still print it until that
+# same change reaches them, so the CLI parity cases below leave `Int` out
+# rather than asserting a line the CLI is now right not to print. Exit-status
+# agreement for `Int` is asserted in test_exit_semantics.py.
+_CLI_RESULT_CASES = [case for case in RESULT_CASES if case.id != "int"]
+
 
 def _program(return_type: str, expression: str) -> str:
     return f"func main() -> {return_type}\n    return {expression}\nend func main\n"
@@ -120,7 +127,7 @@ def test_both_backends_render_the_result_identically(
     assert _run_compiled(source, target="python") == _run_compiled(source, target="js")
 
 
-@pytest.mark.parametrize(("return_type", "expression", "expected"), RESULT_CASES)
+@pytest.mark.parametrize(("return_type", "expression", "expected"), _CLI_RESULT_CASES)
 def test_geno_run_result_line_matches_the_compiled_backend(
     tmp_path: Path, return_type: str, expression: str, expected: str
 ) -> None:
@@ -139,7 +146,7 @@ def test_geno_run_result_line_matches_the_compiled_backend(
     assert completed.stdout.strip().splitlines()[-1] == f"=> {expected}"
 
 
-@pytest.mark.parametrize(("return_type", "expression", "expected"), RESULT_CASES)
+@pytest.mark.parametrize(("return_type", "expression", "expected"), _CLI_RESULT_CASES)
 def test_geno_run_unsafe_matches_the_compiled_backends(
     tmp_path: Path, return_type: str, expression: str, expected: str
 ) -> None:

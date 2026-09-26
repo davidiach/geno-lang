@@ -258,8 +258,10 @@ end func
                     text=True,
                     timeout=10,
                 )
-                assert result.returncode == 0, result.stderr
-                assert "=> 42" in result.stdout
+                # An awaited `Int` is the exit status (spec 4.1.1). An
+                # unawaited coroutine would instead be displayed and exit 0.
+                assert result.returncode == 42, result.stderr
+                assert result.stdout == ""
                 assert "coroutine" not in result.stdout
                 assert "coroutine" not in result.stderr
             finally:
@@ -318,8 +320,9 @@ end func
             timeout=10,
         )
 
-        assert result.returncode == 0
-        assert "42" in result.stdout
+        # `triple` resolved through the import, and its `Int` result is the
+        # process status rather than a printed line (spec 4.1.1).
+        assert result.returncode == 42, result.stderr
 
     def test_run_resolves_local_imports_for_legacy_direct_file_extensions(
         self, tmp_path
@@ -346,8 +349,7 @@ end func
             timeout=10,
         )
 
-        assert result.returncode == 0
-        assert "42" in result.stdout
+        assert result.returncode == 42, result.stderr
 
     def test_run_name_collision_reports_consistent_error(self, tmp_path):
         write_dependency_collision_fixture(tmp_path)
@@ -825,9 +827,10 @@ class TestGenoRunResourceLimits:
             fail_if_parent_resolves,
         )
 
-        run_command.run_file(str(app), check_examples=False)
-
-        assert "=> 7" in capsys.readouterr().out
+        # Reaching the worker at all is the assertion; the status it sends
+        # back is how the parent learns the program ran.
+        assert run_command.run_file(str(app), check_examples=False) == 7
+        assert capsys.readouterr().out == ""
 
     def test_timeout_covers_frontend_startup(self, tmp_path):
         app = tmp_path / "App.geno"
@@ -891,7 +894,7 @@ end func main
                     text=True,
                     timeout=10,
                 )
-                assert result.returncode == 0
+                assert result.returncode == 42
                 data = json.loads(result.stdout)
                 assert data["ok"] is True
                 assert data["value"] == 42
@@ -1078,7 +1081,7 @@ end func main
             timeout=10,
         )
 
-        assert result.returncode == 0
+        assert result.returncode == 42
         data = json.loads(result.stdout)
         assert data["ok"] is True
         assert data["value"] == 42

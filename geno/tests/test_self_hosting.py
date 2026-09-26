@@ -821,8 +821,11 @@ class TestSelfhostCliResultCompatibility:
             'func main() -> Int\n    print("report-ready")\n    return 2\nend func\n',
         )
 
+        # The inner program's `2` is still omitted by the self-hosted adapter,
+        # and selfhost's own `Int` result -- 0 for success -- is now the outer
+        # `geno run`'s exit status instead of a `=> 0` line (spec 4.1.1).
         assert result.returncode == 0
-        assert result.stdout == "report-ready\n=> 0\n"
+        assert result.stdout == "report-ready\n"
         assert result.stderr == ""
 
     def test_imported_main_is_not_entrypoint(self, tmp_path: Path) -> None:
@@ -833,7 +836,7 @@ class TestSelfhostCliResultCompatibility:
         result = self._run(tmp_path, "import Lib\n")
 
         assert result.returncode == 0
-        assert result.stdout == "=> 0\n"
+        assert result.stdout == ""
         assert result.stderr == ""
 
 

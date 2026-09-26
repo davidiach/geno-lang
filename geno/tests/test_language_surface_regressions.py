@@ -353,7 +353,8 @@ class TestReservedRuntimeNameAgreement:
             "end func\n",
         )
         assert _run_geno("check", str(path)).returncode == 0
-        assert _run_geno("run", str(path)).returncode == 0
+        # `widen(2)`, which an `Int` main reports as its status (spec 4.1.1).
+        assert _run_geno("run", str(path)).returncode == 4
         assert run_test_suite([path]).success
 
 
