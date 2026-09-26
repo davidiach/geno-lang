@@ -379,6 +379,7 @@ jobs:
         fi
         python scripts/pytest_shard.py \
           --allow-mixed-attempts \
+          --allow-mixed-images \
           --validate-plan-manifests "${plan_files[@]}" \
           --timing-manifests "${timing_files[@]}"
 

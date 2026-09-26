@@ -84,9 +84,15 @@ def test_contract_arrays_reject_duplicate_entries() -> None:
 
 
 def test_normative_human_spec_is_identifiable() -> None:
+    """The normative document must name the series `spec.json` declares.
+
+    Derived from `language_series` rather than hardcoded, so a series flip is
+    caught when the document and the contract disagree instead of failing on
+    every flip.
+    """
     spec = _load_spec()
     path = ROOT / spec["human_spec"]
     opening = path.read_text().splitlines()[:12]
 
-    assert opening[0] == "# Geno Language Specification v0.4"
+    assert opening[0] == f"# Geno Language Specification v{spec['language_series']}"
     assert any("normative" in line.lower() for line in opening)

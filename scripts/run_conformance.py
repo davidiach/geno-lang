@@ -353,13 +353,20 @@ def run_suite(
     case_ids: frozenset[str] | None = None,
     timeout: float = 10.0,
     require_node: bool = False,
+    strict_case_ids: bool = True,
 ) -> list[CaseResult]:
-    """Run selected cases, returning every checker/backend outcome."""
+    """Run selected cases, returning every checker/backend outcome.
+
+    ``strict_case_ids`` rejects an id this manifest does not define.  A caller
+    running several corpora turns it off and validates against their union
+    instead, because a case may exist in only one of them: a form introduced in
+    the current series has no counterpart in the retained previous one.
+    """
 
     if target not in {"all", *ALL_TARGETS}:
         raise ValueError(f"unknown target: {target}")
     known_ids = {case.id for case in manifest.cases}
-    if case_ids:
+    if case_ids and strict_case_ids:
         unknown_ids = case_ids - known_ids
         if unknown_ids:
             raise ValueError(f"unknown case ids: {', '.join(sorted(unknown_ids))}")
@@ -444,15 +451,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.all_retained
             else (args.manifest or DEFAULT_MANIFEST,)
         )
+        manifests = [load_manifest(path) for path in manifest_paths]
+        selected_ids = frozenset(args.case_ids) if args.case_ids else None
+        if selected_ids:
+            # Validate against every selected corpus at once. A case can belong
+            # to one series only, so requiring each corpus to know every id
+            # would make --case unusable alongside --all-retained.
+            known_ids = {case.id for manifest in manifests for case in manifest.cases}
+            unknown_ids = selected_ids - known_ids
+            if unknown_ids:
+                raise ValueError(f"unknown case ids: {', '.join(sorted(unknown_ids))}")
         suites: list[tuple[ConformanceManifest, list[CaseResult]]] = []
-        for manifest_path in manifest_paths:
-            manifest = load_manifest(manifest_path)
+        for manifest in manifests:
             results = run_suite(
                 manifest,
                 target=args.target,
-                case_ids=frozenset(args.case_ids) if args.case_ids else None,
+                case_ids=selected_ids,
                 timeout=args.timeout,
                 require_node=args.require_node,
+                strict_case_ids=False,
             )
             suites.append((manifest, results))
     except (ManifestError, ValueError) as exc:
