@@ -143,3 +143,281 @@ def test_run_suite_rejects_an_unknown_id_for_a_single_manifest() -> None:
     """The single-corpus contract is unchanged: strict by default."""
     with pytest.raises(ValueError, match="unknown case ids: no-such-case"):
         run_suite(load_manifest(), case_ids=frozenset({"no-such-case"}))
+
+
+_PRINTING_PROGRAM = 'func main() -> Unit\n    print("ok")\n    return ()\nend func\n'
+_INT_PROGRAM = "func main() -> Int\n    return 3\nend func\n"
+
+
+def _corpus(
+    tmp_path: Path, *, program: str, schema_version: int = 2, **case_fields: object
+) -> Path:
+    """Write a one-case run corpus and return its manifest path.
+
+    The loader requires a manifest to live in a directory named for its
+    ``language_version``, so this builds ``v0.5/`` rather than using tmp_path
+    directly.
+    """
+    tmp_path = tmp_path / "v0.5"
+    (tmp_path / "programs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "programs" / "case.geno").write_text(program, encoding="utf-8")
+    fields = "\n".join(
+        f"{key} = {json.dumps(value)}" for key, value in case_fields.items()
+    )
+    manifest = tmp_path / "manifest.toml"
+    manifest.write_text(
+        f"schema_version = {schema_version}\n"
+        'language_version = "0.5"\ndescription = "t"\n\n'
+        "[[cases]]\n"
+        'id = "case"\n'
+        'path = "programs/case.geno"\n'
+        'kind = "run"\n'
+        f"{fields}\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def test_expected_exit_status_defaults_to_zero(tmp_path: Path) -> None:
+    """Omitting it means 0, which every displayed result kind exits with."""
+    manifest = _corpus(
+        tmp_path,
+        program=_PRINTING_PROGRAM,
+        targets=["interpreter"],
+        capabilities=["print"],
+        expected_stdout="ok\n",
+    )
+
+    case = load_manifest(manifest).cases[0]
+
+    assert case.expected_exit_status == 0
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ("3", "must be an integer"),
+        (True, "must be an integer"),
+        (3.5, "must be an integer"),
+        (256, "between 0 and 255"),
+        (-1, "between 0 and 255"),
+    ],
+    ids=["string", "bool", "float", "above-255", "negative"],
+)
+def test_expected_exit_status_is_validated(
+    tmp_path: Path, value: object, match: str
+) -> None:
+    """The manifest states a status a host can report, so 258 is a mistake.
+
+    Normalizing modulo 256 is the implementation's job (`geno/exit_status.py`);
+    a case says which status an executable is required to return. `bool` is
+    rejected separately because it is an `int` subclass.
+    """
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_status=value,
+    )
+
+    with pytest.raises(ManifestError, match=match):
+        load_manifest(manifest)
+
+
+def test_diagnostic_case_cannot_expect_an_exit_status(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "v0.5"
+    (tmp_path / "programs").mkdir(parents=True)
+    (tmp_path / "programs" / "case.geno").write_text(_INT_PROGRAM, encoding="utf-8")
+    manifest = tmp_path / "manifest.toml"
+    manifest.write_text(
+        'schema_version = 2\nlanguage_version = "0.5"\ndescription = "t"\n\n'
+        "[[cases]]\n"
+        'id = "case"\n'
+        'path = "programs/case.geno"\n'
+        'kind = "diagnostic"\n'
+        'targets = ["checker"]\n'
+        'expected_diagnostics = ["E300"]\n'
+        "expected_exit_status = 3\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestError, match="cannot expect process channels"):
+        load_manifest(manifest)
+
+
+@pytest.mark.parametrize("target", ["interpreter", "python"])
+def test_an_int_result_is_reported_as_the_expected_status(
+    tmp_path: Path, target: str
+) -> None:
+    """The contract this corpus field exists for (spec 4.1.1)."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=[target],
+        expected_stdout="",
+        expected_exit_status=3,
+    )
+
+    results = run_suite(load_manifest(manifest), target=target)
+
+    assert results
+    assert all(result.status == "passed" for result in results), results
+
+
+@pytest.mark.parametrize("target", ["interpreter", "python"])
+def test_a_wrong_expected_status_fails(tmp_path: Path, target: str) -> None:
+    """Guards the comparison itself: without it the field would be decorative."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=[target],
+        expected_stdout="",
+        expected_exit_status=4,
+    )
+
+    results = run_suite(load_manifest(manifest), target=target)
+
+    assert [result.status for result in results] == ["failed"]
+    assert "expected exit status 4, got 3" in results[0].detail
+
+
+def test_v05_exit_status_contracts_pass() -> None:
+    """Every executable target agrees on the whole 4.1.1 table."""
+    current = retained_manifest_paths()[-1]
+    manifest = load_manifest(current)
+    exit_cases = frozenset(
+        case.id for case in manifest.cases if case.id.startswith("exit-status-")
+    )
+
+    assert len(exit_cases) >= 5, sorted(exit_cases)
+
+    results = run_suite(
+        manifest,
+        case_ids=exit_cases,
+        require_node=shutil.which("node") is not None,
+    )
+
+    assert all(result.status == "passed" for result in results), results
+    assert {result.target for result in results} >= {
+        "checker",
+        "interpreter",
+        "python",
+    }
+
+
+def test_v04_corpus_stays_on_schema_1() -> None:
+    """Relaxing the pin must not quietly migrate the frozen corpus."""
+    assert load_manifest().schema_version == 1
+
+
+def test_schema_1_rejects_the_executable_boundary_fields(tmp_path: Path) -> None:
+    """The new fields are schema 2, so an older corpus cannot use them silently."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        schema_version=1,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_status=3,
+    )
+
+    with pytest.raises(ManifestError, match="requires schema_version 2"):
+        load_manifest(manifest)
+
+
+def test_an_unsupported_schema_version_is_rejected(tmp_path: Path) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_PRINTING_PROGRAM,
+        schema_version=3,
+        targets=["interpreter"],
+        capabilities=["print"],
+        expected_stdout="ok\n",
+    )
+
+    with pytest.raises(ManifestError, match="schema_version must be one of: 1, 2"):
+        load_manifest(manifest)
+
+
+def test_exit_status_and_exit_class_are_mutually_exclusive(tmp_path: Path) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_status=3,
+        expected_exit_class="nonzero",
+    )
+
+    with pytest.raises(ManifestError, match="mutually exclusive"):
+        load_manifest(manifest)
+
+
+def test_exit_class_nonzero_requires_expected_stderr_contains(tmp_path: Path) -> None:
+    """Otherwise any crash satisfies it, which is not a contract."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_class="nonzero",
+    )
+
+    with pytest.raises(ManifestError, match="requires expected_stderr_contains"):
+        load_manifest(manifest)
+
+
+def test_an_unknown_exit_class_is_rejected(tmp_path: Path) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_class="zero",
+        expected_stderr_contains=["x"],
+    )
+
+    with pytest.raises(ManifestError, match="must be 'nonzero' when present"):
+        load_manifest(manifest)
+
+
+def test_the_two_stderr_fields_are_mutually_exclusive(tmp_path: Path) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_status=3,
+        expected_stderr="",
+        expected_stderr_contains=["x"],
+    )
+
+    with pytest.raises(ManifestError, match="mutually exclusive"):
+        load_manifest(manifest)
+
+
+def test_a_compiled_runtime_error_is_matched_by_class_and_stderr(
+    tmp_path: Path,
+) -> None:
+    """The `expected_exit_class` lane, on the target that really has a stderr."""
+    manifest = _corpus(
+        tmp_path,
+        program=(
+            "func boom(xs: List[Int]) -> Int\n"
+            "    example [1] -> 1\n"
+            "    return xs[7]\n"
+            "end func\n"
+            "func main() -> Int\n"
+            "    return boom([1])\n"
+            "end func\n"
+        ),
+        targets=["python"],
+        expected_stdout="",
+        expected_exit_class="nonzero",
+        expected_stderr_contains=["Error"],
+    )
+
+    results = run_suite(load_manifest(manifest), target="python")
+
+    assert [result.status for result in results] == ["passed"], results

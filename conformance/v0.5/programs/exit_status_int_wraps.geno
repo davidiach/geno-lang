@@ -1,0 +1,8 @@
+func beyond_a_byte() -> Int
+    example () -> 258
+    return 258
+end func
+
+func main() -> Int
+    return beyond_a_byte()
+end func

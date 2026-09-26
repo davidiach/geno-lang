@@ -25,6 +25,17 @@ FIRST_FROZEN_SERIES = (0, 4)
 DEFAULT_MANIFEST = CONFORMANCE_ROOT / "v0.4" / "manifest.toml"
 RUNTIME_TARGETS = ("interpreter", "python", "js")
 ALL_TARGETS = ("checker", *RUNTIME_TARGETS)
+# Schema 1 is the frozen v0.4 corpus. Schema 2 adds the executable-boundary
+# fields the 0.5 entrypoint contract needs -- `expected_exit_status`, the stderr
+# channel and `expected_exit_class` -- and both are accepted so a retained older
+# corpus keeps loading unchanged (docs/spec/v0.5.md 4.1.1).
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+SCHEMA_2_ONLY_FIELDS = (
+    "expected_exit_status",
+    "expected_exit_class",
+    "expected_stderr",
+    "expected_stderr_contains",
+)
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -102,6 +113,10 @@ class ConformanceCase:
     targets: tuple[str, ...]
     capabilities: frozenset[str]
     expected_stdout: str | None
+    expected_exit_status: int | None
+    expected_exit_class: str | None
+    expected_stderr: str | None
+    expected_stderr_contains: tuple[str, ...]
     expected_diagnostics: tuple[str, ...]
 
 
@@ -114,6 +129,22 @@ class ConformanceManifest:
     description: str
     path: Path
     cases: tuple[ConformanceCase, ...]
+
+
+@dataclass(frozen=True)
+class TargetOutcome:
+    """What one executable target reported for a case.
+
+    ``docs/spec/v0.5.md`` 4.1.1 makes all three observable: an `Int` result
+    arrives only as the status, every displayed kind only on stdout, and a
+    diagnostic only on stderr.  A nonzero status alone no longer distinguishes a
+    reported result from a failure, so a case states what it expects on each
+    channel it cares about.
+    """
+
+    stdout: str
+    stderr: str
+    exit_status: int
 
 
 @dataclass(frozen=True)
@@ -132,6 +163,32 @@ def _string_list(raw: Any, *, field: str, case_id: str) -> tuple[str, ...]:
     return tuple(raw)
 
 
+def _exit_status(raw: Any, *, case_id: str) -> int | None:
+    """Validate a case's ``expected_exit_status``.
+
+    The value is the status a host actually reports, so it must already be in
+    range: the modulo in `geno/exit_status.py` is the implementation's job, and
+    writing 258 here would describe a status no process can return.  ``bool`` is
+    rejected because it is an ``int`` subclass and `expected_exit_status = true`
+    is a mistake.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ManifestError(f"{case_id}: expected_exit_status must be an integer")
+    if not 0 <= raw <= 255:
+        raise ManifestError(
+            f"{case_id}: expected_exit_status must be between 0 and 255, got {raw}"
+        )
+    return raw
+
+
+def _optional_str(raw: Any, *, field: str, case_id: str) -> str | None:
+    if raw is None or isinstance(raw, str):
+        return raw
+    raise ManifestError(f"{case_id}: {field} must be a string")
+
+
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
     """Load and strictly validate a versioned conformance manifest."""
 
@@ -142,8 +199,10 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ManifestError(f"cannot load {resolved_manifest}: {exc}") from exc
 
-    if raw.get("schema_version") != 1:
-        raise ManifestError("schema_version must be 1")
+    schema_version = raw.get("schema_version")
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+        supported = ", ".join(str(version) for version in SUPPORTED_SCHEMA_VERSIONS)
+        raise ManifestError(f"schema_version must be one of: {supported}")
     language_version = raw.get("language_version")
     description = raw.get("description")
     if not isinstance(language_version, str) or not language_version:
@@ -208,6 +267,39 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
             )
         )
         expected_stdout = raw_case.get("expected_stdout")
+        schema_2_used = [
+            field for field in SCHEMA_2_ONLY_FIELDS if raw_case.get(field) is not None
+        ]
+        if schema_2_used and schema_version < 2:
+            raise ManifestError(
+                f"{case_id}: {', '.join(sorted(schema_2_used))} "
+                f"requires schema_version 2"
+            )
+        expected_exit_status = _exit_status(
+            raw_case.get("expected_exit_status"), case_id=case_id
+        )
+        expected_exit_class = _optional_str(
+            raw_case.get("expected_exit_class"),
+            field="expected_exit_class",
+            case_id=case_id,
+        )
+        if expected_exit_class is not None and expected_exit_class != "nonzero":
+            raise ManifestError(
+                f"{case_id}: expected_exit_class must be 'nonzero' when present"
+            )
+        expected_stderr = _optional_str(
+            raw_case.get("expected_stderr"), field="expected_stderr", case_id=case_id
+        )
+        expected_stderr_contains = _string_list(
+            raw_case.get("expected_stderr_contains", []),
+            field="expected_stderr_contains",
+            case_id=case_id,
+        )
+        if expected_stderr is not None and expected_stderr_contains:
+            raise ManifestError(
+                f"{case_id}: expected_stderr and expected_stderr_contains "
+                f"are mutually exclusive"
+            )
         expected_diagnostics = _string_list(
             raw_case.get("expected_diagnostics", []),
             field="expected_diagnostics",
@@ -218,12 +310,33 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 raise ManifestError(f"{case_id}: run case requires expected_stdout")
             if "checker" in targets or expected_diagnostics:
                 raise ManifestError(f"{case_id}: run case has diagnostic-only fields")
+            if expected_exit_status is not None and expected_exit_class is not None:
+                raise ManifestError(
+                    f"{case_id}: expected_exit_status and expected_exit_class "
+                    f"are mutually exclusive"
+                )
+            if expected_exit_class == "nonzero" and not expected_stderr_contains:
+                # An unspecified nonzero status is only meaningful paired with
+                # what the host must say about it; otherwise any crash passes.
+                raise ManifestError(
+                    f"{case_id}: expected_exit_class 'nonzero' requires "
+                    f"expected_stderr_contains"
+                )
+            if expected_exit_status is None and expected_exit_class is None:
+                # A case that says nothing expects a clean exit, which is what
+                # `Unit`, a missing `main` and every displayed kind report.
+                expected_exit_status = 0
         else:
             if targets != ("checker",):
                 raise ManifestError(f"{case_id}: diagnostic case must target checker")
             if not expected_diagnostics or expected_stdout is not None or capabilities:
                 raise ManifestError(
                     f"{case_id}: diagnostic case requires only expected_diagnostics"
+                )
+            if schema_2_used:
+                raise ManifestError(
+                    f"{case_id}: diagnostic case cannot expect process channels: "
+                    f"{', '.join(sorted(schema_2_used))}"
                 )
 
         cases.append(
@@ -234,12 +347,16 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 targets=targets,
                 capabilities=capabilities,
                 expected_stdout=expected_stdout,
+                expected_exit_status=expected_exit_status,
+                expected_exit_class=expected_exit_class,
+                expected_stderr=expected_stderr,
+                expected_stderr_contains=expected_stderr_contains,
                 expected_diagnostics=expected_diagnostics,
             )
         )
 
     return ConformanceManifest(
-        schema_version=1,
+        schema_version=schema_version,
         language_version=language_version,
         description=description,
         path=resolved_manifest,
@@ -252,7 +369,9 @@ def _capability_args(capabilities: Iterable[str]) -> list[str]:
     return ["--cap", ",".join(values)] if values else []
 
 
-def _run_interpreter(case: ConformanceCase, source: str, timeout: float) -> str:
+def _run_interpreter(
+    case: ConformanceCase, source: str, timeout: float
+) -> TargetOutcome:
     from geno.api import RunConfig, run
 
     result = run(
@@ -270,10 +389,22 @@ def _run_interpreter(case: ConformanceCase, source: str, timeout: float) -> str:
             for diagnostic in result.diagnostics
         )
         raise RuntimeError(diagnostics or "interpreter failed without diagnostics")
-    return cast(str, result.output)
+    # `geno.api.run()` is an embedding boundary: it returns the raw result and
+    # never terminates its caller, so it has no status of its own. Derive the one
+    # an executable host would report, which is exactly what `entrypoint_kind`
+    # is reported for, through the single definition of the modulo.
+    from geno.entrypoint import EntrypointResultKind
+    from geno.exit_status import exit_status_for_int_result
+
+    exit_status = 0
+    if result.entrypoint_kind is EntrypointResultKind.INT:
+        exit_status = exit_status_for_int_result(cast(int, result.value_raw))
+    # An embedding call has no stderr channel; diagnostics came back as data
+    # above, and a failing one already raised.
+    return TargetOutcome(cast(str, result.output), "", exit_status)
 
 
-def _run_python(case: ConformanceCase, source: str, timeout: float) -> str:
+def _run_python(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome:
     from geno.compiler import compile_to_python
 
     generated = compile_to_python(source)
@@ -289,14 +420,10 @@ def _run_python(case: ConformanceCase, source: str, timeout: float) -> str:
             timeout=timeout,
             check=False,
         )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"compiled Python exited {completed.returncode}: {completed.stderr.strip()}"
-        )
-    return completed.stdout
+    return TargetOutcome(completed.stdout, completed.stderr, completed.returncode)
 
 
-def _run_js(case: ConformanceCase, source: str, timeout: float) -> str:
+def _run_js(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome:
     from geno.js_compiler import compile_to_js
 
     node_path = shutil.which("node")
@@ -316,11 +443,7 @@ def _run_js(case: ConformanceCase, source: str, timeout: float) -> str:
             timeout=timeout,
             check=False,
         )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"compiled JavaScript exited {completed.returncode}: {completed.stderr.strip()}"
-        )
-    return completed.stdout
+    return TargetOutcome(completed.stdout, completed.stderr, completed.returncode)
 
 
 def _check_case(case: ConformanceCase, source: str) -> CaseResult:
@@ -344,6 +467,38 @@ def _check_case(case: ConformanceCase, source: str) -> CaseResult:
         for diagnostic in result.diagnostics
     )
     return CaseResult(case.id, "checker", "failed", detail)
+
+
+def _channel_mismatches(case: ConformanceCase, actual: TargetOutcome) -> list[str]:
+    """Every way ``actual`` departs from what the case requires.
+
+    All of them are reported at once: a case whose status and stdout both moved
+    is one contract change, and seeing only the first channel would hide half of
+    it.
+    """
+    mismatches: list[str] = []
+    if actual.stdout != case.expected_stdout:
+        mismatches.append(
+            f"expected stdout {case.expected_stdout!r}, got {actual.stdout!r}"
+        )
+    if case.expected_exit_status is not None:
+        if actual.exit_status != case.expected_exit_status:
+            mismatches.append(
+                f"expected exit status {case.expected_exit_status}, "
+                f"got {actual.exit_status}"
+            )
+    elif case.expected_exit_class == "nonzero" and actual.exit_status == 0:
+        mismatches.append("expected a nonzero exit status, got 0")
+    if case.expected_stderr is not None and actual.stderr != case.expected_stderr:
+        mismatches.append(
+            f"expected stderr {case.expected_stderr!r}, got {actual.stderr!r}"
+        )
+    for fragment in case.expected_stderr_contains:
+        if fragment not in actual.stderr:
+            mismatches.append(
+                f"expected stderr to contain {fragment!r}, got {actual.stderr!r}"
+            )
+    return mismatches
 
 
 def run_suite(
@@ -411,16 +566,12 @@ def run_suite(
             except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
                 results.append(CaseResult(case.id, runtime_target, "failed", str(exc)))
                 continue
-            if actual == case.expected_stdout:
+            mismatches = _channel_mismatches(case, actual)
+            if not mismatches:
                 results.append(CaseResult(case.id, runtime_target, "passed"))
             else:
                 results.append(
-                    CaseResult(
-                        case.id,
-                        runtime_target,
-                        "failed",
-                        f"expected stdout {case.expected_stdout!r}, got {actual!r}",
-                    )
+                    CaseResult(case.id, runtime_target, "failed", "; ".join(mismatches))
                 )
     return results
 

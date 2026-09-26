@@ -1,13 +1,17 @@
-schema_version = 1
+schema_version = 2
 language_version = "0.5"
 description = "Geno 0.5 source and diagnostic compatibility corpus"
 
-# Seed corpus. Most of these carry forward core 0.4 semantics that proposal 0001
-# does not change, so `--all-retained` keeps meaning something while the 0.5
-# entrypoint work lands. The exception is module-constants, which is a 0.5-only
-# form: #72 was held back from 0.4.4 because it is a language feature, so v0.4
-# cannot carry it. The exit-semantics cases the proposal calls for arrive with
-# the runner change that can express an expected process status.
+# Most of these carry forward core 0.4 semantics that proposal 0001 does not
+# change, so `--all-retained` keeps meaning something. Two groups are 0.5-only:
+# module-constants, a language form #72 held back from 0.4.4 so v0.4 cannot carry
+# it, and the exit-status cases below, which are the entrypoint contract of
+# `docs/spec/v0.5.md` 4.1.1.
+#
+# A run case's `expected_exit_status` defaults to 0 when omitted, which is what
+# every displayed result kind exits with. It is the status a host actually
+# reports, so it is always 0-255: normalizing 258 to 2 is the implementation's
+# job, and the case below states the 2 an executable is required to report.
 
 [[cases]]
 id = "arithmetic-control-flow"
@@ -40,6 +44,48 @@ kind = "run"
 targets = ["interpreter", "python", "js"]
 capabilities = ["print"]
 expected_stdout = "geno:1\nV\n7\n"
+
+[[cases]]
+id = "exit-status-unit"
+path = "programs/exit_status_unit.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "unit entrypoint\n"
+expected_exit_status = 0
+
+[[cases]]
+id = "exit-status-int"
+path = "programs/exit_status_int.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+expected_stdout = ""
+expected_exit_status = 3
+
+[[cases]]
+id = "exit-status-int-wraps"
+path = "programs/exit_status_int_wraps.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+expected_stdout = ""
+expected_exit_status = 2
+
+[[cases]]
+id = "exit-status-int-negative"
+path = "programs/exit_status_int_negative.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+expected_stdout = ""
+expected_exit_status = 255
+
+[[cases]]
+id = "exit-status-output-before-result"
+path = "programs/exit_status_output_before_result.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "work done\n"
+expected_exit_status = 3
 
 [[cases]]
 id = "diagnostic-type-mismatch"
