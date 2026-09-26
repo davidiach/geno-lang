@@ -694,7 +694,7 @@ def _envelope_mismatches(case: ConformanceCase, envelope: dict[str, Any]) -> lis
     if diagnostics != []:
         mismatches.append(f"expected no envelope diagnostics, got {diagnostics!r}")
     expected_value = json.loads(cast(str, case.expected_json_value))
-    if envelope.get("value") != expected_value:
+    if not _json_equal(expected_value, envelope.get("value")):
         mismatches.append(
             f"expected envelope value {expected_value!r}, got {envelope.get('value')!r}"
         )
@@ -714,6 +714,28 @@ def _envelope_mismatches(case: ConformanceCase, envelope: dict[str, Any]) -> lis
     elif steps_used < 0:
         mismatches.append(f"expected steps_used to be non-negative, got {steps_used}")
     return mismatches
+
+
+def _json_equal(expected: Any, actual: Any) -> bool:
+    """Compare two decoded JSON values without Python's numeric coercions.
+
+    ``True == 1`` and ``1 == 1.0`` in Python, so a plain ``==`` would let an
+    envelope reporting ``true`` satisfy a case expecting ``1``.  JSON keeps those
+    apart and so does the contract, since the value is the entrypoint's declared
+    result.  Comparing the decoded ``type`` is what separates them: ``bool`` is an
+    ``int`` subclass but not the same type.
+    """
+    if type(expected) is not type(actual):
+        return False
+    if isinstance(expected, dict):
+        return expected.keys() == actual.keys() and all(
+            _json_equal(value, actual[key]) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(expected) == len(actual) and all(
+            _json_equal(left, right) for left, right in zip(expected, actual)
+        )
+    return bool(expected == actual)
 
 
 def _is_non_negative_number(value: Any) -> bool:
@@ -850,6 +872,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 strict_case_ids=False,
             )
             suites.append((manifest, results))
+        if not any(results for _manifest, results in suites):
+            # A target advertised by the runner but absent from the selected
+            # corpus would otherwise print "0 passed, 0 failed" and exit 0,
+            # which reads as a green conformance run for a lane that never ran.
+            corpora = ", ".join(
+                f"v{manifest.language_version}" for manifest in manifests
+            )
+            selection = f"--target {args.target}"
+            if selected_ids:
+                selection += f" --case {' --case '.join(sorted(selected_ids))}"
+            raise ManifestError(
+                f"{selection} selected no cases in {corpora}; "
+                f"a run that exercises nothing is not a passing run"
+            )
     except (ManifestError, ValueError) as exc:
         print(f"conformance error: {exc}", file=sys.stderr)
         return 2

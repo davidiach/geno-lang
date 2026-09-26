@@ -609,14 +609,14 @@ def test_cli_json_cannot_state_a_failing_envelope(tmp_path: Path) -> None:
         load_manifest(manifest)
 
 
-def _json_case(tmp_path: Path) -> ConformanceCase:
+def _json_case(tmp_path: Path, expected_json_value: str = "3") -> ConformanceCase:
     manifest = _corpus(
         tmp_path,
         program=_INT_PROGRAM,
         targets=["cli-json"],
         expected_stdout="",
         expected_exit_status=3,
-        expected_json_value="3",
+        expected_json_value=expected_json_value,
     )
     return load_manifest(manifest).cases[0]
 
@@ -692,6 +692,71 @@ def test_the_envelope_shape_is_a_contract(
     mismatches = _envelope_mismatches(_json_case(tmp_path), _envelope(**overrides))
 
     assert any(match in mismatch for mismatch in mismatches), mismatches
+
+
+@pytest.mark.parametrize(
+    ("expected_json_value", "actual", "matches"),
+    [
+        ("258", 258, True),
+        ("true", True, True),
+        ("null", None, True),
+        ('{"_tuple": []}', {"_tuple": []}, True),
+        ("[1, 2]", [1, 2], True),
+        ("1", True, False),
+        ("0", False, False),
+        ("1", 1.0, False),
+        ('"3"', 3, False),
+        ("[1, 2]", [1, 2, 3], False),
+        ('{"a": 1}', {"b": 1}, False),
+        ('{"a": 1}', {"a": True}, False),
+    ],
+    ids=[
+        "int",
+        "bool",
+        "null",
+        "unit-tuple",
+        "list",
+        "true-is-not-one",
+        "false-is-not-zero",
+        "float-is-not-int",
+        "string-is-not-int",
+        "shorter-list",
+        "other-key",
+        "nested-bool",
+    ],
+)
+def test_the_envelope_value_comparison_keeps_json_types(
+    tmp_path: Path, expected_json_value: str, actual: object, matches: bool
+) -> None:
+    """`True == 1` in Python, so a bare `==` would accept the wrong JSON type.
+
+    The value is the entrypoint's declared result, so a backend reporting `true`
+    where the contract says `1` is a real disagreement, not a formatting one.
+    """
+    case = _json_case(tmp_path, expected_json_value=expected_json_value)
+
+    mismatches = _envelope_mismatches(case, _envelope(value=actual))
+
+    assert bool(mismatches) is not matches, mismatches
+
+
+def test_a_target_absent_from_the_selected_corpus_is_an_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Otherwise it prints `0 passed, 0 failed` and exits 0, which reads green.
+
+    The frozen v0.4 corpus has no case for any lane schema 2 introduced, so
+    naming one without a manifest used to exercise nothing and succeed.
+    """
+    exit_code = main(["--target", "cli-process"])
+
+    assert exit_code == 2
+    assert "selected no cases" in capsys.readouterr().err
+
+
+def test_a_target_only_one_retained_corpus_defines_still_runs() -> None:
+    """The guard above is about the whole run, not one corpus within it."""
+    assert main(["--all-retained", "--target", "cli-json"]) == 0
 
 
 def test_every_declared_target_has_a_runner() -> None:
