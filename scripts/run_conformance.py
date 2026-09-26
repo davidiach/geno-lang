@@ -25,13 +25,14 @@ SPEC_PATH = ROOT / "spec.json"
 FIRST_FROZEN_SERIES = (0, 4)
 DEFAULT_MANIFEST = CONFORMANCE_ROOT / "v0.4" / "manifest.toml"
 # `interpreter` is the in-process embedding lane; `cli-process` (the default
-# isolated run), `cli-direct` (`--unsafe`) and `js-esm` (Node ESM executed
-# directly) are real child processes, which is the only way to observe the
-# process status the 0.5 entrypoint contract is about.
+# isolated run), `cli-direct` (`--unsafe`), `cli-json` (`--json`) and `js-esm`
+# (Node ESM executed directly) are real child processes, which is the only way to
+# observe the process status the 0.5 entrypoint contract is about.
 RUNTIME_TARGETS = (
     "interpreter",
     "cli-process",
     "cli-direct",
+    "cli-json",
     "python",
     "js",
     "js-esm",
@@ -48,6 +49,17 @@ SCHEMA_2_ONLY_FIELDS = (
     "expected_exit_class",
     "expected_stderr",
     "expected_stderr_contains",
+    "expected_json_value",
+)
+# The `geno run --json` envelope's own fields. Timings are per-run, so only the
+# shape is a contract; `steps_used` is checked the same way and for the same
+# reason.
+ENVELOPE_TIMING_FIELDS = (
+    "total_ms",
+    "lex_ms",
+    "parse_ms",
+    "typecheck_ms",
+    "run_ms",
 )
 
 if str(ROOT) not in sys.path:
@@ -130,6 +142,7 @@ class ConformanceCase:
     expected_exit_class: str | None
     expected_stderr: str | None
     expected_stderr_contains: tuple[str, ...]
+    expected_json_value: str | None
     expected_diagnostics: tuple[str, ...]
 
 
@@ -158,6 +171,13 @@ class TargetOutcome:
     stdout: str
     stderr: str
     exit_status: int
+    envelope: dict[str, Any] | None = None
+    """The parsed `geno run --json` report, set by the `cli-json` lane alone.
+
+    That lane's stdout is a machine-readable report rather than the program's own
+    output, so `stdout` above carries the envelope's `output` field and the
+    ordinary stdout contract still applies unchanged.
+    """
 
 
 @dataclass(frozen=True)
@@ -193,6 +213,30 @@ def _exit_status(raw: Any, *, case_id: str) -> int | None:
         raise ManifestError(
             f"{case_id}: expected_exit_status must be between 0 and 255, got {raw}"
         )
+    return raw
+
+
+def _json_value(raw: Any, *, case_id: str) -> str | None:
+    """Validate a case's ``expected_json_value``, which is JSON *text*.
+
+    The `--json` envelope is where the proposal keeps the result
+    *un*normalized, so this states the raw value: 258 stays 258 while the process
+    exits 2. It is text rather than a TOML value so that a manifest quotes the
+    envelope verbatim, including a `null` TOML cannot express, and so that
+    omitting the field is unambiguously different from expecting `null`.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ManifestError(
+            f"{case_id}: expected_json_value must be a string holding JSON"
+        )
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ManifestError(
+            f"{case_id}: expected_json_value is not valid JSON: {exc}"
+        ) from exc
     return raw
 
 
@@ -313,6 +357,9 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 f"{case_id}: expected_stderr and expected_stderr_contains "
                 f"are mutually exclusive"
             )
+        expected_json_value = _json_value(
+            raw_case.get("expected_json_value"), case_id=case_id
+        )
         expected_diagnostics = _string_list(
             raw_case.get("expected_diagnostics", []),
             field="expected_diagnostics",
@@ -339,6 +386,24 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 # A case that says nothing expects a clean exit, which is what
                 # `Unit`, a missing `main` and every displayed kind report.
                 expected_exit_status = 0
+            if "cli-json" in targets:
+                if expected_json_value is None:
+                    raise ManifestError(
+                        f"{case_id}: a cli-json case requires expected_json_value"
+                    )
+                if expected_exit_class is not None:
+                    # The `--json` lane reports a failure inside the envelope
+                    # rather than on stderr, and no field states an expected
+                    # envelope diagnostic yet, so such a case would be checked
+                    # against the wrong channel.
+                    raise ManifestError(
+                        f"{case_id}: cli-json cannot express a failing envelope; "
+                        f"state expected_exit_status"
+                    )
+            elif expected_json_value is not None:
+                raise ManifestError(
+                    f"{case_id}: expected_json_value requires the cli-json target"
+                )
         else:
             if targets != ("checker",):
                 raise ManifestError(f"{case_id}: diagnostic case must target checker")
@@ -364,6 +429,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 expected_exit_class=expected_exit_class,
                 expected_stderr=expected_stderr,
                 expected_stderr_contains=expected_stderr_contains,
+                expected_json_value=expected_json_value,
                 expected_diagnostics=expected_diagnostics,
             )
         )
@@ -441,6 +507,46 @@ def _run_cli(
         check=False,
     )
     return TargetOutcome(completed.stdout, completed.stderr, completed.returncode)
+
+
+def _run_cli_json(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome:
+    """Run `geno run --json`, whose stdout is a report rather than program output.
+
+    This lane takes `--cap` without `--unsafe`, unlike the two above, and is
+    fail-closed: it grants nothing the case does not name, `print` included.
+    """
+    argv = [
+        sys.executable,
+        "-m",
+        "geno",
+        "run",
+        "--json",
+        *_capability_args(case.capabilities),
+        str(case.path),
+    ]
+    # The interpreter and manifest source are both controlled by this runner.
+    completed = subprocess.run(  # noqa: S603
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=ROOT,
+        check=False,
+    )
+    try:
+        envelope = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"--json wrote no parseable envelope ({exc}): {completed.stdout!r}"
+        ) from exc
+    if not isinstance(envelope, dict):
+        raise RuntimeError(f"--json envelope is not an object: {completed.stdout!r}")
+    output = envelope.get("output")
+    if not isinstance(output, str):
+        # Without it there is nothing to compare the stdout contract against, so
+        # this is a broken host rather than a failed expectation.
+        raise RuntimeError(f"--json envelope has no output string: {output!r}")
+    return TargetOutcome(output, completed.stderr, completed.returncode, envelope)
 
 
 def _run_js_esm(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome:
@@ -565,7 +671,55 @@ def _channel_mismatches(case: ConformanceCase, actual: TargetOutcome) -> list[st
             mismatches.append(
                 f"expected stderr to contain {fragment!r}, got {actual.stderr!r}"
             )
+    if actual.envelope is not None:
+        mismatches += _envelope_mismatches(case, actual.envelope)
     return mismatches
+
+
+def _envelope_mismatches(case: ConformanceCase, envelope: dict[str, Any]) -> list[str]:
+    """What the `--json` report must say beyond the three process channels.
+
+    The envelope is the one boundary that keeps the result *un*normalized, which
+    is the whole point of checking it: `value` stays 258 where the process exits
+    2. Timings and the step count vary per run, so only their shape is a
+    contract, and an unknown key is allowed so that a later timing phase does not
+    fail a retained corpus.  Only the `cli-json` lane reports an envelope, and
+    `load_manifest` requires such a case to state `expected_json_value`, so it is
+    always present here.
+    """
+    mismatches: list[str] = []
+    if envelope.get("ok") is not True:
+        mismatches.append(f"expected envelope ok true, got {envelope.get('ok')!r}")
+    diagnostics = envelope.get("diagnostics")
+    if diagnostics != []:
+        mismatches.append(f"expected no envelope diagnostics, got {diagnostics!r}")
+    expected_value = json.loads(cast(str, case.expected_json_value))
+    if envelope.get("value") != expected_value:
+        mismatches.append(
+            f"expected envelope value {expected_value!r}, got {envelope.get('value')!r}"
+        )
+    timing = envelope.get("timing")
+    if not isinstance(timing, dict):
+        mismatches.append(f"expected an envelope timing table, got {timing!r}")
+    else:
+        for field in ENVELOPE_TIMING_FIELDS:
+            if not _is_non_negative_number(timing.get(field)):
+                mismatches.append(
+                    f"expected timing.{field} to be a non-negative number, "
+                    f"got {timing.get(field)!r}"
+                )
+    steps_used = envelope.get("steps_used")
+    if isinstance(steps_used, bool) or not isinstance(steps_used, int):
+        mismatches.append(f"expected steps_used to be an integer, got {steps_used!r}")
+    elif steps_used < 0:
+        mismatches.append(f"expected steps_used to be non-negative, got {steps_used}")
+    return mismatches
+
+
+def _is_non_negative_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value >= 0
 
 
 def run_suite(
@@ -599,6 +753,7 @@ def run_suite(
         "interpreter": _run_interpreter,
         "cli-process": partial(_run_cli, unsafe=False),
         "cli-direct": partial(_run_cli, unsafe=True),
+        "cli-json": _run_cli_json,
         "python": _run_python,
         "js": _run_js,
         "js-esm": _run_js_esm,

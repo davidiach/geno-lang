@@ -12,6 +12,12 @@ description = "Geno 0.5 source and diagnostic compatibility corpus"
 # every displayed result kind exits with. It is the status a host actually
 # reports, so it is always 0-255: normalizing 258 to 2 is the implementation's
 # job, and the case below states the 2 an executable is required to report.
+#
+# `expected_stderr = ""` is the "no traceback for an expected nonzero status"
+# half of the contract: a status of 3 is a reported result, not a crash, so a
+# host that prints a trace beside it fails.  `expected_json_value` is the JSON
+# text of the `geno run --json` envelope's `value`, which stays *un*normalized:
+# 258 is still 258 there while the process exits 2.
 
 [[cases]]
 id = "arithmetic-control-flow"
@@ -53,6 +59,7 @@ targets = [
     "interpreter",
     "cli-process",
     "cli-direct",
+    "cli-json",
     "python",
     "js",
     "js-esm",
@@ -60,6 +67,8 @@ targets = [
 capabilities = ["print"]
 expected_stdout = "unit entrypoint\n"
 expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
 
 [[cases]]
 id = "exit-status-int"
@@ -69,12 +78,15 @@ targets = [
     "interpreter",
     "cli-process",
     "cli-direct",
+    "cli-json",
     "python",
     "js",
     "js-esm",
 ]
 expected_stdout = ""
 expected_exit_status = 3
+expected_stderr = ""
+expected_json_value = "3"
 
 [[cases]]
 id = "exit-status-int-wraps"
@@ -84,12 +96,15 @@ targets = [
     "interpreter",
     "cli-process",
     "cli-direct",
+    "cli-json",
     "python",
     "js",
     "js-esm",
 ]
 expected_stdout = ""
 expected_exit_status = 2
+expected_stderr = ""
+expected_json_value = "258"
 
 [[cases]]
 id = "exit-status-int-negative"
@@ -99,12 +114,15 @@ targets = [
     "interpreter",
     "cli-process",
     "cli-direct",
+    "cli-json",
     "python",
     "js",
     "js-esm",
 ]
 expected_stdout = ""
 expected_exit_status = 255
+expected_stderr = ""
+expected_json_value = "-1"
 
 [[cases]]
 id = "exit-status-output-before-result"
@@ -114,6 +132,7 @@ targets = [
     "interpreter",
     "cli-process",
     "cli-direct",
+    "cli-json",
     "python",
     "js",
     "js-esm",
@@ -121,6 +140,8 @@ targets = [
 capabilities = ["print"]
 expected_stdout = "work done\n"
 expected_exit_status = 3
+expected_stderr = ""
+expected_json_value = "3"
 
 [[cases]]
 id = "diagnostic-type-mismatch"

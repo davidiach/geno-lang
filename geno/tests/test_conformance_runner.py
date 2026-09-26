@@ -10,7 +10,11 @@ import pytest
 
 from scripts.run_conformance import (
     DEFAULT_MANIFEST,
+    RUNTIME_TARGETS,
+    SCHEMA_2_ONLY_FIELDS,
+    ConformanceCase,
     ManifestError,
+    _envelope_mismatches,
     load_manifest,
     main,
     retained_manifest_paths,
@@ -147,6 +151,16 @@ def test_run_suite_rejects_an_unknown_id_for_a_single_manifest() -> None:
 
 _PRINTING_PROGRAM = 'func main() -> Unit\n    print("ok")\n    return ()\nend func\n'
 _INT_PROGRAM = "func main() -> Int\n    return 3\nend func\n"
+_WRAPPING_PROGRAM = "func main() -> Int\n    return 258\nend func\n"
+# One valid value per schema 2 field, so the version gate below covers all of
+# them rather than only the one it was written for.
+_SCHEMA_2_SAMPLES: dict[str, object] = {
+    "expected_exit_status": 3,
+    "expected_exit_class": "nonzero",
+    "expected_stderr": "",
+    "expected_stderr_contains": ["boom"],
+    "expected_json_value": "3",
+}
 
 
 def _corpus(
@@ -311,15 +325,28 @@ def test_v04_corpus_stays_on_schema_1() -> None:
     assert load_manifest().schema_version == 1
 
 
-def test_schema_1_rejects_the_executable_boundary_fields(tmp_path: Path) -> None:
-    """The new fields are schema 2, so an older corpus cannot use them silently."""
+def test_the_schema_2_field_samples_stay_complete() -> None:
+    """Keeps the version gate below honest when a field is added."""
+    assert set(_SCHEMA_2_SAMPLES) == set(SCHEMA_2_ONLY_FIELDS)
+
+
+@pytest.mark.parametrize("field", SCHEMA_2_ONLY_FIELDS)
+def test_schema_1_rejects_the_executable_boundary_fields(
+    tmp_path: Path, field: str
+) -> None:
+    """The new fields are schema 2, so an older corpus cannot use them silently.
+
+    The version gate runs before every field's own rule, so a value that would
+    also fail those rules still reports the schema first, which is the message a
+    corpus author needs.
+    """
     manifest = _corpus(
         tmp_path,
         program=_INT_PROGRAM,
         schema_version=1,
         targets=["interpreter"],
         expected_stdout="",
-        expected_exit_status=3,
+        **{field: _SCHEMA_2_SAMPLES[field]},
     )
 
     with pytest.raises(ManifestError, match="requires schema_version 2"):
@@ -458,6 +485,215 @@ def test_the_node_esm_lane_reports_an_int_result_as_the_status(
     assert [result.status for result in results] == ["passed"], results
 
 
+def test_the_json_lane_keeps_the_value_raw_while_the_process_normalizes(
+    tmp_path: Path,
+) -> None:
+    """The split proposal 0001 asks for: 258 in the envelope, 2 from the process."""
+    manifest = _corpus(
+        tmp_path,
+        program=_WRAPPING_PROGRAM,
+        targets=["cli-json"],
+        expected_stdout="",
+        expected_exit_status=2,
+        expected_stderr="",
+        expected_json_value="258",
+    )
+
+    results = run_suite(load_manifest(manifest), target="cli-json")
+
+    assert [result.status for result in results] == ["passed"], results
+
+
+def test_a_normalized_envelope_value_fails(tmp_path: Path) -> None:
+    """The single easiest mistake here is normalizing the envelope too."""
+    manifest = _corpus(
+        tmp_path,
+        program=_WRAPPING_PROGRAM,
+        targets=["cli-json"],
+        expected_stdout="",
+        expected_exit_status=2,
+        expected_json_value="2",
+    )
+
+    results = run_suite(load_manifest(manifest), target="cli-json")
+
+    assert [result.status for result in results] == ["failed"]
+    assert "expected envelope value 2, got 258" in results[0].detail
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "expected"),
+    [([], "failed"), (["print"], "passed")],
+    ids=["ungranted", "granted"],
+)
+def test_the_json_lane_is_fail_closed_on_capabilities(
+    tmp_path: Path, capabilities: list[str], expected: str
+) -> None:
+    """`geno run --json` grants nothing by default, so a case must name `print`.
+
+    Without the grant the envelope reports E412 instead of running, which is the
+    behavior #113 settled on and the reason this lane passes `--cap` at all. The
+    ungranted half matters because a lane that silently granted `print` would
+    pass every case here for the wrong reason.
+    """
+    manifest = _corpus(
+        tmp_path / "-".join(capabilities or ["none"]),
+        program=_PRINTING_PROGRAM,
+        targets=["cli-json"],
+        capabilities=capabilities,
+        expected_stdout="ok\n",
+        expected_json_value='{"_tuple": []}',
+    )
+
+    results = run_suite(load_manifest(manifest), target="cli-json")
+
+    assert [result.status for result in results] == [expected], results
+
+
+def test_a_cli_json_case_requires_an_expected_envelope_value(tmp_path: Path) -> None:
+    """Otherwise the lane would only re-check what the others already check."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["cli-json"],
+        expected_stdout="",
+        expected_exit_status=3,
+    )
+
+    with pytest.raises(ManifestError, match="requires expected_json_value"):
+        load_manifest(manifest)
+
+
+def test_expected_json_value_requires_the_cli_json_target(tmp_path: Path) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["interpreter"],
+        expected_stdout="",
+        expected_exit_status=3,
+        expected_json_value="3",
+    )
+
+    with pytest.raises(ManifestError, match="requires the cli-json target"):
+        load_manifest(manifest)
+
+
+def test_expected_json_value_must_hold_json(tmp_path: Path) -> None:
+    """It is JSON text so that `null` is expressible and omission is distinct."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["cli-json"],
+        expected_stdout="",
+        expected_exit_status=3,
+        expected_json_value="{oops",
+    )
+
+    with pytest.raises(ManifestError, match="not valid JSON"):
+        load_manifest(manifest)
+
+
+def test_cli_json_cannot_state_a_failing_envelope(tmp_path: Path) -> None:
+    """Its diagnostics land in the envelope, not on the stderr the class checks."""
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["cli-json"],
+        expected_stdout="",
+        expected_exit_class="nonzero",
+        expected_stderr_contains=["Error"],
+        expected_json_value="null",
+    )
+
+    with pytest.raises(ManifestError, match="cannot express a failing envelope"):
+        load_manifest(manifest)
+
+
+def _json_case(tmp_path: Path) -> ConformanceCase:
+    manifest = _corpus(
+        tmp_path,
+        program=_INT_PROGRAM,
+        targets=["cli-json"],
+        expected_stdout="",
+        expected_exit_status=3,
+        expected_json_value="3",
+    )
+    return load_manifest(manifest).cases[0]
+
+
+def _envelope(**overrides: object) -> dict[str, object]:
+    """A report shaped like the real one, for the shape checks below."""
+    envelope: dict[str, object] = {
+        "ok": True,
+        "value": 3,
+        "output": "",
+        "diagnostics": [],
+        "timing": {
+            "total_ms": 2.84,
+            "lex_ms": 0.3,
+            "parse_ms": 0.21,
+            "typecheck_ms": 1.27,
+            "run_ms": 1.06,
+        },
+        "steps_used": 10,
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+def test_a_well_formed_envelope_has_no_mismatches(tmp_path: Path) -> None:
+    assert _envelope_mismatches(_json_case(tmp_path), _envelope()) == []
+
+
+def test_an_extra_envelope_key_is_allowed(tmp_path: Path) -> None:
+    """A later timing phase must not fail a corpus retained from this series."""
+    envelope = _envelope()
+    envelope["cached"] = False
+    timing = envelope["timing"]
+    assert isinstance(timing, dict)
+    timing["lower_ms"] = 0.4
+
+    assert _envelope_mismatches(_json_case(tmp_path), envelope) == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"ok": False}, "envelope ok true"),
+        ({"diagnostics": [{"code": "E412"}]}, "no envelope diagnostics"),
+        ({"value": 4}, "envelope value 3, got 4"),
+        ({"timing": None}, "envelope timing table"),
+        ({"timing": {"total_ms": 1.0}}, "timing.run_ms"),
+        ({"timing": {"run_ms": -1.0}}, "timing.run_ms"),
+        ({"timing": {"run_ms": "fast"}}, "timing.run_ms"),
+        ({"timing": {"run_ms": True}}, "timing.run_ms"),
+        ({"steps_used": "ten"}, "steps_used to be an integer"),
+        ({"steps_used": True}, "steps_used to be an integer"),
+        ({"steps_used": -1}, "steps_used to be non-negative"),
+    ],
+    ids=[
+        "not-ok",
+        "diagnostics",
+        "value",
+        "no-timing",
+        "missing-phase",
+        "negative-phase",
+        "text-phase",
+        "bool-phase",
+        "text-steps",
+        "bool-steps",
+        "negative-steps",
+    ],
+)
+def test_the_envelope_shape_is_a_contract(
+    tmp_path: Path, overrides: dict[str, object], match: str
+) -> None:
+    """Timings vary per run, so only the shape is checked -- but it is checked."""
+    mismatches = _envelope_mismatches(_json_case(tmp_path), _envelope(**overrides))
+
+    assert any(match in mismatch for mismatch in mismatches), mismatches
+
+
 def test_every_declared_target_has_a_runner() -> None:
     """A target in ALL_TARGETS with no runner would silently KeyError mid-suite."""
     from scripts.run_conformance import ALL_TARGETS
@@ -473,11 +709,4 @@ def test_v05_exit_status_cases_cover_every_executable_boundary() -> None:
 
     assert exit_cases
     for case in exit_cases:
-        assert set(case.targets) == {
-            "interpreter",
-            "cli-process",
-            "cli-direct",
-            "python",
-            "js",
-            "js-esm",
-        }, case.id
+        assert set(case.targets) == set(RUNTIME_TARGETS), case.id
