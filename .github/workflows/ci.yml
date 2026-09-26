@@ -648,7 +648,7 @@ jobs:
       run: python -m pytest geno/tests/test_cli.py geno/tests/test_api.py geno/tests/test_compiler.py geno/tests/test_js_compiler.py geno/tests/test_package_index.py geno/tests/test_sandbox_config.py geno/tests/test_package_manager.py::TestManifestParse::test_manifest_filesystem_sensitive_dependency_name_raises -q --tb=short --timeout=60
 
     - name: Run Windows LSP and project-resolution tests
-      run: python -m pytest geno/tests/test_lsp.py geno/tests/test_project_resolution_consistency.py -q --tb=short --timeout=60
+      run: python -m pytest geno/tests/test_lsp.py geno/tests/test_project_resolution_consistency.py geno/tests/test_deep_review_tooling.py geno/tests/test_deep_review_quality.py -q --tb=short --timeout=60
 
   lint:
     runs-on: ubuntu-latest

@@ -71,10 +71,14 @@ def test_missing_node_is_distinct_and_can_be_required(monkeypatch):
     assert sum(b.success for b in required.backends) == 2
 
 
-def test_real_print_runs_on_every_available_backend():
+@pytest.mark.parametrize(
+    ("expression", "output"),
+    [("7", "7\n"), ('"café 😀"', "café 😀\n")],
+)
+def test_real_print_runs_on_every_available_backend(expression, output):
     result = runner.run_all_backends(
-        "func main() -> Unit\n    print(7)\n    return ()\nend func\n",
-        oracle="7\n",
+        f"func main() -> Unit\n    print({expression})\n    return ()\nend func\n",
+        oracle=output,
     )
     assert result.match, result.error
     assert all(b.success for b in result.backends if b.available)

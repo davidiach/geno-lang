@@ -104,7 +104,9 @@ def _run_compiled_python(source: str, timeout: float = 10.0) -> BackendResult:
             elapsed_s=time.monotonic() - t0,
         )
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", encoding="utf-8", delete=False
+        ) as f:
             f.write(python_code)
             f.flush()
             tmp_path = f.name
@@ -112,6 +114,8 @@ def _run_compiled_python(source: str, timeout: float = 10.0) -> BackendResult:
             [sys.executable, tmp_path, "--cap", "print"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=timeout,
         )
         elapsed = time.monotonic() - t0
@@ -181,7 +185,9 @@ def _run_compiled_js(source: str, timeout: float = 10.0) -> BackendResult:
             elapsed_s=time.monotonic() - t0,
         )
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".js", encoding="utf-8", delete=False
+        ) as f:
             f.write(js_code)
             f.flush()
             tmp_path = f.name
@@ -189,6 +195,7 @@ def _run_compiled_js(source: str, timeout: float = 10.0) -> BackendResult:
             ["node", tmp_path, "--cap", "print"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout,
         )
         elapsed = time.monotonic() - t0

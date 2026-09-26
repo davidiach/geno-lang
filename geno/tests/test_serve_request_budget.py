@@ -170,6 +170,8 @@ def test_serve_handler_error_returns_generic_500_and_logs(monkeypatch, caplog):
     # install_serve_callbacks captures HTTPServer as a closure local, so patch
     # before building the interpreter.
     monkeypatch.setattr(_http_server_mod, "HTTPServer", CapturingServer)
+    # This loopback test must not wait for the runner's reverse-DNS resolver.
+    monkeypatch.setattr("socket.getfqdn", lambda name: name)
 
     interp = _serve_interpreter(_RAISING_HANDLER)
     http_listen = interp.global_env.bindings["http_listen"].func

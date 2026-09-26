@@ -243,7 +243,7 @@ def test_unicode_rename_round_trips_incoming_and_outgoing_positions(
         'func main() -> String\n  let value: String = "x"\n'
         '  return "😀" + value\nend func\n'
     )
-    main.write_text(source)
+    main.write_text(source, encoding="utf-8")
     server, _ = _server({main: source}, encoding)
     # Request at the last letter so a missing inbound conversion misses the name.
     result = _rename(server, main, 2, reference_column + 4, "count")
@@ -265,7 +265,7 @@ def test_unicode_diagnostics_and_navigation_share_protocol_positions(tmp_path):
         'func main() -> String\n  let value: String = "x"\n'
         '  return "😀" + value\nend func\n'
     )
-    main.write_text(source)
+    main.write_text(source, encoding="utf-8")
     server, _ = _server({main: source})
     params = types.DefinitionParams(
         text_document=types.TextDocumentIdentifier(uri=main.as_uri()),
@@ -283,7 +283,7 @@ def test_unicode_diagnostics_and_navigation_share_protocol_positions(tmp_path):
     reference = next(loc for loc in references if loc.range.start.line == 2)
     assert reference.range.start.character == 16
     invalid = source.replace(" + value", " + missing")
-    main.write_text(invalid)
+    main.write_text(invalid, encoding="utf-8")
     _server_instance, diagnostics = _server({main: invalid})
     error = next(d for d in diagnostics[main.as_uri()] if "missing" in d.message)
     assert error.range.start.character == 16
