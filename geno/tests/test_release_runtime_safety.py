@@ -140,18 +140,28 @@ end func
     assert "=> 42" in result.stdout
 
 
-def test_json_mode_uses_normal_default_print_capability(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("cap_args", "expected_ok"),
+    [((), False), (("--cap", "print"), True)],
+)
+def test_json_mode_requires_explicit_print_capability(
+    tmp_path, cap_args: tuple[str, ...], expected_ok: bool
+) -> None:
     result = _run_cli(
         tmp_path,
         """func main() -> Unit\n    print(\"hello\")\nend func\n""",
         "--json",
         "--no-check-examples",
+        *cap_args,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == (0 if expected_ok else 1), result.stdout + result.stderr
+    assert result.stderr == ""
     payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["output"] == "hello\n"
+    assert payload["ok"] is expected_ok
+    assert payload["output"] == ("hello\n" if expected_ok else "")
+    if not expected_ok:
+        assert any("print" in item["message"] for item in payload["diagnostics"])
 
 
 @pytest.mark.parametrize("module_name", ["codecs", "posixpath"])

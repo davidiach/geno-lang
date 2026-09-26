@@ -65,14 +65,17 @@ def test_hosted_deployment_health_checks_preserve_host_policy():
     kubernetes = _section(text, "## Kubernetes", "## Cloud Platforms")
     assert kubernetes.count("- name: Host") == 2
     assert kubernetes.count("value: geno.example.com") >= 2
+    assert "path: /livez" in kubernetes
+    assert "path: /readyz" in kubernetes
 
     ecs = _section(text, "### AWS ECS / Fargate", "### Google Cloud Run")
     assert "Network Load Balancer" in ecs
     assert "TCP target-group health check" in ecs
     assert "urllib.request.urlopen" in ecs
-    assert "http://127.0.0.1:8000/healthz" in ecs
+    assert "http://127.0.0.1:8000/readyz" in ecs
 
     fly = _section(text, "### Fly.io", "## Security")
     assert "[[http_service.checks]]" in fly
     assert "[http_service.checks.headers]" in fly
     assert 'Host = "geno.example.com"' in fly
+    assert 'path = "/readyz"' in fly

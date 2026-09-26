@@ -34,10 +34,9 @@ whatever version the tree currently declares, not only at tag time.
 
 ### Notes
 
-No runtime, compiler or CLI behavior changes in this entry beyond #72, which
-landed separately. `geno run` and both backends still display an `Int` result
-and exit 0; the observable entrypoint change lands with the CLI and backend
-work.
+The 0.5 specification scaffolding does not implement the executable entrypoint
+change. `geno run` and both backends still display an `Int` result and exit 0;
+the observable entrypoint change lands with the CLI and backend work.
 
 ### Fixed
 

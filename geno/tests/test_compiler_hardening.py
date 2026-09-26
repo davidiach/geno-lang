@@ -733,7 +733,7 @@ class TestCompileCodeGenPaths:
         end func
         """
         code = compile_to_python(src)
-        assert "_object_setattr(p, 'x', 10)" in code
+        assert "_object_setattr(p, 'x', _geno_deepcopy(10))" in code
         assert compile_and_run(src) == 10
 
     def test_field_assign_codegen_copies_value_bindings(self):
