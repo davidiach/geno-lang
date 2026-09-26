@@ -1316,8 +1316,11 @@ class TestTupleDestructuring:
         """
         js = compile_js(source)
         result = run_node_code(js)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "7"
+        # `main` returns 7, which is its exit status from 0.5 on rather than
+        # printed output (spec 4.1.1).
+        assert result.stderr == "", result.stderr
+        assert result.returncode == 7
+        assert result.stdout == ""
 
     def test_nested_in_function(self):
         source = """
@@ -4640,8 +4643,9 @@ class TestTypeInferenceCompiled:
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
         result = run_node_code(js_code, timeout=10)
-        assert result.returncode == 0
-        assert "50" in result.stdout
+        assert result.stderr == "", result.stderr
+        assert result.returncode == 50
+        assert result.stdout == ""
 
 
 class TestTypeInferenceParsing:

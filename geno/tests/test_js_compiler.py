@@ -21,7 +21,11 @@ from geno.ast_nodes import (
 from geno.js_compiler import JSCompileError, JSCompiler, compile_to_js
 from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
 from geno.parser import parse
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import (
+    declares_int_main,
+    entrypoint_observation,
+    run_node_code,
+)
 from geno.typechecker import TypeChecker
 from geno.typechecker import TypeError as GenoTypeError
 
@@ -31,32 +35,19 @@ EXAMPLES_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "examples
 def compile_and_run_js(source: str) -> str:
     """Compile Geno to JS, run via Node, and return what the program reported.
 
-    Printed output when the program printed any. Otherwise the process status,
-    which is where a `main` declared `-> Int` now reports its result
-    (docs/spec/v0.5.md 4.1.1). Very many cases in this file use an `Int` main
-    purely to observe an expression's value, and the status is the channel that
-    value arrives on -- rewriting each of them to print instead would be churn
-    that tested nothing new.
+    See `entrypoint_observation`: very many cases in this file use an `Int` main
+    purely to observe an expression's value, which from 0.5 arrives as the exit
+    status rather than on stdout.
 
     A genuine failure still raises, and is distinguishable: Node writes a
-    diagnostic to stderr, while a normal `Int` result writes nothing there. Only
-    a status in 0-255 survives the host, so a case observing a value outside
-    that range has to print it rather than return it.
-
-    The status is read only for a program that declares an `Int` main. A `Unit`
-    or empty-string result prints nothing and must keep reading as "", not as
-    status 0.
+    diagnostic to stderr, while a normal `Int` result writes nothing there.
     """
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
     result = run_node_code(js_out, args=("--cap", "print"), timeout=10)
     if result.stderr:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
-    printed = cast(str, result.stdout).strip()
-    if printed:
-        return printed
-    declares_int_main = re.search(r"func\s+main\s*\(\s*\)\s*->\s*Int\b", source)
-    return str(result.returncode) if declares_int_main else ""
+    return entrypoint_observation(result, int_main=declares_int_main(source))
 
 
 @pytest.mark.parametrize("module_name", ["X = 1; console.log('PWNED')", "default"])

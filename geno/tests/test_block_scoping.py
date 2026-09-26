@@ -244,8 +244,11 @@ def _run_node(source: str) -> str:
         completed = subprocess.run(
             ["node", path], capture_output=True, text=True, timeout=60, check=False
         )
-        assert completed.returncode == 0, completed.stderr[-400:]
-        return completed.stdout.strip().splitlines()[-1]
+        assert completed.stderr == "", completed.stderr[-400:]
+        # `_program` always declares `main() -> Int`, whose result is the exit
+        # status from 0.5 on and is no longer printed (spec 4.1.1). Every value
+        # in the case tables below is well inside 0-255.
+        return str(completed.returncode)
     finally:
         Path(path).unlink(missing_ok=True)
 

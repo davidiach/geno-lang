@@ -12,7 +12,11 @@ from typing import Callable
 
 import pytest
 
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import (
+    declares_int_main,
+    entrypoint_observation,
+    run_node_code,
+)
 
 
 @pytest.fixture()
@@ -118,9 +122,13 @@ def typecheck_project(tmp_path: Path) -> Callable[[Path | None], None]:
 def compile_and_run_js() -> Callable[[str], str]:
     """Compile a Geno source string to JavaScript and execute it via Node.
 
-    Returns a callable that takes Geno source code, compiles it to JS,
-    runs it with Node.js, and returns the stripped stdout. Raises
-    RuntimeError if Node exits with a non-zero status.
+    Returns a callable that takes Geno source code, compiles it to JS, runs it
+    with Node.js, and returns what the program reported -- printed output, or the
+    exit status for a `main` declared `-> Int`, which from 0.5 reports its result
+    that way rather than printing it. See `entrypoint_observation`.
+
+    A genuine failure still raises: Node writes a diagnostic to stderr, while a
+    normal `Int` result writes nothing there.
 
     Note: requires Node.js to be available on PATH. Tests using this
     fixture should be marked with @pytest.mark.skipif if Node is absent.
@@ -133,9 +141,9 @@ def compile_and_run_js() -> Callable[[str], str]:
         js_out = compile_to_js(source)
         assert isinstance(js_out, str)
         result = run_node_code(js_out, args=("--cap", "print"), timeout=10)
-        if result.returncode != 0:
+        if result.stderr:
             raise RuntimeError(f"JS execution failed: {result.stderr}")
-        return result.stdout.strip()
+        return entrypoint_observation(result, int_main=declares_int_main(source))
 
     return _run
 

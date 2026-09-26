@@ -11,7 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import geno
 from geno.compiler import compile_and_exec, compile_to_python
 from geno.js_compiler import compile_to_js
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import (
+    declares_int_main,
+    entrypoint_observation,
+    run_node_code,
+)
 
 
 def run(source: str):
@@ -37,13 +41,17 @@ def _compile_py_and_run(source: str):
 
 
 def _compile_js_and_run(source: str) -> str:
-    """Compile to JS, run via Node, return stdout stripped."""
+    """Compile to JS, run via Node, return what the program reported.
+
+    Printed output, or the exit status for a `main` declared `-> Int`, which
+    from 0.5 reports its result that way. See `entrypoint_observation`.
+    """
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
     result = run_node_code(js_out, timeout=10)
-    if result.returncode != 0:
+    if result.stderr:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
-    return result.stdout.strip()
+    return entrypoint_observation(result, int_main=declares_int_main(source))
 
 
 class TestDefaults:

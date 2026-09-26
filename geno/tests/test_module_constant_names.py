@@ -81,5 +81,7 @@ def test_keyword_constant_and_same_name_shadowing_remain_valid(
         source += "let class = 2\n"
     source += "return class\nend func\n"
     result = runner(compile_fn(source))
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == ("2" if shadow else "1")
+    assert result.stderr == "", result.stderr
+    # `main` returns the constant, which an `Int` main reports as its exit
+    # status from 0.5 on rather than printing (spec 4.1.1).
+    assert result.returncode == (2 if shadow else 1)
