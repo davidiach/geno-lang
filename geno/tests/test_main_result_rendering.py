@@ -67,12 +67,14 @@ RESULT_CASES = [
     pytest.param("List[Int]", "[]", "[]", id="empty_list"),
 ]
 
-# `geno run` no longer prints an `Int` result: it is the process exit status
-# (docs/spec/v0.5.md 4.1.1). The compiled backends still print it until that
-# same change reaches them, so the CLI parity cases below leave `Int` out
-# rather than asserting a line the CLI is now right not to print. Exit-status
-# agreement for `Int` is asserted in test_exit_semantics.py.
-_CLI_RESULT_CASES = [case for case in RESULT_CASES if case.id != "int"]
+# No host prints an `Int` result any more: it is the process exit status
+# (docs/spec/v0.5.md 4.1.1). Every case below is about the *displayed* rendering,
+# so `Int` is left out of all of them rather than asserting a line that nothing
+# is now supposed to print. This used to be two lists, one for the CLI and one
+# for the backends, because only the CLI had made the change; they agree again.
+# Exit-status agreement for `Int` is asserted in test_exit_semantics.py, and the
+# per-backend statuses in test_main_result_compatibility.py.
+_DISPLAYED_RESULT_CASES = [case for case in RESULT_CASES if case.id != "int"]
 
 
 def _program(return_type: str, expression: str) -> str:
@@ -100,7 +102,9 @@ def _run_compiled(source: str, *, target: str) -> str:
         Path(path).unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize(("return_type", "expression", "expected"), RESULT_CASES)
+@pytest.mark.parametrize(
+    ("return_type", "expression", "expected"), _DISPLAYED_RESULT_CASES
+)
 def test_compiled_python_renders_result_in_geno_syntax(
     return_type: str, expression: str, expected: str
 ) -> None:
@@ -110,7 +114,9 @@ def test_compiled_python_renders_result_in_geno_syntax(
 
 
 @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-@pytest.mark.parametrize(("return_type", "expression", "expected"), RESULT_CASES)
+@pytest.mark.parametrize(
+    ("return_type", "expression", "expected"), _DISPLAYED_RESULT_CASES
+)
 def test_compiled_js_renders_result_in_geno_syntax(
     return_type: str, expression: str, expected: str
 ) -> None:
@@ -119,7 +125,9 @@ def test_compiled_js_renders_result_in_geno_syntax(
 
 
 @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-@pytest.mark.parametrize(("return_type", "expression", "expected"), RESULT_CASES)
+@pytest.mark.parametrize(
+    ("return_type", "expression", "expected"), _DISPLAYED_RESULT_CASES
+)
 def test_both_backends_render_the_result_identically(
     return_type: str, expression: str, expected: str
 ) -> None:
@@ -127,7 +135,9 @@ def test_both_backends_render_the_result_identically(
     assert _run_compiled(source, target="python") == _run_compiled(source, target="js")
 
 
-@pytest.mark.parametrize(("return_type", "expression", "expected"), _CLI_RESULT_CASES)
+@pytest.mark.parametrize(
+    ("return_type", "expression", "expected"), _DISPLAYED_RESULT_CASES
+)
 def test_geno_run_result_line_matches_the_compiled_backend(
     tmp_path: Path, return_type: str, expression: str, expected: str
 ) -> None:
@@ -146,7 +156,9 @@ def test_geno_run_result_line_matches_the_compiled_backend(
     assert completed.stdout.strip().splitlines()[-1] == f"=> {expected}"
 
 
-@pytest.mark.parametrize(("return_type", "expression", "expected"), _CLI_RESULT_CASES)
+@pytest.mark.parametrize(
+    ("return_type", "expression", "expected"), _DISPLAYED_RESULT_CASES
+)
 def test_geno_run_unsafe_matches_the_compiled_backends(
     tmp_path: Path, return_type: str, expression: str, expected: str
 ) -> None:

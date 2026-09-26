@@ -4,13 +4,20 @@
 
 Geno CLI apps can be compiled to either Python or JavaScript (Node.js) for distribution.
 
-## Executable result contract (v0.4)
+## Executable result contract (v0.5)
 
-A successful `main() -> Int` is an ordinary displayed program result in the
-0.4 language series; it does not become the process status. `geno run` prefixes
-the value with `=>`, while standalone Python and Node artifacts print the value
-directly. Both forms exit with status 0 and preserve output produced before the
-result. Uncaught runtime errors still exit nonzero.
+A successful `main() -> Int` becomes the process status: the artifact exits with
+that value normalized modulo 256 and does not display it. `geno run` and the
+standalone Python and Node artifacts agree, so `return 2` exits 2, `return 258`
+exits 2 and `return 0 - 1` exits 255. Output produced before the result is
+preserved, and a normal nonzero status is not an error: it carries no traceback
+and no diagnostic. `main() -> Unit` exits 0 silently, any other declared return
+type is still displayed and exits 0, and uncaught runtime errors still exit
+nonzero with a diagnostic.
+
+A browser-targeted artifact has no process to give a status to, so it keeps
+displaying an `Int` result instead. The compiler decides that from the target
+profile, never from whether a `process` global happens to exist at runtime.
 
 Executable behavior is applied only when the artifact is run directly.
 Importing generated Python or Node ESM does not invoke `main` or terminate the

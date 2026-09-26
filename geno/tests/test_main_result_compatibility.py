@@ -155,27 +155,35 @@ def test_embedding_run_returns_value_and_output_without_exiting() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source", "expected_stdout"),
+    ("source", "expected_status", "expected_stdout"),
     [
-        pytest.param(_source("Unit", "return ()"), "", id="unit"),
-        pytest.param(_source("Int", "return 2"), "2\n", id="int-two"),
+        pytest.param(_source("Unit", "return ()"), 0, "", id="unit"),
+        pytest.param(_source("Int", "return 2"), 2, "", id="int-two"),
+        pytest.param(_source("Int", "return 258"), 2, "", id="int-above-255"),
+        pytest.param(_source("Int", "return 0 - 1"), 255, "", id="int-negative"),
         pytest.param(
             _source("Int", 'print("report-ready")\nreturn 2'),
-            "report-ready\n2\n",
+            2,
+            "report-ready\n",
             id="output-before-result",
         ),
     ],
 )
-def test_compiled_python_displays_main_result_without_changing_status(
-    source: str, expected_stdout: str
+def test_compiled_python_reports_an_int_main_as_its_exit_status(
+    source: str, expected_status: int, expected_stdout: str
 ) -> None:
+    """The standalone artifact follows the CLI (docs/spec/v0.5.md 4.1.1).
+
+    This replaces the v0.4 expectation that it printed the value and exited 0.
+    Output written before the result still arrives.
+    """
     result = run_python_code(
         compile_to_python(source),
         python_executable=sys.executable,
         args=("--cap", "print"),
     )
 
-    assert result.returncode == 0
+    assert result.returncode == expected_status
     assert result.stdout == expected_stdout
     assert result.stderr == ""
 
@@ -198,27 +206,47 @@ def test_importing_compiled_python_does_not_run_main(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(_NODE is None, reason="Node.js is not installed")
 @pytest.mark.parametrize(
-    ("source", "expected_stdout"),
+    ("source", "expected_status", "expected_stdout"),
     [
-        pytest.param(_source("Unit", "return ()"), "", id="unit"),
-        pytest.param(_source("Int", "return 2"), "2\n", id="int-two"),
+        pytest.param(_source("Unit", "return ()"), 0, "", id="unit"),
+        pytest.param(_source("Int", "return 2"), 2, "", id="int-two"),
+        pytest.param(_source("Int", "return 258"), 2, "", id="int-above-255"),
+        pytest.param(_source("Int", "return 0 - 1"), 255, "", id="int-negative"),
         pytest.param(
             _source("Int", 'print("report-ready")\nreturn 2'),
-            "report-ready\n2\n",
+            2,
+            "report-ready\n",
             id="output-before-result",
         ),
     ],
 )
-def test_compiled_node_displays_main_result_without_changing_status(
-    source: str, expected_stdout: str
+def test_compiled_node_reports_an_int_main_as_its_exit_status(
+    source: str, expected_status: int, expected_stdout: str
 ) -> None:
     js_code = compile_to_js(source)
     assert isinstance(js_code, str)
     result = run_node_code(js_code, node_executable=_NODE, args=("--cap", "print"))
 
-    assert result.returncode == 0
+    assert result.returncode == expected_status
     assert result.stdout == expected_stdout
     assert result.stderr == ""
+
+
+def test_compiled_node_normalizes_the_status_in_the_generated_code() -> None:
+    """Only the generated code can show this; the host hides it.
+
+    POSIX masks a wait status to its low 8 bits and Node maps a negative
+    `process.exitCode` the same way, so 258 and -1 come back as 2 and 255
+    whether or not the compiler normalized. Running the artifact therefore
+    cannot tell a correct backend from one that emitted the raw value, and
+    JavaScript's `%` truncates toward zero where Python's floors -- so the
+    doubled form is what keeps Node agreeing with `geno/exit_status.py`.
+    """
+    js_code = compile_to_js(_source("Int", "return 0 - 1"))
+    assert isinstance(js_code, str)
+
+    assert "process.exitCode = ((_main_result % 256) + 256) % 256;" in js_code
+    assert "process.exitCode = _main_result % 256;" not in js_code
 
 
 @pytest.mark.skipif(_NODE is None, reason="Node.js is not installed")
@@ -233,8 +261,8 @@ def test_compiled_node_esm_runs_directly_but_is_inert_when_imported(
     direct = subprocess.run(
         [_NODE or "node", str(compiled)], capture_output=True, text=True, timeout=10
     )
-    assert direct.returncode == 0
-    assert direct.stdout == "2\n"
+    assert direct.returncode == 2
+    assert direct.stdout == ""
     assert direct.stderr == ""
 
     importer = tmp_path / "importer.mjs"
@@ -337,6 +365,28 @@ def test_browser_targeted_esm_does_not_import_node_runtime() -> None:
 
 
 @pytest.mark.skipif(_NODE is None, reason="Node.js is not installed")
+def test_browser_targeted_output_keeps_displaying_under_a_node_host() -> None:
+    """A browser artifact displays an `Int`, even where `process` exists.
+
+    This is the case a runtime `typeof process` check gets wrong, and the reason
+    the choice is made from the target profile when the artifact is compiled. Node
+    supplies a real `process`, and a bundler's polyfill supplies a convincing
+    one; either would flip such a check and silently cost a browser artifact the
+    result it is supposed to show (docs/spec/v0.5.md 4.1.1).
+    """
+    profile = TargetProfile.load("browser")
+    js_code = compile_to_js(_source("Int", "return 2"), target_profile=profile)
+    assert isinstance(js_code, str)
+    assert "process.exitCode" not in js_code
+
+    result = run_node_code(js_code, node_executable=_NODE, args=("--cap", "print"))
+
+    assert result.returncode == 0
+    assert result.stdout == "2\n"
+    assert result.stderr == ""
+
+
+@pytest.mark.skipif(_NODE is None, reason="Node.js is not installed")
 def test_compiled_node_esm_runs_main_through_symlink(tmp_path: Path) -> None:
     js_code = compile_to_js(_source("Int", "return 2"), esm=True)
     assert isinstance(js_code, str)
@@ -355,8 +405,8 @@ def test_compiled_node_esm_runs_main_through_symlink(tmp_path: Path) -> None:
         timeout=10,
     )
 
-    assert result.returncode == 0
-    assert result.stdout == "2\n"
+    assert result.returncode == 2
+    assert result.stdout == ""
     assert result.stderr == ""
 
 
@@ -407,8 +457,8 @@ def test_compiled_node_esm_runs_main_with_non_eval_runtime_flag(
         timeout=10,
     )
 
-    assert result.returncode == 0
-    assert result.stdout == "2\n"
+    assert result.returncode == 2
+    assert result.stdout == ""
     assert result.stderr == ""
 
 
@@ -433,6 +483,6 @@ def test_compiled_node_esm_runs_main_through_package_directory(
         timeout=10,
     )
 
-    assert result.returncode == 0
-    assert result.stdout == "2\n"
+    assert result.returncode == 2
+    assert result.stdout == ""
     assert result.stderr == ""

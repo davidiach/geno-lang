@@ -2438,11 +2438,17 @@ class TestBackendParity:
                 "end func\n"
             )
         }
+        # Printed rather than returned: an `Int` main reports its result as the
+        # process status now (spec 4.1.1), and this case is about argument
+        # reordering, so the value has to arrive on a channel it can be compared
+        # on. 123 would also be a legal status, which is exactly why relying on
+        # it here would make the assertion say less than it looks.
         main_source = (
             "import Lib\n"
             '@untested("entry point")\n'
-            "func main() -> Int\n"
-            "  return Lib.encode(c: 3, a: 1, b: 2)\n"
+            "func main() -> Unit\n"
+            "  print(to_string(value: Lib.encode(c: 3, a: 1, b: 2)))\n"
+            "  return ()\n"
             "end func\n"
         )
 
@@ -2455,12 +2461,15 @@ class TestBackendParity:
             "A": "func value() -> Int\n  example () -> 1\n  return 1\nend func\n",
             "B": "func value() -> Int\n  example () -> 2\n  return 2\nend func\n",
         }
+        # Printed rather than returned, for the reason above: this case is about
+        # module namespacing, not about the exit contract.
         main_source = (
             "import A\n"
             "import B\n"
             '@untested("entry point")\n'
-            "func main() -> Int\n"
-            "  return A.value() * 10 + B.value()\n"
+            "func main() -> Unit\n"
+            "  print(to_string(value: A.value() * 10 + B.value()))\n"
+            "  return ()\n"
             "end func\n"
         )
 

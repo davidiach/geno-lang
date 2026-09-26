@@ -94,7 +94,10 @@ def build_app(
 
             # Compile JS via the unified project pipeline
             compiler = JSCompiler(track_source_map=source_map)
-            js_code = compiler.compile_project(dg)
+            # `geno build` enforces the browser profile above, and a browser
+            # artifact has no process exit status: an `Int` result keeps being
+            # displayed.
+            js_code = compiler.compile_project(dg, node_host=False)
             dist_dir.mkdir(parents=True, exist_ok=True)
 
             sources_content: dict[str, str] = {}

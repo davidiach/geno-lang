@@ -91,7 +91,12 @@ from .ast_nodes import (
     WildcardPattern,
     WithExpr,
 )
-from .entrypoint import is_async_execution_form, visible_type_aliases
+from .entrypoint import (
+    EntrypointResultKind,
+    classify_entrypoint_result,
+    is_async_execution_form,
+    visible_type_aliases,
+)
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -763,8 +768,28 @@ class JSCompiler(BaseCompiler):
         main_def: FunctionDef | None,
         *,
         type_aliases: dict[str, TypeAlias] | None = None,
+        kind: EntrypointResultKind = EntrypointResultKind.OTHER,
+        node_host: bool = True,
     ) -> None:
-        """Emit host-boundary handling for a completed main call."""
+        """Emit host-boundary handling for a completed main call.
+
+        ``node_host`` says whether this artifact runs somewhere with a process
+        exit status. It comes from the compile target's profile, never from
+        inspecting a ``process`` global at runtime: a browser bundle carrying a
+        ``process`` polyfill would pass that check and silently stop displaying
+        its result, which is the behaviour a browser artifact is supposed to
+        keep (docs/spec/v0.5.md 4.1.1).
+        """
+        if kind is EntrypointResultKind.INT and node_host:
+            # The result is the status, so it is never displayed.
+            # `process.exitCode` rather than `process.exit` so stdout still
+            # flushes. JavaScript's `%` truncates toward zero where Python's
+            # floors, so a bare `% 256` would leave -1 as -1; the doubled form
+            # matches `geno/exit_status.py`, which is the one definition of this
+            # normalization. A standalone artifact cannot import geno, so the
+            # expression is inlined here as it is in the Python backend.
+            self._writeln("process.exitCode = ((_main_result % 256) + 256) % 256;")
+            return
         resolved_return_type = (
             main_def.__dict__.get("_resolved_return_type")
             if main_def is not None
@@ -850,6 +875,7 @@ class JSCompiler(BaseCompiler):
         tree_shake: bool = True,
         *,
         esm: bool = False,
+        node_host: bool = True,
     ) -> str:
         # Compile user code into a separate buffer first
         self.output = StringIO()
@@ -945,7 +971,11 @@ class JSCompiler(BaseCompiler):
                     self._writeln("const _main_result = await main();")
                 else:
                     self._writeln("const _main_result = main();")
-                self._emit_main_result(main_def)
+                self._emit_main_result(
+                    main_def,
+                    kind=classify_entrypoint_result(program),
+                    node_host=node_host,
+                )
                 if main_is_async:
                     self._dedent()
                     self._writeln(
@@ -1003,6 +1033,7 @@ class JSCompiler(BaseCompiler):
         tree_shake: bool = True,
         *,
         esm: bool = False,
+        node_host: bool = True,
     ) -> str:
         """Compile all modules in a DependencyGraph to a single JS file.
 
@@ -1206,6 +1237,12 @@ class JSCompiler(BaseCompiler):
             self._emit_main_result(
                 main_def,
                 type_aliases=entrypoint_type_aliases,
+                kind=(
+                    classify_entrypoint_result(ep_program, dep_graph.parsed)
+                    if ep_program
+                    else EntrypointResultKind.MISSING
+                ),
+                node_host=node_host,
             )
             if main_is_async:
                 self._dedent()
@@ -3507,7 +3544,11 @@ def compile_to_js(
 
     compiler = JSCompiler(track_source_map=source_map)
     include_node_preamble = esm and profile.target != "browser"
-    js_code = compiler.compile(program, esm=include_node_preamble)
+    js_code = compiler.compile(
+        program,
+        esm=include_node_preamble,
+        node_host=profile.target != "browser",
+    )
 
     if esm:
         js_code = _to_esm(js_code, program, include_node_preamble=include_node_preamble)
@@ -3768,7 +3809,7 @@ def compile_to_html(
         checker.check_program(program)
 
     compiler = JSCompiler(track_source_map=source_map)
-    js_code = compiler.compile(program)
+    js_code = compiler.compile(program, node_host=False)
     sm_json = None
     if source_map:
         sm_json = compiler.generate_source_map(
@@ -3793,7 +3834,7 @@ def compile_project_to_html(
 ) -> str:
     """Compile a multi-module project to a self-contained HTML file."""
     compiler = JSCompiler(track_source_map=source_map)
-    js_code = compiler.compile_project(dep_graph)
+    js_code = compiler.compile_project(dep_graph, node_host=False)
 
     # Collect source contents from the dependency graph
     sources_content: dict[str, str] = {}
