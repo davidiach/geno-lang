@@ -33,6 +33,7 @@ from .builtin_registry import allowed_gated_builtins
 from .capabilities import normalize_capability_values
 from .dependency_graph import DependencyGraphError
 from .diagnostics import Diagnostic, ErrorCode, Severity
+from .entrypoint import EntrypointResultKind, classify_entrypoint_result
 from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
 from .lexer import LexerError
 from .parser_base import ParseError, ParseErrors
@@ -309,6 +310,12 @@ class RunResult:
         diagnostics: List of structured diagnostics (errors/warnings).
         timing: Per-phase timing breakdown.
         steps_used: Number of interpreter steps consumed.
+        entrypoint_kind: How an executable host would treat ``main``'s declared
+            result.  Reported so a caller that *is* a process boundary, such as
+            ``geno run``, can derive an exit status without resolving the
+            program a second time.  It describes the program, not this call:
+            ``value`` and ``value_raw`` are always the raw result, and this API
+            never terminates the host whatever the classification says.
     """
 
     ok: bool
@@ -318,6 +325,7 @@ class RunResult:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     timing: Timing = field(default_factory=Timing)
     steps_used: int = 0
+    entrypoint_kind: EntrypointResultKind | None = None
 
 
 @dataclass
@@ -785,6 +793,9 @@ def run(
                 diagnostics=diagnostics,
                 timing=timing,
                 steps_used=steps,
+                # Classified from the same resolved program that just ran, so a
+                # process boundary above this call does not resolve it again.
+                entrypoint_kind=classify_entrypoint_result(program, parsed_modules),
             ),
         )
 

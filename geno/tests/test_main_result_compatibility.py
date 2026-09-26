@@ -47,66 +47,79 @@ def _run_cli(
 
 
 @pytest.mark.parametrize(
-    ("mode_args", "source", "expected_stdout"),
+    ("mode_args", "source", "expected_status", "expected_stdout"),
     [
-        pytest.param((), _source("Unit", "return ()"), "", id="process-unit"),
+        pytest.param((), _source("Unit", "return ()"), 0, "", id="process-unit"),
         pytest.param(
             ("--unsafe",),
             _source("Unit", "return ()"),
+            0,
             "",
             id="direct-unit",
         ),
-        pytest.param((), _source("Int", "return 0"), "=> 0\n", id="process-zero"),
+        pytest.param((), _source("Int", "return 0"), 0, "", id="process-zero"),
         pytest.param(
             ("--unsafe",),
             _source("Int", "return 0"),
-            "=> 0\n",
+            0,
+            "",
             id="direct-zero",
         ),
-        pytest.param((), _source("Int", "return 2"), "=> 2\n", id="process-two"),
+        pytest.param((), _source("Int", "return 2"), 2, "", id="process-two"),
         pytest.param(
             ("--unsafe",),
             _source("Int", "return 2"),
-            "=> 2\n",
+            2,
+            "",
             id="direct-two",
         ),
         pytest.param(
             (),
             _source("Int", 'print("report-ready")\nreturn 2'),
-            "report-ready\n=> 2\n",
+            2,
+            "report-ready\n",
             id="process-output-before-result",
         ),
         pytest.param(
             ("--unsafe",),
             _source("Int", 'print("report-ready")\nreturn 2'),
-            "report-ready\n=> 2\n",
+            2,
+            "report-ready\n",
             id="direct-output-before-result",
         ),
     ],
 )
-def test_geno_run_displays_main_result_without_changing_status(
+def test_geno_run_reports_an_int_main_as_its_exit_status(
     tmp_path: Path,
     mode_args: tuple[str, ...],
+    expected_status: int,
     source: str,
     expected_stdout: str,
 ) -> None:
+    """An `Int` result is the status, and stops being printed (spec 4.1.1).
+
+    This replaces the v0.4 expectation that `geno run` displayed `=> 2` and
+    exited 0. Output written before the result still arrives, and a normal
+    nonzero status carries no error text.
+    """
     result = _run_cli(tmp_path, source, *mode_args)
 
-    assert result.returncode == 0
+    assert result.returncode == expected_status
     assert result.stdout == expected_stdout
     assert result.stderr == ""
 
 
-def test_geno_run_json_returns_main_value_without_changing_status(
+def test_geno_run_json_keeps_the_raw_value_and_exits_with_the_status(
     tmp_path: Path,
 ) -> None:
+    """`--json` reports what `main` returned; only the process status is normalized."""
     result = _run_cli(
         tmp_path,
         _source("Int", 'print("report-ready")\nreturn 2'),
         "--json",
     )
 
-    assert result.returncode == 0
+    assert result.returncode == 2
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["ok"] is True

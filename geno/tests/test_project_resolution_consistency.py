@@ -651,8 +651,10 @@ class TestProjectResolutionConsistency:
         assert "3 modules" in cli_check.stdout
 
         cli_run = _run_cli("run", str(app_file))
-        assert cli_run.returncode == 0
-        assert cli_run.stdout.strip() == "=> 12"
+        # The embedding API above reports the raw 12; the CLI is a process
+        # boundary, so the same result is its exit status (spec 4.1.1).
+        assert cli_run.returncode == 12
+        assert cli_run.stdout == ""
 
         suite = run_project_test_suite(app_file)
         assert suite.success is True
@@ -716,8 +718,8 @@ class TestProjectResolutionConsistency:
         assert "Scratch.geno" in cli_check.stdout
 
         cli_run = _run_cli("run", str(scratch_file))
-        assert cli_run.returncode == 0
-        assert cli_run.stdout.strip() == "=> 2"
+        assert cli_run.returncode == 2
+        assert cli_run.stdout == ""
 
         output_file = tmp_path / "scratch.py"
         cli_compile = _run_cli("compile", str(scratch_file), "-o", str(output_file))

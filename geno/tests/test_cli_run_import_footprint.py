@@ -44,7 +44,8 @@ status = 0
 try:
     runpy.run_module("geno", run_name="__main__")
 except SystemExit as exc:
-    status = exc.code if isinstance(exc.code, int) else 1
+    # `SystemExit(None)` is a clean exit; only a non-int code is a failure.
+    status = 0 if exc.code is None else (exc.code if isinstance(exc.code, int) else 1)
 print(
     "\\x1ePROBE\\x1e"
     + json.dumps(
@@ -101,7 +102,9 @@ end func
 def test_process_run_does_not_import_the_frontend_in_the_parent(program: Path) -> None:
     result = _loaded_modules(program, "run")
 
-    assert result["status"] == 0
+    # `double(21)`, reported as the exit status by an `Int` main. A frontend
+    # failure would be 1 instead, so this is also the "it ran" assertion.
+    assert result["status"] == 42
     assert result["loaded"] == []
 
 
@@ -111,6 +114,6 @@ def test_unsafe_run_still_imports_the_frontend_in_the_parent(program: Path) -> N
     # the path that needs those imports.
     result = _loaded_modules(program, "run", "--unsafe")
 
-    assert result["status"] == 0
+    assert result["status"] == 42
     assert "geno.interpreter" in result["loaded"]
     assert "geno.typechecker" in result["loaded"]

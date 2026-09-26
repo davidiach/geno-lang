@@ -419,8 +419,10 @@ class TestModulePrivacy:
             "end func\n"
         )
         run_result = self._geno(["run", "App.geno"], project)
-        assert run_result.returncode == 0, run_result.stderr
-        assert "7" in run_result.stdout
+        # The constant won, and an `Int` main reports it as the exit status
+        # rather than printing it (spec 4.1.1).
+        assert run_result.returncode == 7, run_result.stderr
+        assert run_result.stdout == ""
 
         js_path = project / "app.js"
         compile_result = self._geno(

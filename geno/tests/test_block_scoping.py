@@ -157,7 +157,7 @@ def test_geno_run_agrees_with_the_interpreter_lane(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     root = Path(__file__).resolve().parents[2]
-    outputs = []
+    statuses = []
     for extra in ([], ["--unsafe"]):
         completed = subprocess.run(
             [sys.executable, "-m", "geno", "run", *extra, str(program)],
@@ -167,9 +167,12 @@ def test_geno_run_agrees_with_the_interpreter_lane(tmp_path: Path) -> None:
             timeout=120,
             check=False,
         )
-        assert completed.returncode == 0, completed.stderr[-400:]
-        outputs.append(completed.stdout.strip().splitlines()[-1])
-    assert outputs[0] == outputs[1] == "=> 5"
+        assert completed.stderr == "", completed.stderr[-400:]
+        assert completed.stdout == ""
+        statuses.append(completed.returncode)
+    # The outer `x` is still 5, which an `Int` main now reports as its exit
+    # status rather than printing (spec 4.1.1).
+    assert statuses[0] == statuses[1] == 5
 
 
 def test_generated_python_is_syntactically_valid_for_deep_nesting() -> None:
