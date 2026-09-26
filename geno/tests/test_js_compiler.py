@@ -21,7 +21,11 @@ from geno.ast_nodes import (
 from geno.js_compiler import JSCompileError, JSCompiler, compile_to_js
 from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
 from geno.parser import parse
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import (
+    declares_int_main,
+    entrypoint_observation,
+    run_node_code,
+)
 from geno.typechecker import TypeChecker
 from geno.typechecker import TypeError as GenoTypeError
 
@@ -29,13 +33,21 @@ EXAMPLES_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "examples
 
 
 def compile_and_run_js(source: str) -> str:
-    """Compile Geno to JS, run via Node, return stdout."""
+    """Compile Geno to JS, run via Node, and return what the program reported.
+
+    See `entrypoint_observation`: very many cases in this file use an `Int` main
+    purely to observe an expression's value, which from 0.5 arrives as the exit
+    status rather than on stdout.
+
+    A genuine failure still raises, and is distinguishable: Node writes a
+    diagnostic to stderr, while a normal `Int` result writes nothing there.
+    """
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
     result = run_node_code(js_out, args=("--cap", "print"), timeout=10)
-    if result.returncode != 0:
+    if result.stderr:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
-    return cast(str, result.stdout).strip()
+    return entrypoint_observation(result, int_main=declares_int_main(source))
 
 
 @pytest.mark.parametrize("module_name", ["X = 1; console.log('PWNED')", "default"])
@@ -343,10 +355,12 @@ class TestJSCompilerArithmetic:
 
     def test_unary_negation(self):
         source = """
-        func main() -> Int
-            return -5
+        func main() -> Unit
+            print(to_string(value: -5))
         end func
         """
+        # Printed rather than returned: a negative value is not a process
+        # status, so an `Int` main could not carry it (spec 4.1.1).
         assert compile_and_run_js(source) == "-5"
 
     def test_large_int_literal_rejected_for_js_backend(self):
@@ -757,11 +771,13 @@ console.log("ok");
 
     def test_bitwise_or_large_value(self):
         source = """
-        func main() -> Int
+        func main() -> Unit
             let large: Int = 1 << 40
-            return bit_or(large, 1)
+            print(to_string(value: bit_or(large, 1)))
         end func
         """
+        # Printed rather than returned: far outside 0-255, so it cannot be a
+        # process status (spec 4.1.1).
         assert compile_and_run_js(source) == "1099511627777"
 
 
@@ -1676,30 +1692,33 @@ class TestJSCompilerBuiltins:
 
     def test_unicode_string_indexing_uses_code_points(self):
         source = """
-        func main() -> Int
+        func main() -> Unit
             let s: String = from_char_code(128512) + "x"
-            return char_code(s[0])
+            print(to_string(value: char_code(s[0])))
         end func
         """
+        # A code point is outside 0-255, so it is printed, not returned.
         assert compile_and_run_js(source) == "128512"
 
     def test_unicode_string_char_at_uses_code_points(self):
         source = """
-        func main() -> Int
+        func main() -> Unit
             let s: String = from_char_code(128512) + "x"
-            return char_code(string_char_at(text: s, index: 0))
+            print(to_string(value: char_code(string_char_at(text: s, index: 0))))
         end func
         """
+        # A code point is outside 0-255, so it is printed, not returned.
         assert compile_and_run_js(source) == "128512"
 
     def test_unicode_substring_uses_code_points(self):
         source = """
-        func main() -> Int
+        func main() -> Unit
             let s: String = from_char_code(128512) + "x"
             let head: String = substring(text: s, start: 0, stop: 1)
-            return char_code(head) + length(head)
+            print(to_string(value: char_code(head) + length(head)))
         end func
         """
+        # A code point is outside 0-255, so it is printed, not returned.
         assert compile_and_run_js(source) == "128513"
 
     def test_unicode_string_index_of_uses_code_points(self):

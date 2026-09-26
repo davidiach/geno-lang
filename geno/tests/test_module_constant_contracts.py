@@ -10,7 +10,12 @@ from geno.api import RunConfig, run
 from geno.compiler import Compiler, compile_to_python
 from geno.js_compiler import JSCompiler, compile_to_js
 from geno.parser import parse
-from geno.tests._script_runner import run_node_code, run_python_code
+from geno.tests._script_runner import (
+    declares_int_main,
+    entrypoint_observation,
+    run_node_code,
+    run_python_code,
+)
 from geno.typechecker import TypeError as GenoTypeError
 
 
@@ -98,8 +103,14 @@ def test_result_constant_and_contract_scope(backend, typecheck, source, expected
     assert interpreted.ok, interpreted.diagnostics
     assert str(interpreted.value) == expected
     completed = runner(compile_fn(source, typecheck=typecheck))
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == expected
+    assert completed.stderr == "", completed.stderr
+    # An `Int` result is the exit status from 0.5 on and is not printed
+    # (spec 4.1.1); the `float` case still arrives on stdout. Every expected
+    # value here is well inside 0-255.
+    assert (
+        entrypoint_observation(completed, int_main=declares_int_main(source))
+        == expected
+    )
 
 
 @pytest.mark.parametrize("typecheck", [False, True])
@@ -133,8 +144,8 @@ def test_result_binding_with_ensures_retains_checked_rejection(backend, binding)
         compile_fn(source)
     # Bypassing static checks must still produce a hygienic result temporary.
     completed = runner(compile_fn(source, typecheck=False))
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "8"
+    assert completed.stderr == "", completed.stderr
+    assert entrypoint_observation(completed, int_main=True) == "8"
 
 
 def test_result_constants_remain_private_in_project_contracts(backend):
@@ -156,5 +167,5 @@ def test_result_constants_remain_private_in_project_contracts(backend):
     )
     _, compiler_type, runner = backend
     completed = runner(compiler_type().compile_project(graph))
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "9"
+    assert completed.stderr == "", completed.stderr
+    assert entrypoint_observation(completed, int_main=True) == "9"

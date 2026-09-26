@@ -432,12 +432,14 @@ end func
             python_executable=sys.executable,
             args=["--cap", "print"],
         )
-        assert completed.returncode == 0, completed.stderr
+        # `main` prints and then returns 42, which is its exit status from 0.5
+        # on (spec 4.1.1); the print still lands on stdout.
+        assert completed.returncode == 42, completed.stderr
         assert "42" in completed.stdout
 
         if HAS_NODE:
             completed = run_node_code(compile_to_js(source), args=["--cap", "print"])
-            assert completed.returncode == 0, completed.stderr
+            assert completed.returncode == 42, completed.stderr
             assert "42" in completed.stdout
 
     @pytest.mark.parametrize(
@@ -457,12 +459,12 @@ end func
         completed = run_python_code(
             py_code, python_executable=sys.executable, args=["--cap", "print"]
         )
-        assert completed.returncode == 0, completed.stderr
+        assert completed.returncode == 2, completed.stderr
         assert "2" in completed.stdout
 
         if HAS_NODE:
             completed = run_node_code(compile_to_js(source), args=["--cap", "print"])
-            assert completed.returncode == 0, completed.stderr
+            assert completed.returncode == 2, completed.stderr
             assert "2" in completed.stdout
 
     def test_await_only_in_an_example_clause_keeps_main_synchronous(self):
@@ -473,7 +475,7 @@ end func
         completed = run_python_code(
             py_code, python_executable=sys.executable, args=["--cap", "print"]
         )
-        assert completed.returncode == 0, completed.stderr
+        assert completed.returncode == 2, completed.stderr
 
     def test_sync_main_returning_an_async_value_is_not_awaited(self):
         """Returning an async value without awaiting keeps `main` synchronous."""

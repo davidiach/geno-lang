@@ -430,8 +430,9 @@ class TestModulePrivacy:
         )
         assert compile_result.returncode == 0, compile_result.stderr
         node_result = run_node_code(js_path.read_text())
-        assert node_result.returncode == 0, node_result.stderr
-        assert node_result.stdout.strip() == "7"
+        # The compiled Node artifact now agrees with `geno run` above.
+        assert node_result.returncode == 7, node_result.stderr
+        assert node_result.stdout == "", node_result.stdout
 
     def test_an_importing_module_does_not_see_the_constant(self, project):
         (project / "App.geno").write_text(

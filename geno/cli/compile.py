@@ -57,9 +57,10 @@ def compile_file(
                 generate_dts,
             )
 
-            include_node_preamble = esm and all(
+            targets_a_node_host = all(
                 target_profile.target != "browser" for target_profile in profiles
             )
+            include_node_preamble = esm and targets_a_node_host
             if source_map and not output:
                 raise ValueError("--source-map requires -o/--output for JS compile")
             emit_source_map = bool(output and source_map)
@@ -67,7 +68,11 @@ def compile_file(
             sources_content: dict[str, str] = {}
 
             if is_multi:
-                code = compiler.compile_project(dg, esm=include_node_preamble)
+                code = compiler.compile_project(
+                    dg,
+                    esm=include_node_preamble,
+                    node_host=targets_a_node_host,
+                )
                 if emit_source_map:
                     for mod_name in dg.sorted_modules:
                         rf = dg.file_map.get(mod_name)
@@ -77,7 +82,11 @@ def compile_file(
                             ]
             else:
                 program = dg.parsed[dg.sorted_modules[0]]
-                code = compiler.compile(program, esm=include_node_preamble)
+                code = compiler.compile(
+                    program,
+                    esm=include_node_preamble,
+                    node_host=targets_a_node_host,
+                )
                 if emit_source_map:
                     source_path = pg.files[0].path
                     sources_content[str(source_path)] = dg.original_sources[

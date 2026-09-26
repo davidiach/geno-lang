@@ -16,7 +16,11 @@ from geno.dependency_graph import DependencyGraph
 from geno.js_compiler import JSCompileError, JSCompiler, compile_project_to_html
 from geno.project_graph import ProjectGraph
 from geno.target_profile import TargetProfile
-from geno.tests._script_runner import run_node_code, run_python_code
+from geno.tests._script_runner import (
+    entrypoint_observation,
+    run_node_code,
+    run_python_code,
+)
 from geno.typechecker import TypeChecker
 
 # =========================================================================
@@ -90,8 +94,8 @@ class TestPythonMultiModule:
         py_code = compiler.compile_project(dg)
 
         result = run_python_code(py_code, python_executable=sys.executable, timeout=10)
-        assert result.returncode == 0
-        assert "10" in result.stdout
+        assert result.stderr == "", result.stderr
+        assert entrypoint_observation(result, int_main=True) == "10"
 
     def test_three_module_chain(self, tmp_path):
         """A -> B -> C chain compiles correctly."""
@@ -118,8 +122,8 @@ class TestPythonMultiModule:
         py_code = compiler.compile_project(dg)
 
         result = run_python_code(py_code, python_executable=sys.executable, timeout=10)
-        assert result.returncode == 0
-        assert "3" in result.stdout
+        assert result.stderr == "", result.stderr
+        assert entrypoint_observation(result, int_main=True) == "3"
 
     def test_diamond_dependency(self, tmp_path):
         """Diamond: A -> B, A -> C, B -> D, C -> D compiles correctly."""
@@ -151,8 +155,9 @@ class TestPythonMultiModule:
         py_code = compiler.compile_project(dg)
 
         result = run_python_code(py_code, python_executable=sys.executable, timeout=10)
-        assert result.returncode == 0
-        assert "23" in result.stdout  # (10+1) + (10+2) = 23
+        assert result.stderr == "", result.stderr
+        # (10+1) + (10+2) = 23
+        assert entrypoint_observation(result, int_main=True) == "23"
 
     def test_import_no_longer_raises(self, tmp_path):
         """ImportStatement in single-file compile no longer raises."""
@@ -236,8 +241,8 @@ class TestPythonMultiModule:
         py_code = compiler.compile_project(dg)
 
         result = run_python_code(py_code, python_executable=sys.executable, timeout=10)
-        assert result.returncode == 0
-        assert "12" in result.stdout
+        assert result.stderr == "", result.stderr
+        assert entrypoint_observation(result, int_main=True) == "12"
 
 
 # =========================================================================
@@ -274,8 +279,8 @@ class TestJSMultiModule:
         js_code = compiler.compile_project(dg)
 
         result = run_node_code(js_code, timeout=10)
-        assert result.returncode == 0
-        assert "10" in result.stdout
+        assert result.stderr == "", result.stderr
+        assert entrypoint_observation(result, int_main=True) == "10"
 
     def test_cross_module_types(self, tmp_path):
         """Cross-module type references work in JS output."""
@@ -343,8 +348,8 @@ class TestJSMultiModule:
         js_code = compiler.compile_project(dg)
 
         result = run_node_code(js_code, timeout=10)
-        assert result.returncode == 0
-        assert "12" in result.stdout
+        assert result.stderr == "", result.stderr
+        assert entrypoint_observation(result, int_main=True) == "12"
 
 
 # =========================================================================
@@ -415,8 +420,8 @@ def test_python_module_name_does_not_shadow_host_builtin(tmp_path):
         Compiler().compile_project(graph), python_executable=sys.executable, timeout=10
     )
 
-    assert result.returncode == 0
-    assert result.stdout.strip() == "2"
+    assert result.stderr == "", result.stderr
+    assert entrypoint_observation(result, int_main=True) == "2"
 
 
 def test_python_export_cannot_capture_emitted_host_builtin(tmp_path):
@@ -468,8 +473,8 @@ def test_python_project_min_max_exports_do_not_capture_substring_intrinsics(tmp_
     python_code = Compiler().compile_project(graph)
     result = run_python_code(python_code, python_executable=sys.executable, timeout=10)
 
-    assert result.returncode == 0
-    assert result.stdout.strip() == "2"
+    assert result.stderr == "", result.stderr
+    assert entrypoint_observation(result, int_main=True) == "2"
     assert "_builtin_max(0," in python_code
     assert "_builtin_min(len(" in python_code
 
@@ -493,8 +498,8 @@ def test_js_module_name_does_not_shadow_host_global(tmp_path):
     TypeChecker().check_project_graph(graph)
     result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
 
-    assert result.returncode == 0
-    assert result.stdout.strip() == "2"
+    assert result.stderr == "", result.stderr
+    assert entrypoint_observation(result, int_main=True) == "2"
 
 
 def test_js_lowercase_standalone_entry_module_executes(tmp_path):
@@ -505,8 +510,8 @@ def test_js_lowercase_standalone_entry_module_executes(tmp_path):
     TypeChecker().check_project_graph(graph)
     result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
 
-    assert result.returncode == 0
-    assert result.stdout.strip() == "2"
+    assert result.stderr == "", result.stderr
+    assert entrypoint_observation(result, int_main=True) == "2"
 
 
 def test_js_export_cannot_capture_emitted_host_global(tmp_path):
@@ -615,10 +620,10 @@ def test_project_main_does_not_collide_with_trait_dispatcher(tmp_path):
     )
     js_result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
 
-    assert py_result.returncode == 0
-    assert py_result.stdout.strip() == "7"
-    assert js_result.returncode == 0
-    assert js_result.stdout.strip() == "7"
+    assert py_result.stderr == "", py_result.stderr
+    assert js_result.stderr == "", js_result.stderr
+    assert entrypoint_observation(py_result, int_main=True) == "7"
+    assert entrypoint_observation(js_result, int_main=True) == "7"
 
 
 def test_duplicate_import_alias_uses_last_module_without_redeclaration(tmp_path):
@@ -646,7 +651,7 @@ def test_duplicate_import_alias_uses_last_module_without_redeclaration(tmp_path)
     )
     js_result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
 
-    assert py_result.returncode == 0
-    assert py_result.stdout.strip() == "2"
-    assert js_result.returncode == 0
-    assert js_result.stdout.strip() == "2"
+    assert py_result.stderr == "", py_result.stderr
+    assert js_result.stderr == "", js_result.stderr
+    assert entrypoint_observation(py_result, int_main=True) == "2"
+    assert entrypoint_observation(js_result, int_main=True) == "2"

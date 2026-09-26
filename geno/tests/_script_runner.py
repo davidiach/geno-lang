@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -70,3 +71,39 @@ def run_python_code(
         timeout=timeout,
         cwd=cwd,
     )
+
+
+def declares_int_main(source: str) -> bool:
+    """Whether ``source`` declares a zero-argument ``main`` returning ``Int``.
+
+    A literal check, deliberately: it exists only to tell the test helpers below
+    which channel a compiled artifact reports its result on. The real
+    classification is `geno.entrypoint.classify_entrypoint_result`, which also
+    handles an aliased return type and needs a parsed program; tests *about* the
+    exit contract use that instead, through the CLI or the compiler.
+    """
+    return re.search(r"func\s+main\s*\(\s*\)\s*->\s*Int\b", source) is not None
+
+
+def entrypoint_observation(
+    completed: subprocess.CompletedProcess[str],
+    *,
+    int_main: bool,
+) -> str:
+    """What a standalone artifact reported for its ``main`` result, as text.
+
+    From Geno 0.5 an `Int` result is the process exit status and is not printed
+    (docs/spec/v0.5.md 4.1.1), while every other displayed kind still arrives on
+    stdout. Many tests predate that and use `main() -> Int` purely to observe a
+    computed value; passing ``int_main`` lets them keep asserting on one string.
+
+    The status channel only carries 0 to 255, so a test whose value falls
+    outside that range must print it instead of returning it -- `print` accepts
+    an `Int` directly and emits the same digits the backend used to.
+    """
+    printed = completed.stdout.strip()
+    if not int_main:
+        return printed
+    # An `Int` main prints nothing, so anything on stdout came from the program
+    # itself and is the more specific observation.
+    return printed if printed else str(completed.returncode)

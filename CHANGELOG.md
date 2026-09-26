@@ -26,8 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   return the raw result and never terminate their caller. `RunResult` gained
   `entrypoint_kind` so a caller that *is* a boundary can derive a status
   without resolving the program again.
-- The standalone compiled Python, Node script and Node ESM backends still print
-  an `Int` result and exit 0; that half of the contract follows separately.
+- The standalone compiled Python artifact, the standalone Node script and
+  directly executed Node ESM report an `Int` `main` result as their exit status
+  too, normalized the same way and no longer printed. The Python artifact applies
+  it under `if __name__ == '__main__'` only, and Node sets `process.exitCode`
+  rather than calling `process.exit`, so buffered output still flushes and
+  importing either artifact remains inert.
+- Browser-targeted JavaScript keeps displaying an `Int` result, because it has no
+  process boundary. The compiler selects that from the target profile, so a
+  bundler's `process` polyfill cannot turn a browser artifact's displayed result
+  into an exit status.
 
 ## [0.5.0-rc.0] - 2026-09-24
 
@@ -57,8 +65,9 @@ whatever version the tree currently declares, not only at tag time.
 ### Notes
 
 The 0.5 specification scaffolding does not implement the executable entrypoint
-change. `geno run` and both backends still display an `Int` result and exit 0;
-the observable entrypoint change lands with the CLI and backend work.
+change. At this pre-release `geno run` and both backends still display an `Int`
+result and exit 0; the observable entrypoint change lands with the CLI and
+backend work recorded under Unreleased above.
 
 ### Fixed
 

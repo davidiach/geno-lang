@@ -218,8 +218,10 @@ class TestStdStringImport:
             text=True,
             timeout=30,
         )
-        assert run_result.returncode == 0, run_result.stderr
-        assert run_result.stdout.strip() == "2"
+        # `main` returns the list length, 2, which an `Int` main reports as
+        # its exit status from 0.5 on rather than printing (spec 4.1.1).
+        assert run_result.returncode == 2, run_result.stderr
+        assert run_result.stdout == "", run_result.stdout
 
     def test_compiled_js_executes_wrapper_imports(self, tmp_path):
         (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
@@ -266,8 +268,10 @@ class TestStdStringImport:
             text=True,
             timeout=30,
         )
-        assert run_result.returncode == 0, run_result.stderr
-        assert run_result.stdout.strip() == "2"
+        # `main` returns the list length, 2, which an `Int` main reports as
+        # its exit status from 0.5 on rather than printing (spec 4.1.1).
+        assert run_result.returncode == 2, run_result.stderr
+        assert run_result.stdout == "", run_result.stdout
 
 
 class TestStdGenericForwarders:

@@ -94,12 +94,20 @@ change the separate JSON serialization rules for non-finite numbers.
 
 ## Entrypoint results and imports
 
-Geno 0.4 treats `main()`'s return value as a program result, not as a process
-status. A successful `main() -> Int` is displayed by `geno run` and standalone
-compiled Python and Node artifacts, and the process exits with status 0.
-`main() -> Unit` also succeeds with status 0. Output emitted before a returned
-result is preserved. A genuine uncaught runtime error instead exits nonzero and
-emits a diagnostic (or a host traceback for a standalone generated artifact).
+In the Geno 0.5 series `main()`'s return value is the process status at an
+executable boundary. A successful `main() -> Int` exits with that value
+normalized modulo 256 -- mathematically, so `-1` becomes 255 and `258` becomes
+2 -- and is not displayed. `geno run`, standalone compiled Python, the standalone
+Node script and directly executed Node ESM all agree. `main() -> Unit` succeeds
+with status 0 and displays nothing, and every other declared return type keeps
+its displayed result and status 0. Output emitted before a returned result is
+preserved, and a normal nonzero status carries no traceback and no diagnostic. A
+genuine uncaught runtime error instead exits nonzero and emits a diagnostic (or a
+host traceback for a standalone generated artifact).
+
+Browser-targeted ESM has no process boundary, so it keeps displaying an `Int`
+result. That choice is made from the compile target's profile, not by looking for
+a `process` global at runtime, so a bundler's polyfill cannot change it.
 
 Only `main` declared in the selected entry program is invoked. Embedding APIs
 such as `geno.api.run()` return the value in `RunResult` and never terminate the
