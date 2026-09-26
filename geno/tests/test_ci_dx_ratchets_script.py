@@ -282,6 +282,7 @@ def test_workflow_surface_reports_shard_timing_regressions(
     workflow = workflow.replace("        retention-days: 14\n", "", 1)
     workflow = workflow.replace("        overwrite: true\n", "", 1)
     workflow = workflow.replace("          --allow-mixed-attempts \\\n", "", 1)
+    workflow = workflow.replace("          --allow-mixed-images \\\n", "", 1)
     workflow = workflow.replace(
         '          --timing-manifests "${timing_files[@]}"\n',
         "",
@@ -344,6 +345,10 @@ def test_workflow_surface_reports_shard_timing_regressions(
     assert (
         "hosted coverage report job missing coverage validation across partial retries"
         in errors
+    )
+    assert (
+        "hosted coverage report job missing coverage validation across hosted image "
+        "rollouts" in errors
     )
     assert (
         "hosted coverage shard job missing retry-stable coverage artifact "

@@ -7,9 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.0] - 2026-09-24
+
+Development pre-release opening the 0.5 series. Not published; the version is
+dated because `scripts/check_version_alignment.py` requires a dated heading for
+whatever version the tree currently declares, not only at tag time.
+
 ### Added
 
 - **Module-level constants**: A `let` written outside any function now binds a constant every function in the file can read, replacing the duplicated literals and `@untested` helper functions the pattern used to need. The initializer is restricted to literal forms — a number, string or boolean, a negated number, or a list or tuple of those — so a module still executes nothing when it is imported; a call, an operator expression or a reference to another binding is rejected at parse time. `var` is rejected at module level, `export let` is not supported yet, and constants are private to the declaring module. Names follow the `snake_case` variable convention. (#72)
+- `docs/spec/v0.5.md`, the normative 0.5 language contract. Its only change from
+  v0.4 is section 4.1.1, which gives `main() -> Int` executable exit semantics
+  per accepted proposal 0001. `docs/spec/v0.4.md` is frozen and untouched.
+- `conformance/v0.5/`, a seed corpus so the current and retained previous-minor
+  corpora both resolve. It carries forward core 0.4 cases that proposal 0001
+  does not change, plus a module-constants case, which is a 0.5-only form that
+  the frozen v0.4 corpus cannot carry. Exit-semantics cases follow with the
+  runner work.
+
+### Changed
+
+- `spec.json`: `language_series` is now `0.5` and `human_spec` points at the
+  0.5 document. `runtime_semantics.entrypoint_result` describes the accepted
+  contract again -- an `Int` result normalized modulo 256, output preserved
+  before exit, and no traceback for a normal nonzero status.
+
+### Notes
+
+No runtime, compiler or CLI behavior changes in this entry beyond #72, which
+landed separately. `geno run` and both backends still display an `Int` result
+and exit 0; the observable entrypoint change lands with the CLI and backend
+work.
 
 ## [0.4.4] - 2026-09-20
 

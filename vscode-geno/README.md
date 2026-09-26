@@ -28,5 +28,9 @@ cd vscode-geno
 npm ci
 npm run compile
 npm run package
-code --install-extension geno-0.4.4.vsix
+code --install-extension "geno-$(node -p "require('./package.json').version").vsix"
 ```
+
+`npm run package` names the file after the version in `package.json`, which is
+how `scripts/release-gate-vscode.sh` finds it too, so deriving it here keeps the
+command correct across version bumps.

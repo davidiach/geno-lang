@@ -1,11 +1,11 @@
 {
   "name": "Geno",
-  "version": "0.4.4",
+  "version": "0.5.0-rc.0",
   "description": "Machine-readable specification for the Geno programming language",
   "format_version": 1,
-  "language_series": "0.4",
+  "language_series": "0.5",
   "status": "normative-pre-1.0",
-  "human_spec": "docs/spec/v0.4.md",
+  "human_spec": "docs/spec/v0.5.md",
   "compatibility_policy": "docs/operations/compatibility-policy.md",
 
   "keywords": [
@@ -51,8 +51,9 @@
     "print": "canonical Geno representation plus newline; top-level String values are unquoted",
     "entrypoint_result": {
       "unit_status": 0,
-      "int_behavior": "displayed program result with status 0",
-      "preserve_output_before_result": true,
+      "int_status": "returned value normalized modulo 256",
+      "preserve_output_before_exit": true,
+      "normal_nonzero_has_traceback": false,
       "uncaught_runtime_error": "nonzero with diagnostic or standalone-host traceback",
       "embedding_terminates_host": false,
       "generated_python_import_executes_main": false,
@@ -87,7 +88,7 @@
   },
 
   "diagnostics": {
-    "stability": "Published error-code meanings are stable within the 0.4 language series.",
+    "stability": "Published error-code meanings are stable within a language series, and are never repurposed across series; a code retains its meaning for every series this specification still retains.",
     "fallbacks": ["E100", "E200", "E300", "E499"],
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",

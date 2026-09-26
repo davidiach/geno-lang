@@ -400,6 +400,7 @@ def check_workflow_surface(root: Path = ROOT) -> list[str]:
         "actions/download-artifact@": "coverage artifact download",
         "pattern: coverage-data-*": ("retry-stable coverage artifact consumer pattern"),
         "--allow-mixed-attempts": "coverage validation across partial retries",
+        "--allow-mixed-images": "coverage validation across hosted image rollouts",
         "path: coverage-data": "coverage artifact download path",
         "merge-multiple: true": "coverage artifact merge",
         "expected 3 shard plans": "complete shard plan artifact guard",

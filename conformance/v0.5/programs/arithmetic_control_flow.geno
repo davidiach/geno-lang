@@ -1,0 +1,12 @@
+func main() -> Unit
+    print(7 / 2)
+    print(17 % 5)
+    var total: Int = 0
+    var i: Int = 1
+    while i <= 10 do
+        total = total + i
+        i = i + 1
+    end while
+    print(total)
+    return ()
+end func
