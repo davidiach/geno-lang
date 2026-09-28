@@ -1,0 +1,10 @@
+type Status = Int
+
+func failure() -> Status
+    example () -> 4
+    return 4
+end func
+
+func main() -> Status
+    return failure()
+end func

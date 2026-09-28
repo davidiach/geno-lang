@@ -1,0 +1,8 @@
+func third(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 3
+    return xs[2]
+end func
+
+func main() -> Int
+    return third([1])
+end func

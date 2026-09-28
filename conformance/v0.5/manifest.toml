@@ -1,13 +1,30 @@
-schema_version = 1
+schema_version = 2
 language_version = "0.5"
 description = "Geno 0.5 source and diagnostic compatibility corpus"
 
-# Seed corpus. Most of these carry forward core 0.4 semantics that proposal 0001
-# does not change, so `--all-retained` keeps meaning something while the 0.5
-# entrypoint work lands. The exception is module-constants, which is a 0.5-only
-# form: #72 was held back from 0.4.4 because it is a language feature, so v0.4
-# cannot carry it. The exit-semantics cases the proposal calls for arrive with
-# the runner change that can express an expected process status.
+# Most of these carry forward core 0.4 semantics that proposal 0001 does not
+# change, so `--all-retained` keeps meaning something. Two groups are 0.5-only:
+# module-constants, a language form #72 held back from 0.4.4 so v0.4 cannot carry
+# it, and the exit-status cases below, which are the entrypoint contract of
+# `docs/spec/v0.5.md` 4.1.1.
+#
+# A run case's `expected_exit_status` defaults to 0 when omitted, which is what
+# every displayed result kind exits with. It is the status a host actually
+# reports, so it is always 0-255: normalizing 258 to 2 is the implementation's
+# job, and the case below states the 2 an executable is required to report.
+#
+# `expected_stderr = ""` is the "no traceback for an expected nonzero status"
+# half of the contract: a status of 3 is a reported result, not a crash, so a
+# host that prints a trace beside it fails.  `expected_json_value` is the JSON
+# text of the `geno run --json` envelope's `value`, which stays *un*normalized:
+# 258 is still 258 there while the process exits 2.
+#
+# Two entrypoint requirements deliberately stay in `geno/tests/test_exit_semantics.py`
+# instead of here, because a case cannot state them: a synchronous `main` that
+# returns an un-awaited `Async[Int]` is displayed, and its rendering is a host's
+# own coroutine repr rather than stable text; and entry-module ownership needs a
+# second module on disk, which the single-source `python` and `js` lanes do not
+# compile.
 
 [[cases]]
 id = "arithmetic-control-flow"
@@ -40,6 +57,171 @@ kind = "run"
 targets = ["interpreter", "python", "js"]
 capabilities = ["print"]
 expected_stdout = "geno:1\nV\n7\n"
+
+[[cases]]
+id = "exit-status-unit"
+path = "programs/exit_status_unit.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "unit entrypoint\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "exit-status-int"
+path = "programs/exit_status_int.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 3
+expected_stderr = ""
+expected_json_value = "3"
+
+[[cases]]
+id = "exit-status-int-wraps"
+path = "programs/exit_status_int_wraps.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 2
+expected_stderr = ""
+expected_json_value = "258"
+
+[[cases]]
+id = "exit-status-int-negative"
+path = "programs/exit_status_int_negative.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 255
+expected_stderr = ""
+expected_json_value = "-1"
+
+[[cases]]
+id = "exit-status-output-before-result"
+path = "programs/exit_status_output_before_result.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "work done\n"
+expected_exit_status = 3
+expected_stderr = ""
+expected_json_value = "3"
+
+[[cases]]
+id = "exit-status-aliased-int"
+path = "programs/exit_status_aliased_int.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 4
+expected_stderr = ""
+expected_json_value = "4"
+
+[[cases]]
+id = "exit-status-async-main"
+path = "programs/exit_status_async_main.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 5
+expected_stderr = ""
+expected_json_value = "5"
+
+[[cases]]
+id = "exit-status-await-in-sync-main"
+path = "programs/exit_status_await_in_sync_main.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 6
+expected_stderr = ""
+expected_json_value = "6"
+
+[[cases]]
+id = "runtime-error-out-of-bounds"
+path = "programs/runtime_error_out_of_bounds.geno"
+kind = "run"
+# Every lane that owns a real stderr, which is what this case is about. The
+# `interpreter` lane returns diagnostics to its caller as data because it is an
+# embedding boundary, and `cli-json` reports them inside the envelope, so
+# neither has the channel `expected_stderr_contains` reads.
+targets = [
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["Index 2 out of bounds"]
 
 [[cases]]
 id = "diagnostic-type-mismatch"

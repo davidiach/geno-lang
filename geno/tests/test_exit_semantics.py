@@ -7,8 +7,8 @@ process boundary keeps handing back the raw value: the embedding API,
 can end its caller's process is a defect rather than a feature.
 
 Backend-level behavior (standalone compiled Python, Node script and Node ESM)
-is a separate change and is asserted in ``test_main_result_compatibility.py``
-until it lands.
+is asserted in ``test_main_result_compatibility.py``, and every boundary that
+has a process status is compared against the others in ``conformance/v0.5``.
 """
 
 from __future__ import annotations

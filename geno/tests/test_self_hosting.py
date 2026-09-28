@@ -813,19 +813,67 @@ class TestSelfhostCliResultCompatibility:
             check=False,
         )
 
-    def test_integer_result_preserves_output_and_success_status(
+    def test_an_int_result_becomes_the_status_and_stays_unprinted(
         self, tmp_path: Path
     ) -> None:
+        """The self-hosted CLI applies 4.1.1 at its own boundary.
+
+        Two entrypoints are in play: the inner program's `2` becomes the status
+        `cmd_run` returns, and selfhost's own `main() -> Int` hands that to the
+        outer `geno run`, which exits with it. Output written before it still
+        arrives, and the result itself is never displayed.
+        """
         result = self._run(
             tmp_path,
             'func main() -> Int\n    print("report-ready")\n    return 2\nend func\n',
         )
 
-        # The inner program's `2` is still omitted by the self-hosted adapter,
-        # and selfhost's own `Int` result -- 0 for success -- is now the outer
-        # `geno run`'s exit status instead of a `=> 0` line (spec 4.1.1).
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert result.stdout == "report-ready\n"
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize(
+        ("returned", "status"),
+        [(258, 2), (-1, 255), (256, 0)],
+        ids=["above-255", "negative", "wraps-to-zero"],
+    )
+    def test_an_out_of_range_int_result_is_normalized(
+        self, tmp_path: Path, returned: int, status: int
+    ) -> None:
+        """Both CLIs normalize, so the value must survive exactly one modulo."""
+        result = self._run(
+            tmp_path,
+            f"func main() -> Int\n    return {returned}\nend func\n",
+        )
+
+        assert result.returncode == status, result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_a_unit_result_exits_zero(self, tmp_path: Path) -> None:
+        result = self._run(
+            tmp_path,
+            'func main() -> Unit\n    print("done")\n    return ()\nend func\n',
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "done\n"
+        assert result.stderr == ""
+
+    def test_another_result_kind_stays_omitted(self, tmp_path: Path) -> None:
+        """The one thing proposal 0001 asks this CLI to keep doing.
+
+        A displayed kind is shown by `geno run`, but the self-hosted adapter has
+        never printed an inner result and still does not, so it exits 0 with
+        nothing on either channel.
+        """
+        result = self._run(
+            tmp_path,
+            'func main() -> String\n    return "ignored"\nend func\n',
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
         assert result.stderr == ""
 
     def test_imported_main_is_not_entrypoint(self, tmp_path: Path) -> None:

@@ -1096,6 +1096,31 @@ class TestPostRun:
         assert status == 200
         assert data["ok"] is True
 
+    def test_an_int_main_keeps_its_raw_value_and_the_server_keeps_serving(self, client):
+        """The hosted callback is not a process boundary (spec 4.1.1).
+
+        `geno run --json` normalizes the *process* status beside the raw value,
+        but a request handler has no status to report, so 258 comes back as 258
+        and the server answers the next request instead of exiting with 2.
+        """
+        _skip_if_worker_processes_unavailable()
+
+        status, body = client.post(
+            "/run",
+            {"source": "func main() -> Int\n    return 258\nend func\n"},
+        )
+        data = json.loads(body)
+
+        assert status == 200, body
+        assert data["ok"] is True
+        assert data["value"] == 258
+
+        # Reached only because the run above did not end the server process.
+        status, body = client.post("/run", {"source": _VALID_SOURCE})
+
+        assert status == 200, body
+        assert json.loads(body)["ok"] is True
+
     def test_syntax_error(self, client):
         _skip_if_worker_processes_unavailable()
 
