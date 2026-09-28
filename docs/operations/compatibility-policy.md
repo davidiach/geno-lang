@@ -93,9 +93,9 @@ backend is not a passing all-target run.
 
 `conformance/v0.5/manifest.toml` is the current corpus and the v0.4 corpus
 remains in the repository unchanged. Release qualification runs both the current
-corpus and at least the immediately preceding minor corpus. Cases may be corrected only when the original fixture
-was internally inconsistent; such corrections require a proposal and a
-changelog entry.
+corpus and at least the immediately preceding minor corpus. Cases may be
+corrected only when the original fixture was internally inconsistent; such
+corrections require a proposal and a changelog entry.
 
 ## What Users Can Rely On
 
