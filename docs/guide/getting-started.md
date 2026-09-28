@@ -111,7 +111,7 @@ end func
 ```
 
 ```bash
-geno run Main.geno --unsafe --cap print
+geno run Main.geno --unsafe
 # 42
 ```
 

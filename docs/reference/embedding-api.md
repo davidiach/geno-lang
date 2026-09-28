@@ -137,10 +137,18 @@ from geno.entrypoint import EntrypointResultKind
 from geno.exit_status import exit_status_for_int_result
 
 result = geno.run(source)
-status = 0
-if result.entrypoint_kind is EntrypointResultKind.INT:
+if not result.ok:
+    status = 1
+elif result.entrypoint_kind is EntrypointResultKind.INT:
     status = exit_status_for_int_result(result.value_raw)
+else:
+    status = 0
 ```
+
+Check `ok` first, as `geno run` does. A run that fails to parse, type-check or
+execute returns `ok=False` with `entrypoint_kind` and `value_raw` both `None`,
+so a host that reads the classification alone would report success for a program
+that never produced a result.
 
 `value` and `value_raw` stay the raw result whatever the classification says:
 `258` is `258` here even where a process would exit `2`. Acting on the derived

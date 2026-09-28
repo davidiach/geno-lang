@@ -45,11 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `expected_stderr_contains`, `expected_exit_class` and `expected_json_value` --
   and runs seven executable boundaries: the in-process embedding lane, the three
   `geno run` lanes, standalone compiled Python, the Node script and directly
-  executed Node ESM. Nine cases cover the whole section 4.1.1 result table,
-  including a type alias for `Int`, an `async main` and a synchronous `main` that
-  awaits, since classification reads the resolved return type. Schema 1 keeps
-  loading, so the frozen `conformance/v0.4` corpus is untouched, and a run whose
-  target selection matches no case is now an error instead of an empty pass.
+  executed Node ESM. Nine cases carry the `Unit` and `Int` rows of the section
+  4.1.1 result table on every one of those boundaries, including a type alias
+  for `Int`, an `async main` and a synchronous `main` that awaits, since
+  classification reads the resolved return type. The table's other two rows are
+  still pytest's: a `main` returning some other type displays a host's own repr
+  rather than text a case can state, and an entry program with no `main` has no
+  corpus case yet. Both are covered in
+  `geno/tests/test_exit_semantics.py`. Schema 1 keeps loading, so the frozen
+  `conformance/v0.4` corpus is untouched, and a run whose target selection
+  matches no case is now an error instead of an empty pass.
 
 ### Migration
 
@@ -72,12 +77,19 @@ end func
 ```
 
 `print` takes an `Int` directly and emits the same digits the `=> 42` line used
-to, so `geno run` needs `--cap print` for it where the displayed result needed
-nothing. A program that meant its integer as a *status* keeps `main() -> Int` and
-stops reading stdout for it: the value is what the shell reports as `$?`, modulo
-256. Anything parsing `=> N` out of `geno run`'s output needs one of those two
-changes; `geno run --json` is unaffected, because its envelope still carries the
-raw value.
+to. `geno run` grants `print` by default, and so does `--unsafe`, so neither
+form needs a new flag; the fail-closed lanes -- `geno run --json` and the
+embedding API -- grant nothing, so a program migrated this way needs
+`--cap print` there.
+
+A program that meant its integer as a *status* keeps `main() -> Int` and stops
+reading stdout for it: the value is what the shell reports as `$?`, modulo 256.
+
+`geno run --json` needs the same attention, in the other direction. Its envelope
+is unchanged -- `value` still carries the raw result, so 258 is still 258 -- but
+the command now exits with the normalized status, 2 for that envelope.
+Anything running it under `set -e`, or with `subprocess(..., check=True)`, now
+has to read a perfectly valid envelope despite a nonzero exit.
 
 ## [0.5.0-rc.0] - 2026-09-24
 
