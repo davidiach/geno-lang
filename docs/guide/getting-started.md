@@ -104,15 +104,22 @@ end func
 ```geno
 import Utils
 
-func main() -> Int
-    return double(21)
+func main() -> Unit
+    print(double(21))
+    return ()
 end func
 ```
 
 ```bash
 geno run Main.geno --unsafe
-# => 42
+# 42
 ```
+
+In the 0.5 series `main`'s result is the process's exit status rather than
+something the CLI displays, so a program that wants to show a value prints it.
+Had `main` been declared `-> Int` here, `geno run` would have exited 42 and
+printed nothing. See
+[Entrypoint results and imports](../reference/runtime-semantics.md#entrypoint-results-and-imports).
 
 Import resolution looks for `ModuleName.geno` in the same directory as the importing file.
 

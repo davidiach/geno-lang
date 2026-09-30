@@ -124,7 +124,35 @@ class RunResult:
     diagnostics: list[Diagnostic] # Structured error/warning list
     timing: Timing                # Per-phase timing breakdown
     steps_used: int               # Interpreter steps consumed
+    entrypoint_kind: EntrypointResultKind | None  # How a host would treat the result
 ```
+
+`entrypoint_kind` classifies the entrypoint's declared result as `MISSING`,
+`UNIT`, `INT` or `OTHER`. It describes the program rather than this call, so a
+caller that *is* a process boundary can derive a status without resolving the
+program a second time:
+
+```python
+from geno.entrypoint import EntrypointResultKind
+from geno.exit_status import exit_status_for_int_result
+
+result = geno.run(source)
+if not result.ok:
+    status = 1
+elif result.entrypoint_kind is EntrypointResultKind.INT:
+    status = exit_status_for_int_result(result.value_raw)
+else:
+    status = 0
+```
+
+Check `ok` first, as `geno run` does. A run that fails to parse, type-check or
+execute returns `ok=False` with `entrypoint_kind` and `value_raw` both `None`,
+so a host that reads the classification alone would report success for a program
+that never produced a result.
+
+`value` and `value_raw` stay the raw result whatever the classification says:
+`258` is `258` here even where a process would exit `2`. Acting on the derived
+status is the host's decision, and `geno.run()` never takes it.
 
 ### CheckResult
 
