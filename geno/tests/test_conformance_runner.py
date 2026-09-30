@@ -772,6 +772,9 @@ def test_v05_covers_the_whole_declared_result_table() -> None:
 
     An alias, an `async main` and a synchronous `main` that awaits all resolve to
     `Int`, and a corpus that carried only the literal form would not show that.
+    The no-`main` row belongs here for the same reason: every other coverage test
+    derives its inputs from whichever cases the manifest happens to carry, so
+    dropping a case would leave them green and reopen the row it covered.
     """
     manifest = load_manifest(retained_manifest_paths()[-1])
     case_ids = {case.id for case in manifest.cases}
@@ -785,6 +788,7 @@ def test_v05_covers_the_whole_declared_result_table() -> None:
         "exit-status-aliased-int",
         "exit-status-async-main",
         "exit-status-await-in-sync-main",
+        "exit-status-no-main",
         "runtime-error-out-of-bounds",
     } <= case_ids, sorted(case_ids)
 
