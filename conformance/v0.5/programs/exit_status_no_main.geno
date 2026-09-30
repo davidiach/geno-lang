@@ -1,0 +1,13 @@
+// Row 4 of the 4.1.1 result table: an entry program with no `main` is a
+// successful no-op. It defines ordinary functions, none of them an entrypoint,
+// so nothing runs, nothing is displayed, and the status is 0.
+
+func status_code() -> Int
+    example () -> 7
+    return 7
+end func
+
+func describe(code: Int) -> String
+    example (7) -> "code 7"
+    return "code " + to_string(code)
+end func
