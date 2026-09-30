@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-30
+
+First published release of the 0.5 series, and the release that carries accepted
+proposal 0001. `0.5.0-rc.0` below opened the series and was never published, so
+everything recorded under it ships here too: module-level constants, the
+normative `docs/spec/v0.5.md`, and the `conformance/v0.5` corpus.
+
 ### Changed
 
 - **`geno run` honors a `main() -> Int` result as its exit status.** The result
