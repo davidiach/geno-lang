@@ -45,16 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `expected_stderr_contains`, `expected_exit_class` and `expected_json_value` --
   and runs seven executable boundaries: the in-process embedding lane, the three
   `geno run` lanes, standalone compiled Python, the Node script and directly
-  executed Node ESM. Nine cases carry the `Unit` and `Int` rows of the section
-  4.1.1 result table on every one of those boundaries, including a type alias
-  for `Int`, an `async main` and a synchronous `main` that awaits, since
-  classification reads the resolved return type. The table's other two rows are
-  still pytest's: a `main` returning some other type displays a host's own repr
-  rather than text a case can state, and an entry program with no `main` has no
-  corpus case yet. Both are covered in
-  `geno/tests/test_exit_semantics.py`. Schema 1 keeps loading, so the frozen
-  `conformance/v0.4` corpus is untouched, and a run whose target selection
-  matches no case is now an error instead of an empty pass.
+  executed Node ESM. Ten cases carry the `Unit`, `Int` and no-`main` rows of the
+  section 4.1.1 result table on every one of those boundaries, including a type
+  alias for `Int`, an `async main` and a synchronous `main` that awaits, since
+  classification reads the resolved return type. The table's remaining row stays
+  in `geno/tests/test_exit_semantics.py`, because a `main` returning some other
+  type displays a host's own repr rather than text a case can state; so does
+  entry-module ownership, which needs a second module on disk. Schema 1 keeps
+  loading, so the frozen `conformance/v0.4` corpus is untouched, and a run whose
+  target selection matches no case is now an error instead of an empty pass.
 
 ### Migration
 

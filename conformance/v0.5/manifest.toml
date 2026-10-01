@@ -205,6 +205,28 @@ expected_stderr = ""
 expected_json_value = "6"
 
 [[cases]]
+id = "exit-status-no-main"
+path = "programs/exit_status_no_main.geno"
+kind = "run"
+# The fourth row of the 4.1.1 result table: an entry program with no `main` is a
+# successful no-op on every boundary. `expected_json_value = "null"` is the
+# envelope's own report of "there was no result", which is why the field holds
+# JSON text rather than a TOML value.
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = "null"
+
+[[cases]]
 id = "runtime-error-out-of-bounds"
 path = "programs/runtime_error_out_of_bounds.geno"
 kind = "run"
