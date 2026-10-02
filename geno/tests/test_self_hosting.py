@@ -895,6 +895,18 @@ class TestSelfhostTypeAliases:
         ("definitions", "return_type", "body", "status"),
         [
             ("type Status = Int", "Status", "return 4", 4),
+            (
+                "type Box[T, U] = Old(x: T, y: U)\ntype Holder = Holder(value: Id[Box[Int]])\ntype Box[T] = New(x: T)\ntype Id[T] = T",
+                "Unit",
+                "return ()",
+                0,
+            ),
+            (
+                "type Box[T] = Old(x: T)\ntype Holder = Holder(value: Id[Box[Int, String]])\ntype Box[T, U] = New(x: T, y: U)\ntype Id[T] = T",
+                "Unit",
+                "return ()",
+                0,
+            ),
             ("type A = Int\ntype B = A\ntype A = String", "B", 'return "hi"', 0),
             (
                 "type A[T] = T\ntype B = A[Int]\ntype A[T] = String",
@@ -1118,6 +1130,14 @@ class TestSelfhostTypeAliases:
             ("type Bad = Int[String]", "expects 0 type parameter(s)"),
             ("type Bad = List", "expects 1 type parameter(s)"),
             ("type Bad = List[Int, String]", "expects 1 type parameter(s)"),
+            (
+                "type Box[T] = Old(x: T)\ntype Holder = Holder(value: Id[Box[Int]])\ntype Box[T, U] = New(x: T, y: U)\ntype Id[T] = T",
+                "expects 2 type parameter(s)",
+            ),
+            (
+                "type Box[T, U] = Old(x: T, y: U)\ntype Holder = Holder(value: Id[Box[Int, String]])\ntype Box[T] = New(x: T)\ntype Id[T] = T",
+                "expects 1 type parameter(s)",
+            ),
             (
                 "type Box[T] = Box(value: T)\ntype Bad = Box",
                 "expects 1 type parameter(s)",
