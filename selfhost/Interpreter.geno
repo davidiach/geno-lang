@@ -3034,6 +3034,9 @@ func collect_defs(st: InterpState, defs: List[Def]) -> Unit
         | ImportDef(module_name, span) ->
         // Imports handled separately
         let dummy: Int = 0
+        | TypeAliasNode(name, params, target, span) ->
+        // Transparent aliases have no runtime constructors.
+        let dummy: Int = 0
     end match
     return collect_defs(st, tail(defs))
 end func collect_defs

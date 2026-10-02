@@ -39,7 +39,6 @@ The canonical Python frontend also supports these forms that the experimental
 selfhost parser does not yet implement:
 
 - Bare zero-argument examples (`example -> value`); use `example () -> value`.
-- A leading `|` before the first sum-type variant; omit that initial bar.
 - Tuple patterns in match arms, including nested tuple patterns. Tuple `let`
   destructuring is also outside the current selfhost parser subset.
 

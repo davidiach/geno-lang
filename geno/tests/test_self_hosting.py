@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from geno.api import RunConfig, run
+from geno.api import RunConfig, check, run
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.typechecker import TypeChecker, TypeError
@@ -886,6 +886,285 @@ class TestSelfhostCliResultCompatibility:
         assert result.returncode == 0
         assert result.stdout == ""
         assert result.stderr == ""
+
+
+class TestSelfhostTypeAliases:
+    """Aliases resolve identically in the reference and selfhost frontends (#118)."""
+
+    @pytest.mark.parametrize(
+        ("definitions", "return_type", "body", "status"),
+        [
+            ("type Status = Int", "Status", "return 4", 4),
+            (
+                "type Box[T, U] = Old(x: T, y: U)\ntype Holder = Holder(value: Id[Box[Int]])\ntype Box[T] = New(x: T)\ntype Id[T] = T",
+                "Unit",
+                "return ()",
+                0,
+            ),
+            (
+                "type Box[T] = Old(x: T)\ntype Holder = Holder(value: Id[Box[Int, String]])\ntype Box[T, U] = New(x: T, y: U)\ntype Id[T] = T",
+                "Unit",
+                "return ()",
+                0,
+            ),
+            ("type A = Int\ntype B = A\ntype A = String", "B", 'return "hi"', 0),
+            (
+                "type A[T] = T\ntype B = A[Int]\ntype A[T] = String",
+                "B",
+                'return "hi"',
+                0,
+            ),
+            ("type Identity[List] = List", "Identity[Int]", "return 4", 4),
+            ("type Identity[Tuple] = Tuple", "Identity[Int]", "return 4", 4),
+            (
+                "type Box[T] = Box(value: T)\ntype Identity[Box] = Box",
+                "Identity[Int]",
+                "return 4",
+                4,
+            ),
+            ("type Status = Int", "Status", "return 258", 2),
+            ("type Status = Code\ntype Code = Int", "Status", "return -1", 255),
+            ("type Nothing = Unit", "Nothing", "return ()", 0),
+            ("type Nothing = Unit", "Nothing", "let n: Int = 1", 0),
+            ("type Text = String", "Text", 'return "omitted"', 0),
+            ("type Items[T] = List[T]", "Items[Int]", "return [1, 2]", 0),
+            (
+                "type Id[T] = T\ntype Items[U] = List[Id[U]]",
+                "Items[Int]",
+                "return [1]",
+                0,
+            ),
+            ("type Pair = (Int, String)", "Pair", 'return (1, "x")', 0),
+            (
+                "type Status = Int\ntype Box[T] = Box(value: T)\ntype Wrapped = Box[Status]",
+                "Wrapped",
+                "return Box(4)",
+                0,
+            ),
+            ("type Choice = Red | Blue", "Choice", "return Red", 0),
+            ("type State = Ready()", "State", "return Ready()", 0),
+            ("type State = | Ready", "State", "return Ready", 0),
+        ],
+    )
+    def test_alias_return_types_and_adt_disambiguation(
+        self, tmp_path: Path, definitions: str, return_type: str, body: str, status: int
+    ) -> None:
+        source = f"{definitions}\nfunc main() -> {return_type}\n    {body}\nend func\n"
+        typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == status, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_alias_in_examples_parameters_locals_and_forward_fields(
+        self, tmp_path: Path
+    ) -> None:
+        source = """
+        type Box = Box(value: Status)
+        type Status = Int
+        func code(n: Status) -> Status
+            example 4 -> 4
+            let result: Status = n
+            return result
+        end func
+        func main() -> Status
+            let box: Box = Box(code(4))
+            return box.value
+        end func
+        """
+        typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_zero_argument_example_with_aliased_return(self, tmp_path: Path) -> None:
+        source = """
+        type Status = Int
+        func code() -> Status
+            example () -> 4
+            return 4
+        end func
+        func main() -> Status
+            return code()
+        end func
+        """
+        typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_function_alias_and_forward_generic_field(self, tmp_path: Path) -> None:
+        source = """
+        type Holder = Holder(value: Wrapped)
+        type Wrapped = Box[Int]
+        type Box[T] = Box(value: T)
+        type Callback = (Int) -> Int
+        func identity(n: Int) -> Int
+            example 4 -> 4
+            return n
+        end func
+        func get_callback() -> Callback
+            example () -> identity
+            return identity
+        end func
+        func main() -> Int
+            let holder: Holder = Holder(Box(4))
+            let callback: Callback = get_callback()
+            return callback(holder.value.value)
+        end func
+        """
+        typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_forward_generic_type_as_alias_argument(self, tmp_path: Path) -> None:
+        source = """
+        type Holder = Holder(value: Identity[Box[Int]])
+        type Identity[T] = T
+        type Box[T] = Box(value: T)
+        func main() -> Int
+            let holder: Holder = Holder(Box(4))
+            return holder.value.value
+        end func
+        """
+        typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_imported_alias_resolves_for_main(self, tmp_path: Path) -> None:
+        (tmp_path / "Codes.geno").write_text("type Status = Int\n", encoding="utf-8")
+        result = TestSelfhostCliResultCompatibility._run(
+            tmp_path, "import Codes\nfunc main() -> Status\n    return 258\nend func\n"
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize(
+        ("library", "definitions", "return_type", "body", "status"),
+        [
+            (
+                "type Status = String\ntype Text = Status",
+                "type Status = Int",
+                "Text",
+                'return "hi"',
+                0,
+            ),
+            (
+                "type Status = Int\ntype Code = Status",
+                "type Status = String",
+                "Code",
+                "return 258",
+                2,
+            ),
+            (
+                "type Status = String\ntype Pair[T] = (Status, T)",
+                "type Status = Int",
+                "Pair[Status]",
+                'return ("hi", 4)',
+                0,
+            ),
+            (
+                "type Box[T] = Box(value: T)",
+                "type Box = Int\ntype Exit = Box",
+                "Exit",
+                "return 4",
+                4,
+            ),
+            (
+                "type Box[T] = Box(value: T)",
+                "type Box = Int\ntype Identity[T] = T",
+                "Identity[Box]",
+                "return 4",
+                4,
+            ),
+        ],
+    )
+    def test_imported_alias_keeps_defining_module_types(
+        self,
+        tmp_path: Path,
+        library: str,
+        definitions: str,
+        return_type: str,
+        body: str,
+        status: int,
+    ) -> None:
+        source = f"import Codes\n{definitions}\nfunc main() -> {return_type}\n    {body}\nend func\n"
+        reference = check(source, modules={"Codes": library})
+        assert reference.ok, reference.diagnostics
+        (tmp_path / "Codes.geno").write_text(library, encoding="utf-8")
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == status, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize(
+        ("source", "diagnostic"),
+        [
+            (
+                'type Status = Int\nfunc main() -> Status\nreturn "wrong"\nend func',
+                "Return type mismatch",
+            ),
+            (
+                'type Status = Int\nfunc code() -> Status\nexample () -> "wrong"\nreturn 4\nend func',
+                "Example output type mismatch",
+            ),
+            ("type Status = Status", "Recursive type alias"),
+            ("type Status = Code\ntype Code = Status", "Recursive type alias"),
+            ("type Status = Missing", "Unknown type"),
+            (
+                "type Ignore[T] = Int\nfunc main() -> Ignore[Missing]\nreturn 2\nend func",
+                "Unknown type",
+            ),
+            (
+                "type Ignore[T] = Int\nfunc main() -> Ignore[List]\nreturn 2\nend func",
+                "expects 1 type parameter(s)",
+            ),
+            ("type Bad[T] = T[Int]", "expects 0 type parameter(s)"),
+            ("type Bad = Int[String]", "expects 0 type parameter(s)"),
+            ("type Bad = List", "expects 1 type parameter(s)"),
+            ("type Bad = List[Int, String]", "expects 1 type parameter(s)"),
+            (
+                "type Box[T] = Old(x: T)\ntype Holder = Holder(value: Id[Box[Int]])\ntype Box[T, U] = New(x: T, y: U)\ntype Id[T] = T",
+                "expects 2 type parameter(s)",
+            ),
+            (
+                "type Box[T, U] = Old(x: T, y: U)\ntype Holder = Holder(value: Id[Box[Int, String]])\ntype Box[T] = New(x: T)\ntype Id[T] = T",
+                "expects 1 type parameter(s)",
+            ),
+            (
+                "type Box[T] = Box(value: T)\ntype Bad = Box",
+                "expects 1 type parameter(s)",
+            ),
+            (
+                "type Items[T] = List[T]\nfunc main() -> Items\nreturn [1]\nend func",
+                "expects 1 type parameter(s)",
+            ),
+            (
+                "type Items[T] = List[T]\nfunc main() -> Items[Int, String]\nreturn [1]\nend func",
+                "expects 1 type parameter(s)",
+            ),
+            (
+                "type Items[T] = List[T]\nfunc main() -> Items[String]\nreturn [1]\nend func",
+                "Return type mismatch",
+            ),
+        ],
+    )
+    def test_invalid_aliases_are_rejected(
+        self, tmp_path: Path, source: str, diagnostic: str
+    ) -> None:
+        with pytest.raises(TypeError):
+            typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode == 1
+        assert diagnostic in result.stdout + result.stderr
+        assert "type error(s), aborting" in result.stdout + result.stderr
 
 
 class TestSelfhostFrontendParity:
