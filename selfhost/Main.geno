@@ -299,9 +299,7 @@ end func is_int_main_type
 
 // Report whether the entry program's own main is declared to return an Int.
 // The checked type is read rather than the syntax, which is what the language
-// specification classifies on, so this is the right place for an alias for Int to
-// resolve. It cannot be reached that way yet: the self-hosted checker rejects an
-// alias in a return position (#118), so such a program stops at the check above.
+// specification classifies on, including transparent aliases for Int.
 @untested("reads the mutable checker environment")
 func checker_main_returns_int(cs: CheckerState, program: Program) -> Bool
     if not defs_define_main(program.defs) then

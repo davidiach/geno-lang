@@ -854,6 +854,20 @@ func parse_definition(ps: ParserState) -> Def
             let rb: Token = expect(ps, TkRBracket)
         end if
         let eq: Token = expect(ps, TkAssign)
+        // Match the reference frontend's alias/ADT disambiguation.
+        // A leading bar explicitly selects variants, including a nullary ADT.
+        let leading_bar: Bool = match_type(ps, TkBar)
+        if not leading_bar then
+            var is_alias: Bool = check_type(ps, TkLParen)
+            if check_type(ps, TkTypeIdentifier) then
+                let next_type: TokenType = ps.tokens[parser_pos(ps) + 1].tt
+                is_alias = next_type != TkLParen and next_type != TkBar
+            end if
+            if is_alias then
+                let target: TypeAnnot = parse_type(ps)
+                return TypeAliasNode(name_tok.value, vec_to_list(type_params), target, SourceSpan(ps.filename, name_tok.line, name_tok.col, name_tok.line, token_end_col(name_tok)))
+            end if
+        end if
         // Parse variants separated by |
         let variants: Vec[TypeVariant] = vec_new()
         vec_push(variants, parse_type_variant(ps))
