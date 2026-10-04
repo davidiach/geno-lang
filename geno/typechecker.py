@@ -522,6 +522,8 @@ class TypeChecker(ExhaustivenessMixin):
         self._target_profile = target_profile
         self._target_rejected: dict[str, str] = {}
         self._imported_module_names: dict[str, str | None] = {}
+        # Unqualified names that two directly imported modules both export.
+        self._ambiguous_imported_names: dict[str, tuple[str, ...]] = {}
         self._project_module_index: dict[str, dict[str, tuple[str, ...]]] = {}
         self._fresh_tv_counter: int = 0
 
@@ -1112,6 +1114,9 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions:
                 if isinstance(defn, ImportStatement):
                     self._resolve_import(defn, modules, resolved, import_summaries)
+        self._ambiguous_imported_names = self._find_ambiguous_imported_names(
+            program, modules
+        )
 
         # Detect app mode: init/update/render present without main
         func_names = {d.name for d in program.definitions if isinstance(d, FunctionDef)}
@@ -1521,6 +1526,76 @@ class TypeChecker(ExhaustivenessMixin):
         self._module_param_names[ns_name] = module_param_names
         self._module_default_counts[ns_name] = module_default_counts
         self.global_env.bind(ns_name, ModuleType(name))
+
+    def _find_ambiguous_imported_names(
+        self,
+        program: Program,
+        modules: Mapping[str, Union[Program, _ModuleImportSummary]] | None,
+    ) -> dict[str, tuple[str, ...]]:
+        """Map each function name two unaliased imports both export to them.
+
+        The compilers drop such a name from the importer's unqualified scope
+        (``Compiler.compile_project``), so a bare use must be rejected here
+        and qualified as ``Module.name`` instead (#132).  A local definition
+        or module constant of the same name wins over every import.
+        """
+        if not modules:
+            return {}
+        local_names = {
+            defn.name
+            for defn in program.definitions
+            if isinstance(defn, (FunctionDef, ModuleConstant))
+        }
+        sources: dict[str, list[str]] = {}
+        for defn in program.definitions:
+            if not isinstance(defn, ImportStatement) or defn.alias:
+                continue
+            entry = modules.get(defn.module_name)
+            if entry is None:
+                continue
+            if isinstance(entry, _ModuleImportSummary):
+                names = list(entry.functions)
+            else:
+                has_exports = self._program_has_explicit_exports(entry)
+                names = [
+                    item.name
+                    for item in entry.definitions
+                    if isinstance(item, FunctionDef)
+                    and (item.exported or not has_exports)
+                ]
+            for name in names:
+                owners = sources.setdefault(name, [])
+                if name not in local_names and defn.module_name not in owners:
+                    owners.append(defn.module_name)
+        return {
+            name: tuple(owners) for name, owners in sources.items() if len(owners) > 1
+        }
+
+    def _reject_ambiguous_import_use(
+        self, name: str, env: TypeEnv, location: SourceLocation
+    ) -> bool:
+        """Report a bare use of a name two imported modules export."""
+        owners = self._ambiguous_imported_names.get(name)
+        if not owners:
+            return False
+        scope: TypeEnv | None = env
+        while scope is not None and name not in scope.bindings:
+            scope = scope.parent
+        if scope is not self.global_env:
+            return False  # A local binding shadows the imports.
+        qualified = " or ".join(f"{owner}.{name}" for owner in owners)
+        modules_text = (
+            f"both {owners[0]} and {owners[1]}"
+            if len(owners) == 2
+            else ", ".join(owners)
+        )
+        self._error(
+            f"'{name}' is ambiguous: it is exported by {modules_text}. "
+            f"Qualify it as {qualified}",
+            location,
+            ErrorCode.TYPE_UNDEFINED_FUNC,
+        )
+        return True
 
     @staticmethod
     def _program_has_explicit_exports(program: Program) -> bool:
@@ -3548,6 +3623,8 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _check_identifier(self, expr: Identifier, env: TypeEnv) -> Type:
         """Type check an identifier."""
+        if self._reject_ambiguous_import_use(expr.name, env, expr.location):
+            return AnyType()
         type_ = env.lookup(expr.name)
         if type_ is None:
             if expr.name in self._target_rejected:
@@ -3899,6 +3976,11 @@ class TypeChecker(ExhaustivenessMixin):
                         call_arg.value.location,
                     )
             return impl_func_type.return_type
+
+        if identifier_func is not None and self._reject_ambiguous_import_use(
+            identifier_func.name, env, expr.location
+        ):
+            return _ANY_TYPE
 
         if (
             identifier_func is not None
