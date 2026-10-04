@@ -1460,9 +1460,14 @@ class Interpreter:
                 # adversarial example clauses could do up to max_steps work
                 # in verification *and* another max_steps in `main`.
                 if self.check_examples:
-                    self._verify_examples()
-                    self.output_buffer.clear()
-                    self._output_length = 0
+                    try:
+                        self._verify_examples()
+                    finally:
+                        # Example output is never program output, even when
+                        # verification fails and callers report what was
+                        # printed so far (#130).
+                        self.output_buffer.clear()
+                        self._output_length = 0
 
                 # Look for a main function
                 if execute_main and entrypoint_main is not None:

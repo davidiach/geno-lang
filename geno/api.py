@@ -48,6 +48,7 @@ from .tokens import SourceLocation
 if TYPE_CHECKING:
     from .ast_nodes import Program
     from .constraints import AllowedNext
+    from .interpreter import Interpreter
 from .values import value_to_json
 
 logger = logging.getLogger(__name__)
@@ -751,6 +752,7 @@ def run(
 
     # --- Execute ---
     t_run = time.perf_counter()
+    interp: Interpreter | None = None
     try:
         sandbox_config = SandboxConfig(
             timeout=cfg.timeout,
@@ -817,7 +819,12 @@ def run(
         )
         return _emit_monitoring_hook(
             cfg,
-            RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            RunResult(
+                ok=False,
+                output=_partial_output(interp),
+                diagnostics=diagnostics,
+                timing=timing,
+            ),
         )
 
     except RecursionLimitError as e:
@@ -831,7 +838,12 @@ def run(
         )
         return _emit_monitoring_hook(
             cfg,
-            RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            RunResult(
+                ok=False,
+                output=_partial_output(interp),
+                diagnostics=diagnostics,
+                timing=timing,
+            ),
         )
 
     except RecursionError as e:
@@ -849,7 +861,12 @@ def run(
         )
         return _emit_monitoring_hook(
             cfg,
-            RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            RunResult(
+                ok=False,
+                output=_partial_output(interp),
+                diagnostics=diagnostics,
+                timing=timing,
+            ),
         )
 
     except (TimeoutError, ResourceLimitExceeded) as e:
@@ -868,7 +885,12 @@ def run(
         )
         return _emit_monitoring_hook(
             cfg,
-            RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            RunResult(
+                ok=False,
+                output=_partial_output(interp),
+                diagnostics=diagnostics,
+                timing=timing,
+            ),
         )
 
     except SecurityViolation as e:
@@ -882,7 +904,12 @@ def run(
         )
         return _emit_monitoring_hook(
             cfg,
-            RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            RunResult(
+                ok=False,
+                output=_partial_output(interp),
+                diagnostics=diagnostics,
+                timing=timing,
+            ),
         )
 
     except GenoRuntimeError as e:
@@ -890,8 +917,18 @@ def run(
         diagnostics.append(_make_diagnostic(e, ErrorCode.RUNTIME_UNKNOWN))
         return _emit_monitoring_hook(
             cfg,
-            RunResult(ok=False, diagnostics=diagnostics, timing=timing),
+            RunResult(
+                ok=False,
+                output=_partial_output(interp),
+                diagnostics=diagnostics,
+                timing=timing,
+            ),
         )
+
+
+def _partial_output(interp: Interpreter | None) -> str:
+    """Output a failed run printed before it stopped (#130)."""
+    return interp.get_output() if interp is not None else ""
 
 
 def run_path(path: str, config: RunConfig | None = None) -> RunResult:

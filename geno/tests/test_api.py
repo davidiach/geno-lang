@@ -194,6 +194,39 @@ class TestRunErrors:
         assert "Invalid module name" in result.diagnostics[0].message
         assert result.timing.total_ms > 0
 
+    def test_runtime_error_keeps_output_printed_before_it(self):
+        """A failed run still reports what the program printed (#130)."""
+        source = """
+        func main() -> Unit
+            print("before")
+            let xs = [1, 2]
+            print(xs[5])
+        end func
+        """
+        result = run(source, config=RunConfig(capabilities={"print"}))
+        assert result.ok is False
+        assert result.output == "before\n"
+
+    def test_step_limit_keeps_output_printed_before_it(self):
+        source = """
+        func spin(n: Int) -> Int
+            example 0 -> 0
+            var i = 0
+            while i < n do
+                i = i + 1
+            end while
+            return i
+        end func
+
+        func main() -> Unit
+            print("before")
+            print(spin(100000000))
+        end func
+        """
+        result = run(source, config=RunConfig(capabilities={"print"}, max_steps=10_000))
+        assert result.ok is False
+        assert result.output == "before\n"
+
     def test_parse_error(self):
         source = "func -> end"
         result = run(source)
