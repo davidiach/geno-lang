@@ -267,3 +267,36 @@ class TestEntrypointOwnership:
         assert (
             classify_entrypoint_result(entry, modules) is EntrypointResultKind.MISSING
         )
+
+
+class TestEntrypointMainParameters:
+    """An entrypoint `main` is always called as `main()` (#133)."""
+
+    @pytest.mark.parametrize(
+        "header",
+        ["func main(x: Int) -> Int", "async func main(x: Int) -> Int"],
+    )
+    def test_main_with_parameters_is_rejected(self, header):
+        from geno.diagnostics import ErrorCode
+        from geno.types import TypeError as GenoTypeError
+
+        program = parse(f"{header}\n  return x\nend func\n")
+        with pytest.raises(GenoTypeError, match="must take no parameters") as info:
+            TypeChecker().check_program(program)
+        assert info.value.error_code == ErrorCode.TYPE_WRONG_ARITY
+
+    def test_imported_main_with_parameters_stays_an_ordinary_function(self):
+        helpers = parse(
+            "export func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n",
+            filename="<module:Helpers>",
+        )
+        entry = parse(
+            "import Helpers\n\nfunc main() -> Int\n  return Helpers.main(3)\nend func\n"
+        )
+        TypeChecker().check_program(entry, modules={"Helpers": helpers})
+
+    def test_library_module_main_with_parameters_is_allowed(self):
+        program = parse(
+            "func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n"
+        )
+        TypeChecker().check_program(program, is_entrypoint=False)
