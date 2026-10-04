@@ -22,8 +22,8 @@ func probe_vec(n: Int) -> Int
         if vec_length(vec: v) > 10 then
             let popped: Option[Int] = vec_pop(vec: v)
             match popped with
-            | Some(x) -> total = total + x
-            | None -> total = total + 1
+                | Some(x) -> total = total + x
+                | None -> total = total + 1
             end match
         end if
         try

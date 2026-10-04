@@ -128,9 +128,9 @@ func has_suffix(text: String, suffix: String) -> Bool
         return false
     end if
     return substring(
-    text: text,
-    start: length(text) - length(suffix),
-    stop: length(text)
+        text: text,
+        start: length(text) - length(suffix),
+        stop: length(text)
     ) == suffix
 end func has_suffix
 
@@ -221,7 +221,7 @@ func load_named_modules(
     names: List[String],
     modules: MutableMap[String, Program],
     seen: MutableMap[String, Bool]
-    ) -> Unit
+) -> Unit
     if length(names) == 0 then
         return ()
     end if
@@ -235,20 +235,20 @@ func load_named_modules(
             mutable_map_set(map: modules, key: mod_name, value: mod_program)
             let nested_imports: List[String] = collect_import_names(mod_program.defs)
             load_named_modules(
-            base_dir: base_dir,
-            names: nested_imports,
-            modules: modules,
-            seen: seen
+                base_dir: base_dir,
+                names: nested_imports,
+                modules: modules,
+                seen: seen
             )
             | None -> let _unused: Int = 0
         end match
     end if
 
     return load_named_modules(
-    base_dir: base_dir,
-    names: tail(names),
-    modules: modules,
-    seen: seen
+        base_dir: base_dir,
+        names: tail(names),
+        modules: modules,
+        seen: seen
     )
 end func load_named_modules
 

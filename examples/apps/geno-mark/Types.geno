@@ -7,9 +7,9 @@ type Block = Heading(level: Int, content: String) | Paragraph(content: String) |
 
 // Result of converting a markdown document.
 type ConvertResult = ConvertResult(
-html: String,
-block_count: Int,
-line_count: Int
+    html: String,
+    block_count: Int,
+    line_count: Int
 )
 
 // Output mode: full HTML page or just the body fragment.

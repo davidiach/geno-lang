@@ -34,7 +34,7 @@ class TestListPatternRest:
     def test_rest_after(self):
         """[first, ...rest] captures the tail."""
         src = """
-        type Result = Result(val: List[Int])
+        type Wrapped = Wrapped(val: List[Int])
 
         func main() -> List[Int]
             let xs: List[Int] = [1, 2, 3, 4]
