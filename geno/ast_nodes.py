@@ -29,6 +29,10 @@ class ASTNode(ABC):
         pass
 
 
+# ``Expression._float_promotion`` before the typechecker has looked at it.
+FLOAT_PROMOTION_UNKNOWN: Any = object()
+
+
 @dataclass
 class Expression(ASTNode):
     """Base class for all expressions."""
@@ -42,6 +46,11 @@ class Expression(ASTNode):
     )
     _resolved_builtin_name: str | None = field(
         default=None, init=False, repr=False, compare=False
+    )
+    # Float positions where this value may hold an Int (#137); see
+    # ``geno.float_promotion.promotion_shape``.
+    _float_promotion: Any = field(
+        default=FLOAT_PROMOTION_UNKNOWN, init=False, repr=False, compare=False
     )
 
 

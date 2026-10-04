@@ -19,6 +19,7 @@ from typing import Any, cast
 
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
+    FLOAT_PROMOTION_UNKNOWN,
     AssertStatement,
     AssignStatement,
     AwaitExpr,
@@ -89,6 +90,7 @@ from .builtin_registry import (
 )
 from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
+from .float_promotion import float_shape
 from .harness import example_call_args
 from .sandbox import (
     RecursionLimitError,
@@ -98,7 +100,7 @@ from .sandbox import (
 )
 from .sandbox import TimeoutError as SandboxTimeout
 from .tokens import SourceLocation
-from .types import FloatType, ListType
+from .types import FloatType
 
 # Re-export runtime value types for backward compatibility
 from .value_copy import copy_value
@@ -297,25 +299,64 @@ def _unshared_part(value: Any) -> Any:
     return value
 
 
-def _promote_int_to_expected_float(value: Any, expected_type: Any) -> Any:
-    """Materialise Geno's Int-to-Float compatibility in runtime values."""
+def _promote_int_to_expected_float(
+    value: Any, expected_type: Any, source: Any = None
+) -> Any:
+    """Materialise Geno's Int-to-Float compatibility in runtime values.
+
+    Promotion follows the expected type into lists, Options, Results, tuples
+    and maps, so an ``Int`` held where a ``Float`` is expected becomes a
+    float wherever it sits (#137).  When ``source`` is the expression that
+    produced ``value``, the checker's ``_float_promotion`` limits the walk to
+    positions whose static type is not already ``Float``.
+    """
     if type(value) is int and _expected_runtime_type_is_float(expected_type):
         return float(value)
+    shape = getattr(source, "_float_promotion", FLOAT_PROMOTION_UNKNOWN)
+    if shape is FLOAT_PROMOTION_UNKNOWN:
+        shape = float_shape(expected_type)
+    if shape is None or shape == "F":
+        return value
+    return _promote_to_float_shape(value, shape)
+
+
+def _promote_to_float_shape(value: Any, shape: Any) -> Any:
+    if shape is None:
+        return value
+    if shape == "F":
+        return float(value) if type(value) is int else value
+    kind = shape[0]
+    if kind == "L" and isinstance(value, list):
+        return [_promote_to_float_shape(item, shape[1]) for item in value]
+    if kind == "T" and isinstance(value, tuple):
+        return tuple(
+            _promote_to_float_shape(item, item_shape)
+            for item, item_shape in zip(value, shape[1])
+        )
+    if kind == "M" and isinstance(value, dict):
+        return {
+            _promote_to_float_shape(key, shape[1]): _promote_to_float_shape(
+                item, shape[2]
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, ConstructorValue):
+        if kind == "O" and value.constructor == "Some":
+            inner = _promote_to_float_shape(value.fields["value"], shape[1])
+            return ConstructorValue("Some", {"value": inner})
+        if kind == "R" and value.constructor in ("Ok", "Err"):
+            field, part = (
+                ("value", shape[1])
+                if value.constructor == "Ok"
+                else ("error", shape[2])
+            )
+            inner = _promote_to_float_shape(value.fields[field], part)
+            return ConstructorValue(value.constructor, {field: inner})
     return value
 
 
 def _promote_list_element(value: Any, expected_type: Any) -> Any:
     """Copy nested Float lists when their existing Int values need widening."""
-    leaf_type = expected_type
-    while isinstance(leaf_type, ListType):
-        leaf_type = leaf_type.element_type
-    if not _expected_runtime_type_is_float(leaf_type):
-        return value
-    if isinstance(expected_type, ListType) and isinstance(value, list):
-        return [
-            _promote_list_element(element, expected_type.element_type)
-            for element in value
-        ]
     return _promote_int_to_expected_float(value, expected_type)
 
 
@@ -2097,7 +2138,8 @@ class Interpreter:
             has_named_args = any(arg.name for arg in expr.arguments)
             if has_named_args:
                 trait_named_evaluated_args = [
-                    (arg.name, self.eval_expr(arg.value, env)) for arg in expr.arguments
+                    (arg.name, self._eval_argument(arg.value, env))
+                    for arg in expr.arguments
                 ]
                 resolved_type_name: str | None = None
                 for (trait_name, target_type), methods in self.trait_impls.items():
@@ -2134,7 +2176,7 @@ class Interpreter:
                     )
             else:
                 type_name: str | None = None
-                trait_first_arg = self.eval_expr(expr.arguments[0].value, env)
+                trait_first_arg = self._eval_argument(expr.arguments[0].value, env)
                 if isinstance(trait_first_arg, ConstructorValue):
                     # Find which type this constructor belongs to (O(1) lookup)
                     type_name = self._constructor_to_type.get(
@@ -2147,7 +2189,7 @@ class Interpreter:
                         if tt == type_name and method_name in methods:
                             impl_closure = methods[method_name]
                             remaining_args = [
-                                self.eval_expr(arg.value, env)
+                                self._eval_argument(arg.value, env)
                                 for arg in expr.arguments[1:]
                             ]
                             return self._call_function(
@@ -2206,10 +2248,10 @@ class Interpreter:
             # Trait dispatch was probed but did not match. Reuse the
             # already-evaluated first argument so its side effects run once.
             args = [trait_first_arg] + [
-                self.eval_expr(arg.value, env) for arg in expr.arguments[1:]
+                self._eval_argument(arg.value, env) for arg in expr.arguments[1:]
             ]
         else:
-            args = [self.eval_expr(arg.value, env) for arg in expr.arguments]
+            args = [self._eval_argument(arg.value, env) for arg in expr.arguments]
 
         return self._call_function(func, args, expr.location)
 
@@ -2226,8 +2268,18 @@ class Interpreter:
         positions that were not provided — _call_function fills those from
         default values, preserving correct positional mapping.
         """
-        evaluated = [(arg.name, self.eval_expr(arg.value, env)) for arg in call_args]
+        evaluated = [
+            (arg.name, self._eval_argument(arg.value, env)) for arg in call_args
+        ]
         return self._reorder_evaluated_args(evaluated, param_names, location)
+
+    def _eval_argument(self, expr: Expression, env: Environment) -> Any:
+        """Evaluate a call argument, widening Ints bound to Float slots (#137)."""
+        value = self.eval_expr(expr, env)
+        shape = expr._float_promotion
+        if shape is not None and shape is not FLOAT_PROMOTION_UNKNOWN:
+            value = _promote_to_float_shape(value, shape)
+        return value
 
     def _reorder_evaluated_args(
         self,
@@ -2413,7 +2465,7 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            filled_args.append(self.eval_expr(default, func.env))
+                            filled_args.append(self._eval_argument(default, func.env))
                         else:
                             break
                     args = filled_args
@@ -2423,7 +2475,7 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            args[i] = self.eval_expr(default, func.env)
+                            args[i] = self._eval_argument(default, func.env)
                         else:
                             raise RuntimeError(
                                 f"Missing argument for parameter '{func.params[i].name}'",
@@ -2798,7 +2850,11 @@ class Interpreter:
             body = expr.block_body
         else:
             assert expr.body is not None
-            body = [ReturnStatement(location=expr.location, value=expr.body)]
+            return_stmt = ReturnStatement(location=expr.location, value=expr.body)
+            expected = getattr(expr.body, "_expected_runtime_type", None)
+            if expected is not None:
+                return_stmt._expected_runtime_type = expected
+            body = [return_stmt]
         return Closure(
             params=expr.params,
             body=body,
@@ -3060,7 +3116,9 @@ class Interpreter:
         """Execute a let statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", stmt.type_annotation)
+            value,
+            getattr(stmt, "_expected_runtime_type", stmt.type_annotation),
+            stmt.value,
         )
         value = self._deep_copy_value(value)
         env.bind(stmt.name, value, mutable=False)
@@ -3072,7 +3130,9 @@ class Interpreter:
                 continue
             value = self.eval_expr(defn.value, env)
             value = _promote_int_to_expected_float(
-                value, getattr(defn, "_expected_runtime_type", defn.type_annotation)
+                value,
+                getattr(defn, "_expected_runtime_type", defn.type_annotation),
+                defn.value,
             )
             env.bind(defn.name, self._deep_copy_value(value), mutable=False)
             if env is self.global_env:
@@ -3086,7 +3146,9 @@ class Interpreter:
         """Execute a var statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", stmt.type_annotation)
+            value,
+            getattr(stmt, "_expected_runtime_type", stmt.type_annotation),
+            stmt.value,
         )
         value = self._deep_copy_value(value)
         env.bind(stmt.name, value, mutable=True)
@@ -3095,7 +3157,11 @@ class Interpreter:
         self, stmt: TupleDestructureStatement, env: Environment
     ) -> None:
         """Execute a tuple destructuring statement."""
-        value = self.eval_expr(stmt.value, env)
+        value = _promote_int_to_expected_float(
+            self.eval_expr(stmt.value, env),
+            getattr(stmt.value, "_expected_runtime_type", None),
+            stmt.value,
+        )
         if not isinstance(value, tuple) or len(value) != len(stmt.names):
             raise RuntimeError(
                 f"Expected {len(stmt.names)}-element tuple, got {type(value).__name__}",
@@ -3108,7 +3174,7 @@ class Interpreter:
         """Execute an assignment."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", None)
+            value, getattr(stmt, "_expected_runtime_type", None), stmt.value
         )
         value = self._deep_copy_value(value)
         if not env.assign(stmt.target, value):
@@ -3241,7 +3307,11 @@ class Interpreter:
 
     def _exec_for(self, stmt: ForStatement, env: Environment) -> None:
         """Execute a for loop."""
-        iterable = self.eval_expr(stmt.iterable, env)
+        iterable = _promote_int_to_expected_float(
+            self.eval_expr(stmt.iterable, env),
+            getattr(stmt.iterable, "_expected_runtime_type", None),
+            stmt.iterable,
+        )
         if not isinstance(iterable, (list, ArrayValue)):
             raise RuntimeError(
                 f"Cannot iterate over {type(iterable).__name__}", stmt.location
@@ -3344,7 +3414,7 @@ class Interpreter:
         """Execute a return statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", None)
+            value, getattr(stmt, "_expected_runtime_type", None), stmt.value
         )
         raise ReturnException(value)
 

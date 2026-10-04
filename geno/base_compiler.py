@@ -602,13 +602,17 @@ class BaseCompiler(ABC):
         argument_names = {id(arg): self._fresh_temp() for arg in expr.arguments}
         names = [function_name, *argument_names.values()]
         values = [self._compile_expr(expr.function)] + [
-            self._compile_expr(arg.value) for arg in expr.arguments
+            self._compile_call_argument(arg.value) for arg in expr.arguments
         ]
         arguments = ", ".join(
             missing_value if arg is None else argument_names[id(arg)]
             for arg in ordered_args
         )
         return names, values, f"{function_name}({arguments})"
+
+    def _compile_call_argument(self, value: Expression) -> str:
+        """Compile one call argument; backends may widen it to its parameter."""
+        return self._compile_expr(value)
 
     def _compile_named_constructor_call(
         self, expr: ConstructorCall

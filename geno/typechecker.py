@@ -99,6 +99,7 @@ from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
+from .float_promotion import float_shape, promotion_shape
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
 from .types import (
@@ -308,6 +309,24 @@ class _ModuleImportSummary:
     module_symbols: dict[str, Type]
     module_param_names: dict[str, list[str]]
     module_default_counts: dict[str, int]
+
+
+def _block_returns(statements: list[Statement]) -> Iterator[ReturnStatement]:
+    """Yield the returns of a statement block, not those of nested lambdas."""
+    for stmt in statements:
+        if isinstance(stmt, ReturnStatement):
+            yield stmt
+        elif isinstance(stmt, IfStatement):
+            yield from _block_returns(stmt.then_body)
+            yield from _block_returns(stmt.else_body)
+        elif isinstance(stmt, (WhileStatement, ForStatement)):
+            yield from _block_returns(stmt.body)
+        elif isinstance(stmt, MatchStatement):
+            for arm in stmt.arms:
+                yield from _block_returns(arm.body)
+        elif isinstance(stmt, TryStatement):
+            yield from _block_returns(stmt.try_body)
+            yield from _block_returns(stmt.catch_clause.body)
 
 
 @dataclass(frozen=True)
@@ -2310,6 +2329,7 @@ class TypeChecker(ExhaustivenessMixin):
                     param.default_value, self.global_env
                 )
                 expected_type = self._resolve_type(param.param_type)
+                self._record_expected_runtime_type(param.default_value, expected_type)
                 if not self._types_strictly_compatible(expected_type, default_type):
                     self._error(
                         f"Default value type mismatch for '{param.name}': "
@@ -3509,6 +3529,10 @@ class TypeChecker(ExhaustivenessMixin):
                 stmt.location,
             )
 
+        if isinstance(iterable_type, ListType) and float_shape(declared_type):
+            # `for x: Float in [1, 2]` iterates Floats (#137).
+            self._record_expected_runtime_type(stmt.iterable, ListType(declared_type))
+
         body_env = env.child()
         body_env.bind(stmt.variable, declared_type)
 
@@ -3561,6 +3585,15 @@ class TypeChecker(ExhaustivenessMixin):
     def _record_expected_runtime_type(self, expr: Expression, expected: Type) -> None:
         """Attach concrete contextual types used by backend lowering."""
         expr._expected_runtime_type = expected
+        if not isinstance(
+            expr, (IntegerLiteral, ListLiteral, TupleExpr, ListComprehension)
+        ):
+            # Where an existing Int value lands in a Float slot, record how
+            # deep the backends must widen it (#137).  Literals widen their
+            # own elements.
+            expr._float_promotion = promotion_shape(
+                expected, getattr(expr, "_resolved_type", None)
+            )
 
         if isinstance(expr, ListLiteral) and isinstance(expected, ListType):
             for element in expr.elements:
@@ -3574,6 +3607,18 @@ class TypeChecker(ExhaustivenessMixin):
 
         if isinstance(expr, ListComprehension) and isinstance(expected, ListType):
             self._record_expected_runtime_type(expr.element_expr, expected.element_type)
+            return
+
+        if isinstance(expr, LambdaExpr) and isinstance(expected, FuncType):
+            # A lambda typed `(Int) -> Float` returns a Float (#137).
+            if expr.body is not None:
+                self._record_expected_runtime_type(expr.body, expected.return_type)
+            elif expr.block_body:
+                for return_stmt in _block_returns(expr.block_body):
+                    return_stmt._expected_runtime_type = expected.return_type
+                    self._record_expected_runtime_type(
+                        return_stmt.value, expected.return_type
+                    )
             return
 
         if isinstance(expr, FunctionCall):
