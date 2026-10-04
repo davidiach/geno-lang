@@ -148,6 +148,19 @@ _BUILTIN_SIMPLE_TYPES = {
     "String": _STRING_TYPE,
     "Unit": _UNIT_TYPE,
 }
+# Built-in algebraic types the checker registers before reading a program.
+_BUILTIN_ADT_NAMES = frozenset(
+    {
+        "FileKind",
+        "FileMetadata",
+        "HttpRequest",
+        "HttpResponse",
+        "JsonValue",
+        "Option",
+        "ProcessResult",
+        "Result",
+    }
+)
 _PARAMETERIZED_BUILTIN_ARITY = {
     "List": 1,
     "Array": 1,
@@ -159,6 +172,13 @@ _PARAMETERIZED_BUILTIN_ARITY = {
     "Set": 1,
     "Async": 1,
 }
+
+_RESERVED_TYPE_NAMES = (
+    frozenset(_BUILTIN_SIMPLE_TYPES)
+    | frozenset(_PARAMETERIZED_BUILTIN_ARITY)
+    | _BUILTIN_ADT_NAMES
+    | {"Tuple"}
+)
 
 _STDLIB_FORWARDER_BUILTINS: dict[str, dict[str, str]] = {
     "List": {
@@ -1246,6 +1266,8 @@ class TypeChecker(ExhaustivenessMixin):
             has_exports=self._program_has_explicit_exports(program),
         )
 
+        self._validate_type_definition_names(program)
+
         # First pass: collect type aliases, type definitions, and trait definitions
         with self._with_declared_type_defs(type_defs):
             for defn in type_aliases:
@@ -1538,6 +1560,8 @@ class TypeChecker(ExhaustivenessMixin):
                         defn.location,
                     )
                 self._resolve_import(defn, modules, resolved, import_summaries)
+
+        self._validate_type_definition_names(mod_program)
 
         # Determine if module uses explicit exports
         has_exports = any(
@@ -1893,6 +1917,41 @@ class TypeChecker(ExhaustivenessMixin):
         }
         self._module_default_counts[ns_name] = dict(summary.module_default_counts)
         self.global_env.bind(ns_name, ModuleType(module_name))
+
+    def _validate_type_definition_names(self, program: Program) -> None:
+        """Reject a type that redefines a built-in or an earlier type (#139).
+
+        The later definition would otherwise silently replace the earlier one,
+        and a user ``Int`` makes ``Int`` mean two types at once.
+        """
+        seen: set[str] = set()
+        for defn in program.definitions:
+            if not isinstance(defn, (TypeDef, TypeAlias)):
+                continue
+            if defn.name in _RESERVED_TYPE_NAMES:
+                self._error(
+                    f"Type '{defn.name}' is built in and cannot be redefined",
+                    defn.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
+            elif defn.name in seen:
+                self._error(
+                    f"Duplicate type definition '{defn.name}'",
+                    defn.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
+            seen.add(defn.name)
+            if not isinstance(defn, TypeDef):
+                continue
+            variant_names: set[str] = set()
+            for variant in defn.variants:
+                if variant.name in variant_names:
+                    self._error(
+                        f"Duplicate constructor '{variant.name}' in type '{defn.name}'",
+                        variant.location,
+                        ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                    )
+                variant_names.add(variant.name)
 
     def _collect_type_alias(self, alias: TypeAlias) -> None:
         """Collect a type alias."""
