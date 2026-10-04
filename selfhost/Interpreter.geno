@@ -14,12 +14,12 @@ type ValueField = ValueField(fname: String, fval: Value)
 
 // Closure data: captures params, body, environment, function name, and specs.
 type ClosureData = ClosureData(
-cl_params: List[Param],
-cl_body: List[Stmt],
-cl_env: Env,
-cl_name: String,
-cl_specs: SpecBlock,
-cl_span: SourceSpan
+    cl_params: List[Param],
+    cl_body: List[Stmt],
+    cl_env: Env,
+    cl_name: String,
+    cl_specs: SpecBlock,
+    cl_span: SourceSpan
 )
 
 // Runtime value — every evaluated expression produces one of these.
@@ -43,9 +43,9 @@ type Value
 // ============================================================================
 
 type Env = Env(
-bindings: MutableMap[String, Value],
-parent: Option[Env],
-mut_vars: MutableMap[String, Bool]
+    bindings: MutableMap[String, Value],
+    parent: Option[Env],
+    mut_vars: MutableMap[String, Bool]
 )
 
 // ============================================================================
@@ -64,16 +64,16 @@ type ExecResult
 type CtorInfo = CtorInfo(ci_fields: List[String])
 
 type InterpState = InterpState(
-global_env: Env,
-ctor_info: MutableMap[String, CtorInfo],
-func_defs: MutableMap[String, Def],
-out_buf: Vec[String],
-depth_ref: Vec[Int],
-max_depth: Int,
-builtin_params: MutableMap[String, List[String]],
-err_flag: Vec[Bool],
-diagnostics: Vec[Diagnostic],
-diag_stack: Vec[SourceSpan]
+    global_env: Env,
+    ctor_info: MutableMap[String, CtorInfo],
+    func_defs: MutableMap[String, Def],
+    out_buf: Vec[String],
+    depth_ref: Vec[Int],
+    max_depth: Int,
+    builtin_params: MutableMap[String, List[String]],
+    err_flag: Vec[Bool],
+    diagnostics: Vec[Diagnostic],
+    diag_stack: Vec[SourceSpan]
 )
 
 // ============================================================================
@@ -1178,7 +1178,7 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         let old_val: String = as_str(head(tail(args)))
         let new_val: String = as_str(head(tail(tail(args))))
         return StringVal(
-        string_replace(text: text, old: old_val, new: new_val)
+            string_replace(text: text, old: old_val, new: new_val)
         )
     end if
 

@@ -470,8 +470,15 @@ def builtin_slice(lst: list[Any], start: int, end: int) -> list[Any]:
     return lst[start:end]
 
 
+def _widen_mixed(result: Any, a: Any, b: Any) -> Any:
+    """An Int result from mixed Int/Float operands is a Float (#137)."""
+    if type(result) is int and (isinstance(a, float) or isinstance(b, float)):
+        return float(result)
+    return result
+
+
 def builtin_max(a: Any, b: Any) -> Any:
-    return a if a >= b else b
+    return _widen_mixed(a if a >= b else b, a, b)
 
 
 def builtin_starts_with(s: str, prefix: str) -> bool:
@@ -2984,12 +2991,12 @@ def builtin_list_group_by(
 
 def builtin_math_min(a: Any, b: Any) -> Any:
     """Return the smaller of two numbers."""
-    return min(a, b)
+    return _widen_mixed(min(a, b), a, b)
 
 
 def builtin_math_max(a: Any, b: Any) -> Any:
     """Return the larger of two numbers."""
-    return max(a, b)
+    return _widen_mixed(max(a, b), a, b)
 
 
 def builtin_math_log(x: int | float) -> float:

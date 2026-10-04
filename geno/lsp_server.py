@@ -46,7 +46,7 @@ except ImportError:
     HAS_PYGLS = False
 
 import geno
-from geno.formatter import format_source
+from geno.formatter import FormatError, format_source
 from geno.lsp_cache import (
     BoundedDict as _BoundedDict,
 )
@@ -1912,7 +1912,10 @@ class GenoLanguageServer:
         if source is None:
             source = self.server.workspace.get_text_document(uri).source
 
-        formatted = format_source(source)
+        try:
+            formatted = format_source(source)
+        except FormatError:
+            return []
         if formatted == source:
             return []
 
