@@ -89,6 +89,17 @@ class TestCreateProject:
         assert "render" in main
         assert len(files) == 4
 
+    @pytest.mark.parametrize("template", ["minimal", "app", "cli", "web", "api", "lib"])
+    def test_generated_sources_are_already_formatted(self, tmp_path, template):
+        """`geno fmt --check` passes on a fresh project of every template (#145)."""
+        from geno.formatter import format_source
+
+        project = tmp_path / f"p_{template}"
+        create_project(project, template)
+        for source_file in sorted(project.rglob("*.geno")):
+            source = source_file.read_text(encoding="utf-8")
+            assert format_source(source) == source, source_file.name
+
     def test_api_template(self, tmp_path):
         project = tmp_path / "myapi"
         files = create_project(project, "api")
