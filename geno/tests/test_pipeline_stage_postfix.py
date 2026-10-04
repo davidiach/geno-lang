@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from geno.ast_nodes import FieldAccess, IndexAccess, Pipeline
+from geno.ast_nodes import FieldAccess, FunctionCall, IndexAccess, Pipeline
 from geno.parser import parse
 from geno.tests.test_backend_parity import (
     HAS_NODE,
@@ -44,11 +44,13 @@ func main() -> Unit
     print(y)
     print(doubled_first([3]))
     print(doubled_first([]))
+    let z = [10] |> map(_, fn(n: Int) -> fn(k: Int) -> k + n)[0](5)
+    print(z)
     return ()
 end func
 """
 
-EXPECTED = '2\n5\nBox(x: 8)\nOk(value: 6)\nErr(error: "empty")\n'
+EXPECTED = '2\n5\nBox(x: 8)\nOk(value: 6)\nErr(error: "empty")\n15\n'
 
 
 def _value_of_first_let(source: str):
@@ -74,6 +76,15 @@ def test_trailing_field_then_next_stage() -> None:
     assert len(value.stages) == 1
 
 
+def test_call_after_stage_postfix_stays_attached() -> None:
+    value = _value_of_first_let(
+        "func main() -> Unit\n    let x = 1 |> make(_).handler()\nend func\n"
+    )
+    assert isinstance(value, FunctionCall)
+    assert isinstance(value.function, FieldAccess)
+    assert isinstance(value.function.target, Pipeline)
+
+
 @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
 def test_stage_postfix_runs_on_every_backend() -> None:
     _assert_expected_backend_outputs(
@@ -96,11 +107,18 @@ def test_selfhost_parser_applies_the_index(tmp_path) -> None:
         "    return [n, n + 1]\n"
         "end func\n"
         "\n"
+        "func adders(n: Int) -> List[(Int) -> Int]\n"
+        "    example 1 -> [fn(k: Int) -> k + 1]\n"
+        "    return [fn(k: Int) -> k + n]\n"
+        "end func\n"
+        "\n"
         "func main() -> Unit\n"
         "    let x: Int = 5 |> pair[1]\n"
         "    print(x)\n"
+        "    let y: Int = 5 |> adders[0](1)\n"
+        "    print(y)\n"
         "end func\n"
     )
     result = _run_selfhost_cli("run", str(program))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip().splitlines()[-1] == "6"
+    assert result.stdout.strip().splitlines()[-2:] == ["6", "6"]

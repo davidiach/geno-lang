@@ -97,22 +97,8 @@ class ExpressionParserMixin(ParserBase):
     )
 
     def _parse_pipeline_postfix(self, expr: Expression) -> Expression:
-        """Apply index, field and `?` postfixes that follow a pipeline stage."""
-        while self._current_type in self._PIPELINE_POSTFIX:
-            current_type = self._current_type
-            self._advance()
-            if current_type is TokenType.LBRACKET:
-                index = self._parse_expression()
-                self._expect(TokenType.RBRACKET)
-                expr = IndexAccess(location=expr.location, target=expr, index=index)
-            elif current_type is TokenType.DOT:
-                field = self._expect(TokenType.IDENTIFIER).value
-                expr = FieldAccess(
-                    location=expr.location, target=expr, field_name=field
-                )
-            else:
-                expr = PropagateExpr(location=expr.location, operand=expr)
-        return expr
+        """Apply the postfixes (index, field, `?`, call) that follow a stage."""
+        return self._parse_postfix_chain(expr)
 
     def _parse_pipeline_stage(self) -> tuple[Expression, list[Expression]]:
         """Parse a single pipeline stage: f or f(args)"""
@@ -291,6 +277,22 @@ class ExpressionParserMixin(ParserBase):
                 return expr
             return self._parse_with_expr(expr)
 
+        expr = self._parse_postfix_chain(expr)
+        current_type = self._current_type
+
+        # Check for `with` expression: expr with (field: val, ...)
+        # Only parse if `with` is followed by `(` to avoid conflict with `match ... with`
+        if current_type is TokenType.WITH:
+            next_pos = self.pos + 1
+            if next_pos < tokens_len and tokens[next_pos].type is TokenType.LPAREN:
+                return self._parse_with_expr(expr)
+
+        return expr
+
+    def _parse_postfix_chain(self, expr: Expression) -> Expression:
+        """Apply call, index, field and `?` postfixes to ``expr``."""
+        tokens = self.tokens
+        tokens_len = self._tokens_len
         while True:
             current_type = self._current_type
             if current_type is TokenType.LPAREN:
@@ -336,14 +338,6 @@ class ExpressionParserMixin(ParserBase):
                 expr = PropagateExpr(location=expr.location, operand=expr)
             else:
                 break
-
-        # Check for `with` expression: expr with (field: val, ...)
-        # Only parse if `with` is followed by `(` to avoid conflict with `match ... with`
-        if current_type is TokenType.WITH:
-            next_pos = self.pos + 1
-            if next_pos < tokens_len and tokens[next_pos].type is TokenType.LPAREN:
-                return self._parse_with_expr(expr)
-
         return expr
 
     def _parse_with_expr(self, target: Expression) -> WithExpr:

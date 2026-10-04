@@ -201,16 +201,28 @@ func parse_pipeline_postfix(ps: ParserState, piped: Expr) -> Expr
     var expr: Expr = piped
     var more: Bool = true
     while more do
-        if match_type(ps, TkLBracket) then
-            let idx: Expr = parse_expression(ps)
-            let rb: Token = expect(ps, TkRBracket)
-            expr = IndexExpr(expr, idx)
+        if match_type(ps, TkLParen) then
+            let args: Vec[CallArg] = vec_new()
+            if not check_type(ps, TkRParen) then
+                vec_push(args, parse_call_arg(ps))
+                while match_type(ps, TkComma) do
+                    vec_push(args, parse_call_arg(ps))
+                end while
+            end if
+            let rp: Token = expect(ps, TkRParen)
+            expr = CallExpr(expr, vec_to_list(args))
         else
-            if match_type(ps, TkDot) then
-                let field_tok: Token = expect(ps, TkIdentifier)
-                expr = FieldExpr(expr, field_tok.value)
+            if match_type(ps, TkLBracket) then
+                let idx: Expr = parse_expression(ps)
+                let rb: Token = expect(ps, TkRBracket)
+                expr = IndexExpr(expr, idx)
             else
-                more = false
+                if match_type(ps, TkDot) then
+                    let field_tok: Token = expect(ps, TkIdentifier)
+                    expr = FieldExpr(expr, field_tok.value)
+                else
+                    more = false
+                end if
             end if
         end if
     end while
