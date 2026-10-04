@@ -3019,13 +3019,18 @@ class Interpreter:
     def _deep_copy_value(value: Any, memo: dict[int, Any] | None = None) -> Any:
         return copy_value(value, memo)
 
+    @staticmethod
+    def _shared_snapshot(value: Any) -> Any:
+        """Snapshot for an immutable binding; shared parts stay shared."""
+        return copy_value(value, share=True)
+
     def _exec_let(self, stmt: LetStatement, env: Environment) -> None:
         """Execute a let statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
             value, getattr(stmt, "_expected_runtime_type", stmt.type_annotation)
         )
-        value = self._deep_copy_value(value)
+        value = self._shared_snapshot(value)
         env.bind(stmt.name, value, mutable=False)
 
     def _bind_module_constants(self, program: Program, env: Environment) -> None:
@@ -3037,7 +3042,7 @@ class Interpreter:
             value = _promote_int_to_expected_float(
                 value, getattr(defn, "_expected_runtime_type", defn.type_annotation)
             )
-            env.bind(defn.name, self._deep_copy_value(value), mutable=False)
+            env.bind(defn.name, self._shared_snapshot(value), mutable=False)
             if env is self.global_env:
                 # In this module the name is a constant, not a function, even
                 # if an import brought a function of that name into scope.

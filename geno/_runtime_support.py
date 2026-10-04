@@ -325,8 +325,19 @@ class Constructor:
         return f"{type(self).__name__}({field_strs})"
 
 
-def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any:
-    """Copy Geno value containers while preserving explicit reference types."""
+def _geno_deepcopy(
+    value: Any, memo: list[tuple[Any, Any]] | None = None, share: bool = False
+) -> Any:
+    """Copy Geno value containers while preserving explicit reference types.
+
+    By default ``memo`` only holds the containers on the current recursion
+    path: a cycle still terminates, but two siblings that referenced one
+    object get independent copies.  A snapshot that may later be written in
+    place needs that, or a nested write through one sibling shows up in the
+    other (#129).  ``share=True`` keeps one copy per original object so a
+    value built from shared parts stays linear in size; compiled ``let``
+    bindings use it because nothing can write through them.
+    """
     if memo is None:
         memo = []
 
@@ -340,31 +351,46 @@ def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any
     if isinstance(value, list):
         copied_list: list[Any] = []
         memo += [(value, copied_list)]
-        copied_list.extend(_geno_deepcopy(item, memo) for item in value)
+        try:
+            copied_list.extend(_geno_deepcopy(item, memo, share) for item in value)
+        finally:
+            if not share:
+                del memo[-1]
         return copied_list
 
     if isinstance(value, dict):
         copied_dict: dict[Any, Any] = {}
         memo += [(value, copied_dict)]
-        for key, nested_value in value.items():
-            copied_dict[_geno_deepcopy(key, memo)] = _geno_deepcopy(nested_value, memo)
+        try:
+            for key, nested_value in value.items():
+                copied_dict[_geno_deepcopy(key, memo, share)] = _geno_deepcopy(
+                    nested_value, memo, share
+                )
+        finally:
+            if not share:
+                del memo[-1]
         return copied_dict
 
     if isinstance(value, tuple):
-        copied_tuple = tuple(_geno_deepcopy(item, memo) for item in value)
-        memo += [(value, copied_tuple)]
+        copied_tuple = tuple(_geno_deepcopy(item, memo, share) for item in value)
+        if share:
+            memo += [(value, copied_tuple)]
         return copied_tuple
 
     if isinstance(value, Constructor):
         geno_object: Any = _GENO_OBJECT
         copied_constructor = geno_object.__new__(type(value))
         memo += [(value, copied_constructor)]
-        for field in _dataclasses_fields(value):
-            _object_setattr(
-                copied_constructor,
-                field.name,
-                _geno_deepcopy(getattr(value, field.name), memo),
-            )
+        try:
+            for field in _dataclasses_fields(value):
+                _object_setattr(
+                    copied_constructor,
+                    field.name,
+                    _geno_deepcopy(getattr(value, field.name), memo, share),
+                )
+        finally:
+            if not share:
+                del memo[-1]
         return copied_constructor
 
     return value

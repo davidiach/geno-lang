@@ -2797,6 +2797,40 @@ class TestBackendParity:
         )
 
     @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+    def test_nested_field_write_does_not_reach_aliased_sibling(self):
+        """Fields that held one value are independent after a snapshot (#129)."""
+        source = """
+        type Pt = Pt(x: Int)
+        type Pair = Pair(a: Pt, b: Pt)
+        type Bag = Bag(xs: List[Pt], ys: List[Pt])
+
+        func main() -> Unit
+            let p = Pt(1)
+            var pair = Pair(p, p)
+            pair.a.x = 50
+            print(pair.b.x)
+            var pts = [p, p]
+            pts[0].x = 9
+            print(pts[1].x)
+            let shared = [p]
+            var bag = Bag(shared, shared)
+            bag.xs[0].x = 7
+            print(bag.ys[0].x)
+            print(p.x)
+            return ()
+        end func
+        """
+
+        _assert_expected_backend_outputs(
+            label="aliased sibling snapshot",
+            context=source,
+            expected="1\n1\n1\n1\n",
+            interp_out=_interpreter_output(source),
+            py_out=_compiled_python_output(source),
+            js_out=_compiled_js_output(source),
+        )
+
+    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
     def test_unicode_string_operations_count_code_points_across_backends(self):
         source = """
         func main() -> Unit

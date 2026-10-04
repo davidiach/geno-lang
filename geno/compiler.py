@@ -1667,7 +1667,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return
         value = self._compile_expr(stmt.value)
         name = self._declare_block_binding(stmt.name)
-        rhs = f"_geno_deepcopy({value})"
+        # Nothing writes through a ``let``, so shared parts may stay shared.
+        rhs = f"_geno_deepcopy({value}, None, True)"
         rhs = self._promote_expr_to_expected_float(
             rhs, getattr(stmt, "_expected_runtime_type", type_annot)
         )
