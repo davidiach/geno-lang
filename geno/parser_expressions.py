@@ -78,9 +78,41 @@ class ExpressionParserMixin(ParserBase):
                         function=func, arguments=args, location=stage_location
                     )
                 )
+                if self._current_type in self._PIPELINE_POSTFIX:
+                    # `xs |> map(_, f)[0]` indexes the stage's result rather
+                    # than leaving `[0]` behind as a statement of its own
+                    # (#138); later stages continue from the indexed value.
+                    left = self._parse_pipeline_postfix(
+                        Pipeline(location=left.location, initial=left, stages=stages)
+                    )
+                    stages = []
+            if not stages:
+                return left
             return Pipeline(location=left.location, initial=left, stages=stages)
 
         return left
+
+    _PIPELINE_POSTFIX = frozenset(
+        {TokenType.LBRACKET, TokenType.DOT, TokenType.QUESTION}
+    )
+
+    def _parse_pipeline_postfix(self, expr: Expression) -> Expression:
+        """Apply index, field and `?` postfixes that follow a pipeline stage."""
+        while self._current_type in self._PIPELINE_POSTFIX:
+            current_type = self._current_type
+            self._advance()
+            if current_type is TokenType.LBRACKET:
+                index = self._parse_expression()
+                self._expect(TokenType.RBRACKET)
+                expr = IndexAccess(location=expr.location, target=expr, index=index)
+            elif current_type is TokenType.DOT:
+                field = self._expect(TokenType.IDENTIFIER).value
+                expr = FieldAccess(
+                    location=expr.location, target=expr, field_name=field
+                )
+            else:
+                expr = PropagateExpr(location=expr.location, operand=expr)
+        return expr
 
     def _parse_pipeline_stage(self) -> tuple[Expression, list[Expression]]:
         """Parse a single pipeline stage: f or f(args)"""
