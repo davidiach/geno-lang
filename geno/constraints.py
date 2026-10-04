@@ -343,6 +343,19 @@ def step_with_end_check(
                     keyword_value or "",
                 )
 
+    # `else if` continues the open `if`, and a `for`/`if` in the middle of
+    # a bracketed expression belongs to a list comprehension. Neither opens
+    # a block of its own.
+    if token.type == TokenType.IF and prev_token and prev_token.type == TokenType.ELSE:
+        return state
+    if (
+        token.type in (TokenType.FOR, TokenType.IF)
+        and state.bracket_depth > 0
+        and prev_token is not None
+        and prev_token.type != TokenType.NEWLINE
+    ):
+        return state
+
     return step(state, token)
 
 

@@ -404,3 +404,44 @@ func a() -> Int
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestContinuationKeywords:
+    """`else if` and comprehension `for`/`if` open no block (#144)."""
+
+    ELSE_IF = """func sign(n: Int) -> String
+    example 5 -> "pos"
+    example -5 -> "neg"
+    example 0 -> "zero"
+    if n > 0 then
+        return "pos"
+    else if n < 0 then
+        return "neg"
+    else
+        return "zero"
+    end if
+end func
+"""
+
+    COMPREHENSION = """func squares(xs: List[Int]) -> List[Int]
+    example [1, 2] -> [1, 4]
+    return [x * x for x: Int in xs if x > 0]
+end func
+"""
+
+    @pytest.mark.parametrize("source", [ELSE_IF, COMPREHENSION])
+    def test_complete_program_is_valid(self, source: str) -> None:
+        assert validate_prefix(source) == (True, None)
+        assert get_unclosed_blocks(source) == []
+
+    def test_else_if_leaves_only_the_outer_if_open(self) -> None:
+        prefix = self.ELSE_IF.split('        return "neg"')[0]
+        assert get_unclosed_blocks(prefix) == ["if", "func"]
+
+    def test_comprehension_leaves_no_block_open(self) -> None:
+        prefix = "func f(xs: List[Int]) -> List[Int]\n    return [x for x: Int in xs"
+        assert get_unclosed_blocks(prefix) == ["func"]
+
+    def test_statement_for_still_opens_a_block(self) -> None:
+        prefix = "func f(xs: List[Int]) -> Unit\n    for x in xs do\n"
+        assert get_unclosed_blocks(prefix) == ["for", "func"]
