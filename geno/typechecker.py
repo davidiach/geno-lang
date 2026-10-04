@@ -13,7 +13,16 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Sequence, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+    Union,
+    cast,
+)
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -216,10 +225,16 @@ def _is_fresh_placeholder(type_: Type) -> bool:
     return isinstance(type_, TypeVar) and type_.name.startswith(_FRESH_TYPE_VAR_PREFIX)
 
 
-def _fill_fresh_placeholders(left: Type, right: Type) -> Type | None:
+def _fill_fresh_placeholders(
+    left: Type,
+    right: Type,
+    combine: Callable[[Type, Type], Type | None] | None = None,
+) -> Type | None:
     """Combine two types that differ only where one has an inference placeholder.
 
-    Returns ``None`` when they differ anywhere else.
+    Where they differ otherwise, ``combine`` (when given) picks the common
+    type of that pair, such as ``Float`` for ``Int`` and ``Float``; without
+    it, or when it returns ``None``, the result is ``None``.
     """
     if left == right:
         return left
@@ -227,6 +242,17 @@ def _fill_fresh_placeholders(left: Type, right: Type) -> Type | None:
         return right
     if _is_fresh_placeholder(right):
         return left
+    structural = _fill_fresh_placeholder_fields(left, right, combine)
+    if structural is not None:
+        return structural
+    return combine(left, right) if combine is not None else None
+
+
+def _fill_fresh_placeholder_fields(
+    left: Type,
+    right: Type,
+    combine: Callable[[Type, Type], Type | None] | None,
+) -> Type | None:
     if type(left) is not type(right) or not dataclasses.is_dataclass(left):
         return None
     combined: dict[str, object] = {}
@@ -234,7 +260,7 @@ def _fill_fresh_placeholders(left: Type, right: Type) -> Type | None:
         left_value = getattr(left, item.name)
         right_value = getattr(right, item.name)
         if isinstance(left_value, Type) and isinstance(right_value, Type):
-            merged = _fill_fresh_placeholders(left_value, right_value)
+            merged = _fill_fresh_placeholders(left_value, right_value, combine)
             if merged is None:
                 return None
             combined[item.name] = merged
@@ -244,7 +270,9 @@ def _fill_fresh_placeholders(left: Type, right: Type) -> Type | None:
             parts: list[object] = []
             for left_part, right_part in zip(left_value, right_value):
                 if isinstance(left_part, Type) and isinstance(right_part, Type):
-                    merged_part = _fill_fresh_placeholders(left_part, right_part)
+                    merged_part = _fill_fresh_placeholders(
+                        left_part, right_part, combine
+                    )
                     if merged_part is None:
                         return None
                     parts.append(merged_part)
@@ -4961,6 +4989,11 @@ class TypeChecker(ExhaustivenessMixin):
         # Check pattern exhaustiveness
         self._check_pattern_exhaustiveness(scrutinee_type, expr.arms, expr.location)
 
+        if result_type is not None:
+            # An arm merged by widening (`Ok(1)` beside `Ok(2.5)`) must build
+            # the merged type at runtime too, or Python keeps the Int (#134).
+            self._record_expected_runtime_type(expr, result_type)
+
         return result_type if result_type else AnyType()
 
     def _merge_match_expr_result_types(self, left: Type, right: Type) -> Type | None:
@@ -4973,7 +5006,17 @@ class TypeChecker(ExhaustivenessMixin):
         # the other parameter as an inference placeholder: `Err("zero")` is
         # `Result[_, String]` and `Ok(n)` is `Result[Int, _]`.  Fill each
         # placeholder from the other arm, as a list literal does (#134).
-        return _fill_fresh_placeholders(left, right)
+        # Parts that are both concrete still merge by compatibility, so
+        # `Ok(1)`, `Err("x")`, `Ok(2.5)` gives `Result[Float, String]` in any
+        # arm order.
+        return _fill_fresh_placeholders(left, right, self._common_arm_type)
+
+    def _common_arm_type(self, left: Type, right: Type) -> Type | None:
+        if self._types_strictly_compatible(left, right):
+            return left
+        if self._types_strictly_compatible(right, left):
+            return right
+        return None
 
     def _bind_pattern_effect_env(
         self,
