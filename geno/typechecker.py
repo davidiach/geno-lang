@@ -8,6 +8,8 @@ Verifies type annotations and catches type errors before runtime.
 
 from __future__ import annotations
 
+import dataclasses
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -204,6 +206,63 @@ _STDLIB_FORWARDER_BUILTINS: dict[str, dict[str, str]] = {
 # =============================================================================
 # Project import summaries
 # =============================================================================
+
+
+_FRESH_TYPE_VAR_PREFIX = "__fresh_"
+_FRESH_TYPE_VAR_NAME = re.compile(r"__fresh_[A-Za-z]+_\d+")
+
+
+def _is_fresh_placeholder(type_: Type) -> bool:
+    return isinstance(type_, TypeVar) and type_.name.startswith(_FRESH_TYPE_VAR_PREFIX)
+
+
+def _fill_fresh_placeholders(left: Type, right: Type) -> Type | None:
+    """Combine two types that differ only where one has an inference placeholder.
+
+    Returns ``None`` when they differ anywhere else.
+    """
+    if left == right:
+        return left
+    if _is_fresh_placeholder(left):
+        return right
+    if _is_fresh_placeholder(right):
+        return left
+    if type(left) is not type(right) or not dataclasses.is_dataclass(left):
+        return None
+    combined: dict[str, object] = {}
+    for item in dataclasses.fields(left):
+        left_value = getattr(left, item.name)
+        right_value = getattr(right, item.name)
+        if isinstance(left_value, Type) and isinstance(right_value, Type):
+            merged = _fill_fresh_placeholders(left_value, right_value)
+            if merged is None:
+                return None
+            combined[item.name] = merged
+        elif isinstance(left_value, tuple) and isinstance(right_value, tuple):
+            if len(left_value) != len(right_value):
+                return None
+            parts: list[object] = []
+            for left_part, right_part in zip(left_value, right_value):
+                if isinstance(left_part, Type) and isinstance(right_part, Type):
+                    merged_part = _fill_fresh_placeholders(left_part, right_part)
+                    if merged_part is None:
+                        return None
+                    parts.append(merged_part)
+                elif left_part == right_part:
+                    parts.append(left_part)
+                else:
+                    return None
+            combined[item.name] = tuple(parts)
+        elif left_value == right_value:
+            combined[item.name] = left_value
+        else:
+            return None
+    return dataclasses.replace(left, **combined)
+
+
+def _display_type(type_: Type) -> str:
+    """Render a type for a diagnostic, hiding inference placeholder names."""
+    return _FRESH_TYPE_VAR_NAME.sub("_", str(type_))
 
 
 @dataclass(frozen=True)
@@ -2982,7 +3041,7 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 self._error(
                     f"Cannot infer a concrete type for 'let {stmt.name}' from "
-                    f"{actual_type}; add an explicit type annotation",
+                    f"{_display_type(actual_type)}; add an explicit type annotation",
                     stmt.location,
                 )
             # Type inference: use the type of the RHS expression
@@ -3030,7 +3089,7 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 self._error(
                     f"Cannot infer a concrete type for 'let {defn.name}' from "
-                    f"{actual_type}; add an explicit type annotation",
+                    f"{_display_type(actual_type)}; add an explicit type annotation",
                     defn.location,
                 )
             constant_type = actual_type
@@ -3065,7 +3124,7 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 self._error(
                     f"Cannot infer a concrete type for 'var {stmt.name}' from "
-                    f"{actual_type}; add an explicit type annotation",
+                    f"{_display_type(actual_type)}; add an explicit type annotation",
                     stmt.location,
                 )
             # Type inference: use the type of the RHS expression
@@ -4892,7 +4951,8 @@ class TypeChecker(ExhaustivenessMixin):
                 merged_type = self._merge_match_expr_result_types(result_type, arm_type)
                 if merged_type is None:
                     self._error(
-                        f"Match arm type mismatch: expected {result_type}, got {arm_type}",
+                        "Match arm type mismatch: expected "
+                        f"{_display_type(result_type)}, got {_display_type(arm_type)}",
                         arm.location,
                     )
                 else:
@@ -4909,7 +4969,11 @@ class TypeChecker(ExhaustivenessMixin):
             return left
         if self._types_strictly_compatible(right, left):
             return right
-        return None
+        # Arms that build different variants of one generic type each leave
+        # the other parameter as an inference placeholder: `Err("zero")` is
+        # `Result[_, String]` and `Ok(n)` is `Result[Int, _]`.  Fill each
+        # placeholder from the other arm, as a list literal does (#134).
+        return _fill_fresh_placeholders(left, right)
 
     def _bind_pattern_effect_env(
         self,
