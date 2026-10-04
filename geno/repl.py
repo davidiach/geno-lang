@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import __version__
-from .ast_nodes import ReturnStatement, TestBlock
+from .ast_nodes import FunctionDef, ReturnStatement, TestBlock
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES, all_builtin_names
 from .interpreter import Interpreter
 from .interpreter import RuntimeError as GenoRuntimeError
@@ -459,7 +459,9 @@ class REPL:
                         ):
                             for statement in definition.body:
                                 self.interpreter.exec_stmt(statement, test_env)
+                        self._flush_output()
                         print(f"Passed: {definition.name}")
+                self._flush_output()
                 if result is not None:
                     print(f"=> {self.interpreter.format_display_value(result)}")
                 else:
@@ -468,47 +470,70 @@ class REPL:
             else:
                 # Try as expression
                 result = self._eval_expression(source)
+                self._flush_output()
                 if result is not None:
                     print(f"=> {self.interpreter.format_display_value(result)}")
 
             self.history.append(source)
 
         except (LexerError, ParseError) as e:
+            self._flush_output()
             print(f"Syntax Error: {e.message}")
             if hasattr(e, "location"):
                 print(f"  at {e.location}")
 
         except TypeError as e:
+            self._flush_output()
             print(f"Type Error: {e.message}")
             if hasattr(e, "location"):
                 print(f"  at {e.location}")
 
         except GenoRuntimeError as e:
+            self._flush_output()
             print(f"Runtime Error: {e.message}")
             if e.location:
                 print(f"  at {e.location}")
 
         except Exception as e:
+            self._flush_output()
             print(f"Error: {e}")
             if "--debug" in sys.argv:
                 traceback.print_exc()
 
+    def _flush_output(self) -> None:
+        """Show what the last input printed; the interpreter only buffers it."""
+        output = self.interpreter.get_output()
+        self.interpreter.output_buffer.clear()
+        if output:
+            print(output, end="")
+
     def _eval_expression(self, source: str) -> Any:
         """Evaluate a single expression.
 
-        The ``-> Int`` return type and example are parser-required placeholders;
-        this path skips type checking so the annotation is never enforced.
+        The expression is wrapped in a function so the parser accepts it. Its
+        tokens are lexed on their own and spliced in, so diagnostics point at
+        the line and column the user typed. The ``-> Int`` return type and
+        example are parser-required placeholders: the expression itself is
+        type-checked, and the annotation is never enforced.
         """
-        wrapped = f"""
-func __repl_eval__() -> Int
-    example () -> 0
-    return {source}
-end func __repl_eval__
-"""
-        lexer = Lexer(wrapped, "<repl>")
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
+        header = Lexer(
+            "func __repl_eval__() -> Int\n    example () -> 0\n    return ",
+            "<repl-wrapper>",
+        ).tokenize()[:-1]
+        body = Lexer(source, "<repl>").tokenize()[:-1]
+        footer = Lexer("\nend func __repl_eval__\n", "<repl-wrapper>").tokenize()
+        parser = Parser(header + body + footer)
         program = parser.parse_program()
+
+        func_def = program.definitions[0]
+        statement = func_def.body[-1] if isinstance(func_def, FunctionDef) else None
+        if isinstance(statement, ReturnStatement) and statement.value is not None:
+            self.type_checker.errors = []
+            self.type_checker._check_expression(
+                statement.value, self.type_checker.global_env
+            )
+            if self.type_checker.errors:
+                raise self.type_checker.errors[0]
 
         # Execute
         result = self.interpreter.run(program)
@@ -540,6 +565,7 @@ end func __repl_eval__
 
             self.type_checker.check_program(program)
             result = self.interpreter.run(program)
+            self._flush_output()
 
             print(f"Loaded {len(program.definitions)} definitions.")
             if result is not None:
@@ -548,6 +574,8 @@ end func __repl_eval__
         except FileNotFoundError:
             print(f"File not found: {filename}")
         except Exception as e:  # Boundary: diverse parse/typecheck/runtime errors
+            # What the program printed before failing still belongs to it.
+            self._flush_output()
             print(f"Error loading file: {e}")
 
     def _show_type(self, source: str) -> None:
