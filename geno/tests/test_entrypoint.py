@@ -300,3 +300,30 @@ class TestEntrypointMainParameters:
             "func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n"
         )
         TypeChecker().check_program(program, is_entrypoint=False)
+
+
+def test_api_accepts_an_imported_module_main_with_parameters():
+    """`geno.api` checks module bodies as non-entrypoints (#133 review)."""
+    from geno.api import RunConfig, check, run
+
+    helpers = (
+        "export func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n"
+    )
+    entry = "import Helpers\n\nfunc main() -> Int\n  return Helpers.main(3)\nend func\n"
+    config = RunConfig(modules={"Helpers": helpers})
+    result = run(entry, config=config)
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.value == 3
+    checked = check(entry, modules={"Helpers": helpers})
+    assert checked.ok, [d.message for d in checked.diagnostics]
+
+
+def test_selfhost_checker_rejects_main_with_parameters(tmp_path):
+    """The self-hosted checker applies the same entrypoint rule (#133 review)."""
+    from geno.tests.test_cli import _run_selfhost_cli
+
+    program = tmp_path / "m.geno"
+    program.write_text("func main(x: Int) -> Int\n    return x\nend func\n")
+    result = _run_selfhost_cli("check", str(program))
+    assert result.returncode != 0
+    assert "must take no parameters" in result.stdout + result.stderr
