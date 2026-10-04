@@ -83,3 +83,48 @@ def test_get_field_still_refuses_private_attributes() -> None:
     for value, name in [(plain, "_hidden"), (vec, "_elements"), (plain, "__class__")]:
         with pytest.raises(RuntimeError, match="not allowed"):
             get_field(value, name)
+
+
+NESTED_SOURCE = """
+type R = R(_x: Int, y: Int)
+type Outer = Outer(_i: R, n: Int)
+
+func main() -> Unit
+    var o = Outer(_i: R(_x: 1, y: 2), n: 3)
+    let alias = o
+    o._i.y = 5
+    o._i._x = 4
+    print(o)
+    print(alias)
+    return ()
+end func
+"""
+
+NESTED_EXPECTED = "Outer(_i: R(_x: 4, y: 5), n: 3)\nOuter(_i: R(_x: 1, y: 2), n: 3)\n"
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+def test_nested_write_through_underscore_field_on_every_backend() -> None:
+    _assert_expected_backend_outputs(
+        label="nested write through underscore record field",
+        context=NESTED_SOURCE,
+        expected=NESTED_EXPECTED,
+        interp_out=_interpreter_output(NESTED_SOURCE),
+        py_out=_compiled_python_output(NESTED_SOURCE),
+        js_out=_compiled_js_output(NESTED_SOURCE),
+    )
+
+
+def test_nested_write_through_underscore_field_under_geno_run(tmp_path: Path) -> None:
+    program = tmp_path / "nested.geno"
+    program.write_text(NESTED_SOURCE, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "geno", "run", str(program)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-400:]
+    assert result.stdout == NESTED_EXPECTED

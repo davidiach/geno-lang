@@ -409,7 +409,9 @@ def _geno_unshared_part(value: Any) -> Any:
         geno_object: Any = _GENO_OBJECT
         copied_constructor = geno_object.__new__(type(value))
         for field in _dataclasses_fields(value):
-            _object_setattr(copied_constructor, field.name, getattr(value, field.name))
+            _object_setattr(
+                copied_constructor, field.name, _object_getattribute(value, field.name)
+            )
         return copied_constructor
     if isinstance(value, list):
         return list(value)
