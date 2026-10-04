@@ -699,6 +699,9 @@ def run_file(
             print(f"Security Error: {e}", file=sys.stderr)
             sys.exit(1)
         except (TimeoutError, StepLimitExceeded) as e:
+            partial_output = getattr(e, "partial_output", "")
+            if partial_output:
+                print(partial_output, end="", flush=True)
             print(f"Limit Error: {e}", file=sys.stderr)
             sys.exit(1)
         except SandboxError as e:

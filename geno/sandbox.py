@@ -68,7 +68,11 @@ class ResourceLimitExceeded(SandboxError):
 class TimeoutError(ResourceLimitExceeded):
     """Raised when execution exceeds time limit."""
 
-    pass
+    def __init__(self, *args: object, partial_output: str = "") -> None:
+        super().__init__(*args)
+        # What the program printed before it was stopped, when the sandbox
+        # could recover it (#130).
+        self.partial_output = partial_output
 
 
 class RecursionLimitError(ResourceLimitExceeded):
@@ -1952,7 +1956,14 @@ class ProcessSandbox:
             if termination_errors:
                 raise termination_errors[0]
             if timeout is not None and timed_out.is_set():
-                raise subprocess.TimeoutExpired(cmd, timeout)
+                # The worker is gone, so its stdout reaches EOF; keep what it
+                # printed before the kill (#130) unless a descendant still
+                # holds the pipe open.
+                stdout_thread.join(timeout=1.0)
+                partial_stdout = (
+                    "" if stdout_thread.is_alive() else str(stdout_result["text"])
+                )
+                raise subprocess.TimeoutExpired(cmd, timeout, output=partial_stdout)
 
             stdout_thread.join()
             stderr_thread.join()
@@ -2219,7 +2230,8 @@ class ProcessSandbox:
 
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(
-                f"Execution timed out after {self.config.timeout} seconds"
+                f"Execution timed out after {self.config.timeout} seconds",
+                partial_output=exc.output if isinstance(exc.output, str) else "",
             ) from exc
 
     def _frame_prelude_blob(self, code: str) -> tuple[str, dict[str, Any] | None]:
@@ -3092,6 +3104,8 @@ def main():
             raise RuntimeError(f"Output limit exceeded ({max_output} characters)")
         output_buffer.append(output)
         sys.stdout.write(output)
+        # A timeout kills the worker; flushed output survives it (#130).
+        sys.stdout.flush()
     safe_builtins['print'] = safe_print
 
     # Inject configurable collection size limit so the runtime prelude
