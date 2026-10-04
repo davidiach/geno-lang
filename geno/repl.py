@@ -459,6 +459,7 @@ class REPL:
                         ):
                             for statement in definition.body:
                                 self.interpreter.exec_stmt(statement, test_env)
+                        self._flush_output()
                         print(f"Passed: {definition.name}")
                 self._flush_output()
                 if result is not None:
@@ -573,6 +574,8 @@ class REPL:
         except FileNotFoundError:
             print(f"File not found: {filename}")
         except Exception as e:  # Boundary: diverse parse/typecheck/runtime errors
+            # What the program printed before failing still belongs to it.
+            self._flush_output()
             print(f"Error loading file: {e}")
 
     def _show_type(self, source: str) -> None:

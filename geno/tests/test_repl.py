@@ -748,6 +748,31 @@ class TestReplShowsProgramBehaviour:
         repl_process(repl, f":load {program}")
         assert repl_execute(repl, "main()") == "from main\n"
 
+    def test_failed_load_shows_its_output_and_does_not_leak_it(self, tmp_path):
+        failing = tmp_path / "failing.geno"
+        failing.write_text(
+            'func main() -> Unit\n    print("partial")\n    let z = 1 / 0\n'
+            "    print(z)\nend func\n",
+            encoding="utf-8",
+        )
+        clean = tmp_path / "clean.geno"
+        clean.write_text(
+            "func one() -> Int\n    example () -> 1\n    return 1\nend func\n",
+            encoding="utf-8",
+        )
+        repl = make_repl()
+        out = repl_process(repl, f":load {failing}")
+        assert "Error loading file" in out
+        assert out.index("partial") < out.index("Error loading file")
+        assert "partial" not in repl_process(repl, f":load {clean}")
+
+    def test_test_block_output_precedes_its_pass_line(self):
+        out = repl_execute(
+            make_repl(),
+            'test "prints"\n    print("during")\n    assert true\nend test\n',
+        )
+        assert out.index("during") < out.index("Passed: prints")
+
     def test_runtime_error_points_at_the_typed_input(self):
         out = repl_execute(make_repl(), "1 + (2 / 0)")
         assert "Division by zero" in out
