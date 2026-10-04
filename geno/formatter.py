@@ -7,21 +7,85 @@ so comments and blank lines are preserved.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass, fields, is_dataclass
+
 from .lexer import Lexer, LexerError
-from .tokens import TokenType
+from .tokens import SourceLocation, TokenType
 
-# Keywords that open a new indentation block (followed by "end <kw>")
-_BLOCK_OPENERS = {"func", "if", "while", "for", "match", "try", "trait", "impl", "test"}
 
-# "end" decreases depth before the line
-_BLOCK_CLOSERS = {"end"}
-
-# These decrease depth for themselves, then increase for their body
-_MID_BLOCK = {"else", "catch"}
+class FormatError(ValueError):
+    """Raised when formatting would change what the program means."""
 
 
 def format_source(source: str) -> str:
-    """Format Geno source code. Returns the formatted string."""
+    """Format Geno source code. Returns the formatted string.
+
+    Raises:
+        FormatError: if ``source`` parses but the formatted text would not
+            parse to the same program.  Formatting only changes whitespace,
+            so this guard catches indentation-sensitive constructs the
+            formatter misjudged instead of writing a broken file (#131).
+    """
+    formatted = _format_source_text(source)
+    if formatted != source and not _same_program(source, formatted):
+        raise FormatError(
+            "formatting would change the meaning of this file; it was left unchanged"
+        )
+    return formatted
+
+
+def _same_program(source: str, formatted: str) -> bool:
+    """Return whether ``formatted`` parses to the same program as ``source``.
+
+    A ``source`` that does not parse (an editor buffer mid-edit) has nothing
+    to compare, so formatting it stays best effort.  Lines starting with
+    ``#`` (the security corpus's ``# EXPECT:`` headers) are blanked on both
+    sides first, as the corpus runner drops them before running the body.
+    """
+    from .parser import ParseError, ParseErrors, parse
+
+    unparsable = (LexerError, ParseError, ParseErrors, RecursionError)
+    try:
+        original = parse(_without_hash_lines(source))
+    except unparsable:
+        return True
+    try:
+        reformatted = parse(_without_hash_lines(formatted))
+    except unparsable:
+        return False
+    return _ast_key(original) == _ast_key(reformatted)
+
+
+def _without_hash_lines(text: str) -> str:
+    return "".join(
+        "\n" if line.lstrip().startswith("#") else line
+        for line in text.splitlines(keepends=True)
+    )
+
+
+def _ast_key(node: object) -> object:
+    """Structural key of an AST that ignores source locations."""
+    if isinstance(node, list | tuple):
+        return tuple(_ast_key(item) for item in node)
+    if isinstance(node, dict):
+        return tuple((key, _ast_key(value)) for key, value in node.items())
+    if is_dataclass(node) and not isinstance(node, type):
+        return (
+            type(node).__name__,
+            tuple(
+                (item.name, _ast_key(getattr(node, item.name)))
+                for item in fields(node)
+                if item.compare and item.name != "location"
+            ),
+        )
+    if isinstance(node, SourceLocation):
+        return None
+    return node
+
+
+def _format_source_text(source: str) -> str:
+    """Format ``source`` without the parse-preservation guard."""
     if '"""' not in source:
         return _format_lines(source)
     try:
@@ -60,16 +124,39 @@ def format_source(source: str) -> str:
     return formatted
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\|>|->|\S")
+_OPEN_BRACKETS = {"(": ")", "[": "]", "{": "}"}
+_CLOSE_BRACKETS = {")", "]", "}"}
+# Keywords that always open a block closed by ``end <kw>``.
+_ALWAYS_OPENS = {"while", "match", "try", "trait", "impl", "test"}
+
+
+@dataclass
+class _Frame:
+    """One open block or bracket and the indent its contents use."""
+
+    kind: str
+    inner: int
+    is_lambda_params: bool = False
+
+
 def _format_lines(source: str) -> str:
-    """Apply indentation with multiline literal contents protected by the caller."""
+    """Apply indentation with multiline literal contents protected by the caller.
+
+    Indentation follows the code's tokens: a stack holds every open block
+    (``func`` ... ``end func``, ``fn(...) do`` ... ``end fn``, a match
+    expression, ...) and every open bracket.  A line is indented one step past
+    the line that opened the innermost frame, so match expressions, block
+    lambdas and multi-line call arguments keep their structure (#131, #145).
+    """
     lines = source.split("\n")
+    codes = _line_codes(lines)
+    else_if_lines = _else_if_continuation_lines(lines, codes)
     result: list[str] = []
-    depth = 0
+    stack: list[_Frame] = []
     in_block_comment = False
     block_comment_depth = 0
     in_type_def = False
-    # Track if we're directly inside a trait block (not inside a func within an impl)
-    in_trait_body = False
 
     for index, line in enumerate(lines):
         stripped = line.strip()
@@ -81,14 +168,15 @@ def _format_lines(source: str) -> str:
                 in_block_comment = False
             continue
 
+        depth = stack[-1].inner if stack else 0
+
         if _starts_block_comment(stripped):
             block_comment_depth = (
                 depth + 1
                 if in_type_def and _next_significant_token(lines, index + 1) == "|"
                 else depth
             )
-            formatted = _indent(block_comment_depth) + stripped
-            result.append(formatted)
+            result.append(_indent(block_comment_depth) + stripped)
             in_block_comment = True
             continue
 
@@ -98,24 +186,10 @@ def _format_lines(source: str) -> str:
             result.append("")
             continue
 
-        # Get the first token for indent decisions.  Lines starting with
-        # ``export`` (e.g. ``export func foo`` / ``export type Foo = ...``
-        # / ``export async func foo``) must be classified by the token
-        # AFTER ``export`` — otherwise they bypass the block-opener /
-        # alias handling below and get the wrong depth.  F-0020 in #663.
-        # ``classification_line`` mirrors ``stripped`` with the leading
-        # ``export`` (if any) peeled off; every subsequent check that
-        # wants to pattern-match on a prefix (e.g. ``async func``) uses
-        # it instead of ``stripped``.
-        first_token = _first_token(stripped)
-        classification_line = stripped
-        if first_token == "export":  # noqa: S105
-            remainder = stripped[len("export") :].lstrip()
-            if remainder:
-                classification_line = remainder
-                first_token = _first_token(remainder)
-
-        opens_binding_match = _opens_binding_match_expression(classification_line)
+        tokens = _TOKEN_RE.findall(codes[index])
+        first_token = tokens[0] if tokens else ""
+        if first_token == "export" and len(tokens) > 1:  # noqa: S105
+            first_token = tokens[1]
 
         # End a multi-line type def when we hit a non-| line
         comment_continues_type_def = (
@@ -126,54 +200,31 @@ def _format_lines(source: str) -> str:
         if in_type_def and first_token != "|" and not comment_continues_type_def:  # noqa: S105
             in_type_def = False
 
-        # Determine indent level for this line
         line_depth = depth
-
-        if first_token in _BLOCK_CLOSERS:
-            depth = max(0, depth - 1)
-            line_depth = depth
-            # Check if we're closing a trait
-            if "end trait" in stripped:
-                in_trait_body = False
-        elif first_token in _MID_BLOCK:
+        if index in else_if_lines:
+            # ``if`` wrapped onto the line after ``else`` at the same column
+            # continues the chain; it must stay level with ``else``.
             line_depth = max(0, depth - 1)
-        elif comment_continues_type_def:
+        elif first_token == "end" and stack:  # noqa: S105
+            line_depth = _closing_depth(stack, _end_kind(tokens, 0))
+        elif first_token in _CLOSE_BRACKETS and stack:
+            line_depth = _closing_depth(stack, first_token)
+        elif first_token in {"else", "catch"}:
+            line_depth = max(0, depth - 1)
+        elif first_token == "|>":  # noqa: S105
             line_depth = depth + 1
-        elif first_token == "|" and in_type_def:  # noqa: S105
+        elif comment_continues_type_def or (first_token == "|" and in_type_def):  # noqa: S105
             # Type variant continuation lines indent under the type keyword
             line_depth = depth + 1
 
-        # Apply indent
         result.append(_indent(line_depth) + stripped)
 
-        # Adjust depth for subsequent lines
-        if first_token == "async" and classification_line.startswith("async func"):  # noqa: S105
-            # async func opens a block just like func
-            depth += 1
-        elif first_token == "func" and in_trait_body:  # noqa: S105
-            # Trait method signatures don't open blocks
-            pass
-        elif first_token == "type" and "=" in classification_line:  # noqa: S105
-            # Type definitions: if this has | on continuation lines, track it
-            # But type doesn't use end/end type, so no depth change
+        if first_token == "type" and "=" in tokens:  # noqa: S105
+            # Type definitions use leading ``|`` variant lines, not ``end``.
             in_type_def = True
-        elif first_token in _BLOCK_OPENERS and _has_inline_block_close(
-            stripped, first_token
-        ):
-            # Block opened and closed on same line (e.g., "if x then return y end if")
-            pass
-        elif first_token in _BLOCK_OPENERS:
-            depth += 1
-            if first_token == "trait":  # noqa: S105
-                in_trait_body = True
-        elif opens_binding_match and not _has_inline_block_close(
-            classification_line, "match"
-        ):
-            # ``let value = match ... with`` opens a match-expression even
-            # though the line's first token is a binding keyword.  Missing
-            # this increment makes ``end match`` close the surrounding block
-            # and flattens every following line.
-            depth += 1
+        _apply_line_tokens(
+            stack, tokens, line_depth + 1, skip_first_if=index in else_if_lines
+        )
 
     # Ensure file ends with a single newline
     text = "\n".join(result)
@@ -184,6 +235,143 @@ def _format_lines(source: str) -> str:
     while text.endswith("\n\n"):
         text = text[:-1]
     return text
+
+
+def _line_codes(lines: list[str]) -> list[str]:
+    """Return each line's code, blank for lines inside a block comment."""
+    codes: list[str] = []
+    in_block_comment = False
+    for line in lines:
+        stripped = line.strip()
+        if in_block_comment:
+            in_block_comment = "*/" not in stripped
+            codes.append("")
+            continue
+        if _starts_block_comment(stripped):
+            in_block_comment = True
+            codes.append("")
+            continue
+        codes.append(_line_code(stripped))
+    return codes
+
+
+def _line_code(stripped: str) -> str:
+    """Return a line's code with strings and comments blanked out."""
+    if stripped.startswith("#"):
+        # Corpus headers such as ``# EXPECT: E502`` are prose, not code.
+        return ""
+    return _strip_strings_and_line_comments(stripped)
+
+
+def _end_kind(tokens: list[str], index: int) -> str:
+    """Return the block keyword named after the ``end`` at ``index``."""
+    return tokens[index + 1] if index + 1 < len(tokens) else ""
+
+
+def _closing_depth(stack: list[_Frame], kind: str) -> int:
+    """Indent for a line that starts by closing the frame named ``kind``."""
+    for frame in reversed(stack):
+        if frame.kind == kind:
+            return max(0, frame.inner - 1)
+    return max(0, stack[-1].inner - 1)
+
+
+def _apply_line_tokens(
+    stack: list[_Frame], tokens: list[str], inner: int, *, skip_first_if: bool
+) -> None:
+    """Push and pop the frames one line's tokens open and close."""
+    lead = tokens[1:2] if tokens[:1] == ["export"] else tokens[:1]
+    starts_with_impl = lead == ["impl"]
+    previous = ""
+    last_closed_lambda_params = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        top = stack[-1] if stack else None
+        in_bracket = top is not None and top.kind in _CLOSE_BRACKETS
+        if token == "end":  # noqa: S105
+            kind = _end_kind(tokens, index)
+            _pop_block(stack, kind)
+            index += 2
+            previous = kind
+            continue
+        if token in _OPEN_BRACKETS:
+            stack.append(
+                _Frame(
+                    _OPEN_BRACKETS[token],
+                    inner,
+                    is_lambda_params=token == "(" and previous == "fn",  # noqa: S105
+                )
+            )
+        elif token in _CLOSE_BRACKETS:
+            last_closed_lambda_params = False
+            if top is not None and top.kind == token:
+                last_closed_lambda_params = top.is_lambda_params
+                stack.pop()
+        elif token in _ALWAYS_OPENS:
+            stack.append(_Frame(token, inner))
+        elif token == "func":  # noqa: S105
+            # Trait bodies hold signatures only; they never get ``end func``.
+            if top is None or top.kind != "trait":
+                stack.append(_Frame(token, inner))
+        elif token == "if":  # noqa: S105
+            chained = previous == "else" or (index == 0 and skip_first_if)
+            # A comprehension's ``if`` filter has no ``end if``.
+            if not chained and not in_bracket:
+                stack.append(_Frame(token, inner))
+        elif token == "for":  # noqa: S105
+            # Neither a comprehension's ``for`` nor ``impl T for U`` opens a block.
+            if not in_bracket and not starts_with_impl:
+                stack.append(_Frame(token, inner))
+        elif token == "do":  # noqa: S105
+            if previous == ")" and last_closed_lambda_params:
+                stack.append(_Frame("fn", inner))
+        previous = token
+        index += 1
+
+
+def _pop_block(stack: list[_Frame], kind: str) -> None:
+    """Close the innermost block named ``kind`` and any brackets left inside it."""
+    for position in range(len(stack) - 1, -1, -1):
+        if stack[position].kind == kind:
+            del stack[position:]
+            return
+        if stack[position].kind not in _CLOSE_BRACKETS:
+            break
+    if stack:
+        stack.pop()
+
+
+def _else_if_continuation_lines(lines: list[str], codes: list[str]) -> set[int]:
+    """Lines whose leading ``if`` continues the chain of the ``else`` above.
+
+    The parser treats an ``if`` on a later line as ``else if`` when it sits at
+    or left of the ``else`` column, so the formatter must keep both level.
+    """
+    chained: set[int] = set()
+    for index, code in enumerate(codes):
+        tokens = _TOKEN_RE.findall(code)
+        if not tokens or tokens[-1] != "else":
+            continue
+        else_column = _token_column(lines[index], code, len(tokens) - 1)
+        for next_index in range(index + 1, len(codes)):
+            next_tokens = _TOKEN_RE.findall(codes[next_index])
+            if not next_tokens:
+                continue
+            if next_tokens[0] == "if":
+                next_line = lines[next_index]
+                if_column = len(next_line) - len(next_line.lstrip())
+                if if_column <= else_column:
+                    chained.add(next_index)
+            break
+    return chained
+
+
+def _token_column(line: str, code: str, token_index: int) -> int:
+    """Zero-based column of the ``token_index``-th token of ``line``."""
+    leading = len(line) - len(line.lstrip())
+    matches = list(_TOKEN_RE.finditer(code))
+    return leading + matches[token_index].start()
 
 
 def _indent(depth: int) -> str:
@@ -209,12 +397,6 @@ def _starts_block_comment(stripped: str) -> bool:
             return True
         i += 1
     return False
-
-
-def _has_inline_block_close(line: str, block_name: str) -> bool:
-    """Return whether ``end <block_name>`` appears in code on the same line."""
-    code = _strip_strings_and_line_comments(line)
-    return f"end {block_name}" in code
 
 
 def _strip_strings_and_line_comments(line: str) -> str:
@@ -246,19 +428,6 @@ def _strip_strings_and_line_comments(line: str) -> str:
             chars.append(ch)
         i += 1
     return "".join(chars)
-
-
-def _opens_binding_match_expression(line: str) -> bool:
-    """Return whether a ``let``/``var`` binding opens a match expression."""
-    code = _strip_strings_and_line_comments(line)
-    first_token = _first_token(code.lstrip())
-    if first_token not in {"let", "var"}:
-        return False
-    assignment = code.find("=")
-    if assignment == -1:
-        return False
-    value = code[assignment + 1 :].lstrip()
-    return value == "match" or value.startswith("match ")
 
 
 def _first_token(line: str) -> str:

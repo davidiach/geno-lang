@@ -37,8 +37,8 @@ end func
 func default_value(field: FieldDef) -> FieldValue
     example (FieldDef("x", "X", TextInput, "", false, 0, 0, 0, 0)) -> StringVal("")
     return match field.kind with
-    | NumberInput -> IntVal(0)
-    | BoolInput -> BoolVal(false)
-    | _ -> StringVal("")
-end match
+        | NumberInput -> IntVal(0)
+        | BoolInput -> BoolVal(false)
+        | _ -> StringVal("")
+    end match
 end func

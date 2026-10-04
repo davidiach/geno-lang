@@ -267,3 +267,63 @@ class TestEntrypointOwnership:
         assert (
             classify_entrypoint_result(entry, modules) is EntrypointResultKind.MISSING
         )
+
+
+class TestEntrypointMainParameters:
+    """An entrypoint `main` is always called as `main()` (#133)."""
+
+    @pytest.mark.parametrize(
+        "header",
+        ["func main(x: Int) -> Int", "async func main(x: Int) -> Int"],
+    )
+    def test_main_with_parameters_is_rejected(self, header):
+        from geno.diagnostics import ErrorCode
+        from geno.types import TypeError as GenoTypeError
+
+        program = parse(f"{header}\n  return x\nend func\n")
+        with pytest.raises(GenoTypeError, match="must take no parameters") as info:
+            TypeChecker().check_program(program)
+        assert info.value.error_code == ErrorCode.TYPE_WRONG_ARITY
+
+    def test_imported_main_with_parameters_stays_an_ordinary_function(self):
+        helpers = parse(
+            "export func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n",
+            filename="<module:Helpers>",
+        )
+        entry = parse(
+            "import Helpers\n\nfunc main() -> Int\n  return Helpers.main(3)\nend func\n"
+        )
+        TypeChecker().check_program(entry, modules={"Helpers": helpers})
+
+    def test_library_module_main_with_parameters_is_allowed(self):
+        program = parse(
+            "func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n"
+        )
+        TypeChecker().check_program(program, is_entrypoint=False)
+
+
+def test_api_accepts_an_imported_module_main_with_parameters():
+    """`geno.api` checks module bodies as non-entrypoints (#133 review)."""
+    from geno.api import RunConfig, check, run
+
+    helpers = (
+        "export func main(x: Int) -> Int\n  example 1 -> 1\n  return x\nend func\n"
+    )
+    entry = "import Helpers\n\nfunc main() -> Int\n  return Helpers.main(3)\nend func\n"
+    config = RunConfig(modules={"Helpers": helpers})
+    result = run(entry, config=config)
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.value == 3
+    checked = check(entry, modules={"Helpers": helpers})
+    assert checked.ok, [d.message for d in checked.diagnostics]
+
+
+def test_selfhost_checker_rejects_main_with_parameters(tmp_path):
+    """The self-hosted checker applies the same entrypoint rule (#133 review)."""
+    from geno.tests.test_cli import _run_selfhost_cli
+
+    program = tmp_path / "m.geno"
+    program.write_text("func main(x: Int) -> Int\n    return x\nend func\n")
+    result = _run_selfhost_cli("check", str(program))
+    assert result.returncode != 0
+    assert "must take no parameters" in result.stdout + result.stderr

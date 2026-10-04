@@ -73,9 +73,9 @@ type RequiresClause = RequiresClause(cond: Expr)
 type EnsuresClause = EnsuresClause(cond: Expr)
 
 type SpecBlock = SpecBlock(
-req_clauses: List[RequiresClause],
-ens_clauses: List[EnsuresClause],
-examples: List[ExampleClause]
+    req_clauses: List[RequiresClause],
+    ens_clauses: List[EnsuresClause],
+    examples: List[ExampleClause]
 )
 
 // ---- Parameters ----
@@ -95,21 +95,21 @@ type Annotation = Annotation(name: String, args: List[String])
 
 type Def
 = FuncDef(
-name: String,
-params: List[Param],
-ret_type: TypeAnnot,
-specs: SpecBlock,
-body: List[Stmt],
-closing_name: Option[String],
-annotations: List[Annotation],
-effects: List[String],
-span: SourceSpan
+    name: String,
+    params: List[Param],
+    ret_type: TypeAnnot,
+    specs: SpecBlock,
+    body: List[Stmt],
+    closing_name: Option[String],
+    annotations: List[Annotation],
+    effects: List[String],
+    span: SourceSpan
 )
 | TypeDefNode(
-name: String,
-type_params: List[String],
-variants: List[TypeVariant],
-span: SourceSpan
+    name: String,
+    type_params: List[String],
+    variants: List[TypeVariant],
+    span: SourceSpan
 )
 | TypeAliasNode(name: String, type_params: List[String], target: TypeAnnot, span: SourceSpan)
 | ImportDef(module_name: String, span: SourceSpan)

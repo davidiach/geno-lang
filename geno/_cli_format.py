@@ -56,7 +56,7 @@ def dim(text: str) -> str:
 
 def format_files(path: str, check: bool = False, diff: bool = False):
     """Format Geno source files."""
-    from .formatter import format_source
+    from .formatter import FormatError, format_source
     from .test_runner import discover_files
 
     target = Path(path)
@@ -86,7 +86,12 @@ def format_files(path: str, check: bool = False, diff: bool = False):
             had_error = True
             continue
 
-        formatted = format_source(source)
+        try:
+            formatted = format_source(source)
+        except FormatError as exc:
+            print(f"Error: cannot format {filepath}: {exc}", file=sys.stderr)
+            had_error = True
+            continue
 
         if source == formatted:
             continue

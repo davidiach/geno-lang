@@ -18,8 +18,8 @@ end func
 func unwrap_sum(layer: Layer) -> Int
     example Inner(5) -> 5
     match layer with
-    | Inner(v) -> return v
-    | Outer(child, tag) -> return tag + unwrap_sum(child)
+        | Inner(v) -> return v
+        | Outer(child, tag) -> return tag + unwrap_sum(child)
     end match
 end func
 
