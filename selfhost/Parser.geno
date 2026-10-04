@@ -521,7 +521,7 @@ end func parse_primary
 // ---- Match expression (inline) ----
 
 func parse_match_expr(ps: ParserState) -> Expr
-    example ParserState([Token(TkMatch, "match", 1, 1), Token(TkIdentifier, "x", 1, 7), Token(TkWith, "with", 1, 9), Token(TkBar, "|", 1, 14), Token(TkUnderscore, "_", 1, 16), Token(TkArrow, "->", 1, 18), Token(TkReturn, "return", 1, 21), Token(TkInteger, "0", 1, 28), Token(TkEnd, "end", 1, 30), Token(TkMatch, "match", 1, 34), Token(TkEof, "", 1, 39)], array_from_list([0]), vec_new(), "<input>") -> MatchE(Ident("x"), [MatchArm(WildcardPat, [ReturnStmt(IntLit(0))], 1, 16)])
+    example ParserState([Token(TkMatch, "match", 1, 1), Token(TkIdentifier, "x", 1, 7), Token(TkWith, "with", 1, 9), Token(TkBar, "|", 1, 14), Token(TkUnderscore, "_", 1, 16), Token(TkArrow, "->", 1, 18), Token(TkInteger, "0", 1, 21), Token(TkEnd, "end", 1, 23), Token(TkMatch, "match", 1, 27), Token(TkEof, "", 1, 32)], array_from_list([0]), vec_new(), "<input>") -> MatchE(Ident("x"), [MatchArm(WildcardPat, [ReturnStmt(IntLit(0))], 1, 16)])
     let m: Token = expect(ps, TkMatch)
     let scrutinee: Expr = parse_expression(ps)
     let w: Token = expect(ps, TkWith)
@@ -530,8 +530,10 @@ func parse_match_expr(ps: ParserState) -> Expr
         let arm_tok: Token = current(ps)
         let pat: Pattern = parse_pattern(ps)
         let arrow: Token = expect(ps, TkArrow)
-        let body: List[Stmt] = parse_match_arm_body(ps)
-        vec_push(arms, MatchArm(pat, body, arm_tok.line, arm_tok.col))
+        // A match-expression arm is one expression, its value (#140); the
+        // host parser lowers it to a return the same way.
+        let value: Expr = parse_expression(ps)
+        vec_push(arms, MatchArm(pat, [ReturnStmt(value)], arm_tok.line, arm_tok.col))
     end while
     let e: Token = expect(ps, TkEnd)
     let m2: Token = expect(ps, TkMatch)
