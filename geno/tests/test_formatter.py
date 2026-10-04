@@ -608,6 +608,27 @@ class TestStructurePreservation:
         with pytest.raises(FormatError):
             format_source(source)
 
+    def test_guard_checks_files_with_expect_headers(self, monkeypatch):
+        from geno import formatter
+        from geno.formatter import FormatError
+
+        source = (
+            "# EXPECT: E503\n"
+            "func sign(n: Int) -> String\n"
+            '    example 5 -> "pos"\n'
+            "    if n > 0 then\n"
+            '        return "pos"\n'
+            "    else\n"
+            "    if n < 0 then\n"
+            '        return "neg"\n'
+            "    end if\n"
+            "end func\n"
+        )
+        broken = source.replace("    if n < 0", "        if n < 0")
+        monkeypatch.setattr(formatter, "_format_source_text", lambda _src: broken)
+        with pytest.raises(FormatError):
+            format_source(source)
+
     def test_cli_reports_a_refused_file_and_leaves_it(
         self, tmp_path, capsys, monkeypatch
     ):

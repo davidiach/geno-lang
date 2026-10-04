@@ -39,20 +39,29 @@ def _same_program(source: str, formatted: str) -> bool:
     """Return whether ``formatted`` parses to the same program as ``source``.
 
     A ``source`` that does not parse (an editor buffer mid-edit) has nothing
-    to compare, so formatting it stays best effort.
+    to compare, so formatting it stays best effort.  Lines starting with
+    ``#`` (the security corpus's ``# EXPECT:`` headers) are blanked on both
+    sides first, as the corpus runner drops them before running the body.
     """
     from .parser import ParseError, ParseErrors, parse
 
     unparsable = (LexerError, ParseError, ParseErrors, RecursionError)
     try:
-        original = parse(source)
+        original = parse(_without_hash_lines(source))
     except unparsable:
         return True
     try:
-        reformatted = parse(formatted)
+        reformatted = parse(_without_hash_lines(formatted))
     except unparsable:
         return False
     return _ast_key(original) == _ast_key(reformatted)
+
+
+def _without_hash_lines(text: str) -> str:
+    return "".join(
+        "\n" if line.lstrip().startswith("#") else line
+        for line in text.splitlines(keepends=True)
+    )
 
 
 def _ast_key(node: object) -> object:
