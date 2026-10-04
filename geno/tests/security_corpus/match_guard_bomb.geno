@@ -16,8 +16,8 @@ func attack(n: Int) -> Int
         return 0
     end if
     match n with
-    | x when expensive(x) -> return attack(n - 1)
-    | _ -> return 0
+        | x when expensive(x) -> return attack(n - 1)
+        | _ -> return 0
     end match
 end func
 

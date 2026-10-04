@@ -175,8 +175,8 @@ func main() -> Int
 
     // Sum of factorials 1! + 2! + 3! + 4! + 5!
     let facts: List[Int] = map(
-    [1, 2, 3, 4, 5],
-    fn(n: Int) -> factorial(n)
+        [1, 2, 3, 4, 5],
+        fn(n: Int) -> factorial(n)
     )
     let fact_sum: Int = fold(list: facts, initial: 0, reducer: fn(acc: Int, x: Int) -> acc + x)
     print(format(template: "1! + 2! + 3! + 4! + 5! = {}", values: [to_string(fact_sum)]))

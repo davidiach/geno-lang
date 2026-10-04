@@ -24,11 +24,11 @@ type GType
 
 // Structured source span for diagnostics.
 type SourceSpan = SourceSpan(
-filename: String,
-line: Int,
-col: Int,
-end_line: Int,
-end_col: Int
+    filename: String,
+    line: Int,
+    col: Int,
+    end_line: Int,
+    end_col: Int
 )
 
 func dummy_span(dummy: Int) -> SourceSpan
@@ -40,9 +40,9 @@ end func dummy_span
 type DiagSeverity = DiagError | DiagWarning
 
 type Diagnostic = Diagnostic(
-severity: DiagSeverity,
-message: String,
-span: SourceSpan
+    severity: DiagSeverity,
+    message: String,
+    span: SourceSpan
 )
 
 func format_span(span: SourceSpan) -> String
@@ -70,17 +70,17 @@ type FieldInfo = FieldInfo(name: String, field_type: GType)
 
 // Information about a user-defined type collected during type checking.
 type TypeDefEntry = TypeDefEntry(
-name: String,
-type_params: List[String],
-variant_names: List[String],
-variant_fields: MutableMap[String, List[FieldInfo]]
+    name: String,
+    type_params: List[String],
+    variant_names: List[String],
+    variant_fields: MutableMap[String, List[FieldInfo]]
 )
 
 // Type environment: maps variable names to types with scoped lookup.
 type TypeEnv = TypeEnv(
-bindings: MutableMap[String, GType],
-mutable_vars: MutableMap[String, Bool],
-parent: Option[TypeEnv]
+    bindings: MutableMap[String, GType],
+    mutable_vars: MutableMap[String, Bool],
+    parent: Option[TypeEnv]
 )
 
 // Create a new empty type environment.
