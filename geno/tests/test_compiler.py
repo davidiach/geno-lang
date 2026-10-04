@@ -1815,8 +1815,12 @@ class TestCompilerPatternMatchFieldSafety:
         result = compile_and_run(source)
         assert result == 42
 
-    def test_pattern_match_blocks_dunder_field(self):
-        """Fields starting with _ must be blocked by get_field at runtime."""
+    def test_pattern_match_reads_declared_underscore_field(self):
+        """A declared `_x` field is readable; get_field still guards the access.
+
+        Undeclared `_`-prefixed attributes and dunders stay blocked; see
+        test_underscore_record_fields.py (#142).
+        """
         source = """
         type Bad = Bad(_secret: Int)
 
@@ -1833,10 +1837,8 @@ class TestCompilerPatternMatchFieldSafety:
         end func
         """
         python_code = compile_to_python(source)
-        # The compiled code should use get_field which blocks _-prefixed access
         assert "get_field(" in python_code
-        with pytest.raises(RuntimeError, match="not allowed"):
-            compile_and_run(source)
+        assert compile_and_run(source) == 42
 
 
 class TestCompilerReservedNameProtection:

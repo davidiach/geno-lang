@@ -148,7 +148,7 @@ def _geno_sort_key(value: Any, _seen: tuple[Any, ...] | None = None) -> tuple[An
         if constructor_name == "_None":
             constructor_name = "None"
         fields = tuple(
-            (field.name, _geno_sort_key(getattr(value, field.name), _seen))
+            (field.name, _geno_sort_key(_object_getattribute(value, field.name), _seen))
             for field in _dataclasses_fields(value)
         )
         return (6, constructor_name, fields)
@@ -253,7 +253,7 @@ def _geno_format(
             return constructor_name
         field_strs = ", ".join(
             f"{field.name}: "
-            f"{_geno_format(getattr(value, field.name), _seen, _top_level=False)}"
+            f"{_geno_format(_object_getattribute(value, field.name), _seen, _top_level=False)}"
             for field in fields
         )
         return f"{constructor_name}({field_strs})"
@@ -321,7 +321,9 @@ class Constructor:
         fields = _dc.fields(self)
         if not fields:
             return type(self).__name__
-        field_strs = ", ".join(f"{f.name}: {getattr(self, f.name)!r}" for f in fields)
+        field_strs = ", ".join(
+            f"{f.name}: {_object_getattribute(self, f.name)!r}" for f in fields
+        )
         return f"{type(self).__name__}({field_strs})"
 
 
@@ -363,7 +365,7 @@ def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any
             _object_setattr(
                 copied_constructor,
                 field.name,
-                _geno_deepcopy(getattr(value, field.name), memo),
+                _geno_deepcopy(_object_getattribute(value, field.name), memo),
             )
         return copied_constructor
 
@@ -1181,11 +1183,26 @@ def get_field(value, field_name: str):
     Security: Rejects private attributes and blocked attribute names
     to prevent sandbox escape via attribute access.
     """
-    if field_name in _BLOCKED_FIELD_NAMES or field_name.startswith("_"):
+    if field_name in _BLOCKED_FIELD_NAMES or field_name.startswith("__"):
         raise RuntimeError(
             f"Access to field '{field_name}' is not allowed (private attribute)"
         )
     import dataclasses as _dc
+
+    if field_name.startswith("_"):
+        # A Geno record may declare `_x`; nothing else with a leading
+        # underscore is reachable as a field.
+        try:
+            declared = isinstance(value, Constructor) and any(
+                field.name == field_name for field in _dataclasses_fields(value)
+            )
+        except TypeError:
+            declared = False
+        if declared:
+            return _object_getattribute(value, field_name)
+        raise RuntimeError(
+            f"Access to field '{field_name}' is not allowed (private attribute)"
+        )
 
     try:
         value_dict = _object_getattribute(value, "__dict__")
@@ -1305,7 +1322,8 @@ def _check_collection_size(result):
         if isinstance(value, Constructor):
             visited.append(value)
             stack.extend(
-                getattr(value, field.name) for field in _dataclasses_fields(value)
+                _object_getattribute(value, field.name)
+                for field in _dataclasses_fields(value)
             )
     return result
 
@@ -2931,7 +2949,9 @@ def _geno_value_to_python(value):
     if isinstance(value, Constructor):
         result = {"_tag": type(value).__name__}
         for field in _dataclasses_fields(value):
-            result[field.name] = _geno_value_to_python(getattr(value, field.name))
+            result[field.name] = _geno_value_to_python(
+                _object_getattribute(value, field.name)
+            )
         return result
     # Runtime-only containers fall back to their Geno display representation.
     if isinstance(value, (_GenoArray, _GenoMutableMap, _GenoVec, _GenoSet)):
