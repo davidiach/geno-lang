@@ -85,6 +85,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .diagnostics import ErrorCode
+from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
@@ -1188,6 +1189,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         if is_entrypoint:
             self._validate_browser_entrypoint_lifecycle(program)
+            self._validate_entrypoint_main_params(program)
 
         # Collect function names tested by test blocks so they can be
         # exempted from the example requirement.
@@ -1257,6 +1259,23 @@ class TypeChecker(ExhaustivenessMixin):
             )
 
         return checked
+
+    def _validate_entrypoint_main_params(self, program: Program) -> None:
+        """Reject an entrypoint ``main`` that declares parameters (#133).
+
+        Every host calls the entrypoint as ``main()`` (spec section 4.1.1), so
+        a parameter could never be supplied; without this check each backend
+        failed at run time with its own host error.
+        """
+        main_def = find_entrypoint_main(program)
+        if main_def is None or not main_def.params:
+            return
+        self._error(
+            "The entrypoint `main` must take no parameters; it is called as "
+            "`main()`. Read command-line arguments with `cli_args()` instead",
+            main_def.location,
+            ErrorCode.TYPE_WRONG_ARITY,
+        )
 
     def _validate_browser_entrypoint_lifecycle(self, program: Program) -> None:
         """Reject stale or partial browser app lifecycles on entrypoints."""
