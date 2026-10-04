@@ -1635,6 +1635,36 @@ def vec_from_list(lst):
 # =============================================================================
 
 
+class _GenoAsync:
+    """An ``Async[T]`` that runs once, however often it is awaited (#136).
+
+    A Python coroutine can only be awaited once; the first await here runs
+    it and later awaits get its result, or its error raised again.
+    """
+
+    __slots__ = ("_awaitable", "_done", "_error", "_result")
+
+    def __init__(self, awaitable):
+        self._awaitable = awaitable
+        self._done = False
+        self._result = None
+        self._error = None
+
+    def __await__(self):
+        if not self._done:
+            try:
+                self._result = yield from self._awaitable.__await__()
+            except (_GenoThrow, RuntimeError, IndexError) as exc:
+                # What a Geno `catch` can see; anything else ends the run.
+                self._error = exc
+                self._done = True
+                raise
+            self._done = True
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
 class _GenoSet:
     def __init__(self, data=None):
         self._data = data if data is not None else set()
