@@ -163,7 +163,9 @@ func parse_pipeline(ps: ParserState) -> Expr
     example ParserState([Token(TkInteger, "1", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> IntLit(1)
     let left: Expr = parse_or(ps)
     if check_type(ps, TkPipe) then
-        let stages: Vec[PipeStage] = vec_new()
+        var acc: Expr = left
+        var stages: Vec[PipeStage] = vec_new()
+        var has_stages: Bool = false
         while match_type(ps, TkPipe) do
             let stage_tok: Token = current(ps)
             let func_expr: Expr = parse_primary(ps)
@@ -178,11 +180,54 @@ func parse_pipeline(ps: ParserState) -> Expr
                 let rp: Token = expect(ps, TkRParen)
             end if
             vec_push(stages, PipeStage(func_expr, vec_to_list(args), stage_tok.line, stage_tok.col))
+            has_stages = true
+            if check_type(ps, TkLBracket) or check_type(ps, TkDot) then
+                // `xs |> f(_)[0]` indexes the stage's result (#138)
+                acc = parse_pipeline_postfix(ps, PipelineExpr(acc, vec_to_list(stages)))
+                stages = vec_new()
+                has_stages = false
+            end if
         end while
-        return PipelineExpr(left, vec_to_list(stages))
+        if not has_stages then
+            return acc
+        end if
+        return PipelineExpr(acc, vec_to_list(stages))
     end if
     return left
 end func parse_pipeline
+
+func parse_pipeline_postfix(ps: ParserState, piped: Expr) -> Expr
+    example ParserState([Token(TkEof, "", 1, 1)], array_from_list([0]), vec_new(), "<input>"), IntLit(1) -> IntLit(1)
+    var expr: Expr = piped
+    var more: Bool = true
+    while more do
+        if match_type(ps, TkLParen) then
+            let args: Vec[CallArg] = vec_new()
+            if not check_type(ps, TkRParen) then
+                vec_push(args, parse_call_arg(ps))
+                while match_type(ps, TkComma) do
+                    vec_push(args, parse_call_arg(ps))
+                end while
+            end if
+            let rp: Token = expect(ps, TkRParen)
+            expr = CallExpr(expr, vec_to_list(args))
+        else
+            if match_type(ps, TkLBracket) then
+                let idx: Expr = parse_expression(ps)
+                let rb: Token = expect(ps, TkRBracket)
+                expr = IndexExpr(expr, idx)
+            else
+                if match_type(ps, TkDot) then
+                    let field_tok: Token = expect(ps, TkIdentifier)
+                    expr = FieldExpr(expr, field_tok.value)
+                else
+                    more = false
+                end if
+            end if
+        end if
+    end while
+    return expr
+end func parse_pipeline_postfix
 
 func parse_pipeline_arg(ps: ParserState) -> Expr
     example ParserState([Token(TkUnderscore, "_", 1, 1), Token(TkEof, "", 1, 2)], array_from_list([0]), vec_new(), "<input>") -> PlaceholderE
