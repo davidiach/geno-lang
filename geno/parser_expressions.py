@@ -432,14 +432,29 @@ class ExpressionParserMixin(ParserBase):
             if self._current_type is TokenType.LPAREN:
                 self._advance()
                 args: list[Expression] = []
+                arg_names: list[str | None] = []
                 if self._current_type is not TokenType.RPAREN:
-                    args.append(self._parse_expression())
-                    while self._current_type is TokenType.COMMA:
-                        self._advance()
+                    while True:
+                        if (
+                            self._current_type is TokenType.IDENTIFIER
+                            and self._peek(1).type is TokenType.COLON
+                        ):
+                            arg_names.append(self._advance().value)
+                            self._expect(TokenType.COLON)
+                        else:
+                            arg_names.append(None)
                         args.append(self._parse_expression())
+                        if self._current_type is not TokenType.COMMA:
+                            break
+                        self._advance()
                 self._expect(TokenType.RPAREN)
                 return ConstructorCall(
-                    location=location, constructor=name, arguments=args
+                    location=location,
+                    constructor=name,
+                    arguments=args,
+                    argument_names=(
+                        arg_names if any(n is not None for n in arg_names) else None
+                    ),
                 )
             # Known zero-argument constructors are constructor calls without parens
             if name in ("None",):

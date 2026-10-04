@@ -84,6 +84,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WithExpr,
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
+from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .exhaustiveness import ExhaustivenessMixin
 from .tokens import SourceLocation
@@ -3440,7 +3441,14 @@ class TypeChecker(ExhaustivenessMixin):
                 if fields is None:
                     return
                 substitutions = dict(zip(type_info.type_params, expected.type_args))
-                for argument, (_name, field_type) in zip(expr.arguments, fields):
+                if expr.argument_names is not None and expr.argument_order is None:
+                    return
+                field_arguments = (
+                    expr.arguments
+                    if expr.argument_order is None
+                    else [expr.arguments[index] for index in expr.argument_order]
+                )
+                for argument, (_name, field_type) in zip(field_arguments, fields):
                     self._record_expected_runtime_type(
                         argument,
                         self._apply_substitutions(field_type, substitutions),
@@ -4770,9 +4778,25 @@ class TypeChecker(ExhaustivenessMixin):
             type_info = self.type_defs[type_name]
             fields = type_info.variants[expr.constructor]
 
-            if len(expr.arguments) != len(fields):
+            arguments = expr.arguments
+            if expr.argument_names is not None:
+                try:
+                    order = constructor_argument_order(
+                        expr.constructor,
+                        expr.argument_names,
+                        [field_name for field_name, _ in fields],
+                    )
+                except ValueError as exc:
+                    self._error(str(exc), expr.location, ErrorCode.TYPE_WRONG_ARITY)
+                    for arg in expr.arguments:
+                        self._check_expression(arg, env)
+                    return AnyType()
+                expr.argument_order = order
+                arguments = [expr.arguments[index] for index in order]
+
+            if len(arguments) != len(fields):
                 self._error(
-                    f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(expr.arguments)}",
+                    f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(arguments)}",
                     expr.location,
                     ErrorCode.TYPE_WRONG_ARITY,
                 )
@@ -4781,7 +4805,7 @@ class TypeChecker(ExhaustivenessMixin):
             type_param_bindings: dict[str, Type] = {}
             has_never_arg = False
             for i, (arg, (_field_name, field_type)) in enumerate(
-                zip(expr.arguments, fields)
+                zip(arguments, fields)
             ):
                 arg_type = self._check_expression(arg, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)

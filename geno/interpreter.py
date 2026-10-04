@@ -86,6 +86,7 @@ from .builtin_registry import (
     allowed_gated_builtins,
     interpreter_builtin_param_name_lists,
 )
+from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .harness import example_call_args
 from .sandbox import (
@@ -2797,16 +2798,29 @@ class Interpreter:
             type_def = self.type_defs[parent_type]
             for variant in type_def.variants:
                 if variant.name == expr.constructor:
-                    if len(expr.arguments) != len(variant.fields):
-                        raise RuntimeError(
-                            f"Constructor {expr.constructor} expects "
-                            f"{len(variant.fields)} arguments, got {len(expr.arguments)}",
-                            expr.location,
-                        )
-
-                    fields = {}
-                    for arg, (field_name, _) in zip(expr.arguments, variant.fields):
-                        fields[field_name] = self.eval_expr(arg, env)
+                    field_names = [field_name for field_name, _ in variant.fields]
+                    if expr.argument_names is None:
+                        if len(expr.arguments) != len(variant.fields):
+                            raise RuntimeError(
+                                f"Constructor {expr.constructor} expects "
+                                f"{len(variant.fields)} arguments, "
+                                f"got {len(expr.arguments)}",
+                                expr.location,
+                            )
+                        order = list(range(len(field_names)))
+                    else:
+                        try:
+                            order = constructor_argument_order(
+                                expr.constructor, expr.argument_names, field_names
+                            )
+                        except ValueError as exc:
+                            raise RuntimeError(str(exc), expr.location) from None
+                    # Evaluate in source order, then place by field.
+                    values = [self.eval_expr(arg, env) for arg in expr.arguments]
+                    fields = {
+                        field_name: values[index]
+                        for field_name, index in zip(field_names, order)
+                    }
 
                     return ConstructorValue(expr.constructor, fields)
 

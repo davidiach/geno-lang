@@ -21,6 +21,7 @@ from ._definition_index import DefinitionIndex
 from .ast_nodes import (
     AssignStatement,
     CallArg,
+    ConstructorCall,
     ConstructorPattern,
     Expression,
     FieldAccess,
@@ -608,6 +609,29 @@ class BaseCompiler(ABC):
             for arg in ordered_args
         )
         return names, values, f"{function_name}({arguments})"
+
+    def _compile_named_constructor_call(
+        self, expr: ConstructorCall
+    ) -> tuple[list[str], list[str], str] | None:
+        """Bind source-order values for ``Point(y: a, x: b)``, then place them.
+
+        Returns ``None`` when the arguments are already in field order, so the
+        caller emits a plain positional call.
+        """
+        if expr.argument_names is None:
+            return None
+        order = expr.argument_order
+        if order is None:
+            raise ValueError(
+                f"Named arguments to constructor {expr.constructor} need type "
+                "checking before compilation"
+            )
+        if order == list(range(len(expr.arguments))):
+            return None
+        names = [self._fresh_temp() for _ in expr.arguments]
+        values = [self._compile_expr(arg) for arg in expr.arguments]
+        placed = ", ".join(names[index] for index in order)
+        return names, values, f"{expr.constructor}({placed})"
 
     @staticmethod
     def _call_args_match_param_names(call_args: list, param_names: list[str]) -> bool:
