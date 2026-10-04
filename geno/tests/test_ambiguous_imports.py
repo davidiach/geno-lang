@@ -80,3 +80,15 @@ def test_project_graph_rejects_the_ambiguous_name(tmp_path):
     graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
     with pytest.raises(GenoTypeError, match="ambiguous"):
         TypeChecker().check_project_graph(graph)
+
+
+def test_local_trait_method_wins_over_both_imports():
+    _check(
+        "import Utils\nimport Other\n\n"
+        "type Point = Point(x: Int)\n\n"
+        "trait Doubler\n  func double(self: Self) -> Int\nend trait\n\n"
+        "impl Doubler for Point\n"
+        "  func double(self: Point) -> Int\n    example Point(1) -> 2\n"
+        "    return self.x * 2\n  end func\nend impl\n\n"
+        "func main() -> Unit\n  print(double(Point(1)))\nend func\n"
+    )

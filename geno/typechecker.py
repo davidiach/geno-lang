@@ -1537,7 +1537,9 @@ class TypeChecker(ExhaustivenessMixin):
         The compilers drop such a name from the importer's unqualified scope
         (``Compiler.compile_project``), so a bare use must be rejected here
         and qualified as ``Module.name`` instead (#132).  A local definition
-        or module constant of the same name wins over every import.
+        or module constant of the same name wins over every import, and so
+        does a local trait method, whose dispatcher the compilers emit in
+        place of the dropped imports.
         """
         if not modules:
             return {}
@@ -1546,6 +1548,9 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions
             if isinstance(defn, (FunctionDef, ModuleConstant))
         }
+        for defn in program.definitions:
+            if isinstance(defn, (TraitDef, ImplDef)):
+                local_names.update(method.name for method in defn.methods)
         sources: dict[str, list[str]] = {}
         for defn in program.definitions:
             if not isinstance(defn, ImportStatement) or defn.alias:
