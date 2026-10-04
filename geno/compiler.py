@@ -114,6 +114,7 @@ from .entrypoint import (
     classify_entrypoint_result,
     is_async_execution_form,
 )
+from .float_promotion import float_shape
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
 from .types import FloatType, ListType, UserType
@@ -195,6 +196,7 @@ _PYTHON_EMITTED_LOCAL_HELPER_NAMES = frozenset(
         "_builtin_min",
         "_geno_format",
         "_object_setattr",
+        "_promote_float_shape",
         "_promote_int_to_float",
     }
 )
@@ -1582,6 +1584,11 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         """Compile for loops while preserving per-iteration lambda captures."""
         iterable = self._compile_expr(stmt.iterable)
+        if not isinstance(stmt.iterable, ListLiteral):
+            # A literal promotes its own elements.
+            iterable = self._promote_expr_to_expected_float(
+                iterable, getattr(stmt.iterable, "_expected_runtime_type", None)
+            )
         self._loop_capture_names.append(self._loop_lambda_names(stmt.body))
         try:
             with self._block_scope():
@@ -2330,6 +2337,10 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _promote_expr_to_expected_float(self, value: str, expected_type: object) -> str:
         if self._expected_runtime_type_is_float(expected_type):
             return f"_promote_int_to_float({value})"
+        shape = float_shape(expected_type)
+        if shape is not None and shape != "F":
+            # An Int inside a Float list, Option, Result, tuple or map (#137).
+            return f"_promote_float_shape({value}, {shape!r})"
         return value
 
     def _promote_list_element(self, value: str, expected_type: object) -> str:
@@ -2981,7 +2992,11 @@ class Compiler(BaseCompiler, ASTVisitor):
             with self._with_shadowed_bindings([p.name for p in expr.params]):
                 if expr.block_body is None:
                     assert expr.body is not None
-                    self._writeln(f"return {self._compile_expr(expr.body)}")
+                    body = self._promote_expr_to_expected_float(
+                        self._compile_expr(expr.body),
+                        getattr(expr.body, "_expected_runtime_type", None),
+                    )
+                    self._writeln(f"return {body}")
                 elif not expr.block_body:
                     self._writeln("pass")
                 else:
@@ -3004,7 +3019,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         else:
             assert expr.body is not None
             with self._with_shadowed_bindings([p.name for p in expr.params]):
-                body = self._compile_expr(expr.body)
+                body = self._promote_expr_to_expected_float(
+                    self._compile_expr(expr.body),
+                    getattr(expr.body, "_expected_runtime_type", None),
+                )
             return f"(lambda {params}: {body})"
 
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:

@@ -87,6 +87,7 @@ from .builtin_registry import (
     interpreter_builtin_param_name_lists,
 )
 from .diagnostics import ErrorCode
+from .float_promotion import float_shape
 from .harness import example_call_args
 from .sandbox import (
     RecursionLimitError,
@@ -96,7 +97,7 @@ from .sandbox import (
 )
 from .sandbox import TimeoutError as SandboxTimeout
 from .tokens import SourceLocation
-from .types import FloatType, ListType
+from .types import FloatType
 
 # Re-export runtime value types for backward compatibility
 from .value_copy import copy_value
@@ -282,24 +283,57 @@ def _expected_runtime_type_is_float(expected_type: Any) -> bool:
 
 
 def _promote_int_to_expected_float(value: Any, expected_type: Any) -> Any:
-    """Materialise Geno's Int-to-Float compatibility in runtime values."""
+    """Materialise Geno's Int-to-Float compatibility in runtime values.
+
+    Promotion follows the expected type into lists, Options, Results, tuples
+    and maps, so an ``Int`` held where a ``Float`` is expected becomes a
+    float wherever it sits (#137).
+    """
     if type(value) is int and _expected_runtime_type_is_float(expected_type):
         return float(value)
+    shape = float_shape(expected_type)
+    if shape is None or shape == "F":
+        return value
+    return _promote_to_float_shape(value, shape)
+
+
+def _promote_to_float_shape(value: Any, shape: Any) -> Any:
+    if shape is None:
+        return value
+    if shape == "F":
+        return float(value) if type(value) is int else value
+    kind = shape[0]
+    if kind == "L" and isinstance(value, list):
+        return [_promote_to_float_shape(item, shape[1]) for item in value]
+    if kind == "T" and isinstance(value, tuple):
+        return tuple(
+            _promote_to_float_shape(item, item_shape)
+            for item, item_shape in zip(value, shape[1])
+        )
+    if kind == "M" and isinstance(value, dict):
+        return {
+            _promote_to_float_shape(key, shape[1]): _promote_to_float_shape(
+                item, shape[2]
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, ConstructorValue):
+        if kind == "O" and value.constructor == "Some":
+            inner = _promote_to_float_shape(value.fields["value"], shape[1])
+            return ConstructorValue("Some", {"value": inner})
+        if kind == "R" and value.constructor in ("Ok", "Err"):
+            field, part = (
+                ("value", shape[1])
+                if value.constructor == "Ok"
+                else ("error", shape[2])
+            )
+            inner = _promote_to_float_shape(value.fields[field], part)
+            return ConstructorValue(value.constructor, {field: inner})
     return value
 
 
 def _promote_list_element(value: Any, expected_type: Any) -> Any:
     """Copy nested Float lists when their existing Int values need widening."""
-    leaf_type = expected_type
-    while isinstance(leaf_type, ListType):
-        leaf_type = leaf_type.element_type
-    if not _expected_runtime_type_is_float(leaf_type):
-        return value
-    if isinstance(expected_type, ListType) and isinstance(value, list):
-        return [
-            _promote_list_element(element, expected_type.element_type)
-            for element in value
-        ]
     return _promote_int_to_expected_float(value, expected_type)
 
 
@@ -2774,7 +2808,11 @@ class Interpreter:
             body = expr.block_body
         else:
             assert expr.body is not None
-            body = [ReturnStatement(location=expr.location, value=expr.body)]
+            return_stmt = ReturnStatement(location=expr.location, value=expr.body)
+            expected = getattr(expr.body, "_expected_runtime_type", None)
+            if expected is not None:
+                return_stmt._expected_runtime_type = expected
+            body = [return_stmt]
         return Closure(
             params=expr.params,
             body=body,
@@ -3173,7 +3211,10 @@ class Interpreter:
 
     def _exec_for(self, stmt: ForStatement, env: Environment) -> None:
         """Execute a for loop."""
-        iterable = self.eval_expr(stmt.iterable, env)
+        iterable = _promote_int_to_expected_float(
+            self.eval_expr(stmt.iterable, env),
+            getattr(stmt.iterable, "_expected_runtime_type", None),
+        )
         if not isinstance(iterable, (list, ArrayValue)):
             raise RuntimeError(
                 f"Cannot iterate over {type(iterable).__name__}", stmt.location

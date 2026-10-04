@@ -86,6 +86,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .diagnostics import ErrorCode
 from .exhaustiveness import ExhaustivenessMixin
+from .float_promotion import float_shape
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
 from .types import (
@@ -3322,6 +3323,10 @@ class TypeChecker(ExhaustivenessMixin):
                 stmt.location,
             )
 
+        if isinstance(iterable_type, ListType) and float_shape(declared_type):
+            # `for x: Float in [1, 2]` iterates Floats (#137).
+            self._record_expected_runtime_type(stmt.iterable, ListType(declared_type))
+
         body_env = env.child()
         body_env.bind(stmt.variable, declared_type)
 
@@ -3387,6 +3392,15 @@ class TypeChecker(ExhaustivenessMixin):
 
         if isinstance(expr, ListComprehension) and isinstance(expected, ListType):
             self._record_expected_runtime_type(expr.element_expr, expected.element_type)
+            return
+
+        if (
+            isinstance(expr, LambdaExpr)
+            and isinstance(expected, FuncType)
+            and expr.body is not None
+        ):
+            # An expression lambda typed `(Int) -> Float` returns a Float (#137).
+            self._record_expected_runtime_type(expr.body, expected.return_type)
             return
 
         if isinstance(expr, FunctionCall):
