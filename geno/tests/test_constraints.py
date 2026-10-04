@@ -445,3 +445,22 @@ end func
     def test_statement_for_still_opens_a_block(self) -> None:
         prefix = "func f(xs: List[Int]) -> Unit\n    for x in xs do\n"
         assert get_unclosed_blocks(prefix) == ["for", "func"]
+
+    def test_loop_inside_a_bracketed_block_lambda_still_opens_a_block(self) -> None:
+        source = """func f(xs: List[Int]) -> Int
+    let g = [fn(x: Int) -> Int do
+        var t = 0
+        for y in xs[0:1] do
+            if y > 0 then
+                t = t + y
+            end if
+        end for
+        return t
+    end fn]
+    return 0
+end func
+"""
+        assert validate_prefix(source) == (True, None)
+        assert get_unclosed_blocks(source) == []
+        inside = source.split("            t = t + y")[0]
+        assert get_unclosed_blocks(inside) == ["if", "for", "func"]

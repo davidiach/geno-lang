@@ -126,6 +126,11 @@ class ConstraintState:
     # loop starter.
     in_impl_header: bool = False
 
+    # A `for`/`if` met mid-expression inside brackets is either a list
+    # comprehension clause or a statement inside a block lambda. It opens a
+    # block only once its `do`/`then` arrives. Entries are (kind, depth).
+    pending_bracket_blocks: List[Tuple[str, int]] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class ConstraintViolation:
@@ -343,9 +348,7 @@ def step_with_end_check(
                     keyword_value or "",
                 )
 
-    # `else if` continues the open `if`, and a `for`/`if` in the middle of
-    # a bracketed expression belongs to a list comprehension. Neither opens
-    # a block of its own.
+    # `else if` continues the open `if` rather than opening another.
     if token.type == TokenType.IF and prev_token and prev_token.type == TokenType.ELSE:
         return state
     if (
@@ -353,10 +356,24 @@ def step_with_end_check(
         and state.bracket_depth > 0
         and prev_token is not None
         and prev_token.type != TokenType.NEWLINE
+        and not state.in_impl_header
     ):
+        kind = "for" if token.type == TokenType.FOR else "if"
+        state.pending_bracket_blocks.append((kind, state.bracket_depth))
+        return state
+    opener = {TokenType.DO: "for", TokenType.THEN: "if"}.get(token.type)
+    pending = state.pending_bracket_blocks
+    if opener and pending and pending[-1] == (opener, state.bracket_depth):
+        pending.pop()
+        state.open_blocks.append(opener)
         return state
 
-    return step(state, token)
+    result = step(state, token)
+    if isinstance(result, ConstraintState) and token.type == TokenType.RBRACKET:
+        result.pending_bracket_blocks = [
+            entry for entry in pending if entry[1] <= result.bracket_depth
+        ]
+    return result
 
 
 def allowed_next(state: ConstraintState) -> AllowedNext:
