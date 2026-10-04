@@ -3,11 +3,11 @@
 // Demonstrates: mouse input, format, floor, app mode
 
 type State = State(
-display: String,
-accumulator: Float,
-operator: String,
-waiting_input: Bool,
-just_computed: Bool
+    display: String,
+    accumulator: Float,
+    operator: String,
+    waiting_input: Bool,
+    just_computed: Bool
 )
 
 func button_cols() -> Int

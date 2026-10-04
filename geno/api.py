@@ -722,7 +722,9 @@ def run(
             for mod_name, mod_ast in parsed_modules.items():
                 other_mods = {k: v for k, v in parsed_modules.items() if k != mod_name}
                 mod_checker = TypeChecker(target_profile=target_profile)
-                mod_checker.check_program(mod_ast, modules=other_mods or None)
+                mod_checker.check_program(
+                    mod_ast, modules=other_mods or None, is_entrypoint=False
+                )
         checker.check_program(program, modules=parsed_modules)
     except (ValueError, RuntimeError) as e:
         _finalize_timing(timing, "typecheck_ms", t_tc, t0)
@@ -1135,7 +1137,9 @@ def check(
             for mod_name, mod_ast in parsed_modules.items():
                 other_mods = {k: v for k, v in parsed_modules.items() if k != mod_name}
                 mod_checker = TypeChecker(target_profile=target_profile)
-                mod_checker.check_program(mod_ast, modules=other_mods or None)
+                mod_checker.check_program(
+                    mod_ast, modules=other_mods or None, is_entrypoint=False
+                )
         checker.check_program(program, modules=parsed_modules)
         entrypoint_name = _module_name
         if entrypoint_name is None and filename and not filename.startswith("<"):

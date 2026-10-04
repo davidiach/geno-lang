@@ -6,15 +6,15 @@ type InputKind = TextInput | NumberInput | EmailInput | BoolInput | SelectInput(
 
 // A single form field definition.
 type FieldDef = FieldDef(
-name: String,
-label: String,
-kind: InputKind,
-placeholder: String,
-required: Bool,
-min_length: Int,
-max_length: Int,
-min_value: Int,
-max_value: Int
+    name: String,
+    label: String,
+    kind: InputKind,
+    placeholder: String,
+    required: Bool,
+    min_length: Int,
+    max_length: Int,
+    min_value: Int,
+    max_value: Int
 )
 
 // Validation result for a single field.
@@ -25,10 +25,10 @@ type FieldValue = StringVal(value: String) | IntVal(value: Int) | BoolVal(value:
 
 // The overall form state.
 type FormState = FormState(
-title: String,
-fields: List[FieldDef],
-values: List[FieldValue],
-errors: List[FieldError],
-submitted: Bool,
-active_form: Int
+    title: String,
+    fields: List[FieldDef],
+    values: List[FieldValue],
+    errors: List[FieldError],
+    submitted: Bool,
+    active_form: Int
 )
