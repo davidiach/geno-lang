@@ -203,3 +203,28 @@ def test_js_runtime_stops_cap_parsing_at_the_separator() -> None:
         "the JS capability parser must stop at the `--` separator so program "
         "arguments cannot grant capabilities"
     )
+
+
+def test_sandbox_provides_not_implemented() -> None:
+    """Dataclass `__eq__` returns NotImplemented for different classes (#127)."""
+    assert _sandbox_available_names() >= {"NotImplemented"}
+
+
+def test_geno_run_compares_different_constructors(tmp_path: Path) -> None:
+    """`==` between different variants is `false`, not a NameError (#127)."""
+    result = _run_geno(
+        tmp_path,
+        "type Color = Red | Green | Blue\n"
+        "\n"
+        "func main() -> Unit\n"
+        "    let c = Red\n"
+        "    print(c == Green)\n"
+        "    print(c != Green)\n"
+        "    print(Some(1) == None)\n"
+        '    print(Ok(1) == Err("x"))\n'
+        "    print([Some(1)] == [None])\n"
+        "    print(contains([None, Some(2)], Some(2)))\n"
+        "end func\n",
+    )
+    assert result.returncode == 0, result.stderr[-400:]
+    assert result.stdout.split() == ["false", "true", "false", "false", "false", "true"]
