@@ -15,8 +15,8 @@ end func
 func count(t: Tree) -> Int
     example Leaf(0) -> 1
     match t with
-    | Leaf(x) -> return 1
-    | Node(l, r) -> return 1 + count(l) + count(r)
+        | Leaf(x) -> return 1
+        | Node(l, r) -> return 1 + count(l) + count(r)
     end match
 end func
 

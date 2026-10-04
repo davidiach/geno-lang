@@ -48,8 +48,9 @@ ANYTYPE_RECOVERY_BASELINE: dict[str, AnyTypeRecoverySite] = {
         "Recover loop element type after diagnosing a non-iterable for target.",
     ),
     "_check_identifier": AnyTypeRecoverySite(
-        2,
-        "Recover after target rejection or undefined-variable diagnostics.",
+        3,
+        "Recover after target rejection, undefined-variable, or ambiguous-import"
+        " diagnostics.",
     ),
     "_check_index_access": AnyTypeRecoverySite(
         1,

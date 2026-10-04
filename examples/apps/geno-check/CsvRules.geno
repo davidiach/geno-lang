@@ -82,10 +82,10 @@ end func
 @untested("uses map_get on CSV row")
 func validate_user_row(file: String, row_label: String, row: Map[String, String]) -> List[Violation]
     return []
-    |> concat(_, check_required(file: file, row_label: row_label, row: row, field: "name"))
-    |> concat(_, check_required(file: file, row_label: row_label, row: row, field: "email"))
-    |> concat(_, check_numeric(file: file, row_label: row_label, row: row, field: "age"))
-    |> concat(_, check_allowed_values(file: file, row_label: row_label, row: row, field: "role", allowed: ["admin", "user", "guest"]))
+        |> concat(_, check_required(file: file, row_label: row_label, row: row, field: "name"))
+        |> concat(_, check_required(file: file, row_label: row_label, row: row, field: "email"))
+        |> concat(_, check_numeric(file: file, row_label: row_label, row: row, field: "age"))
+        |> concat(_, check_allowed_values(file: file, row_label: row_label, row: row, field: "role", allowed: ["admin", "user", "guest"]))
 end func
 
 // Validate an entire CSV file using the users schema.

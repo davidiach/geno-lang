@@ -51,9 +51,9 @@ func validate_toml(file: String, text: String) -> List[Violation]
         return [Violation(file, "<root>", "parse", "invalid TOML: " + msg, "valid TOML", "parse error", Error)]
         | Ok(_) ->
         return []
-        |> concat(_, check_section(file: file, text: text, section: "server"))
-        |> concat(_, check_section(file: file, text: text, section: "database"))
-        |> concat(_, check_key(file: file, text: text, key: "port"))
-        |> concat(_, check_key(file: file, text: text, key: "host"))
+            |> concat(_, check_section(file: file, text: text, section: "server"))
+            |> concat(_, check_section(file: file, text: text, section: "database"))
+            |> concat(_, check_key(file: file, text: text, key: "port"))
+            |> concat(_, check_key(file: file, text: text, key: "host"))
     end match
 end func

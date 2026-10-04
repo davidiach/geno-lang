@@ -9,9 +9,9 @@ type Color = Red | Green | Blue
 func color_value(c: Color) -> Int
     example Red -> 0
     match c with
-    | Red -> return 0
-    | Green -> return 1
-    | Blue -> return 2
+        | Red -> return 0
+        | Green -> return 1
+        | Blue -> return 2
     end match
 end func
 
