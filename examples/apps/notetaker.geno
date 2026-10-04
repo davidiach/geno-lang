@@ -3,10 +3,10 @@
 // Demonstrates: text input, mouse input, format, arrays, app mode
 
 type State = State(
-notes: Array[String],
-note_count: Int,
-max_notes: Int,
-selected: Int
+    notes: Array[String],
+    note_count: Int,
+    max_notes: Int,
+    selected: Int
 )
 
 func btn_x() -> Int
