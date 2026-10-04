@@ -226,6 +226,8 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
         {
             # Security-critical functions
             "get_field",
+            "_geno_own_field",
+            "_geno_own_index",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -367,6 +369,9 @@ class Compiler(BaseCompiler, ASTVisitor):
     def __init__(self):
         super().__init__()
         self._active_loop_vars: list[str] = []
+        # Types sharing their name with one of several variants, mapped to the
+        # variant names; annotations spell out their Union (#128).
+        self._same_name_union_variants: dict[str, list[str]] = {}
         self._loop_capture_names: list[set[str]] = []
         self._name_overrides: list[dict[str, str]] = []
         self._active_module_bindings: dict[str, str] = {}
@@ -844,6 +849,8 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         self._compile_module_constants(program)
 
+        self._collect_same_name_union_variants(program)
+
         # Compile all definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
@@ -1013,6 +1020,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             collect_definitions(program, into=self._definition_index)
 
             self._compile_module_constants(program)
+            self._collect_same_name_union_variants(program)
 
             # Compile definitions
             for defn in program.definitions:
@@ -1117,9 +1125,21 @@ class Compiler(BaseCompiler, ASTVisitor):
         variant_names = [v.name for v in defn.variants]
         if len(variant_names) == 1:
             self._writeln(f"{defn.name} = {variant_names[0]}")
-        else:
+        elif defn.name not in variant_names:
             self._writeln(f"{defn.name} = Union[{', '.join(variant_names)}]")
+        # A variant that shares the type's name (``type Shape = Shape(n: Int)
+        # | Other``) already binds that name to its constructor class; a
+        # Union alias would shadow the constructor and make it uncallable
+        # (#128).  Annotations spell that Union out instead.
         self._writeln()
+
+    def _collect_same_name_union_variants(self, program: Program) -> None:
+        for defn in program.definitions:
+            if not isinstance(defn, TypeDef) or len(defn.variants) < 2:
+                continue
+            variant_names = [v.name for v in defn.variants]
+            if defn.name in variant_names:
+                self._same_name_union_variants[defn.name] = variant_names
 
     def _compile_variant(
         self, type_name: str, type_params: list[str], variant: TypeVariant
@@ -1208,6 +1228,10 @@ class Compiler(BaseCompiler, ASTVisitor):
                     err = self._compile_type_annotation(type_annot.type_params[1])
                     return f"Union[Ok[{ok}], Err[{err}]]"
                 return "Union[Ok, Err]"
+
+            same_name_variants = self._same_name_union_variants.get(type_annot.name)
+            if same_name_variants is not None:
+                return f"Union[{', '.join(same_name_variants)}]"
 
             if type_annot.type_params:
                 params = ", ".join(
@@ -1521,12 +1545,23 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_field_assign_statement(self, stmt: FieldAssignStatement) -> None:
         """Compile field assignment against frozen Python constructor dataclasses."""
-        target = self._compile_expr(stmt.target)
+        target = self._compile_write_target(stmt.target)
         value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(f"_object_setattr({target}, {stmt.field_name!r}, {value})")
 
     def _snapshot_value(self, value: str) -> str:
         return f"_geno_deepcopy({value})"
+
+    def _compile_write_target(self, expr: Expression) -> str:
+        """Compile the value a field write lands in, unsharing its path (#129)."""
+        if isinstance(expr, FieldAccess):
+            parent = self._compile_write_target(expr.target)
+            return f"_geno_own_field({parent}, {expr.field_name!r})"
+        if isinstance(expr, IndexAccess):
+            parent = self._compile_write_target(expr.target)
+            index = self._compile_expr(expr.index)
+            return f"_geno_own_index({parent}, {index})"
+        return self._compile_expr(expr)
 
     def _compile_try_statement(self, stmt: TryStatement) -> None:
         """Compile a try/catch statement to Python try/except."""
@@ -3057,6 +3092,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         if expr.constructor == "None":
             return "None_"
 
+        reordered = self._compile_named_constructor_call(expr)
+        if reordered is not None:
+            names, values, call = reordered
+            return f"(lambda {', '.join(names)}: {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
         return f"{expr.constructor}({args})"
 
