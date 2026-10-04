@@ -284,6 +284,10 @@ SAFE_BUILTINS = {
     "True": True,
     "False": False,
     "None": None,
+    # The `__eq__` that `@dataclass` generates returns NotImplemented when the
+    # operands are different constructor classes, so comparing two variants of
+    # one type (`Some(1) == None`) needs it.  It is an inert singleton.
+    "NotImplemented": NotImplemented,
     # Exceptions (safe subset)
     "Exception": Exception,
     "ValueError": ValueError,
