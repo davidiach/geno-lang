@@ -3,15 +3,15 @@
 // Demonstrates: break/continue, floor, arrays, keyboard input, app mode
 
 type State = State(
-grid: Array[Int],
-piece_type: Int,
-piece_x: Int,
-piece_y: Int,
-piece_rot: Int,
-timer: Float,
-score: Int,
-game_over: Bool,
-next_piece: Int
+    grid: Array[Int],
+    piece_type: Int,
+    piece_x: Int,
+    piece_y: Int,
+    piece_rot: Int,
+    timer: Float,
+    score: Int,
+    game_over: Bool,
+    next_piece: Int
 )
 
 func piece_dx(piece: Int, rot: Int, cell: Int) -> Int

@@ -42,10 +42,10 @@ func run_pipeline(input: String) -> Int
 
     // Pipeline: filter engineers, sort by name, select columns, take 3
     let result: Table = table
-    |> filter_rows(_, "role", "Engineer")
-    |> sort_by(_, "name")
-    |> select_columns(_, ["name", "age", "city"])
-    |> take_rows(_, 3)
+        |> filter_rows(_, "role", "Engineer")
+        |> sort_by(_, "name")
+        |> select_columns(_, ["name", "age", "city"])
+        |> take_rows(_, 3)
 
     // Output in all 4 formats
     print("=== CSV ===")

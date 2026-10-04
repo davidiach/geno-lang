@@ -10,18 +10,18 @@ import Types
 // Holds all mutable state needed during type checking.
 
 type CheckerState = CheckerState(
-global_env: TypeEnv,
-type_defs: MutableMap[String, TypeDefEntry],
-func_params: MutableMap[String, List[String]],
-ret_type_stack: Vec[GType],
-errors: Vec[String],
-user_defined: MutableMap[String, Bool],
-diagnostics: Vec[Diagnostic],
-diag_stack: Vec[SourceSpan],
-type_aliases: MutableMap[String, Def],
-resolving_aliases: Vec[String],
-resolved_aliases: MutableMap[String, GType],
-declared_type_params: MutableMap[String, List[String]]
+    global_env: TypeEnv,
+    type_defs: MutableMap[String, TypeDefEntry],
+    func_params: MutableMap[String, List[String]],
+    ret_type_stack: Vec[GType],
+    errors: Vec[String],
+    user_defined: MutableMap[String, Bool],
+    diagnostics: Vec[Diagnostic],
+    diag_stack: Vec[SourceSpan],
+    type_aliases: MutableMap[String, Def],
+    resolving_aliases: Vec[String],
+    resolved_aliases: MutableMap[String, GType],
+    declared_type_params: MutableMap[String, List[String]]
 )
 
 // Create a fresh checker state with builtins registered.

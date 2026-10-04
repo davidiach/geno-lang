@@ -487,3 +487,174 @@ class TestFormatFilesErrorBoundary:
         assert good.read_text(encoding="utf-8").startswith(
             "func add(x: Int, y: Int) -> Int\n    example"
         )
+
+
+def _assert_fixed_point_and_parses(source: str) -> None:
+    from geno.parser import parse
+
+    assert format_source(source) == source
+    parse(source)
+
+
+class TestStructurePreservation:
+    """Formatting must never change how a program parses (#131)."""
+
+    def test_match_expression_assigned_to_existing_variable(self):
+        source = (
+            "func f(n: Int) -> Int\n"
+            "    example 1 -> 11\n"
+            "    var r = 0\n"
+            "    if n > 0 then\n"
+            "        r = match n with\n"
+            "            | 1 -> 10\n"
+            "            | _ -> 20\n"
+            "        end match\n"
+            "    else\n"
+            "        if n < 0 then\n"
+            "            r = -1\n"
+            "        end if\n"
+            "        r = r * 100\n"
+            "    end if\n"
+            "    return r\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
+
+    def test_returned_match_expression(self):
+        source = (
+            "func f(x: Option[Int]) -> Int\n"
+            "    example Some(1) -> 1\n"
+            "    return match x with\n"
+            "        | Some(v) -> v\n"
+            "        | None -> 0\n"
+            "    end match\n"
+            "end func\n"
+            "\n"
+            "func main() -> Unit\n"
+            "    print(f(None))\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
+
+    def test_block_lambda_body(self):
+        source = (
+            "func g(n: Int) -> Int\n"
+            "    example 1 -> 2\n"
+            "    let h = fn(x: Int) do\n"
+            "        let y = x + 1\n"
+            "        return y\n"
+            "    end fn\n"
+            "    let ys = map([n], fn(x: Int) do\n"
+            "        return x\n"
+            "    end fn)\n"
+            "    return h(n)\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
+
+    def test_else_newline_if_chain_stays_level(self):
+        source = (
+            "func sign(n: Int) -> String\n"
+            '    example 5 -> "pos"\n'
+            "    if n > 0 then\n"
+            '        return "pos"\n'
+            "    else\n"
+            "    if n < 0 then\n"
+            '        return "neg"\n'
+            "    else\n"
+            '        return "zero"\n'
+            "    end if\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
+
+    def test_comprehension_and_impl_for_do_not_open_blocks(self):
+        source = (
+            "trait Show\n"
+            "    func show(self: Int) -> String\n"
+            "end trait\n"
+            "\n"
+            "impl Show for Int\n"
+            "    func show(self: Int) -> String\n"
+            '        example 1 -> "1"\n'
+            "        return to_string(self)\n"
+            "    end func\n"
+            "end impl\n"
+            "\n"
+            "func evens(xs: List[Int]) -> List[Int]\n"
+            "    example [1, 2] -> [2]\n"
+            "    return [x for x: Int in xs if x % 2 == 0]\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
+
+    def test_guard_refuses_a_meaning_change(self, monkeypatch):
+        from geno import formatter
+        from geno.formatter import FormatError
+
+        source = (
+            "func sign(n: Int) -> String\n"
+            '    example 5 -> "pos"\n'
+            "    if n > 0 then\n"
+            '        return "pos"\n'
+            "    else\n"
+            "    if n < 0 then\n"
+            '        return "neg"\n'
+            "    end if\n"
+            "end func\n"
+        )
+        broken = source.replace("    if n < 0", "        if n < 0")
+        monkeypatch.setattr(formatter, "_format_source_text", lambda _src: broken)
+        with pytest.raises(FormatError):
+            format_source(source)
+
+    def test_cli_reports_a_refused_file_and_leaves_it(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        from geno import formatter
+        from geno._cli_format import format_files
+
+        target = tmp_path / "prog.geno"
+        target.write_text("func main() -> Unit\nprint(1)\nend func\n")
+        monkeypatch.setattr(
+            formatter, "_format_source_text", lambda _src: "func main( -> Unit\n"
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            format_files(str(target))
+        assert exc_info.value.code == 1
+        assert "cannot format" in capsys.readouterr().err
+        assert target.read_text() == "func main() -> Unit\nprint(1)\nend func\n"
+
+
+class TestContinuationLines:
+    """Lines inside open brackets keep a hanging indent (#145)."""
+
+    def test_named_arguments_and_closing_paren(self):
+        source = (
+            "func main() -> Unit\n"
+            "    let s = substring(\n"
+            '        text: "hello",\n'
+            "        start: 0,\n"
+            "        stop: 2\n"
+            "    )\n"
+            "    print(s)\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
+        flattened = "\n".join(line.strip() for line in source.split("\n"))
+        assert format_source(flattened) == source
+
+    def test_multi_line_record_type(self):
+        source = "type P = P(\n    x: Int,\n    y: Int\n)\n"
+        _assert_fixed_point_and_parses(source)
+
+    def test_pipeline_continuation(self):
+        source = (
+            "func main() -> Unit\n"
+            "    let xs = [1, 2, 3]\n"
+            "        |> map(_, fn(x: Int) -> x + 1)\n"
+            "        |> filter(_, fn(x: Int) -> x > 2)\n"
+            "    print(xs)\n"
+            "end func\n"
+        )
+        _assert_fixed_point_and_parses(source)
