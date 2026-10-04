@@ -20,16 +20,16 @@ func peel_and_rewrap(w: Wrapper, rounds: Int) -> Int
     var i: Int = 0
     while i < rounds do
         match current with
-        | Layer(inner, tag) ->
+            | Layer(inner, tag) ->
             current = Layer(Layer(inner, tag), i)
-        | Base(v) ->
+            | Base(v) ->
             current = Layer(Base(v), i)
         end match
         i = i + 1
     end while
     match current with
-    | Layer(_, tag) -> return tag
-    | Base(v) -> return v
+        | Layer(_, tag) -> return tag
+        | Base(v) -> return v
     end match
 end func
 

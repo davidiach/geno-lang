@@ -8,8 +8,8 @@ func count_words(text: String) -> Int
     example "" -> 0
 
     let words: List[String] = text
-    |> split(" ")
-    |> filter(fn(w: String) -> w != "")
+        |> split(" ")
+        |> filter(fn(w: String) -> w != "")
     return length(words)
 end func count_words
 
@@ -18,9 +18,9 @@ func normalize(text: String) -> String
     example "  hello   world  " -> "hello world"
 
     let words: List[String] = text
-    |> trim()
-    |> split(" ")
-    |> filter(fn(w: String) -> w != "")
+        |> trim()
+        |> split(" ")
+        |> filter(fn(w: String) -> w != "")
     return join(words, " ")
 end func normalize
 
@@ -30,8 +30,8 @@ func word_list(text: String) -> List[String]
     example "" -> []
 
     return text
-    |> split(" ")
-    |> filter(fn(w: String) -> w != "")
+        |> split(" ")
+        |> filter(fn(w: String) -> w != "")
 end func word_list
 
 

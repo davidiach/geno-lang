@@ -2744,9 +2744,13 @@ class TestCompilerCollectionSizeLimits:
         env = {"_GENO_MAX_INTEGER_BITS": 64, "__name__": "__test__"}
         exec(python_code, env)
         main = cast(Callable[[], object], env["main"])
+        op_float = cast(Callable[[object, object], object], env["op_float"])
 
+        # Int arguments are widened to Float at the call (#137), as on JS.
+        assert isinstance(main(), float)
+        # Raw Ints that still reach Float arithmetic hit the bit limit.
         with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
-            main()
+            op_float(int(left_value), int(right_value))
 
     def test_compiled_int_literal_honors_bit_limit(self):
         """Direct integer literals must not bypass runtime bit limits."""

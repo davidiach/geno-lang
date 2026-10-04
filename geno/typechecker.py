@@ -8,10 +8,21 @@ Verifies type annotations and catches type errors before runtime.
 
 from __future__ import annotations
 
+import dataclasses
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Sequence, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+    Union,
+    cast,
+)
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -84,8 +95,11 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WithExpr,
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
+from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
+from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
+from .float_promotion import float_shape, promotion_shape
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
 from .types import (
@@ -206,6 +220,82 @@ _STDLIB_FORWARDER_BUILTINS: dict[str, dict[str, str]] = {
 # =============================================================================
 
 
+_FRESH_TYPE_VAR_PREFIX = "__fresh_"
+_FRESH_TYPE_VAR_NAME = re.compile(r"__fresh_[A-Za-z]+_\d+")
+
+
+def _is_fresh_placeholder(type_: Type) -> bool:
+    return isinstance(type_, TypeVar) and type_.name.startswith(_FRESH_TYPE_VAR_PREFIX)
+
+
+def _fill_fresh_placeholders(
+    left: Type,
+    right: Type,
+    combine: Callable[[Type, Type], Type | None] | None = None,
+) -> Type | None:
+    """Combine two types that differ only where one has an inference placeholder.
+
+    Where they differ otherwise, ``combine`` (when given) picks the common
+    type of that pair, such as ``Float`` for ``Int`` and ``Float``; without
+    it, or when it returns ``None``, the result is ``None``.
+    """
+    if left == right:
+        return left
+    if _is_fresh_placeholder(left):
+        return right
+    if _is_fresh_placeholder(right):
+        return left
+    structural = _fill_fresh_placeholder_fields(left, right, combine)
+    if structural is not None:
+        return structural
+    return combine(left, right) if combine is not None else None
+
+
+def _fill_fresh_placeholder_fields(
+    left: Type,
+    right: Type,
+    combine: Callable[[Type, Type], Type | None] | None,
+) -> Type | None:
+    if type(left) is not type(right) or not dataclasses.is_dataclass(left):
+        return None
+    combined: dict[str, object] = {}
+    for item in dataclasses.fields(left):
+        left_value = getattr(left, item.name)
+        right_value = getattr(right, item.name)
+        if isinstance(left_value, Type) and isinstance(right_value, Type):
+            merged = _fill_fresh_placeholders(left_value, right_value, combine)
+            if merged is None:
+                return None
+            combined[item.name] = merged
+        elif isinstance(left_value, tuple) and isinstance(right_value, tuple):
+            if len(left_value) != len(right_value):
+                return None
+            parts: list[object] = []
+            for left_part, right_part in zip(left_value, right_value):
+                if isinstance(left_part, Type) and isinstance(right_part, Type):
+                    merged_part = _fill_fresh_placeholders(
+                        left_part, right_part, combine
+                    )
+                    if merged_part is None:
+                        return None
+                    parts.append(merged_part)
+                elif left_part == right_part:
+                    parts.append(left_part)
+                else:
+                    return None
+            combined[item.name] = tuple(parts)
+        elif left_value == right_value:
+            combined[item.name] = left_value
+        else:
+            return None
+    return dataclasses.replace(left, **combined)
+
+
+def _display_type(type_: Type) -> str:
+    """Render a type for a diagnostic, hiding inference placeholder names."""
+    return _FRESH_TYPE_VAR_NAME.sub("_", str(type_))
+
+
 @dataclass(frozen=True)
 class _ModuleImportSummary:
     """Compact import-facing view of a checked module."""
@@ -219,6 +309,24 @@ class _ModuleImportSummary:
     module_symbols: dict[str, Type]
     module_param_names: dict[str, list[str]]
     module_default_counts: dict[str, int]
+
+
+def _block_returns(statements: list[Statement]) -> Iterator[ReturnStatement]:
+    """Yield the returns of a statement block, not those of nested lambdas."""
+    for stmt in statements:
+        if isinstance(stmt, ReturnStatement):
+            yield stmt
+        elif isinstance(stmt, IfStatement):
+            yield from _block_returns(stmt.then_body)
+            yield from _block_returns(stmt.else_body)
+        elif isinstance(stmt, (WhileStatement, ForStatement)):
+            yield from _block_returns(stmt.body)
+        elif isinstance(stmt, MatchStatement):
+            for arm in stmt.arms:
+                yield from _block_returns(arm.body)
+        elif isinstance(stmt, TryStatement):
+            yield from _block_returns(stmt.try_body)
+            yield from _block_returns(stmt.catch_clause.body)
 
 
 @dataclass(frozen=True)
@@ -522,6 +630,8 @@ class TypeChecker(ExhaustivenessMixin):
         self._target_profile = target_profile
         self._target_rejected: dict[str, str] = {}
         self._imported_module_names: dict[str, str | None] = {}
+        # Unqualified names that two directly imported modules both export.
+        self._ambiguous_imported_names: dict[str, tuple[str, ...]] = {}
         self._project_module_index: dict[str, dict[str, tuple[str, ...]]] = {}
         self._fresh_tv_counter: int = 0
 
@@ -1112,6 +1222,9 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions:
                 if isinstance(defn, ImportStatement):
                     self._resolve_import(defn, modules, resolved, import_summaries)
+        self._ambiguous_imported_names = self._find_ambiguous_imported_names(
+            program, modules
+        )
 
         # Detect app mode: init/update/render present without main
         func_names = {d.name for d in program.definitions if isinstance(d, FunctionDef)}
@@ -1188,6 +1301,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         if is_entrypoint:
             self._validate_browser_entrypoint_lifecycle(program)
+            self._validate_entrypoint_main_params(program)
 
         # Collect function names tested by test blocks so they can be
         # exempted from the example requirement.
@@ -1257,6 +1371,23 @@ class TypeChecker(ExhaustivenessMixin):
             )
 
         return checked
+
+    def _validate_entrypoint_main_params(self, program: Program) -> None:
+        """Reject an entrypoint ``main`` that declares parameters (#133).
+
+        Every host calls the entrypoint as ``main()`` (spec section 4.1.1), so
+        a parameter could never be supplied; without this check each backend
+        failed at run time with its own host error.
+        """
+        main_def = find_entrypoint_main(program)
+        if main_def is None or not main_def.params:
+            return
+        self._error(
+            "The entrypoint `main` must take no parameters; it is called as "
+            "`main()`. Read command-line arguments with `cli_args()` instead",
+            main_def.location,
+            ErrorCode.TYPE_WRONG_ARITY,
+        )
 
     def _validate_browser_entrypoint_lifecycle(self, program: Program) -> None:
         """Reject stale or partial browser app lifecycles on entrypoints."""
@@ -1521,6 +1652,81 @@ class TypeChecker(ExhaustivenessMixin):
         self._module_param_names[ns_name] = module_param_names
         self._module_default_counts[ns_name] = module_default_counts
         self.global_env.bind(ns_name, ModuleType(name))
+
+    def _find_ambiguous_imported_names(
+        self,
+        program: Program,
+        modules: Mapping[str, Union[Program, _ModuleImportSummary]] | None,
+    ) -> dict[str, tuple[str, ...]]:
+        """Map each function name two unaliased imports both export to them.
+
+        The compilers drop such a name from the importer's unqualified scope
+        (``Compiler.compile_project``), so a bare use must be rejected here
+        and qualified as ``Module.name`` instead (#132).  A local definition
+        or module constant of the same name wins over every import, and so
+        does a local trait method, whose dispatcher the compilers emit in
+        place of the dropped imports.
+        """
+        if not modules:
+            return {}
+        local_names = {
+            defn.name
+            for defn in program.definitions
+            if isinstance(defn, (FunctionDef, ModuleConstant))
+        }
+        for defn in program.definitions:
+            if isinstance(defn, (TraitDef, ImplDef)):
+                local_names.update(method.name for method in defn.methods)
+        sources: dict[str, list[str]] = {}
+        for defn in program.definitions:
+            if not isinstance(defn, ImportStatement) or defn.alias:
+                continue
+            entry = modules.get(defn.module_name)
+            if entry is None:
+                continue
+            if isinstance(entry, _ModuleImportSummary):
+                names = list(entry.functions)
+            else:
+                has_exports = self._program_has_explicit_exports(entry)
+                names = [
+                    item.name
+                    for item in entry.definitions
+                    if isinstance(item, FunctionDef)
+                    and (item.exported or not has_exports)
+                ]
+            for name in names:
+                owners = sources.setdefault(name, [])
+                if name not in local_names and defn.module_name not in owners:
+                    owners.append(defn.module_name)
+        return {
+            name: tuple(owners) for name, owners in sources.items() if len(owners) > 1
+        }
+
+    def _reject_ambiguous_import_use(
+        self, name: str, env: TypeEnv, location: SourceLocation
+    ) -> bool:
+        """Report a bare use of a name two imported modules export."""
+        owners = self._ambiguous_imported_names.get(name)
+        if not owners:
+            return False
+        scope: TypeEnv | None = env
+        while scope is not None and name not in scope.bindings:
+            scope = scope.parent
+        if scope is not self.global_env:
+            return False  # A local binding shadows the imports.
+        qualified = " or ".join(f"{owner}.{name}" for owner in owners)
+        modules_text = (
+            f"both {owners[0]} and {owners[1]}"
+            if len(owners) == 2
+            else ", ".join(owners)
+        )
+        self._error(
+            f"'{name}' is ambiguous: it is exported by {modules_text}. "
+            f"Qualify it as {qualified}",
+            location,
+            ErrorCode.TYPE_UNDEFINED_FUNC,
+        )
+        return True
 
     @staticmethod
     def _program_has_explicit_exports(program: Program) -> bool:
@@ -2123,6 +2329,7 @@ class TypeChecker(ExhaustivenessMixin):
                     param.default_value, self.global_env
                 )
                 expected_type = self._resolve_type(param.param_type)
+                self._record_expected_runtime_type(param.default_value, expected_type)
                 if not self._types_strictly_compatible(expected_type, default_type):
                     self._error(
                         f"Default value type mismatch for '{param.name}': "
@@ -2982,7 +3189,7 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 self._error(
                     f"Cannot infer a concrete type for 'let {stmt.name}' from "
-                    f"{actual_type}; add an explicit type annotation",
+                    f"{_display_type(actual_type)}; add an explicit type annotation",
                     stmt.location,
                 )
             # Type inference: use the type of the RHS expression
@@ -3030,7 +3237,7 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 self._error(
                     f"Cannot infer a concrete type for 'let {defn.name}' from "
-                    f"{actual_type}; add an explicit type annotation",
+                    f"{_display_type(actual_type)}; add an explicit type annotation",
                     defn.location,
                 )
             constant_type = actual_type
@@ -3065,7 +3272,7 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 self._error(
                     f"Cannot infer a concrete type for 'var {stmt.name}' from "
-                    f"{actual_type}; add an explicit type annotation",
+                    f"{_display_type(actual_type)}; add an explicit type annotation",
                     stmt.location,
                 )
             # Type inference: use the type of the RHS expression
@@ -3322,6 +3529,10 @@ class TypeChecker(ExhaustivenessMixin):
                 stmt.location,
             )
 
+        if isinstance(iterable_type, ListType) and float_shape(declared_type):
+            # `for x: Float in [1, 2]` iterates Floats (#137).
+            self._record_expected_runtime_type(stmt.iterable, ListType(declared_type))
+
         body_env = env.child()
         body_env.bind(stmt.variable, declared_type)
 
@@ -3374,6 +3585,15 @@ class TypeChecker(ExhaustivenessMixin):
     def _record_expected_runtime_type(self, expr: Expression, expected: Type) -> None:
         """Attach concrete contextual types used by backend lowering."""
         expr._expected_runtime_type = expected
+        if not isinstance(
+            expr, (IntegerLiteral, ListLiteral, TupleExpr, ListComprehension)
+        ):
+            # Where an existing Int value lands in a Float slot, record how
+            # deep the backends must widen it (#137).  Literals widen their
+            # own elements.
+            expr._float_promotion = promotion_shape(
+                expected, getattr(expr, "_resolved_type", None)
+            )
 
         if isinstance(expr, ListLiteral) and isinstance(expected, ListType):
             for element in expr.elements:
@@ -3387,6 +3607,18 @@ class TypeChecker(ExhaustivenessMixin):
 
         if isinstance(expr, ListComprehension) and isinstance(expected, ListType):
             self._record_expected_runtime_type(expr.element_expr, expected.element_type)
+            return
+
+        if isinstance(expr, LambdaExpr) and isinstance(expected, FuncType):
+            # A lambda typed `(Int) -> Float` returns a Float (#137).
+            if expr.body is not None:
+                self._record_expected_runtime_type(expr.body, expected.return_type)
+            elif expr.block_body:
+                for return_stmt in _block_returns(expr.block_body):
+                    return_stmt._expected_runtime_type = expected.return_type
+                    self._record_expected_runtime_type(
+                        return_stmt.value, expected.return_type
+                    )
             return
 
         if isinstance(expr, FunctionCall):
@@ -3440,7 +3672,14 @@ class TypeChecker(ExhaustivenessMixin):
                 if fields is None:
                     return
                 substitutions = dict(zip(type_info.type_params, expected.type_args))
-                for argument, (_name, field_type) in zip(expr.arguments, fields):
+                if expr.argument_names is not None and expr.argument_order is None:
+                    return
+                field_arguments = (
+                    expr.arguments
+                    if expr.argument_order is None
+                    else [expr.arguments[index] for index in expr.argument_order]
+                )
+                for argument, (_name, field_type) in zip(field_arguments, fields):
                     self._record_expected_runtime_type(
                         argument,
                         self._apply_substitutions(field_type, substitutions),
@@ -3548,6 +3787,8 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _check_identifier(self, expr: Identifier, env: TypeEnv) -> Type:
         """Type check an identifier."""
+        if self._reject_ambiguous_import_use(expr.name, env, expr.location):
+            return AnyType()
         type_ = env.lookup(expr.name)
         if type_ is None:
             if expr.name in self._target_rejected:
@@ -3899,6 +4140,11 @@ class TypeChecker(ExhaustivenessMixin):
                         call_arg.value.location,
                     )
             return impl_func_type.return_type
+
+        if identifier_func is not None and self._reject_ambiguous_import_use(
+            identifier_func.name, env, expr.location
+        ):
+            return _ANY_TYPE
 
         if (
             identifier_func is not None
@@ -4770,9 +5016,25 @@ class TypeChecker(ExhaustivenessMixin):
             type_info = self.type_defs[type_name]
             fields = type_info.variants[expr.constructor]
 
-            if len(expr.arguments) != len(fields):
+            arguments = expr.arguments
+            if expr.argument_names is not None:
+                try:
+                    order = constructor_argument_order(
+                        expr.constructor,
+                        expr.argument_names,
+                        [field_name for field_name, _ in fields],
+                    )
+                except ValueError as exc:
+                    self._error(str(exc), expr.location, ErrorCode.TYPE_WRONG_ARITY)
+                    for arg in expr.arguments:
+                        self._check_expression(arg, env)
+                    return AnyType()
+                expr.argument_order = order
+                arguments = [expr.arguments[index] for index in order]
+
+            if len(arguments) != len(fields):
                 self._error(
-                    f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(expr.arguments)}",
+                    f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(arguments)}",
                     expr.location,
                     ErrorCode.TYPE_WRONG_ARITY,
                 )
@@ -4781,7 +5043,7 @@ class TypeChecker(ExhaustivenessMixin):
             type_param_bindings: dict[str, Type] = {}
             has_never_arg = False
             for i, (arg, (_field_name, field_type)) in enumerate(
-                zip(expr.arguments, fields)
+                zip(arguments, fields)
             ):
                 arg_type = self._check_expression(arg, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
@@ -4892,7 +5154,8 @@ class TypeChecker(ExhaustivenessMixin):
                 merged_type = self._merge_match_expr_result_types(result_type, arm_type)
                 if merged_type is None:
                     self._error(
-                        f"Match arm type mismatch: expected {result_type}, got {arm_type}",
+                        "Match arm type mismatch: expected "
+                        f"{_display_type(result_type)}, got {_display_type(arm_type)}",
                         arm.location,
                     )
                 else:
@@ -4901,10 +5164,29 @@ class TypeChecker(ExhaustivenessMixin):
         # Check pattern exhaustiveness
         self._check_pattern_exhaustiveness(scrutinee_type, expr.arms, expr.location)
 
+        if result_type is not None:
+            # An arm merged by widening (`Ok(1)` beside `Ok(2.5)`) must build
+            # the merged type at runtime too, or Python keeps the Int (#134).
+            self._record_expected_runtime_type(expr, result_type)
+
         return result_type if result_type else AnyType()
 
     def _merge_match_expr_result_types(self, left: Type, right: Type) -> Type | None:
         """Return an order-independent result type for compatible match arms."""
+        if self._types_strictly_compatible(left, right):
+            return left
+        if self._types_strictly_compatible(right, left):
+            return right
+        # Arms that build different variants of one generic type each leave
+        # the other parameter as an inference placeholder: `Err("zero")` is
+        # `Result[_, String]` and `Ok(n)` is `Result[Int, _]`.  Fill each
+        # placeholder from the other arm, as a list literal does (#134).
+        # Parts that are both concrete still merge by compatibility, so
+        # `Ok(1)`, `Err("x")`, `Ok(2.5)` gives `Result[Float, String]` in any
+        # arm order.
+        return _fill_fresh_placeholders(left, right, self._common_arm_type)
+
+    def _common_arm_type(self, left: Type, right: Type) -> Type | None:
         if self._types_strictly_compatible(left, right):
             return left
         if self._types_strictly_compatible(right, left):
