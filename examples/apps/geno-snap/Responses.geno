@@ -8,9 +8,9 @@ import Validate
 @untested("returns constant list")
 func cors_headers() -> List[(String, String)]
     return [("Access-Control-Allow-Origin", "*"),
-    ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
-    ("Access-Control-Allow-Headers", "Content-Type"),
-    ("Content-Type", "application/json")]
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+        ("Access-Control-Allow-Headers", "Content-Type"),
+        ("Content-Type", "application/json")]
 end func
 
 // Build a successful JSON response with CORS headers.

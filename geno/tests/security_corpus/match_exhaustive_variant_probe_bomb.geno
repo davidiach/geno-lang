@@ -8,29 +8,29 @@
 # module paths).  The O(variants * iterations) match operations
 # should be step-counted.
 type Token = Ident(name: String)
-           | IntLit(val: Int)
-           | FloatLit(val: Float)
-           | StringLit(val: String)
-           | BoolLit(val: Bool)
-           | LParen
-           | RParen
-           | Comma
-           | Dot
-           | Arrow
+    | IntLit(val: Int)
+    | FloatLit(val: Float)
+    | StringLit(val: String)
+    | BoolLit(val: Bool)
+    | LParen
+    | RParen
+    | Comma
+    | Dot
+    | Arrow
 
 func classify(t: Token) -> String
     example Ident("x") -> "ident:x"
     match t with
-    | Ident(n) -> return f"ident:{n}"
-    | IntLit(v) -> return f"int:{to_string(v)}"
-    | FloatLit(v) -> return f"float:{to_string(v)}"
-    | StringLit(v) -> return f"str:{v}"
-    | BoolLit(v) -> return f"bool:{to_string(v)}"
-    | LParen -> return "lparen"
-    | RParen -> return "rparen"
-    | Comma -> return "comma"
-    | Dot -> return "dot"
-    | Arrow -> return "arrow"
+        | Ident(n) -> return f"ident:{n}"
+        | IntLit(v) -> return f"int:{to_string(v)}"
+        | FloatLit(v) -> return f"float:{to_string(v)}"
+        | StringLit(v) -> return f"str:{v}"
+        | BoolLit(v) -> return f"bool:{to_string(v)}"
+        | LParen -> return "lparen"
+        | RParen -> return "rparen"
+        | Comma -> return "comma"
+        | Dot -> return "dot"
+        | Arrow -> return "arrow"
     end match
 end func
 
