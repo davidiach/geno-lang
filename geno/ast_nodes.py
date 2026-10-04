@@ -367,10 +367,17 @@ class MatchExpr(Expression):
 
 @dataclass
 class ConstructorCall(Expression):
-    """Constructor call: Some(5), Cons(1, Nil)"""
+    """Constructor call: Some(5), Cons(1, Nil), Point(x: 1, y: 2)"""
 
     constructor: str
     arguments: list[Expression]
+    # Field names for ``Point(x: 1, y: 2)`` (None per positional argument);
+    # None when every argument is positional.
+    argument_names: list[str | None] | None = None
+    # Set by the type checker for a call with named arguments: for each field
+    # in declaration order, the source index of its argument.  Arguments are
+    # evaluated in source order and then placed by this order.
+    argument_order: list[int] | None = field(default=None, compare=False, repr=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_constructor_call(self)

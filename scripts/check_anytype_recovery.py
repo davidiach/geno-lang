@@ -36,8 +36,8 @@ ANYTYPE_RECOVERY_BASELINE: dict[str, AnyTypeRecoverySite] = {
         "Recover after diagnosing await on a non-Async expression.",
     ),
     "_check_constructor_call": AnyTypeRecoverySite(
-        1,
-        "Recover after an unknown constructor diagnostic.",
+        2,
+        "Recover after an unknown constructor or invalid named-argument diagnostic.",
     ),
     "_check_field_access": AnyTypeRecoverySite(
         3,
