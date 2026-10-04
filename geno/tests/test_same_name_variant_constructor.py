@@ -68,3 +68,19 @@ def test_same_name_variant_constructs_under_geno_run(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr[-400:]
     assert result.stdout == EXPECTED
+
+
+def test_annotations_name_the_whole_type() -> None:
+    import types
+    import typing
+
+    from geno.compiler import compile_to_python
+
+    module = types.ModuleType("geno_same_name_hints")
+    sys.modules[module.__name__] = module
+    try:
+        exec(compile(compile_to_python(SOURCE), "<geno>", "exec"), module.__dict__)
+        hints = typing.get_type_hints(module.size)
+    finally:
+        del sys.modules[module.__name__]
+    assert set(typing.get_args(hints["s"])) == {module.Shape, module.Other}
