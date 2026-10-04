@@ -223,6 +223,8 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
         {
             # Security-critical functions
             "get_field",
+            "_geno_own_field",
+            "_geno_own_index",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -1540,12 +1542,23 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_field_assign_statement(self, stmt: FieldAssignStatement) -> None:
         """Compile field assignment against frozen Python constructor dataclasses."""
-        target = self._compile_expr(stmt.target)
+        target = self._compile_write_target(stmt.target)
         value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(f"_object_setattr({target}, {stmt.field_name!r}, {value})")
 
     def _snapshot_value(self, value: str) -> str:
         return f"_geno_deepcopy({value})"
+
+    def _compile_write_target(self, expr: Expression) -> str:
+        """Compile the value a field write lands in, unsharing its path (#129)."""
+        if isinstance(expr, FieldAccess):
+            parent = self._compile_write_target(expr.target)
+            return f"_geno_own_field({parent}, {expr.field_name!r})"
+        if isinstance(expr, IndexAccess):
+            parent = self._compile_write_target(expr.target)
+            index = self._compile_expr(expr.index)
+            return f"_geno_own_index({parent}, {index})"
+        return self._compile_expr(expr)
 
     def _compile_try_statement(self, stmt: TryStatement) -> None:
         """Compile a try/catch statement to Python try/except."""
