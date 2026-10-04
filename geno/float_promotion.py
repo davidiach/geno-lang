@@ -78,3 +78,40 @@ def _tuple(items: Any) -> Any:
     if all(shape is None for shape in shapes):
         return None
     return ("T", shapes)
+
+
+def promotion_shape(expected: Any, actual: Any) -> Any:
+    """Return the Float shape of ``expected`` where ``actual`` may hold an Int.
+
+    Positions whose static type is already ``Float`` are left out, so a value
+    that needs no widening is not copied.  An unknown ``actual`` falls back to
+    the full ``float_shape``.
+    """
+    if isinstance(actual, FloatType):
+        return None
+    if isinstance(expected, ListType) and isinstance(actual, ListType):
+        return _wrap("L", promotion_shape(expected.element_type, actual.element_type))
+    if isinstance(expected, OptionType) and isinstance(actual, OptionType):
+        return _wrap("O", promotion_shape(expected.value_type, actual.value_type))
+    if isinstance(expected, ResultType) and isinstance(actual, ResultType):
+        return _pair(
+            "R",
+            promotion_shape(expected.ok_type, actual.ok_type),
+            promotion_shape(expected.err_type, actual.err_type),
+        )
+    if isinstance(expected, MapType) and isinstance(actual, MapType):
+        return _pair(
+            "M",
+            promotion_shape(expected.key_type, actual.key_type),
+            promotion_shape(expected.value_type, actual.value_type),
+        )
+    if (
+        isinstance(expected, TupleType)
+        and isinstance(actual, TupleType)
+        and len(expected.element_types) == len(actual.element_types)
+    ):
+        return _tuple(
+            promotion_shape(item, actual_item)
+            for item, actual_item in zip(expected.element_types, actual.element_types)
+        )
+    return float_shape(expected)
