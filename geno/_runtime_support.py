@@ -3381,7 +3381,9 @@ def path_extension(path):
 
 def path_is_absolute(path):
     return _runtime_posixpath.isabs(path) or (
-        len(path) >= 3 and path[0].isalpha() and path[1:3] == ":/"
+        len(path) >= 3
+        and path[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        and path[1:3] == ":/"
     )
 
 

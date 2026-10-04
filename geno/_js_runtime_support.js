@@ -4348,11 +4348,12 @@ function path_join(base, child) {
     return result;
 }
 
+// path_parent and path_extension follow Python's posixpath.dirname and
+// posixpath.splitext so every backend agrees.
 function path_parent(path) {
-    const idx = path.lastIndexOf('/');
-    if (idx < 0) return '';
-    if (idx === 0) return '/';
-    return path.substring(0, idx);
+    let head = path.substring(0, path.lastIndexOf('/') + 1);
+    if (head && !/^\/+$/.test(head)) head = head.replace(/\/+$/, '');
+    return head;
 }
 
 function path_filename(path) {
@@ -4363,8 +4364,10 @@ function path_filename(path) {
 function path_extension(path) {
     const base = path_filename(path);
     const idx = base.lastIndexOf('.');
-    if (idx <= 0) return '';
-    return base.substring(idx);
+    for (let i = 0; i < idx; i++) {
+        if (base[i] !== '.') return base.substring(idx);
+    }
+    return '';
 }
 
 function path_is_absolute(path) {

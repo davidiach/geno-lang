@@ -3245,8 +3245,11 @@ def builtin_path_is_absolute(path: str) -> bool:
     """Return whether a path is absolute, including canonical Windows paths."""
     import posixpath
 
+    # Only ASCII drive letters count; str.isalpha() would also accept "é".
     return posixpath.isabs(path) or (
-        len(path) >= 3 and path[0].isalpha() and path[1:3] == ":/"
+        len(path) >= 3
+        and path[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        and path[1:3] == ":/"
     )
 
 
