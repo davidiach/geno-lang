@@ -1114,8 +1114,12 @@ class Compiler(BaseCompiler, ASTVisitor):
         variant_names = [v.name for v in defn.variants]
         if len(variant_names) == 1:
             self._writeln(f"{defn.name} = {variant_names[0]}")
-        else:
+        elif defn.name not in variant_names:
             self._writeln(f"{defn.name} = Union[{', '.join(variant_names)}]")
+        # A variant that shares the type's name (``type Shape = Shape(n: Int)
+        # | Other``) already binds that name to its constructor class; a
+        # Union alias would shadow the constructor and make it uncallable
+        # (#128).  Annotations are quoted strings, so nothing needs the alias.
         self._writeln()
 
     def _compile_variant(
