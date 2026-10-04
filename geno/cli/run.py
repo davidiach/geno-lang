@@ -668,6 +668,11 @@ def run_file(
                 _restore_cli_args_env()
 
             if error is not None:
+                # Output the program produced before it failed is part of
+                # what it did; flush it before the error, as compiled
+                # backends do (#130).
+                if run_output:
+                    print(run_output, end="", flush=True)
                 if error.startswith(_GENO_FRONTEND_ERROR_PREFIX):
                     print(
                         error.removeprefix(_GENO_FRONTEND_ERROR_PREFIX),
@@ -794,6 +799,13 @@ def run_file(
             _set_cli_args_env()
             try:
                 result = interpreter.run(program, modules=parsed_modules)
+            except BaseException:
+                # Keep what the program printed before it failed (#130); the
+                # handlers below then report the error itself.
+                partial_output = interpreter.get_output()
+                if partial_output:
+                    print(partial_output, end="", flush=True)
+                raise
             finally:
                 _restore_cli_args_env()
             status = _main_result_exit_status(
