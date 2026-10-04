@@ -1430,6 +1430,8 @@ class TypeChecker(ExhaustivenessMixin):
                     )
                 self._resolve_import(defn, modules, resolved, import_summaries)
 
+        self._validate_type_definition_names(mod_program)
+
         # Determine if module uses explicit exports
         has_exports = any(
             (isinstance(d, (FunctionDef, TypeAlias, TypeDef)) and d.exported)

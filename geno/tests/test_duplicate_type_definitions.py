@@ -79,3 +79,49 @@ def test_selfhost_checker_agrees(tmp_path, source: str, message: str) -> None:
     result = _run_selfhost_cli("check", str(program))
     assert result.returncode != 0
     assert message in result.stdout + result.stderr
+
+
+BAD_MODULE = "type Int = Foo | Bar\n\nfunc helper() -> Int\n    example () -> 1\n    return 1\nend func\n"
+IMPORTER = "import Bad\n" + MAIN
+
+
+def test_imported_module_is_validated() -> None:
+    with pytest.raises(GenoTypeError, match="Type 'Int' is built in"):
+        TypeChecker().check_program(parse(IMPORTER), modules={"Bad": parse(BAD_MODULE)})
+
+
+def _write_import_project(tmp_path):
+    (tmp_path / "Bad.geno").write_text(BAD_MODULE, encoding="utf-8")
+    main = tmp_path / "Main.geno"
+    main.write_text(IMPORTER, encoding="utf-8")
+    return main
+
+
+def test_geno_test_rejects_an_imported_redefinition(tmp_path) -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    main = _write_import_project(tmp_path)
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONPATH": str(repo_root)}
+    result = subprocess.run(
+        [sys.executable, "-m", "geno", "test", str(main)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Type 'Int' is built in" in result.stdout + result.stderr
+
+
+def test_selfhost_checker_validates_imported_modules(tmp_path) -> None:
+    from geno.tests.test_cli import _run_selfhost_cli
+
+    main = _write_import_project(tmp_path)
+    result = _run_selfhost_cli("check", str(main))
+    assert result.returncode != 0
+    assert "Type 'Int' is built in" in result.stdout + result.stderr

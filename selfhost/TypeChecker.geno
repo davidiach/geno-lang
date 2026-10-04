@@ -2703,6 +2703,7 @@ func resolve_import(cs: CheckerState, imp: Def, modules: MutableMap[String, Prog
         end if
         let mod_prog: Program = unwrap(mod_opt)
         resolve_module_imports(cs: cs, defs: mod_prog.defs, modules: modules, resolved: resolved, mod_name: mod_name)
+        validate_type_names(cs, mod_prog.defs)
         collect_type_headers(cs, mod_prog.defs)
         collect_defs_pass1(cs: cs, defs: mod_prog.defs)
         validate_type_aliases(cs, mod_prog.defs)
