@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from functools import partial
+from types import MappingProxyType
 from typing import Any, cast
 
 from . import builtins as _builtins
@@ -279,6 +280,20 @@ def _expected_runtime_type_is_float(expected_type: Any) -> bool:
         and expected_type.name == "Float"
         and not expected_type.type_params
     )
+
+
+def _unshared_part(value: Any) -> Any:
+    """Return a one-level copy of a value-type container about to be written.
+
+    Reference types (Array, Vec, MutableMap, ...) and scalars come back as is.
+    """
+    if isinstance(value, ConstructorValue):
+        return ConstructorValue(value.constructor, dict(value.fields))
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
 
 
 def _promote_int_to_expected_float(value: Any, expected_type: Any) -> Any:
@@ -1445,9 +1460,14 @@ class Interpreter:
                 # adversarial example clauses could do up to max_steps work
                 # in verification *and* another max_steps in `main`.
                 if self.check_examples:
-                    self._verify_examples()
-                    self.output_buffer.clear()
-                    self._output_length = 0
+                    try:
+                        self._verify_examples()
+                    finally:
+                        # Example output is never program output, even when
+                        # verification fails and callers report what was
+                        # printed so far (#130).
+                        self.output_buffer.clear()
+                        self._output_length = 0
 
                 # Look for a main function
                 if execute_main and entrypoint_main is not None:
@@ -2561,7 +2581,9 @@ class Interpreter:
         """Evaluate index access."""
         target = self.eval_expr(expr.target, env)
         index = self.eval_expr(expr.index, env)
+        return self._index_into(target, index, expr)
 
+    def _index_into(self, target: Any, index: Any, expr: IndexAccess) -> Any:
         if isinstance(target, list):
             if not isinstance(index, int):
                 raise RuntimeError("List index must be integer", expr.location)
@@ -2606,8 +2628,9 @@ class Interpreter:
 
     def _eval_field_access(self, expr: FieldAccess, env: Environment) -> Any:
         """Evaluate field access."""
-        target = self.eval_expr(expr.target, env)
+        return self._field_of(self.eval_expr(expr.target, env), expr)
 
+    def _field_of(self, target: Any, expr: FieldAccess) -> Any:
         if isinstance(target, _ModuleNamespace):
             ns = target.members
             if expr.field_name in ns:
@@ -3124,16 +3147,47 @@ class Interpreter:
                 stmt.location,
             )
 
+    def _eval_write_target(self, expr: Expression, env: Environment) -> Any:
+        """Evaluate the value a field write lands in, unsharing its path.
+
+        A snapshot keeps one copy of a part that two places shared, so each
+        constructor, list or map reached on the way to the write is copied
+        and put back first.  The write then never shows through another path
+        to the same part (#129).  The root binding is already its own copy.
+        """
+        if isinstance(expr, FieldAccess):
+            parent = self._eval_write_target(expr.target, env)
+            if (
+                isinstance(parent, ConstructorValue)
+                and expr.field_name in parent.fields
+            ):
+                child = _unshared_part(parent.fields[expr.field_name])
+                new_fields = dict(parent.fields)
+                new_fields[expr.field_name] = child
+                object.__setattr__(parent, "_fields", MappingProxyType(new_fields))
+                return child
+            return self._field_of(parent, expr)
+        if isinstance(expr, IndexAccess):
+            parent = self._eval_write_target(expr.target, env)
+            index = self.eval_expr(expr.index, env)
+            child = self._index_into(parent, index, expr)
+            if isinstance(parent, (list, ArrayValue)):
+                child = _unshared_part(child)
+                parent[index + len(parent) if index < 0 else index] = child
+            elif isinstance(parent, dict):
+                child = _unshared_part(child)
+                parent[index] = child
+            return child
+        return self.eval_expr(expr, env)
+
     def _exec_field_assign(self, stmt: FieldAssignStatement, env: Environment) -> None:
         """Execute a field assignment: obj.field = value."""
-        target = self.eval_expr(stmt.target, env)
+        target = self._eval_write_target(stmt.target, env)
         value = self._deep_copy_value(self.eval_expr(stmt.value, env))
 
         if isinstance(target, ConstructorValue):
             if stmt.field_name in target.fields:
                 # Mutate by creating a new fields dict and replacing _fields
-                from types import MappingProxyType
-
                 new_fields = dict(target.fields)
                 new_fields[stmt.field_name] = value
                 object.__setattr__(target, "_fields", MappingProxyType(new_fields))
