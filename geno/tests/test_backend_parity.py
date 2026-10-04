@@ -2803,6 +2803,7 @@ class TestBackendParity:
         type Pt = Pt(x: Int)
         type Pair = Pair(a: Pt, b: Pt)
         type Bag = Bag(xs: List[Pt], ys: List[Pt])
+        type Shelf = Shelf(pairs: List[Pair], pts: List[Pt])
 
         func main() -> Unit
             let p = Pt(1)
@@ -2817,6 +2818,11 @@ class TestBackendParity:
             bag.xs[0].x = 7
             print(bag.ys[0].x)
             print(p.x)
+            var boxes = Shelf([pair, pair], [pair.a])
+            boxes.pairs[1].a.x = 4
+            print(boxes.pairs[0].a.x)
+            print(boxes.pts[0].x)
+            print(boxes.pairs[1].a.x)
             return ()
         end func
         """
@@ -2824,7 +2830,7 @@ class TestBackendParity:
         _assert_expected_backend_outputs(
             label="aliased sibling snapshot",
             context=source,
-            expected="1\n1\n1\n1\n",
+            expected="1\n1\n1\n1\n50\n50\n4\n",
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),

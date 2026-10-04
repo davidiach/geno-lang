@@ -325,19 +325,8 @@ class Constructor:
         return f"{type(self).__name__}({field_strs})"
 
 
-def _geno_deepcopy(
-    value: Any, memo: list[tuple[Any, Any]] | None = None, share: bool = False
-) -> Any:
-    """Copy Geno value containers while preserving explicit reference types.
-
-    By default ``memo`` only holds the containers on the current recursion
-    path: a cycle still terminates, but two siblings that referenced one
-    object get independent copies.  A snapshot that may later be written in
-    place needs that, or a nested write through one sibling shows up in the
-    other (#129).  ``share=True`` keeps one copy per original object so a
-    value built from shared parts stays linear in size; compiled ``let``
-    bindings use it because nothing can write through them.
-    """
+def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any:
+    """Copy Geno value containers while preserving explicit reference types."""
     if memo is None:
         memo = []
 
@@ -351,49 +340,76 @@ def _geno_deepcopy(
     if isinstance(value, list):
         copied_list: list[Any] = []
         memo += [(value, copied_list)]
-        try:
-            copied_list.extend(_geno_deepcopy(item, memo, share) for item in value)
-        finally:
-            if not share:
-                del memo[-1]
+        copied_list.extend(_geno_deepcopy(item, memo) for item in value)
         return copied_list
 
     if isinstance(value, dict):
         copied_dict: dict[Any, Any] = {}
         memo += [(value, copied_dict)]
-        try:
-            for key, nested_value in value.items():
-                copied_dict[_geno_deepcopy(key, memo, share)] = _geno_deepcopy(
-                    nested_value, memo, share
-                )
-        finally:
-            if not share:
-                del memo[-1]
+        for key, nested_value in value.items():
+            copied_dict[_geno_deepcopy(key, memo)] = _geno_deepcopy(nested_value, memo)
         return copied_dict
 
     if isinstance(value, tuple):
-        copied_tuple = tuple(_geno_deepcopy(item, memo, share) for item in value)
-        if share:
-            memo += [(value, copied_tuple)]
+        copied_tuple = tuple(_geno_deepcopy(item, memo) for item in value)
+        memo += [(value, copied_tuple)]
         return copied_tuple
 
     if isinstance(value, Constructor):
         geno_object: Any = _GENO_OBJECT
         copied_constructor = geno_object.__new__(type(value))
         memo += [(value, copied_constructor)]
-        try:
-            for field in _dataclasses_fields(value):
-                _object_setattr(
-                    copied_constructor,
-                    field.name,
-                    _geno_deepcopy(getattr(value, field.name), memo, share),
-                )
-        finally:
-            if not share:
-                del memo[-1]
+        for field in _dataclasses_fields(value):
+            _object_setattr(
+                copied_constructor,
+                field.name,
+                _geno_deepcopy(getattr(value, field.name), memo),
+            )
         return copied_constructor
 
     return value
+
+
+def _geno_unshared_part(value: Any) -> Any:
+    """Copy one level of a value-type container that is about to be written."""
+    if isinstance(value, Constructor):
+        geno_object: Any = _GENO_OBJECT
+        copied_constructor = geno_object.__new__(type(value))
+        for field in _dataclasses_fields(value):
+            _object_setattr(copied_constructor, field.name, getattr(value, field.name))
+        return copied_constructor
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _geno_own_field(parent: Any, field_name: str) -> Any:
+    """Read a field on the way to a field write, unsharing it first.
+
+    A snapshot keeps one copy of a part that two places shared, so the part
+    is copied and put back before the write reaches it; the write then never
+    shows through another path to the same part (#129).
+    """
+    child = get_field(parent, field_name)
+    if not isinstance(parent, Constructor):
+        return child
+    unshared = _geno_unshared_part(child)
+    if unshared is not child:
+        _object_setattr(parent, field_name, unshared)
+    return unshared
+
+
+def _geno_own_index(container: Any, index: Any) -> Any:
+    """Index on the way to a field write, unsharing the element first (#129)."""
+    child = _safe_index(container, index)
+    if not isinstance(container, (list, dict, _GenoArray)):
+        return child
+    unshared = _geno_unshared_part(child)
+    if unshared is not child:
+        container[index] = unshared
+    return unshared
 
 
 # =============================================================================
