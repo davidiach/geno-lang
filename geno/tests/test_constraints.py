@@ -429,7 +429,38 @@ end func
 end func
 """
 
-    @pytest.mark.parametrize("source", [ELSE_IF, COMPREHENSION])
+    NESTED_IF_IN_ELSE = """func sign(n: Int) -> String
+    example 5 -> "pos"
+    example -5 -> "neg"
+    example 0 -> "zero"
+    if n > 0 then
+        return "pos"
+    else
+        if n < 0 then
+            return "neg"
+        end if
+        return "zero"
+    end if
+end func
+"""
+
+    WRAPPED_ELSE_IF = """func sign(n: Int) -> String
+    example 5 -> "pos"
+    example 0 -> "zero"
+    if n > 0 then
+        return "pos"
+    else
+    if n < 0 then
+        return "neg"
+    else
+        return "zero"
+    end if
+end func
+"""
+
+    @pytest.mark.parametrize(
+        "source", [ELSE_IF, COMPREHENSION, NESTED_IF_IN_ELSE, WRAPPED_ELSE_IF]
+    )
     def test_complete_program_is_valid(self, source: str) -> None:
         assert validate_prefix(source) == (True, None)
         assert get_unclosed_blocks(source) == []
@@ -437,6 +468,10 @@ end func
     def test_else_if_leaves_only_the_outer_if_open(self) -> None:
         prefix = self.ELSE_IF.split('        return "neg"')[0]
         assert get_unclosed_blocks(prefix) == ["if", "func"]
+
+    def test_indented_if_after_else_opens_its_own_block(self) -> None:
+        prefix = self.NESTED_IF_IN_ELSE.split('            return "neg"')[0]
+        assert get_unclosed_blocks(prefix) == ["if", "if", "func"]
 
     def test_comprehension_leaves_no_block_open(self) -> None:
         prefix = "func f(xs: List[Int]) -> List[Int]\n    return [x for x: Int in xs"

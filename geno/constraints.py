@@ -348,8 +348,18 @@ def step_with_end_check(
                     keyword_value or "",
                 )
 
-    # `else if` continues the open `if` rather than opening another.
-    if token.type == TokenType.IF and prev_token and prev_token.type == TokenType.ELSE:
+    # `else if` continues the open `if` rather than opening another.  As in
+    # the parser, an `if` on a later, more-indented line is a nested
+    # statement with its own `end if`.
+    if (
+        token.type == TokenType.IF
+        and prev_token
+        and prev_token.type == TokenType.ELSE
+        and (
+            token.location.line == prev_token.location.line
+            or token.location.column <= prev_token.location.column
+        )
+    ):
         return state
     if (
         token.type in (TokenType.FOR, TokenType.IF)
