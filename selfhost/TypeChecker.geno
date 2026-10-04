@@ -490,6 +490,60 @@ func resolve_alias(cs: CheckerState, name: String, params: List[TypeAnnot], tpar
     end match
 end func resolve_alias
 
+// Built-in type names a program may not define (#139).
+func is_builtin_type_name(name: String) -> Bool
+    example "Int" -> true
+    example "Shape" -> false
+    let builtins: List[String] = ["Int", "Float", "Bool", "String", "Unit", "List", "Array", "Map", "MutableMap", "Vec", "Set", "Tuple", "Async", "Option", "Result", "JsonValue", "HttpRequest", "HttpResponse", "ProcessResult", "FileKind", "FileMetadata"]
+    for builtin: String in builtins do
+        if builtin == name then
+            return true
+        end if
+    end for
+    return false
+end func is_builtin_type_name
+
+// A type name is defined once and never reuses a built-in; constructor
+// names within one type are distinct (#139).
+@untested("reports duplicate type diagnostics via mutation")
+func validate_type_names(cs: CheckerState, defs: List[Def]) -> Unit
+    let seen: MutableMap[String, Bool] = mutable_map_new()
+    for defn: Def in defs do
+        match defn with
+            | TypeAliasNode(name, params, target, span) ->
+            check_type_name(cs: cs, name: name, span: span, seen: seen)
+            | TypeDefNode(name, params, variants, span) ->
+            check_type_name(cs: cs, name: name, span: span, seen: seen)
+            let variant_seen: MutableMap[String, Bool] = mutable_map_new()
+            for variant: TypeVariant in variants do
+                if mutable_map_contains(variant_seen, variant.name) then
+                    checker_push_span(cs, span)
+                    tc_error(cs, "Duplicate constructor '" + variant.name + "' in type '" + name + "'")
+                    checker_pop_span(cs)
+                end if
+                mutable_map_set(map: variant_seen, key: variant.name, value: true)
+            end for
+            | _ -> let ignore: Int = 0
+        end match
+    end for
+    return ()
+end func validate_type_names
+
+@untested("reports duplicate type diagnostics via mutation")
+func check_type_name(cs: CheckerState, name: String, span: SourceSpan, seen: MutableMap[String, Bool]) -> Unit
+    checker_push_span(cs, span)
+    if is_builtin_type_name(name) then
+        tc_error(cs, "Type '" + name + "' is built in and cannot be redefined")
+    else
+        if mutable_map_contains(seen, name) then
+            tc_error(cs, "Duplicate type definition '" + name + "'")
+        end if
+    end if
+    checker_pop_span(cs)
+    mutable_map_set(map: seen, key: name, value: true)
+    return ()
+end func check_type_name
+
 // Collect type names and aliases before resolving fields or signatures.
 @untested("registers type headers via mutation")
 func collect_type_headers(cs: CheckerState, defs: List[Def]) -> Unit
@@ -2753,6 +2807,7 @@ func check_program(cs: CheckerState, program: Program, modules: MutableMap[Strin
     let resolved: MutableMap[String, Bool] = mutable_map_new()
     resolve_imports(cs: cs, defs: program.defs, modules: modules, resolved: resolved)
     // Pass 1: collect type definitions
+    validate_type_names(cs, program.defs)
     collect_type_headers(cs, program.defs)
     collect_defs_pass1(cs, program.defs)
     validate_type_aliases(cs, program.defs)
