@@ -110,10 +110,10 @@ end func describe
 func main() -> Int
     // Build a list of todos
     let todos: List[Todo] = [
-    Task("Buy groceries", High, Pending),
-    Task("Read chapter 5", Medium, Pending),
-    Task("Clean desk", Low, Pending),
-    Task("Reply to email", High, Done)
+        Task("Buy groceries", High, Pending),
+        Task("Read chapter 5", Medium, Pending),
+        Task("Clean desk", Low, Pending),
+        Task("Reply to email", High, Done)
     ]
 
     // Show all todos

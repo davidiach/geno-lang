@@ -80,7 +80,7 @@ func get_error(errors: List[FieldError], field_name: String) -> String
     example ([], "x") -> ""
     let found: Option[FieldError] = list_find(errors, fn(e: FieldError) -> e.field_name == field_name)
     return match found with
-    | Some(e) -> e.message
-    | None -> ""
-end match
+        | Some(e) -> e.message
+        | None -> ""
+    end match
 end func

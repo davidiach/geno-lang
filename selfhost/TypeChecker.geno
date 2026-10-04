@@ -10,18 +10,18 @@ import Types
 // Holds all mutable state needed during type checking.
 
 type CheckerState = CheckerState(
-global_env: TypeEnv,
-type_defs: MutableMap[String, TypeDefEntry],
-func_params: MutableMap[String, List[String]],
-ret_type_stack: Vec[GType],
-errors: Vec[String],
-user_defined: MutableMap[String, Bool],
-diagnostics: Vec[Diagnostic],
-diag_stack: Vec[SourceSpan],
-type_aliases: MutableMap[String, Def],
-resolving_aliases: Vec[String],
-resolved_aliases: MutableMap[String, GType],
-declared_type_params: MutableMap[String, List[String]]
+    global_env: TypeEnv,
+    type_defs: MutableMap[String, TypeDefEntry],
+    func_params: MutableMap[String, List[String]],
+    ret_type_stack: Vec[GType],
+    errors: Vec[String],
+    user_defined: MutableMap[String, Bool],
+    diagnostics: Vec[Diagnostic],
+    diag_stack: Vec[SourceSpan],
+    type_aliases: MutableMap[String, Def],
+    resolving_aliases: Vec[String],
+    resolved_aliases: MutableMap[String, GType],
+    declared_type_params: MutableMap[String, List[String]]
 )
 
 // Create a fresh checker state with builtins registered.
@@ -489,6 +489,60 @@ func resolve_alias(cs: CheckerState, name: String, params: List[TypeAnnot], tpar
         | _ -> return TAny
     end match
 end func resolve_alias
+
+// Built-in type names a program may not define (#139).
+func is_builtin_type_name(name: String) -> Bool
+    example "Int" -> true
+    example "Shape" -> false
+    let builtins: List[String] = ["Int", "Float", "Bool", "String", "Unit", "List", "Array", "Map", "MutableMap", "Vec", "Set", "Tuple", "Async", "Option", "Result", "JsonValue", "HttpRequest", "HttpResponse", "ProcessResult", "FileKind", "FileMetadata"]
+    for builtin: String in builtins do
+        if builtin == name then
+            return true
+        end if
+    end for
+    return false
+end func is_builtin_type_name
+
+// A type name is defined once and never reuses a built-in; constructor
+// names within one type are distinct (#139).
+@untested("reports duplicate type diagnostics via mutation")
+func validate_type_names(cs: CheckerState, defs: List[Def]) -> Unit
+    let seen: MutableMap[String, Bool] = mutable_map_new()
+    for defn: Def in defs do
+        match defn with
+            | TypeAliasNode(name, params, target, span) ->
+            check_type_name(cs: cs, name: name, span: span, seen: seen)
+            | TypeDefNode(name, params, variants, span) ->
+            check_type_name(cs: cs, name: name, span: span, seen: seen)
+            let variant_seen: MutableMap[String, Bool] = mutable_map_new()
+            for variant: TypeVariant in variants do
+                if mutable_map_contains(variant_seen, variant.name) then
+                    checker_push_span(cs, span)
+                    tc_error(cs, "Duplicate constructor '" + variant.name + "' in type '" + name + "'")
+                    checker_pop_span(cs)
+                end if
+                mutable_map_set(map: variant_seen, key: variant.name, value: true)
+            end for
+            | _ -> let ignore: Int = 0
+        end match
+    end for
+    return ()
+end func validate_type_names
+
+@untested("reports duplicate type diagnostics via mutation")
+func check_type_name(cs: CheckerState, name: String, span: SourceSpan, seen: MutableMap[String, Bool]) -> Unit
+    checker_push_span(cs, span)
+    if is_builtin_type_name(name) then
+        tc_error(cs, "Type '" + name + "' is built in and cannot be redefined")
+    else
+        if mutable_map_contains(seen, name) then
+            tc_error(cs, "Duplicate type definition '" + name + "'")
+        end if
+    end if
+    checker_pop_span(cs)
+    mutable_map_set(map: seen, key: name, value: true)
+    return ()
+end func check_type_name
 
 // Collect type names and aliases before resolving fields or signatures.
 @untested("registers type headers via mutation")
@@ -2649,6 +2703,7 @@ func resolve_import(cs: CheckerState, imp: Def, modules: MutableMap[String, Prog
         end if
         let mod_prog: Program = unwrap(mod_opt)
         resolve_module_imports(cs: cs, defs: mod_prog.defs, modules: modules, resolved: resolved, mod_name: mod_name)
+        validate_type_names(cs, mod_prog.defs)
         collect_type_headers(cs, mod_prog.defs)
         collect_defs_pass1(cs: cs, defs: mod_prog.defs)
         validate_type_aliases(cs, mod_prog.defs)
@@ -2746,6 +2801,23 @@ func resolve_imports(cs: CheckerState, defs: List[Def], modules: MutableMap[Stri
     return ()
 end func resolve_imports
 
+// The entrypoint `main` is always called as `main()` (spec 4.1.1, #133).
+func validate_entrypoint_main_params(cs: CheckerState, defs: List[Def]) -> Unit
+    example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), []) -> ()
+    for d: Def in defs do
+        match d with
+            | FuncDef(name, params, _, _, _, _, _, _, span) ->
+            if name == "main" and length(params) > 0 then
+                checker_push_span(cs, span)
+                tc_error(cs, "The entrypoint `main` must take no parameters; it is called as `main()`. Read command-line arguments with `cli_args()` instead")
+                checker_pop_span(cs)
+            end if
+            | _ -> ()
+        end match
+    end for
+    return ()
+end func validate_entrypoint_main_params
+
 // Main entry point: type check a complete program.
 func check_program(cs: CheckerState, program: Program, modules: MutableMap[String, Program]) -> Int
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), Program([]), mutable_map_new()) -> 0
@@ -2753,6 +2825,7 @@ func check_program(cs: CheckerState, program: Program, modules: MutableMap[Strin
     let resolved: MutableMap[String, Bool] = mutable_map_new()
     resolve_imports(cs: cs, defs: program.defs, modules: modules, resolved: resolved)
     // Pass 1: collect type definitions
+    validate_type_names(cs, program.defs)
     collect_type_headers(cs, program.defs)
     collect_defs_pass1(cs, program.defs)
     validate_type_aliases(cs, program.defs)
@@ -2760,6 +2833,7 @@ func check_program(cs: CheckerState, program: Program, modules: MutableMap[Strin
     collect_defs_pass2(cs, program.defs)
     // Pass 3: check function bodies
     check_defs_pass3(cs, program.defs)
+    validate_entrypoint_main_params(cs, program.defs)
     // Return error count
     return vec_length(cs.errors)
 end func check_program

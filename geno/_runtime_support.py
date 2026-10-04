@@ -68,6 +68,37 @@ def _promote_int_to_float(value: Any) -> Any:
     return value
 
 
+def _promote_float_shape(value: Any, shape: Any) -> Any:
+    """Promote the Ints at the Float positions ``shape`` names (#137).
+
+    ``shape`` comes from ``geno.float_promotion.float_shape``.
+    """
+    if shape is None:
+        return value
+    if shape == "F":
+        return _promote_int_to_float(value)
+    kind = shape[0]
+    if kind == "L" and isinstance(value, list):
+        return [_promote_float_shape(item, shape[1]) for item in value]
+    if kind == "T" and isinstance(value, tuple):
+        return tuple(
+            _promote_float_shape(item, item_shape)
+            for item, item_shape in zip(value, shape[1])
+        )
+    if kind == "M" and isinstance(value, dict):
+        return {
+            _promote_float_shape(key, shape[1]): _promote_float_shape(item, shape[2])
+            for key, item in value.items()
+        }
+    if kind == "O" and isinstance(value, Some):
+        return Some(_promote_float_shape(value.value, shape[1]))
+    if kind == "R" and isinstance(value, Ok):
+        return Ok(_promote_float_shape(value.value, shape[1]))
+    if kind == "R" and isinstance(value, Err):
+        return Err(_promote_float_shape(value.error, shape[2]))
+    return value
+
+
 def _object_getattribute(obj: Any, name: str) -> Any:
     """Call object.__getattribute__ without relying on exposed builtins."""
     return _GENO_OBJECT.__getattribute__(obj, name)  # type: ignore[call-arg]
@@ -370,6 +401,48 @@ def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any
         return copied_constructor
 
     return value
+
+
+def _geno_unshared_part(value: Any) -> Any:
+    """Copy one level of a value-type container that is about to be written."""
+    if isinstance(value, Constructor):
+        geno_object: Any = _GENO_OBJECT
+        copied_constructor = geno_object.__new__(type(value))
+        for field in _dataclasses_fields(value):
+            _object_setattr(copied_constructor, field.name, getattr(value, field.name))
+        return copied_constructor
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _geno_own_field(parent: Any, field_name: str) -> Any:
+    """Read a field on the way to a field write, unsharing it first.
+
+    A snapshot keeps one copy of a part that two places shared, so the part
+    is copied and put back before the write reaches it; the write then never
+    shows through another path to the same part (#129).
+    """
+    child = get_field(parent, field_name)
+    if not isinstance(parent, Constructor):
+        return child
+    unshared = _geno_unshared_part(child)
+    if unshared is not child:
+        _object_setattr(parent, field_name, unshared)
+    return unshared
+
+
+def _geno_own_index(container: Any, index: Any) -> Any:
+    """Index on the way to a field write, unsharing the element first (#129)."""
+    child = _safe_index(container, index)
+    if not isinstance(container, (list, dict, _GenoArray)):
+        return child
+    unshared = _geno_unshared_part(child)
+    if unshared is not child:
+        container[index] = unshared
+    return unshared
 
 
 # =============================================================================
@@ -696,8 +769,15 @@ def round_(x: float) -> int:
     return _require_safe_js_int(rounded, "round result")
 
 
+def _widen_mixed(result: Any, a: Any, b: Any) -> Any:
+    """An Int result from mixed Int/Float operands is a Float (#137)."""
+    if type(result) is int and (isinstance(a, float) or isinstance(b, float)):
+        return float(result)
+    return result
+
+
 def max_(a: Any, b: Any) -> Any:
-    return a if a >= b else b
+    return _widen_mixed(a if a >= b else b, a, b)
 
 
 def is_sorted(lst: list) -> bool:
@@ -3218,11 +3298,11 @@ def math_abs(x):
 
 
 def math_min(a, b):
-    return _builtin_min(a, b)
+    return _widen_mixed(_builtin_min(a, b), a, b)
 
 
 def math_max(a, b):
-    return _builtin_max(a, b)
+    return _widen_mixed(_builtin_max(a, b), a, b)
 
 
 def math_clamp(value, lo, hi):

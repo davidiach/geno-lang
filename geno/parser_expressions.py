@@ -78,9 +78,27 @@ class ExpressionParserMixin(ParserBase):
                         function=func, arguments=args, location=stage_location
                     )
                 )
+                if self._current_type in self._PIPELINE_POSTFIX:
+                    # `xs |> map(_, f)[0]` indexes the stage's result rather
+                    # than leaving `[0]` behind as a statement of its own
+                    # (#138); later stages continue from the indexed value.
+                    left = self._parse_pipeline_postfix(
+                        Pipeline(location=left.location, initial=left, stages=stages)
+                    )
+                    stages = []
+            if not stages:
+                return left
             return Pipeline(location=left.location, initial=left, stages=stages)
 
         return left
+
+    _PIPELINE_POSTFIX = frozenset(
+        {TokenType.LBRACKET, TokenType.DOT, TokenType.QUESTION}
+    )
+
+    def _parse_pipeline_postfix(self, expr: Expression) -> Expression:
+        """Apply the postfixes (index, field, `?`, call) that follow a stage."""
+        return self._parse_postfix_chain(expr)
 
     def _parse_pipeline_stage(self) -> tuple[Expression, list[Expression]]:
         """Parse a single pipeline stage: f or f(args)"""
@@ -259,6 +277,22 @@ class ExpressionParserMixin(ParserBase):
                 return expr
             return self._parse_with_expr(expr)
 
+        expr = self._parse_postfix_chain(expr)
+        current_type = self._current_type
+
+        # Check for `with` expression: expr with (field: val, ...)
+        # Only parse if `with` is followed by `(` to avoid conflict with `match ... with`
+        if current_type is TokenType.WITH:
+            next_pos = self.pos + 1
+            if next_pos < tokens_len and tokens[next_pos].type is TokenType.LPAREN:
+                return self._parse_with_expr(expr)
+
+        return expr
+
+    def _parse_postfix_chain(self, expr: Expression) -> Expression:
+        """Apply call, index, field and `?` postfixes to ``expr``."""
+        tokens = self.tokens
+        tokens_len = self._tokens_len
         while True:
             current_type = self._current_type
             if current_type is TokenType.LPAREN:
@@ -304,14 +338,6 @@ class ExpressionParserMixin(ParserBase):
                 expr = PropagateExpr(location=expr.location, operand=expr)
             else:
                 break
-
-        # Check for `with` expression: expr with (field: val, ...)
-        # Only parse if `with` is followed by `(` to avoid conflict with `match ... with`
-        if current_type is TokenType.WITH:
-            next_pos = self.pos + 1
-            if next_pos < tokens_len and tokens[next_pos].type is TokenType.LPAREN:
-                return self._parse_with_expr(expr)
-
         return expr
 
     def _parse_with_expr(self, target: Expression) -> WithExpr:
@@ -432,14 +458,29 @@ class ExpressionParserMixin(ParserBase):
             if self._current_type is TokenType.LPAREN:
                 self._advance()
                 args: list[Expression] = []
+                arg_names: list[str | None] = []
                 if self._current_type is not TokenType.RPAREN:
-                    args.append(self._parse_expression())
-                    while self._current_type is TokenType.COMMA:
-                        self._advance()
+                    while True:
+                        if (
+                            self._current_type is TokenType.IDENTIFIER
+                            and self._peek(1).type is TokenType.COLON
+                        ):
+                            arg_names.append(self._advance().value)
+                            self._expect(TokenType.COLON)
+                        else:
+                            arg_names.append(None)
                         args.append(self._parse_expression())
+                        if self._current_type is not TokenType.COMMA:
+                            break
+                        self._advance()
                 self._expect(TokenType.RPAREN)
                 return ConstructorCall(
-                    location=location, constructor=name, arguments=args
+                    location=location,
+                    constructor=name,
+                    arguments=args,
+                    argument_names=(
+                        arg_names if any(n is not None for n in arg_names) else None
+                    ),
                 )
             # Known zero-argument constructors are constructor calls without parens
             if name in ("None",):

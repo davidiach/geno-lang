@@ -49,9 +49,9 @@ end func is_space
 // through helper functions without needing a mutable struct.
 
 type LexerState = LexerState(
-source: String,
-pos: Array[Int],
-keywords: MutableMap[String, TokenType]
+    source: String,
+    pos: Array[Int],
+    keywords: MutableMap[String, TokenType]
 )
 
 @untested("lexer internal state")
