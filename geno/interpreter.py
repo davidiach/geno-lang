@@ -2780,44 +2780,66 @@ class Interpreter:
         return self._execute_async_value(value, expr.location)
 
     def _execute_async_value(self, value: Any, location: SourceLocation | None) -> Any:
-        """Execute a deferred async closure, or return a synchronous value."""
+        """Execute a deferred async closure, or return a synchronous value.
+
+        An ``Async`` value runs once: awaiting it again gives the first
+        result, or raises the first error again (#136).
+        """
         if isinstance(value, AsyncValue):
-            # Execute the async closure's body directly (bypass is_async check)
-            func = value.closure
-            call_env = func.env.child()
-            for param, arg in zip(func.params, value.args):
-                call_env.bind(param.name, arg)
-            if func.specs:
-                self._check_requires(func, call_env)
-            if self.call_depth >= self.max_recursion_depth:
-                # See _call_function — RecursionLimitError is uncatchable
-                # by user try/catch (issue #650).
-                raise RecursionLimitError(
-                    f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
-                    f"Check for infinite recursion or increase the limit."
-                )
-            self.call_depth += 1
+            if value.done:
+                if value.error is not None:
+                    raise value.error
+                return value.result
+            finished = False
             try:
-                try:
-                    for stmt in func.body:
-                        self.exec_stmt(stmt, call_env)
-                    result = None
-                except ReturnException as ret:
-                    result = ret.value
-                except PropagateException as prop:
-                    result = prop.value
-                except BreakException:
-                    raise RuntimeError("'break' outside of loop", location)
-                except ContinueException:
-                    raise RuntimeError("'continue' outside of loop", location)
-                if func.specs:
-                    self._check_ensures(func, call_env, result)
-                self._check_collection_limits([result], location)
-                return result
+                value.result = self._run_async_value(value, location)
+                finished = True
             finally:
-                self.call_depth -= 1
+                if not finished:
+                    value.error = sys.exc_info()[1]
+                value.done = True
+            return value.result
         # If not an AsyncValue, return as-is (identity await)
         return value
+
+    def _run_async_value(
+        self, value: AsyncValue, location: SourceLocation | None
+    ) -> Any:
+        """Run an async closure's body."""
+        # Execute the async closure's body directly (bypass is_async check)
+        func = value.closure
+        call_env = func.env.child()
+        for param, arg in zip(func.params, value.args):
+            call_env.bind(param.name, arg)
+        if func.specs:
+            self._check_requires(func, call_env)
+        if self.call_depth >= self.max_recursion_depth:
+            # See _call_function — RecursionLimitError is uncatchable
+            # by user try/catch (issue #650).
+            raise RecursionLimitError(
+                f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
+                f"Check for infinite recursion or increase the limit."
+            )
+        self.call_depth += 1
+        try:
+            try:
+                for stmt in func.body:
+                    self.exec_stmt(stmt, call_env)
+                result = None
+            except ReturnException as ret:
+                result = ret.value
+            except PropagateException as prop:
+                result = prop.value
+            except BreakException:
+                raise RuntimeError("'break' outside of loop", location)
+            except ContinueException:
+                raise RuntimeError("'continue' outside of loop", location)
+            if func.specs:
+                self._check_ensures(func, call_env, result)
+            self._check_collection_limits([result], location)
+            return result
+        finally:
+            self.call_depth -= 1
 
     def _eval_pipeline(self, expr: Pipeline, env: Environment) -> Any:
         """Evaluate a pipeline expression."""

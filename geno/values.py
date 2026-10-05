@@ -126,6 +126,11 @@ class AsyncValue:
     def __init__(self, closure: Closure, args: list[Any]) -> None:
         self.closure = closure
         self.args = args
+        # The first await runs the body; later awaits get the same outcome
+        # instead of running it again (#136).
+        self.done = False
+        self.result: Any = None
+        self.error: BaseException | None = None
 
     def __repr__(self) -> str:
         return f"<async {self.closure.name or 'anonymous'}>"

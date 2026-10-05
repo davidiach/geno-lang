@@ -118,7 +118,7 @@ from .entrypoint import (
 from .float_promotion import float_shape
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .types import FloatType, ListType, UserType
+from .types import AsyncType, FloatType, ListType, UserType
 
 
 @dataclass
@@ -256,6 +256,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_check_collection_kind",
             "_MAX_COLLECTION_SIZE",
             "_geno_run_async",
+            "_GenoAsync",
             "match_constructor",
             "_BLOCKED_FIELD_NAMES",
             # Core type infrastructure
@@ -2137,7 +2138,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             return self._compile_unary_op(cast(UnaryOp, expr))
 
         if expr_type is FunctionCall:
-            return self._compile_function_call(cast(FunctionCall, expr))
+            return self._run_async_once(
+                expr, self._compile_function_call(cast(FunctionCall, expr))
+            )
 
         if expr_type is IndexAccess:
             index_expr = cast(IndexAccess, expr)
@@ -2151,7 +2154,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"get_field({target}, {field_access.field_name!r})"
 
         if expr_type is Pipeline:
-            return self._compile_pipeline(cast(Pipeline, expr))
+            return self._run_async_once(
+                expr, self._compile_pipeline(cast(Pipeline, expr))
+            )
 
         if expr_type is LambdaExpr:
             return self._compile_lambda(cast(LambdaExpr, expr))
@@ -2202,7 +2207,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         if expr_type is AwaitExpr:
             await_expr = cast(AwaitExpr, expr)
-            inner = self._compile_expr(await_expr.expr)
+            inner = self._compile_await_operand(await_expr.expr)
             return f"(await {inner})"
 
         return self._compile_expr_slowpath(expr)
@@ -2298,7 +2303,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return self._compile_unary_op(expr)
 
         if isinstance(expr, FunctionCall):
-            return self._compile_function_call(expr)
+            return self._run_async_once(expr, self._compile_function_call(expr))
 
         if isinstance(expr, IndexAccess):
             target = self._compile_expr(expr.target)
@@ -2310,7 +2315,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"get_field({target}, {expr.field_name!r})"
 
         if isinstance(expr, Pipeline):
-            return self._compile_pipeline(expr)
+            return self._run_async_once(expr, self._compile_pipeline(expr))
 
         if isinstance(expr, LambdaExpr):
             return self._compile_lambda(expr)
@@ -2354,7 +2359,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"_geno_throw({value})"
 
         if isinstance(expr, AwaitExpr):
-            inner = self._compile_expr(expr.expr)
+            inner = self._compile_await_operand(expr.expr)
             return f"(await {inner})"
 
         raise CompileError(f"Unsupported expression node: {type(expr).__name__}")
@@ -2738,6 +2743,21 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"_safe_invert({operand})"
 
         return operand
+
+    def _compile_await_operand(self, expr: Expression) -> str:
+        """An Async awaited where it is made can't be awaited again: no wrap."""
+        if isinstance(expr, FunctionCall):
+            return self._compile_function_call(expr)
+        if isinstance(expr, Pipeline):
+            return self._compile_pipeline(expr)
+        return self._compile_expr(expr)
+
+    @staticmethod
+    def _run_async_once(expr: Expression, code: str) -> str:
+        """Wrap a call producing ``Async[T]`` so it may be awaited again (#136)."""
+        if isinstance(getattr(expr, "_resolved_type", None), AsyncType):
+            return f"_GenoAsync({code})"
+        return code
 
     def _compile_function_call(self, expr: FunctionCall) -> str:
         """Compile a function call."""
