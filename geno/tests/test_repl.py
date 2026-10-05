@@ -716,3 +716,70 @@ class TestReplTestBlocks:
         output = repl_process(make_repl(), ':ast test "works"\nassert true\nend test')
         assert "TestBlock" in output
         assert "Error" not in output
+
+
+# ---------------------------------------------------------------------------
+# Output, positions and type errors (#143)
+# ---------------------------------------------------------------------------
+
+
+class TestReplShowsProgramBehaviour:
+    def test_print_output_is_shown(self):
+        out = repl_execute(make_repl(), 'print("hi")')
+        assert out == "hi\n"
+
+    def test_output_before_an_error_is_shown_first(self):
+        repl = make_repl()
+        repl_execute(
+            repl,
+            'func noisy(n: Int) -> Int\n    example 0 -> 0\n    print("before")\n'
+            "    return 10 / n\nend func\n",
+        )
+        out = repl_execute(repl, "noisy(0)")
+        assert out.index("before") < out.index("Runtime Error")
+
+    def test_loaded_main_prints(self, tmp_path):
+        program = tmp_path / "hello.geno"
+        program.write_text(
+            'func main() -> Unit\n    print("from main")\nend func\n',
+            encoding="utf-8",
+        )
+        repl = make_repl()
+        repl_process(repl, f":load {program}")
+        assert repl_execute(repl, "main()") == "from main\n"
+
+    def test_failed_load_shows_its_output_and_does_not_leak_it(self, tmp_path):
+        failing = tmp_path / "failing.geno"
+        failing.write_text(
+            'func main() -> Unit\n    print("partial")\n    let z = 1 / 0\n'
+            "    print(z)\nend func\n",
+            encoding="utf-8",
+        )
+        clean = tmp_path / "clean.geno"
+        clean.write_text(
+            "func one() -> Int\n    example () -> 1\n    return 1\nend func\n",
+            encoding="utf-8",
+        )
+        repl = make_repl()
+        out = repl_process(repl, f":load {failing}")
+        assert "Error loading file" in out
+        assert out.index("partial") < out.index("Error loading file")
+        assert "partial" not in repl_process(repl, f":load {clean}")
+
+    def test_test_block_output_precedes_its_pass_line(self):
+        out = repl_execute(
+            make_repl(),
+            'test "prints"\n    print("during")\n    assert true\nend test\n',
+        )
+        assert out.index("during") < out.index("Passed: prints")
+
+    def test_runtime_error_points_at_the_typed_input(self):
+        out = repl_execute(make_repl(), "1 + (2 / 0)")
+        assert "Division by zero" in out
+        assert "at <repl>:1:6" in out
+
+    def test_expression_type_errors_use_geno_diagnostics(self):
+        out = repl_execute(make_repl(), '"a" + 1')
+        assert out.startswith("Type Error: Cannot apply '+' to String and Int")
+        assert "can only concatenate" not in out
+        assert "at <repl>:1:" in out

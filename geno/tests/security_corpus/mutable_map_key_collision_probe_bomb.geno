@@ -29,8 +29,8 @@ func main() -> Int
         mutable_map_set(map: m, key: key, value: i)
         let fetched: Option[Int] = mutable_map_get(map: m, key: key)
         match fetched with
-        | Some(v) -> total = total + v
-        | None -> total = total + 1
+            | Some(v) -> total = total + v
+            | None -> total = total + 1
         end match
         if i % 100 == 0 then
             let exists: Bool = mutable_map_contains(map: m, key: key)

@@ -44,8 +44,8 @@ func validate_json(file: String, text: String) -> List[Violation]
             let raw: String = json_to_string(json)
             // Pipeline: accumulate violations from each rule
             return []
-            |> concat(_, check_required_key(file: file, raw: raw, key: "host"))
-            |> concat(_, check_required_key(file: file, raw: raw, key: "port"))
+                |> concat(_, check_required_key(file: file, raw: raw, key: "host"))
+                |> concat(_, check_required_key(file: file, raw: raw, key: "port"))
             | _ ->
             return [Violation(file, "<root>", "type", "expected a JSON object", "object", "non-object", Error)]
         end match

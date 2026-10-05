@@ -152,7 +152,11 @@ def _render_expr(expr) -> str:
         return f"({elems})"
     if isinstance(expr, ConstructorCall):
         if expr.arguments:
-            args = ", ".join(_render_expr(a) for a in expr.arguments)
+            names = expr.argument_names or [None] * len(expr.arguments)
+            args = ", ".join(
+                f"{name}: {_render_expr(a)}" if name else _render_expr(a)
+                for name, a in zip(names, expr.arguments)
+            )
             return f"{expr.constructor}({args})"
         return expr.constructor
     if isinstance(expr, FunctionCall):

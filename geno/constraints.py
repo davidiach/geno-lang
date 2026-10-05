@@ -126,6 +126,11 @@ class ConstraintState:
     # loop starter.
     in_impl_header: bool = False
 
+    # A `for`/`if` met mid-expression inside brackets is either a list
+    # comprehension clause or a statement inside a block lambda. It opens a
+    # block only once its `do`/`then` arrives. Entries are (kind, depth).
+    pending_bracket_blocks: List[Tuple[str, int]] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class ConstraintViolation:
@@ -343,7 +348,42 @@ def step_with_end_check(
                     keyword_value or "",
                 )
 
-    return step(state, token)
+    # `else if` continues the open `if` rather than opening another.  As in
+    # the parser, an `if` on a later, more-indented line is a nested
+    # statement with its own `end if`.
+    if (
+        token.type == TokenType.IF
+        and prev_token
+        and prev_token.type == TokenType.ELSE
+        and (
+            token.location.line == prev_token.location.line
+            or token.location.column <= prev_token.location.column
+        )
+    ):
+        return state
+    if (
+        token.type in (TokenType.FOR, TokenType.IF)
+        and state.bracket_depth > 0
+        and prev_token is not None
+        and prev_token.type != TokenType.NEWLINE
+        and not state.in_impl_header
+    ):
+        kind = "for" if token.type == TokenType.FOR else "if"
+        state.pending_bracket_blocks.append((kind, state.bracket_depth))
+        return state
+    opener = {TokenType.DO: "for", TokenType.THEN: "if"}.get(token.type)
+    pending = state.pending_bracket_blocks
+    if opener and pending and pending[-1] == (opener, state.bracket_depth):
+        pending.pop()
+        state.open_blocks.append(opener)
+        return state
+
+    result = step(state, token)
+    if isinstance(result, ConstraintState) and token.type == TokenType.RBRACKET:
+        result.pending_bracket_blocks = [
+            entry for entry in pending if entry[1] <= result.bracket_depth
+        ]
+    return result
 
 
 def allowed_next(state: ConstraintState) -> AllowedNext:

@@ -14,10 +14,12 @@ import time
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from functools import partial
+from types import MappingProxyType
 from typing import Any, cast
 
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
+    FLOAT_PROMOTION_UNKNOWN,
     AssertStatement,
     AssignStatement,
     AwaitExpr,
@@ -86,7 +88,9 @@ from .builtin_registry import (
     allowed_gated_builtins,
     interpreter_builtin_param_name_lists,
 )
+from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
+from .float_promotion import float_shape
 from .harness import example_call_args
 from .sandbox import (
     RecursionLimitError,
@@ -96,7 +100,7 @@ from .sandbox import (
 )
 from .sandbox import TimeoutError as SandboxTimeout
 from .tokens import SourceLocation
-from .types import FloatType, ListType
+from .types import FloatType
 
 # Re-export runtime value types for backward compatibility
 from .value_copy import copy_value
@@ -281,25 +285,78 @@ def _expected_runtime_type_is_float(expected_type: Any) -> bool:
     )
 
 
-def _promote_int_to_expected_float(value: Any, expected_type: Any) -> Any:
-    """Materialise Geno's Int-to-Float compatibility in runtime values."""
+def _unshared_part(value: Any) -> Any:
+    """Return a one-level copy of a value-type container about to be written.
+
+    Reference types (Array, Vec, MutableMap, ...) and scalars come back as is.
+    """
+    if isinstance(value, ConstructorValue):
+        return ConstructorValue(value.constructor, dict(value.fields))
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _promote_int_to_expected_float(
+    value: Any, expected_type: Any, source: Any = None
+) -> Any:
+    """Materialise Geno's Int-to-Float compatibility in runtime values.
+
+    Promotion follows the expected type into lists, Options, Results, tuples
+    and maps, so an ``Int`` held where a ``Float`` is expected becomes a
+    float wherever it sits (#137).  When ``source`` is the expression that
+    produced ``value``, the checker's ``_float_promotion`` limits the walk to
+    positions whose static type is not already ``Float``.
+    """
     if type(value) is int and _expected_runtime_type_is_float(expected_type):
         return float(value)
+    shape = getattr(source, "_float_promotion", FLOAT_PROMOTION_UNKNOWN)
+    if shape is FLOAT_PROMOTION_UNKNOWN:
+        shape = float_shape(expected_type)
+    if shape is None or shape == "F":
+        return value
+    return _promote_to_float_shape(value, shape)
+
+
+def _promote_to_float_shape(value: Any, shape: Any) -> Any:
+    if shape is None:
+        return value
+    if shape == "F":
+        return float(value) if type(value) is int else value
+    kind = shape[0]
+    if kind == "L" and isinstance(value, list):
+        return [_promote_to_float_shape(item, shape[1]) for item in value]
+    if kind == "T" and isinstance(value, tuple):
+        return tuple(
+            _promote_to_float_shape(item, item_shape)
+            for item, item_shape in zip(value, shape[1])
+        )
+    if kind == "M" and isinstance(value, dict):
+        return {
+            _promote_to_float_shape(key, shape[1]): _promote_to_float_shape(
+                item, shape[2]
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, ConstructorValue):
+        if kind == "O" and value.constructor == "Some":
+            inner = _promote_to_float_shape(value.fields["value"], shape[1])
+            return ConstructorValue("Some", {"value": inner})
+        if kind == "R" and value.constructor in ("Ok", "Err"):
+            field, part = (
+                ("value", shape[1])
+                if value.constructor == "Ok"
+                else ("error", shape[2])
+            )
+            inner = _promote_to_float_shape(value.fields[field], part)
+            return ConstructorValue(value.constructor, {field: inner})
     return value
 
 
 def _promote_list_element(value: Any, expected_type: Any) -> Any:
     """Copy nested Float lists when their existing Int values need widening."""
-    leaf_type = expected_type
-    while isinstance(leaf_type, ListType):
-        leaf_type = leaf_type.element_type
-    if not _expected_runtime_type_is_float(leaf_type):
-        return value
-    if isinstance(expected_type, ListType) and isinstance(value, list):
-        return [
-            _promote_list_element(element, expected_type.element_type)
-            for element in value
-        ]
     return _promote_int_to_expected_float(value, expected_type)
 
 
@@ -1445,9 +1502,14 @@ class Interpreter:
                 # adversarial example clauses could do up to max_steps work
                 # in verification *and* another max_steps in `main`.
                 if self.check_examples:
-                    self._verify_examples()
-                    self.output_buffer.clear()
-                    self._output_length = 0
+                    try:
+                        self._verify_examples()
+                    finally:
+                        # Example output is never program output, even when
+                        # verification fails and callers report what was
+                        # printed so far (#130).
+                        self.output_buffer.clear()
+                        self._output_length = 0
 
                 # Look for a main function
                 if execute_main and entrypoint_main is not None:
@@ -2076,7 +2138,8 @@ class Interpreter:
             has_named_args = any(arg.name for arg in expr.arguments)
             if has_named_args:
                 trait_named_evaluated_args = [
-                    (arg.name, self.eval_expr(arg.value, env)) for arg in expr.arguments
+                    (arg.name, self._eval_argument(arg.value, env))
+                    for arg in expr.arguments
                 ]
                 resolved_type_name: str | None = None
                 for (trait_name, target_type), methods in self.trait_impls.items():
@@ -2113,7 +2176,7 @@ class Interpreter:
                     )
             else:
                 type_name: str | None = None
-                trait_first_arg = self.eval_expr(expr.arguments[0].value, env)
+                trait_first_arg = self._eval_argument(expr.arguments[0].value, env)
                 if isinstance(trait_first_arg, ConstructorValue):
                     # Find which type this constructor belongs to (O(1) lookup)
                     type_name = self._constructor_to_type.get(
@@ -2126,7 +2189,7 @@ class Interpreter:
                         if tt == type_name and method_name in methods:
                             impl_closure = methods[method_name]
                             remaining_args = [
-                                self.eval_expr(arg.value, env)
+                                self._eval_argument(arg.value, env)
                                 for arg in expr.arguments[1:]
                             ]
                             return self._call_function(
@@ -2185,10 +2248,10 @@ class Interpreter:
             # Trait dispatch was probed but did not match. Reuse the
             # already-evaluated first argument so its side effects run once.
             args = [trait_first_arg] + [
-                self.eval_expr(arg.value, env) for arg in expr.arguments[1:]
+                self._eval_argument(arg.value, env) for arg in expr.arguments[1:]
             ]
         else:
-            args = [self.eval_expr(arg.value, env) for arg in expr.arguments]
+            args = [self._eval_argument(arg.value, env) for arg in expr.arguments]
 
         return self._call_function(func, args, expr.location)
 
@@ -2205,8 +2268,18 @@ class Interpreter:
         positions that were not provided — _call_function fills those from
         default values, preserving correct positional mapping.
         """
-        evaluated = [(arg.name, self.eval_expr(arg.value, env)) for arg in call_args]
+        evaluated = [
+            (arg.name, self._eval_argument(arg.value, env)) for arg in call_args
+        ]
         return self._reorder_evaluated_args(evaluated, param_names, location)
+
+    def _eval_argument(self, expr: Expression, env: Environment) -> Any:
+        """Evaluate a call argument, widening Ints bound to Float slots (#137)."""
+        value = self.eval_expr(expr, env)
+        shape = expr._float_promotion
+        if shape is not None and shape is not FLOAT_PROMOTION_UNKNOWN:
+            value = _promote_to_float_shape(value, shape)
+        return value
 
     def _reorder_evaluated_args(
         self,
@@ -2392,7 +2465,7 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            filled_args.append(self.eval_expr(default, func.env))
+                            filled_args.append(self._eval_argument(default, func.env))
                         else:
                             break
                     args = filled_args
@@ -2402,7 +2475,7 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            args[i] = self.eval_expr(default, func.env)
+                            args[i] = self._eval_argument(default, func.env)
                         else:
                             raise RuntimeError(
                                 f"Missing argument for parameter '{func.params[i].name}'",
@@ -2561,7 +2634,9 @@ class Interpreter:
         """Evaluate index access."""
         target = self.eval_expr(expr.target, env)
         index = self.eval_expr(expr.index, env)
+        return self._index_into(target, index, expr)
 
+    def _index_into(self, target: Any, index: Any, expr: IndexAccess) -> Any:
         if isinstance(target, list):
             if not isinstance(index, int):
                 raise RuntimeError("List index must be integer", expr.location)
@@ -2606,8 +2681,9 @@ class Interpreter:
 
     def _eval_field_access(self, expr: FieldAccess, env: Environment) -> Any:
         """Evaluate field access."""
-        target = self.eval_expr(expr.target, env)
+        return self._field_of(self.eval_expr(expr.target, env), expr)
 
+    def _field_of(self, target: Any, expr: FieldAccess) -> Any:
         if isinstance(target, _ModuleNamespace):
             ns = target.members
             if expr.field_name in ns:
@@ -2796,7 +2872,11 @@ class Interpreter:
             body = expr.block_body
         else:
             assert expr.body is not None
-            body = [ReturnStatement(location=expr.location, value=expr.body)]
+            return_stmt = ReturnStatement(location=expr.location, value=expr.body)
+            expected = getattr(expr.body, "_expected_runtime_type", None)
+            if expected is not None:
+                return_stmt._expected_runtime_type = expected
+            body = [return_stmt]
         return Closure(
             params=expr.params,
             body=body,
@@ -2819,16 +2899,29 @@ class Interpreter:
             type_def = self.type_defs[parent_type]
             for variant in type_def.variants:
                 if variant.name == expr.constructor:
-                    if len(expr.arguments) != len(variant.fields):
-                        raise RuntimeError(
-                            f"Constructor {expr.constructor} expects "
-                            f"{len(variant.fields)} arguments, got {len(expr.arguments)}",
-                            expr.location,
-                        )
-
-                    fields = {}
-                    for arg, (field_name, _) in zip(expr.arguments, variant.fields):
-                        fields[field_name] = self.eval_expr(arg, env)
+                    field_names = [field_name for field_name, _ in variant.fields]
+                    if expr.argument_names is None:
+                        if len(expr.arguments) != len(variant.fields):
+                            raise RuntimeError(
+                                f"Constructor {expr.constructor} expects "
+                                f"{len(variant.fields)} arguments, "
+                                f"got {len(expr.arguments)}",
+                                expr.location,
+                            )
+                        order = list(range(len(field_names)))
+                    else:
+                        try:
+                            order = constructor_argument_order(
+                                expr.constructor, expr.argument_names, field_names
+                            )
+                        except ValueError as exc:
+                            raise RuntimeError(str(exc), expr.location) from None
+                    # Evaluate in source order, then place by field.
+                    values = [self.eval_expr(arg, env) for arg in expr.arguments]
+                    fields = {
+                        field_name: values[index]
+                        for field_name, index in zip(field_names, order)
+                    }
 
                     return ConstructorValue(expr.constructor, fields)
 
@@ -3045,7 +3138,9 @@ class Interpreter:
         """Execute a let statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", stmt.type_annotation)
+            value,
+            getattr(stmt, "_expected_runtime_type", stmt.type_annotation),
+            stmt.value,
         )
         value = self._deep_copy_value(value)
         env.bind(stmt.name, value, mutable=False)
@@ -3057,7 +3152,9 @@ class Interpreter:
                 continue
             value = self.eval_expr(defn.value, env)
             value = _promote_int_to_expected_float(
-                value, getattr(defn, "_expected_runtime_type", defn.type_annotation)
+                value,
+                getattr(defn, "_expected_runtime_type", defn.type_annotation),
+                defn.value,
             )
             env.bind(defn.name, self._deep_copy_value(value), mutable=False)
             if env is self.global_env:
@@ -3071,7 +3168,9 @@ class Interpreter:
         """Execute a var statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", stmt.type_annotation)
+            value,
+            getattr(stmt, "_expected_runtime_type", stmt.type_annotation),
+            stmt.value,
         )
         value = self._deep_copy_value(value)
         env.bind(stmt.name, value, mutable=True)
@@ -3080,7 +3179,11 @@ class Interpreter:
         self, stmt: TupleDestructureStatement, env: Environment
     ) -> None:
         """Execute a tuple destructuring statement."""
-        value = self.eval_expr(stmt.value, env)
+        value = _promote_int_to_expected_float(
+            self.eval_expr(stmt.value, env),
+            getattr(stmt.value, "_expected_runtime_type", None),
+            stmt.value,
+        )
         if not isinstance(value, tuple) or len(value) != len(stmt.names):
             raise RuntimeError(
                 f"Expected {len(stmt.names)}-element tuple, got {type(value).__name__}",
@@ -3093,7 +3196,7 @@ class Interpreter:
         """Execute an assignment."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", None)
+            value, getattr(stmt, "_expected_runtime_type", None), stmt.value
         )
         value = self._deep_copy_value(value)
         if not env.assign(stmt.target, value):
@@ -3146,16 +3249,47 @@ class Interpreter:
                 stmt.location,
             )
 
+    def _eval_write_target(self, expr: Expression, env: Environment) -> Any:
+        """Evaluate the value a field write lands in, unsharing its path.
+
+        A snapshot keeps one copy of a part that two places shared, so each
+        constructor, list or map reached on the way to the write is copied
+        and put back first.  The write then never shows through another path
+        to the same part (#129).  The root binding is already its own copy.
+        """
+        if isinstance(expr, FieldAccess):
+            parent = self._eval_write_target(expr.target, env)
+            if (
+                isinstance(parent, ConstructorValue)
+                and expr.field_name in parent.fields
+            ):
+                child = _unshared_part(parent.fields[expr.field_name])
+                new_fields = dict(parent.fields)
+                new_fields[expr.field_name] = child
+                object.__setattr__(parent, "_fields", MappingProxyType(new_fields))
+                return child
+            return self._field_of(parent, expr)
+        if isinstance(expr, IndexAccess):
+            parent = self._eval_write_target(expr.target, env)
+            index = self.eval_expr(expr.index, env)
+            child = self._index_into(parent, index, expr)
+            if isinstance(parent, (list, ArrayValue)):
+                child = _unshared_part(child)
+                parent[index + len(parent) if index < 0 else index] = child
+            elif isinstance(parent, dict):
+                child = _unshared_part(child)
+                parent[index] = child
+            return child
+        return self.eval_expr(expr, env)
+
     def _exec_field_assign(self, stmt: FieldAssignStatement, env: Environment) -> None:
         """Execute a field assignment: obj.field = value."""
-        target = self.eval_expr(stmt.target, env)
+        target = self._eval_write_target(stmt.target, env)
         value = self._deep_copy_value(self.eval_expr(stmt.value, env))
 
         if isinstance(target, ConstructorValue):
             if stmt.field_name in target.fields:
                 # Mutate by creating a new fields dict and replacing _fields
-                from types import MappingProxyType
-
                 new_fields = dict(target.fields)
                 new_fields[stmt.field_name] = value
                 object.__setattr__(target, "_fields", MappingProxyType(new_fields))
@@ -3195,7 +3329,11 @@ class Interpreter:
 
     def _exec_for(self, stmt: ForStatement, env: Environment) -> None:
         """Execute a for loop."""
-        iterable = self.eval_expr(stmt.iterable, env)
+        iterable = _promote_int_to_expected_float(
+            self.eval_expr(stmt.iterable, env),
+            getattr(stmt.iterable, "_expected_runtime_type", None),
+            stmt.iterable,
+        )
         if not isinstance(iterable, (list, ArrayValue)):
             raise RuntimeError(
                 f"Cannot iterate over {type(iterable).__name__}", stmt.location
@@ -3298,7 +3436,7 @@ class Interpreter:
         """Execute a return statement."""
         value = self.eval_expr(stmt.value, env)
         value = _promote_int_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", None)
+            value, getattr(stmt, "_expected_runtime_type", None), stmt.value
         )
         raise ReturnException(value)
 

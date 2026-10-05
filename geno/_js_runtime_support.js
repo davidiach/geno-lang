@@ -687,6 +687,41 @@ function _withGenoFormatter(value, formatter) {
     return value;
 }
 
+// Built-in constructors carry no compiled formatter, and the parts the
+// generic fallback can't render (Float fields, tuples) need their static
+// types (#141).
+function _formatHeaderPairs(pairs, seen) {
+    return "[" + pairs.map(pair => (
+        "(" + _stringifyValue(pair[0], seen, false) + ", " + _stringifyValue(pair[1], seen, false) + ")"
+    )).join(", ") + "]";
+}
+
+const _BUILTIN_TAG_FORMATTERS = Object.freeze(Object.assign(Object.create(null), {
+    JsonFloat: (value) => "JsonFloat(value: " + _formatFloat(value.value) + ")",
+    JsonArray: (value, seen) => (
+        "JsonArray(items: [" + value.items.map(item => _stringifyValue(item, seen, false)).join(", ") + "])"
+    ),
+    JsonObject: (value, seen) => "JsonObject(entries: " + _formatHeaderPairs(value.entries, seen) + ")",
+    HttpRequest: (value, seen) => (
+        "HttpRequest(method: " + _reprString(value.method)
+        + ", path: " + _reprString(value.path)
+        + ", query: " + _reprString(value.query)
+        + ", headers: " + _formatHeaderPairs(value.headers, seen)
+        + ", body: " + _reprString(value.body) + ")"
+    ),
+    HttpResponse: (value, seen) => (
+        "HttpResponse(status: " + _GENO_STRING(value.status)
+        + ", body: " + _reprString(value.body)
+        + ", headers: " + _formatHeaderPairs(value.headers, seen) + ")"
+    ),
+}));
+
+function _constructorFormatter(value) {
+    const formatter = value[_GENO_FORMATTER];
+    if (typeof formatter === "function") return formatter;
+    return _BUILTIN_TAG_FORMATTERS[value._tag];
+}
+
 function _formatValue(value) {
     if (value === null || value === undefined) return '()';
     if (typeof value === 'boolean') return _GENO_STRING(value);
@@ -710,7 +745,7 @@ function _formatValue(value) {
     }
     if (value instanceof GenoVec) return 'Vec([' + value._elements.map(_formatValue).join(', ') + '])';
     if (isConstructor(value)) {
-        const formatter = value[_GENO_FORMATTER];
+        const formatter = _constructorFormatter(value);
         if (typeof formatter === "function") return formatter(value, undefined, false);
         const fields = Object.keys(value).filter(k => k !== '_tag');
         if (fields.length === 0) return value._tag;
@@ -774,7 +809,7 @@ function _stringifyValue(value, seen, topLevel = true) {
         return "{" + entries.join(", ") + "}";
     }
     if (isConstructor(value)) {
-        const formatter = value[_GENO_FORMATTER];
+        const formatter = _constructorFormatter(value);
         if (typeof formatter === "function") return formatter(value, seen, topLevel);
         const fields = Object.keys(value).filter(k => k !== "_tag");
         if (fields.length === 0) return value._tag;
@@ -816,6 +851,10 @@ function _deepCopy(val) {
         for (const key of Object.keys(val)) {
             copy[key] = _deepCopy(val[key]);
         }
+        // The formatter is a non-enumerable symbol, so Object.keys skips it;
+        // without it a copied Float field prints as an Int (#141).
+        const formatter = val[_GENO_FORMATTER];
+        if (typeof formatter === "function") _withGenoFormatter(copy, formatter);
         return Object.isFrozen(val) ? Object.freeze(copy) : copy;
     }
     return val;
@@ -4348,11 +4387,12 @@ function path_join(base, child) {
     return result;
 }
 
+// path_parent and path_extension follow Python's posixpath.dirname and
+// posixpath.splitext so every backend agrees.
 function path_parent(path) {
-    const idx = path.lastIndexOf('/');
-    if (idx < 0) return '';
-    if (idx === 0) return '/';
-    return path.substring(0, idx);
+    let head = path.substring(0, path.lastIndexOf('/') + 1);
+    if (head && !/^\/+$/.test(head)) head = head.replace(/\/+$/, '');
+    return head;
 }
 
 function path_filename(path) {
@@ -4363,8 +4403,10 @@ function path_filename(path) {
 function path_extension(path) {
     const base = path_filename(path);
     const idx = base.lastIndexOf('.');
-    if (idx <= 0) return '';
-    return base.substring(idx);
+    for (let i = 0; i < idx; i++) {
+        if (base[i] !== '.') return base.substring(idx);
+    }
+    return '';
 }
 
 function path_is_absolute(path) {
