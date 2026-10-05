@@ -1738,28 +1738,45 @@ def vec_from_list(lst):
 class _GenoAsync:
     """An ``Async[T]`` that runs once, however often it is awaited (#136).
 
-    A Python coroutine can only be awaited once; the first await here runs
-    it and later awaits get its result, or its error raised again.
+    A Python coroutine can only be awaited once. The first await runs it;
+    an await that arrives while that run is in flight waits for it, and a
+    later await gets its result, or its error raised again, as a
+    JavaScript Promise does.
     """
 
-    __slots__ = ("_awaitable", "_done", "_error", "_result")
+    __slots__ = ("_awaitable", "_done", "_error", "_result", "_started")
 
     def __init__(self, awaitable):
         self._awaitable = awaitable
+        self._started = False
         self._done = False
         self._result = None
         self._error = None
 
     def __await__(self):
-        if not self._done:
+        if not self._started:
+            self._started = True
+            finished = False
             try:
                 self._result = yield from self._awaitable.__await__()
+                finished = True
             except (_GenoThrow, RuntimeError, IndexError) as exc:
                 # What a Geno `catch` can see; anything else ends the run.
                 self._error = exc
-                self._done = True
+                finished = True
                 raise
-            self._done = True
+            finally:
+                if not finished:
+                    # Cancelled or interrupted: later awaiters must not
+                    # wait forever or read a result that never came.
+                    self._error = RuntimeError("Async value did not finish")
+                self._done = True
+            return self._result
+        while not self._done:
+            # Another awaiter is driving the run: hand control back to the
+            # event loop until it finishes. No asyncio import: the sandbox
+            # does not expose it.
+            yield
         if self._error is not None:
             raise self._error
         return self._result

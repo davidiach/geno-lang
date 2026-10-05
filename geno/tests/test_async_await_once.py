@@ -79,3 +79,82 @@ def test_default_geno_run_awaits_twice(tmp_path) -> None:
         check=False,
     )
     assert result.stdout == EXPECTED, result.stderr[-400:]
+
+
+def test_concurrent_awaiters_share_one_run() -> None:
+    import asyncio
+
+    from geno._runtime_support import _GenoAsync
+
+    runs = []
+
+    async def work() -> int:
+        runs.append(1)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return 7
+
+    shared = _GenoAsync(work())
+
+    async def consume() -> int:
+        return await shared
+
+    async def both() -> list[int]:
+        # Separate coroutines: gather() would de-duplicate the same awaitable.
+        return list(await asyncio.gather(consume(), consume(), consume()))
+
+    assert asyncio.run(both()) == [7, 7, 7]
+    assert len(runs) == 1
+
+
+def test_concurrent_awaiters_share_one_error() -> None:
+    import asyncio
+
+    from geno._runtime_support import _GenoAsync
+
+    runs = []
+
+    async def work() -> int:
+        runs.append(1)
+        await asyncio.sleep(0)
+        raise RuntimeError("boom")
+
+    shared = _GenoAsync(work())
+
+    async def consume() -> int:
+        return await shared
+
+    async def both() -> list[object]:
+        return list(await asyncio.gather(consume(), consume(), return_exceptions=True))
+
+    outcomes = asyncio.run(both())
+    assert [str(o) for o in outcomes] == ["boom", "boom"]
+    assert len(runs) == 1
+
+
+def test_cancelled_run_does_not_strand_other_awaiters() -> None:
+    import asyncio
+
+    from geno._runtime_support import _GenoAsync
+
+    async def work() -> int:
+        await asyncio.sleep(10)
+        return 1
+
+    shared = _GenoAsync(work())
+
+    async def consume() -> int:
+        return await shared
+
+    async def scenario() -> str:
+        first = asyncio.ensure_future(consume())
+        second = asyncio.ensure_future(consume())
+        await asyncio.sleep(0)
+        first.cancel()
+        try:
+            await asyncio.wait_for(second, timeout=5)
+        except RuntimeError as exc:
+            return str(exc)
+        return "no error"
+
+    assert asyncio.run(scenario()) == "Async value did not finish"
