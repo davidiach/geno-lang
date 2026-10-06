@@ -120,6 +120,9 @@ has to read a perfectly valid envelope despite a nonzero exit.
     not reuse a built-in type name, and the constructors of one type must have
     distinct names. The section's own examples use fresh names instead of
     redefining `Option` and `List`. (#139)
+
+  The document's own summary of how 0.5 differs from v0.4 now names all three
+  sections; it had still said section 4.1.1 was the only one.
 - Record fields may begin with a single underscore. The spec and `spec.json`
   only ever reserved keywords and dunder names on Python targets, but the
   compiled-Python prelude refused any `_`-prefixed field, so `r._x` passed
