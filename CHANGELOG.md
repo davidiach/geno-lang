@@ -102,6 +102,102 @@ the command now exits with the normalized status, 2 for that envelope.
 Anything running it under `set -e`, or with `subprocess(..., check=True)`, now
 has to read a perfectly valid envelope despite a nonzero exit.
 
+### Added
+
+- **Named arguments in constructor calls.** `Point(x: 10, y: 20)` parses, as
+  sections 6.3 and 7.8 of the spec have always written it and as the grammar's
+  `arg = (IDENT ":")? expr` allows for a `TYPE_IDENT` callee. The checker
+  validates names against the variant's fields and reports unknown, repeated,
+  missing and positional-after-named arguments; arguments are evaluated in
+  source order on every backend. (#135)
+- Two further rules in `docs/spec/v0.5.md`, so the 0.5 contract now differs from
+  v0.4 in three places rather than only section 4.1.1:
+  - Section 7.15: an `Async[T]` value runs its computation **at most once**.
+    Awaiting it again, including while an earlier await of it is still in
+    progress, produces that one run's result, and a run that threw throws the
+    same error to every awaiter. `spec.json` carries the rule too. (#136)
+  - Section 4.2: a type or type alias name may be defined once per module and may
+    not reuse a built-in type name, and the constructors of one type must have
+    distinct names. The section's own examples use fresh names instead of
+    redefining `Option` and `List`. (#139)
+- Record fields may begin with a single underscore. The spec and `spec.json`
+  only ever reserved keywords and dunder names on Python targets, but the
+  compiled-Python prelude refused any `_`-prefixed field, so `r._x` passed
+  `geno check` and crashed `geno run` and compiled Python. A single leading
+  underscore is admitted for a declared field of a Geno record; other `_`
+  attributes and dunders stay blocked. (#142)
+
+### Fixed
+
+Twenty-one defects found by evaluating the 0.5 line. Three reject programs that
+0.4.4 accepted, each of which already failed at run time on at least one
+backend, and two change printed output; see Migration above for what that means
+for an upgrade.
+
+- **Checks that now reject what ran wrong before**: an entry `main` that
+  declares parameters is reported as `E304`, since every host calls it as
+  `main()` (#133); a bare name that two unaliased imports both export is
+  reported at its use, naming the qualified forms, where the compilers had been
+  dropping it as ambiguous and `--unsafe` silently ran the last import (#132);
+  and a repeated type name, a repeated constructor within one type, or a user
+  type reusing a built-in name is reported at the definition, in both checkers
+  and for imported modules as well as the entrypoint, instead of silently
+  replacing the earlier meaning (#139).
+- **Float typing on the Python backends**: an `Int` held where a `Float` is
+  expected stayed an `Int` in the interpreter and compiled Python whenever
+  promotion was skipped -- inside a container, at a parameter, default, named or
+  destructured argument, in a lambda or block lambda typed to return `Float`, an
+  annotated `for` variable, or a mixed `max`/`min` -- so it printed `7` where
+  JavaScript printed `7.0`. The checker records the Float positions per
+  expression and both Python backends widen along that shape. (#137)
+- **`geno run` keeps output printed before an uncaught runtime error**, on all
+  three lanes and on a sandbox timeout, where the process-sandbox path returned
+  on the worker's error before printing, `--unsafe` read the buffer only on
+  success, and `--json` reported an empty `output`. Example-verification output
+  is cleared even when verification fails. (#130)
+- **Value semantics with aliased parts**: `var pair = Pair(p, p); pair.a.x = 50`
+  no longer changes `pair.b.x`. A field write copies one level of each
+  constructor, list or map on its target path before writing, so snapshots still
+  share structure and a shared DAG does not expand exponentially. (#129)
+- **A variant may share its type's name**: `type Shape = Shape(n: Int) | Other`
+  no longer rebinds the constructor to a `typing.Union` in compiled Python, and
+  annotations naming such a type spell out the union. (#128)
+- **Cross-variant equality under the sandbox**: `Some(1) == None` crashed with
+  `NameError: NotImplemented` on the sandboxed `geno run` path. (#127)
+- **`match` arms that build different variants of a generic type unify**:
+  `| 0 -> Err("zero") | _ -> Ok(n)` is accepted, and `Ok(1)`, `Err("x")`,
+  `Ok(2.5)` gives `Result[Float, String]` whatever the arm order. Diagnostics no
+  longer leak internal `__fresh_*` names. (#134)
+- **An index, field or call after a pipeline stage applies to the stage's
+  result**: `xs |> map(_, f)[0]` and `x |> make(_).handler()` no longer leave the
+  postfix behind as a separate statement, in either parser. (#138)
+- **`geno fmt` tracks blocks and brackets by token**, so a match expression not
+  bound by `let`/`var`, a block lambda, an `else`/`if` chain, multi-line
+  arguments, list literals and pipelines keep their structure. `format_source`
+  re-parses its output and raises `FormatError` rather than writing a file whose
+  meaning would change; `geno fmt` reports it and the LSP returns no edit. The
+  repository's `.geno` files are reformatted to the new fixed point, whitespace
+  only. (#131, #145)
+- **`geno constrain --validate` treats `else if` and comprehension `for`/`if` as
+  continuations**, so valid programs are no longer reported as having unclosed
+  blocks, while statements in a `fn ... do` lambda still open a block. (#144)
+- **The REPL** shows buffered output before each result, error, test result and
+  failed `:load`, reports positions in the user's own input rather than at the
+  hidden wrapper's line 4, and type-checks expressions before running them.
+  (#143)
+- **Compiled JavaScript prints built-in `JsonValue` and `HttpRequest`/
+  `HttpResponse` values canonically** rather than as `JsonFloat(value: 5)` and
+  header tuples as arrays, and `_deepCopy` carries a constructor's formatter
+  over so a copied value keeps its rendering. (#141)
+- **`path_parent`, `path_extension` and `path_is_absolute` agree across
+  backends**: the JS runtime follows `posixpath` semantics for repeated
+  separators and all-dot names, and the Python drive-letter check accepts only
+  ASCII letters, as `docs/reference/capabilities.md` describes. (#146)
+- **Self-hosted frontend parity**: transparent type aliases resolve in
+  signatures, fields, examples and entrypoints (#118), and a match-expression
+  arm evaluates to its expression rather than `()` (#140).
+- The VS Code extension's transitive `brace-expansion` moves to 5.0.12. (#125)
+
 ## [0.5.0-rc.0] - 2026-09-24
 
 Development pre-release opening the 0.5 series. Not published; the version is
