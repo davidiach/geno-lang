@@ -380,6 +380,7 @@ jobs:
         python scripts/pytest_shard.py \
           --allow-mixed-attempts \
           --allow-mixed-images \
+          --allow-mixed-python-patch \
           --validate-plan-manifests "${plan_files[@]}" \
           --timing-manifests "${timing_files[@]}"
 
