@@ -37,6 +37,7 @@ from ._backend_fastpath import (
 )
 from ._definition_index import collect_definitions
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program
+    FLOAT_PROMOTION_UNKNOWN,
     AssignStatement,
     ASTVisitor,
     AwaitExpr,
@@ -114,9 +115,10 @@ from .entrypoint import (
     classify_entrypoint_result,
     is_async_execution_form,
 )
+from .float_promotion import float_shape
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .types import FloatType, ListType, UserType
+from .types import AsyncType, FloatType, ListType, UserType
 
 
 @dataclass
@@ -195,6 +197,7 @@ _PYTHON_EMITTED_LOCAL_HELPER_NAMES = frozenset(
         "_builtin_min",
         "_geno_format",
         "_object_setattr",
+        "_promote_float_shape",
         "_promote_int_to_float",
     }
 )
@@ -223,6 +226,8 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
         {
             # Security-critical functions
             "get_field",
+            "_geno_own_field",
+            "_geno_own_index",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -251,6 +256,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_check_collection_kind",
             "_MAX_COLLECTION_SIZE",
             "_geno_run_async",
+            "_GenoAsync",
             "match_constructor",
             "_BLOCKED_FIELD_NAMES",
             # Core type infrastructure
@@ -1328,7 +1334,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             if p.default_value is None:
                 continue
             param_name = self._mangle_name(p.name)
-            default_value = self._compile_expr(p.default_value)
+            default_value = self._compile_call_argument(p.default_value)
             self._writeln(f"if {param_name} is _GENO_MISSING:")
             self._indent()
             self._writeln(f"{param_name} = {default_value}")
@@ -1540,12 +1546,23 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_field_assign_statement(self, stmt: FieldAssignStatement) -> None:
         """Compile field assignment against frozen Python constructor dataclasses."""
-        target = self._compile_expr(stmt.target)
+        target = self._compile_write_target(stmt.target)
         value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(f"_object_setattr({target}, {stmt.field_name!r}, {value})")
 
     def _snapshot_value(self, value: str) -> str:
         return f"_geno_deepcopy({value})"
+
+    def _compile_write_target(self, expr: Expression) -> str:
+        """Compile the value a field write lands in, unsharing its path (#129)."""
+        if isinstance(expr, FieldAccess):
+            parent = self._compile_write_target(expr.target)
+            return f"_geno_own_field({parent}, {expr.field_name!r})"
+        if isinstance(expr, IndexAccess):
+            parent = self._compile_write_target(expr.target)
+            index = self._compile_expr(expr.index)
+            return f"_geno_own_index({parent}, {index})"
+        return self._compile_expr(expr)
 
     def _compile_try_statement(self, stmt: TryStatement) -> None:
         """Compile a try/catch statement to Python try/except."""
@@ -1604,6 +1621,13 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_for_statement(self, stmt: ForStatement) -> None:
         """Compile for loops while preserving per-iteration lambda captures."""
         iterable = self._compile_expr(stmt.iterable)
+        if not isinstance(stmt.iterable, ListLiteral):
+            # A literal promotes its own elements.
+            iterable = self._promote_expr_to_expected_float(
+                iterable,
+                getattr(stmt.iterable, "_expected_runtime_type", None),
+                stmt.iterable,
+            )
         self._loop_capture_names.append(self._loop_lambda_names(stmt.body))
         try:
             with self._block_scope():
@@ -1649,6 +1673,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             rhs = self._promote_expr_to_expected_float(
                 self._compile_expr(defn.value),
                 getattr(defn, "_expected_runtime_type", defn.type_annotation),
+                defn.value,
             )
             self._active_module_bindings[defn.name] = identity
             if defn.type_annotation is not None:
@@ -1691,7 +1716,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         name = self._declare_block_binding(stmt.name)
         rhs = f"_geno_deepcopy({value})"
         rhs = self._promote_expr_to_expected_float(
-            rhs, getattr(stmt, "_expected_runtime_type", type_annot)
+            rhs, getattr(stmt, "_expected_runtime_type", type_annot), stmt.value
         )
         if type_annot is not None and name not in self._nonlocal_param_names:
             ann = self._compile_type_annotation(type_annot)
@@ -1733,7 +1758,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         value = self._compile_expr(stmt.value)
         name = self._declare_block_binding(stmt.name)
         rhs = f"_geno_deepcopy({value})"
-        rhs = self._promote_expr_to_expected_float(rhs, expected_type)
+        rhs = self._promote_expr_to_expected_float(rhs, expected_type, stmt.value)
         if type_annot is not None and name not in self._nonlocal_param_names:
             ann = self._compile_type_annotation(type_annot)
             # Quote annotations to match function signatures and ADT fields,
@@ -1751,7 +1776,11 @@ class Compiler(BaseCompiler, ASTVisitor):
         )
 
     def _compile_tuple_destructure(self, stmt: TupleDestructureStatement) -> None:
-        value = self._compile_expr(stmt.value)
+        value = self._promote_expr_to_expected_float(
+            self._compile_expr(stmt.value),
+            getattr(stmt.value, "_expected_runtime_type", None),
+            stmt.value,
+        )
         temporary = self._fresh_temp()
         self._writeln(f"{temporary} = {value}")
         for index, name in enumerate(stmt.names):
@@ -1761,7 +1790,7 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_return_statement(self, stmt: ReturnStatement) -> None:
         value = self._compile_expr(stmt.value)
         value = self._promote_expr_to_expected_float(
-            value, getattr(stmt, "_expected_runtime_type", None)
+            value, getattr(stmt, "_expected_runtime_type", None), stmt.value
         )
         self._writeln(self._return_stmt(value))
 
@@ -1815,7 +1844,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return
         value = self._compile_expr(stmt.value)
         value = f"_geno_deepcopy({value})"
-        value = self._promote_expr_to_expected_float(value, expected_type)
+        value = self._promote_expr_to_expected_float(value, expected_type, stmt.value)
         self._writeln(f"{self._compiled_identifier_name(stmt.target)} = {value}")
 
     # ``_compile_{index_assign,field_assign}_statement`` live on
@@ -2109,7 +2138,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             return self._compile_unary_op(cast(UnaryOp, expr))
 
         if expr_type is FunctionCall:
-            return self._compile_function_call(cast(FunctionCall, expr))
+            return self._run_async_once(
+                expr, self._compile_function_call(cast(FunctionCall, expr))
+            )
 
         if expr_type is IndexAccess:
             index_expr = cast(IndexAccess, expr)
@@ -2123,7 +2154,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"get_field({target}, {field_access.field_name!r})"
 
         if expr_type is Pipeline:
-            return self._compile_pipeline(cast(Pipeline, expr))
+            return self._run_async_once(
+                expr, self._compile_pipeline(cast(Pipeline, expr))
+            )
 
         if expr_type is LambdaExpr:
             return self._compile_lambda(cast(LambdaExpr, expr))
@@ -2174,7 +2207,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         if expr_type is AwaitExpr:
             await_expr = cast(AwaitExpr, expr)
-            inner = self._compile_expr(await_expr.expr)
+            inner = self._compile_await_operand(await_expr.expr)
             return f"(await {inner})"
 
         return self._compile_expr_slowpath(expr)
@@ -2270,7 +2303,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return self._compile_unary_op(expr)
 
         if isinstance(expr, FunctionCall):
-            return self._compile_function_call(expr)
+            return self._run_async_once(expr, self._compile_function_call(expr))
 
         if isinstance(expr, IndexAccess):
             target = self._compile_expr(expr.target)
@@ -2282,7 +2315,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"get_field({target}, {expr.field_name!r})"
 
         if isinstance(expr, Pipeline):
-            return self._compile_pipeline(expr)
+            return self._run_async_once(expr, self._compile_pipeline(expr))
 
         if isinstance(expr, LambdaExpr):
             return self._compile_lambda(expr)
@@ -2326,7 +2359,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"_geno_throw({value})"
 
         if isinstance(expr, AwaitExpr):
-            inner = self._compile_expr(expr.expr)
+            inner = self._compile_await_operand(expr.expr)
             return f"(await {inner})"
 
         raise CompileError(f"Unsupported expression node: {type(expr).__name__}")
@@ -2349,10 +2382,33 @@ class Compiler(BaseCompiler, ASTVisitor):
             and not expected_type.type_params
         )
 
-    def _promote_expr_to_expected_float(self, value: str, expected_type: object) -> str:
+    def _promote_expr_to_expected_float(
+        self, value: str, expected_type: object, source: object = None
+    ) -> str:
         if self._expected_runtime_type_is_float(expected_type):
             return f"_promote_int_to_float({value})"
-        return value
+        # The checker's `_float_promotion` on the source expression leaves out
+        # positions already typed Float, so those values are not copied.
+        shape = getattr(source, "_float_promotion", FLOAT_PROMOTION_UNKNOWN)
+        if shape is FLOAT_PROMOTION_UNKNOWN:
+            shape = float_shape(expected_type)
+        return self._promote_to_float_shape(value, shape)
+
+    @staticmethod
+    def _promote_to_float_shape(value: str, shape: object) -> str:
+        if shape is None:
+            return value
+        if shape == "F":
+            return f"_promote_int_to_float({value})"
+        # An Int inside a Float list, Option, Result, tuple or map (#137).
+        return f"_promote_float_shape({value}, {shape!r})"
+
+    def _compile_call_argument(self, value: Expression) -> str:
+        """Widen an Int argument bound to a Float parameter (#137)."""
+        shape = value._float_promotion
+        if shape is FLOAT_PROMOTION_UNKNOWN:
+            shape = None
+        return self._promote_to_float_shape(self._compile_expr(value), shape)
 
     def _promote_list_element(self, value: str, expected_type: object) -> str:
         if isinstance(expected_type, ListType):
@@ -2688,6 +2744,21 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         return operand
 
+    def _compile_await_operand(self, expr: Expression) -> str:
+        """An Async awaited where it is made can't be awaited again: no wrap."""
+        if isinstance(expr, FunctionCall):
+            return self._compile_function_call(expr)
+        if isinstance(expr, Pipeline):
+            return self._compile_pipeline(expr)
+        return self._compile_expr(expr)
+
+    @staticmethod
+    def _run_async_once(expr: Expression, code: str) -> str:
+        """Wrap a call producing ``Async[T]`` so it may be awaited again (#136)."""
+        if isinstance(getattr(expr, "_resolved_type", None), AsyncType):
+            return f"_GenoAsync({code})"
+        return code
+
     def _compile_function_call(self, expr: FunctionCall) -> str:
         """Compile a function call."""
         has_named_args = any(arg.name for arg in expr.arguments)
@@ -2723,7 +2794,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         func = self._compile_expr(expr.function)
         args = ", ".join(
-            "_GENO_MISSING" if arg is None else self._compile_expr(arg.value)
+            "_GENO_MISSING" if arg is None else self._compile_call_argument(arg.value)
             for arg in ordered_args
         )
 
@@ -3003,7 +3074,11 @@ class Compiler(BaseCompiler, ASTVisitor):
             with self._with_shadowed_bindings([p.name for p in expr.params]):
                 if expr.block_body is None:
                     assert expr.body is not None
-                    self._writeln(f"return {self._compile_expr(expr.body)}")
+                    body = self._promote_expr_to_expected_float(
+                        self._compile_expr(expr.body),
+                        getattr(expr.body, "_expected_runtime_type", None),
+                    )
+                    self._writeln(f"return {body}")
                 elif not expr.block_body:
                     self._writeln("pass")
                 else:
@@ -3026,7 +3101,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         else:
             assert expr.body is not None
             with self._with_shadowed_bindings([p.name for p in expr.params]):
-                body = self._compile_expr(expr.body)
+                body = self._promote_expr_to_expected_float(
+                    self._compile_expr(expr.body),
+                    getattr(expr.body, "_expected_runtime_type", None),
+                )
             return f"(lambda {params}: {body})"
 
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:
@@ -3034,6 +3112,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         if expr.constructor == "None":
             return "None_"
 
+        reordered = self._compile_named_constructor_call(expr)
+        if reordered is not None:
+            names, values, call = reordered
+            return f"(lambda {', '.join(names)}: {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
         return f"{expr.constructor}({args})"
 

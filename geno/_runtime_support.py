@@ -68,6 +68,37 @@ def _promote_int_to_float(value: Any) -> Any:
     return value
 
 
+def _promote_float_shape(value: Any, shape: Any) -> Any:
+    """Promote the Ints at the Float positions ``shape`` names (#137).
+
+    ``shape`` comes from ``geno.float_promotion.float_shape``.
+    """
+    if shape is None:
+        return value
+    if shape == "F":
+        return _promote_int_to_float(value)
+    kind = shape[0]
+    if kind == "L" and isinstance(value, list):
+        return [_promote_float_shape(item, shape[1]) for item in value]
+    if kind == "T" and isinstance(value, tuple):
+        return tuple(
+            _promote_float_shape(item, item_shape)
+            for item, item_shape in zip(value, shape[1])
+        )
+    if kind == "M" and isinstance(value, dict):
+        return {
+            _promote_float_shape(key, shape[1]): _promote_float_shape(item, shape[2])
+            for key, item in value.items()
+        }
+    if kind == "O" and isinstance(value, Some):
+        return Some(_promote_float_shape(value.value, shape[1]))
+    if kind == "R" and isinstance(value, Ok):
+        return Ok(_promote_float_shape(value.value, shape[1]))
+    if kind == "R" and isinstance(value, Err):
+        return Err(_promote_float_shape(value.error, shape[2]))
+    return value
+
+
 def _object_getattribute(obj: Any, name: str) -> Any:
     """Call object.__getattribute__ without relying on exposed builtins."""
     return _GENO_OBJECT.__getattribute__(obj, name)  # type: ignore[call-arg]
@@ -148,7 +179,7 @@ def _geno_sort_key(value: Any, _seen: tuple[Any, ...] | None = None) -> tuple[An
         if constructor_name == "_None":
             constructor_name = "None"
         fields = tuple(
-            (field.name, _geno_sort_key(getattr(value, field.name), _seen))
+            (field.name, _geno_sort_key(_object_getattribute(value, field.name), _seen))
             for field in _dataclasses_fields(value)
         )
         return (6, constructor_name, fields)
@@ -253,7 +284,7 @@ def _geno_format(
             return constructor_name
         field_strs = ", ".join(
             f"{field.name}: "
-            f"{_geno_format(getattr(value, field.name), _seen, _top_level=False)}"
+            f"{_geno_format(_object_getattribute(value, field.name), _seen, _top_level=False)}"
             for field in fields
         )
         return f"{constructor_name}({field_strs})"
@@ -321,7 +352,9 @@ class Constructor:
         fields = _dc.fields(self)
         if not fields:
             return type(self).__name__
-        field_strs = ", ".join(f"{f.name}: {getattr(self, f.name)!r}" for f in fields)
+        field_strs = ", ".join(
+            f"{f.name}: {_object_getattribute(self, f.name)!r}" for f in fields
+        )
         return f"{type(self).__name__}({field_strs})"
 
 
@@ -363,11 +396,55 @@ def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any
             _object_setattr(
                 copied_constructor,
                 field.name,
-                _geno_deepcopy(getattr(value, field.name), memo),
+                _geno_deepcopy(_object_getattribute(value, field.name), memo),
             )
         return copied_constructor
 
     return value
+
+
+def _geno_unshared_part(value: Any) -> Any:
+    """Copy one level of a value-type container that is about to be written."""
+    if isinstance(value, Constructor):
+        geno_object: Any = _GENO_OBJECT
+        copied_constructor = geno_object.__new__(type(value))
+        for field in _dataclasses_fields(value):
+            _object_setattr(
+                copied_constructor, field.name, _object_getattribute(value, field.name)
+            )
+        return copied_constructor
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _geno_own_field(parent: Any, field_name: str) -> Any:
+    """Read a field on the way to a field write, unsharing it first.
+
+    A snapshot keeps one copy of a part that two places shared, so the part
+    is copied and put back before the write reaches it; the write then never
+    shows through another path to the same part (#129).
+    """
+    child = get_field(parent, field_name)
+    if not isinstance(parent, Constructor):
+        return child
+    unshared = _geno_unshared_part(child)
+    if unshared is not child:
+        _object_setattr(parent, field_name, unshared)
+    return unshared
+
+
+def _geno_own_index(container: Any, index: Any) -> Any:
+    """Index on the way to a field write, unsharing the element first (#129)."""
+    child = _safe_index(container, index)
+    if not isinstance(container, (list, dict, _GenoArray)):
+        return child
+    unshared = _geno_unshared_part(child)
+    if unshared is not child:
+        container[index] = unshared
+    return unshared
 
 
 # =============================================================================
@@ -694,8 +771,15 @@ def round_(x: float) -> int:
     return _require_safe_js_int(rounded, "round result")
 
 
+def _widen_mixed(result: Any, a: Any, b: Any) -> Any:
+    """An Int result from mixed Int/Float operands is a Float (#137)."""
+    if type(result) is int and (isinstance(a, float) or isinstance(b, float)):
+        return float(result)
+    return result
+
+
 def max_(a: Any, b: Any) -> Any:
-    return a if a >= b else b
+    return _widen_mixed(a if a >= b else b, a, b)
 
 
 def is_sorted(lst: list) -> bool:
@@ -1181,11 +1265,26 @@ def get_field(value, field_name: str):
     Security: Rejects private attributes and blocked attribute names
     to prevent sandbox escape via attribute access.
     """
-    if field_name in _BLOCKED_FIELD_NAMES or field_name.startswith("_"):
+    if field_name in _BLOCKED_FIELD_NAMES or field_name.startswith("__"):
         raise RuntimeError(
             f"Access to field '{field_name}' is not allowed (private attribute)"
         )
     import dataclasses as _dc
+
+    if field_name.startswith("_"):
+        # A Geno record may declare `_x`; nothing else with a leading
+        # underscore is reachable as a field.
+        try:
+            declared = isinstance(value, Constructor) and any(
+                field.name == field_name for field in _dataclasses_fields(value)
+            )
+        except TypeError:
+            declared = False
+        if declared:
+            return _object_getattribute(value, field_name)
+        raise RuntimeError(
+            f"Access to field '{field_name}' is not allowed (private attribute)"
+        )
 
     try:
         value_dict = _object_getattribute(value, "__dict__")
@@ -1305,7 +1404,8 @@ def _check_collection_size(result):
         if isinstance(value, Constructor):
             visited.append(value)
             stack.extend(
-                getattr(value, field.name) for field in _dataclasses_fields(value)
+                _object_getattribute(value, field.name)
+                for field in _dataclasses_fields(value)
             )
     return result
 
@@ -1633,6 +1733,53 @@ def vec_from_list(lst):
 # =============================================================================
 # Set
 # =============================================================================
+
+
+class _GenoAsync:
+    """An ``Async[T]`` that runs once, however often it is awaited (#136).
+
+    A Python coroutine can only be awaited once. The first await runs it;
+    an await that arrives while that run is in flight waits for it, and a
+    later await gets its result, or its error raised again, as a
+    JavaScript Promise does.
+    """
+
+    __slots__ = ("_awaitable", "_done", "_error", "_result", "_started")
+
+    def __init__(self, awaitable):
+        self._awaitable = awaitable
+        self._started = False
+        self._done = False
+        self._result = None
+        self._error = None
+
+    def __await__(self):
+        if not self._started:
+            self._started = True
+            finished = False
+            try:
+                self._result = yield from self._awaitable.__await__()
+                finished = True
+            except (_GenoThrow, RuntimeError, IndexError) as exc:
+                # What a Geno `catch` can see; anything else ends the run.
+                self._error = exc
+                finished = True
+                raise
+            finally:
+                if not finished:
+                    # Cancelled or interrupted: later awaiters must not
+                    # wait forever or read a result that never came.
+                    self._error = RuntimeError("Async value did not finish")
+                self._done = True
+            return self._result
+        while not self._done:
+            # Another awaiter is driving the run: hand control back to the
+            # event loop until it finishes. No asyncio import: the sandbox
+            # does not expose it.
+            yield
+        if self._error is not None:
+            raise self._error
+        return self._result
 
 
 class _GenoSet:
@@ -2931,7 +3078,9 @@ def _geno_value_to_python(value):
     if isinstance(value, Constructor):
         result = {"_tag": type(value).__name__}
         for field in _dataclasses_fields(value):
-            result[field.name] = _geno_value_to_python(getattr(value, field.name))
+            result[field.name] = _geno_value_to_python(
+                _object_getattribute(value, field.name)
+            )
         return result
     # Runtime-only containers fall back to their Geno display representation.
     if isinstance(value, (_GenoArray, _GenoMutableMap, _GenoVec, _GenoSet)):
@@ -3198,11 +3347,11 @@ def math_abs(x):
 
 
 def math_min(a, b):
-    return _builtin_min(a, b)
+    return _widen_mixed(_builtin_min(a, b), a, b)
 
 
 def math_max(a, b):
-    return _builtin_max(a, b)
+    return _widen_mixed(_builtin_max(a, b), a, b)
 
 
 def math_clamp(value, lo, hi):
@@ -3381,7 +3530,9 @@ def path_extension(path):
 
 def path_is_absolute(path):
     return _runtime_posixpath.isabs(path) or (
-        len(path) >= 3 and path[0].isalpha() and path[1:3] == ":/"
+        len(path) >= 3
+        and path[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        and path[1:3] == ":/"
     )
 
 

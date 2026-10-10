@@ -8,17 +8,17 @@ import Layout
 import Theme
 
 type DashState = DashState(
-cpu: Int,
-memory: Int,
-requests: Int,
-latency: Int,
-cpu_history: List[Int],
-latency_history: List[Int],
-elapsed: Float,
-refresh_timer: Float,
-refresh_interval: Float,
-status: Status,
-error_message: String
+    cpu: Int,
+    memory: Int,
+    requests: Int,
+    latency: Int,
+    cpu_history: List[Int],
+    latency_history: List[Int],
+    elapsed: Float,
+    refresh_timer: Float,
+    refresh_interval: Float,
+    status: Status,
+    error_message: String
 )
 
 // Initial history buffer (20 zeroes).

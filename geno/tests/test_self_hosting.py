@@ -895,25 +895,6 @@ class TestSelfhostTypeAliases:
         ("definitions", "return_type", "body", "status"),
         [
             ("type Status = Int", "Status", "return 4", 4),
-            (
-                "type Box[T, U] = Old(x: T, y: U)\ntype Holder = Holder(value: Id[Box[Int]])\ntype Box[T] = New(x: T)\ntype Id[T] = T",
-                "Unit",
-                "return ()",
-                0,
-            ),
-            (
-                "type Box[T] = Old(x: T)\ntype Holder = Holder(value: Id[Box[Int, String]])\ntype Box[T, U] = New(x: T, y: U)\ntype Id[T] = T",
-                "Unit",
-                "return ()",
-                0,
-            ),
-            ("type A = Int\ntype B = A\ntype A = String", "B", 'return "hi"', 0),
-            (
-                "type A[T] = T\ntype B = A[Int]\ntype A[T] = String",
-                "B",
-                'return "hi"',
-                0,
-            ),
             ("type Identity[List] = List", "Identity[Int]", "return 4", 4),
             ("type Identity[Tuple] = Tuple", "Identity[Int]", "return 4", 4),
             (
@@ -955,6 +936,25 @@ class TestSelfhostTypeAliases:
         assert result.returncode == status, result.stdout + result.stderr
         assert result.stdout == ""
         assert result.stderr == ""
+
+    @pytest.mark.parametrize(
+        "definitions",
+        [
+            "type Box[T, U] = Old(x: T, y: U)\ntype Box[T] = New(x: T)",
+            "type A = Int\ntype B = A\ntype A = String",
+            "type A[T] = T\ntype B = A[Int]\ntype A[T] = String",
+        ],
+    )
+    def test_redefined_type_is_rejected_by_both_frontends(
+        self, tmp_path: Path, definitions: str
+    ) -> None:
+        """A second definition of a type name is an error, not a replacement (#139)."""
+        source = f"{definitions}\nfunc main() -> Unit\n    return ()\nend func\n"
+        with pytest.raises(TypeError, match="Duplicate type definition"):
+            typecheck(source)
+        result = TestSelfhostCliResultCompatibility._run(tmp_path, source)
+        assert result.returncode != 0
+        assert "Duplicate type definition" in result.stdout + result.stderr
 
     def test_alias_in_examples_parameters_locals_and_forward_fields(
         self, tmp_path: Path

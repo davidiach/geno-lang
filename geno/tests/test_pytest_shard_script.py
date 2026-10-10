@@ -670,6 +670,88 @@ def test_hosted_image_rollout_preserves_shard_timings(
     assert "not a comparable timing sample" in output
 
 
+def test_hosted_python_patch_bump_preserves_shard_timings(
+    tmp_path: Path, capsys
+) -> None:
+    """A hosted image rollout brings a new interpreter patch with it."""
+    plan_paths = _write_plan_manifests(tmp_path)
+    plan = pytest_shard.validate_shard_plan_manifests(plan_paths)
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    for path, version in zip(timing_paths, ("3.11.16", "3.11.17", "3.11.16")):
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["provenance"]["python_version"] = version
+        manifest["provenance"]["environment_sha256"] = _environment_sha256(
+            manifest["provenance"]
+        )
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Without the allowance this is the failure a hosted patch rollout caused.
+    with pytest.raises(ValueError, match=r"python_version=3\.11\.16/3\.11\.17"):
+        pytest_shard.validate_shard_timing_manifests(timing_paths, plan)
+
+    assert (
+        pytest_shard.main(
+            [
+                "--validate-plan-manifests",
+                *(str(path) for path in plan_paths),
+                "--timing-manifests",
+                *(str(path) for path in timing_paths),
+                "--allow-mixed-python-patch",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "mixed Python patch versions" in output
+    assert "3.11.16/3.11.17" in output
+    assert "not a comparable timing sample" in output
+
+
+def test_python_patch_allowance_still_rejects_a_different_minor(
+    tmp_path: Path,
+) -> None:
+    """3.11 against 3.12 is a different interpreter, not a patch rollout."""
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    for path, version in zip(timing_paths, ("3.11.17", "3.12.1", "3.11.17")):
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["provenance"]["python_version"] = version
+        manifest["provenance"]["environment_sha256"] = _environment_sha256(
+            manifest["provenance"]
+        )
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match=r"different runtime environments: python_version="
+    ):
+        pytest_shard.validate_shard_timing_manifests(
+            timing_paths, plan, allow_mixed_python_patch=True
+        )
+
+
+def test_python_patch_error_names_the_patch_releases(tmp_path: Path) -> None:
+    """The message keeps the patch releases, not the relaxed 3.11/3.12 form."""
+    plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
+    timing_paths = _write_timing_manifests(tmp_path, plan)
+    for path, version in zip(timing_paths, ("3.11.17", "3.12.1", "3.11.17")):
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["provenance"]["python_version"] = version
+        manifest["provenance"]["environment_sha256"] = _environment_sha256(
+            manifest["provenance"]
+        )
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"3\.11\.17/3\.12\.1"):
+        pytest_shard.validate_shard_timing_manifests(
+            timing_paths, plan, allow_mixed_python_patch=True
+        )
+
+
+def test_mixed_python_patch_allowance_requires_timing_validation_mode() -> None:
+    with pytest.raises(SystemExit, match="requires timing validation mode"):
+        pytest_shard.main(["--allow-mixed-python-patch", "--shard-index", "0"])
+
+
 @pytest.mark.parametrize(
     "field", ["runner_os", "runner_arch", "runner_image_os", "python_version"]
 )

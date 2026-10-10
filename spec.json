@@ -400,7 +400,7 @@
   },
 
   "async_await": {
-    "description": "Async functions return Async[T] and are defined with 'async func'. Use 'await' to resolve Async[T] values. 'await' is allowed inside 'async func' and inside 'main()'. Async functions are exempt from example clause requirements.",
+    "description": "Async functions return Async[T] and are defined with 'async func'. Use 'await' to resolve Async[T] values. An Async[T] value runs at most once: awaiting it again, even while an earlier await is in progress, gives the same result, or throws the same error. 'await' is allowed inside 'async func' and inside 'main()'. Async functions are exempt from example clause requirements.",
     "syntax": {
       "definition": "async func name(params) -> ReturnType",
       "usage": "let result: T = await async_expr"

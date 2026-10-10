@@ -3392,6 +3392,10 @@ class JSCompiler(BaseCompiler):
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:
         if expr.constructor == "None":
             return "None_"
+        reordered = self._compile_named_constructor_call(expr)
+        if reordered is not None:
+            names, values, call = reordered
+            return f"(({', '.join(names)}) => {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
         return f"{expr.constructor}({args})"
 
