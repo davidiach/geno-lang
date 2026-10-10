@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A method defined twice in one impl block is reported** as `E309` at the
+  second definition, for the entrypoint and for imported modules alike. Every
+  backend dispatched to the last definition, so the first body was dead code
+  and `geno test` failed its own examples against the other body. Section 4.6
+  of `docs/spec/v0.5.md` states the rule, a fourth place the 0.5 contract
+  differs from v0.4. Extracted from #43 (#51).
+
 ## [0.5.0-rc.1] - 2026-09-30
 
 The first published release of the 0.5 series, and the one that carries accepted
