@@ -344,8 +344,9 @@ func ratio(a: Float, b: Float) -> Float
 end func
 ```
 
-Every example-verification path compares the same way. Two `Int` values must be
-equal. When either side is a `Float`, the two must agree to a relative tolerance
+`geno test` and the `run_harness_from_source` and `run_harness_from_compiled`
+helpers compare the same way, including inside lists, tuples, maps and
+constructors. Two `Int` values must be equal. When either side is a `Float`, the two must agree to a relative tolerance
 of `1e-9`, with an absolute floor of `1e-12` near zero. An expectation rounded to
 ten or more significant digits therefore passes at any magnitude: rounding
 `16000000.0 / 7.0` to `2285714.28571` passes, while `22.857` above is off by about

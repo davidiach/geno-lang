@@ -608,9 +608,9 @@ end func
         assert len(harnesses[0].examples) == 2
 
 
-def _example_program(signature: str, example: str, body: str) -> str:
+def _example_program(signature: str, example: str, body: str, prelude: str = "") -> str:
     return (
-        f"func subject{signature}\n"
+        prelude + f"func subject{signature}\n"
         f"    example {example}\n"
         f"    return {body}\n"
         "end func\n\n"
@@ -622,8 +622,11 @@ def _example_program(signature: str, example: str, body: str) -> str:
 
 _RATIO = "(a: Float, b: Float) -> Float"
 
+_RATIO_TYPE = "type Ratio = Ratio(value: Float, label: String)\n\n"
+
 # Each case is (source, whether its one example passes). The first two are the
-# reproductions from #111; the Int cases pin that two Ints compare exactly.
+# reproductions from #111, the aggregate cases carry the same rounded Float one
+# level down, and the Int cases pin that two Ints compare exactly.
 _EXAMPLE_VERDICT_CASES = [
     pytest.param(
         _example_program(_RATIO, "(160.0, 7.0) -> 22.85714286", "a / b"),
@@ -639,6 +642,52 @@ _EXAMPLE_VERDICT_CASES = [
         _example_program(_RATIO, "(160.0, 7.0) -> 22.857", "a / b"),
         False,
         id="five-digits-still-fails",
+    ),
+    pytest.param(
+        _example_program(
+            "(a: Float, b: Float) -> (Float, Float)",
+            "(160.0, 7.0) -> (22.85714286, 1.0)",
+            "(a / b, 1.0)",
+        ),
+        True,
+        id="float-in-tuple",
+    ),
+    pytest.param(
+        _example_program(
+            "(a: Float, b: Float) -> (Float, Float)",
+            "(160.0, 7.0) -> (22.857, 1.0)",
+            "(a / b, 1.0)",
+        ),
+        False,
+        id="five-digits-in-tuple-still-fails",
+    ),
+    pytest.param(
+        _example_program(
+            "(a: Float, b: Float) -> List[Float]",
+            "(160.0, 7.0) -> [22.85714286]",
+            "[a / b]",
+        ),
+        True,
+        id="float-in-list",
+    ),
+    pytest.param(
+        _example_program(
+            "(a: Float, b: Float) -> Ratio",
+            '(160.0, 7.0) -> Ratio(value: 22.85714286, label: "r")',
+            'Ratio(value: a / b, label: "r")',
+            prelude=_RATIO_TYPE,
+        ),
+        True,
+        id="float-in-constructor",
+    ),
+    pytest.param(
+        _example_program(
+            "(a: Float, b: Float) -> Option[Float]",
+            "(160.0, 7.0) -> Some(22.85714286)",
+            "Some(a / b)",
+        ),
+        True,
+        id="float-in-option",
     ),
     pytest.param(
         _example_program("() -> Int", "() -> 2000000001", "2000000000"),

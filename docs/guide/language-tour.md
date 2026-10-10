@@ -101,7 +101,7 @@ A convenience rounding like `22.857` fails. The tolerance deliberately does not
 stretch that far: an example that passed on a value correct to only four digits
 would hide a real error rather than catch it.
 
-Every verification path uses the same relative tolerance of `1e-9`, so an
+`geno test` compares a `Float` result to a relative tolerance of `1e-9`, so an
 expectation rounded to ten or more significant digits passes at any magnitude.
 Taking the expected value from a real run and keeping all its digits is still
 the simplest habit. When the domain allows it, prefer `Int` arithmetic instead,
