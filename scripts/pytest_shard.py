@@ -811,6 +811,7 @@ def validate_shard_timing_manifests(
     *,
     allow_mixed_attempts: bool = False,
     allow_mixed_images: bool = False,
+    allow_mixed_python_patch: bool = False,
 ) -> list[ShardTimingManifest]:
     """Validate timing telemetry against the exact agreed shard plan."""
     if len(paths) != plan["shard_count"]:
@@ -839,12 +840,30 @@ def validate_shard_timing_manifests(
         if not (allow_mixed_images and key == "runner_image_version")
     )
     facts = [_environment_facts(manifest) for manifest in manifests]
-    if len({tuple(fact[key] for key in compared_keys) for fact in facts}) != 1:
+    compared_facts = (
+        [_without_python_patch(fact) for fact in facts]
+        if allow_mixed_python_patch
+        else facts
+    )
+    if len({tuple(fact[key] for key in compared_keys) for fact in compared_facts}) != 1:
+        # Describe the raw facts: naming 3.11/3.12 would hide which patch
+        # releases were actually involved.
         raise ValueError(
             "shard timing manifests come from different runtime environments: "
             + _describe_environment_differences(facts, compared_keys)
         )
     return sorted(manifests, key=lambda manifest: manifest["shard_index"])
+
+
+def _python_minor(version: str) -> str:
+    """``3.11.17`` as ``3.11``, leaving anything shorter as it stands."""
+    parts = version.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else version
+
+
+def _without_python_patch(fact: dict[str, str]) -> dict[str, str]:
+    """The same facts with the interpreter compared to minor precision only."""
+    return {**fact, "python_version": _python_minor(fact["python_version"])}
 
 
 def _environment_facts(manifest: ShardTimingManifest) -> dict[str, str]:
@@ -879,6 +898,14 @@ def print_shard_timing_summary(manifests: Sequence[ShardTimingManifest]) -> None
         print(
             "  mixed runner images "
             f"({'/'.join(sorted(images))}): "
+            "valid for coverage, not a comparable timing sample",
+            flush=True,
+        )
+    pythons = {manifest["provenance"]["python_version"] for manifest in manifests}
+    if len(pythons) > 1:
+        print(
+            "  mixed Python patch versions "
+            f"({'/'.join(sorted(pythons))}): "
             "valid for coverage, not a comparable timing sample",
             flush=True,
         )
@@ -970,6 +997,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "so this is normal; it is not a comparable timing sample."
         ),
     )
+    parser.add_argument(
+        "--allow-mixed-python-patch",
+        action="store_true",
+        help=(
+            "Allow shards whose runners had different patch releases of one "
+            "Python minor version. A hosted image rollout carries a new "
+            "interpreter patch with it, so this is normal; a different minor "
+            "version is still refused, and it is not a comparable timing sample."
+        ),
+    )
     parser.add_argument("--shard-count", type=int, default=2)
     parser.add_argument(
         "--balance-profile",
@@ -1011,6 +1048,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--allow-mixed-attempts requires timing validation mode")
     if args.allow_mixed_images and not in_timing_validation_mode:
         raise SystemExit("--allow-mixed-images requires timing validation mode")
+    if args.allow_mixed_python_patch and not in_timing_validation_mode:
+        raise SystemExit("--allow-mixed-python-patch requires timing validation mode")
     if args.validate_plan_manifests is not None:
         if (
             args.plan_manifest is not None
@@ -1033,6 +1072,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     plan,
                     allow_mixed_attempts=args.allow_mixed_attempts,
                     allow_mixed_images=args.allow_mixed_images,
+                    allow_mixed_python_patch=args.allow_mixed_python_patch,
                 )
             except ValueError as exc:
                 print(f"pytest shard timing validation failed: {exc}", file=sys.stderr)
