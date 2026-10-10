@@ -344,14 +344,12 @@ func ratio(a: Float, b: Float) -> Float
 end func
 ```
 
-The comparison paths currently differ: `geno test` uses the interpreter's
-relative tolerance with a small absolute floor, while `run_harness_from_source`
-and `run_harness_from_compiled` use an absolute tolerance. A fixed number of
-significant digits cannot guarantee that a rounded expectation passes both,
-especially as the value grows. For example, rounding `16000000.0 / 7.0` to
-`2285714.28571` keeps twelve significant digits and passes interpreter example
-verification, but fails both harness functions. Preserve the full value,
-`2285714.285714286`, instead.
+Every example-verification path compares the same way. Two `Int` values must be
+equal. When either side is a `Float`, the two must agree to a relative tolerance
+of `1e-9`, with an absolute floor of `1e-12` near zero. An expectation rounded to
+ten or more significant digits therefore passes at any magnitude: rounding
+`16000000.0 / 7.0` to `2285714.28571` passes, while `22.857` above is off by about
+six parts in a million and fails.
 
 The reliable habit is not to compute the expected value mentally at all. Run the
 function, take the value it prints, and keep it. Where the domain allows it,

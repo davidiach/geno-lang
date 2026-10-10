@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Example verification compares numbers one way on every path.**
+  `run_harness_from_source` and `run_harness_from_compiled` compared Floats to
+  an absolute `1e-9`, so an expectation `geno test` accepted could fail there,
+  and from about `1e9` up only the exact value passed. They now use
+  `geno test`'s relative tolerance. Two `Int` values also compare exactly in
+  `geno test`, where an example off by one had passed once the values reached
+  about `1e9`, and a correct one beyond Float range had failed with `int too
+  large to convert to float`. (#111)
+
 ## [0.5.0-rc.1] - 2026-09-30
 
 The first published release of the 0.5 series, and the one that carries accepted

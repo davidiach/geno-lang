@@ -17,6 +17,7 @@ from geno.harness import (
     HarnessResult,
     HarnessRunner,
     SpecViolation,
+    example_numbers_match,
     extract_harnesses,
     generate_test_report,
     run_harness_from_compiled,
@@ -605,6 +606,91 @@ end func
         harnesses = extract_harnesses(program)
         assert len(harnesses) == 1
         assert len(harnesses[0].examples) == 2
+
+
+def _example_program(signature: str, example: str, body: str) -> str:
+    return (
+        f"func subject{signature}\n"
+        f"    example {example}\n"
+        f"    return {body}\n"
+        "end func\n\n"
+        "func main() -> Unit\n"
+        "    return ()\n"
+        "end func\n"
+    )
+
+
+_RATIO = "(a: Float, b: Float) -> Float"
+
+# Each case is (source, whether its one example passes). The first two are the
+# reproductions from #111; the Int cases pin that two Ints compare exactly.
+_EXAMPLE_VERDICT_CASES = [
+    pytest.param(
+        _example_program(_RATIO, "(160.0, 7.0) -> 22.85714286", "a / b"),
+        True,
+        id="ten-digits-near-one",
+    ),
+    pytest.param(
+        _example_program(_RATIO, "(16000000.0, 7.0) -> 2285714.28571", "a / b"),
+        True,
+        id="twelve-digits-in-the-millions",
+    ),
+    pytest.param(
+        _example_program(_RATIO, "(160.0, 7.0) -> 22.857", "a / b"),
+        False,
+        id="five-digits-still-fails",
+    ),
+    pytest.param(
+        _example_program("() -> Int", "() -> 2000000001", "2000000000"),
+        False,
+        id="int-off-by-one-at-2e9",
+    ),
+    pytest.param(
+        _example_program("(n: Int) -> Int", "1100 -> 2 ** 1100", "2 ** n"),
+        True,
+        id="int-beyond-float-range",
+    ),
+]
+
+
+class TestExampleNumberComparison:
+    """Every example-verification path gives one verdict (#111)."""
+
+    @pytest.mark.parametrize(("source", "passes"), _EXAMPLE_VERDICT_CASES)
+    def test_harness_from_source(self, source: str, passes: bool) -> None:
+        result = run_harness_from_source(source)
+        assert (result.total, result.success) == (1, passes), result.violations
+
+    @pytest.mark.parametrize(("source", "passes"), _EXAMPLE_VERDICT_CASES)
+    def test_harness_from_compiled(self, source: str, passes: bool) -> None:
+        result = run_harness_from_compiled(source)
+        assert (result.total, result.success) == (1, passes), result.violations
+
+    @pytest.mark.parametrize(("source", "passes"), _EXAMPLE_VERDICT_CASES)
+    def test_geno_test(self, tmp_path, source: str, passes: bool) -> None:
+        from geno.test_runner import run_test_suite
+
+        path = tmp_path / "Main.geno"
+        path.write_text(source, encoding="utf-8")
+        suite = run_test_suite([path])
+        assert (suite.total, suite.success) == (1, passes), suite.file_results
+
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            (22.857142857142858, 22.85714286, True),
+            (22.857142857142858, 22.857, False),
+            (0.0, 1e-13, True),
+            (1, 1.0, True),
+            (2_000_000_001, 2_000_000_000, False),
+            (2**53 + 1, 2**53, False),
+            (2**1100, 2**1100, True),
+            (2**1100, 1.0e300, False),
+        ],
+    )
+    def test_example_numbers_match(self, a, b, expected: bool) -> None:
+        assert example_numbers_match(a, b) is expected
+        assert example_numbers_match(b, a) is expected
 
 
 if __name__ == "__main__":
