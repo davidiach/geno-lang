@@ -11,6 +11,7 @@ import pytest
 
 from geno.api import RunConfig, run
 from geno.compiler import compile_and_exec
+from geno.diagnostics import ErrorCode
 from geno.js_compiler import compile_to_js
 from geno.lexer import Lexer
 from geno.parser import Parser
@@ -4016,6 +4017,131 @@ class TestTraitDuplicateImpl:
         """
         with pytest.raises(Exception, match="Duplicate implementation"):
             run_geno(source)
+
+    def test_duplicate_method_rejected_at_second_definition(self):
+        source = """trait Touch
+    func touch(self: Self) -> Unit
+end trait
+
+type Box = Box(value: Int)
+
+impl Touch for Box
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        return ()
+    end func
+
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        return ()
+    end func
+end impl
+"""
+
+        with pytest.raises(TypeError) as exc_info:
+            typecheck(source)
+
+        error = exc_info.value
+        assert error.error_code == ErrorCode.TYPE_DUPLICATE_DEFINITION
+        assert (
+            error.message
+            == "Duplicate method definition: 'touch' in impl 'Touch' for 'Box'"
+        )
+        assert error.location.line == 13
+
+    @pytest.mark.timeout(2)
+    def test_duplicate_methods_with_conflicting_effects_complete_boundedly(self):
+        source = """type Box = Box(value: Int)
+
+trait Touch
+    func touch(self: Self) -> Unit
+end trait
+
+impl Touch for Box
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        return ()
+    end func
+
+    func touch(self: Box) -> Unit
+        example Box(0) -> ()
+        print("effect seed")
+        return ()
+    end func
+end impl
+"""
+
+        with pytest.raises(TypeError) as exc_info:
+            typecheck(source)
+
+        assert exc_info.value.error_code == ErrorCode.TYPE_DUPLICATE_DEFINITION
+        assert (
+            exc_info.value.message
+            == "Duplicate method definition: 'touch' in impl 'Touch' for 'Box'"
+        )
+
+    DUPLICATE_METHOD_MODULE = """trait Touch
+    func touch(self: Self) -> String
+end trait
+
+type Box = Box(value: Int)
+
+impl Touch for Box
+    func touch(self: Box) -> String
+        example Box(0) -> "first"
+        return "first"
+    end func
+
+    func touch(self: Box) -> String
+        example Box(0) -> "second"
+        return "second"
+    end func
+end impl
+
+func helper() -> Int
+    example () -> 1
+    return 1
+end func
+"""
+    IMPORTER = "import Bad\n\nfunc main() -> Unit\n    print(helper())\nend func\n"
+
+    def _parse(self, source: str):
+        return Parser(Lexer(source, "<test>").tokenize()).parse_program()
+
+    def test_duplicate_method_in_imported_module_rejected(self):
+        with pytest.raises(TypeError) as exc_info:
+            TypeChecker().check_program(
+                self._parse(self.IMPORTER),
+                modules={"Bad": self._parse(self.DUPLICATE_METHOD_MODULE)},
+            )
+
+        assert exc_info.value.error_code == ErrorCode.TYPE_DUPLICATE_DEFINITION
+        assert exc_info.value.location.line == 13
+
+    def test_geno_test_rejects_duplicate_method_in_imported_module(self, tmp_path):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        (tmp_path / "Bad.geno").write_text(
+            self.DUPLICATE_METHOD_MODULE, encoding="utf-8"
+        )
+        main = tmp_path / "Main.geno"
+        main.write_text(self.IMPORTER, encoding="utf-8")
+        repo_root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", str(main)],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": str(repo_root)},
+            timeout=60,
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, output
+        assert "Duplicate method definition: 'touch'" in output
 
 
 # ── Review fix tests ──────────────────────────────────────────────────
