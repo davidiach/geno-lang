@@ -1562,6 +1562,9 @@ class TypeChecker(ExhaustivenessMixin):
                 self._resolve_import(defn, modules, resolved, import_summaries)
 
         self._validate_type_definition_names(mod_program)
+        for defn in mod_program.definitions:
+            if isinstance(defn, ImplDef):
+                self._validate_impl_method_names(defn)
 
         # Determine if module uses explicit exports
         has_exports = any(
@@ -1918,6 +1921,23 @@ class TypeChecker(ExhaustivenessMixin):
         self._module_default_counts[ns_name] = dict(summary.module_default_counts)
         self.global_env.bind(ns_name, ModuleType(module_name))
 
+    def _validate_impl_method_names(self, defn: ImplDef) -> None:
+        """Reject a method defined twice in one impl block.
+
+        Every backend dispatches to the last definition, so the earlier body
+        and its examples would otherwise be silently dead.
+        """
+        seen: set[str] = set()
+        for method in defn.methods:
+            if method.name in seen:
+                self._error(
+                    f"Duplicate method definition: '{method.name}' in impl "
+                    f"'{defn.trait_name}' for '{defn.target_type}'",
+                    method.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
+            seen.add(method.name)
+
     def _validate_type_definition_names(self, program: Program) -> None:
         """Reject a type that redefines a built-in or an earlier type (#139).
 
@@ -2225,10 +2245,13 @@ class TypeChecker(ExhaustivenessMixin):
         trait_def = self.trait_defs[defn.trait_name]
         impl_self_type = UserType(defn.target_type)
 
-        # Build a map of implemented method names to their FunctionDef nodes
+        self._validate_impl_method_names(defn)
+
+        # Build a map of implemented method names to their FunctionDef nodes;
+        # a repeated method was reported above, so keep the first.
         impl_method_map: dict[str, FunctionDef] = {}
         for method in defn.methods:
-            impl_method_map[method.name] = method
+            impl_method_map.setdefault(method.name, method)
 
         # Verify all required methods are implemented and signatures match
         for sig in trait_def.methods:
@@ -2282,6 +2305,8 @@ class TypeChecker(ExhaustivenessMixin):
         # Register the implementation
         method_types: dict[str, FuncType] = {}
         for method in defn.methods:
+            if method.name in method_types:
+                continue
             param_types = tuple(self._resolve_type(p.param_type) for p in method.params)
             return_type = self._resolve_type(method.return_type)
             effects = frozenset(method.effects) if method.effects else frozenset()
