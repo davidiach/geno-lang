@@ -91,7 +91,7 @@ from .builtin_registry import (
 from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .float_promotion import float_shape
-from .harness import example_call_args
+from .harness import example_call_args, example_numbers_match
 from .sandbox import (
     RecursionLimitError,
     SandboxConfig,
@@ -1785,14 +1785,14 @@ class Interpreter:
             b = ()
         if type(a) in (int, float) and type(b) in (int, float):
             if approximate_floats:
-                return math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-12)
+                return example_numbers_match(a, b)
             # Int is a subtype of Float in Geno. Equality therefore compares
             # numeric values rather than host-language storage types.
             return bool(a == b)
         if type(a) != type(b):
             return False
         if approximate_floats and isinstance(a, float):
-            return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+            return example_numbers_match(a, b)
 
         # Guard against circular references
         if isinstance(
