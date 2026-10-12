@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `geno test` failed its own examples against the other body. Section 4.6
   of `docs/spec/v0.5.md` states the rule, a fourth place the 0.5 contract
   differs from v0.4. Extracted from #43 (#51).
+- **`geno test` and the harness helpers compare example numbers one way.**
+  `run_harness_from_source` and `run_harness_from_compiled` compared Floats to
+  an absolute `1e-9`, and a Float inside a tuple, map or constructor exactly, so
+  an expectation `geno test` accepted could fail there, and from about `1e9` up
+  only the exact value passed. They now use `geno test`'s relative tolerance at
+  every depth. Two `Int` values also compare exactly in
+  `geno test`, where an example off by one had passed once the values reached
+  about `1e9`, and a correct one beyond Float range had failed with `int too
+  large to convert to float`. (#111)
 
 ## [0.5.0-rc.1] - 2026-09-30
 

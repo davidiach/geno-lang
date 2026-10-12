@@ -9,6 +9,8 @@ that implementations match their specifications.
 Ported from Stitch's harness system, adapted for Geno.
 """
 
+import dataclasses
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
@@ -111,6 +113,24 @@ def example_call_args(
     if isinstance(input_val, tuple):
         return list(input_val)
     return [input_val]
+
+
+def example_numbers_match(a: int | float, b: int | float) -> bool:
+    """Compare an example's numeric result with its expectation.
+
+    Two Ints compare exactly. When either side is a Float the tolerance is
+    relative, so an expectation rounded to the same number of significant
+    digits passes at any magnitude, with a small absolute floor near zero.
+    ``geno test`` and the harness runners share this one comparator, so an
+    example passes or fails the same way on either (#111).
+    """
+    if type(a) is int and type(b) is int:
+        return a == b
+    try:
+        return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+    except OverflowError:
+        # An Int beyond Float range cannot be within tolerance of a Float.
+        return bool(a == b)
 
 
 # =============================================================================
@@ -333,16 +353,41 @@ class HarnessRunner:
         return example.output_expr
 
     def _values_equal(self, a: Any, b: Any) -> bool:
-        """Check if two values are equal (handling special cases)."""
-        # Handle floating point comparison
-        if isinstance(a, float) and isinstance(b, float):
-            return abs(a - b) < 1e-9
+        """Compare an example's result with its expectation.
 
-        # Handle list comparison
-        if isinstance(a, list) and isinstance(b, list):
-            if len(a) != len(b):
-                return False
-            return all(self._values_equal(x, y) for x, y in zip(a, b))
+        Numbers go through ``example_numbers_match``. Lists, tuples, maps and
+        constructor values are compared part by part, so a Float inside one
+        gets the same tolerance it would get on its own.
+        """
+        # Int is a subtype of Float, so a numeric pair compares by value.
+        if type(a) in (int, float) and type(b) in (int, float):
+            return example_numbers_match(a, b)
+
+        if isinstance(a, (list, tuple)) and type(a) is type(b):
+            return len(a) == len(b) and all(
+                self._values_equal(x, y) for x, y in zip(a, b)
+            )
+        if isinstance(a, dict) and isinstance(b, dict):
+            return a.keys() == b.keys() and all(
+                self._values_equal(a[key], b[key]) for key in a
+            )
+        # Interpreted constructors carry named fields; compiled ones are
+        # slotted dataclass instances.
+        if isinstance(a, ConstructorValue) and isinstance(b, ConstructorValue):
+            return (
+                a.constructor == b.constructor
+                and a.fields.keys() == b.fields.keys()
+                and all(self._values_equal(a.fields[k], b.fields[k]) for k in a.fields)
+            )
+        if (
+            dataclasses.is_dataclass(a)
+            and not isinstance(a, type)
+            and type(a) is type(b)
+        ):
+            return all(
+                self._values_equal(getattr(a, f.name), getattr(b, f.name))
+                for f in dataclasses.fields(a)
+            )
 
         return bool(a == b)
 
