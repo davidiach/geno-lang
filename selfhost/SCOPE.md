@@ -45,6 +45,15 @@ selfhost parser does not yet implement:
 These are parser/interpreter gaps, so the keyword and builtin parity checks do
 not detect them. Canonical frontend and backend tests cover the new forms.
 
+## Example verification gap
+
+The selfhost `test` flow checks an example with `values_equal`, the same
+function that implements `==`, so a `Float` result must match its expectation
+exactly. Canonical `geno test` accepts a relative tolerance of `1e-9` (#111),
+so a rounded expectation such as `22.85714286` for `160.0 / 7.0` passes there
+and fails here. Closing the gap needs a separate approximate comparator, since
+`==` itself must stay exact.
+
 ## What selfhost is NOT (yet)
 
 - **Not a compiler**: There is no code-generation backend. The selfhost does not

@@ -1,5 +1,6 @@
 """Tests for scripts/check_ci_dx_ratchets.py."""
 
+import re
 from pathlib import Path
 
 from scripts import check_ci_dx_ratchets as ratchets
@@ -318,11 +319,13 @@ def test_workflow_surface_reports_shard_timing_regressions(
         "find coverage-data -maxdepth 1 -type f -name 'mistyped-coverage.*' -print",
         1,
     )
-    upload_action = (
-        "      uses: actions/upload-artifact@"
-        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n"
+    # Read the pinned upload step from ci.yml so action bumps don't defeat the
+    # duplication below.
+    upload_action = re.search(
+        r"^      uses: actions/upload-artifact@.*\n", workflow, re.MULTILINE
     )
-    workflow = workflow.replace(upload_action, upload_action * 2, 1)
+    assert upload_action is not None
+    workflow = workflow.replace(upload_action[0], upload_action[0] * 2, 1)
     (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
     (tmp_path / "Makefile").write_text(
         (ratchets.ROOT / "Makefile").read_text(encoding="utf-8"),
