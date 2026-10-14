@@ -1,0 +1,67 @@
+name: External Apps
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '43 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-apps-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  external-apps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned external applications
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: oskarasi/geno-corpus
+          ref: 977644bbc4a7ca3b0210cf8f024d9c9c67be2b42
+          path: external-corpus
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Build candidate wheel with locked tools
+        run: |
+          python -m pip install --require-hashes -r requirements-release.lock
+          python -m build --wheel --no-isolation --outdir "$RUNNER_TEMP/candidate-wheel"
+
+      - name: Run all external applications against the candidate wheel
+        run: >-
+          python scripts/check_external_apps.py
+          --wheel "$RUNNER_TEMP"/candidate-wheel/*.whl
+          --corpus external-corpus
+          --output "$RUNNER_TEMP/external-apps"
+
+      - name: Retain candidate identity and application results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: external-apps-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/external-apps/receipt.json
+            ${{ runner.temp }}/external-apps/commands.jsonl
+            ${{ runner.temp }}/external-apps/corpus.json
+            ${{ runner.temp }}/external-apps/logs/*.log
+            ${{ runner.temp }}/candidate-wheel/*.whl
+          if-no-files-found: warn
+          retention-days: 30
