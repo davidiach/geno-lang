@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
+### Changed
+
+- Promote the frozen 0.5.0-rc.1 feature set to a non-prerelease version under
+  [accepted proposal 0002](docs/proposals/0002-0.5-stable-promotion.md) (#177).
+  The project lead waived the waiting periods and external human review for
+  this promotion; all technical release requirements remain in force.
+- Retain the RC's module-level constants, named constructor arguments,
+  single-execution async values, stricter type/import validation, and backend,
+  formatting, hosted-runtime, and exact-integer JSON fixes described below.
+  This promotion changes release metadata and documentation only.
+- Geno remains a preview project with the existing pre-1.0 compatibility
+  policy and Alpha package classifier. A non-prerelease version does not
+  confer serious-beta qualification.
+
+### Migration from 0.4
+
+- A successful `main() -> Int` selects the process exit status modulo 256:
+  `2` and `258` exit 2; `0 - 1` exits 255. Its value is no longer printed
+  as `=> N`. Print a value and return `Unit` when output is intended.
+- JSON mode retains the raw result while exiting with the normalized status.
+  Allow intentional nonzero exits in `set -e` or `check=True` callers.
+  Printed output requires `--cap print` in JSON mode and
+  `RunConfig(capabilities={"print"})` when embedding.
+- Embedding still returns the raw value without terminating the caller.
+  Generated Python and Node ESM imports remain inert; browser artifacts keep
+  their existing display behavior.
+- Parameterized entrypoints, ambiguous bare imports, duplicate types or
+  constructors, builtin type-name reuse, and duplicate impl methods are
+  rejected. Async computations execute once even when awaited repeatedly.
+  See the RC.1 migration notes below and [0.5 specification](docs/spec/v0.5.md).
+
 ## [0.5.0-rc.1] - 2026-10-14
 
 Release candidate prepared for the first publication of the 0.5 series. It carries accepted

@@ -55,5 +55,6 @@
 - [Release Runbook](operations/release-runbook.md) -- release process and rollback plan
 - [Monitoring & Support](operations/monitoring-and-support.md) -- production surfaces and incident expectations
 - [Local CI](operations/local-ci.md) -- running local validation checks
+- [External Application CI](operations/external-apps.md) -- candidate-wheel checks against the pinned 101-app corpus
 - [Tiered Testing Design](design/tiered-testing.md) -- example clause tier system
 - [Shared IR ADR](adr-shared-ir.md) -- architecture decision record
