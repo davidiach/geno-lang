@@ -1276,6 +1276,9 @@ class ProcessSandbox:
     def __init__(self, config: ProcessSandboxConfig | None = None):
         self.config = config or ProcessSandboxConfig()
         self.system = platform.system()
+        # Capability named by the worker's authenticated denial tag on the
+        # most recent run, if that run failed on a capability check.
+        self.last_capability_denied: str | None = None
 
     @classmethod
     def _read_stream_bounded(
@@ -2155,6 +2158,7 @@ class ProcessSandbox:
         config_overrides: dict[str, Any] | None,
     ) -> tuple[Any, str, str | None]:
         """Run and parse a framed worker payload under hard resource limits."""
+        self.last_capability_denied = None
         # Keep the command line tiny on Windows. The trusted worker and payload
         # are framed separately on stdin; no untrusted text is persisted.
         worker_script = self._create_worker_script()
@@ -2195,6 +2199,13 @@ class ProcessSandbox:
                 error = parsed.get("error")
                 if not success and not error:
                     error = "Execution failed"
+                denied_cap = parsed.get("capability")
+                if (
+                    not success
+                    and parsed.get("error_type") == "capability_denied"
+                    and isinstance(denied_cap, str)
+                ):
+                    self.last_capability_denied = denied_cap
                 worker_traceback = parsed.get("traceback")
                 if not success and worker_traceback:
                     logger.error(
@@ -3242,6 +3253,12 @@ def main():
             detail = type(e).__name__ + ": " + detail
         error_msg = _truncate_worker_text(detail, max_result_error)
         payload = {"result": None, "success": False, "error": error_msg}
+        # Only the trusted runtime's _require_cap tags a denial; the parent
+        # relies on this field, never on the (program-controllable) message.
+        denied_cap = getattr(e, "_geno_capability_denied", None)
+        if type(e) is RuntimeError and isinstance(denied_cap, str):
+            payload["error_type"] = "capability_denied"
+            payload["capability"] = denied_cap
         # Opt-in debug escape hatch: when the parent enables it, carry the
         # worker traceback so a compiler-bug report from the process-isolated
         # path is diagnosable. Off by default (never leaks internals).

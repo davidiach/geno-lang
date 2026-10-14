@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import sys
 from dataclasses import dataclass
@@ -27,7 +26,7 @@ from .._serve import (
 from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
-from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
+from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES, KNOWN_CAPABILITIES
 from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 
 # A leaf module by design: the parent side of the process-isolated lane needs
@@ -405,37 +404,34 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_CAPABILITY_DENIED_RE = re.compile(
-    r"Capability denied: '([a-z_][a-z0-9_]*)' requires the '([a-z_]+)' capability"
-)
-
-
-def _default_lane_capability_hint(error: str, filename: str) -> str | None:
+def _default_lane_capability_hint(
+    capability: str | None,
+    filename: str,
+    program_args: list[str] | None = None,
+) -> str | None:
     """Explain how to grant a capability the default process lane denied.
 
     The default lane rejects ``--cap``, so the runtime's denial alone is not
-    actionable there. The worker error text is program-influenced, so a hint
-    is only produced for a builtin/capability pair the manifest agrees on, and
-    it always spells out that the grant leaves process isolation.
+    actionable there. ``capability`` must come from the worker's structured
+    denial tag (``ProcessSandbox.last_capability_denied``), never from the
+    error text: a program can throw any message, and this hint recommends
+    leaving process isolation.
     """
-    match = _CAPABILITY_DENIED_RE.fullmatch(error)
-    if match is None:
-        return None
-    builtin_name, capability = match.groups()
-    from ..builtin_registry import capability_for_source_builtin
-
-    if capability_for_source_builtin(builtin_name) != capability:
+    if capability is None or capability not in KNOWN_CAPABILITIES:
         return None
     if capability in DEFAULT_ALLOWED_CAPABILITIES:
         return None
     caps = ",".join(sorted(DEFAULT_ALLOWED_CAPABILITIES | {capability}))
     defaults = ", ".join(sorted(DEFAULT_ALLOWED_CAPABILITIES))
+    command = f"geno run --unsafe --cap {caps} {shlex.quote(filename)}"
+    if program_args:
+        command += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
     return (
         f"Hint: the default 'geno run' lane grants only {defaults} and does "
         "not accept --cap.\n"
         f"  To grant '{capability}', rerun without process isolation "
         "(trusted code only):\n"
-        f"  geno run --unsafe --cap {caps} {shlex.quote(filename)}"
+        f"  {command}"
     )
 
 
@@ -699,9 +695,10 @@ def run_file(
             )
             _set_cli_args_env()
             try:
-                result, run_output, error = ProcessSandbox(
-                    process_config
-                ).execute_geno_request(request)
+                process_sandbox = ProcessSandbox(process_config)
+                result, run_output, error = process_sandbox.execute_geno_request(
+                    request
+                )
             finally:
                 _restore_cli_args_env()
 
@@ -718,7 +715,11 @@ def run_file(
                     )
                 else:
                     _print_runtime_error(RuntimeError(error))
-                    hint = _default_lane_capability_hint(error, filename)
+                    hint = _default_lane_capability_hint(
+                        process_sandbox.last_capability_denied,
+                        filename,
+                        program_args,
+                    )
                     if hint:
                         print(hint, file=sys.stderr)
                 sys.exit(1)

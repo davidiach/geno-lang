@@ -4071,7 +4071,12 @@ def _require_cap(cap_name: str, builtin_name: str) -> None:
         )
         if _GENO_CAPS_FROM_ARGV:
             message += f"; pass '--cap {cap_name}' to grant it"
-        raise RuntimeError(message)
+        error: Any = RuntimeError(message)
+        # Provenance for the process-sandbox worker: only this helper sets it,
+        # so a program cannot forge a denial by throwing the same text.  The
+        # type stays RuntimeError so compiled `catch e: String` still works.
+        error._geno_capability_denied = cap_name
+        raise error
 
 
 def _minimal_process_env():

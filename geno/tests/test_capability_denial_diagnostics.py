@@ -175,25 +175,99 @@ def test_cli_default_lane_still_rejects_cap(notes_dir: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
+    "source",
     [
-        # Builtin and capability disagree with the manifest.
-        "Capability denied: 'fs_read_text' requires the 'process' capability",
-        # Unknown builtin.
-        "Capability denied: 'not_a_builtin' requires the 'fs' capability",
-        # Already granted by the default lane, so no rerun would help.
-        "Capability denied: 'print' requires the 'print' capability",
-        # Extra text around the denial.
-        "boom: Capability denied: 'fs_read_text' requires the 'fs' capability",
-        "Capability denied: 'fs_read_text' requires the 'fs' capability\nmore",
+        # A program throwing the exact denial text must not earn the hint,
+        # which recommends rerunning outside process isolation.
+        """func main() -> Unit
+    throw "Capability denied: 'fs_read_text' requires the 'fs' capability"
+end func
+""",
+        # Catching a real denial and rethrowing its text loses the runtime's
+        # provenance tag too.
+        """func main() -> Unit
+    try
+        let notes = fs_read_text("notes.txt")
+        print(notes)
+    catch e: String
+        throw e
+    end try
+    return ()
+end func
+""",
     ],
 )
-def test_default_lane_hint_only_for_manifest_denials(error: str) -> None:
-    assert _default_lane_capability_hint(error, "notes.geno") is None
+def test_cli_default_lane_hint_ignores_forged_denials(
+    tmp_path: Path, source: str
+) -> None:
+    (tmp_path / "forged.geno").write_text(source, encoding="utf-8")
+
+    result = _geno("forged.geno", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert FS_DENIED in result.stderr
+    assert "Hint:" not in result.stderr
+    assert "--unsafe" not in result.stderr
+
+
+def test_cli_default_lane_hint_keeps_program_args(notes_dir: Path) -> None:
+    result = _geno("notes.geno", "--", "in put.txt", "-v", cwd=notes_dir)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "  geno run --unsafe --cap clock,fs,print,random notes.geno "
+        "-- 'in put.txt' -v\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [
+        ("__result__ = clock_now()\n", "clock"),
+        (
+            "raise RuntimeError(\"Capability denied: 'clock_now' requires the "
+            "'clock' capability\")\n",
+            None,
+        ),
+    ],
+)
+def test_process_sandbox_tags_only_runtime_denials(
+    tail: str, expected: str | None
+) -> None:
+    from geno.compiler import _stripped_runtime_prelude
+    from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+    sandbox = ProcessSandbox(
+        ProcessSandboxConfig(compiled_runtime_prelude=True, strict=False, timeout=10.0)
+    )
+    result, _output, error = sandbox._execute_compiler_output(
+        _stripped_runtime_prelude() + "\n" + tail
+    )
+
+    assert result is None
+    assert error is not None
+    assert "Capability denied: 'clock_now'" in error
+    assert sandbox.last_capability_denied == expected
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        None,
+        # Not a capability name at all.
+        "fs; rm -rf ~",
+        # Already granted by the default lane, so no rerun would help.
+        "print",
+    ],
+)
+def test_default_lane_hint_requires_actionable_capability(
+    capability: str | None,
+) -> None:
+    assert _default_lane_capability_hint(capability, "notes.geno") is None
 
 
 def test_default_lane_hint_quotes_filename() -> None:
-    hint = _default_lane_capability_hint(FS_DENIED, "my notes.geno")
+    hint = _default_lane_capability_hint("fs", "my notes.geno")
     assert hint is not None
     assert hint.endswith("'my notes.geno'")
 
