@@ -20,7 +20,10 @@ let inferred = 42
 var total = 0
 ```
 
-`let` bindings are immutable; use `var` when you need mutation.
+`let` bindings are immutable; use `var` when you need mutation. Update a `var`
+by assigning to it (`total = total + 1`). Writing `var total = ...` again
+rebinds it in the same block, or declares a separate variable in a nested
+block. `geno check` warns about either redeclaration (W300).
 
 ### Module Constants
 

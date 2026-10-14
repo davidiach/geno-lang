@@ -7044,3 +7044,102 @@ class TestContextAwareCompletions:
         item_map = {item.label: item for item in result.items}
         assert item_map["Some"].kind == types.CompletionItemKind.EnumMember
         assert item_map["None"].kind == types.CompletionItemKind.EnumMember
+
+
+class TestRedeclaredVarWarnings:
+    """W300 warnings reach the editor once a document type-checks."""
+
+    BUGGY = (
+        "export func total(xs: List[Int]) -> Int\n"
+        "    example [1, 2, 3] -> 0\n"
+        "    var sum: Int = 0\n"
+        "    for x: Int in xs do\n"
+        "        var sum: Int = sum + x\n"
+        "    end for\n"
+        "    return sum\n"
+        "end func\n"
+    )
+
+    def _open(self, monkeypatch, uri, text):
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        published: list[tuple[str, list[types.Diagnostic]]] = []
+        monkeypatch.setattr(
+            server,
+            "publish_diagnostics",
+            lambda u, diags: published.append((u, list(diags))),
+        )
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri, language_id="geno", version=1, text=text
+                )
+            )
+        )
+        return {u: diags for u, diags in published}
+
+    @staticmethod
+    def _assert_one_warning(diags):
+        assert len(diags) == 1, [d.message for d in diags]
+        (diag,) = diags
+        assert diag.severity == types.DiagnosticSeverity.Warning
+        assert diag.code == "W300"
+        assert diag.range.start.line == 4
+        assert diag.range.start.character == 8
+
+    def test_manifest_project_publishes_warning_on_its_module(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils"]\n'
+        )
+        main_file = tmp_path / "Main.geno"
+        utils_file = tmp_path / "Utils.geno"
+        main_source = (
+            "import Utils\nfunc main() -> Int\n  return total([1, 2])\nend func\n"
+        )
+        main_file.write_text(main_source)
+        utils_file.write_text(self.BUGGY)
+
+        latest = self._open(monkeypatch, main_file.as_uri(), main_source)
+
+        assert latest[main_file.as_uri()] == []
+        self._assert_one_warning(latest[utils_file.as_uri()])
+
+    def test_single_file_manifest_project_publishes_warning(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
+        main_file = tmp_path / "Main.geno"
+        main_file.write_text(self.BUGGY)
+
+        latest = self._open(monkeypatch, main_file.as_uri(), self.BUGGY)
+
+        self._assert_one_warning(latest[main_file.as_uri()])
+
+    def test_unsaved_document_publishes_warning(self, monkeypatch):
+        uri = "untitled:Main.geno"
+        latest = self._open(monkeypatch, uri, self.BUGGY)
+
+        self._assert_one_warning(latest[uri])
+
+    def test_sibling_module_warning_stays_on_its_own_document(
+        self, tmp_path, monkeypatch
+    ):
+        app_file = tmp_path / "App.geno"
+        helper_file = tmp_path / "Helper.geno"
+        app_source = (
+            "import Helper\nfunc main() -> Int\n  return total([1, 2])\nend func\n"
+        )
+        app_file.write_text(app_source)
+        helper_file.write_text(self.BUGGY)
+
+        latest = self._open(monkeypatch, app_file.as_uri(), app_source)
+        assert latest[app_file.as_uri()] == []
+
+        latest = self._open(monkeypatch, helper_file.as_uri(), self.BUGGY)
+        self._assert_one_warning(latest[helper_file.as_uri()])

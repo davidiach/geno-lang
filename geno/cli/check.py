@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import sys
 
-from ._util import _format_source_snippet, _print_error, report_deep_nesting_error
+from ._util import (
+    _format_source_snippet,
+    _print_error,
+    _print_warning,
+    report_deep_nesting_error,
+)
 
 
 def check_file(filename: str, target: str | None = None):
@@ -19,6 +24,7 @@ def check_file(filename: str, target: str | None = None):
     from ..project_graph import ProjectGraphError
     from ..project_resolution import ProjectResolutionError, resolve_project_context
     from ..typechecker import TypeChecker, TypeError
+    from ..var_shadowing import project_warnings
 
     try:
         resolved = resolve_project_context(filename)
@@ -73,6 +79,11 @@ def check_file(filename: str, target: str | None = None):
 
         assert checked is not None
 
+        # Warnings do not depend on the target, so report them once.
+        warnings = project_warnings(dg)
+        for warning in warnings:
+            _print_warning(warning)
+
         mod_count = len(checked)
         total_defs = sum(len(prog.definitions) for prog in checked.values())
         if len(target_names) > 1:
@@ -86,6 +97,9 @@ def check_file(filename: str, target: str | None = None):
             for target_name in target_names:
                 print(f"  {target_name}: passed")
         print(f"  {total_defs} definitions, {mod_count} modules")
+        if warnings:
+            plural = "" if len(warnings) == 1 else "s"
+            print(f"  {len(warnings)} warning{plural}")
 
     except FileNotFoundError:
         print(f"Error: File not found: {filename}", file=sys.stderr)

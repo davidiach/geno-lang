@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `geno check` warns when a `let` or `var` redeclares a mutable variable from
+  the same or an enclosing block (W300), as in `var y = f(y)` inside a loop
+  where `y = f(y)` was meant. The program still passes. The warning is
+  printed to stderr, returned by `geno.check()` and `geno.check_path()` with
+  `Severity.WARNING`, and published by the language server. It covers the
+  project's own modules, not the standard library or installed dependencies.
+
 ### Fixed
 
 - `http_listen` dispatches `OPTIONS` and `PATCH` requests to routes registered
