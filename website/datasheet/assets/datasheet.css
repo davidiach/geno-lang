@@ -3877,3 +3877,12 @@ sup {
     font-size: 16px;
   }
 }
+.status-rel {
+  color: var(--teal-ink);
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+  padding-bottom: 1px;
+}
+.status-rel:hover {
+  color: var(--ink);
+}
