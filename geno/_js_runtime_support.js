@@ -2088,9 +2088,18 @@ const _GENO_CAPS = (function() {
     }
 })();
 
+// Whether the grant came from this script's own --cap flags; only then is
+// "pass --cap" advice true (hosts that set __GENO_CAPS decide grants).
+const _GENO_CAPS_FROM_ARGV = !(
+    typeof globalThis !== "undefined" && Array.isArray(globalThis.__GENO_CAPS)
+) && typeof process !== "undefined" && !!process.argv;
+
 function _requireCap(capName, builtinName) {
     if (!_GENO_CAPS.has(capName)) {
-        throw new Error("Capability denied: '" + builtinName + "' requires '--cap " + capName + "'");
+        // Same wording as geno.capabilities.capability_denied_message.
+        let message = "Capability denied: '" + builtinName + "' requires the '" + capName + "' capability";
+        if (_GENO_CAPS_FROM_ARGV) message += "; pass '--cap " + capName + "' to grant it";
+        throw new Error(message);
     }
 }
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import sys
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -403,6 +405,40 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_CAPABILITY_DENIED_RE = re.compile(
+    r"Capability denied: '([a-z_][a-z0-9_]*)' requires the '([a-z_]+)' capability"
+)
+
+
+def _default_lane_capability_hint(error: str, filename: str) -> str | None:
+    """Explain how to grant a capability the default process lane denied.
+
+    The default lane rejects ``--cap``, so the runtime's denial alone is not
+    actionable there. The worker error text is program-influenced, so a hint
+    is only produced for a builtin/capability pair the manifest agrees on, and
+    it always spells out that the grant leaves process isolation.
+    """
+    match = _CAPABILITY_DENIED_RE.fullmatch(error)
+    if match is None:
+        return None
+    builtin_name, capability = match.groups()
+    from ..builtin_registry import capability_for_source_builtin
+
+    if capability_for_source_builtin(builtin_name) != capability:
+        return None
+    if capability in DEFAULT_ALLOWED_CAPABILITIES:
+        return None
+    caps = ",".join(sorted(DEFAULT_ALLOWED_CAPABILITIES | {capability}))
+    defaults = ", ".join(sorted(DEFAULT_ALLOWED_CAPABILITIES))
+    return (
+        f"Hint: the default 'geno run' lane grants only {defaults} and does "
+        "not accept --cap.\n"
+        f"  To grant '{capability}', rerun without process isolation "
+        "(trusted code only):\n"
+        f"  geno run --unsafe --cap {caps} {shlex.quote(filename)}"
+    )
+
+
 def _format_process_frontend_error(filename: str, error: BaseException) -> str:
     """Format a frontend failure without leaking a worker traceback."""
     from io import StringIO
@@ -682,6 +718,9 @@ def run_file(
                     )
                 else:
                     _print_runtime_error(RuntimeError(error))
+                    hint = _default_lane_capability_hint(error, filename)
+                    if hint:
+                        print(hint, file=sys.stderr)
                 sys.exit(1)
             # Captured output is printed before the status is returned, so a
             # nonzero exit never costs the program its output.

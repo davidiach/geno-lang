@@ -262,9 +262,9 @@
   ];
   // Call order matters: the first ungranted capability is the one reported.
   var CAPS_CALLS = [
-    { cap: "fs", fn: "fs_read_text", line: 2 },
-    { cap: "env", fn: "env_get_or", line: 4 },
-    { cap: "print", fn: "print", line: 5 },
+    { cap: "fs", fn: "fs_read_text", line: 2, col: 17 },
+    { cap: "env", fn: "env_get_or", line: 4, col: 16 },
+    { cap: "print", fn: "print", line: 5, col: 5 },
   ];
 
   function capsDemo(root) {
@@ -300,12 +300,27 @@
       if (!list.length) denied = CAPS_CALLS[0];
       var text = cmd + "\n";
       if (!denied) text += "ada has 3 notes";
-      else if (!list.length) text += "Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'";
+      else if (!list.length)
+        text +=
+          "Runtime Error: Capability denied: 'fs_read_text' requires the 'fs' capability\n" +
+          "Hint: the default 'geno run' lane grants only clock, print, random and does not accept --cap.\n" +
+          "  To grant 'fs', rerun without process isolation (trusted code only):\n" +
+          "  geno run --unsafe --cap clock,fs,print,random notes.geno";
       else
         text +=
-          "Stack trace (most recent call last):\n  in main, notes.geno:1:1\nRuntime Error: Capability denied: '" +
+          "Stack trace (most recent call last):\n  in main, notes.geno:1:1\n  at notes.geno:" +
+          denied.line +
+          ":" +
+          denied.col +
+          "\nRuntime Error: Capability denied: '" +
           denied.fn +
-          "' requires a capability that was not granted";
+          "' requires the '" +
+          denied.cap +
+          "' capability\n  " +
+          CAPS_SRC[denied.line - 1] +
+          "\n  " +
+          new Array(denied.col).join(" ") +
+          "^";
       out.innerHTML = H.highlight(text, "sh");
       var reached = true;
       code.querySelectorAll(".ln").forEach(function (ln) {

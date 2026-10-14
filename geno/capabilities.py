@@ -19,6 +19,22 @@ KNOWN_CAPABILITIES = manifest_capability_names()
 DEFAULT_ALLOWED_CAPABILITIES = frozenset({"print", "clock", "random"})
 
 
+def capability_denied_message(builtin_name: str, capability: str | None) -> str:
+    """Return the runtime message for a call to a builtin whose cap is missing.
+
+    Every execution lane uses this wording so the denial always names the
+    missing capability. The compiled runtimes (``_runtime_support.py`` and
+    ``_js_runtime_support.js``) cannot import this module, so they spell the
+    same text out; a parity test keeps them aligned.
+    """
+    if capability is None:
+        return (
+            f"Capability denied: '{builtin_name}' requires a capability that "
+            "was not granted"
+        )
+    return f"Capability denied: '{builtin_name}' requires the '{capability}' capability"
+
+
 class CapabilityParseError(ValueError):
     """Raised when a capability list contains an unknown or malformed name."""
 

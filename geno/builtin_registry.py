@@ -752,6 +752,18 @@ def allowed_gated_builtins(capabilities: Collection[str] | None) -> set[str]:
     }
 
 
+_CAPABILITY_BY_SOURCE_BUILTIN: dict[str, str] = {
+    spec.source_name: spec.capability
+    for spec in BUILTIN_REGISTRY.values()
+    if spec.capability is not None
+}
+
+
+def capability_for_source_builtin(name: str) -> str | None:
+    """Return the capability gating source builtin ``name``, if any."""
+    return _CAPABILITY_BY_SOURCE_BUILTIN.get(name)
+
+
 def all_builtin_names() -> list[str]:
     """Return the sorted public builtin name list used for completion."""
     return sorted({spec.source_name for spec in BUILTIN_REGISTRY.values()})
@@ -772,6 +784,7 @@ __all__ = [
     "allowed_gated_builtins",
     "build_builtin_signatures",
     "builtin_param_name_lists",
+    "capability_for_source_builtin",
     "interpreter_builtin_param_name_lists",
     "js_backend_builtin_helper_names",
     "js_backend_builtin_name_map",

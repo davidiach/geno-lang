@@ -3464,6 +3464,7 @@ _FORMAT_METHODS = frozenset({"format", "format_map"})
 _WORKER_COMPILED_INTERNAL_NAMES = frozenset(
     {
         "_GENO_CAPS",
+        "_GENO_CAPS_FROM_ARGV",
         "_bounded_regex_replace",
         "_dataclasses_fields",
         "_object_getattribute",

@@ -621,6 +621,7 @@ class TestPreludeBlobFraming:
         "tail",
         [
             "_GENO_CAPS = {'clock'}\n__result__ = clock_now()\n",
+            "_GENO_CAPS_FROM_ARGV = True\n__result__ = clock_now()\n",
             "__result__ = _bounded_regex_replace('a', 'b', 'a')\n",
         ],
     )
@@ -647,6 +648,8 @@ class TestPreludeBlobFraming:
 
         assert denied_result is None
         assert denied_error is not None
-        assert "requires '--cap clock'" in denied_error
+        assert "requires the 'clock' capability" in denied_error
+        # The worker injects the grant, so "pass --cap" advice would be false.
+        assert "--cap" not in denied_error
         assert allowed_error is None
         assert isinstance(allowed_result, (int, float))
