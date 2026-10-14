@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geno Website Directions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Two design directions for the Geno programming language website: Datasheet and Dialogue.">
+<link rel="icon" href="shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@1,6..72,400&display=swap">
+<style>
+  /* Layout: a split table of contents. Each direction keeps its own ground
+     (paper for Datasheet, night for Dialogue) and shows itself live. */
+  :root {
+    --paper: #f3f5f4;
+    --ink: #0f172a;
+    --ink-3: #66748a;
+    --rule: #d1d9d6;
+    --teal: #0d9488;
+    --night: #061110;
+    --bone: #e8efec;
+    --bone-3: #6d837d;
+    --line: #21433f;
+    --mint: #2dd4bf;
+    --apricot: #f2b880;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); background: var(--night); }
+  body { margin: 0; background: var(--night); color: var(--bone); font: 400 16px/1.55 "IBM Plex Mono", ui-monospace, monospace; -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
+  .top {
+    display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 18px max(16px, env(safe-area-inset-right, 0px)) 18px max(16px, env(safe-area-inset-left, 0px));
+    background: var(--night); border-bottom: 1px solid var(--line);
+  }
+  .top-l { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--bone-3); }
+  .top-l svg { width: 24px; height: 22px; color: var(--bone); }
+  .top-l b { color: var(--bone); font-weight: 600; }
+  .top-r { font-size: 12.5px; color: var(--bone-3); }
+  .split { display: grid; grid-template-columns: 1fr 1fr; min-height: calc(100vh - 60px); }
+  .side {
+    display: flex; flex-direction: column; gap: 26px;
+    padding: clamp(32px, 5vw, 64px) max(16px, env(safe-area-inset-right, 0px)) clamp(40px, 5vw, 64px) max(16px, env(safe-area-inset-left, 0px));
+    min-width: 0;
+  }
+  @media (min-width: 760px) { .side { padding-left: clamp(24px, 4vw, 64px); padding-right: clamp(24px, 4vw, 64px); } }
+  .side-a { background: var(--paper); color: var(--ink); }
+  .side-b { background: var(--night); color: var(--bone); border-left: 1px solid var(--line); }
+  .k { font: 600 11px/1 "IBM Plex Mono", monospace; letter-spacing: .16em; text-transform: uppercase; }
+  .side-a .k { color: var(--teal); }
+  .side-b .k { color: var(--mint); }
+  .name-a { margin: 10px 0 0; font: 700 clamp(64px, 8vw, 120px)/.85 "Barlow Condensed", "Arial Narrow", sans-serif; letter-spacing: .005em; }
+  .name-b { margin: 10px 0 0; font: 300 clamp(48px, 6.2vw, 96px)/.9 "Archivo", sans-serif; font-stretch: 125%; letter-spacing: -.045em; }
+  .pitch { margin: 18px 0 0; max-width: 46ch; font-size: 14.5px; }
+  .side-a .pitch { color: #364353; }
+  .side-b .pitch { color: #a7bab4; }
+  .pitch em { font: italic 400 1.18em/1.3 "Newsreader", Georgia, serif; }
+  .side-b .pitch em { color: var(--apricot); }
+  .side-a .pitch em { color: var(--ink); }
+  .frame {
+    position: relative; width: 100%; aspect-ratio: 16 / 11; max-width: 100%; overflow: hidden;
+    border-radius: 10px; flex: none;
+  }
+  .side-a .frame { border: 1px solid var(--rule); box-shadow: 0 30px 60px -36px rgba(15, 23, 42, .45); background: #fff; }
+  .side-b .frame { border: 1px solid var(--line); box-shadow: 0 30px 80px -40px rgba(0, 0, 0, .9); background: var(--night); }
+  .frame iframe { position: absolute; top: 0; left: 0; width: 1440px; height: 990px; border: 0; transform-origin: 0 0; pointer-events: none; }
+  .frame a { position: absolute; inset: 0; z-index: 2; }
+  .frame a:focus-visible { outline: 3px solid var(--mint); outline-offset: -3px; border-radius: 10px; }
+  .links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .links a { text-decoration: none; font-size: 13px; padding: 10px 14px; border-radius: 4px; transition: background .2s, color .2s, border-color .2s; }
+  .side-a .links a { border: 1.5px solid var(--ink); }
+  .side-a .links a:first-child { background: var(--ink); color: var(--paper); }
+  .side-a .links a:hover { background: var(--teal); border-color: var(--teal); color: #fff; }
+  .side-b .links a { border: 1px solid var(--line); border-radius: 999px; }
+  .side-b .links a:first-child { background: var(--mint); border-color: var(--mint); color: #04211e; }
+  .side-b .links a:hover { border-color: var(--mint); color: var(--mint); }
+  .side-b .links a:first-child:hover { color: #04211e; background: #8af3e2; }
+  .notes { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; }
+  .side-a .notes { color: var(--ink-3); }
+  .side-b .notes { color: var(--bone-3); }
+  .notes li::before { content: "— "; }
+  .foot { padding: 20px max(16px, env(safe-area-inset-right, 0px)) 24px max(16px, env(safe-area-inset-left, 0px)); font-size: 12px; color: var(--bone-3); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; background: var(--night); }
+  .foot a { color: var(--mint); }
+  @media (max-width: 900px) {
+    .split { grid-template-columns: 1fr; }
+    .side-b { border-left: 0; border-top: 1px solid var(--line); }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .side > * { animation: up .8s cubic-bezier(.16,1,.3,1) both; }
+    .side > *:nth-child(2) { animation-delay: .06s; }
+    .side > *:nth-child(3) { animation-delay: .12s; }
+    .side > *:nth-child(4) { animation-delay: .18s; }
+    .side > *:nth-child(5) { animation-delay: .24s; }
+  }
+  @keyframes up { from { opacity: 0; transform: translateY(14px); } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="2 5 27 25">
+    <g fill="currentColor"><rect x="8" y="7" width="16" height="2"/><rect x="6" y="9" width="4" height="2"/><rect x="22" y="9" width="4" height="2"/><rect x="4" y="11" width="4" height="10"/><rect x="6" y="21" width="4" height="2"/><rect x="22" y="17" width="4" height="6"/><rect x="8" y="23" width="16" height="1"/><rect x="8" y="24" width="15" height="1"/></g>
+    <g fill="#2dd4bf"><rect x="14" y="15" width="12" height="2"/><rect x="23" y="24" width="4" height="4"/></g>
+  </symbol>
+</svg>
+
+<header class="top">
+  <div class="top-l"><svg aria-hidden="true"><use href="#mark"/></svg><span><b>Geno</b> website · two directions</span></div>
+  <div class="top-r">Same language, same facts, two ways to tell it.</div>
+</header>
+
+<main class="split">
+  <section class="side side-a" aria-labelledby="a-name">
+    <div>
+      <p class="k">Direction A</p>
+      <h1 id="a-name" class="name-a">Datasheet</h1>
+      <p class="pitch">Geno presented the way engineers document a component they trust: a part number, a pinout, rated limits and test conditions. <em>Every function ships with its datasheet.</em> Light and dark editions.</p>
+    </div>
+    <div class="frame" data-scale>
+      <iframe src="datasheet/" title="Preview of the Datasheet direction" loading="lazy" tabindex="-1" aria-hidden="true"></iframe>
+      <a href="datasheet/" aria-label="Open the Datasheet direction"></a>
+    </div>
+    <nav class="links" aria-label="Datasheet pages">
+      <a href="datasheet/">Open the site</a>
+      <a href="datasheet/playground.html">Playground</a>
+      <a href="datasheet/blog/">Application notes</a>
+    </nav>
+    <ul class="notes">
+      <li>Chip diagram hero running the README example’s test vectors</li>
+      <li>Numbered sections, figures and spec tables, with a contents rail</li>
+      <li>Blog posts rendered as application notes</li>
+    </ul>
+  </section>
+
+  <section class="side side-b" aria-labelledby="b-name">
+    <div>
+      <p class="k">Direction B</p>
+      <h2 id="b-name" class="name-b">Dialogue</h2>
+      <p class="pitch">A five-act conversation between a model and the compiler, set in two voices: <em>the model in italic serif, Geno in monospace.</em> Dark, cinematic, with a live replay of a bug being caught and fixed.</p>
+    </div>
+    <div class="frame" data-scale>
+      <iframe src="dialogue/" title="Preview of the Dialogue direction" loading="lazy" tabindex="-1" aria-hidden="true"></iframe>
+      <a href="dialogue/" aria-label="Open the Dialogue direction"></a>
+    </div>
+    <nav class="links" aria-label="Dialogue pages">
+      <a href="dialogue/">Open the site</a>
+      <a href="dialogue/playground.html">Playground</a>
+      <a href="dialogue/journal/">Journal</a>
+    </nav>
+    <ul class="notes">
+      <li>Scripted hero: write, fail an example, repair, prove, ship</li>
+      <li>Five acts with live demos, an act timecode rail and poster art</li>
+      <li>Blog posts rendered as a long-form journal</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>Both directions run the real Geno 0.5.0-rc.1 toolchain in their playgrounds.</span>
+  <a href="https://github.com/davidiach/geno-lang">github.com/davidiach/geno-lang</a>
+</footer>
+
+<script>
+  // Fit each 1440px-wide live preview into its frame.
+  (function () {
+    var frames = document.querySelectorAll("[data-scale]");
+    function fit() {
+      frames.forEach(function (f) {
+        var s = f.clientWidth / 1440;
+        var ifr = f.querySelector("iframe");
+        ifr.style.transform = "scale(" + s + ")";
+        ifr.style.height = Math.ceil(f.clientHeight / s) + "px";
+      });
+    }
+    fit();
+    if ("ResizeObserver" in window) new ResizeObserver(fit).observe(document.body);
+    else window.addEventListener("resize", fit);
+  })();
+</script>
+</body>
+</html>

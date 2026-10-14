@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geno Page Not Found</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: a single centered terminal, reporting the missing page the way
+     geno check reports a missing match arm. */
+  :root { --bg: #061110; --text: #e8efec; --text-2: #a7bab4; --text-3: #6d837d; --line: #21433f; --geno: #2dd4bf; --fail: #ff7d68; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(60% 50% at 50% 0%, rgba(45,212,191,.08), transparent 70%), var(--bg); color: var(--text); font: 400 16px/1.55 "Archivo", system-ui, sans-serif; padding: 48px max(16px, env(safe-area-inset-right, 0px)) 48px max(16px, env(safe-area-inset-left, 0px)); }
+  main { width: 100%; max-width: 760px; }
+  h1 { margin: 0; font: 300 clamp(56px, 10vw, 120px)/.9 "Archivo", sans-serif; font-stretch: 125%; letter-spacing: -.05em; }
+  h1 span { color: var(--geno); }
+  p { color: var(--text-2); max-width: 52ch; margin: 18px 0 0; }
+  pre { margin: 32px 0 0; padding: 18px 20px; border: 1px solid var(--line); border-radius: 12px; background: #040b0a; font: 400 13.5px/1.65 "JetBrains Mono", ui-monospace, monospace; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; font-variant-ligatures: none; }
+  .p { color: var(--geno); } .c { color: #fff; font-weight: 500; } .f { color: var(--fail); }
+  nav { margin-top: 28px; display: flex; flex-wrap: wrap; gap: 10px; }
+  nav a { text-decoration: none; color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 10px 16px; font-size: 14px; }
+  nav a:first-child { background: var(--geno); border-color: var(--geno); color: #04211e; }
+  nav a:hover { border-color: var(--geno); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Not <span>handled.</span></h1>
+  <p>There is no page at this address. Geno would have caught this at compile time.</p>
+<pre aria-label="geno check output"><span class="p">$</span> <span class="c">geno</span> check site.geno
+<span class="f" id="err">Type Error: site.geno:1:1: Type Error: Non-exhaustive patterns: missing Page("/")</span>
+      match request.path with
+      ^</pre>
+  <nav aria-label="Ways back">
+    <a href="/geno-lang/">Design versions</a>
+    <a href="/geno-lang/datasheet/">Datasheet</a>
+    <a href="/geno-lang/dialogue/">Dialogue</a>
+  </nav>
+</main>
+<script>
+  // Name the missing path in the message; textContent keeps it inert.
+  document.getElementById("err").textContent =
+    "Type Error: site.geno:1:1: Type Error: Non-exhaustive patterns: missing Page(\"" + location.pathname + "\")";
+</script>
+</body>
+</html>
