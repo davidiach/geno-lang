@@ -337,12 +337,18 @@ This record is Accepted and numbered. The remaining work is:
 1. Add the v0.5 specification, corpus, migration fixtures, and runtime/backend
    behavior in separate reviewed implementation PRs.
 2. Re-run the canonical release gate and external dogfood from built artifacts.
-3. Publish only as a v0.5 prerelease with curated breaking-change notes.
+3. Publish v0.5 prereleases with curated breaking-change notes. Publish 0.5.0
+   and compatible 0.5.x maintenance releases only under the accepted gates in
+   [proposal 0002](0002-0.5-stable-promotion.md).
 
 Release evidence records the accepted proposal, candidate commit, CI and
 release-gate runs, conformance output, dogfood result, release owner,
-independent reviewer, and support owner. A post-release smoke verifies exit 0,
-exit 2 with preserved output, an uncaught error, embedding, and installed
+independent reviewer, and support owner. For the initial 0.5.0 promotion,
+proposal 0002 records the project lead's one-time waiting/external-review
+exception; record the actual automated review provider and conditional
+authorization without claiming independent human approval. A post-release
+smoke verifies exit 0, exit 2 with preserved output, an uncaught error, embedding,
+and installed
 Python/Node artifacts.
 
 Superseding or amending this direction uses a new proposal, per
