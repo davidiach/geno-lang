@@ -164,6 +164,12 @@ class CheckResult:
     timing: Timing                # Per-phase timing breakdown
 ```
 
+`ok` is true when the program type-checks. `diagnostics` can still hold
+warnings with `Severity.WARNING`, such as W300 for a `let` or `var` that
+redeclares a mutable variable. Warnings are reported only for programs that
+pass, and `check_path()` reports them for the project's own modules, not the
+standard library or installed dependencies.
+
 ### ConstraintResult
 
 ```python

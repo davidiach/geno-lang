@@ -24,6 +24,7 @@ from typing import (
     AbstractSet,
     Any,
     Callable,
+    Collection,
     Mapping,
     Union,
     cast,
@@ -1048,6 +1049,7 @@ def check(
     *,
     _module_name: str | None = None,
     _check_default_run: bool = False,
+    _lint_modules: Collection[str] | None = None,
 ) -> CheckResult:
     """
     Parse and type-check Geno source code without executing it.
@@ -1061,7 +1063,8 @@ def check(
             project-style target validation.
 
     Returns:
-        CheckResult with ok status and diagnostics.
+        CheckResult with ok status and diagnostics. A program that passes
+        can still carry warnings (``Severity.WARNING``), such as W300.
     """
     from .lexer import Lexer, LexerError
     from .parser import ParseError, ParseErrors, Parser
@@ -1174,8 +1177,33 @@ def check(
         return CheckResult(ok=False, diagnostics=diagnostics, timing=timing)
     timing.typecheck_ms = (time.perf_counter() - t_tc) * 1000
 
+    diagnostics.extend(_redeclared_var_warnings(program, parsed_modules, _lint_modules))
     timing.total_ms = (time.perf_counter() - t0) * 1000
     return CheckResult(ok=True, diagnostics=diagnostics, timing=timing)
+
+
+def _redeclared_var_warnings(
+    program: Program,
+    parsed_modules: Mapping[str, Program] | None,
+    lint_modules: Collection[str] | None,
+) -> list[Diagnostic]:
+    """W300 warnings for the entrypoint and the caller's own modules.
+
+    ``lint_modules`` names the modules to report on. When it is None, every
+    supplied module is reported except an unmodified shipped standard-library
+    module, which ``_module_filename`` gives its real path.
+    """
+    from .var_shadowing import find_redeclared_vars, is_std_module_path
+
+    found = find_redeclared_vars(program)
+    for name, module in (parsed_modules or {}).items():
+        if lint_modules is not None:
+            if name not in lint_modules:
+                continue
+        elif is_std_module_path(module.location.filename):
+            continue
+        found.extend(find_redeclared_vars(module))
+    return found
 
 
 def check_path(
@@ -1201,6 +1229,17 @@ def check_path(
             for name, resolved_file in resolved.dependency_graph.file_map.items()
         }
         module_paths.update(merged_inputs.module_paths)
+        # Warnings cover the project's own modules, not the standard
+        # library or installed dependencies.
+        from .var_shadowing import is_std_module_path
+
+        file_map = resolved.dependency_graph.file_map
+        lint_modules = {
+            name
+            for name in effective_modules or {}
+            if not (name in file_map and file_map[name].is_dependency)
+            and not is_std_module_path(module_paths.get(name, ""))
+        }
     except _PROJECT_SYNTAX_ERRORS as exc:
         timing.total_ms = (time.perf_counter() - t0) * 1000
         return CheckResult(
@@ -1243,6 +1282,7 @@ def check_path(
             modules=effective_modules,
             target=target_name,
             _module_name=resolved.entrypoint,
+            _lint_modules=lint_modules,
         )
         if not current.ok:
             diagnostics.extend(

@@ -219,3 +219,34 @@ for i in range(10) do // 'do' required
     // ...
 end for
 ```
+
+## 11. Redeclaring a `var` Instead of Updating It
+
+```
+// Warning [W300]: 'var y' declares a new variable that hides the mutable 'y'
+var y: Int = 110
+for i: Int in range(0, 3) do
+    var y: Int = y + 40     // a second y, gone at end for
+end for
+// y is still 110 here
+```
+
+```
+// Fix: assign to the existing var
+var y: Int = 110
+for i: Int in range(0, 3) do
+    y = y + 40
+end for
+```
+
+Inside a nested block, `let` and `var` declare a separate variable. The new
+`y` hides the outer one until the block ends, and the outer `y` keeps its old
+value. In the same block, redeclaration instead updates the existing binding;
+closures created before the redeclaration observe its new value. Redeclaring
+with `let` also makes the binding immutable.
+
+`geno check` reports W300 when a `let` or `var` redeclares a name whose nearest
+binding is a `var`, in the same block or an enclosing one. The warning describes
+which case applies. It also checks lambdas in default parameter values. The
+program still passes; use assignment to update a `var` without redeclaring it,
+or rename the variable if you meant to have two.
