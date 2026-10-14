@@ -60,10 +60,19 @@ It runs only when triggered manually:
 
 1. Settings → Pages → Source: **GitHub Actions**.
 2. Actions → **website** → Run workflow.
+3. Settings → Pages → Custom domain: `geno-lang.org`, then tick
+   **Enforce HTTPS** once GitHub has issued the certificate.
 
-`404.html` links to `/geno-lang/...`, which matches a project site at
-`https://davidiach.github.io/geno-lang/`. Update those links for a custom
-domain.
+The site is served from the root of `https://geno-lang.org`. The domain's DNS
+has four `A` records for `@` pointing at GitHub Pages (`185.199.108.153`,
+`185.199.109.153`, `185.199.110.153`, `185.199.111.153`) and a `CNAME` for
+`www` pointing at `davidiach.github.io`. Verify the domain under the account's
+Pages settings so no other repository can claim it. A workflow deploy ignores
+`CNAME` files, so the custom domain lives only in the repository settings.
+
+`SITE_URL` in `build.py` sets the canonical, Open Graph, RSS and sitemap
+addresses. `index.html` and `playground.html` carry the same address by hand,
+and `404.html` uses root-absolute links because it is served at any depth.
 
 ## Editing content
 
@@ -80,8 +89,6 @@ domain.
 
 - Blog posts are bylined "The Geno project" and dated 2026-10-14, the launch
   date. Change the byline or dates in each post's front matter if you prefer.
-- `SITE_URL` in `build.py` (used in RSS links), the `og:image` URLs, and the
-  `/geno-lang/` paths in `404.html`.
 - Community links point to GitHub Discussions and Issues; add chat or social
   links if the project gets them.
 - The version (0.5.0) is written into the pages by hand; search for it

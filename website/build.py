@@ -36,7 +36,7 @@ from pathlib import Path
 SITE = Path(__file__).resolve().parent
 REPO = SITE.parent
 SHARED = SITE / "shared"
-SITE_URL = "https://davidiach.github.io/geno-lang"  # placeholder until a domain exists
+SITE_URL = "https://geno-lang.org"
 
 EXAMPLE_TITLES = {
     "welcome": "Examples as specs",
@@ -217,6 +217,7 @@ def fill(template: str, values: dict[str, str]) -> str:
 def post_values(p: Post, prev: Post | None, nxt: Post | None) -> dict[str, str]:
     body, toc_items = toc(p.body)
     return {
+        "site_url": SITE_URL,
         "title": html.escape(p.title),
         "slug": p.slug,
         "summary": html.escape(p.summary),
@@ -266,6 +267,17 @@ def rss(posts: list[Post]) -> str:
     )
 
 
+def sitemap(posts: list[Post]) -> str:
+    urls = [f"{SITE_URL}/", f"{SITE_URL}/playground.html", f"{SITE_URL}/blog/"]
+    urls += [f"{SITE_URL}/blog/{p.slug}.html" for p in posts]
+    rows = "\n".join(f"  <url><loc>{u}</loc></url>" for u in urls)
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{rows}\n</urlset>\n"
+    )
+
+
 def build_blog() -> None:
     posts = load_posts()
     tdir = SITE / "_templates"
@@ -281,9 +293,13 @@ def build_blog() -> None:
         (out / f"{p.slug}.html").write_text(fill(post_t, post_values(p, older, newer)))
     rows = "\n".join(fill(row_t, post_values(p, None, None)) for p in posts)
     (out / "index.html").write_text(
-        fill(index_t, {"rows": rows, "count": str(len(posts))})
+        fill(index_t, {"site_url": SITE_URL, "rows": rows, "count": str(len(posts))})
     )
     (out / "feed.xml").write_text(rss(posts))
+    (SITE / "sitemap.xml").write_text(sitemap(posts))
+    (SITE / "robots.txt").write_text(
+        f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}/sitemap.xml\n"
+    )
     landing = SITE / "index.html"
     cards = "\n".join(fill(card_t, post_values(p, None, None)) for p in posts[:3])
     text = landing.read_text()

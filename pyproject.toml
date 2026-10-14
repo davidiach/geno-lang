@@ -57,7 +57,7 @@ geno = "geno.__main__:main"
 geno-serve = "geno.server:main"
 
 [project.urls]
-Homepage = "https://github.com/davidiach/geno-lang"
+Homepage = "https://geno-lang.org"
 Documentation = "https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md"
 Repository = "https://github.com/davidiach/geno-lang.git"
 Issues = "https://github.com/davidiach/geno-lang/issues"
