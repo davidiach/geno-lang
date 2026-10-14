@@ -177,7 +177,7 @@ def load_posts() -> list[Post]:
                 slug=meta.get("slug", path.stem),
                 title=meta["title"],
                 date=date.fromisoformat(meta["date"]),
-                author=meta.get("author", "The Geno project"),
+                author=meta.get("author", "David Iach"),
                 summary=meta.get("summary", ""),
                 number=int(meta.get("number", "0")),
                 tags=[t.strip() for t in meta.get("tags", "").split(",") if t.strip()],
