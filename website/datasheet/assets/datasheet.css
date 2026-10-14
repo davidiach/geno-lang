@@ -3647,3 +3647,27 @@ sup {
   margin-top: 48px;
   max-width: 1000px;
 }
+
+/* phones: dense tables scroll inside their frame instead of squeezing */
+@media (max-width: 640px) {
+  .code,
+  .term {
+    font-size: 12.5px;
+    padding: 14px;
+  }
+  .code-pins {
+    padding-left: 42px;
+  }
+  .spec.roc,
+  .spec.caps-table,
+  .spec.status-table,
+  .spec.pin-table,
+  .spec.rev,
+  .spec.orderable {
+    min-width: 600px;
+  }
+  .tbl-wrap {
+    margin-right: calc(-1 * max(16px, env(safe-area-inset-right, 0px)));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+}

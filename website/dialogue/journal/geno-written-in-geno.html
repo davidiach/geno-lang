@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geno, written in Geno</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.">
+<meta name="theme-color" content="#061110">
+<link rel="icon" href="../../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="alternate" type="application/rss+xml" title="Geno journal" href="feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..600&family=JetBrains+Mono:ital,wght@0,400..700;1,400&display=swap">
+<link rel="stylesheet" href="../assets/dialogue.css">
+</head>
+<body>
+<a class="skip" href="../#main">Skip to content</a>
+<div class="grain" aria-hidden="true"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="2 5 27 25">
+    <g fill="currentColor"><rect x="8" y="7" width="16" height="2"/><rect x="6" y="9" width="4" height="2"/><rect x="22" y="9" width="4" height="2"/><rect x="4" y="11" width="4" height="10"/><rect x="6" y="21" width="4" height="2"/><rect x="22" y="17" width="4" height="6"/><rect x="8" y="23" width="16" height="1"/><rect x="8" y="24" width="15" height="1"/></g>
+    <g fill="var(--geno)"><rect x="14" y="15" width="12" height="2"/><rect x="23" y="24" width="4" height="4"/></g>
+  </symbol>
+</svg>
+
+<header class="nav" data-nav>
+  <div class="nav-in">
+    <a class="brand" href="../" aria-label="Geno home">
+      <svg class="brand-mark" aria-hidden="true"><use href="../#mark"/></svg>
+      <span>Geno</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="../#acts">The five acts</a>
+      <a href="../#rehearsal">Playground</a>
+      <a href="../#install">Install</a>
+      <a href="./">Journal</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+    </nav>
+    <div class="nav-end">
+      <a class="nav-gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+      <a class="nav-cta" href="../playground.html">Try Geno</a>
+      <button class="nav-menu" type="button" data-menu aria-expanded="false" aria-controls="nav-drawer" aria-label="Open menu"><span></span><span></span></button>
+    </div>
+  </div>
+  <div class="nav-drawer" id="nav-drawer" hidden>
+    <a href="../#acts">The five acts</a>
+    <a href="../#rehearsal">Playground</a>
+    <a href="../#install">Install</a>
+    <a href="./">Journal</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+    <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+  </div>
+</header>
+
+<main id="main" class="entry">
+  <header class="entry-head">
+    <div class="hero-light" aria-hidden="true"></div>
+    <div class="wrap entry-head-in">
+      <p class="entry-kicker"><a href="./">Journal</a><span>Engineering</span><span>No. 001</span></p>
+      <h1 class="entry-title">Geno, written in Geno</h1>
+      <p class="entry-sum">The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.</p>
+      <p class="entry-meta"><span>David Iach</span><span>May 20, 2026</span><span>1 min read</span></p>
+    </div>
+  </header>
+  <div class="wrap entry-body">
+    <aside class="entry-toc" aria-label="In this entry">
+      <p class="label">In this entry</p>
+      <ol><li><a href="#what-it-is-good-for">What it is good for</a></li>
+<li><a href="#what-it-is-not-yet">What it is not, yet</a></li>
+<li><a href="#keeping-it-honest">Keeping it honest</a></li></ol>
+      <p class="entry-tags"><span class="tag">selfhost</span> <span class="tag">compiler</span></p>
+    </aside>
+    <article class="story">
+<p class="lede">A language is a lot more convincing once it can describe itself. The <code>selfhost/</code> directory holds a Geno frontend and tree-walking interpreter written entirely in Geno: about 8,400 lines across eight modules.</p>
+
+<pre><code data-lang="sh">selfhost/
+  Tokens.geno       token definitions
+  Lexer.geno        source text to tokens
+  Ast.geno          syntax tree types
+  Parser.geno       tokens to syntax tree
+  Types.geno        type representation
+  TypeChecker.geno  checking
+  Interpreter.geno  evaluation
+  Main.geno         demo, check, run and test commands</code></pre>
+
+<h2 id="what-it-is-good-for">What it is good for</h2>
+
+<p>Writing a compiler is a stress test for a language: deep recursion, large algebraic data types, exhaustive matches over dozens of variants, and plenty of string handling. Several of Geno's rough edges were found because the self-hosted parser needed something the language made awkward.</p>
+
+<p>Every function in it carries examples, like any other Geno code, so <code>geno test selfhost/</code> doubles as a regression suite for the language that runs it.</p>
+
+<h2 id="what-it-is-not-yet">What it is not, yet</h2>
+
+<ul>
+  <li>It has no code generation backend and no bootstrap path. The Python implementation remains the reference compiler.</li>
+  <li>It covers the subset of Geno its own modules use. Async, traits and app mode are not implemented.</li>
+  <li>Builtin coverage is 123 of 228, about 53%.</li>
+</ul>
+
+<h2 id="keeping-it-honest">Keeping it honest</h2>
+
+<p><code>scripts/check_selfhost_parity.py</code> fails the build when a new keyword or builtin appears in the language without either an implementation in <code>selfhost/</code> or an entry in a named gap group. The gaps are ordered so the next work goes to pure, host-independent builtins first. Nothing drifts silently.</p>
+
+<p>The self-hosted CLI follows the same contracts as the real one, including 0.5's exit semantics: an inner program's <code>Int</code> result becomes the status <code>cmd_run</code> returns.</p>
+    </article>
+  </div>
+  <nav class="wrap entry-pager" aria-label="More entries"><span></span><a class="pager-next" href="what-we-measure.html"><span>Newer</span>What we measure, and what we don&#x27;t claim yet</a></nav>
+</main>
+
+<footer class="credits credits-mini">
+  <div class="wrap credits-in">
+    <svg class="credits-mark" aria-hidden="true"><use href="#mark"/></svg>
+    <nav class="cr-links" aria-label="Footer">
+      <a href="../">Home</a>
+      <a href="../playground.html">Playground</a>
+      <a href="./">Journal</a>
+      <a href="feed.xml">RSS</a>
+      <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="../../">Design versions</a>
+    </nav>
+    <p class="cr-fine">© 2026 The Geno authors. Geno is preview software provided as is; the language and tooling may change before 1.0.</p>
+  </div>
+</footer>
+
+<script src="../../shared/js/highlight.js"></script>
+<script src="../../shared/js/demos.js"></script>
+<script src="../assets/dialogue.js"></script>
+</body>
+</html>

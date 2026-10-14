@@ -36,7 +36,8 @@ from pathlib import Path
 SITE = Path(__file__).resolve().parent
 REPO = SITE.parent
 SHARED = SITE / "shared"
-VERSIONS = ["datasheet", "dialogue"]
+# site version -> directory its blog renders into
+VERSIONS = {"datasheet": "blog", "dialogue": "journal"}
 SITE_URL = "https://davidiach.github.io/geno-lang"  # placeholder until a domain exists
 
 EXAMPLE_TITLES = {
@@ -221,7 +222,7 @@ def post_values(p: Post, prev: Post | None, nxt: Post | None) -> dict[str, str]:
 
 
 def rss(version: str, posts: list[Post]) -> str:
-    base = f"{SITE_URL}/{version}/blog"
+    base = f"{SITE_URL}/{version}/{VERSIONS[version]}"
     items = []
     for p in posts:
         dt = datetime(p.date.year, p.date.month, p.date.day, 12, tzinfo=timezone.utc)
@@ -246,12 +247,12 @@ def rss(version: str, posts: list[Post]) -> str:
 
 def build_blog() -> None:
     posts = load_posts()
-    for version in VERSIONS:
+    for version, blog_dir in VERSIONS.items():
         tdir = SITE / version / "_templates"
         if not tdir.exists():
             print(f"blog     {version}: no templates yet, skipped")
             continue
-        out = SITE / version / "blog"
+        out = SITE / version / blog_dir
         out.mkdir(parents=True, exist_ok=True)
         post_t = (tdir / "post.html").read_text()
         index_t = (tdir / "blog.html").read_text()
