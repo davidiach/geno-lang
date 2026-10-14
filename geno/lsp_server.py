@@ -98,6 +98,21 @@ def _parameter_information(label: str) -> Any:
     return _ParameterInformationFallback(label=label)
 
 
+def _warning_diagnostics_by_uri(dep_graph: Any, files: Any) -> dict[str, list[Any]]:
+    """Group a checked project's W300 warnings by the URI of each file."""
+    from geno.var_shadowing import project_warnings
+
+    uris = {Path(rf.path).resolve(): rf.path.as_uri() for rf in files}
+    grouped: dict[str, list[Any]] = {}
+    for warning in project_warnings(dep_graph):
+        if warning.location is None:
+            continue
+        file_uri = uris.get(Path(warning.location.filename).resolve())
+        if file_uri is not None:
+            grouped.setdefault(file_uri, []).append(_to_lsp_diagnostic(warning))
+    return grouped
+
+
 def _diagnostics_by_uri_from_exception(
     exc: Exception,
     default_uri: str,
@@ -1594,10 +1609,11 @@ class GenoLanguageServer:
                     self._doc_cache[uri] = (source, all_symbols)
                     return
 
-                # No errors — clear diagnostics for all project files
+                # No errors — publish warnings, clear every other file
+                warnings_by_uri = _warning_diagnostics_by_uri(dg, project.files)
                 for rf in project.files:
                     mod_uri = rf.path.as_uri()
-                    self._send_diagnostics(mod_uri, [])
+                    self._send_diagnostics(mod_uri, warnings_by_uri.get(mod_uri, []))
 
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
@@ -1695,10 +1711,11 @@ class GenoLanguageServer:
                     self._doc_cache[uri] = (source, all_symbols)
                     return
 
-                # No errors — clear diagnostics for all project files
+                # No errors — publish warnings, clear every other file
+                warnings_by_uri = _warning_diagnostics_by_uri(dg, context.project.files)
                 for rf in context.project.files:
                     mod_uri = rf.path.as_uri()
-                    self._send_diagnostics(mod_uri, [])
+                    self._send_diagnostics(mod_uri, warnings_by_uri.get(mod_uri, []))
 
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
@@ -1707,6 +1724,7 @@ class GenoLanguageServer:
                 from geno.target_profile import resolve_manifest_targets
 
                 lsp_diags: list[types.Diagnostic] = []
+                passing_diags: list[types.Diagnostic] = []
                 target_names = resolve_manifest_targets(context.project.root)
                 single_file_check_targets: list[str | None] = (
                     list(target_names) if target_names else [None]
@@ -1724,7 +1742,12 @@ class GenoLanguageServer:
                         lsp_diags.extend(
                             _to_lsp_diagnostic(d) for d in result.diagnostics
                         )
-                self._send_diagnostics(uri, lsp_diags)
+                    else:
+                        # Warnings do not depend on the target; keep one copy.
+                        passing_diags = [
+                            _to_lsp_diagnostic(d) for d in result.diagnostics
+                        ]
+                self._send_diagnostics(uri, lsp_diags or passing_diags)
                 all_symbols, _ = _extract_completion_symbols(source)
                 self._doc_cache[uri] = (source, all_symbols)
                 return

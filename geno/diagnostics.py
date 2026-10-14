@@ -63,6 +63,10 @@ class ErrorCode(Enum):
     EFFECT_UNKNOWN = "E311"  # Unrecognized effect name in annotation
     EFFECT_MISMATCH = "E312"  # Callback has incompatible effects
 
+    # Warnings (W3xx): reported with Severity.WARNING once a program passes
+    # the type checker; the program is still accepted.
+    WARN_REDECLARED_VAR = "W300"  # let/var redeclares a mutable var in scope
+
     # Runtime errors (4xx)
     RUNTIME_DIVISION_BY_ZERO = "E400"
     RUNTIME_INDEX_OUT_OF_BOUNDS = "E401"

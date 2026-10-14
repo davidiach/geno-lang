@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TextIO
 
-from ..diagnostics import ErrorCode
+from ..diagnostics import Diagnostic, ErrorCode
 from ..version_support import is_supported_python, unsupported_python_message
 
 
@@ -31,6 +32,17 @@ def _print_error(label: str, error, file=sys.stderr):
     loc = getattr(error, "location", None)
     snippet = _format_source_snippet(loc)
     print(f"{label}: {error}{snippet}", file=file)
+
+
+def _print_warning(diagnostic: Diagnostic, file: TextIO | None = None) -> None:
+    """Print a warning diagnostic with its code and a source snippet."""
+    loc = diagnostic.location
+    where = f"{loc.filename}:{loc.line}:{loc.column}: " if loc else ""
+    snippet = _format_source_snippet(loc)
+    print(
+        f"Warning: {where}{diagnostic.message} [{diagnostic.code.value}]{snippet}",
+        file=file or sys.stderr,
+    )
 
 
 def report_deep_nesting_error(filename: str) -> None:

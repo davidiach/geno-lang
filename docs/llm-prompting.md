@@ -13,6 +13,7 @@ You are writing code in Geno, a statically typed, functional-first language.
 Key syntax rules:
 - Use `let` for immutable bindings: `let x: Int = 5` or `let x = 5`
 - Use `var` for mutable bindings: `var count: Int = 0` or `var count = 0`
+- Update a `var` by assigning to it: `count = count + 1`, not `var count = count + 1`
 - Function parameters and return values require type annotations
 - Boolean literals are lowercase: `true`, `false`
 - String concatenation uses `+` (same as arithmetic addition)
