@@ -1,0 +1,49 @@
+<!--
+title: The playground runs the real compiler
+slug: the-playground-runs-the-real-compiler
+date: 2026-10-14
+number: 6
+author: David Iach
+kicker: Tooling
+tags: tooling, playground
+summary: Most language playgrounds send your code to a server. Geno's runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.
+-->
+<p class="lede">The playground on this site does not imitate Geno. It loads CPython compiled to WebAssembly, unpacks the same <code>geno</code> package you get from <code>pip install</code>, and runs the real CLI against your code. Nothing leaves your browser.</p>
+
+<h2>Why not a server?</h2>
+
+<p>A hosted sandbox is the usual answer, and Geno has one (<code>geno serve</code>). For a playground it brings costs we did not want: a service to operate, rate limits to tune, and a privacy question for every keystroke. It also tends to drift from the release people actually install.</p>
+
+<p>Geno's toolchain is plain Python with no compiled extensions. That makes it a good fit for <a href="https://pyodide.org">Pyodide</a>, which runs CPython in WebAssembly. The whole <code>geno</code> package, minus its tests, compresses to about 600 KB.</p>
+
+<h2>How it works</h2>
+
+<ol>
+  <li>On your first run, a Web Worker loads Pyodide (about 13 MB, cached by your browser after that).</li>
+  <li>The worker fetches the Geno bundle and adds it to Python's import path.</li>
+  <li>Each button writes your editor contents to <code>Main.geno</code> in an in-memory file system and calls the CLI's own <code>main()</code> with the same arguments you would type.</li>
+</ol>
+
+<pre><code data-lang="sh">$ geno test -v Main.geno
+  FAIL  Main.geno (2/3) 16ms
+        x score_label: expected "passing", got "needs work"
+
+2 passed, 1 failed, in 0.10s</code></pre>
+
+<p>That output is not formatted by the website. It is what <code>geno test</code> prints.</p>
+
+<h2>Where the browser differs</h2>
+
+<p><strong>Run uses the direct interpreter.</strong> The default <code>geno run</code> lane starts a sandboxed child process, and a browser tab cannot spawn processes. The playground uses <code>geno run --unsafe --cap …</code>, which applies exactly the capabilities you tick. With none ticked it switches to the fail-closed <code>--json</code> lane, which grants nothing.</p>
+
+<p><strong>Files are imaginary.</strong> Grant <code>fs</code> and your program can read and write, but only inside the worker's in-memory file system.</p>
+
+<p><strong>Runaway programs are stopped twice.</strong> Geno's own step and time limits apply as they do on the command line. If something still runs too long, the page discards the worker and starts a fresh one.</p>
+
+<h2>The open-blocks indicator</h2>
+
+<p>Under the editor you will see which blocks are open at your cursor, such as <code>if › for › func</code>. Once the runtime has loaded, that comes from <code>geno.constraints</code>, the module behind <code>geno constrain</code>. It is the same information a model gets when Geno is used for constrained decoding: at every point in a program, what still needs closing.</p>
+
+<h2>Sharing</h2>
+
+<p>The share button puts your program in the page address after a <code>#</code>, so the code is never sent to a server. Paste the link and the playground opens with your program in it.</p>

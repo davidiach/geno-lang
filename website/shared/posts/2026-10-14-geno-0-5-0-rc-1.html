@@ -1,0 +1,85 @@
+<!--
+title: Geno 0.5.0-rc.1: main now speaks in exit codes
+slug: geno-0-5-0-rc-1
+date: 2026-10-14
+number: 7
+author: David Iach
+kicker: Release
+tags: release, cli, spec
+summary: The first published build of the 0.5 series makes main() -> Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.
+-->
+<p class="lede">Geno 0.5.0-rc.1 is the first published build of the 0.5 series. It is a prerelease because it carries one deliberate breaking change: when <code>main</code> returns an <code>Int</code>, that integer is now the exit status of your program.</p>
+
+<pre><code data-lang="sh">$ pip install --pre geno-lang
+$ geno --version
+geno 0.5.0-rc.1</code></pre>
+
+<h2>Exit codes, on every boundary</h2>
+
+<p>Until now, <code>geno run</code> printed an integer result as a <code>=&gt; 2</code> line and exited 0. That was pleasant for small examples and awkward for real command-line tools. A link checker that found broken links had to <code>throw</code> to fail CI, which turned an expected outcome into a stack trace.</p>
+
+<p>Accepted <a href="https://github.com/davidiach/geno-lang/blob/main/docs/proposals/0001-executable-entrypoint-exit-semantics.md">proposal 0001</a> fixes that. A <code>main() -&gt; Int</code> now supplies the process status, normalized modulo 256:</p>
+
+<pre><code data-lang="geno">func main() -> Int
+    let broken = check_links()
+    print(f"{broken} broken links")
+    if broken > 0 then
+        return 2
+    end if
+    return 0
+end func</code></pre>
+
+<pre><code data-lang="sh">$ geno run sitecheck.geno
+3 broken links
+$ echo $?
+2</code></pre>
+
+<p>The rule holds on all seven executable boundaries the conformance corpus now covers: the in-process lane, the three <code>geno run</code> lanes, standalone compiled Python, the Node script, and directly executed Node ESM. Output written before the result still arrives, and a normal nonzero status carries no traceback.</p>
+
+<p>Things that are not process boundaries keep returning the raw value. <code>geno.api.run()</code>, the hosted server and imported artifacts never terminate their caller because <code>main</code> returned a number. Browser builds keep displaying the result, since a browser tab has no exit status.</p>
+
+<h3>Migrating</h3>
+
+<p>If your integer was there to be seen, print it and return <code>Unit</code>:</p>
+
+<pre><code data-lang="geno">func main() -> Unit
+    print(double(21))
+    return ()
+end func</code></pre>
+
+<p>If you run <code>geno run --json</code> under <code>set -e</code> or with <code>check=True</code>, note that the envelope still reports the raw value (258 stays 258) while the process now exits with the normalized status (2).</p>
+
+<h2>Named arguments for constructors</h2>
+
+<p><code>Point(x: 10, y: 20)</code> now parses, as the specification has always written it. The checker validates names against the variant's fields and reports unknown, repeated, missing and positional-after-named arguments. Arguments evaluate in source order on every backend.</p>
+
+<pre><code data-lang="geno">type Point = Point(x: Int, y: Int)
+
+let origin = Point(x: 0, y: 0)</code></pre>
+
+<h2>An Async value runs once</h2>
+
+<p>Section 7.15 of the 0.5 specification now says it plainly: awaiting the same <code>Async[T]</code> twice, even while the first await is still in progress, produces the result of a single run. A run that threw throws the same error to every awaiter. Python, JavaScript and the interpreter agree.</p>
+
+<h2>Module constants</h2>
+
+<p>A <code>let</code> outside any function declares a constant every function in the file can read. The initializer must be a literal, so importing a module still never runs code.</p>
+
+<pre><code data-lang="geno">let usage: String = "roman &lt;number&gt;"
+let numerals: List[String] = ["I", "V", "X", "L", "C", "D", "M"]</code></pre>
+
+<h2>Fixes from the 0.5 evaluation</h2>
+
+<ul>
+  <li>Large integers in <code>geno run --json</code> stay exact JSON numbers past Python's 4,300-digit conversion limit, including inside collections.</li>
+  <li>A method defined twice in one <code>impl</code> block is reported as <code>E309</code> instead of silently keeping the last one.</li>
+  <li>Record fields may begin with a single underscore on every backend.</li>
+  <li><code>path_parent</code>, <code>path_extension</code> and <code>path_is_absolute</code> agree across Python and JavaScript.</li>
+  <li>The REPL shows <code>print</code> output and type-checks expressions.</li>
+</ul>
+
+<p>Three of these reject programs that 0.4.4 accepted. Each of those programs already failed at run time on at least one backend, so the checker now says so earlier. The full list is in the <a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">changelog</a>.</p>
+
+<h2>Try it</h2>
+
+<p>The <a href="../playground.html">playground</a> on this site runs this exact release in your browser. Bugs and rough edges go to <a href="https://github.com/davidiach/geno-lang/issues">GitHub issues</a>; questions and early impressions to <a href="https://github.com/davidiach/geno-lang/discussions">Discussions</a>.</p>

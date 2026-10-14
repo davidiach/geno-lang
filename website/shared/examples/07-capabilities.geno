@@ -1,0 +1,23 @@
+// Capabilities: effects are denied unless granted.
+// Untick "clock" below the editor and press Run.
+
+func greeting(hour: Int) -> String
+    example 8 -> "Good morning"
+    example 15 -> "Good afternoon"
+    example 22 -> "Good evening"
+    if hour < 12 then
+        return "Good morning"
+    else if hour < 18 then
+        return "Good afternoon"
+    end if
+    return "Good evening"
+end func
+
+func main() -> Unit
+    let stamp = clock_format(clock_now(), "%H")
+    match parse_int(stamp) with
+        | Some(h) -> print(greeting(h) + ", from inside your browser.")
+        | None -> print("The clock returned " + stamp)
+    end match
+    return ()
+end func

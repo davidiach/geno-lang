@@ -1,0 +1,56 @@
+<!--
+title: Why Geno writes end func
+slug: why-geno-writes-end-func
+date: 2026-08-12
+number: 4
+author: David Iach
+kicker: Design
+tags: design, llm, syntax
+summary: Braces and indentation work well for people with editors. Generated code needs boundaries that survive truncation, reformatting and streaming, so every Geno block closes by name.
+-->
+<p class="lede">Every block in Geno ends with the name of what it closes: <code>end func</code>, <code>end if</code>, <code>end match</code>. It looks old-fashioned, and that is a fair first reaction. Here is why we chose it anyway.</p>
+
+<pre><code data-lang="geno">func count_vowels(text: String) -> Int
+    example "geno" -> 2
+    example "rhythm" -> 0
+    var total = 0
+    for ch: String in to_chars(text) do
+        if string_contains("aeiou", ch) then
+            total = total + 1
+        end if
+    end for
+    return total
+end func</code></pre>
+
+<h2>Where generated code loses its place</h2>
+
+<p>A model emits code one token at a time. With braces, the closing <code>}</code> of a loop and the closing <code>}</code> of a function are the same token, so a model that has lost count produces something that parses and means the wrong thing. With significant indentation, the structure lives in whitespace, which is the first thing to break when code passes through a chat interface, a diff or a copy-paste.</p>
+
+<p>A named terminator fails loudly instead. <code>end for</code> where the parser expects <code>end if</code> is an error at that exact line, with the reason attached.</p>
+
+<h2>A stack you can ask about</h2>
+
+<p>Because every opener has a matching closer, Geno can tell you at any point in a partial program which blocks are still open. <code>geno constrain</code> exposes that directly:</p>
+
+<pre><code data-lang="sh">$ printf 'func f(x: Int) -> Int\n    example 1 -> 1\n    if x > 0 then\n' | geno constrain
+AllowedNext(keywords=[...], need_to_close=['if', 'func'])</code></pre>
+
+<p>That is the foundation for constrained decoding: a generator can be steered so that it never emits a token the grammar cannot accept, and never stops while a block is still open. The module is marked Research in the maturity matrix because we have not yet benchmarked it against real models. The prefix validation itself works today.</p>
+
+<h2>Labels for people, too</h2>
+
+<p>The terminator can carry a label, which helps long functions and loops read well in review:</p>
+
+<pre><code data-lang="geno">    while i &lt;= n do
+        let next = prev + curr
+        prev = curr
+        curr = next
+        i = i + 1
+    end while "count up to n"
+
+    return curr
+end func fib_iterative</code></pre>
+
+<h2>What it costs</h2>
+
+<p>More characters per block, and some keywords you cannot use as names (<code>end</code>, <code>in</code>, <code>with</code>, <code>type</code>). Editors absorb most of the typing: the VS Code extension's snippets write each block with its terminator already in place, and its indentation rules dedent as soon as you type <code>end</code>.</p>

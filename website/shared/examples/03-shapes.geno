@@ -1,0 +1,26 @@
+// Algebraic data types and exhaustive matching.
+// Delete the Triangle arm and press Check.
+
+type Shape = Circle(radius: Float)
+           | Rectangle(width: Float, height: Float)
+           | Triangle(base: Float, height: Float)
+
+func area(s: Shape) -> Float
+    example Circle(1.0) -> 3.14159
+    example Rectangle(3.0, 4.0) -> 12.0
+    example Triangle(4.0, 5.0) -> 10.0
+    match s with
+        | Circle(r) -> return 3.14159 * r * r
+        | Rectangle(w, h) -> return w * h
+        | Triangle(b, h) -> return 0.5 * b * h
+    end match
+end func
+
+func total_area(shapes: List[Shape]) -> Float
+    example [Circle(1.0), Rectangle(2.0, 3.0)] -> 9.14159
+    return fold(list: shapes, initial: 0.0, reducer: fn(acc: Float, s: Shape) -> acc + area(s))
+end func
+
+func main() -> Float
+    return total_area([Circle(1.0), Rectangle(2.0, 3.0), Triangle(4.0, 5.0)])
+end func

@@ -1,0 +1,41 @@
+<!--
+title: Geno, written in Geno
+slug: geno-written-in-geno
+date: 2026-05-20
+number: 1
+author: David Iach
+kicker: Engineering
+tags: selfhost, compiler
+summary: The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.
+-->
+<p class="lede">A language is a lot more convincing once it can describe itself. The <code>selfhost/</code> directory holds a Geno frontend and tree-walking interpreter written entirely in Geno: about 8,400 lines across eight modules.</p>
+
+<pre><code data-lang="sh">selfhost/
+  Tokens.geno       token definitions
+  Lexer.geno        source text to tokens
+  Ast.geno          syntax tree types
+  Parser.geno       tokens to syntax tree
+  Types.geno        type representation
+  TypeChecker.geno  checking
+  Interpreter.geno  evaluation
+  Main.geno         demo, check, run and test commands</code></pre>
+
+<h2>What it is good for</h2>
+
+<p>Writing a compiler is a stress test for a language: deep recursion, large algebraic data types, exhaustive matches over dozens of variants, and plenty of string handling. Several of Geno's rough edges were found because the self-hosted parser needed something the language made awkward.</p>
+
+<p>Every function in it carries examples, like any other Geno code, so <code>geno test selfhost/</code> doubles as a regression suite for the language that runs it.</p>
+
+<h2>What it is not, yet</h2>
+
+<ul>
+  <li>It has no code generation backend and no bootstrap path. The Python implementation remains the reference compiler.</li>
+  <li>It covers the subset of Geno its own modules use. Async, traits and app mode are not implemented.</li>
+  <li>Builtin coverage is 123 of 228, about 53%.</li>
+</ul>
+
+<h2>Keeping it honest</h2>
+
+<p><code>scripts/check_selfhost_parity.py</code> fails the build when a new keyword or builtin appears in the language without either an implementation in <code>selfhost/</code> or an entry in a named gap group. The gaps are ordered so the next work goes to pure, host-independent builtins first. Nothing drifts silently.</p>
+
+<p>The self-hosted CLI follows the same contracts as the real one, including 0.5's exit semantics: an inner program's <code>Int</code> result becomes the status <code>cmd_run</code> returns.</p>
