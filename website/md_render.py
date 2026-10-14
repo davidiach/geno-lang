@@ -406,6 +406,18 @@ class _Renderer:
             buf.append(fragment)
             return f"\x00{len(buf) - 1}\x00"
 
+        def resolve(fragment: str) -> str:
+            while "\x00" in fragment:
+                fragment = re.sub(
+                    r"\x00(\d+)\x00", lambda m: buf[int(m.group(1))], fragment
+                )
+            return fragment
+
+        def attr_text(fragment: str) -> str:
+            # Placeholders hold markup; inside an attribute only their text may
+            # appear, and the caller escapes it with quotes.
+            return plain(resolve(fragment))
+
         # Code spans first: nothing inside them is Markdown.
         text = re.sub(
             r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)",
@@ -416,7 +428,7 @@ class _Renderer:
             flags=re.S,
         )
         text = re.sub(
-            r"<(https?://[^\s<>]+)>",
+            r"<(https?://[^\s<>\x00]+)>",
             lambda m: keep(
                 self.anchor(m.group(1), html.escape(m.group(1), quote=False))
             ),
@@ -429,13 +441,14 @@ class _Renderer:
         )
 
         def link(m: re.Match[str]) -> str:
-            label, url = m.group(2), m.group(3)
+            label, url = m.group(2), attr_text(m.group(3))
             if m.group(1):
                 src = self.link(url)
                 if re.match(r"^\s*(?:javascript|vbscript):", src, re.I):
                     src = ""
+                alt = attr_text(self.inline(label, buf))
                 return keep(
-                    f'<img src="{html.escape(src)}" alt="{html.escape(plain(label))}" loading="lazy">'
+                    f'<img src="{html.escape(src)}" alt="{html.escape(alt)}" loading="lazy">'
                 )
             return keep(self.anchor(url, self.inline(label, buf)))
 
@@ -446,18 +459,20 @@ class _Renderer:
             text,
         )
 
-        def ref(m: re.Match[str]) -> str:
-            label, key = m.group(1), (m.group(2) or m.group(1))
+        def ref(m: re.Match[str], label: str, key: str) -> str:
             url = self.refs.get(key.strip().lower())
             if url is None:
                 return str(m.group(0))
             return keep(self.anchor(url, self.inline(label, buf)))
 
-        text = re.sub(bracket + r"\[([^\]]*)\]", ref, text)
+        # [text][key], [text][] and the shortcut [key]
         text = re.sub(
-            bracket + r"(?!\(|\[)",
-            lambda m: ref(m) if m.group(1).strip().lower() in self.refs else m.group(0),
+            bracket + r"\[([^\]]*)\]",
+            lambda m: ref(m, m.group(1), m.group(2) or m.group(1)),
             text,
+        )
+        text = re.sub(
+            bracket + r"(?!\(|\[)", lambda m: ref(m, m.group(1), m.group(1)), text
         )
         text = re.sub(
             r"(?<![\w\"'=/])(https?://[^\s<>\x00]*[^\s<>\x00.,:;\"')\]])",
@@ -483,11 +498,7 @@ class _Renderer:
         text = re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"<del>\1</del>", text, flags=re.S)
         text = re.sub(r"(?: {2,}|\\)\n", "<br>\n", text)
 
-        if not top:
-            return text
-        while "\x00" in text:
-            text = re.sub(r"\x00(\d+)\x00", lambda m: buf[int(m.group(1))], text)
-        return text
+        return resolve(text) if top else text
 
     def anchor(self, url: str, label: str) -> str:
         href = self.link(url)

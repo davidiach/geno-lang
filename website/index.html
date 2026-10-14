@@ -530,7 +530,7 @@ $ python app.py --cap print,fs                # compiled Python</code></pre>
 
     <section class="sub" id="conditions" aria-labelledby="h82">
       <h3 id="h82" class="h-sub"><span class="no">8.2</span>Resource limits</h3>
-      <p>Every <code>geno run</code> is bounded: a program that exceeds a limit stops with an error instead of exhausting the machine. By default a run gets a million interpreter steps, 500 call frames, 256&nbsp;MiB of memory and 30 seconds. Standalone compiled Python and JavaScript keep the integer and collection guards, but have no timeout or step limit of their own.</p>
+      <p>Every <code>geno run</code> is bounded: a program that exceeds a limit stops with an error instead of exhausting the machine. By default a run gets 30 seconds, 256&nbsp;MiB of memory (512&nbsp;MiB on macOS) and 500 call frames; the interpreter modes, <code>--unsafe</code> and <code>--json</code>, also stop after a million steps. Standalone compiled Python and JavaScript keep the integer and collection guards, but have no timeout or step limit of their own.</p>
       <details class="more">
       <summary>All default limits and their flags</summary>
       <div class="tbl-wrap">

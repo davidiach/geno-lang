@@ -164,6 +164,22 @@ class TestMarkdownInline:
         assert "&lt;script&gt;" in out
         assert 'href="#"' in out
 
+    def test_code_spans_cannot_break_out_of_attributes(self) -> None:
+        assert _html('![`" onerror="alert(1)`](x.png)') == (
+            '<p><img src="x.png" alt="&quot; onerror=&quot;alert(1)" loading="lazy"></p>'
+        )
+        assert _html('[a](`x"y`)') == '<p><a href="x&quot;y">a</a></p>'
+
+    def test_shortcut_and_collapsed_reference_links(self) -> None:
+        out = _html(
+            "[foo], [Foo][] and [bar][foo]; [nope] stays.\n\n[foo]: https://e.x/\n"
+        )
+        assert out.count('<a href="https://e.x/" rel="noopener">') == 3
+        assert ">foo</a>" in out
+        assert ">Foo</a>" in out
+        assert ">bar</a>" in out
+        assert "[nope] stays." in out
+
     def test_backslash_escapes(self) -> None:
         assert _html(r"\*not em\* and \[not link\]") == "<p>*not em* and [not link]</p>"
 
