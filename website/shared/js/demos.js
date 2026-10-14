@@ -811,6 +811,37 @@
     });
   }
 
+  // Copy buttons for long-form code blocks. Shell blocks copy only the
+  // commands (lines after a "$ " prompt), not their output.
+  function codeCopy(selector) {
+    document.querySelectorAll(selector).forEach(function (pre) {
+      if (pre.dataset.copyReady) return;
+      pre.dataset.copyReady = "1";
+      var code = pre.querySelector("code");
+      var raw = (code || pre).textContent;
+      var isShell = code && code.getAttribute("data-lang") === "sh";
+      var text = raw;
+      if (isShell) {
+        var cmds = raw.split("\n").filter(function (l) {
+          return /^\$ /.test(l);
+        });
+        if (cmds.length) text = cmds.map(function (l) { return l.slice(2); }).join("\n");
+      }
+      var wrap = document.createElement("div");
+      wrap.className = "pre-wrap";
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "pre-copy";
+      b.setAttribute("aria-label", isShell ? "Copy commands" : "Copy code");
+      b.dataset.copy = text;
+      b.innerHTML = '<span class="pc-a">Copy</span><span class="pc-b">Copied</span>';
+      wrap.appendChild(b);
+    });
+    copyButtons(document);
+  }
+
   function init(root) {
     root = root || document;
     root.querySelectorAll("[data-demo]").forEach(function (el) {
@@ -832,5 +863,5 @@
     H.highlightAll(root);
   }
 
-  global.GenoDemos = { init: init, copyButtons: copyButtons, tabs: tabs, onVisible: onVisible, bench: BENCH, reduceMotion: reduceMotion };
+  global.GenoDemos = { init: init, copyButtons: copyButtons, codeCopy: codeCopy, tabs: tabs, onVisible: onVisible, bench: BENCH, reduceMotion: reduceMotion };
 })(window);

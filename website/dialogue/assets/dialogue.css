@@ -3009,8 +3009,6 @@ html.is-scrubbing * {
   width: 100%;
   border-collapse: collapse;
   font: 400 15px/1.45 var(--f-body);
-  display: block;
-  overflow-x: auto;
 }
 .story th {
   text-align: left;
@@ -3213,5 +3211,73 @@ code * {
   .pg-dl div {
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
+  }
+}
+
+/* long-form code: copy buttons and reading progress */
+.pre-wrap {
+  position: relative;
+  margin-block: 1.4em;
+}
+.story > .pre-wrap + * {
+  margin-top: 1.4em;
+}
+.pre-wrap > pre {
+  margin: 0 !important;
+}
+.pre-copy {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font: 500 11.5px/1 var(--f-mono);
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-3);
+  color: var(--text-2);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.pre-wrap:hover .pre-copy,
+.pre-copy:focus-visible,
+.pre-copy[data-copied] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .pre-copy {
+    opacity: 1;
+  }
+}
+.pc-b {
+  display: none;
+  color: var(--geno);
+}
+.pre-copy[data-copied] .pc-a {
+  display: none;
+}
+.pre-copy[data-copied] .pc-b {
+  display: inline;
+}
+.progress {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 85;
+  background: linear-gradient(90deg, var(--geno), var(--model));
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+}
+@supports (animation-timeline: scroll()) {
+  .progress {
+    animation: progress linear both;
+    animation-timeline: scroll(root);
+  }
+}
+@keyframes progress {
+  to {
+    transform: scaleX(1);
   }
 }

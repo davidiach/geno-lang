@@ -166,7 +166,7 @@
           <tr data-v="2"><td>TV3</td><td>40</td><td>"needs work"</td><td><span class="res">PASS</span></td></tr>
         </tbody>
       </table>
-      <figcaption id="fig1-cap"><b>Figure 1.</b> <span>Functional diagram. Each <code>example</code> clause is a test vector, run by <code>geno test</code>.</span></figcaption>
+      <figcaption id="fig1-cap"><b>Figure 1.</b> <span>Functional diagram. Each <code>example</code> clause is a test vector, run by <code>geno test</code>. Pin functions in <a href="#pinout">Table 4-1</a>.</span></figcaption>
     </figure>
 
     <div class="p1-cols">
@@ -534,6 +534,13 @@ $ geno dev   # live reload</code></pre>
 # POST /run · GET /healthz · GET /metrics</code></pre>
         </article>
       </div>
+      <aside class="caution" aria-label="Caution">
+        <svg class="caution-i" viewBox="0 0 40 36" aria-hidden="true"><path d="M20 3 L37 33 H3 Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M20 13v10" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="20" cy="28" r="1.8" fill="currentColor"/></svg>
+        <div>
+          <p class="caution-h">Execution boundary</p>
+          <p>Generated JavaScript is trusted code. In Mode B, <code>--cap</code> selects which Node.js APIs are wired up; it does not sandbox the artifact. Run untrusted programs through <code>geno run</code>, which isolates the process, or behind <code>geno serve</code>. The in-process embedding API applies cooperative limits only.</p>
+        </div>
+      </aside>
     </section>
   </section>
 

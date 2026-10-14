@@ -205,6 +205,9 @@
   }
 
   /* shared demos + playground -------------------------------------------- */
-  if (window.GenoDemos) window.GenoDemos.init(document);
+  if (window.GenoDemos) {
+    window.GenoDemos.init(document);
+    window.GenoDemos.codeCopy(".prose pre");
+  }
   if (window.GenoPlayground) window.GenoPlayground.init();
 })();

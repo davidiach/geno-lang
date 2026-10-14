@@ -476,6 +476,9 @@
   });
 
   /* shared demos + playground --------------------------------------------- */
-  if (window.GenoDemos) window.GenoDemos.init(document);
+  if (window.GenoDemos) {
+    window.GenoDemos.init(document);
+    window.GenoDemos.codeCopy(".story pre");
+  }
   if (window.GenoPlayground) window.GenoPlayground.init();
 })();

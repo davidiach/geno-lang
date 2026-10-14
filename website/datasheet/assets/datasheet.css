@@ -3461,8 +3461,6 @@ sup {
   width: 100%;
   border-collapse: collapse;
   font-size: 15.5px;
-  display: block;
-  overflow-x: auto;
 }
 .prose th {
   text-align: left;
@@ -3708,4 +3706,105 @@ sup {
 }
 .sec {
   padding-bottom: clamp(40px, 5vw, 64px);
+}
+
+/* caution box, as datasheets print their ESD warnings */
+.caution {
+  margin-top: 22px;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  border: 1.5px solid var(--ink);
+  background: var(--sheet);
+  padding: 16px 18px;
+}
+.caution-i {
+  width: 44px;
+  height: 40px;
+  color: var(--amber);
+}
+.caution-h {
+  font: 700 15px/1.2 var(--f-display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.caution p:not(.caution-h) {
+  font-size: 15px;
+  color: var(--ink-2);
+  max-width: 80ch;
+}
+.fig-chip figcaption a {
+  color: var(--teal-ink);
+}
+
+/* long-form code: copy buttons and reading progress */
+.pre-wrap {
+  position: relative;
+  margin-block: 1.3em;
+}
+.prose > .pre-wrap + * {
+  margin-top: 1.3em;
+}
+.pre-wrap > pre {
+  margin: 0 !important;
+}
+.pre-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font: 600 10.5px/1 var(--f-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  color: var(--ink-2);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.pre-wrap:hover .pre-copy,
+.pre-copy:focus-visible,
+.pre-copy[data-copied] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .pre-copy {
+    opacity: 1;
+  }
+}
+.pc-b {
+  display: none;
+  color: var(--teal-ink);
+}
+.pre-copy[data-copied] .pc-a {
+  display: none;
+}
+.pre-copy[data-copied] .pc-b {
+  display: inline;
+}
+.progress {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 60;
+  background: var(--teal);
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+}
+@supports (animation-timeline: scroll()) {
+  .progress {
+    animation: progress linear both;
+    animation-timeline: scroll(root);
+  }
+}
+@keyframes progress {
+  to {
+    transform: scaleX(1);
+  }
 }
