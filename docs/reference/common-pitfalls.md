@@ -239,8 +239,14 @@ for i: Int in range(0, 3) do
 end for
 ```
 
-`let` and `var` always declare a new variable. Inside a nested block the new
+Inside a nested block, `let` and `var` declare a separate variable. The new
 `y` hides the outer one until the block ends, and the outer `y` keeps its old
-value. `geno check` reports W300 when a `let` or `var` redeclares a name whose
-nearest binding is a `var`, in the same block or an enclosing one. The program
-still passes; rename the inner variable if you meant to have two.
+value. In the same block, redeclaration instead updates the existing binding;
+closures created before the redeclaration observe its new value. Redeclaring
+with `let` also makes the binding immutable.
+
+`geno check` reports W300 when a `let` or `var` redeclares a name whose nearest
+binding is a `var`, in the same block or an enclosing one. The warning describes
+which case applies. It also checks lambdas in default parameter values. The
+program still passes; use assignment to update a `var` without redeclaring it,
+or rename the variable if you meant to have two.

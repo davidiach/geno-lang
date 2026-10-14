@@ -22,7 +22,8 @@ var total = 0
 
 `let` bindings are immutable; use `var` when you need mutation. Update a `var`
 by assigning to it (`total = total + 1`). Writing `var total = ...` again
-declares a second variable, and `geno check` warns about it (W300).
+rebinds it in the same block, or declares a separate variable in a nested
+block. `geno check` warns about either redeclaration (W300).
 
 ### Module Constants
 

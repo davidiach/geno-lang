@@ -196,6 +196,61 @@ def test_message_names_the_original_declaration():
     assert warning.location.column == 9
 
 
+@pytest.mark.parametrize(
+    ("declaration", "keyword"),
+    [
+        ("var x: Int = 2", "var"),
+        ("let x: Int = 2", "let"),
+        ("var (x, y): (Int, Int) = (2, 0)", "var"),
+        ("let (x, y): (Int, Int) = (2, 0)", "let"),
+    ],
+)
+def test_same_block_message_describes_live_rebinding(declaration, keyword):
+    source = (
+        "func main() -> Int\n"
+        "    var x: Int = 1\n"
+        "    let read = fn() -> x\n"
+        f"    {declaration}\n"
+        "    return read()\n"
+        "end func\n"
+    )
+    (warning,) = _warnings(source)
+    assert warning.message == (
+        f"'{keyword} x' rebinds the mutable 'x' from line 2 in the same block. "
+        "Existing closures observe its new value. Write 'x = ...' to update "
+        "it without redeclaring, or choose a different name"
+    )
+    assert warning.location.line == 4
+    result = geno.run(source)
+    assert result.ok, result.diagnostics
+    assert result.value == 2
+
+
+def test_default_parameter_lambda_warns_once():
+    source = """\
+func use(f: () -> Int with mutation = fn() do
+    var x: Int = 0
+    if true then
+        var x: Int = 1
+    end if
+    return x
+end fn) -> Int
+    example () -> 2
+    var x: Int = 2
+    return f() + x
+end func
+func main() -> Int
+    return use()
+end func
+"""
+    (warning,) = _warnings(source)
+    assert warning.location.line == 4
+    assert "from line 2, which keeps its old value" in warning.message
+    result = geno.run(source)
+    assert result.ok, result.diagnostics
+    assert result.value == 2
+
+
 QUIET_CASES = {
     "let rebinding a parameter": """\
         func bump(n: Int) -> Int

@@ -1,10 +1,10 @@
 """Warn when a declaration redeclares a mutable variable (W300).
 
-Inside a block, ``var y = f(y)`` where ``y`` is already a ``var`` declares a
-second ``y`` instead of updating the first one, and the new value is lost when
-the block ends. The checker accepts the program because each ``y`` is
-well-typed, so this pass reports it as a warning once the program passes the
-type checker.
+Inside a nested block, ``var y = f(y)`` where an enclosing ``y`` is a ``var``
+declares a second ``y`` instead of updating the first one, and the new value
+is lost when the block ends. In the same block, redeclaration rebinds the
+existing variable instead. This pass distinguishes those cases in a warning
+once the program passes the type checker.
 
 The rule is syntactic: a ``let`` or ``var`` warns when the nearest binding of
 its name, in the same block or an enclosing one of the same function body, is
@@ -85,15 +85,24 @@ class _Finder:
         found, var_line = scope.nearest(name)
         if found and var_line is not None:
             keyword = "var" if mutable else "let"
+            if name in scope.names:
+                message = (
+                    f"'{keyword} {name}' rebinds the mutable '{name}' from "
+                    f"line {var_line} in the same block. Existing closures "
+                    f"observe its new value. Write '{name} = ...' to update "
+                    "it without redeclaring, or choose a different name"
+                )
+            else:
+                message = (
+                    f"'{keyword} {name}' declares a new variable that hides "
+                    f"the mutable '{name}' from line {var_line}, which keeps "
+                    f"its old value. Write '{name} = ...' to update it, or "
+                    "choose a different name"
+                )
             self.diagnostics.append(
                 Diagnostic(
                     code=ErrorCode.WARN_REDECLARED_VAR,
-                    message=(
-                        f"'{keyword} {name}' declares a new variable that hides "
-                        f"the mutable '{name}' from line {var_line}, which keeps "
-                        f"its old value. Write '{name} = ...' to update it, or "
-                        "choose a different name"
-                    ),
+                    message=message,
                     severity=Severity.WARNING,
                     location=location,
                 )
@@ -119,6 +128,9 @@ class _Finder:
     def function(self, params: list[Parameter], body: list[Statement]) -> None:
         scope = _Scope()
         for param in params:
+            # Defaults are checked in global scope, outside the function's
+            # parameters and locals. Their lambdas still need their own walk.
+            self.expression(param.default_value, _Scope())
             self.bind_immutable(param.name, scope)
         self.block(body, scope)
 
