@@ -121,7 +121,7 @@
   global.GenoReplay = { codeHTML: codeHTML, termHTML: termHTML, FRAMES: FRAMES, SAY: SAY, openBlocks: openBlocks, sigState: sigState };
   if (typeof document === "undefined") return;
 
-  var root = document.querySelector("[data-replay]");
+  var root = document.querySelector("[data-repair]");
   if (!root || !H()) return;
 
   var reduce = global.matchMedia && global.matchMedia("(prefers-reduced-motion: reduce)").matches;

@@ -1,11 +1,12 @@
-// Welcome to Geno. Every function carries examples, and they run.
+// Welcome to Geno. Functions carry examples, and geno test runs them.
 // Try: change 60 to 75 below, then press Test.
 
 func score_label(score: Int) -> String
     requires score >= 0
-    example 95 -> "excellent"
-    example 70 -> "passing"
-    example 40 -> "needs work"
+    example 90 -> "excellent"
+    example 89 -> "passing"
+    example 60 -> "passing"
+    example 59 -> "needs work"
 
     if score >= 90 then
         return "excellent"
@@ -17,7 +18,7 @@ func score_label(score: Int) -> String
 end func
 
 func main() -> Unit
-    for s: Int in [95, 70, 40] do
+    for s: Int in [90, 89, 60, 59] do
         print(f"{s} -> {score_label(s)}")
     end for
     return ()

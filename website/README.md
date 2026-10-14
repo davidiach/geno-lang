@@ -71,18 +71,24 @@ domain.
 |---|---|
 | Blog posts | `shared/posts/*.html`, front matter in the leading comment, then run `build.py` |
 | Playground examples | `shared/examples/NN-name.geno`; titles in `EXAMPLE_TITLES` in `build.py` |
-| Hero replay and demos | `shared/js/demos.js`; every printed message was captured from the 0.5.0-rc.1 CLI |
+| Hero replay | `assets/replay.js`; every printed line was captured from the 0.5.0-rc.1 CLI |
+| Interactive demos | `shared/js/demos.js`; same rule |
 | Benchmark data | `BENCH` in `shared/js/demos.js`, from `benchmarks/RESULTS.md` |
 | Landing copy | `index.html` |
 
 ## Placeholders to review
 
-- Blog bylines and dates (posts are written from the changelog and docs, but the
-  dates and author name are placeholders).
+- Blog posts are bylined "The Geno project" and dated 2026-10-14, the launch
+  date. Change the byline or dates in each post's front matter if you prefer.
 - `SITE_URL` in `build.py` (used in RSS links), the `og:image` URLs, and the
   `/geno-lang/` paths in `404.html`.
 - Community links point to GitHub Discussions and Issues; add chat or social
   links if the project gets them.
+- The version (0.5.0-rc.1) is written into the pages by hand; search for it
+  when the next release ships.
 
 An earlier second design direction ("Dialogue") was retired in favour of this
 one; it is in the git history at commit `a28c457`.
+
+The social card `og.png` is a 1200×630 screenshot of an HTML mock of
+Figure 1's failing step; regenerate it if the replay's program changes.

@@ -13,7 +13,7 @@
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
-<link rel="alternate" type="application/rss+xml" title="Geno application notes" href="feed.xml">
+<link rel="alternate" type="application/rss+xml" title="Geno blog" href="feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
@@ -37,14 +37,15 @@
       <span class="brand-word">GENO</span>
     </a>
     <nav class="bar-nav" aria-label="Primary">
-      <a href="../#ordering">Install</a>
+      <a href="../#install">Install</a>
       <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
       <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
       <a href="../playground.html">Playground</a>
-      <a href="./">App notes</a>
+      <a href="./">Blog</a>
       <a href="../#community">Community</a>
     </nav>
     <div class="bar-end">
+      <a class="try" href="../playground.html">Try Geno <span aria-hidden="true">→</span></a>
       <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
         <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
       </button>
@@ -56,20 +57,21 @@
     </div>
   </div>
   <div class="drawer" id="drawer" hidden>
-    <a href="../#ordering">Install</a>
+    <a href="../#install">Install</a>
     <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
     <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
     <a href="../playground.html">Playground</a>
-    <a href="./">Application notes</a>
+    <a href="./">Blog</a>
     <a href="../#community">Community</a>
     <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between paper and night"><span class="theme-paper">Paper edition</span><span class="theme-night">Night edition</span></button>
   </div>
 </header>
 
 <div class="docline" aria-hidden="true">
   <div class="docline-in">
-    <span><b>GENO</b> APPLICATION NOTES</span>
-    <span class="docline-mid">LITERATURE INDEX – 7 DOCUMENTS</span>
+    <span><b>GENO</b> BLOG</span>
+    <span class="docline-mid">APPLICATION NOTES · 7 POSTS</span>
     <span><a href="feed.xml">RSS</a></span>
   </div>
 </div>
@@ -77,57 +79,57 @@
 <main id="main" class="an-index">
   <header class="an-index-head">
     <div class="an-head-in">
-      <p class="an-kicker"><a href="../">Geno datasheet</a><span>/</span><span>Literature</span></p>
-      <h1 class="an-index-title">Application Notes</h1>
-      <p class="an-index-lede">Releases, design decisions and engineering detail from the Geno project. Each note stands on its own; read them in any order.</p>
+      <p class="an-kicker"><a href="../">Geno</a><span>/</span><span>Application notes</span></p>
+      <h1 class="an-index-title">Blog</h1>
+      <p class="an-index-lede">Releases, design decisions and engineering detail from the Geno project. Each post stands on its own; read them in any order.</p>
     </div>
   </header>
   <div class="an-index-body">
     <div class="tbl-wrap">
       <table class="spec an-table">
-        <thead><tr><th scope="col">Number</th><th scope="col">Title</th><th scope="col">Topic</th><th scope="col">Date</th></tr></thead>
+        <thead><tr><th scope="col">No.</th><th scope="col">Title</th><th scope="col">Topic</th><th scope="col">Date</th></tr></thead>
         <tbody>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-007</td>
+            <td class="an-row-no">007</td>
             <td><a class="an-row-title" href="geno-0-5-0-rc-1.html">Geno 0.5.0-rc.1: main now speaks in exit codes</a><span class="an-row-sum">The first published build of the 0.5 series makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</span></td>
             <td><span class="an-row-topic">Release</span></td>
             <td class="an-row-date">2026-10-14</td>
           </tr>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-006</td>
+            <td class="an-row-no">006</td>
             <td><a class="an-row-title" href="the-playground-runs-the-real-compiler.html">The playground runs the real compiler</a><span class="an-row-sum">Most language playgrounds send your code to a server. Geno&#x27;s runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.</span></td>
             <td><span class="an-row-topic">Tooling</span></td>
             <td class="an-row-date">2026-10-14</td>
           </tr>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-005</td>
-            <td><a class="an-row-title" href="examples-are-the-specification.html">Examples are the specification</a><span class="an-row-sum">Every Geno function except main carries at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</span></td>
+            <td class="an-row-no">005</td>
+            <td><a class="an-row-title" href="examples-are-the-specification.html">Examples are the specification</a><span class="an-row-sum">Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</span></td>
             <td><span class="an-row-topic">Design</span></td>
-            <td class="an-row-date">2026-09-02</td>
+            <td class="an-row-date">2026-10-14</td>
           </tr>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-004</td>
+            <td class="an-row-no">004</td>
             <td><a class="an-row-title" href="why-geno-writes-end-func.html">Why Geno writes end func</a><span class="an-row-sum">Braces and indentation work well for people with editors. Generated code needs boundaries that survive truncation, reformatting and streaming, so every Geno block closes by name.</span></td>
             <td><span class="an-row-topic">Design</span></td>
-            <td class="an-row-date">2026-08-12</td>
+            <td class="an-row-date">2026-10-14</td>
           </tr>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-003</td>
+            <td class="an-row-no">003</td>
             <td><a class="an-row-title" href="fail-closed-capabilities.html">Fail closed: how capabilities work</a><span class="an-row-sum">A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.</span></td>
             <td><span class="an-row-topic">Security</span></td>
-            <td class="an-row-date">2026-07-28</td>
+            <td class="an-row-date">2026-10-14</td>
           </tr>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-002</td>
+            <td class="an-row-no">002</td>
             <td><a class="an-row-title" href="what-we-measure.html">What we measure, and what we don&#x27;t claim yet</a><span class="an-row-sum">Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.</span></td>
             <td><span class="an-row-topic">Research</span></td>
-            <td class="an-row-date">2026-06-18</td>
+            <td class="an-row-date">2026-10-14</td>
           </tr>
           <tr class="an-row">
-            <td class="an-row-no">GNOA-001</td>
+            <td class="an-row-no">001</td>
             <td><a class="an-row-title" href="geno-written-in-geno.html">Geno, written in Geno</a><span class="an-row-sum">The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.</span></td>
             <td><span class="an-row-topic">Engineering</span></td>
-            <td class="an-row-date">2026-05-20</td>
+            <td class="an-row-date">2026-10-14</td>
           </tr>
         </tbody>
       </table>
@@ -148,12 +150,12 @@
         <p>Geno. A language for code you didn&rsquo;t write.</p>
       </div>
       <nav class="foot-nav" aria-label="Footer">
-        <div><h3>Product</h3><a href="../#ordering">Install</a><a href="../playground.html">Playground</a><a href="../#modes">Targets</a><a href="../#characteristics">Benchmarks</a></div>
-        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="./">App notes</a></div>
+        <div><h3>Product</h3><a href="../#install">Install</a><a href="../playground.html">Playground</a><a href="../#modes">Targets</a><a href="../#performance">Benchmarks</a></div>
+        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="./">Blog</a></div>
         <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="feed.xml">RSS</a></div>
       </nav>
     </div>
-    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span></div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>Datasheet revised October 2026</span></div>
   </div>
 </footer>
 <script src="../shared/js/highlight.js"></script>

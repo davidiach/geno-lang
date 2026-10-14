@@ -127,7 +127,8 @@
     "    requires score >= 0",
     '    example {ex0} -> "excellent"',
     '    example {ex1} -> "passing"',
-    '    example {ex2} -> "needs work"',
+    '    example {ex2} -> "passing"',
+    '    example {ex3} -> "needs work"',
     "",
     "    if score >= {hi} then",
     '        return "excellent"',
@@ -138,26 +139,31 @@
     "    end if",
     "end func",
   ];
-  var SCORE_EXPECT = ["excellent", "passing", "needs work"];
+  var SCORE_EXPECT = ["excellent", "passing", "passing", "needs work"];
+  // Boundary examples: 89/90 and 59/60 pin both thresholds exactly.
+  var SCORE_DEFAULTS = { ex0: 90, ex1: 89, ex2: 60, ex3: 59, hi: 90, mid: 60 };
 
   function scoreDemo(root) {
     var state = {
-      ex0: 95,
-      ex1: 70,
-      ex2: 40,
-      hi: +(root.dataset.hi || 90),
-      mid: +(root.dataset.mid || 60),
+      ex0: SCORE_DEFAULTS.ex0,
+      ex1: SCORE_DEFAULTS.ex1,
+      ex2: SCORE_DEFAULTS.ex2,
+      ex3: SCORE_DEFAULTS.ex3,
+      hi: +(root.dataset.hi || SCORE_DEFAULTS.hi),
+      mid: +(root.dataset.mid || SCORE_DEFAULTS.mid),
     };
+    var N = SCORE_EXPECT.length;
     var meta = {
       ex0: { min: -20, max: 120, label: "First example input" },
       ex1: { min: -20, max: 120, label: "Second example input" },
       ex2: { min: -20, max: 120, label: "Third example input" },
+      ex3: { min: -20, max: 120, label: "Fourth example input" },
       hi: { min: 0, max: 120, label: "Threshold for excellent" },
       mid: { min: 0, max: 120, label: "Threshold for passing" },
     };
     var code = slot(root, "code");
     var out = slot(root, "out");
-    var exLine = { ex0: 3, ex1: 4, ex2: 5 };
+    var exLine = { ex0: 3, ex1: 4, ex2: 5, ex3: 6 };
 
     code.innerHTML = SCORE_SRC.map(function (line, i) {
       var html = line
@@ -184,7 +190,7 @@
     function render() {
       var passed = 0;
       var fails = [];
-      [0, 1, 2].forEach(function (i) {
+      SCORE_EXPECT.forEach(function (_, i) {
         var input = state["ex" + i];
         var got = label(input);
         var ok = got === SCORE_EXPECT[i];
@@ -206,9 +212,9 @@
           fails.push('score_label: expected "' + SCORE_EXPECT[i] + '", got "' + got + '"');
         }
       });
-      var failed = 3 - passed;
+      var failed = N - passed;
       var text = "$ geno test -v score.geno\n";
-      text += (failed ? "  FAIL  " : "  PASS  ") + "score.geno (" + passed + "/3) 4ms\n";
+      text += (failed ? "  FAIL  " : "  PASS  ") + "score.geno (" + passed + "/" + N + ") 4ms\n";
       fails.forEach(function (f) {
         text += "        x " + f + "\n";
       });
@@ -217,7 +223,7 @@
       root.classList.toggle("is-failing", failed > 0);
       root.dataset.passed = passed;
       var sum = slot(root, "summary");
-      if (sum) sum.textContent = failed ? passed + " of 3 examples hold" : "All 3 examples hold";
+      if (sum) sum.textContent = failed ? passed + " of " + N + " examples hold" : "All " + N + " examples hold";
       root.dispatchEvent(new CustomEvent("demo:update", { detail: { passed: passed, failed: failed } }));
     }
 
@@ -230,8 +236,8 @@
     var reset = $(root, "[data-reset]");
     if (reset)
       reset.addEventListener("click", function () {
-        ["ex0", "ex1", "ex2", "hi", "mid"].forEach(function (k) {
-          var v = { ex0: 95, ex1: 70, ex2: 40, hi: 90, mid: 60 }[k];
+        Object.keys(SCORE_DEFAULTS).forEach(function (k) {
+          var v = SCORE_DEFAULTS[k];
           state[k] = v;
           var el = $(code, '[data-scrub="' + k + '"]');
           el.querySelector(".tok-num").textContent = v;

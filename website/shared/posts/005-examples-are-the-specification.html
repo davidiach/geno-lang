@@ -1,12 +1,12 @@
 <!--
 title: Examples are the specification
 slug: examples-are-the-specification
-date: 2026-09-02
+date: 2026-10-14
 number: 5
-author: David Iach
+author: The Geno project
 kicker: Design
 tags: design, testing
-summary: Every Geno function except main carries at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.
+summary: Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.
 -->
 <p class="lede">In Geno, a function without an example does not type-check. That rule surprises people more than anything else in the language, so here is the reasoning behind it.</p>
 
@@ -30,12 +30,12 @@ end func</code></pre>
 <p><code>geno test</code> evaluates every example of every function through the interpreter and reports each mismatch with the value it actually got:</p>
 
 <pre><code data-lang="sh">$ geno test -v score.geno
-  FAIL  score.geno (2/3) 12ms
+  FAIL  score.geno (3/4) 14ms
         x score_label: expected "passing", got "needs work"
 
-2 passed, 1 failed, in 0.03s</code></pre>
+3 passed, 1 failed, in 0.04s</code></pre>
 
-<p>That line is the whole point. When a model writes <code>score >= 75</code> where the examples say 70 should pass, the failure names the function, the expectation and the actual value. It is exactly the feedback a repair prompt needs, and nobody had to write a test file.</p>
+<p>That line is the whole point. When a model writes <code>score >= 75</code> where the examples say 60 passes, the failure names the function, the expectation and the actual value. It is exactly the feedback a repair prompt needs, and nobody had to write a test file.</p>
 
 <h2>Contracts cover what examples cannot</h2>
 
@@ -57,10 +57,11 @@ end func</code></pre>
 <ul>
   <li><strong>Floats compare with a relative tolerance of 1e-9.</strong> Copy the full value from a real run. A rounded <code>22.857</code> fails on purpose: a tolerance loose enough to accept it would also hide real errors.</li>
   <li><strong>Zero-argument functions</strong> use <code>example () -&gt; value</code>.</li>
-  <li><strong>Exempt functions</strong> are <code>main</code>, async functions and app lifecycle hooks, whose results depend on the world outside the program.</li>
+  <li><strong>Put examples on the boundaries.</strong> The examples behind that failure are 90, 89, 60 and 59, one on each side of each threshold, so they leave exactly one right answer. Examples at 95, 70 and 40 would also catch <code>>= 75</code>, but they pass for any passing bar from 41 to 70, so they could not tell a model that the bar is 60.</li>
+  <li><strong>Exempt functions</strong> are <code>main</code>, async functions, app lifecycle hooks and functions marked <code>@untested</code>, whose results depend on the world outside the program. Helpers used only by <code>test</code> blocks are exempt too.</li>
   <li><strong>Escape hatch:</strong> <code>@untested</code> marks a function you cannot sensibly exemplify, and <code>geno test --fail-on-untested</code> makes CI refuse it.</li>
 </ul>
 
 <h2>The cost</h2>
 
-<p>Mandatory examples make Geno a little slower to write by hand. In exchange, every function documents its own behaviour, every file carries a regression suite, and every model-written program arrives with evidence attached. For the programs Geno is designed for, that trade is worth making.</p>
+<p>Mandatory examples make Geno a little slower to write by hand. In exchange, every ordinary function documents its own behaviour, every file carries a regression suite, and every model-written program arrives with evidence attached. For the programs Geno is designed for, that trade is worth making.</p>

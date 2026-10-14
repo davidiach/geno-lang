@@ -2392,7 +2392,10 @@ sup {
 .pin-table tbody tr:focus-visible,
 .pin-table tbody tr.is-lit {
   background: var(--teal-wash);
-  outline: none;
+}
+.pin-table tbody tr:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
 }
 
 /* chart */
@@ -2836,7 +2839,7 @@ sup {
   min-width: 0;
 }
 .evm::before {
-  content: "GENO-EVM";
+  content: "GENO PLAYGROUND";
   position: absolute;
   top: -10px;
   left: 14px;
@@ -4291,54 +4294,61 @@ sup {
   .code-pins {
     padding-left: 42px;
   }
-  .spec.roc,
-  .spec.caps-table,
-  .spec.status-table,
-  .spec.pin-table,
-  .spec.rev,
-  .spec.orderable {
-    min-width: 600px;
+  /* label/value rows instead of a table that scrolls out of view */
+  .spec.spec-stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
-  .tbl-wrap {
-    margin-right: calc(-1 * max(16px, env(safe-area-inset-right, 0px)));
-    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  .spec.spec-stack,
+  .spec.spec-stack tbody,
+  .spec.spec-stack tr,
+  .spec.spec-stack td {
+    display: block;
+    width: 100%;
+  }
+  .spec.spec-stack tbody {
+    border-top: 1.5px solid var(--ink);
+  }
+  .spec.spec-stack tr {
+    padding: 10px 0 11px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .spec.spec-stack caption {
+    display: block;
+  }
+  .spec.spec-stack td {
+    position: relative;
+    min-height: 1.6em;
+    padding: 3px 0 3px calc(7.4em + 12px);
+    border: 0;
+    text-align: left;
+  }
+  .spec.spec-stack td::before {
+    content: attr(data-label);
+    position: absolute;
+    left: 0;
+    top: 5px;
+    width: 7.4em;
+    font: 600 10.5px/1.9 var(--f-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .spec.spec-stack td:first-child {
+    font-weight: 600;
+  }
+  .spec.spec-stack td code {
+    white-space: normal;
+  }
+  .spec.spec-stack .r {
+    font-size: inherit;
   }
 }
 
-/* running page footer, as at the bottom of every datasheet page */
-.pagefoot {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 16px;
-  margin: 0 0 clamp(40px, 5vw, 64px);
-  padding-top: 10px;
-  border-top: 1px solid var(--rule);
-  font: 500 11px/1.4 var(--f-mono);
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
-}
-.pagefoot a {
-  color: var(--teal-ink);
-  text-decoration: none;
-}
-.pagefoot a:hover {
-  text-decoration: underline;
-}
-.pf-n {
-  font: 700 14px/1 var(--f-display);
-  color: var(--ink);
-  letter-spacing: 0;
-}
-@media (max-width: 520px) {
-  .pagefoot > span:first-child {
-    display: none;
-  }
-}
-.p1-foot {
-  grid-column: 1 / -1;
-  margin: 8px 0 0;
-}
 .sec {
   padding-bottom: clamp(40px, 5vw, 64px);
 }
@@ -4524,4 +4534,353 @@ sup {
 
 .pinout + .tbl-wrap {
   margin-top: 30px;
+}
+
+/* ------------------------------------------------ plain names, datasheet aliases */
+.alias {
+  margin-left: auto;
+  align-self: center;
+  padding-left: 16px;
+  font: 500 10.5px/1.3 var(--f-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  text-align: right;
+}
+.h-main,
+.h-sub {
+  flex-wrap: wrap;
+}
+.spec caption .alias {
+  margin-left: 10px;
+  padding-left: 0;
+}
+@media (max-width: 640px) {
+  .h-main .alias,
+  .h-sub .alias {
+    flex-basis: 100%;
+    margin: 2px 0 0;
+    padding: 0;
+    text-align: left;
+  }
+  .h-main .alias {
+    order: -1;
+    margin: 0 0 6px;
+  }
+}
+
+/* granting capabilities */
+.grant {
+  margin-top: 22px;
+  padding: 16px 18px 18px;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--teal);
+}
+.grant-h {
+  font: 700 15px/1.2 var(--f-display);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.grant .term {
+  margin-bottom: 12px;
+}
+.grant > p:not(.grant-h):not(.fn) {
+  color: var(--ink-2);
+  max-width: 72ch;
+}
+.grant .fn {
+  margin-top: 10px;
+}
+
+/* what we don't claim: boxed, as a datasheet prints its notes */
+.claims {
+  margin-top: 30px;
+  border: 1.5px solid var(--ink);
+  background: var(--sheet);
+  padding: 18px 20px 6px;
+}
+.claims-k {
+  font: 700 15px/1.2 var(--f-display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ink);
+}
+.claims ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.claims li {
+  position: relative;
+  padding: 12px 0 12px 30px;
+  border-bottom: 1px solid var(--rule-2);
+  color: var(--ink-2);
+  font-size: 15.5px;
+}
+.claims li:last-child {
+  border-bottom: 0;
+}
+.claims li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 21px;
+  width: 12px;
+  height: 1.5px;
+  background: var(--fail);
+  transform: rotate(45deg);
+  box-shadow: 0 0 0 0 transparent;
+}
+.claims li::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 21px;
+  width: 12px;
+  height: 1.5px;
+  background: var(--fail);
+  transform: rotate(-45deg);
+}
+.claims b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.claims a {
+  color: var(--teal-ink);
+}
+
+/* status board */
+.board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin-top: 20px;
+  border-top: 1.5px solid var(--ink);
+}
+.board-col {
+  padding: 14px 16px 16px 0;
+}
+.board-col + .board-col {
+  padding-left: 16px;
+  border-left: 1px solid var(--rule);
+}
+.board h4 {
+  margin-bottom: 12px;
+}
+.board ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.board li b {
+  display: block;
+  font: 600 15.5px/1.3 var(--f-body);
+  color: var(--ink);
+}
+.board li span {
+  display: block;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+@media (max-width: 900px) {
+  .board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .board-col:nth-child(3) {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .board-col:nth-child(n + 3) {
+    border-top: 1px solid var(--rule);
+  }
+}
+@media (max-width: 480px) {
+  .board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .board-col + .board-col {
+    padding-left: 0;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+}
+
+/* take part: each link says what it is for */
+.links-purpose li a {
+  padding-bottom: 2px;
+  border-bottom: 0;
+}
+.links-purpose li {
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--rule);
+}
+.links-purpose li span {
+  display: block;
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+
+/* phones and tablets: a contents control that follows the reader */
+.toc-m {
+  display: none;
+}
+@media (max-width: 1080px) {
+  .toc-m {
+    display: block;
+    position: sticky;
+    top: calc(var(--bar-h) + env(safe-area-inset-top, 0px));
+    z-index: 30;
+    margin: 0 0 24px;
+    background: var(--bar-bg);
+    backdrop-filter: saturate(1.4) blur(14px);
+    -webkit-backdrop-filter: saturate(1.4) blur(14px);
+    border-block: 1px solid var(--rule);
+  }
+  .toc-m summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 44px;
+    cursor: pointer;
+    list-style: none;
+    font: 600 15px/1.2 var(--f-display);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .toc-m summary::-webkit-details-marker {
+    display: none;
+  }
+  .toc-m summary::after {
+    content: "";
+    margin-left: auto;
+    width: 8px;
+    height: 8px;
+    border-right: 1.5px solid var(--ink-2);
+    border-bottom: 1.5px solid var(--ink-2);
+    transform: rotate(45deg) translateY(-3px);
+    transition: transform 0.2s var(--ease);
+  }
+  .toc-m[open] summary::after {
+    transform: rotate(-135deg) translateY(-2px);
+  }
+  .toc-m-k {
+    font: 600 10.5px/1 var(--f-mono);
+    letter-spacing: 0.12em;
+    color: var(--ink-3);
+  }
+  .toc-m-now {
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .toc-m ol {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0 10px;
+    max-height: min(60vh, 520px);
+    overflow-y: auto;
+  }
+  .toc-m li a {
+    display: flex;
+    gap: 12px;
+    padding: 10px 0;
+    border-top: 1px solid var(--rule-2);
+    text-decoration: none;
+    color: var(--ink-2);
+    font-size: 16px;
+  }
+  .toc-m li a span {
+    min-width: 22px;
+    font: 500 12.5px/1.6 var(--f-mono);
+    color: var(--ink-3);
+  }
+  .toc-m li a[aria-current="true"] {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .toc-m li a[aria-current="true"] span {
+    color: var(--teal-ink);
+  }
+}
+
+/* header: a Try link at every width; theme and GitHub move into the menu on phones */
+.try {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--paper);
+  font: 600 13.5px/1 var(--f-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.try:hover {
+  background: var(--teal-ink);
+}
+.try:focus-visible,
+.theme:focus-visible,
+.gh:focus-visible,
+.menu:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+.theme-drawer {
+  display: none;
+}
+@media (max-width: 980px) {
+  .bar-end .theme {
+    display: none;
+  }
+  .drawer .theme-drawer {
+    display: inline-flex;
+    justify-self: start;
+    margin-top: 14px;
+    height: 40px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+  .drawer .theme-drawer span {
+    display: none;
+  }
+  :root .drawer .theme-drawer .theme-night {
+    display: inline;
+  }
+  :root[data-theme="dark"] .drawer .theme-drawer .theme-night {
+    display: none;
+  }
+  :root[data-theme="dark"] .drawer .theme-drawer .theme-paper {
+    display: inline;
+  }
+}
+@media (max-width: 980px) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .drawer .theme-drawer .theme-night {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .drawer .theme-drawer .theme-paper {
+    display: inline;
+  }
+}
+@media (max-width: 520px) {
+  .bar-end .gh {
+    display: none;
+  }
+  .try {
+    height: 36px;
+  }
+}
+.notes-head .alias {
+  display: none;
 }

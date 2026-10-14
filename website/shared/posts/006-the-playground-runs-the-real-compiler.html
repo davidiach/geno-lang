@@ -3,7 +3,7 @@ title: The playground runs the real compiler
 slug: the-playground-runs-the-real-compiler
 date: 2026-10-14
 number: 6
-author: David Iach
+author: The Geno project
 kicker: Tooling
 tags: tooling, playground
 summary: Most language playgrounds send your code to a server. Geno's runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.
@@ -25,10 +25,10 @@ summary: Most language playgrounds send your code to a server. Geno's runs the a
 </ol>
 
 <pre><code data-lang="sh">$ geno test -v Main.geno
-  FAIL  Main.geno (2/3) 16ms
+  FAIL  Main.geno (3/4) 28ms
         x score_label: expected "passing", got "needs work"
 
-2 passed, 1 failed, in 0.10s</code></pre>
+3 passed, 1 failed, in 0.03s</code></pre>
 
 <p>That output is not formatted by the website. It is what <code>geno test</code> prints.</p>
 

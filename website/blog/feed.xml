@@ -22,35 +22,35 @@
     <title>Examples are the specification</title>
     <link>https://davidiach.github.io/geno-lang/blog/examples-are-the-specification.html</link>
     <guid>https://davidiach.github.io/geno-lang/blog/examples-are-the-specification.html</guid>
-    <pubDate>Wed, 02 Sep 2026 12:00:00 +0000</pubDate>
-    <description>Every Geno function except main carries at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</description>
+    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <description>Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</description>
   </item>
   <item>
     <title>Why Geno writes end func</title>
     <link>https://davidiach.github.io/geno-lang/blog/why-geno-writes-end-func.html</link>
     <guid>https://davidiach.github.io/geno-lang/blog/why-geno-writes-end-func.html</guid>
-    <pubDate>Wed, 12 Aug 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
     <description>Braces and indentation work well for people with editors. Generated code needs boundaries that survive truncation, reformatting and streaming, so every Geno block closes by name.</description>
   </item>
   <item>
     <title>Fail closed: how capabilities work</title>
     <link>https://davidiach.github.io/geno-lang/blog/fail-closed-capabilities.html</link>
     <guid>https://davidiach.github.io/geno-lang/blog/fail-closed-capabilities.html</guid>
-    <pubDate>Tue, 28 Jul 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
     <description>A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.</description>
   </item>
   <item>
     <title>What we measure, and what we don&#x27;t claim yet</title>
     <link>https://davidiach.github.io/geno-lang/blog/what-we-measure.html</link>
     <guid>https://davidiach.github.io/geno-lang/blog/what-we-measure.html</guid>
-    <pubDate>Thu, 18 Jun 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
     <description>Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.</description>
   </item>
   <item>
     <title>Geno, written in Geno</title>
     <link>https://davidiach.github.io/geno-lang/blog/geno-written-in-geno.html</link>
     <guid>https://davidiach.github.io/geno-lang/blog/geno-written-in-geno.html</guid>
-    <pubDate>Wed, 20 May 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
     <description>The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.</description>
   </item>
 </channel>
