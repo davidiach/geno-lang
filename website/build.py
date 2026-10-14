@@ -23,15 +23,18 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import posixpath
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
+from typing import Callable
 
 SITE = Path(__file__).resolve().parent
 REPO = SITE.parent
@@ -216,8 +219,13 @@ def fill(template: str, values: dict[str, str]) -> str:
 
 def post_values(p: Post, prev: Post | None, nxt: Post | None) -> dict[str, str]:
     body, toc_items = toc(p.body)
+    # Cards come from og-images.cjs; a post without one shares the site card.
+    card = SITE / "blog" / "og" / f"{p.slug}.png"
     return {
         "site_url": SITE_URL,
+        "og_image": f"{SITE_URL}/blog/og/{p.slug}.png"
+        if card.exists()
+        else f"{SITE_URL}/og.png",
         "title": html.escape(p.title),
         "slug": p.slug,
         "summary": html.escape(p.summary),
@@ -243,11 +251,19 @@ def post_values(p: Post, prev: Post | None, nxt: Post | None) -> dict[str, str]:
     }
 
 
+def published_at(p: Post) -> datetime:
+    """Noon UTC on the post's date, plus one minute per post number, so posts
+    that share a date keep their number order in feed readers."""
+    return datetime(
+        p.date.year, p.date.month, p.date.day, 12, tzinfo=timezone.utc
+    ) + timedelta(minutes=p.number)
+
+
 def rss(posts: list[Post]) -> str:
     base = f"{SITE_URL}/blog"
     items = []
     for p in posts:
-        dt = datetime(p.date.year, p.date.month, p.date.day, 12, tzinfo=timezone.utc)
+        dt = published_at(p)
         items.append(
             "  <item>\n"
             f"    <title>{html.escape(p.title)}</title>\n"
@@ -258,18 +274,20 @@ def rss(posts: list[Post]) -> str:
             "  </item>"
         )
     return (
-        '<?xml version="1.0" encoding="utf-8"?>\n<rss version="2.0">\n<channel>\n'
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n<channel>\n'
         "  <title>Geno</title>\n"
         f"  <link>{base}/</link>\n"
+        f'  <atom:link href="{base}/feed.xml" rel="self" type="application/rss+xml"/>\n'
         "  <description>Notes, releases and design writing from the Geno project.</description>\n"
-        + "\n".join(items)
-        + "\n</channel>\n</rss>\n"
+        "  <language>en</language>\n" + "\n".join(items) + "\n</channel>\n</rss>\n"
     )
 
 
-def sitemap(posts: list[Post]) -> str:
+def sitemap(posts: list[Post], docs: list[str]) -> str:
     urls = [f"{SITE_URL}/", f"{SITE_URL}/playground.html", f"{SITE_URL}/blog/"]
     urls += [f"{SITE_URL}/blog/{p.slug}.html" for p in posts]
+    urls += [f"{SITE_URL}/{d}" for d in docs]
     rows = "\n".join(f"  <url><loc>{u}</loc></url>" for u in urls)
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -278,7 +296,7 @@ def sitemap(posts: list[Post]) -> str:
     )
 
 
-def build_blog() -> None:
+def build_blog() -> list[Post]:
     posts = load_posts()
     tdir = SITE / "_templates"
     out = SITE / "blog"
@@ -296,10 +314,6 @@ def build_blog() -> None:
         fill(index_t, {"site_url": SITE_URL, "rows": rows, "count": str(len(posts))})
     )
     (out / "feed.xml").write_text(rss(posts))
-    (SITE / "sitemap.xml").write_text(sitemap(posts))
-    (SITE / "robots.txt").write_text(
-        f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}/sitemap.xml\n"
-    )
     landing = SITE / "index.html"
     cards = "\n".join(fill(card_t, post_values(p, None, None)) for p in posts[:3])
     text = landing.read_text()
@@ -312,6 +326,145 @@ def build_blog() -> None:
     if n:
         landing.write_text(new)
     print(f"blog     {len(posts)} posts")
+    return posts
+
+
+# --------------------------------------------------------------------------
+# 4. Docs
+# --------------------------------------------------------------------------
+GITHUB = "https://github.com/davidiach/geno-lang"
+# Sections of docs/INDEX.md listed under "Start here" on every docs page.
+DOCS_NAV_SECTIONS = ("Getting Started", "Reference")
+
+
+def doc_pages() -> dict[str, str]:
+    """Repository Markdown path -> site path, for every page the site hosts:
+    all of docs/ (INDEX.md becomes docs/index.html) and the changelog."""
+    pages = {}
+    for path in sorted((REPO / "docs").rglob("*.md")):
+        rel = path.relative_to(REPO).as_posix()
+        pages[rel] = (
+            "docs/index.html"
+            if rel == "docs/INDEX.md"
+            else rel[: -len(".md")] + ".html"
+        )
+    pages["CHANGELOG.md"] = "docs/changelog.html"
+    return pages
+
+
+def site_href(target: str, page: str) -> str:
+    """Relative link from site page ``page`` to site path ``target``."""
+    rel = posixpath.relpath(target, posixpath.dirname(page) or ".")
+    if rel.endswith("index.html"):
+        rel = rel[: -len("index.html")] or "./"
+    return rel
+
+
+def doc_link(source: str, page: str, pages: dict[str, str]) -> Callable[[str], str]:
+    """Map a link in Markdown file ``source`` to the site, or to GitHub when the
+    target is not a hosted page."""
+    blob = f"{GITHUB}/blob/main/"
+
+    def link(url: str) -> str:
+        if url.startswith(blob):
+            url_path, _, frag = url[len(blob) :].partition("#")
+            if url_path in pages:
+                return site_href(pages[url_path], page) + (f"#{frag}" if frag else "")
+            return url
+        if re.match(r"^[a-z][a-z0-9+.-]*:|^#|^//", url):
+            return url
+        url_path, _, frag = url.partition("#")
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(source), url_path))
+        if target.startswith(".."):
+            return url
+        suffix = f"#{frag}" if frag else ""
+        if target in pages:
+            return site_href(pages[target], page) + suffix
+        kind = "tree" if (REPO / target).is_dir() else "blob"
+        return f"{GITHUB}/{kind}/main/{target}{suffix}"
+
+    return link
+
+
+def doc_sections(
+    pages: dict[str, str],
+) -> tuple[dict[str, str], list[tuple[str, str, str]]]:
+    """Read docs/INDEX.md: the section each linked page sits under, and the
+    entries of DOCS_NAV_SECTIONS as (section, title, repository path)."""
+    section_of: dict[str, str] = {}
+    nav: list[tuple[str, str, str]] = []
+    section = ""
+    for line in (REPO / "docs" / "INDEX.md").read_text().splitlines():
+        if line.startswith("## "):
+            section = line[3:].strip()
+            continue
+        m = re.match(r"^- \[([^\]]+)\]\(([^)#]+)\)", line)
+        if not m:
+            continue
+        target = posixpath.normpath(posixpath.join("docs", m.group(2)))
+        if target not in pages:
+            continue
+        section_of.setdefault(target, section)
+        if section in DOCS_NAV_SECTIONS:
+            nav.append((section, m.group(1), target))
+    return section_of, nav
+
+
+def build_docs() -> list[str]:
+    if str(SITE) not in sys.path:
+        sys.path.insert(0, str(SITE))
+    from md_render import render  # website/md_render.py, next to this script
+
+    pages = doc_pages()
+    section_of, nav = doc_sections(pages)
+    template = (SITE / "_templates" / "doc.html").read_text()
+    out_dir = SITE / "docs"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    for source, page in pages.items():
+        doc = render((REPO / source).read_text(), link=doc_link(source, page, pages))
+        depth = page.count("/")
+        root = "../" * depth
+        section = section_of.get(source) or (
+            "Changelog" if source == "CHANGELOG.md" else "Documentation"
+        )
+        toc = [h for h in doc.headings if h.level == 2]
+        page_toc = ""
+        if len(toc) > 1:
+            items = "\n".join(
+                f'        <li><a href="#{h.id}">{html.escape(h.text)}</a></li>'
+                for h in toc
+            )
+            page_toc = f'      <p class="toc-h">On this page</p>\n      <ol>\n{items}\n      </ol>'
+        nav_items = "\n".join(
+            f'        <li><a href="{site_href(pages[target], page)}"'
+            + (' aria-current="page"' if target == source else "")
+            + f">{html.escape(title)}</a></li>"
+            for _, title, target in nav
+        )
+        title = doc.title or posixpath.basename(source)[: -len(".md")]
+        values = {
+            "site_url": SITE_URL,
+            "root": root,
+            "path": page[: -len("index.html")] if page.endswith("index.html") else page,
+            "title": html.escape(title),
+            "description": html.escape(doc.description or title),
+            "section": html.escape(section),
+            "section_upper": html.escape(section.upper()),
+            "source": html.escape(source),
+            "source_url": f"{GITHUB}/blob/main/{source}",
+            "page_toc": page_toc,
+            "docs_nav": nav_items,
+            "body": doc.html,
+        }
+        target = SITE / page
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(fill(template, values))
+    print(f"docs     {len(pages)} pages")
+    return [
+        p[: -len("index.html")] if p.endswith("index.html") else p
+        for p in pages.values()
+    ]
 
 
 def main() -> None:
@@ -328,7 +481,12 @@ def main() -> None:
     if not args.no_bundle:
         build_bundle()
     build_examples(args.verify)
-    build_blog()
+    posts = build_blog()
+    docs = build_docs()
+    (SITE / "sitemap.xml").write_text(sitemap(posts, docs))
+    (SITE / "robots.txt").write_text(
+        f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}/sitemap.xml\n"
+    )
 
 
 if __name__ == "__main__":

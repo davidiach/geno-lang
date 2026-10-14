@@ -1,18 +1,22 @@
 # Geno website
 
 The Geno website: a landing page set as a component datasheet, a full-size
-playground and a blog. Everything is static HTML, CSS and JavaScript with no
-build-time dependencies beyond Python's standard library.
+playground, the documentation and a blog. Everything is static HTML, CSS and
+JavaScript with no build-time dependencies beyond Python's standard library.
 
 | Path | What |
 |---|---|
 | `index.html` | Landing page. Figure 1 replays a model writing a function, failing an example, repairing it and shipping it. |
 | `playground.html` | Full-size playground (the same component as the landing page's section). |
-| `blog/` | Generated from `shared/posts/` by `build.py`, with an RSS feed. |
+| `docs/` | Rendered from the repository's `docs/**/*.md` and `CHANGELOG.md` by `build.py`; not committed. |
+| `blog/` | Generated from `shared/posts/` by `build.py`, with an RSS feed. `blog/og/` holds each post's social card. |
 | `404.html` | Not-found page for GitHub Pages. |
-| `assets/` | Site stylesheet and page script. |
+| `assets/` | Site stylesheet, page scripts and the self-hosted fonts (`assets/fonts/`, SIL OFL 1.1). |
 | `shared/` | Playground runtime, demos, highlighter, examples, posts, brand marks. |
-| `_templates/` | Blog templates used by `build.py`. |
+| `_templates/` | Blog and docs templates used by `build.py`. |
+| `md_render.py` | The small Markdown renderer `build.py` uses for the docs. |
+| `og-images.cjs` | Renders the per-post social cards in `blog/og/`. |
+| `favicon.ico`, `apple-touch-icon.png` | Icons for browsers and home screens that do not use the SVG mark. |
 
 ## The playground runs the real compiler
 
@@ -28,7 +32,7 @@ never drift from the toolchain it claims to be.
 ## Build and preview
 
 ```bash
-python3 website/build.py --verify   # bundle + examples + blog; checks/tests every example
+python3 website/build.py --verify   # bundle + examples + blog + docs; checks/tests every example
 python3 -m http.server -d website 8000
 # open http://localhost:8000/
 ```
@@ -41,8 +45,22 @@ python3 -m http.server -d website 8000
 3. Renders `shared/posts/*.html` into `blog/` through `_templates/`, writes an
    RSS feed, and refreshes the "latest posts" block between
    `<!-- blog:latest -->` markers on the landing page.
+4. Renders every Markdown file under `docs/`, plus `CHANGELOG.md`, into
+   `website/docs/` through `_templates/doc.html` (`docs/INDEX.md` becomes the
+   docs home page), and writes `sitemap.xml`. Links between hosted pages stay
+   on the site; links to anything else go to GitHub. The "Start here" list on
+   every docs page is the Getting Started and Reference sections of
+   `docs/INDEX.md`.
 
-Generated blog pages are committed so the site works without a build.
+Generated blog pages are committed so the site works without a build. The docs
+pages are not: like the bundle, they are rebuilt from the repository on every
+deploy, so they cannot drift from `docs/`.
+
+`md_render.py` covers the Markdown the docs use: headings, paragraphs, fenced
+code, pipe tables, nested and task lists, block quotes, emphasis and links.
+Raw HTML is escaped. `geno/tests/test_website_build_script.py` renders the
+whole docs tree and fails on unrendered Markdown or a broken link or anchor
+between docs pages.
 
 ### Self-hosting Pyodide
 
@@ -55,8 +73,10 @@ standard-library archive locations the same way.
 
 ## Deploy
 
-`.github/workflows/website.yml` builds the site and deploys it to GitHub Pages.
-It runs only when triggered manually:
+`.github/workflows/website.yml` builds the site and deploys it to GitHub Pages,
+leaving the build inputs (this README, `build.py`, `md_render.py`,
+`og-images.cjs`, templates and post sources) out of the published artifact. It
+runs only when triggered manually:
 
 1. Settings → Pages → Source: **GitHub Actions**.
 2. Actions → **website** → Run workflow.
@@ -79,6 +99,8 @@ and `404.html` uses root-absolute links because it is served at any depth.
 | What | Where |
 |---|---|
 | Blog posts | `shared/posts/*.html`, front matter in the leading comment, then run `build.py` |
+| Post social cards | `node website/og-images.cjs` (needs Node.js and Playwright with Chromium), after changing a post's title, number, date, kicker or summary |
+| Docs pages | The Markdown under `docs/`; the site picks it up on the next build |
 | Playground examples | `shared/examples/NN-name.geno`; titles in `EXAMPLE_TITLES` in `build.py` |
 | Hero replay | `assets/replay.js`; every printed line was captured from the 0.5.0 CLI |
 | Interactive demos | `shared/js/demos.js`; same rule |
@@ -88,7 +110,9 @@ and `404.html` uses root-absolute links because it is served at any depth.
 ## Placeholders to review
 
 - Blog posts are bylined "David Iach" and dated 2026-10-14, the launch date.
-  Change the byline or dates in each post's front matter.
+  Change the byline or dates in each post's front matter. Posts that share a
+  date are published in the feed a minute apart in number order, so feed
+  readers keep their order.
 - Community links point to GitHub Discussions and Issues; add chat or social
   links if the project gets them.
 - The version (0.5.0) is written into the pages by hand; search for it
