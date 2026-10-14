@@ -5,12 +5,19 @@
   var root = document.documentElement;
   var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* theme: paper / night ------------------------------------------------ */
+  /* theme: light / dark -------------------------------------------------- */
   function currentTheme() {
     if (root.dataset.theme) return root.dataset.theme;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
-  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
+  var toggles = document.querySelectorAll("[data-theme-toggle]");
+  function labelToggles() {
+    var next = currentTheme() === "dark" ? "light" : "dark";
+    toggles.forEach(function (btn) {
+      btn.setAttribute("aria-label", "Switch to the " + next + " theme");
+    });
+  }
+  toggles.forEach(function (btn) {
     btn.addEventListener("click", function () {
       var next = currentTheme() === "dark" ? "light" : "dark";
       root.dataset.theme = next;
@@ -19,8 +26,24 @@
       } catch (e) {
         /* private mode */
       }
+      labelToggles();
       window.dispatchEvent(new Event("themechange"));
     });
+  });
+  labelToggles();
+
+  /* "Open in the playground": carry the listing in the URL, the way the
+     playground's Share button does --------------------------------------- */
+  document.querySelectorAll("[data-open-pg]").forEach(function (a) {
+    var box = a.closest("article") || a.parentElement;
+    var code = box && box.querySelector("pre code");
+    if (!code || !window.TextEncoder) return;
+    var bin = "";
+    new TextEncoder().encode(code.textContent).forEach(function (b) {
+      bin += String.fromCharCode(b);
+    });
+    var src = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    a.href = a.getAttribute("href").split("#")[0] + "#src=" + src;
   });
 
   /* bar shadow + mobile drawer -------------------------------------------- */

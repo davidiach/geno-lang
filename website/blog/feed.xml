@@ -1,56 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0">
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
   <title>Geno</title>
   <link>https://geno-lang.org/blog/</link>
+  <atom:link href="https://geno-lang.org/blog/feed.xml" rel="self" type="application/rss+xml"/>
   <description>Notes, releases and design writing from the Geno project.</description>
+  <language>en</language>
   <item>
     <title>Geno 0.5.0: main now speaks in exit codes</title>
     <link>https://geno-lang.org/blog/geno-0-5-0.html</link>
     <guid>https://geno-lang.org/blog/geno-0-5-0.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:07:00 +0000</pubDate>
     <description>Geno 0.5.0 makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</description>
   </item>
   <item>
     <title>The playground runs the real compiler</title>
     <link>https://geno-lang.org/blog/the-playground-runs-the-real-compiler.html</link>
     <guid>https://geno-lang.org/blog/the-playground-runs-the-real-compiler.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:06:00 +0000</pubDate>
     <description>Most language playgrounds send your code to a server. Geno&#x27;s runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.</description>
   </item>
   <item>
     <title>Examples are the specification</title>
     <link>https://geno-lang.org/blog/examples-are-the-specification.html</link>
     <guid>https://geno-lang.org/blog/examples-are-the-specification.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:05:00 +0000</pubDate>
     <description>Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</description>
   </item>
   <item>
     <title>Why Geno writes end func</title>
     <link>https://geno-lang.org/blog/why-geno-writes-end-func.html</link>
     <guid>https://geno-lang.org/blog/why-geno-writes-end-func.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:04:00 +0000</pubDate>
     <description>Braces and indentation work well for people with editors. Generated code needs boundaries that survive truncation, reformatting and streaming, so every Geno block closes by name.</description>
   </item>
   <item>
     <title>Fail closed: how capabilities work</title>
     <link>https://geno-lang.org/blog/fail-closed-capabilities.html</link>
     <guid>https://geno-lang.org/blog/fail-closed-capabilities.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:03:00 +0000</pubDate>
     <description>A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.</description>
   </item>
   <item>
     <title>What we measure, and what we don&#x27;t claim yet</title>
     <link>https://geno-lang.org/blog/what-we-measure.html</link>
     <guid>https://geno-lang.org/blog/what-we-measure.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:02:00 +0000</pubDate>
     <description>Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.</description>
   </item>
   <item>
     <title>Geno, written in Geno</title>
     <link>https://geno-lang.org/blog/geno-written-in-geno.html</link>
     <guid>https://geno-lang.org/blog/geno-written-in-geno.html</guid>
-    <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    <pubDate>Wed, 14 Oct 2026 12:01:00 +0000</pubDate>
     <description>The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.</description>
   </item>
 </channel>
