@@ -744,36 +744,149 @@ $ geno dev   # live reload</code></pre>
       <p>Each reference app must check, test and build before a release is tagged. Together they cover all four modes.</p>
       <div class="apps">
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-check">
-          <span class="app-fig" aria-hidden="true"><i class="af af-check"></i></span>
-          <span class="app-k">python-cli</span><b>geno-check</b><span>Validates JSON, CSV and TOML files against typed rules. Six modules; needs <code>fs</code> and <code>print</code>.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f m" x="22" y="30" width="196" height="100"/>
+            <path class="m" d="M68 30V130M130 30V130M172 30V130"/>
+            <path class="m" d="M22 80H218M22 105H218"/>
+            <path class="s" d="M22 30H218M22 55H218"/>
+            <text x="29" y="46.79">name</text>
+            <text x="75" y="46.79">email</text>
+            <text class="k" x="137" y="46.79">age</text>
+            <text x="179" y="46.79">role</text>
+            <text x="137" y="71.79">36</text>
+            <text class="k" x="137" y="96.79">abc</text>
+            <text x="137" y="121.79">29</text>
+            <path class="m" d="M29 67.5h20M75 67.5h48M179 67.5h27.56M75 92.5h48M179 92.5h32M29 117.5h20M75 117.5h48M179 117.5h27.56"/>
+            <rect class="x" x="133" y="83" width="36" height="19"/>
+          </svg></span>
+          <span class="app-k">python-cli</span><b>geno-check</b><span>Validates JSON, CSV and TOML files against typed rules and prints one line per violation. Needs <code>fs</code>, <code>print</code> and <code>env</code>.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-dash">
-          <span class="app-fig" aria-hidden="true"><i class="af af-dash"></i></span>
-          <span class="app-k">browser</span><b>geno-dash</b><span>A live metrics dashboard drawn on canvas: bar charts, stat cards and sparklines.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f s" x="22" y="22" width="196" height="116"/>
+            <path class="s" d="M22 40L218 40"/>
+            <path class="m" d="M30 31L90 31"/>
+            <text class="k" x="210" y="35.29" text-anchor="end">HEALTHY</text>
+            <text class="k" x="36" y="61.29">40%</text>
+            <text class="k" x="82.5" y="61.29">47%</text>
+            <text class="k" x="129" y="61.29">1411</text>
+            <text class="k" x="175.5" y="61.29">127</text>
+            <path class="m" d="M30 47h40.5v20h-40.5zM76.5 47h40.5v20h-40.5zM123 47h40.5v20h-40.5z"/>
+            <path class="a" d="M169.5 47h40.5v20h-40.5z"/>
+            <circle class="fa" cx="151.55" cy="31" r="3.5"/>
+            <path class="m" d="M30 77h12M30 84h12M30 91h12M30 98h12M46 75h60.43v4h-60.43zM46 82h71v4h-71zM46 89h38.37v4h-38.37zM46 96h21.32v4h-21.32z"/>
+            <path class="m j" d="M30 118.31L34.58 116.37L39.16 119.77L43.74 114.19L48.32 117.59L52.89 121.71L57.47 115.64L62.05 112.49L66.63 119.04L71.21 120.26L75.79 114.67L80.37 117.1L84.95 122.44L89.53 113.7L94.11 116.61L98.68 118.31L103.26 112L107.84 119.53L112.42 117.34L117 119.29M123 118.33L127.58 120.32L132.16 115.35L136.74 121.4L141.32 113.36L145.89 117.34L150.47 119.78L155.05 114.53L159.63 122.04L164.21 116.25L168.79 118.87L173.37 112L177.95 120.41L182.53 116.97L187.11 122.67L191.68 114.98L196.26 118.06L200.84 120.05L205.42 113.9L210 117.52"/>
+          </svg></span>
+          <span class="app-k">browser</span><b>geno-dash</b><span>A canvas system monitor: four stat cards, a bar chart and two sparklines, redrawn every second from simulated metrics.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-snap">
-          <span class="app-fig" aria-hidden="true"><i class="af af-snap"></i></span>
-          <span class="app-k">python-hosted</span><b>geno-snap</b><span>An API mock server. Example clauses are the mock responses; <code>requires</code> validates requests.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f" x="120" y="22" width="98" height="116"/>
+            <path class="h" d="M120 24.96L122.96 22M120 32.03L127 25.03M120 39.1L127 32.1M120 46.17L127 39.17M120 53.24L127 46.24M121.31 59L127 53.31M120 81.53L120.53 81M120 88.6L127 81.6M120 95.67L127 88.67M120 102.74L127 95.74M120 109.81L127 102.81M120 116.88L127 109.88M120 123.95L127 116.95M120 131.02L127 124.02M120.09 138L127 131.09"/>
+            <path class="s" d="M120 59V22H218V138H120V81H127V138M120 59H127V22"/>
+            <path class="m" d="M127 46L218 46"/>
+            <text x="135" y="38">/api/user</text>
+            <rect class="m" x="150" y="58" width="58" height="48"/>
+            <path class="m" d="M150 82L208 82"/>
+            <text class="k" x="158" y="74.29">Alice</text>
+            <text x="158" y="98.29">Bob</text>
+            <text class="k" x="22" y="62">?id=1</text>
+            <path class="s" d="M22 70H149M144 66.5L149 70L144 73.5"/>
+            <text class="k" x="22" y="96">?id=abc</text>
+            <path class="x" d="M22 104L117 104Q120 104 120 107L120 121Q120 124 117 124L51.05 124M56.05 127.5L51.05 124L56.05 120.5"/>
+            <text class="k" x="22" y="128.29">400</text>
+          </svg></span>
+          <span class="app-k">python-hosted</span><b>geno-snap</b><span>A mock JSON API on <code>geno serve</code>. It checks each request by hand and answers 400 or 404 when one is malformed.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-log">
-          <span class="app-fig" aria-hidden="true"><i class="af af-log"></i></span>
-          <span class="app-k">node-cli</span><b>geno-log</b><span>Summarizes structured service events under Node.js, checked against golden output.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <path class="m d" d="M30 79.1H210"/>
+            <text x="30" y="73.1">avg_ms=183</text>
+            <rect class="f" x="44" y="98" width="20" height="36"/>
+            <rect class="s" x="44" y="98" width="20" height="36"/>
+            <rect class="f" x="78" y="108.5" width="20" height="25.5"/>
+            <rect class="s" x="78" y="108.5" width="20" height="25.5"/>
+            <rect class="f" x="112" y="62" width="20" height="72"/>
+            <path class="h" d="M112 68.31L118.31 62M112 75.38L125.38 62M112 82.45L132 62.45M112 89.53L132 69.53M112 96.6L132 76.6M112 103.67L132 83.67M112 110.74L132 90.74M112 117.81L132 97.81M112 124.88L132 104.88M112 131.95L132 111.95M117.02 134L132 119.02M124.09 134L132 126.09M131.17 134L132 133.17"/>
+            <rect class="s" x="112" y="62" width="20" height="72"/>
+            <rect class="f" x="146" y="86" width="20" height="48"/>
+            <rect class="s" x="146" y="86" width="20" height="48"/>
+            <rect class="f" x="180" y="41" width="20" height="93"/>
+            <path class="h" d="M180 42.74L181.74 41M180 49.81L188.81 41M180 56.88L195.88 41M180 63.95L200 43.95M180 71.02L200 51.02M180 78.09L200 58.09M180 85.17L200 65.17M180 92.24L200 72.24M180 99.31L200 79.31M180 106.38L200 86.38M180 113.45L200 93.45M180 120.52L200 100.52M180 127.59L200 107.59M180.66 134L200 114.66M187.73 134L200 121.73M194.8 134L200 128.8"/>
+            <rect class="x" x="180" y="41" width="20" height="93"/>
+            <text class="k" x="200" y="34" text-anchor="end">max_ms=310</text>
+            <path class="s" d="M30 134L210 134"/>
+          </svg></span>
+          <span class="app-k">node-cli</span><b>geno-log</b><span>Summarizes five built-in service events under Node.js. The report is checked byte for byte against <code>expected.out</code>.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-pipe">
-          <span class="app-fig" aria-hidden="true"><i class="af af-pipe"></i></span>
-          <span class="app-k">python-cli</span><b>geno-pipe</b><span>A CSV pipeline: filter, sort, select and take, then write CSV, JSON, a table or Markdown.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f" x="22" y="40" width="64" height="12"/>
+            <rect class="s" x="22" y="40" width="64" height="12"/>
+            <path class="m" d="M38 40v12M54 40v12M70 40v12"/>
+            <rect class="f" x="22" y="57" width="64" height="12"/>
+            <path class="h" d="M22 59.32L24.32 57M22 66.39L31.39 57M26.46 69L38.46 57M33.53 69L45.53 57M40.6 69L52.6 57M47.67 69L59.67 57M54.74 69L66.74 57M61.81 69L73.81 57M68.89 69L80.89 57M75.96 69L86 58.96M83.03 69L86 66.03"/>
+            <rect class="m" x="22" y="57" width="64" height="12"/>
+            <path class="m" d="M38 57v12M54 57v12M70 57v12"/>
+            <rect class="f" x="22" y="74" width="64" height="12"/>
+            <path class="h" d="M22 80.53L28.53 74M23.6 86L35.6 74M30.67 86L42.67 74M37.74 86L49.74 74M44.81 86L56.81 74M51.89 86L63.89 74M58.96 86L70.96 74M66.03 86L78.03 74M73.1 86L85.1 74M80.17 86L86 80.17"/>
+            <rect class="m" x="22" y="74" width="64" height="12"/>
+            <path class="m" d="M38 74v12M54 74v12M70 74v12"/>
+            <rect class="f" x="22" y="91" width="64" height="12"/>
+            <rect class="s" x="22" y="91" width="64" height="12"/>
+            <path class="m" d="M38 91v12M54 91v12M70 91v12"/>
+            <rect class="f" x="22" y="108" width="64" height="12"/>
+            <rect class="s" x="22" y="108" width="64" height="12"/>
+            <path class="m" d="M38 108v12M54 108v12M70 108v12"/>
+            <path class="s" d="M86 46L141 46Q144 46 144 49L144 63Q144 66 147 66L170 66M86 97L129 97Q132 97 132 94L132 81Q132 78 135 78L170 78M86 114L141 114Q144 114 144 111L144 93Q144 90 147 90L170 90"/>
+            <rect class="f s" x="170" y="60" width="48" height="36"/>
+            <path class="m" d="M186 60v36M202 60v36M170 72h48M170 84h48"/>
+            <path class="a" d="M106 38H114M110 38V123M106 123H114"/>
+            <text x="110" y="33.5" text-anchor="middle">|&gt;</text>
+            <text class="k" x="110" y="135.82" text-anchor="middle">&quot;Engineer&quot;</text>
+          </svg></span>
+          <span class="app-k">python-cli</span><b>geno-pipe</b><span>A fixed CSV pipeline, filter, sort, select and take joined with <code>|&gt;</code>, printed as CSV, JSON, a table and Markdown.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-form">
-          <span class="app-fig" aria-hidden="true"><i class="af af-form"></i></span>
-          <span class="app-k">browser</span><b>geno-form</b><span>A form builder on canvas. Types drive the layout, constraints the validation, examples the placeholders.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f s" x="22" y="22" width="196" height="116"/>
+            <text x="32" y="39">Email</text>
+            <rect class="m" x="32" y="43" width="176" height="15"/>
+            <path class="m" d="M39 50.5L123 50.5"/>
+            <text x="32" y="73">Age</text>
+            <rect class="x" x="32" y="79" width="176" height="15"/>
+            <text x="39" y="90.79">25</text>
+            <text class="k" x="32" y="107">Age must be at least 13</text>
+            <rect class="s" x="32" y="114" width="64" height="18"/>
+            <text class="k" x="64" y="127.29" text-anchor="middle">Submit</text>
+          </svg></span>
+          <span class="app-k">browser</span><b>geno-form</b><span>Registration and contact forms drawn on canvas from typed field records, with length and range rules checked on Enter.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-mark">
-          <span class="app-fig" aria-hidden="true"><i class="af af-mark"></i></span>
-          <span class="app-k">python-cli</span><b>geno-mark</b><span>Markdown to styled HTML: headings with anchors, lists, code blocks and inline formatting.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f s" x="30" y="22" width="180" height="116"/>
+            <rect class="m" x="62" y="30" width="136" height="52"/>
+            <text class="k" x="70" y="44">Contents</text>
+            <path class="m" d="M70 59h3M70 72h3M76 72h56"/>
+            <text x="76" y="63.29">Features</text>
+            <text class="k lg" x="62" y="103.6">Features</text>
+            <path class="m" d="M62 113h3M70 113h96M62 122h3M70 122h80M62 131h3M70 131h88"/>
+            <path class="a" d="M70 59L50 59Q42 59 42 67L42 92Q42 98 48 98L54 98M49 94.5L54 98L49 101.5"/>
+          </svg></span>
+          <span class="app-k">python-cli</span><b>geno-mark</b><span>Markdown to a styled HTML page: anchored headings, a table of contents, lists, quotes and code blocks.</span>
         </a>
         <a class="app" href="https://github.com/davidiach/geno-lang/blob/main/examples/apps/tetris.geno">
-          <span class="app-fig" aria-hidden="true"><i class="af af-tetris"></i></span>
-          <span class="app-k">browser</span><b>tetris.geno</b><span>The classic in a single file, with keyboard input and the app-mode lifecycle.</span>
+          <span class="app-fig" aria-hidden="true"><svg class="af" viewBox="0 0 240 160" aria-hidden="true" focusable="false">
+            <rect class="f" x="72" y="22.5" width="57" height="114"/>
+            <path class="g" d="M77.7 22.5v114M83.4 22.5v114M89.1 22.5v114M94.8 22.5v114M100.5 22.5v114M106.2 22.5v114M111.9 22.5v114M117.6 22.5v114M123.3 22.5v114M72 22.5h57M72 28.2h57M72 33.9h57M72 39.6h57M72 45.3h57M72 51h57M72 56.7h57M72 62.4h57M72 68.1h57M72 73.8h57M72 79.5h57M72 85.2h57M72 90.9h57M72 96.6h57M72 102.3h57M72 108h57M72 113.7h57M72 119.4h57M72 125.1h57M72 130.8h57"/>
+            <path class="fg" d="M72.55 131.35h4.6v4.6h-4.6zM78.25 131.35h4.6v4.6h-4.6zM83.95 131.35h4.6v4.6h-4.6zM89.65 131.35h4.6v4.6h-4.6zM101.05 131.35h4.6v4.6h-4.6zM106.75 131.35h4.6v4.6h-4.6zM112.45 131.35h4.6v4.6h-4.6zM118.15 131.35h4.6v4.6h-4.6zM123.85 131.35h4.6v4.6h-4.6zM72.55 119.95h4.6v4.6h-4.6zM78.25 119.95h4.6v4.6h-4.6zM83.95 119.95h4.6v4.6h-4.6zM106.75 119.95h4.6v4.6h-4.6zM118.15 119.95h4.6v4.6h-4.6zM123.85 119.95h4.6v4.6h-4.6zM72.55 114.25h4.6v4.6h-4.6zM78.25 114.25h4.6v4.6h-4.6zM83.95 114.25h4.6v4.6h-4.6zM106.75 114.25h4.6v4.6h-4.6zM112.45 114.25h4.6v4.6h-4.6zM118.15 114.25h4.6v4.6h-4.6zM123.85 114.25h4.6v4.6h-4.6zM72.55 108.55h4.6v4.6h-4.6zM78.25 108.55h4.6v4.6h-4.6zM106.75 108.55h4.6v4.6h-4.6zM112.45 108.55h4.6v4.6h-4.6zM123.85 108.55h4.6v4.6h-4.6zM72.55 102.85h4.6v4.6h-4.6zM78.25 102.85h4.6v4.6h-4.6zM112.45 102.85h4.6v4.6h-4.6zM123.85 102.85h4.6v4.6h-4.6zM72.55 97.15h4.6v4.6h-4.6zM78.25 97.15h4.6v4.6h-4.6zM123.85 97.15h4.6v4.6h-4.6zM72.55 91.45h4.6v4.6h-4.6z"/>
+            <path class="fa" d="M72.55 125.65h4.6v4.6h-4.6zM78.25 125.65h4.6v4.6h-4.6zM83.95 125.65h4.6v4.6h-4.6zM106.75 125.65h4.6v4.6h-4.6zM112.45 125.65h4.6v4.6h-4.6zM118.15 125.65h4.6v4.6h-4.6zM123.85 125.65h4.6v4.6h-4.6z"/>
+            <path class="fk" d="M89.65 125.65h4.6v4.6h-4.6zM95.35 125.65h4.6v4.6h-4.6zM101.05 125.65h4.6v4.6h-4.6zM95.35 119.95h4.6v4.6h-4.6z"/>
+            <path class="s" d="M70.5 22.5V138H130.5V22.5"/>
+            <text x="149" y="34.5">Next:</text>
+            <path class="fk" d="M155.25 42.05h4.6v4.6h-4.6zM160.95 42.05h4.6v4.6h-4.6zM149.55 47.75h4.6v4.6h-4.6zM155.25 47.75h4.6v4.6h-4.6z"/>
+          </svg></span>
+          <span class="app-k">browser</span><b>tetris.geno</b><span>Falling blocks on a 10&times;20 well in one file, with arrow keys, a next-piece preview and the app-mode lifecycle.</span>
         </a>
       </div>
     </section>

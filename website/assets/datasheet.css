@@ -3223,26 +3223,41 @@ sup {
   border-left: 1px solid var(--rule);
 }
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 16px;
+  padding: 0 16px 18px;
   text-decoration: none;
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
   background: var(--sheet);
   min-width: 0;
-  transition: background 0.2s;
 }
-.app:hover {
+.app:hover,
+.app:focus-visible {
   background: var(--teal-wash);
+}
+.app:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+  border-radius: 0;
+}
+/* the outline paints under the full-bleed plate, so the ring is redrawn above it */
+.app:focus-visible::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  box-shadow: inset 0 0 0 2px var(--teal);
+  pointer-events: none;
 }
 .app-k {
   font: 600 10.5px/1 var(--f-mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--teal-ink);
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .app b {
   font: 700 20px/1.1 var(--f-display);
@@ -3253,49 +3268,135 @@ sup {
   color: var(--ink-2);
   line-height: 1.45;
 }
+
+/* each app opens with a full-bleed plate on graph paper */
 .app-fig {
-  height: 64px;
-  border: 1px solid var(--rule-2);
-  background: var(--paper) linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 100% 8px;
-  display: grid;
-  place-items: center;
+  position: relative;
+  display: block;
+  margin: 0 -16px;
+  aspect-ratio: 3 / 2;
+  max-height: 161px; /* 160px of drawing + the 1px rule: plates render 1:1 */
   overflow: hidden;
+  border-bottom: 1px solid var(--rule);
+  background-color: var(--paper);
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 8px 8px, 8px 8px, 40px 40px, 40px 40px;
+  background-position: center;
+}
+/* hover and focus tint the plate with the tile, one step darker, as paper sits under sheet */
+.app:hover .app-fig,
+.app:focus-visible .app-fig {
+  background-color: color-mix(in srgb, var(--teal) 10%, var(--paper));
+}
+.app-fig::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  pointer-events: none;
+  --c: var(--ink-3);
+  background: linear-gradient(var(--c), var(--c)) left top / 8px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) left top / 1px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) right top / 8px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) right top / 1px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) left bottom / 8px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) left bottom / 1px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) right bottom / 8px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) right bottom / 1px 8px no-repeat;
+}
+.app:hover .app-fig::before,
+.app:focus-visible .app-fig::before {
+  --c: var(--teal);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app,
+  .app-fig {
+    transition: background-color 0.2s;
+  }
 }
 .af {
+  position: relative;
   display: block;
-  width: 96px;
-  height: 44px;
-  background: var(--ink);
-  -webkit-mask: var(--m) center / contain no-repeat;
-  mask: var(--m) center / contain no-repeat;
-  transition: transform 0.4s var(--ease);
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
-.app:hover .af {
-  transform: scale(1.06);
+.af .s,
+.af .m,
+.af .a,
+.af .x {
+  fill: none;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: miter;
 }
-.af-check {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg fill='none' stroke='%23000' stroke-width='2'%3E%3Crect x='6' y='5' width='8' height='8'/%3E%3Cpath d='M8 9l2 2 3-4'/%3E%3Cpath d='M20 9h40'/%3E%3Crect x='6' y='18' width='8' height='8'/%3E%3Cpath d='M8 22l2 2 3-4'/%3E%3Cpath d='M20 22h56'/%3E%3Crect x='6' y='31' width='8' height='8'/%3E%3Cpath d='M8 33l4 4M12 33l-4 4'/%3E%3Cpath d='M20 35h30'/%3E%3C/g%3E%3C/svg%3E");
+.af .s {
+  stroke: var(--ink);
 }
-.af-dash {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg fill='%23000'%3E%3Crect x='6' y='26' width='8' height='14'/%3E%3Crect x='18' y='16' width='8' height='24'/%3E%3Crect x='30' y='20' width='8' height='20'/%3E%3Crect x='42' y='8' width='8' height='32'/%3E%3C/g%3E%3Cpath d='M58 34l8-10 8 4 8-14 8 6' fill='none' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E");
+.af .m {
+  stroke: var(--ink-3);
 }
-.af-snap {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg fill='none' stroke='%23000' stroke-width='2'%3E%3Crect x='4' y='8' width='26' height='28'/%3E%3Crect x='66' y='8' width='26' height='28'/%3E%3Cpath d='M34 16h26M54 11l6 5-6 5M62 28H36M42 23l-6 5 6 5'/%3E%3C/g%3E%3C/svg%3E");
+.af .a {
+  stroke: var(--teal);
 }
-.af-log {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg stroke='%23000' stroke-width='2'%3E%3Cpath d='M6 8h14M26 8h50M6 18h14M26 18h34M6 28h14M26 28h58M6 38h14M26 38h22'/%3E%3C/g%3E%3C/svg%3E");
+.af .x {
+  stroke: var(--fail);
 }
-.af-pipe {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg fill='none' stroke='%23000' stroke-width='2'%3E%3Crect x='4' y='12' width='18' height='20'/%3E%3Crect x='39' y='12' width='18' height='20'/%3E%3Crect x='74' y='12' width='18' height='20'/%3E%3Cpath d='M22 22h17M57 22h17'/%3E%3C/g%3E%3C/svg%3E");
+/* hatching is Figure 1's .sg-x: 1px lines, 5px apart, -45deg, in var(--rule).
+   A 1px diagonal antialiases lighter than Figure 1's gradient stripe, so night
+   --rule is lifted 10% toward --chart-over; measured at 1x the plate hatch then sits
+   where Figure 1's does (about 26 luma over the ground at night, 31-40 by day). */
+.af .h {
+  fill: none;
+  stroke: var(--rule);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
-.af-form {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg fill='none' stroke='%23000' stroke-width='2'%3E%3Crect x='8' y='5' width='80' height='10'/%3E%3Crect x='8' y='20' width='80' height='10'/%3E%3C/g%3E%3Crect x='60' y='34' width='28' height='8' fill='%23000'/%3E%3C/svg%3E");
+:root[data-theme="dark"] .af .h {
+  stroke: color-mix(in srgb, var(--chart-over) 10%, var(--rule));
 }
-.af-mark {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cpath d='M10 6v16M18 6v16M6 11h16M6 17h16' stroke='%23000' stroke-width='2'/%3E%3Cpath d='M30 14h40' stroke='%23000' stroke-width='4'/%3E%3Cpath d='M6 30h80M6 38h56' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E");
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .af .h {
+    stroke: color-mix(in srgb, var(--chart-over) 10%, var(--rule));
+  }
 }
-.af-tetris {
-  --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 44'%3E%3Cg fill='%23000'%3E%3Crect x='22' y='4' width='9' height='9'/%3E%3Crect x='32' y='4' width='9' height='9'/%3E%3Crect x='32' y='14' width='9' height='9'/%3E%3Crect x='42' y='14' width='9' height='9'/%3E%3Crect x='12' y='34' width='9' height='9'/%3E%3Crect x='22' y='34' width='9' height='9'/%3E%3Crect x='32' y='34' width='9' height='9'/%3E%3Crect x='52' y='34' width='9' height='9'/%3E%3Crect x='62' y='34' width='9' height='9'/%3E%3Crect x='62' y='24' width='9' height='9'/%3E%3Crect x='72' y='34' width='9' height='9'/%3E%3C/g%3E%3C/svg%3E");
+/* the tetris board grid: the same faint 1px line as the hatching */
+.af .g {
+  fill: none;
+  stroke: var(--rule-2);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.af .f {
+  fill: var(--sheet);
+}
+.af .d {
+  stroke-dasharray: 3 3;
+}
+.af .j {
+  stroke-linejoin: round;
+}
+.af .fa {
+  fill: var(--teal);
+}
+.af .fk {
+  fill: var(--ink);
+}
+.af .fg {
+  fill: var(--chart-over);
+}
+.af text {
+  font: 500 12.25px var(--f-mono);
+  fill: var(--ink-3);
+}
+.af text.k {
+  fill: var(--ink);
+}
+.af text.lg {
+  font: 600 16px var(--f-display);
+  letter-spacing: 0.02em;
 }
 @media (max-width: 1180px) {
   .apps {
