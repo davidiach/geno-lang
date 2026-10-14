@@ -1,0 +1,31 @@
+// Result, Option and the ? operator: errors are values you can match on.
+
+func parse_port(arg: String) -> Result[Int, String]
+    example "8080" -> Ok(8080)
+    example "eighty" -> Err("not a number: eighty")
+    example "70000" -> Err("out of range: 70000")
+    match parse_int(arg) with
+        | None -> return Err("not a number: " + arg)
+        | Some(n) ->
+            if n < 1 or n > 65535 then
+                return Err("out of range: " + arg)
+            end if
+            return Ok(n)
+    end match
+end func
+
+func describe(arg: String) -> String
+    example "443" -> "listening on 443"
+    example "http" -> "error: not a number: http"
+    match parse_port(arg) with
+        | Ok(port) -> return f"listening on {port}"
+        | Err(msg) -> return "error: " + msg
+    end match
+end func
+
+func main() -> Unit
+    for a: String in ["8080", "eighty", "70000"] do
+        print(describe(a))
+    end for
+    return ()
+end func

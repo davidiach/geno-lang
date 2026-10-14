@@ -1,0 +1,26 @@
+// Welcome to Geno. Functions carry examples,
+// and geno test runs them. Try changing the
+// threshold `score >= 60` to 75, then press Test.
+
+func score_label(score: Int) -> String
+    requires score >= 0
+    example 90 -> "excellent"
+    example 89 -> "passing"
+    example 60 -> "passing"
+    example 59 -> "needs work"
+
+    if score >= 90 then
+        return "excellent"
+    else if score >= 60 then
+        return "passing"
+    else
+        return "needs work"
+    end if
+end func
+
+func main() -> Unit
+    for s: Int in [90, 89, 60, 59] do
+        print(f"{s} -> {score_label(s)}")
+    end for
+    return ()
+end func

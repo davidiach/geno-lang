@@ -1,0 +1,29 @@
+// Traits and impl blocks.
+
+trait Describable
+    func describe(self: Self) -> String
+end trait
+
+type Planet = Planet(name: String, moons: Int)
+
+impl Describable for Planet
+    func describe(self: Planet) -> String
+        example Planet("Mars", 2) -> "Mars has 2 moons"
+        example Planet("Venus", 0) -> "Venus has no moons"
+        example Planet("Earth", 1) -> "Earth has 1 moon"
+        if self.moons == 0 then
+            return f"{self.name} has no moons"
+        else if self.moons == 1 then
+            return f"{self.name} has 1 moon"
+        end if
+        return f"{self.name} has {self.moons} moons"
+    end func
+end impl
+
+func main() -> Unit
+    let planets = [Planet("Earth", 1), Planet("Jupiter", 95), Planet("Mercury", 0)]
+    for p: Planet in planets do
+        print(describe(p))
+    end for
+    return ()
+end func

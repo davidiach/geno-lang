@@ -1,0 +1,25 @@
+// Contracts: requires checks inputs, ensures checks the result.
+
+func fib(n: Int) -> Int
+    requires n >= 0
+    ensures result >= 0
+    example 0 -> 0
+    example 1 -> 1
+    example 10 -> 55
+    example 20 -> 6765
+
+    var prev = 0
+    var curr = 1
+    var i = 0
+    while i < n do
+        let next = prev + curr
+        prev = curr
+        curr = next
+        i = i + 1
+    end while
+    return prev
+end func
+
+func main() -> List[Int]
+    return [fib(n) for n: Int in range(0, 12)]
+end func

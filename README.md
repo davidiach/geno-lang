@@ -5,7 +5,7 @@
 [![Status: Preview](https://img.shields.io/badge/status-preview-yellow.svg)](docs/preview-program.md)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-[Install](#quickstart) | [Language Tour](docs/guide/language-tour.md) | [Examples](#examples) | [Documentation](docs/INDEX.md) | [Maturity](docs/MATURITY.md) | [Contributing](CONTRIBUTING.md)
+[Website](https://geno-lang.org) | [Install](#quickstart) | [Language Tour](docs/guide/language-tour.md) | [Examples](#examples) | [Documentation](docs/INDEX.md) | [Maturity](docs/MATURITY.md) | [Contributing](CONTRIBUTING.md)
 
 Geno is a statically typed, functional-first programming language for reliable
 small programs written with LLMs. You can write Geno directly or generate it

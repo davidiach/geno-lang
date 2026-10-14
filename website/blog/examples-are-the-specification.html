@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Examples are the specification</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.">
+<meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Examples are the specification">
+<meta property="og:description" content="Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://geno-lang.org/blog/examples-are-the-specification.html">
+<meta property="og:image" content="https://geno-lang.org/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://geno-lang.org/blog/examples-are-the-specification.html">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="alternate" type="application/rss+xml" title="Geno blog" href="feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="../assets/datasheet.css">
+<script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="2 5 27 25">
+    <g fill="currentColor"><rect x="8" y="7" width="16" height="2"/><rect x="6" y="9" width="4" height="2"/><rect x="22" y="9" width="4" height="2"/><rect x="4" y="11" width="4" height="10"/><rect x="6" y="21" width="4" height="2"/><rect x="22" y="17" width="4" height="6"/><rect x="8" y="23" width="16" height="1"/><rect x="8" y="24" width="15" height="1"/></g>
+    <g fill="var(--teal)"><rect x="14" y="15" width="12" height="2"/><rect x="23" y="24" width="4" height="4"/></g>
+  </symbol>
+</svg>
+
+<header class="bar" data-bar>
+  <div class="bar-in">
+    <a class="brand" href="../" aria-label="Geno home">
+      <svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>
+      <span class="brand-word">GENO</span>
+    </a>
+    <nav class="bar-nav" aria-label="Primary">
+      <a href="../#install">Install</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="../playground.html">Playground</a>
+      <a href="./">Blog</a>
+      <a href="../#community">Community</a>
+    </nav>
+    <div class="bar-end">
+      <a class="try" href="../playground.html">Try Geno <span aria-hidden="true">→</span></a>
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
+        <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
+      </button>
+      <a class="gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <button class="menu" type="button" data-menu aria-expanded="false" aria-controls="drawer" aria-label="Open menu"><span></span><span></span></button>
+    </div>
+  </div>
+  <div class="drawer" id="drawer" hidden>
+    <a href="../#install">Install</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
+    <a href="../playground.html">Playground</a>
+    <a href="./">Blog</a>
+    <a href="../#community">Community</a>
+    <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between paper and night"><span class="theme-paper">Paper edition</span><span class="theme-night">Night edition</span></button>
+  </div>
+</header>
+
+<div class="docline" aria-hidden="true">
+  <div class="docline-in">
+    <span><b>GENO</b> BLOG</span>
+    <span class="docline-mid">BLOG NO. 005 · 2026-10-14</span>
+    <span>2 min read</span>
+  </div>
+</div>
+
+<div class="progress" aria-hidden="true"></div>
+<main id="main" class="an">
+  <header class="an-head">
+    <div class="an-head-in">
+      <p class="an-kicker"><a href="./">Blog</a><span>/</span><span>Design</span></p>
+      <p class="an-no">No. 005</p>
+      <h1 class="an-title">Examples are the specification</h1>
+      <p class="an-meta"><span>The Geno project</span><span>October 14, 2026</span><span>2 min read</span></p>
+      <div class="an-abstract">
+        <h2>Abstract</h2>
+        <p>Ordinary Geno functions must carry at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</p>
+      </div>
+    </div>
+  </header>
+  <div class="an-doc">
+    <nav class="an-toc" aria-label="Contents">
+      <p class="toc-h">Contents</p>
+      <ol><li><a href="#plausible-is-cheap">Plausible is cheap</a></li>
+<li><a href="#what-geno-test-does-with-them">What geno test does with them</a></li>
+<li><a href="#contracts-cover-what-examples-cannot">Contracts cover what examples cannot</a></li>
+<li><a href="#details-that-matter-in-practice">Details that matter in practice</a></li>
+<li><a href="#the-cost">The cost</a></li></ol>
+      <p class="an-tags"><span class="tag">design</span> <span class="tag">testing</span></p>
+    </nav>
+    <article class="prose">
+<p class="lede">In Geno, a function without an example does not type-check. That rule surprises people more than anything else in the language, so here is the reasoning behind it.</p>
+
+<pre><code data-lang="geno">func clamp(value: Int, lo: Int, hi: Int) -> Int
+    example 5, 0, 10 -> 5
+    example -1, 0, 10 -> 0
+    example 15, 0, 10 -> 10
+    if value &lt; lo then return lo end if
+    if value > hi then return hi end if
+    return value
+end func</code></pre>
+
+<h2 id="plausible-is-cheap">Plausible is cheap</h2>
+
+<p>Language models are very good at producing code that looks right. Looking right is not the problem worth solving. The useful question is whether the code does what was asked, and a reviewer can only answer it if what was asked is written down somewhere checkable.</p>
+
+<p>An <code>example</code> clause is that written-down intent, in the smallest form that still executes: these inputs, this output. It sits next to the signature, where a reader looks first and where a model writing the function is forced to commit to it.</p>
+
+<h2 id="what-geno-test-does-with-them">What geno test does with them</h2>
+
+<p><code>geno test</code> evaluates every example of every function through the interpreter and reports each mismatch with the value it actually got:</p>
+
+<pre><code data-lang="sh">$ geno test -v score.geno
+  FAIL  score.geno (3/4) 14ms
+        x score_label: expected "passing", got "needs work"
+
+3 passed, 1 failed, in 0.04s</code></pre>
+
+<p>That line is the whole point. When a model writes <code>score >= 75</code> where the examples say 60 passes, the failure names the function, the expectation and the actual value. It is exactly the feedback a repair prompt needs, and nobody had to write a test file.</p>
+
+<h2 id="contracts-cover-what-examples-cannot">Contracts cover what examples cannot</h2>
+
+<p>Examples pin down specific points. <code>requires</code> and <code>ensures</code> state rules for every call:</p>
+
+<pre><code data-lang="geno">func factorial(n: Int) -> Int
+    requires n >= 0
+    ensures result >= 1
+    example 5 -> 120
+    example 0 -> 1
+    if n &lt;= 1 then return 1 end if
+    return n * factorial(n - 1)
+end func</code></pre>
+
+<p>Both compile into the generated Python and JavaScript, so a precondition still holds when the program runs outside the interpreter.</p>
+
+<h2 id="details-that-matter-in-practice">Details that matter in practice</h2>
+
+<ul>
+  <li><strong>Floats compare with a relative tolerance of 1e-9.</strong> Copy the full value from a real run. A rounded <code>22.857</code> fails on purpose: a tolerance loose enough to accept it would also hide real errors.</li>
+  <li><strong>Zero-argument functions</strong> use <code>example () -&gt; value</code>.</li>
+  <li><strong>Put examples on the boundaries.</strong> The examples behind that failure are 90, 89, 60 and 59, one on each side of each threshold, so they leave exactly one right answer. Examples at 95, 70 and 40 would also catch <code>>= 75</code>, but they pass for any passing bar from 41 to 70, so they could not tell a model that the bar is 60.</li>
+  <li><strong>Exempt functions</strong> are <code>main</code>, async functions, app lifecycle hooks and functions marked <code>@untested</code>, whose results depend on the world outside the program. Helpers used only by <code>test</code> blocks are exempt too.</li>
+  <li><strong>Escape hatch:</strong> <code>@untested</code> marks a function you cannot sensibly exemplify, and <code>geno test --fail-on-untested</code> makes CI refuse it.</li>
+</ul>
+
+<h2 id="the-cost">The cost</h2>
+
+<p>Mandatory examples make Geno a little slower to write by hand. In exchange, every ordinary function documents its own behaviour, every file carries a regression suite, and every model-written program arrives with evidence attached. For the programs Geno is designed for, that trade is worth making.</p>
+    </article>
+  </div>
+  <nav class="pager" aria-label="More application notes"><a class="pager-prev" href="why-geno-writes-end-func.html"><span>Older</span>Why Geno writes end func</a><a class="pager-next" href="the-playground-runs-the-real-compiler.html"><span>Newer</span>The playground runs the real compiler</a></nav>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <div class="notice">
+      <h2>Important notice and disclaimer</h2>
+      <p>GENO IS PREVIEW SOFTWARE, PROVIDED UNDER THE APACHE LICENSE 2.0 “AS IS” AND WITHOUT WARRANTIES OF ANY KIND. THE PRE-1.0 LANGUAGE AND TOOLING MAY CHANGE BETWEEN RELEASES; BREAKING CHANGES ARE RECORDED IN THE CHANGELOG. THE IN-PROCESS EMBEDDING API USES COOPERATIVE LIMITS, AND GENERATED JAVASCRIPT IS NOT A SECURITY BOUNDARY. BEFORE RUNNING UNTRUSTED PROGRAMS, READ THE SECURITY POLICY. EXAMPLES PASSING IS EVIDENCE, NOT PROOF.</p>
+    </div>
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <svg class="foot-mark" aria-hidden="true"><use href="#mark"/></svg>
+        <p>Geno. A language for code you didn&rsquo;t write.</p>
+      </div>
+      <nav class="foot-nav" aria-label="Footer">
+        <div><h3>Product</h3><a href="../#install">Install</a><a href="../playground.html">Playground</a><a href="../#modes">Targets</a><a href="../#performance">Benchmarks</a></div>
+        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="./">Blog</a></div>
+        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="feed.xml">RSS</a></div>
+      </nav>
+    </div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>Datasheet revised October 2026</span></div>
+  </div>
+</footer>
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
+<script src="../assets/datasheet.js"></script>
+</body>
+</html>

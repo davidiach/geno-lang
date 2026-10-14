@@ -1,0 +1,18 @@
+// Pipelines, lambdas and list comprehensions.
+
+func squares_of_evens(data: List[Int]) -> List[Int]
+    example [1, 2, 3, 4, 5] -> [4, 16]
+    example [] -> []
+    return data
+        |> filter(_, fn(x: Int) -> x % 2 == 0)
+        |> map(_, fn(x: Int) -> x * x)
+end func
+
+func shout(words: List[String]) -> List[String]
+    example ["geno", "is", "here"] -> ["GENO!", "IS!", "HERE!"]
+    return [to_upper(w) + "!" for w: String in words]
+end func
+
+func main() -> List[Int]
+    return squares_of_evens([3, 8, 10, 13, 22])
+end func

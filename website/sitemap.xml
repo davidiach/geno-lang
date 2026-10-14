@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://geno-lang.org/</loc></url>
+  <url><loc>https://geno-lang.org/playground.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/</loc></url>
+  <url><loc>https://geno-lang.org/blog/geno-0-5-0.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/the-playground-runs-the-real-compiler.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/examples-are-the-specification.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/why-geno-writes-end-func.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/fail-closed-capabilities.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/what-we-measure.html</loc></url>
+  <url><loc>https://geno-lang.org/blog/geno-written-in-geno.html</loc></url>
+</urlset>

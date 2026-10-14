@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>What we measure, and what we don&#x27;t claim yet</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.">
+<meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="What we measure, and what we don&#x27;t claim yet">
+<meta property="og:description" content="Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://geno-lang.org/blog/what-we-measure.html">
+<meta property="og:image" content="https://geno-lang.org/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://geno-lang.org/blog/what-we-measure.html">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="alternate" type="application/rss+xml" title="Geno blog" href="feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="../assets/datasheet.css">
+<script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="2 5 27 25">
+    <g fill="currentColor"><rect x="8" y="7" width="16" height="2"/><rect x="6" y="9" width="4" height="2"/><rect x="22" y="9" width="4" height="2"/><rect x="4" y="11" width="4" height="10"/><rect x="6" y="21" width="4" height="2"/><rect x="22" y="17" width="4" height="6"/><rect x="8" y="23" width="16" height="1"/><rect x="8" y="24" width="15" height="1"/></g>
+    <g fill="var(--teal)"><rect x="14" y="15" width="12" height="2"/><rect x="23" y="24" width="4" height="4"/></g>
+  </symbol>
+</svg>
+
+<header class="bar" data-bar>
+  <div class="bar-in">
+    <a class="brand" href="../" aria-label="Geno home">
+      <svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>
+      <span class="brand-word">GENO</span>
+    </a>
+    <nav class="bar-nav" aria-label="Primary">
+      <a href="../#install">Install</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="../playground.html">Playground</a>
+      <a href="./">Blog</a>
+      <a href="../#community">Community</a>
+    </nav>
+    <div class="bar-end">
+      <a class="try" href="../playground.html">Try Geno <span aria-hidden="true">→</span></a>
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
+        <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
+      </button>
+      <a class="gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <button class="menu" type="button" data-menu aria-expanded="false" aria-controls="drawer" aria-label="Open menu"><span></span><span></span></button>
+    </div>
+  </div>
+  <div class="drawer" id="drawer" hidden>
+    <a href="../#install">Install</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
+    <a href="../playground.html">Playground</a>
+    <a href="./">Blog</a>
+    <a href="../#community">Community</a>
+    <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between paper and night"><span class="theme-paper">Paper edition</span><span class="theme-night">Night edition</span></button>
+  </div>
+</header>
+
+<div class="docline" aria-hidden="true">
+  <div class="docline-in">
+    <span><b>GENO</b> BLOG</span>
+    <span class="docline-mid">BLOG NO. 002 · 2026-10-14</span>
+    <span>2 min read</span>
+  </div>
+</div>
+
+<div class="progress" aria-hidden="true"></div>
+<main id="main" class="an">
+  <header class="an-head">
+    <div class="an-head-in">
+      <p class="an-kicker"><a href="./">Blog</a><span>/</span><span>Research</span></p>
+      <p class="an-no">No. 002</p>
+      <h1 class="an-title">What we measure, and what we don&#x27;t claim yet</h1>
+      <p class="an-meta"><span>The Geno project</span><span>October 14, 2026</span><span>2 min read</span></p>
+      <div class="an-abstract">
+        <h2>Abstract</h2>
+        <p>Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.</p>
+      </div>
+    </div>
+  </header>
+  <div class="an-doc">
+    <nav class="an-toc" aria-label="Contents">
+      <p class="toc-h">Contents</p>
+      <ol><li><a href="#runtime-compiled-geno-versus-hand-written-python">Runtime: compiled Geno versus hand-written Python</a></li>
+<li><a href="#correctness-the-benchmark-we-have-not-published">Correctness: the benchmark we have not published</a></li></ol>
+      <p class="an-tags"><span class="tag">research</span> <span class="tag">benchmarks</span></p>
+    </nav>
+    <article class="prose">
+<p class="lede">A language that asks to be trusted with generated code should be careful about its own claims. This post covers the two benchmarks in the repository: the one we publish numbers for, and the one we deliberately do not.</p>
+
+<h2 id="runtime-compiled-geno-versus-hand-written-python">Runtime: compiled Geno versus hand-written Python</h2>
+
+<p>The runtime suite has 77 problems, each written twice: once in Geno and once in idiomatic Python. We compile the Geno version and time both. Problems that finish in under 5 ms on both sides are skipped, because at that scale timer noise and interpreter warm-up dominate.</p>
+
+<table>
+  <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Problems measured</td><td>53 of 77</td></tr>
+    <tr><td>Median ratio</td><td>1.60×</td></tr>
+    <tr><td>P90 ratio</td><td>2.17×</td></tr>
+    <tr><td>Best / worst</td><td>0.92× / 2.84×</td></tr>
+    <tr><td>At or under 2×</td><td>45 of 53 (84.9%)</td></tr>
+  </tbody>
+</table>
+
+<p>The target is at most 2× for at least 80% of problems, and the committed run meets it. Across repeated runs the pass rate moves between about 85% and 91% and the median between 1.57× and 1.63×.</p>
+
+<h3>Where the overhead comes from</h3>
+
+<p>Compiled Geno keeps guards that Python does not have: integer bit lengths and collection sizes. The slowest problems are dominated by <code>i * i</code> products in tight loops, where each multiplication keeps a bit-length guard because multiplying adds the operands' bit lengths, which makes it a real integer-bomb path. The compiler moves every other check to where it is provably needed, and the <a href="https://github.com/davidiach/geno-lang/blob/main/benchmarks/RESULTS.md">results page</a> documents each relaxation alongside the test that pins it.</p>
+
+<h2 id="correctness-the-benchmark-we-have-not-published">Correctness: the benchmark we have not published</h2>
+
+<p>The question everyone asks is whether models write more correct programs in Geno than in Python. The repository contains a benchmark designed to answer it: matched problems, prompts for both languages, extraction, evaluation, pass@k and error categories.</p>
+
+<p>We have not published frontier-model results, and Geno makes no correctness claim against Python. A credible answer needs at least three frontier models with exact snapshot IDs, a recorded run date and repository revision, pass@1 for every model and language, difficulty and error breakdowns, and the raw prompts and responses alongside the numbers. Until that checklist is complete, the honest statement is that we do not know yet.</p>
+
+<p>The <a href="https://github.com/davidiach/geno-lang/blob/main/docs/benchmark/llm-correctness-methodology.md">methodology</a> and configuration are public. If you have the budget to run it before we do, we would like to hear what you find.</p>
+    </article>
+  </div>
+  <nav class="pager" aria-label="More application notes"><a class="pager-prev" href="geno-written-in-geno.html"><span>Older</span>Geno, written in Geno</a><a class="pager-next" href="fail-closed-capabilities.html"><span>Newer</span>Fail closed: how capabilities work</a></nav>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <div class="notice">
+      <h2>Important notice and disclaimer</h2>
+      <p>GENO IS PREVIEW SOFTWARE, PROVIDED UNDER THE APACHE LICENSE 2.0 “AS IS” AND WITHOUT WARRANTIES OF ANY KIND. THE PRE-1.0 LANGUAGE AND TOOLING MAY CHANGE BETWEEN RELEASES; BREAKING CHANGES ARE RECORDED IN THE CHANGELOG. THE IN-PROCESS EMBEDDING API USES COOPERATIVE LIMITS, AND GENERATED JAVASCRIPT IS NOT A SECURITY BOUNDARY. BEFORE RUNNING UNTRUSTED PROGRAMS, READ THE SECURITY POLICY. EXAMPLES PASSING IS EVIDENCE, NOT PROOF.</p>
+    </div>
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <svg class="foot-mark" aria-hidden="true"><use href="#mark"/></svg>
+        <p>Geno. A language for code you didn&rsquo;t write.</p>
+      </div>
+      <nav class="foot-nav" aria-label="Footer">
+        <div><h3>Product</h3><a href="../#install">Install</a><a href="../playground.html">Playground</a><a href="../#modes">Targets</a><a href="../#performance">Benchmarks</a></div>
+        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="./">Blog</a></div>
+        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="feed.xml">RSS</a></div>
+      </nav>
+    </div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>Datasheet revised October 2026</span></div>
+  </div>
+</footer>
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
+<script src="../assets/datasheet.js"></script>
+</body>
+</html>

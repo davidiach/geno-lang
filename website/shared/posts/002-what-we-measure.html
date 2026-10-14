@@ -1,0 +1,40 @@
+<!--
+title: What we measure, and what we don't claim yet
+slug: what-we-measure
+date: 2026-10-14
+number: 2
+author: The Geno project
+kicker: Research
+tags: research, benchmarks
+summary: Geno's compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.
+-->
+<p class="lede">A language that asks to be trusted with generated code should be careful about its own claims. This post covers the two benchmarks in the repository: the one we publish numbers for, and the one we deliberately do not.</p>
+
+<h2>Runtime: compiled Geno versus hand-written Python</h2>
+
+<p>The runtime suite has 77 problems, each written twice: once in Geno and once in idiomatic Python. We compile the Geno version and time both. Problems that finish in under 5 ms on both sides are skipped, because at that scale timer noise and interpreter warm-up dominate.</p>
+
+<table>
+  <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Problems measured</td><td>53 of 77</td></tr>
+    <tr><td>Median ratio</td><td>1.60×</td></tr>
+    <tr><td>P90 ratio</td><td>2.17×</td></tr>
+    <tr><td>Best / worst</td><td>0.92× / 2.84×</td></tr>
+    <tr><td>At or under 2×</td><td>45 of 53 (84.9%)</td></tr>
+  </tbody>
+</table>
+
+<p>The target is at most 2× for at least 80% of problems, and the committed run meets it. Across repeated runs the pass rate moves between about 85% and 91% and the median between 1.57× and 1.63×.</p>
+
+<h3>Where the overhead comes from</h3>
+
+<p>Compiled Geno keeps guards that Python does not have: integer bit lengths and collection sizes. The slowest problems are dominated by <code>i * i</code> products in tight loops, where each multiplication keeps a bit-length guard because multiplying adds the operands' bit lengths, which makes it a real integer-bomb path. The compiler moves every other check to where it is provably needed, and the <a href="https://github.com/davidiach/geno-lang/blob/main/benchmarks/RESULTS.md">results page</a> documents each relaxation alongside the test that pins it.</p>
+
+<h2>Correctness: the benchmark we have not published</h2>
+
+<p>The question everyone asks is whether models write more correct programs in Geno than in Python. The repository contains a benchmark designed to answer it: matched problems, prompts for both languages, extraction, evaluation, pass@k and error categories.</p>
+
+<p>We have not published frontier-model results, and Geno makes no correctness claim against Python. A credible answer needs at least three frontier models with exact snapshot IDs, a recorded run date and repository revision, pass@1 for every model and language, difficulty and error breakdowns, and the raw prompts and responses alongside the numbers. Until that checklist is complete, the honest statement is that we do not know yet.</p>
+
+<p>The <a href="https://github.com/davidiach/geno-lang/blob/main/docs/benchmark/llm-correctness-methodology.md">methodology</a> and configuration are public. If you have the budget to run it before we do, we would like to hear what you find.</p>

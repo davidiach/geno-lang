@@ -1,0 +1,56 @@
+<!--
+title: Fail closed: how capabilities work
+slug: fail-closed-capabilities
+date: 2026-10-14
+number: 3
+author: The Geno project
+kicker: Security
+tags: security, capabilities
+summary: A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.
+-->
+<p class="lede">Most computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, naming the builtin that needed it.</p>
+
+<pre><code data-lang="sh">$ geno run notes.geno
+Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre>
+
+<h2>The ten capabilities</h2>
+
+<table>
+  <thead><tr><th>Capability</th><th>Unlocks</th></tr></thead>
+  <tbody>
+    <tr><td><code>print</code></td><td>Console output</td></tr>
+    <tr><td><code>clock</code></td><td>Timestamps, timing, <code>sleep_ms</code></td></tr>
+    <tr><td><code>random</code></td><td>Random numbers</td></tr>
+    <tr><td><code>fs</code></td><td>Reading, writing and listing files</td></tr>
+    <tr><td><code>http</code></td><td>Outbound HTTP and HTTPS requests</td></tr>
+    <tr><td><code>regex</code></td><td>Regular expressions</td></tr>
+    <tr><td><code>env</code></td><td>Environment variables and CLI arguments</td></tr>
+    <tr><td><code>process</code></td><td>Running other programs</td></tr>
+    <tr><td><code>stdin</code></td><td>Reading standard input</td></tr>
+    <tr><td><code>serve</code></td><td>Listening for HTTP requests</td></tr>
+  </tbody>
+</table>
+
+<p>The mapping from builtin to capability is declared once, in <code>geno/builtin_manifest.py</code>, and every execution surface derives its checks from it. A new effectful builtin cannot ship without saying which capability it needs.</p>
+
+<h2>Each surface, honestly</h2>
+
+<p><strong><code>geno run</code></strong> compiles to Python and runs it in a separate, resource-limited process. <code>print</code>, <code>clock</code> and <code>random</code> work; everything else is denied.</p>
+
+<p><strong><code>geno run --unsafe --cap fs,print</code></strong> uses the direct interpreter with exactly the capabilities you list and nothing implicit.</p>
+
+<p><strong><code>geno run --json</code></strong> and the embedding API grant nothing unless asked. They run in your process with cooperative limits, so use the hosted server or your own worker process for untrusted code.</p>
+
+<p><strong><code>geno serve</code></strong> lets an operator decide which capabilities requests may ask for, and each request receives only the subset it asked for.</p>
+
+<p><strong>Compiled Python</strong> reads <code>--cap</code> from its own command line and denies everything without it.</p>
+
+<p><strong>Compiled JavaScript is the exception.</strong> <code>--cap</code> controls which APIs are wired up, but generated Node.js code is not a sandbox. Treat it as trusted code, which is how the <a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">security policy</a> describes it too.</p>
+
+<h2>Granted does not mean unlimited</h2>
+
+<p>Granting <code>fs</code>, <code>http</code> or <code>process</code> still applies scoped policies in the interpreter and in compiled Python: filesystem roots, read-only modes, blocked private network addresses, redirect limits and response-size caps. The <a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/capabilities.md">capability reference</a> lists them per surface.</p>
+
+<h2>Why the command line?</h2>
+
+<p>Because that is where a person decides to run something. A model can write <code>fs_read_text("/etc/passwd")</code>. It cannot also grant itself the right to execute it, and the line that would grant it is short enough to read before pressing Enter.</p>
