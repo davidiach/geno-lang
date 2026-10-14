@@ -245,6 +245,9 @@ def find_redeclared_vars(program: Program) -> list[Diagnostic]:
 
 def is_std_module_path(path: str | Path) -> bool:
     """True when ``path`` is a standard-library module shipped with Geno."""
+    if not str(path) or str(path).startswith("<"):
+        # In-memory sources such as "<module:Math>" are never shipped files.
+        return False
     try:
         return Path(path).resolve().is_relative_to(_STD_DIR)
     except (OSError, ValueError):

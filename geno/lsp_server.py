@@ -1737,6 +1737,9 @@ class GenoLanguageServer:
                         target=target_name,
                         _module_name=context.module_name,
                         _check_default_run=True,
+                        # Diagnostics here land on this URI, so warn only
+                        # about this document; siblings warn when opened.
+                        _lint_modules=(),
                     )
                     if not result.ok:
                         lsp_diags.extend(

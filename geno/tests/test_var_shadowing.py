@@ -407,3 +407,27 @@ def test_cli_check_without_warnings_is_unchanged(tmp_path, capsys):
     out, err = capsys.readouterr()
     assert err == ""
     assert out.splitlines()[-1] == "  1 definitions, 1 modules"
+
+
+def test_caller_module_named_like_std_still_warns():
+    """A supplied module is skipped only when it is the shipped std source."""
+    entry = "func main() -> Int\n    return 0\nend func\n"
+    buggy = "export " + textwrap.dedent(LOOP_SOURCE)
+    result = geno.check(entry, modules={"Math": buggy})
+    assert result.ok, [str(d) for d in result.diagnostics]
+    assert [
+        (d.code.value, d.location.filename if d.location else None)
+        for d in result.diagnostics
+    ] == [("W300", "<module:Math>")]
+
+    shipped = (STD_DIR / "Math.geno").read_text(encoding="utf-8")
+    module = geno.api._parse_modules({"Math": shipped})["Math"]
+    assert module.location.filename == str(STD_DIR / "Math.geno")
+
+
+def test_std_path_check_ignores_in_memory_names():
+    from geno.var_shadowing import is_std_module_path
+
+    assert is_std_module_path(STD_DIR / "Math.geno")
+    assert not is_std_module_path("<module:Math>")
+    assert not is_std_module_path("")

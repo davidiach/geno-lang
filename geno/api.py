@@ -1189,17 +1189,18 @@ def _redeclared_var_warnings(
 ) -> list[Diagnostic]:
     """W300 warnings for the entrypoint and the caller's own modules.
 
-    ``lint_modules`` names the modules to report on; when it is None, every
-    supplied module except a standard-library one is reported.
+    ``lint_modules`` names the modules to report on. When it is None, every
+    supplied module is reported except an unmodified shipped standard-library
+    module, which ``_module_filename`` gives its real path.
     """
-    from .var_shadowing import find_redeclared_vars
+    from .var_shadowing import find_redeclared_vars, is_std_module_path
 
     found = find_redeclared_vars(program)
     for name, module in (parsed_modules or {}).items():
         if lint_modules is not None:
             if name not in lint_modules:
                 continue
-        elif (_STDLIB_DIR / f"{name}.geno").is_file():
+        elif is_std_module_path(module.location.filename):
             continue
         found.extend(find_redeclared_vars(module))
     return found

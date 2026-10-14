@@ -7126,3 +7126,20 @@ class TestRedeclaredVarWarnings:
         latest = self._open(monkeypatch, uri, self.BUGGY)
 
         self._assert_one_warning(latest[uri])
+
+    def test_sibling_module_warning_stays_on_its_own_document(
+        self, tmp_path, monkeypatch
+    ):
+        app_file = tmp_path / "App.geno"
+        helper_file = tmp_path / "Helper.geno"
+        app_source = (
+            "import Helper\nfunc main() -> Int\n  return total([1, 2])\nend func\n"
+        )
+        app_file.write_text(app_source)
+        helper_file.write_text(self.BUGGY)
+
+        latest = self._open(monkeypatch, app_file.as_uri(), app_source)
+        assert latest[app_file.as_uri()] == []
+
+        latest = self._open(monkeypatch, helper_file.as_uri(), self.BUGGY)
+        self._assert_one_warning(latest[helper_file.as_uri()])
