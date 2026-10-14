@@ -165,7 +165,13 @@ class ConstructorValue:
     def __repr__(self) -> str:
         if not self._fields:
             return self.constructor
-        field_strs = ", ".join(f"{k}: {safe_repr(v)}" for k, v in self._fields.items())
+        try:
+            # Keep the original recursion cost for ordinary constructor fields.
+            field_strs = ", ".join(f"{k}: {v!r}" for k, v in self._fields.items())
+        except ValueError:
+            field_strs = ", ".join(
+                f"{k}: {safe_repr(v)}" for k, v in self._fields.items()
+            )
         return f"{self.constructor}({field_strs})"
 
     def __eq__(self, other: object) -> bool:

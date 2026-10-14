@@ -18,10 +18,11 @@ _BIG_TEXT = str(Decimal(_BIG))
 
 
 def _run_json(
-    tmp_path: Path, return_type: str, body: str
+    tmp_path: Path, return_type: str, body: str, *, definitions: str = ""
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     program = tmp_path / "Main.geno"
     program.write_text(
+        f"{definitions}\n"
         f"func main() -> {return_type}\n"
         "    let big: Int = 2 ** 16000 + 7\n"
         f"{body}\n"
@@ -44,7 +45,7 @@ def _run_json(
     )
     assert completed.stderr == ""
     payload = json.loads(completed.stdout, parse_int=Decimal)
-    assert payload["ok"] is True
+    assert payload["ok"] is True, payload["diagnostics"]
     assert payload["diagnostics"] == []
     return completed, payload
 
@@ -124,6 +125,36 @@ def test_cli_preserves_large_integers_in_collections(
 
     assert completed.returncode == 0
     assert payload["value"] == expected
+
+
+@pytest.mark.parametrize(
+    ("leaf", "leaf_text"),
+    [
+        pytest.param("42", "42", id="small-integer"),
+        pytest.param("big", _BIG_TEXT, id="large-integer"),
+    ],
+)
+def test_cli_preserves_deep_constructor_map_keys(
+    tmp_path: Path, leaf: str, leaf_text: str
+) -> None:
+    """Integer formatting must not consume the recursion budget for normal ADTs."""
+    completed, payload = _run_json(
+        tmp_path,
+        "Map[Chain, Int]",
+        f"    var chain: Chain = Leaf({leaf})\n"
+        "    var i: Int = 0\n"
+        "    while i < 220 do\n"
+        "        chain = Link(chain)\n"
+        "        i = i + 1\n"
+        "    end while\n"
+        "    return map_from_entries([(chain, 1)])",
+        definitions="type Chain = Leaf(value: Int) | Link(tail: Chain)",
+    )
+    expected_key = "Link(tail: " * 220 + f"Leaf(value: {leaf_text})" + ")" * 220
+
+    assert completed.returncode == 0
+    assert payload["value"] == {expected_key: 1}
+    assert payload["output"] == ""
 
 
 @pytest.mark.parametrize(
