@@ -440,28 +440,19 @@
       );
     },
     tetris: function () {
+      // A piece mid-fall above a stack with one gap: the board has not been
+      // cleared yet.
       var cells = [
-        [3, 1, T],
-        [4, 1, T],
-        [4, 2, T],
-        [5, 2, T],
-        [1, 8, A],
-        [2, 8, A],
-        [3, 8, T],
-        [4, 8, T],
-        [6, 8, T],
-        [7, 8, A],
-        [7, 7, A],
-        [8, 8, T],
-        [0, 7, T],
-        [0, 8, T],
-        [5, 7, B],
-        [5, 8, B],
+        [4, 0, A], [5, 0, A], [5, 1, A], [6, 1, A],
+        [0, 5, T], [1, 5, T], [2, 5, T], [3, 5, B], [5, 5, T], [6, 5, T], [7, 5, B], [8, 5, T],
+        [0, 4, T], [1, 4, B], [7, 4, T], [8, 4, T], [8, 3, T],
+        [0, 6, T], [1, 6, T], [2, 6, B], [3, 6, T], [4, 6, T], [5, 6, T], [6, 6, B], [7, 6, T], [8, 6, T],
       ];
       var s = "";
       cells.forEach(function (c) {
-        s += '<rect x="' + (14 + c[0] * 30) + '" y="' + (60 + c[1] * 30) + '" width="27" height="27" rx="4" fill="' + c[2] + '" fill-opacity="' + (c[2] === B ? 0.35 : 0.85) + '"/>';
+        s += '<rect x="' + (15 + c[0] * 30) + '" y="' + (24 + c[1] * 30) + '" width="27" height="27" rx="4" fill="' + c[2] + '" fill-opacity="' + (c[2] === B ? 0.3 : 0.88) + '"/>';
       });
+      s += '<path d="M135 84v62" stroke="' + A + '" stroke-opacity=".35" stroke-width="2" stroke-dasharray="3 6"/>';
       return svg(s, "#122c2a");
     },
   };

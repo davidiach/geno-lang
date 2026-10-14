@@ -13,14 +13,22 @@
 
   var here = (document.currentScript && document.currentScript.src) || location.href;
   var sharedBase = new URL("../", here).href; // .../shared/
-  var meta = document.querySelector('meta[name="geno-pyodide-base"]');
+  function metaContent(name) {
+    var m = document.querySelector('meta[name="' + name + '"]');
+    return m ? m.content : null;
+  }
+  // Optional overrides for self-hosting: <meta name="geno-pyodide-base">,
+  // <meta name="geno-bundle-url"> and <meta name="geno-stdlib-url">.
   var config = {
-    pyodideBase: (meta && meta.content) || global.GENO_PYODIDE_BASE || "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
-    bundleUrl: new URL("playground/geno.zip", sharedBase).href,
+    pyodideBase: metaContent("geno-pyodide-base") || global.GENO_PYODIDE_BASE || "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
+    bundleUrl: metaContent("geno-bundle-url") || new URL("playground/geno.zip", sharedBase).href,
+    stdlibUrl: metaContent("geno-stdlib-url"),
     workerUrl: new URL("js/runtime-worker.js", sharedBase).href,
   };
-  // Pyodide's own loader needs an absolute base.
+  // Pyodide's own loader needs absolute URLs.
   config.pyodideBase = new URL(config.pyodideBase, location.href).href;
+  config.bundleUrl = new URL(config.bundleUrl, location.href).href;
+  if (config.stdlibUrl) config.stdlibUrl = new URL(config.stdlibUrl, location.href).href;
 
   var worker = null;
   var bootPromise = null;
@@ -88,7 +96,7 @@
     setState("loading");
     try {
       spawn();
-      worker.postMessage({ type: "boot", config: { pyodideBase: config.pyodideBase, bundleUrl: config.bundleUrl } });
+      worker.postMessage({ type: "boot", config: { pyodideBase: config.pyodideBase, bundleUrl: config.bundleUrl, stdlibUrl: config.stdlibUrl } });
     } catch (e) {
       setState("error", { message: String(e.message || e) });
       reject(e);

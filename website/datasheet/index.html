@@ -315,19 +315,20 @@
       <h3 id="h52" class="h-sub"><span class="no">5.2</span>Recommended Operating Conditions</h3>
       <div class="tbl-wrap">
         <table class="spec roc">
-          <thead><tr><th scope="col">Parameter</th><th scope="col" class="r">Min</th><th scope="col" class="r">Nom</th><th scope="col" class="r">Max</th><th scope="col">Unit</th></tr></thead>
+          <thead><tr><th scope="col">Parameter</th><th scope="col" class="r">Default</th><th scope="col">Unit</th><th scope="col">Set with</th></tr></thead>
           <tbody>
-            <tr><td>Python (toolchain and compiled output)</td><td class="r">3.10</td><td class="r">3.12</td><td class="r">3.13</td><td>version</td></tr>
-            <tr><td>Interpreter steps per run<sup>(2)</sup></td><td class="r">—</td><td class="r">1,000,000</td><td class="r">set by host</td><td>steps</td></tr>
-            <tr><td>Call depth</td><td class="r">—</td><td class="r">500</td><td class="r">set by host</td><td>frames</td></tr>
-            <tr><td>Integer size</td><td class="r">—</td><td class="r">33,219</td><td class="r">set by host</td><td>bits</td></tr>
-            <tr><td>String and collection size</td><td class="r">—</td><td class="r">10,000,000</td><td class="r">set by host</td><td>elements</td></tr>
-            <tr><td>Captured output</td><td class="r">—</td><td class="r">100,000</td><td class="r">set by host</td><td>characters</td></tr>
-            <tr><td>Sandboxed memory, <code>geno run</code></td><td class="r">—</td><td class="r">256</td><td class="r">set by host</td><td>MiB</td></tr>
+            <tr><td>Python, toolchain and compiled output</td><td class="r">3.10 – 3.13</td><td>version</td><td>—</td></tr>
+            <tr><td>Interpreter steps per run<sup>(2)</sup></td><td class="r">1,000,000</td><td>steps</td><td><code>--max-steps</code></td></tr>
+            <tr><td>Call depth</td><td class="r">500</td><td>frames</td><td><code>--max-recursion-depth</code></td></tr>
+            <tr><td>Integer size</td><td class="r">33,219</td><td>bits</td><td><code>--max-integer-bits</code></td></tr>
+            <tr><td>String and collection size</td><td class="r">10,000,000</td><td>elements</td><td><code>--max-collection-size</code></td></tr>
+            <tr><td>Captured output</td><td class="r">100,000</td><td>characters</td><td><code>--max-output-length</code></td></tr>
+            <tr><td>Sandboxed memory, <code>geno run</code></td><td class="r">256</td><td>MiB</td><td><code>--max-memory-bytes</code></td></tr>
+            <tr><td>Wall-clock timeout, <code>geno run</code></td><td class="r">30</td><td>seconds</td><td><code>--timeout</code></td></tr>
           </tbody>
         </table>
       </div>
-      <p class="fn">(2) Defaults for <code>geno run --unsafe</code> and <code>--json</code>. Every limit is a flag (<code>--max-steps</code>, <code>--max-integer-bits</code>, …) and a field of <code>RunConfig</code> in the embedding API.</p>
+      <p class="fn">(2) Applies to <code>geno run --unsafe</code> and <code>--json</code>. Each limit is also a field of <code>RunConfig</code> in the embedding API, where the host sets it.</p>
     </section>
 
     <section class="sub" id="tests" aria-labelledby="h53">

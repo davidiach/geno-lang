@@ -21,7 +21,7 @@ function boot(config) {
   booting = (async function () {
     post({ type: "progress", stage: "python", label: "Loading Python (WebAssembly)" });
     importScripts(config.pyodideBase + "pyodide.js");
-    pyodide = await loadPyodide({
+    var options = {
       indexURL: config.pyodideBase,
       stdout: function (line) {
         out.push(line);
@@ -29,7 +29,9 @@ function boot(config) {
       stderr: function (line) {
         out.push(line);
       },
-    });
+    };
+    if (config.stdlibUrl) options.stdLibURL = config.stdlibUrl;
+    pyodide = await loadPyodide(options);
     post({ type: "progress", stage: "geno", label: "Loading the Geno toolchain" });
     var res = await fetch(config.bundleUrl);
     if (!res.ok) throw new Error("Could not fetch the Geno bundle (" + res.status + ")");
