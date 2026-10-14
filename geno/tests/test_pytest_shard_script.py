@@ -555,7 +555,9 @@ def test_shard_timing_validation_rejects_mixed_ci_runs(tmp_path: Path) -> None:
     plan = pytest_shard.validate_shard_plan_manifests(_write_plan_manifests(tmp_path))
     timing_paths = _write_timing_manifests(tmp_path, plan)
     manifest = json.loads(timing_paths[1].read_text(encoding="utf-8"))
-    manifest["provenance"]["github_run_attempt"] = "2"
+    # Differ from the ambient attempt: a CI re-run already runs as attempt 2.
+    attempt = manifest["provenance"]["github_run_attempt"]
+    manifest["provenance"]["github_run_attempt"] = f"{attempt}-other"
     timing_paths[1].write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError, match="different CI runs"):
