@@ -99,8 +99,8 @@ end func
 // Render a text input field.
 @untested("canvas drawing function")
 func render_text_field(field: FieldDef, value: FieldValue, errors: List[FieldError], y: Int) -> Int
-    // Label
-    draw_text(text: field.label, x: 40, y: y, size: 14, color: color_label())
+    // Label (draw_text places text by its baseline)
+    draw_text(text: field.label, x: 40, y: y + 14, size: 14, color: color_label())
 
     // Input box
     let box_y: Int = y + 20
@@ -112,12 +112,12 @@ func render_text_field(field: FieldDef, value: FieldValue, errors: List[FieldErr
     // Value or placeholder
     let display: String = display_text(value: value, placeholder: field.placeholder)
     let txt_color: String = display_color(value)
-    draw_text(text: display, x: 48, y: box_y + 8, size: 14, color: txt_color)
+    draw_text(text: display, x: 48, y: box_y + 20, size: 14, color: txt_color)
 
     // Error message
     if has_err then
         let msg: String = get_error(errors: errors, field_name: field.name)
-        draw_text(text: msg, x: 40, y: box_y + 35, size: 12, color: color_error())
+        draw_text(text: msg, x: 40, y: box_y + 46, size: 12, color: color_error())
         return box_y + 55
     end if
     return box_y + 40
@@ -138,7 +138,7 @@ func render_bool_field(field: FieldDef, value: FieldValue, y: Int) -> Int
     end if
 
     // Label
-    draw_text(text: field.label, x: 65, y: y + 2, size: 14, color: color_label())
+    draw_text(text: field.label, x: 65, y: y + 14, size: 14, color: color_label())
     return y + 30
 end func
 
@@ -146,13 +146,13 @@ end func
 @untested("canvas drawing function")
 func render_button(label: String, y: Int) -> Int
     draw_rect(x: 40, y: y, width: 120, height: 36, color: color_button())
-    draw_text(text: label, x: 60, y: y + 10, size: 14, color: "#ffffff")
+    draw_text(text: label, x: 60, y: y + 23, size: 14, color: "#ffffff")
     return y + 50
 end func
 
 // Render success message.
 @untested("canvas drawing function")
 func render_success(y: Int) -> Int
-    draw_text(text: "Form submitted successfully!", x: 40, y: y, size: 16, color: color_success())
+    draw_text(text: "Form submitted successfully!", x: 40, y: y + 16, size: 16, color: color_success())
     return y + 30
 end func
