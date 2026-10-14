@@ -95,12 +95,17 @@ class GenoJSONEncoder(json.JSONEncoder):
                 return "NaN"
             return "Infinity" if number > 0 else "-Infinity"
 
+        # Python 3.13 moved this normalization out of _make_iterencode.
+        # Passing its normalized form also preserves earlier Python behavior.
+        indent = self.indent
+        if indent is not None and not isinstance(indent, str):
+            indent = " " * indent
         make_iterencode = json.encoder.__dict__["_make_iterencode"]
         iterator = make_iterencode(
             markers,
             self.default,
             string_encoder,
-            self.indent,
+            indent,
             float_text,
             self.key_separator,
             self.item_separator,

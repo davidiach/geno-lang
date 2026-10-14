@@ -131,6 +131,9 @@ def test_cli_preserves_large_integers_in_collections(
     [
         pytest.param({}, id="defaults"),
         pytest.param({"indent": 2, "sort_keys": True}, id="pretty"),
+        pytest.param({"indent": 0}, id="zero-indent"),
+        pytest.param({"indent": -1}, id="negative-indent"),
+        pytest.param({"indent": "\t"}, id="string-indent"),
         pytest.param(
             {"ensure_ascii": False, "separators": (",", ":")}, id="unicode-compact"
         ),
