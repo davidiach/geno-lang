@@ -1341,6 +1341,138 @@ class TestErrorSourceDisplay:
                 os.unlink(f.name)
 
 
+_NON_EXHAUSTIVE_SOURCE = """\
+type Shape = Circle(radius: Float) | Rectangle(width: Float, height: Float) | Triangle(base: Float, height: Float)
+
+func area(s: Shape) -> Float
+    example Circle(1.0) -> 3.14159
+    match s with
+        | Circle(r) -> return 3.14159 * r * r
+        | Rectangle(w, h) -> return w * h
+    end match
+end func
+"""
+
+
+class TestDiagnosticLabelPrintedOnce:
+    """Each CLI diagnostic carries its phase label exactly once."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [("check",), ("run",), ("run", "--unsafe"), ("compile",)],
+        ids=["check", "run", "run-unsafe", "compile"],
+    )
+    @pytest.mark.parametrize(
+        ("source", "label", "message"),
+        [
+            (
+                _NON_EXHAUSTIVE_SOURCE,
+                "Type Error",
+                "Non-exhaustive patterns: missing Triangle(<float>, <float>)",
+            ),
+            ('let x = "abc\n', "Lexer Error", "Unterminated string literal"),
+            ("func f( -> Int\n", "Parse Error", "Expected parameter name"),
+        ],
+        ids=["type", "lexer", "parse"],
+    )
+    def test_label_appears_once(self, tmp_path, command, source, label, message):
+        path = tmp_path / "shapes.geno"
+        path.write_text(source)
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", *command, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode != 0
+        first_line = result.stderr.splitlines()[0]
+        assert first_line.startswith(f"{label}: {path}:")
+        assert first_line.endswith(f": {message}")
+        assert result.stderr.count(label) == 1
+
+    @pytest.mark.parametrize("command", [("check",), ("run",)])
+    def test_each_of_several_type_errors_is_labelled_once(self, tmp_path, command):
+        path = tmp_path / "multi.geno"
+        path.write_text(
+            'func f() -> Int\n  example () -> 1\n  return "a"\nend func\n'
+            "func g() -> Int\n  example () -> 1\n  return true\nend func\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", *command, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode != 0
+        labelled = [line for line in result.stderr.splitlines() if "Type Error" in line]
+        assert labelled == [
+            f"Type Error: {path}:3:3: Return type mismatch: expected Int, got String",
+            f"Type Error: {path}:7:3: Return type mismatch: expected Int, got Bool",
+        ]
+
+    def test_target_error_label_appears_once(self, tmp_path):
+        path = tmp_path / "big.geno"
+        path.write_text("func main() -> Int\n  return 9007199254740992\nend func\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "check", str(path), "--target", "node-cli"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode != 0
+        assert result.stderr.startswith("Target Error (target: node-cli): ")
+        assert result.stderr.count("Error") == 1
+
+    def test_project_test_suite_type_error_label_appears_once(self, tmp_path):
+        from geno.test_runner import run_project_test_suite
+
+        (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
+        (tmp_path / "Main.geno").write_text(_NON_EXHAUSTIVE_SOURCE)
+        suite = run_project_test_suite(tmp_path)
+        [file_result] = suite.file_results
+        assert file_result.error is not None
+        assert file_result.error.startswith("Type Error: ")
+        assert file_result.error.count("Type Error") == 1
+
+
+class TestCheckSummaryPluralisation:
+    """The `geno check` success summary pluralises its counts."""
+
+    def test_single_definition_and_module(self, tmp_path):
+        path = tmp_path / "one.geno"
+        path.write_text("func f() -> Int\n  example () -> 1\n  return 1\nend func\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "check", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[-1] == "  1 definition, 1 module"
+
+    def test_several_definitions_and_modules(self, tmp_path):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Util"]\n'
+        )
+        (tmp_path / "Main.geno").write_text(
+            "import Util\n"
+            '@untested("entry point")\n'
+            "func main() -> Int\n  return one()\nend func\n"
+        )
+        (tmp_path / "Util.geno").write_text(
+            "func one() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "check", str(tmp_path / "Main.geno")],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        # The import counts as a definition too; only the nouns matter here.
+        assert result.stdout.splitlines()[-1].endswith(" definitions, 2 modules")
+
+
 class TestDidYouMean:
     """Error messages should include 'Did you mean?' suggestions."""
 

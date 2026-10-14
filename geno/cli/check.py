@@ -96,7 +96,9 @@ def check_file(filename: str, target: str | None = None):
         if len(target_names) > 1:
             for target_name in target_names:
                 print(f"  {target_name}: passed")
-        print(f"  {total_defs} definitions, {mod_count} modules")
+        def_noun = "definition" if total_defs == 1 else "definitions"
+        mod_noun = "module" if mod_count == 1 else "modules"
+        print(f"  {total_defs} {def_noun}, {mod_count} {mod_noun}")
         if warnings:
             plural = "" if len(warnings) == 1 else "s"
             print(f"  {len(warnings)} warning{plural}")

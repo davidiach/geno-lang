@@ -42,7 +42,7 @@
   <h1>Not handled.</h1>
   <p>There is no page at this address. In Geno, a missing case is a compile error; on the web it is this page.</p>
 <pre aria-label="geno check output"><span class="p">$</span> <span class="c">geno</span> check site.geno
-<span class="f" id="err">Type Error: site.geno:5:3: Type Error: Non-exhaustive patterns: missing Page("/")</span>
+<span class="f" id="err">Type Error: site.geno:5:3: Non-exhaustive patterns: missing Page("/")</span>
     match request.path with
     ^</pre>
   <nav aria-label="Ways back">
@@ -55,7 +55,7 @@
   try { var t = localStorage.getItem("geno-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
   // Name the missing path in the message; textContent keeps it inert.
   document.getElementById("err").textContent =
-    "Type Error: site.geno:5:3: Type Error: Non-exhaustive patterns: missing Page(\"" + location.pathname + "\")";
+    "Type Error: site.geno:5:3: Non-exhaustive patterns: missing Page(\"" + location.pathname + "\")";
 </script>
 </body>
 </html>

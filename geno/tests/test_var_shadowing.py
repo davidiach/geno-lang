@@ -461,7 +461,7 @@ def test_cli_check_without_warnings_is_unchanged(tmp_path, capsys):
         assert exc.code in (0, None)
     out, err = capsys.readouterr()
     assert err == ""
-    assert out.splitlines()[-1] == "  1 definitions, 1 modules"
+    assert out.splitlines()[-1] == "  1 definition, 1 module"
 
 
 def test_caller_module_named_like_std_still_warns():
