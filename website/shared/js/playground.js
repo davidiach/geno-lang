@@ -399,24 +399,51 @@
     qa(root, "share").forEach(function (b) {
       b.addEventListener("click", function () {
         var url = location.href.split("#")[0] + "#src=" + b64encode(ta.value);
+        var inBar = false;
         try {
           history.replaceState(null, "", url);
+          inBar = true;
         } catch (e) {
           /* some hosts forbid it */
         }
-        var done = function () {
-          b.setAttribute("data-copied", "");
+        // Say "copied" only after a write succeeds; otherwise point at the
+        // address bar, which already holds the link.
+        var show = function (copied) {
+          if (!copied && !inBar) return;
+          b.setAttribute("data-copied", copied ? "" : "address");
           setTimeout(function () {
             b.removeAttribute("data-copied");
-          }, 1600);
+          }, copied ? 1600 : 3200);
+        };
+        var fallback = function () {
+          show(copyFallback(url));
         };
         try {
-          navigator.clipboard.writeText(url).then(done, done);
+          navigator.clipboard.writeText(url).then(function () {
+            show(true);
+          }, fallback);
         } catch (e) {
-          done();
+          fallback();
         }
       });
     });
+    function copyFallback(text) {
+      var area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      var ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (e) {
+        ok = false;
+      }
+      document.body.removeChild(area);
+      return ok;
+    }
     qa(root, "reset").forEach(function (b) {
       b.addEventListener("click", function () {
         var ex = EXAMPLES[select ? +select.value : 0];

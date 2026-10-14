@@ -2904,12 +2904,21 @@ sup {
   opacity: 0.55;
   pointer-events: none;
 }
+/* The status replaces the label while it shows, so it fits the
+   three-column phone grid. */
+.btn-act[data-copied] {
+  font-size: 0;
+}
 .btn-act[data-copied]::after {
-  content: " · link copied";
+  content: "Link copied";
   text-transform: none;
   letter-spacing: 0;
   font-family: var(--f-mono);
   font-size: 11px;
+  line-height: 1.2;
+}
+.btn-act[data-copied="address"]::after {
+  content: "Link in URL bar";
 }
 .evm-main {
   display: grid;

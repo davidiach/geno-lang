@@ -782,12 +782,10 @@
         }
         try {
           navigator.clipboard.writeText(text).then(done, function () {
-            fallback(text);
-            done();
+            if (fallback(text)) done();
           });
         } catch (e) {
-          fallback(text);
-          done();
+          if (fallback(text)) done();
         }
       });
     });
@@ -799,12 +797,14 @@
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
+      var ok = false;
       try {
-        document.execCommand("copy");
+        ok = document.execCommand("copy");
       } catch (e) {
-        /* selection is left for the user */
+        ok = false;
       }
       document.body.removeChild(ta);
+      return ok;
     }
   }
 
