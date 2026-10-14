@@ -196,6 +196,63 @@
     }, 1900);
   }
 
+  /* hero chip: hover a pin to read its function (from Table 4-1) --------- */
+  var chipEl = document.querySelector("[data-chip]");
+  var tip = document.querySelector("[data-chip-tip]");
+  if (chipEl && tip) {
+    var fig = chipEl.closest("figure");
+    var groups = ["wires line", "legs rect", "lbl text"].map(function (sel) {
+      return chipEl.querySelectorAll("." + sel.split(" ")[0] + " " + sel.split(" ")[1]);
+    });
+    var clear = function () {
+      chipEl.classList.remove("has-pin");
+      groups.forEach(function (g) {
+        g.forEach(function (el) {
+          el.classList.remove("is-on");
+          el.removeAttribute("data-pinset");
+        });
+      });
+      tip.hidden = true;
+    };
+    chipEl.querySelectorAll("[data-chip-pin]").forEach(function (hit) {
+      var n = +hit.dataset.chipPin;
+      var row = document.querySelector('tr[data-pin="' + n + '"]');
+      hit.addEventListener("pointerenter", function () {
+        clear();
+        chipEl.classList.add("has-pin");
+        groups.forEach(function (g) {
+          var el = g[n - 1];
+          if (el) {
+            el.classList.add("is-on");
+            el.setAttribute("data-pinset", "");
+          }
+        });
+        if (row) {
+          var cells = row.querySelectorAll("td");
+          tip.innerHTML = "<b>PIN " + n + " · " + cells[1].textContent + "</b>" + cells[3].innerHTML;
+        }
+        tip.hidden = false;
+        var hb = hit.getBoundingClientRect();
+        var fb = fig.getBoundingClientRect();
+        var left = Math.min(fb.width - tip.offsetWidth - 8, Math.max(8, hb.left - fb.left + hb.width / 2 - tip.offsetWidth / 2));
+        var top = hb.top - fb.top - tip.offsetHeight - 6;
+        if (top < 4) top = hb.bottom - fb.top + 6;
+        tip.style.left = left + "px";
+        tip.style.top = top + "px";
+      });
+      hit.addEventListener("pointerleave", clear);
+      hit.addEventListener("click", function () {
+        var target = document.getElementById("pinout");
+        if (target) target.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
+        if (row) {
+          setTimeout(function () {
+            row.focus({ preventScroll: true });
+          }, reduce ? 0 : 700);
+        }
+      });
+    });
+  }
+
   /* block diagram pulses only while visible -------------------------------- */
   var bd = document.querySelector(".fig-blocks");
   if (bd && !reduce && "IntersectionObserver" in window) {

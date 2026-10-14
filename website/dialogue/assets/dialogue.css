@@ -13,7 +13,7 @@
   --line-2: #21433f;
   --text: #e8efec;
   --text-2: #a7bab4;
-  --text-3: #6d837d;
+  --text-3: #768c86;
   --geno: #2dd4bf;
   --geno-2: #8af3e2;
   --geno-ink: #04211e;
@@ -29,7 +29,7 @@
   --s-end: #5eead4;
   --s-str: #e8c99e;
   --s-num: #f2b880;
-  --s-com: #5f7570;
+  --s-com: #728780;
   --s-op: #7f9690;
   --s-type: #a5bcff;
   --s-fn: #ffffff;
@@ -3279,5 +3279,11 @@ code * {
 @keyframes progress {
   to {
     transform: scaleX(1);
+  }
+}
+/* iOS zooms into text fields under 16px; keep the editor at 16px on touch */
+@media (pointer: coarse) {
+  .pg-editor {
+    font-size: 16px;
   }
 }

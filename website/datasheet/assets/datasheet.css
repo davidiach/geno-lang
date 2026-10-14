@@ -9,7 +9,7 @@
   --sheet: #ffffff;
   --ink: #0f172a;
   --ink-2: #364353;
-  --ink-3: #66748a;
+  --ink-3: #5c6a7f;
   --rule: #d1d9d6;
   --rule-2: #e3e8e6;
   --teal: #0d9488;
@@ -32,7 +32,7 @@
   --s-end: #0a7067;
   --s-str: #a3401f;
   --s-num: #a3401f;
-  --s-com: #8492a1;
+  --s-com: #637282;
   --s-op: #66748a;
   --s-type: #1e3a8a;
   --s-fn: #0f172a;
@@ -84,7 +84,7 @@
     --s-end: #5eead4;
     --s-str: #f6a98e;
     --s-num: #f6a98e;
-    --s-com: #6c7d8b;
+    --s-com: #7a8b98;
     --s-op: #8d9aa6;
     --s-type: #a9b8ff;
     --s-fn: #f8fafc;
@@ -118,7 +118,7 @@
   --s-end: #5eead4;
   --s-str: #f6a98e;
   --s-num: #f6a98e;
-  --s-com: #6c7d8b;
+  --s-com: #7a8b98;
   --s-op: #8d9aa6;
   --s-type: #a9b8ff;
   --s-fn: #f8fafc;
@@ -3806,5 +3806,74 @@ sup {
 @keyframes progress {
   to {
     transform: scaleX(1);
+  }
+}
+
+/* hero chip: hoverable pins */
+.chip .hits rect {
+  fill: transparent;
+  cursor: help;
+}
+.chip-tip {
+  position: absolute;
+  z-index: 3;
+  max-width: 260px;
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--paper);
+  font: 400 12.5px/1.45 var(--f-body);
+  pointer-events: none;
+  box-shadow: 0 12px 28px -14px rgba(0, 0, 0, 0.5);
+}
+.chip-tip b {
+  font: 600 11px/1 var(--f-mono);
+  letter-spacing: 0.06em;
+  display: block;
+  margin-bottom: 4px;
+  color: var(--teal);
+}
+.chip.has-pin .wires line,
+.chip.has-pin .legs rect,
+.chip.has-pin .lbl text {
+  opacity: 0.35;
+  transition: opacity 0.2s;
+}
+.chip [data-pinset].is-on {
+  opacity: 1 !important;
+}
+.chip .legs rect.is-on {
+  fill: var(--teal-wash);
+  stroke: var(--teal);
+}
+.chip .wires line.is-on {
+  stroke: var(--teal);
+  stroke-width: 2;
+}
+.pinmark-r {
+  left: auto;
+  right: -4px;
+  position: relative;
+  display: inline-block;
+  margin-left: 12px;
+  top: -1px;
+}
+.chip-tip code {
+  background: rgba(255, 255, 255, 0.14);
+  color: inherit;
+}
+:root[data-theme="dark"] .chip-tip code {
+  background: rgba(15, 23, 42, 0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .chip-tip code {
+    background: rgba(15, 23, 42, 0.12);
+  }
+}
+/* iOS zooms into text fields under 16px; keep the editor at 16px on touch */
+@media (pointer: coarse) {
+  .pg-editor {
+    font-size: 16px;
   }
 }

@@ -154,9 +154,18 @@
           <text x="290" y="140" data-chip-out>"excellent"</text>
           <text x="290" y="200" data-chip-count>3/3 pass</text>
         </g>
+        <g class="hits">
+          <rect data-chip-pin="1" x="0" y="100" width="135" height="44"/>
+          <rect data-chip-pin="2" x="0" y="160" width="135" height="44"/>
+          <rect data-chip-pin="3" x="265" y="100" width="135" height="44"/>
+          <rect data-chip-pin="4" x="265" y="160" width="135" height="44"/>
+          <rect data-chip-pin="5" x="150" y="8" width="160" height="84"/>
+          <rect data-chip-pin="6" x="150" y="214" width="100" height="78"/>
+        </g>
         <circle class="pulse" r="4" cx="14" cy="122" data-pulse-in/>
         <circle class="pulse" r="4" cx="285" cy="122" data-pulse-out/>
       </svg>
+      <p class="chip-tip" data-chip-tip hidden></p>
       <table class="vectors" data-vectors>
         <caption class="sr">Test vectors from the example clauses of score_label</caption>
         <thead><tr><th scope="col">Vector</th><th scope="col">score</th><th scope="col">Expected</th><th scope="col">Result</th></tr></thead>
@@ -239,20 +248,20 @@
     <div class="pinout" data-pinout>
       <figure class="fig fig-code" aria-labelledby="fig41">
         <div class="code-head"><span class="code-file">score.geno</span><span class="code-meta">14 lines · 3 examples</span></div>
-<pre class="code code-pins"><code><span class="ln" data-pinline="1 2"><span class="pinmark" data-pm="1">1</span><span class="tok-kw">func</span> <span class="tok-fn">score_label</span><span class="tok-punct">(</span>score<span class="tok-punct">:</span> <span class="tok-type">Int</span><span class="tok-punct">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">String</span></span>
-<span class="ln" data-pinline="3"><span class="pinmark" data-pm="3">3</span>    <span class="tok-spec">requires</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">0</span></span>
+<pre class="code code-pins"><code><span class="ln" data-pinline="1 3"><span class="pinmark" data-pm="1">1</span><span class="tok-kw">func</span> <span class="tok-fn">score_label</span><span class="tok-punct">(</span>score<span class="tok-punct">:</span> <span class="tok-type">Int</span><span class="tok-punct">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">String</span><span class="pinmark pinmark-r" data-pm="3">3</span></span>
+<span class="ln" data-pinline="5"><span class="pinmark" data-pm="5">5</span>    <span class="tok-spec">requires</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">0</span></span>
 <span class="ln" data-pinline="4"><span class="pinmark" data-pm="4">4</span>    <span class="tok-spec">example</span> <span class="tok-num">95</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"excellent"</span></span>
 <span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">70</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span>
 <span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">40</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"needs work"</span></span>
 <span class="ln"> </span>
-<span class="ln" data-pinline="5"><span class="pinmark" data-pm="5">5</span>    <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">90</span> <span class="tok-kw">then</span></span>
-<span class="ln" data-pinline="5">        <span class="tok-kw">return</span> <span class="tok-str">"excellent"</span></span>
-<span class="ln" data-pinline="5">    <span class="tok-kw">else</span> <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">60</span> <span class="tok-kw">then</span></span>
-<span class="ln" data-pinline="5">        <span class="tok-kw">return</span> <span class="tok-str">"passing"</span></span>
-<span class="ln" data-pinline="5">    <span class="tok-kw">else</span></span>
-<span class="ln" data-pinline="5">        <span class="tok-kw">return</span> <span class="tok-str">"needs work"</span></span>
-<span class="ln" data-pinline="6"><span class="pinmark" data-pm="6">6</span>    <span class="tok-end">end</span> <span class="tok-end">if</span></span>
-<span class="ln" data-pinline="6"><span class="tok-end">end</span> <span class="tok-end">func</span></span></code></pre>
+<span class="ln" data-pinline="2">    <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">90</span> <span class="tok-kw">then</span></span>
+<span class="ln" data-pinline="2">        <span class="tok-kw">return</span> <span class="tok-str">"excellent"</span></span>
+<span class="ln" data-pinline="2">    <span class="tok-kw">else</span> <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">60</span> <span class="tok-kw">then</span></span>
+<span class="ln" data-pinline="2">        <span class="tok-kw">return</span> <span class="tok-str">"passing"</span></span>
+<span class="ln" data-pinline="2">    <span class="tok-kw">else</span></span>
+<span class="ln" data-pinline="2">        <span class="tok-kw">return</span> <span class="tok-str">"needs work"</span></span>
+<span class="ln" data-pinline="6">    <span class="tok-end">end</span> <span class="tok-end">if</span></span>
+<span class="ln" data-pinline="6"><span class="pinmark" data-pm="6">6</span><span class="tok-end">end</span> <span class="tok-end">func</span></span></code></pre>
         <figcaption id="fig41"><b>Figure 4-1.</b> score.geno, the README example. Point at a pin to see what it does.</figcaption>
       </figure>
       <div class="tbl-wrap">
@@ -261,14 +270,14 @@
           <thead><tr><th scope="col">Pin</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Description</th></tr></thead>
           <tbody>
             <tr data-pin="1" tabindex="0"><td class="num">1</td><td><code>score: Int</code></td><td>I</td><td>Parameters always carry types. Local <code>let</code> bindings may be inferred.</td></tr>
-            <tr data-pin="2" tabindex="0"><td class="num">2</td><td><code>-&gt; String</code></td><td>O</td><td>Return type, required. Errors are values: <code>Result[T, E]</code> and <code>Option[T]</code>, never null.</td></tr>
-            <tr data-pin="3" tabindex="0"><td class="num">3</td><td><code>requires</code></td><td>C</td><td>Precondition. Checked on every call in the interpreter, Python and JavaScript. <code>ensures</code> checks <code>result</code>.</td></tr>
+            <tr data-pin="2" tabindex="0"><td class="num">2</td><td><code>caps: none</code></td><td>P</td><td>Effects. The body uses no capability, so it runs anywhere. A function that read files would run only where <code>--cap fs</code> is granted.</td></tr>
+            <tr data-pin="3" tabindex="0"><td class="num">3</td><td><code>-&gt; String</code></td><td>O</td><td>Return type, required. Errors are values, <code>Result[T, E]</code> and <code>Option[T]</code>, never null.</td></tr>
             <tr data-pin="4" tabindex="0"><td class="num">4</td><td><code>example</code></td><td>T</td><td>Executable specification. Required on every function except <code>main</code>; <code>geno test</code> runs each one.</td></tr>
-            <tr data-pin="5" tabindex="0"><td class="num">5</td><td><code>if … then</code></td><td>—</td><td>Body. Immutable by default (<code>let</code>), mutable on request (<code>var</code>). <code>then</code> and <code>do</code> are required.</td></tr>
-            <tr data-pin="6" tabindex="0"><td class="num">6</td><td><code>end if</code></td><td>T</td><td>Named terminator. A mismatched <code>end</code> fails at that line, so generated structure cannot drift silently.</td></tr>
+            <tr data-pin="5" tabindex="0"><td class="num">5</td><td><code>requires</code></td><td>C</td><td>Precondition, checked on every call in the interpreter, Python and JavaScript. <code>ensures</code> checks <code>result</code>.</td></tr>
+            <tr data-pin="6" tabindex="0"><td class="num">6</td><td><code>end func</code></td><td>T</td><td>Named terminator. A mismatched <code>end</code> fails on its own line, so generated structure cannot drift silently.</td></tr>
           </tbody>
         </table>
-        <p class="fn">I = input, O = output, C = contract, T = checked by the toolchain.</p>
+        <p class="fn">I = input, O = output, P = permission, C = contract, T = checked by the toolchain. Pin numbers match Figure 1.</p>
       </div>
     </div>
   </section>
