@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Geno, written in Geno</title>
+<title>Fail closed: how capabilities work</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.">
+<meta name="description" content="A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.">
 <meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
-<meta property="og:image" content="https://davidiach.github.io/geno-lang/datasheet/og.png">
+<meta property="og:image" content="https://davidiach.github.io/geno-lang/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="../../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
 <link rel="alternate" type="application/rss+xml" title="Geno application notes" href="feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -69,8 +69,8 @@
 <div class="docline" aria-hidden="true">
   <div class="docline-in">
     <span><b>GENO</b> APPLICATION NOTE</span>
-    <span class="docline-mid">GNOA001 – 2026-05-20</span>
-    <span>1 min read</span>
+    <span class="docline-mid">GNOA003 – 2026-07-28</span>
+    <span>2 min read</span>
   </div>
 </div>
 
@@ -78,59 +78,75 @@
 <main id="main" class="an">
   <header class="an-head">
     <div class="an-head-in">
-      <p class="an-kicker"><a href="./">Application notes</a><span>/</span><span>Engineering</span></p>
-      <p class="an-no">GNOA-001</p>
-      <h1 class="an-title">Geno, written in Geno</h1>
-      <p class="an-meta"><span>David Iach</span><span>May 20, 2026</span><span>1 min read</span></p>
+      <p class="an-kicker"><a href="./">Application notes</a><span>/</span><span>Security</span></p>
+      <p class="an-no">GNOA-003</p>
+      <h1 class="an-title">Fail closed: how capabilities work</h1>
+      <p class="an-meta"><span>David Iach</span><span>July 28, 2026</span><span>2 min read</span></p>
       <div class="an-abstract">
         <h2>Abstract</h2>
-        <p>The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.</p>
+        <p>A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.</p>
       </div>
     </div>
   </header>
   <div class="an-doc">
     <nav class="an-toc" aria-label="Contents">
       <p class="toc-h">Contents</p>
-      <ol><li><a href="#what-it-is-good-for">What it is good for</a></li>
-<li><a href="#what-it-is-not-yet">What it is not, yet</a></li>
-<li><a href="#keeping-it-honest">Keeping it honest</a></li></ol>
-      <p class="an-tags"><span class="tag">selfhost</span> <span class="tag">compiler</span></p>
+      <ol><li><a href="#the-ten-capabilities">The ten capabilities</a></li>
+<li><a href="#each-surface-honestly">Each surface, honestly</a></li>
+<li><a href="#granted-does-not-mean-unlimited">Granted does not mean unlimited</a></li>
+<li><a href="#why-the-command-line">Why the command line?</a></li></ol>
+      <p class="an-tags"><span class="tag">security</span> <span class="tag">capabilities</span></p>
     </nav>
     <article class="prose">
-<p class="lede">A language is a lot more convincing once it can describe itself. The <code>selfhost/</code> directory holds a Geno frontend and tree-walking interpreter written entirely in Geno: about 8,400 lines across eight modules.</p>
+<p class="lede">Pure computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, with the capability it was missing.</p>
 
-<pre><code data-lang="sh">selfhost/
-  Tokens.geno       token definitions
-  Lexer.geno        source text to tokens
-  Ast.geno          syntax tree types
-  Parser.geno       tokens to syntax tree
-  Types.geno        type representation
-  TypeChecker.geno  checking
-  Interpreter.geno  evaluation
-  Main.geno         demo, check, run and test commands</code></pre>
+<pre><code data-lang="sh">$ geno run notes.geno
+Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre>
 
-<h2 id="what-it-is-good-for">What it is good for</h2>
+<h2 id="the-ten-capabilities">The ten capabilities</h2>
 
-<p>Writing a compiler is a stress test for a language: deep recursion, large algebraic data types, exhaustive matches over dozens of variants, and plenty of string handling. Several of Geno's rough edges were found because the self-hosted parser needed something the language made awkward.</p>
+<table>
+  <thead><tr><th>Capability</th><th>Unlocks</th></tr></thead>
+  <tbody>
+    <tr><td><code>print</code></td><td>Console output</td></tr>
+    <tr><td><code>clock</code></td><td>Timestamps, timing, <code>sleep_ms</code></td></tr>
+    <tr><td><code>random</code></td><td>Random numbers</td></tr>
+    <tr><td><code>fs</code></td><td>Reading, writing and listing files</td></tr>
+    <tr><td><code>http</code></td><td>Outbound HTTP and HTTPS requests</td></tr>
+    <tr><td><code>regex</code></td><td>Regular expressions</td></tr>
+    <tr><td><code>env</code></td><td>Environment variables and CLI arguments</td></tr>
+    <tr><td><code>process</code></td><td>Running other programs</td></tr>
+    <tr><td><code>stdin</code></td><td>Reading standard input</td></tr>
+    <tr><td><code>serve</code></td><td>Listening for HTTP requests</td></tr>
+  </tbody>
+</table>
 
-<p>Every function in it carries examples, like any other Geno code, so <code>geno test selfhost/</code> doubles as a regression suite for the language that runs it.</p>
+<p>The mapping from builtin to capability is declared once, in <code>geno/builtin_manifest.py</code>, and every execution surface derives its checks from it. A new effectful builtin cannot ship without saying which capability it needs.</p>
 
-<h2 id="what-it-is-not-yet">What it is not, yet</h2>
+<h2 id="each-surface-honestly">Each surface, honestly</h2>
 
-<ul>
-  <li>It has no code generation backend and no bootstrap path. The Python implementation remains the reference compiler.</li>
-  <li>It covers the subset of Geno its own modules use. Async, traits and app mode are not implemented.</li>
-  <li>Builtin coverage is 123 of 228, about 53%.</li>
-</ul>
+<p><strong><code>geno run</code></strong> compiles to Python and runs it in a separate, resource-limited process. <code>print</code>, <code>clock</code> and <code>random</code> work; everything else is denied.</p>
 
-<h2 id="keeping-it-honest">Keeping it honest</h2>
+<p><strong><code>geno run --unsafe --cap fs,print</code></strong> uses the direct interpreter with exactly the capabilities you list and nothing implicit.</p>
 
-<p><code>scripts/check_selfhost_parity.py</code> fails the build when a new keyword or builtin appears in the language without either an implementation in <code>selfhost/</code> or an entry in a named gap group. The gaps are ordered so the next work goes to pure, host-independent builtins first. Nothing drifts silently.</p>
+<p><strong><code>geno run --json</code></strong> and the embedding API grant nothing unless asked. They run in your process with cooperative limits, so use the hosted server or your own worker process for untrusted code.</p>
 
-<p>The self-hosted CLI follows the same contracts as the real one, including 0.5's exit semantics: an inner program's <code>Int</code> result becomes the status <code>cmd_run</code> returns.</p>
+<p><strong><code>geno serve</code></strong> lets an operator decide which capabilities requests may ask for, and each request receives only the subset it asked for.</p>
+
+<p><strong>Compiled Python</strong> reads <code>--cap</code> from its own command line and denies everything without it.</p>
+
+<p><strong>Compiled JavaScript is the exception.</strong> <code>--cap</code> controls which APIs are wired up, but generated Node.js code is not a sandbox. Treat it as trusted code, which is how the <a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">security policy</a> describes it too.</p>
+
+<h2 id="granted-does-not-mean-unlimited">Granted does not mean unlimited</h2>
+
+<p>Granting <code>fs</code>, <code>http</code> or <code>process</code> still applies scoped policies in the interpreter and in compiled Python: filesystem roots, read-only modes, blocked private network addresses, redirect limits and response-size caps. The <a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/capabilities.md">capability reference</a> lists them per surface.</p>
+
+<h2 id="why-the-command-line">Why the command line?</h2>
+
+<p>Because that is where a person decides to run something. A model can write <code>fs_read_text("/etc/passwd")</code>. It cannot also grant itself the right to execute it, and the line that would grant it is short enough to read before pressing Enter.</p>
     </article>
   </div>
-  <nav class="pager" aria-label="More application notes"><span></span><a class="pager-next" href="what-we-measure.html"><span>Newer</span>What we measure, and what we don&#x27;t claim yet</a></nav>
+  <nav class="pager" aria-label="More application notes"><a class="pager-prev" href="what-we-measure.html"><span>Older</span>What we measure, and what we don&#x27;t claim yet</a><a class="pager-next" href="why-geno-writes-end-func.html"><span>Newer</span>Why Geno writes end func</a></nav>
 </main>
 
 <footer class="foot">
@@ -150,11 +166,11 @@
         <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="feed.xml">RSS</a></div>
       </nav>
     </div>
-    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span><a href="../../">Design versions</a></div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span></div>
   </div>
 </footer>
-<script src="../../shared/js/highlight.js"></script>
-<script src="../../shared/js/demos.js"></script>
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
 <script src="../assets/datasheet.js"></script>
 </body>
 </html>

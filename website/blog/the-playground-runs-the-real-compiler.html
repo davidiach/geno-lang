@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Fail closed: how capabilities work</title>
+<title>The playground runs the real compiler</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.">
+<meta name="description" content="Most language playgrounds send your code to a server. Geno&#x27;s runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.">
 <meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
-<meta property="og:image" content="https://davidiach.github.io/geno-lang/datasheet/og.png">
+<meta property="og:image" content="https://davidiach.github.io/geno-lang/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="../../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
 <link rel="alternate" type="application/rss+xml" title="Geno application notes" href="feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -69,7 +69,7 @@
 <div class="docline" aria-hidden="true">
   <div class="docline-in">
     <span><b>GENO</b> APPLICATION NOTE</span>
-    <span class="docline-mid">GNOA003 – 2026-07-28</span>
+    <span class="docline-mid">GNOA006 – 2026-10-14</span>
     <span>2 min read</span>
   </div>
 </div>
@@ -78,75 +78,69 @@
 <main id="main" class="an">
   <header class="an-head">
     <div class="an-head-in">
-      <p class="an-kicker"><a href="./">Application notes</a><span>/</span><span>Security</span></p>
-      <p class="an-no">GNOA-003</p>
-      <h1 class="an-title">Fail closed: how capabilities work</h1>
-      <p class="an-meta"><span>David Iach</span><span>July 28, 2026</span><span>2 min read</span></p>
+      <p class="an-kicker"><a href="./">Application notes</a><span>/</span><span>Tooling</span></p>
+      <p class="an-no">GNOA-006</p>
+      <h1 class="an-title">The playground runs the real compiler</h1>
+      <p class="an-meta"><span>David Iach</span><span>October 14, 2026</span><span>2 min read</span></p>
       <div class="an-abstract">
         <h2>Abstract</h2>
-        <p>A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.</p>
+        <p>Most language playgrounds send your code to a server. Geno&#x27;s runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.</p>
       </div>
     </div>
   </header>
   <div class="an-doc">
     <nav class="an-toc" aria-label="Contents">
       <p class="toc-h">Contents</p>
-      <ol><li><a href="#the-ten-capabilities">The ten capabilities</a></li>
-<li><a href="#each-surface-honestly">Each surface, honestly</a></li>
-<li><a href="#granted-does-not-mean-unlimited">Granted does not mean unlimited</a></li>
-<li><a href="#why-the-command-line">Why the command line?</a></li></ol>
-      <p class="an-tags"><span class="tag">security</span> <span class="tag">capabilities</span></p>
+      <ol><li><a href="#why-not-a-server">Why not a server?</a></li>
+<li><a href="#how-it-works">How it works</a></li>
+<li><a href="#where-the-browser-differs">Where the browser differs</a></li>
+<li><a href="#the-open-blocks-indicator">The open-blocks indicator</a></li>
+<li><a href="#sharing">Sharing</a></li></ol>
+      <p class="an-tags"><span class="tag">tooling</span> <span class="tag">playground</span></p>
     </nav>
     <article class="prose">
-<p class="lede">Pure computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, with the capability it was missing.</p>
+<p class="lede">The playground on this site does not imitate Geno. It loads CPython compiled to WebAssembly, unpacks the same <code>geno</code> package you get from <code>pip install</code>, and runs the real CLI against your code. Nothing leaves your browser.</p>
 
-<pre><code data-lang="sh">$ geno run notes.geno
-Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre>
+<h2 id="why-not-a-server">Why not a server?</h2>
 
-<h2 id="the-ten-capabilities">The ten capabilities</h2>
+<p>A hosted sandbox is the usual answer, and Geno has one (<code>geno serve</code>). For a playground it brings costs we did not want: a service to operate, rate limits to tune, and a privacy question for every keystroke. It also tends to drift from the release people actually install.</p>
 
-<table>
-  <thead><tr><th>Capability</th><th>Unlocks</th></tr></thead>
-  <tbody>
-    <tr><td><code>print</code></td><td>Console output</td></tr>
-    <tr><td><code>clock</code></td><td>Timestamps, timing, <code>sleep_ms</code></td></tr>
-    <tr><td><code>random</code></td><td>Random numbers</td></tr>
-    <tr><td><code>fs</code></td><td>Reading, writing and listing files</td></tr>
-    <tr><td><code>http</code></td><td>Outbound HTTP and HTTPS requests</td></tr>
-    <tr><td><code>regex</code></td><td>Regular expressions</td></tr>
-    <tr><td><code>env</code></td><td>Environment variables and CLI arguments</td></tr>
-    <tr><td><code>process</code></td><td>Running other programs</td></tr>
-    <tr><td><code>stdin</code></td><td>Reading standard input</td></tr>
-    <tr><td><code>serve</code></td><td>Listening for HTTP requests</td></tr>
-  </tbody>
-</table>
+<p>Geno's toolchain is plain Python with no compiled extensions. That makes it a good fit for <a href="https://pyodide.org">Pyodide</a>, which runs CPython in WebAssembly. The whole <code>geno</code> package, minus its tests, compresses to about 600 KB.</p>
 
-<p>The mapping from builtin to capability is declared once, in <code>geno/builtin_manifest.py</code>, and every execution surface derives its checks from it. A new effectful builtin cannot ship without saying which capability it needs.</p>
+<h2 id="how-it-works">How it works</h2>
 
-<h2 id="each-surface-honestly">Each surface, honestly</h2>
+<ol>
+  <li>On your first run, a Web Worker loads Pyodide (about 13 MB, cached by your browser after that).</li>
+  <li>The worker fetches the Geno bundle and adds it to Python's import path.</li>
+  <li>Each button writes your editor contents to <code>Main.geno</code> in an in-memory file system and calls the CLI's own <code>main()</code> with the same arguments you would type.</li>
+</ol>
 
-<p><strong><code>geno run</code></strong> compiles to Python and runs it in a separate, resource-limited process. <code>print</code>, <code>clock</code> and <code>random</code> work; everything else is denied.</p>
+<pre><code data-lang="sh">$ geno test -v Main.geno
+  FAIL  Main.geno (2/3) 16ms
+        x score_label: expected "passing", got "needs work"
 
-<p><strong><code>geno run --unsafe --cap fs,print</code></strong> uses the direct interpreter with exactly the capabilities you list and nothing implicit.</p>
+2 passed, 1 failed, in 0.10s</code></pre>
 
-<p><strong><code>geno run --json</code></strong> and the embedding API grant nothing unless asked. They run in your process with cooperative limits, so use the hosted server or your own worker process for untrusted code.</p>
+<p>That output is not formatted by the website. It is what <code>geno test</code> prints.</p>
 
-<p><strong><code>geno serve</code></strong> lets an operator decide which capabilities requests may ask for, and each request receives only the subset it asked for.</p>
+<h2 id="where-the-browser-differs">Where the browser differs</h2>
 
-<p><strong>Compiled Python</strong> reads <code>--cap</code> from its own command line and denies everything without it.</p>
+<p><strong>Run uses the direct interpreter.</strong> The default <code>geno run</code> lane starts a sandboxed child process, and a browser tab cannot spawn processes. The playground uses <code>geno run --unsafe --cap …</code>, which applies exactly the capabilities you tick. With none ticked it switches to the fail-closed <code>--json</code> lane, which grants nothing.</p>
 
-<p><strong>Compiled JavaScript is the exception.</strong> <code>--cap</code> controls which APIs are wired up, but generated Node.js code is not a sandbox. Treat it as trusted code, which is how the <a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">security policy</a> describes it too.</p>
+<p><strong>Files are imaginary.</strong> Grant <code>fs</code> and your program can read and write, but only inside the worker's in-memory file system.</p>
 
-<h2 id="granted-does-not-mean-unlimited">Granted does not mean unlimited</h2>
+<p><strong>Runaway programs are stopped twice.</strong> Geno's own step and time limits apply as they do on the command line. If something still runs too long, the page discards the worker and starts a fresh one.</p>
 
-<p>Granting <code>fs</code>, <code>http</code> or <code>process</code> still applies scoped policies in the interpreter and in compiled Python: filesystem roots, read-only modes, blocked private network addresses, redirect limits and response-size caps. The <a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/capabilities.md">capability reference</a> lists them per surface.</p>
+<h2 id="the-open-blocks-indicator">The open-blocks indicator</h2>
 
-<h2 id="why-the-command-line">Why the command line?</h2>
+<p>Under the editor you will see which blocks are open at your cursor, such as <code>if › for › func</code>. Once the runtime has loaded, that comes from <code>geno.constraints</code>, the module behind <code>geno constrain</code>. It is the same information a model gets when Geno is used for constrained decoding: at every point in a program, what still needs closing.</p>
 
-<p>Because that is where a person decides to run something. A model can write <code>fs_read_text("/etc/passwd")</code>. It cannot also grant itself the right to execute it, and the line that would grant it is short enough to read before pressing Enter.</p>
+<h2 id="sharing">Sharing</h2>
+
+<p>The share button puts your program in the page address after a <code>#</code>, so the code is never sent to a server. Paste the link and the playground opens with your program in it.</p>
     </article>
   </div>
-  <nav class="pager" aria-label="More application notes"><a class="pager-prev" href="what-we-measure.html"><span>Older</span>What we measure, and what we don&#x27;t claim yet</a><a class="pager-next" href="why-geno-writes-end-func.html"><span>Newer</span>Why Geno writes end func</a></nav>
+  <nav class="pager" aria-label="More application notes"><a class="pager-prev" href="examples-are-the-specification.html"><span>Older</span>Examples are the specification</a><a class="pager-next" href="geno-0-5-0-rc-1.html"><span>Newer</span>Geno 0.5.0-rc.1: main now speaks in exit codes</a></nav>
 </main>
 
 <footer class="foot">
@@ -166,11 +160,11 @@ Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre
         <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="feed.xml">RSS</a></div>
       </nav>
     </div>
-    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span><a href="../../">Design versions</a></div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span></div>
   </div>
 </footer>
-<script src="../../shared/js/highlight.js"></script>
-<script src="../../shared/js/demos.js"></script>
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
 <script src="../assets/datasheet.js"></script>
 </body>
 </html>

@@ -1,17 +1,18 @@
 # Geno website
 
-Two complete design directions for the Geno website, built from the same
-facts, examples and posts. Pick one; the other can be deleted.
+The Geno website: a landing page set as a component datasheet, a full-size
+playground and a blog. Everything is static HTML, CSS and JavaScript with no
+build-time dependencies beyond Python's standard library.
 
-| Directory | Direction | Pages |
-|---|---|---|
-| `datasheet/` | **Datasheet.** Geno presented as a precision component datasheet: part number, pinout, rated limits, test conditions. Light and dark editions. | landing, `playground.html`, `blog/` (application notes) |
-| `dialogue/` | **Dialogue.** A dark, five-act conversation between a model and the compiler, set in two typographic voices. | landing, `playground.html`, `journal/` |
-| `index.html` | Chooser with live previews of both. | |
-| `404.html` | Shared not-found page for GitHub Pages. | |
-
-Everything is static HTML, CSS and JavaScript with no build-time
-dependencies beyond Python's standard library.
+| Path | What |
+|---|---|
+| `index.html` | Landing page. Figure 1 replays a model writing a function, failing an example, repairing it and shipping it. |
+| `playground.html` | Full-size playground (the same component as the landing page's section). |
+| `blog/` | Generated from `shared/posts/` by `build.py`, with an RSS feed. |
+| `404.html` | Not-found page for GitHub Pages. |
+| `assets/` | Site stylesheet and page script. |
+| `shared/` | Playground runtime, demos, highlighter, examples, posts, brand marks. |
+| `_templates/` | Blog templates used by `build.py`. |
 
 ## The playground runs the real compiler
 
@@ -37,9 +38,9 @@ python3 -m http.server -d website 8000
 1. Zips `geno/` (without tests) into `shared/playground/geno.zip`.
 2. Generates `shared/js/examples.js` from `shared/examples/*.geno`. With
    `--verify` each example must pass `geno check` and `geno test`.
-3. Renders `shared/posts/*.html` into each direction's blog through its
-   `_templates/`, writes an RSS feed, and refreshes the "latest posts" block
-   between `<!-- blog:latest -->` markers on each landing page.
+3. Renders `shared/posts/*.html` into `blog/` through `_templates/`, writes an
+   RSS feed, and refreshes the "latest posts" block between
+   `<!-- blog:latest -->` markers on the landing page.
 
 Generated blog pages are committed so the site works without a build.
 
@@ -47,8 +48,10 @@ Generated blog pages are committed so the site works without a build.
 
 The runtime loads Pyodide 0.26.4 from `cdn.jsdelivr.net`. To serve it yourself,
 copy the Pyodide distribution into `shared/playground/pyodide/` and add
-`<meta name="geno-pyodide-base" content="../shared/playground/pyodide/">`
-to the playground pages (or set `window.GENO_PYODIDE_BASE`).
+`<meta name="geno-pyodide-base" content="shared/playground/pyodide/">`
+to the pages that host a playground (or set `window.GENO_PYODIDE_BASE`).
+`geno-bundle-url` and `geno-stdlib-url` override the bundle and Python
+standard-library archive locations the same way.
 
 ## Deploy
 
@@ -68,16 +71,18 @@ domain.
 |---|---|
 | Blog posts | `shared/posts/*.html`, front matter in the leading comment, then run `build.py` |
 | Playground examples | `shared/examples/NN-name.geno`; titles in `EXAMPLE_TITLES` in `build.py` |
-| Interactive demos | `shared/js/demos.js`; every printed message was captured from the 0.5.0-rc.1 CLI |
+| Hero replay and demos | `shared/js/demos.js`; every printed message was captured from the 0.5.0-rc.1 CLI |
 | Benchmark data | `BENCH` in `shared/js/demos.js`, from `benchmarks/RESULTS.md` |
-| Landing copy | `datasheet/index.html`, `dialogue/index.html` |
+| Landing copy | `index.html` |
 
 ## Placeholders to review
 
 - Blog bylines and dates (posts are written from the changelog and docs, but the
   dates and author name are placeholders).
-- `SITE_URL` in `build.py` (used in RSS links) and the `/geno-lang/` paths in
-  `404.html`.
-- Social preview images (`og:image`) are not set yet.
+- `SITE_URL` in `build.py` (used in RSS links), the `og:image` URLs, and the
+  `/geno-lang/` paths in `404.html`.
 - Community links point to GitHub Discussions and Issues; add chat or social
   links if the project gets them.
+
+An earlier second design direction ("Dialogue") was retired in favour of this
+one; it is in the git history at commit `a28c457`.

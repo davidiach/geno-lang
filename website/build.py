@@ -10,9 +10,9 @@ Steps:
    ``website/shared/playground/geno.zip`` for the in-browser playground,
    which loads it into Pyodide and runs the real CLI.
 2. Generate ``website/shared/js/examples.js`` from ``shared/examples/*.geno``.
-3. Render ``shared/posts/*.html`` into each site version's ``blog/`` using
-   that version's ``_templates/``, write an RSS feed, and refresh the
-   "latest posts" block on the version's landing page.
+3. Render ``shared/posts/*.html`` into ``blog/`` through ``_templates/``,
+   write an RSS feed, and refresh the "latest posts" block on the landing
+   page.
 
 The site itself is static HTML with no build-time dependencies; this script
 only uses the standard library.
@@ -36,8 +36,6 @@ from pathlib import Path
 SITE = Path(__file__).resolve().parent
 REPO = SITE.parent
 SHARED = SITE / "shared"
-# site version -> directory its blog renders into
-VERSIONS = {"datasheet": "blog", "dialogue": "journal"}
 SITE_URL = "https://davidiach.github.io/geno-lang"  # placeholder until a domain exists
 
 EXAMPLE_TITLES = {
@@ -244,8 +242,8 @@ def post_values(p: Post, prev: Post | None, nxt: Post | None) -> dict[str, str]:
     }
 
 
-def rss(version: str, posts: list[Post]) -> str:
-    base = f"{SITE_URL}/{version}/{VERSIONS[version]}"
+def rss(posts: list[Post]) -> str:
+    base = f"{SITE_URL}/blog"
     items = []
     for p in posts:
         dt = datetime(p.date.year, p.date.month, p.date.day, 12, tzinfo=timezone.utc)
@@ -270,43 +268,34 @@ def rss(version: str, posts: list[Post]) -> str:
 
 def build_blog() -> None:
     posts = load_posts()
-    for version, blog_dir in VERSIONS.items():
-        tdir = SITE / version / "_templates"
-        if not tdir.exists():
-            print(f"blog     {version}: no templates yet, skipped")
-            continue
-        out = SITE / version / blog_dir
-        out.mkdir(parents=True, exist_ok=True)
-        post_t = (tdir / "post.html").read_text()
-        index_t = (tdir / "blog.html").read_text()
-        row_t = (tdir / "blog-row.html").read_text()
-        card_t = (tdir / "blog-card.html").read_text()
-        for i, p in enumerate(posts):
-            older = posts[i + 1] if i + 1 < len(posts) else None
-            newer = posts[i - 1] if i > 0 else None
-            (out / f"{p.slug}.html").write_text(
-                fill(post_t, post_values(p, older, newer))
-            )
-        rows = "\n".join(fill(row_t, post_values(p, None, None)) for p in posts)
-        (out / "index.html").write_text(
-            fill(index_t, {"rows": rows, "count": str(len(posts))})
-        )
-        (out / "feed.xml").write_text(rss(version, posts))
-        landing = SITE / version / "index.html"
-        if landing.exists():
-            cards = "\n".join(
-                fill(card_t, post_values(p, None, None)) for p in posts[:3]
-            )
-            text = landing.read_text()
-            new, n = re.subn(
-                r"(<!-- blog:latest -->).*?(<!-- /blog:latest -->)",
-                lambda m, cards=cards: m.group(1) + "\n" + cards + "\n" + m.group(2),
-                text,
-                flags=re.S,
-            )
-            if n:
-                landing.write_text(new)
-        print(f"blog     {version}: {len(posts)} posts")
+    tdir = SITE / "_templates"
+    out = SITE / "blog"
+    out.mkdir(parents=True, exist_ok=True)
+    post_t = (tdir / "post.html").read_text()
+    index_t = (tdir / "blog.html").read_text()
+    row_t = (tdir / "blog-row.html").read_text()
+    card_t = (tdir / "blog-card.html").read_text()
+    for i, p in enumerate(posts):
+        older = posts[i + 1] if i + 1 < len(posts) else None
+        newer = posts[i - 1] if i > 0 else None
+        (out / f"{p.slug}.html").write_text(fill(post_t, post_values(p, older, newer)))
+    rows = "\n".join(fill(row_t, post_values(p, None, None)) for p in posts)
+    (out / "index.html").write_text(
+        fill(index_t, {"rows": rows, "count": str(len(posts))})
+    )
+    (out / "feed.xml").write_text(rss(posts))
+    landing = SITE / "index.html"
+    cards = "\n".join(fill(card_t, post_values(p, None, None)) for p in posts[:3])
+    text = landing.read_text()
+    new, n = re.subn(
+        r"(<!-- blog:latest -->).*?(<!-- /blog:latest -->)",
+        lambda m: m.group(1) + "\n" + cards + "\n" + m.group(2),
+        text,
+        flags=re.S,
+    )
+    if n:
+        landing.write_text(new)
+    print(f"blog     {len(posts)} posts")
 
 
 def main() -> None:

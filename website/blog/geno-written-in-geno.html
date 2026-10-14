@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>What we measure, and what we don&#x27;t claim yet</title>
+<title>Geno, written in Geno</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.">
+<meta name="description" content="The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.">
 <meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
-<meta property="og:image" content="https://davidiach.github.io/geno-lang/datasheet/og.png">
+<meta property="og:image" content="https://davidiach.github.io/geno-lang/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="../../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
 <link rel="alternate" type="application/rss+xml" title="Geno application notes" href="feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -69,8 +69,8 @@
 <div class="docline" aria-hidden="true">
   <div class="docline-in">
     <span><b>GENO</b> APPLICATION NOTE</span>
-    <span class="docline-mid">GNOA002 – 2026-06-18</span>
-    <span>2 min read</span>
+    <span class="docline-mid">GNOA001 – 2026-05-20</span>
+    <span>1 min read</span>
   </div>
 </div>
 
@@ -78,57 +78,59 @@
 <main id="main" class="an">
   <header class="an-head">
     <div class="an-head-in">
-      <p class="an-kicker"><a href="./">Application notes</a><span>/</span><span>Research</span></p>
-      <p class="an-no">GNOA-002</p>
-      <h1 class="an-title">What we measure, and what we don&#x27;t claim yet</h1>
-      <p class="an-meta"><span>David Iach</span><span>June 18, 2026</span><span>2 min read</span></p>
+      <p class="an-kicker"><a href="./">Application notes</a><span>/</span><span>Engineering</span></p>
+      <p class="an-no">GNOA-001</p>
+      <h1 class="an-title">Geno, written in Geno</h1>
+      <p class="an-meta"><span>David Iach</span><span>May 20, 2026</span><span>1 min read</span></p>
       <div class="an-abstract">
         <h2>Abstract</h2>
-        <p>Geno&#x27;s compiled Python lands at a median 1.60x the time of hand-written Python across 53 measured problems. Whether models write more correct code in Geno is a question we have not answered publicly, and here is why.</p>
+        <p>The repository includes a lexer, parser, type checker and interpreter for Geno, written in about 8,400 lines of Geno. What it covers, what it does not, and why we keep it honest with a parity check.</p>
       </div>
     </div>
   </header>
   <div class="an-doc">
     <nav class="an-toc" aria-label="Contents">
       <p class="toc-h">Contents</p>
-      <ol><li><a href="#runtime-compiled-geno-versus-hand-written-python">Runtime: compiled Geno versus hand-written Python</a></li>
-<li><a href="#correctness-the-benchmark-we-have-not-published">Correctness: the benchmark we have not published</a></li></ol>
-      <p class="an-tags"><span class="tag">research</span> <span class="tag">benchmarks</span></p>
+      <ol><li><a href="#what-it-is-good-for">What it is good for</a></li>
+<li><a href="#what-it-is-not-yet">What it is not, yet</a></li>
+<li><a href="#keeping-it-honest">Keeping it honest</a></li></ol>
+      <p class="an-tags"><span class="tag">selfhost</span> <span class="tag">compiler</span></p>
     </nav>
     <article class="prose">
-<p class="lede">A language that asks to be trusted with generated code should be careful about its own claims. This post covers the two benchmarks in the repository: the one we publish numbers for, and the one we deliberately do not.</p>
+<p class="lede">A language is a lot more convincing once it can describe itself. The <code>selfhost/</code> directory holds a Geno frontend and tree-walking interpreter written entirely in Geno: about 8,400 lines across eight modules.</p>
 
-<h2 id="runtime-compiled-geno-versus-hand-written-python">Runtime: compiled Geno versus hand-written Python</h2>
+<pre><code data-lang="sh">selfhost/
+  Tokens.geno       token definitions
+  Lexer.geno        source text to tokens
+  Ast.geno          syntax tree types
+  Parser.geno       tokens to syntax tree
+  Types.geno        type representation
+  TypeChecker.geno  checking
+  Interpreter.geno  evaluation
+  Main.geno         demo, check, run and test commands</code></pre>
 
-<p>The runtime suite has 77 problems, each written twice: once in Geno and once in idiomatic Python. We compile the Geno version and time both. Problems that finish in under 5 ms on both sides are skipped, because at that scale timer noise and interpreter warm-up dominate.</p>
+<h2 id="what-it-is-good-for">What it is good for</h2>
 
-<table>
-  <thead><tr><th>Metric</th><th>Value</th></tr></thead>
-  <tbody>
-    <tr><td>Problems measured</td><td>53 of 77</td></tr>
-    <tr><td>Median ratio</td><td>1.60×</td></tr>
-    <tr><td>P90 ratio</td><td>2.17×</td></tr>
-    <tr><td>Best / worst</td><td>0.92× / 2.84×</td></tr>
-    <tr><td>At or under 2×</td><td>45 of 53 (84.9%)</td></tr>
-  </tbody>
-</table>
+<p>Writing a compiler is a stress test for a language: deep recursion, large algebraic data types, exhaustive matches over dozens of variants, and plenty of string handling. Several of Geno's rough edges were found because the self-hosted parser needed something the language made awkward.</p>
 
-<p>The target is at most 2× for at least 80% of problems, and the committed run meets it. Across repeated runs the pass rate moves between about 85% and 91% and the median between 1.57× and 1.63×.</p>
+<p>Every function in it carries examples, like any other Geno code, so <code>geno test selfhost/</code> doubles as a regression suite for the language that runs it.</p>
 
-<h3>Where the overhead comes from</h3>
+<h2 id="what-it-is-not-yet">What it is not, yet</h2>
 
-<p>Geno enforces resource limits that Python does not: integer bit lengths, collection sizes, step counts. The slowest problems are dominated by <code>i * i</code> products in tight loops, where each multiplication keeps a bit-length guard because multiplying adds the operands' bit lengths, which makes it a real integer-bomb path. The compiler moves every other check to where it is provably needed, and the <a href="https://github.com/davidiach/geno-lang/blob/main/benchmarks/RESULTS.md">results page</a> documents each relaxation alongside the test that pins it.</p>
+<ul>
+  <li>It has no code generation backend and no bootstrap path. The Python implementation remains the reference compiler.</li>
+  <li>It covers the subset of Geno its own modules use. Async, traits and app mode are not implemented.</li>
+  <li>Builtin coverage is 123 of 228, about 53%.</li>
+</ul>
 
-<h2 id="correctness-the-benchmark-we-have-not-published">Correctness: the benchmark we have not published</h2>
+<h2 id="keeping-it-honest">Keeping it honest</h2>
 
-<p>The question everyone asks is whether models write more correct programs in Geno than in Python. The repository contains a benchmark designed to answer it: matched problems, prompts for both languages, extraction, evaluation, pass@k and error categories.</p>
+<p><code>scripts/check_selfhost_parity.py</code> fails the build when a new keyword or builtin appears in the language without either an implementation in <code>selfhost/</code> or an entry in a named gap group. The gaps are ordered so the next work goes to pure, host-independent builtins first. Nothing drifts silently.</p>
 
-<p>We have not published frontier-model results, and Geno makes no correctness claim against Python. A credible answer needs at least three frontier models with exact snapshot IDs, a recorded run date and repository revision, pass@1 for every model and language, difficulty and error breakdowns, and the raw prompts and responses alongside the numbers. Until that checklist is complete, the honest statement is that we do not know yet.</p>
-
-<p>The <a href="https://github.com/davidiach/geno-lang/blob/main/docs/benchmark/llm-correctness-methodology.md">methodology</a> and configuration are public. If you have the budget to run it before we do, we would like to hear what you find.</p>
+<p>The self-hosted CLI follows the same contracts as the real one, including 0.5's exit semantics: an inner program's <code>Int</code> result becomes the status <code>cmd_run</code> returns.</p>
     </article>
   </div>
-  <nav class="pager" aria-label="More application notes"><a class="pager-prev" href="geno-written-in-geno.html"><span>Older</span>Geno, written in Geno</a><a class="pager-next" href="fail-closed-capabilities.html"><span>Newer</span>Fail closed: how capabilities work</a></nav>
+  <nav class="pager" aria-label="More application notes"><span></span><a class="pager-next" href="what-we-measure.html"><span>Newer</span>What we measure, and what we don&#x27;t claim yet</a></nav>
 </main>
 
 <footer class="foot">
@@ -148,11 +150,11 @@
         <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="feed.xml">RSS</a></div>
       </nav>
     </div>
-    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span><a href="../../">Design versions</a></div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span></div>
   </div>
 </footer>
-<script src="../../shared/js/highlight.js"></script>
-<script src="../../shared/js/demos.js"></script>
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
 <script src="../assets/datasheet.js"></script>
 </body>
 </html>
