@@ -10,6 +10,10 @@
 <meta property="og:title" content="Geno: plausible in, proven out">
 <meta property="og:description" content="A programming language for code written with LLMs. Runs directly; compiles to Python and JavaScript.">
 <meta property="og:type" content="website">
+<meta property="og:image" content="https://davidiach.github.io/geno-lang/dialogue/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
 <link rel="alternate" type="application/rss+xml" title="Geno journal" href="journal/feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -94,7 +98,7 @@
         <span class="screen-dots" aria-hidden="true"><i></i><i></i><i></i></span>
         <span class="screen-file">score.geno</span>
         <span class="hud" data-hud aria-hidden="true"><span class="hud-l">open</span><span class="hud-v" data-hud-open>none</span></span>
-        <span class="verdict" data-verdict>Proven</span>
+        <span class="verdict" data-verdict>3/3 passing</span>
       </div>
       <div class="screen-body">
 <pre class="screen-code" data-duet-code><code data-lang="geno">func score_label(score: Int) -> String
@@ -298,7 +302,7 @@ Compiled to score.py</code></pre></li>
         <li><b>python-hosted</b><code>geno serve</code><span>An HTTP runtime with isolation, auth, rate limits and metrics.</span></li>
       </ul>
     </div>
-    <p class="act-foot">Generated JavaScript is for trusted environments; the sandbox applies to the Python lanes and the hosted runtime. <a href="https://github.com/davidiach/geno-lang/blob/main/docs/runtime/execution-surface.md">Execution surfaces</a></p>
+    <p class="act-foot">Generated JavaScript is trusted code: capability flags choose which APIs are wired up, but they are not a sandbox. <a href="https://github.com/davidiach/geno-lang/blob/main/docs/runtime/execution-surface.md">Execution surfaces</a></p>
   </div>
 </section>
 
@@ -583,7 +587,7 @@ $ geno run Main.geno
 <section class="status" aria-labelledby="status-h">
   <div class="wrap">
     <div class="sec-head">
-      <h2 id="status-h" class="sec-title">In production.</h2>
+      <h2 id="status-h" class="sec-title">Still in production.</h2>
       <p class="sec-lede">Geno is a public preview. The core is solid; the language can still change before 1.0.</p>
     </div>
     <div class="status-board">

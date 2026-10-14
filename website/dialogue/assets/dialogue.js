@@ -160,12 +160,19 @@
         })();
       });
     }
+    // Keep the newest line in view; older lines slide up under a fade.
+    function follow() {
+      var max = script.scrollHeight - script.clientHeight;
+      script.classList.toggle("is-scrolled", max > 4);
+      if (max > 0) script.scrollTo({ top: max, behavior: "smooth" });
+    }
     function line(who) {
       var li = document.createElement("li");
       li.className = "sl sl-" + who + " is-new";
       li.innerHTML = "<b>" + (who === "model" ? "Model" : "Geno") + "</b>";
       script.appendChild(li);
       while (script.children.length > 7) script.removeChild(script.firstChild);
+      follow();
       return li;
     }
     async function modelSays(text) {
@@ -173,8 +180,10 @@
       line("model").appendChild(p);
       for (var i = 1; i <= text.length; i++) {
         p.textContent = text.slice(0, i);
+        if (i % 12 === 0) follow();
         await sleep(text[i - 1] === " " ? 30 : 18 + Math.random() * 22);
       }
+      follow();
     }
     function genoSays(text, out) {
       var li = line("geno");
@@ -189,10 +198,12 @@
         pre.innerHTML = "<code>" + H.highlight(out, "sh") + "</code>";
         li.appendChild(pre);
       }
+      follow();
       return pre;
     }
     function setOut(pre, out) {
       pre.innerHTML = "<code>" + H.highlight(out, "sh") + "</code>";
+      follow();
     }
     function openBlocks(text) {
       var stack = [];
@@ -244,6 +255,8 @@
     async function loop() {
       for (;;) {
         script.innerHTML = "";
+        script.scrollTop = 0;
+        script.classList.remove("is-scrolled");
         codeEl.innerHTML = "";
         setVerdict("writing", "Writing");
         hud([]);
@@ -274,7 +287,7 @@
         await sleep(700);
         setOut(pre, PASS_OUT);
         render(fixed, { 3: { cls: "is-pass" }, 4: { cls: "is-pass" }, 5: { cls: "is-pass" } });
-        setVerdict("proven", "Proven");
+        setVerdict("proven", "3/3 passing");
         await sleep(2000);
 
         await modelSays("Then ship it.");

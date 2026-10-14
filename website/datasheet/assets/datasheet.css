@@ -3671,3 +3671,41 @@ sup {
     padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
 }
+
+/* running page footer, as at the bottom of every datasheet page */
+.pagefoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  margin: 0 0 clamp(40px, 5vw, 64px);
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+  font: 500 11px/1.4 var(--f-mono);
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+.pagefoot a {
+  color: var(--teal-ink);
+  text-decoration: none;
+}
+.pagefoot a:hover {
+  text-decoration: underline;
+}
+.pf-n {
+  font: 700 14px/1 var(--f-display);
+  color: var(--ink);
+  letter-spacing: 0;
+}
+@media (max-width: 520px) {
+  .pagefoot > span:first-child {
+    display: none;
+  }
+}
+.p1-foot {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+}
+.sec {
+  padding-bottom: clamp(40px, 5vw, 64px);
+}
