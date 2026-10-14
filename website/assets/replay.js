@@ -258,6 +258,9 @@
 
   /* -------------------------------------------------------------- steps */
   var LEN = [5600, 4600, 4000, 3800, 8500];
+  // How long the finished capture stays up before the first replay. The clock
+  // only runs while the figure is on screen.
+  var POSTER_MS = 4500;
 
   async function typeSay(text, g) {
     say("", false);
@@ -457,8 +460,9 @@
     setPlaying(false);
     return;
   }
-  // Open on the finished capture, then rewind and play it. First size each
-  // step from its own sleeps so the cursor crosses each boundary on time.
+  // Open on the finished capture and hold it long enough to read, then rewind
+  // and play it. First size each step from its own sleeps so the cursor
+  // crosses each boundary on time.
   (async function () {
     dry = true;
     for (var i = 0; i < RUN.length; i++) {
@@ -471,7 +475,7 @@
     setPlaying(true);
     var g = gen;
     try {
-      await sleep(1400, g);
+      await sleep(POSTER_MS, g);
       await rewind(g);
       run(0);
     } catch (e) {

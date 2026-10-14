@@ -10,4 +10,50 @@
   <url><loc>https://geno-lang.org/blog/fail-closed-capabilities.html</loc></url>
   <url><loc>https://geno-lang.org/blog/what-we-measure.html</loc></url>
   <url><loc>https://geno-lang.org/blog/geno-written-in-geno.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/</loc></url>
+  <url><loc>https://geno-lang.org/docs/MATURITY.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/REFERENCE_APPS.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/SCOPE.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/SUPPORTED_TARGETS.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/adr-shared-ir.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/llm-correctness-methodology.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/llm-correctness-results.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/perf-ratchets.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/quality_criteria.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/results.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/validation-contract.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/deploy/browser.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/deploy/cli.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/deploy/hosted.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/design/benchmark-v2.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/design/target-aware-check.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/design/tiered-testing.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/guide/first-app.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/guide/getting-started.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/guide/language-tour.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/guide/tutorial-todo-app.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/llm-prompting.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/operations/compatibility-policy.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/operations/external-apps.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/operations/local-ci.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/operations/monitoring-and-support.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/operations/release-runbook.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/operations/serious-beta-qualification.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/preview-program.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0000-template.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0001-executable-entrypoint-exit-semantics.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0002-0.5-stable-promotion.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/README.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/reference/capabilities.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/reference/common-pitfalls.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/reference/embedding-api.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/reference/filesystem.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/reference/runtime-semantics.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/runtime/backend-contracts.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/runtime/execution-surface.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/security/focused-review-2026-03.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/spec/v0.2.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/spec/v0.4.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/spec/v0.5.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/changelog.html</loc></url>
 </urlset>

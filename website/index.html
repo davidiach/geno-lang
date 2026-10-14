@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Geno: a language for code you didn&rsquo;t write</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <meta name="author" content="David Iach">
 <meta name="description" content="Geno is a statically typed, functional-first programming language for code written with LLMs. Executable examples, named block endings and capability-gated effects. Compiles to Python and JavaScript.">
 <meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
@@ -18,11 +17,11 @@
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://geno-lang.org/">
+<link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="icon" href="shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="alternate" type="application/rss+xml" title="Geno blog" href="blog/feed.xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Newsreader:ital,wght@1,400&display=swap">
+<link rel="stylesheet" href="assets/fonts.css">
 <link rel="stylesheet" href="assets/datasheet.css">
 <script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
@@ -44,16 +43,16 @@
     </a>
     <nav class="bar-nav" aria-label="Primary">
       <a href="#install">Install</a>
-      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
-      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="docs/guide/language-tour.html">Tour</a>
+      <a href="docs/">Docs</a>
       <a href="playground.html">Playground</a>
       <a href="blog/">Blog</a>
       <a href="#community">Community</a>
     </nav>
     <div class="bar-end">
       <a class="try" href="playground.html">Try Geno <span aria-hidden="true">→</span></a>
-      <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
-        <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch between light and dark themes">
+        <span class="theme-paper">Light</span><span class="theme-night">Dark</span>
       </button>
       <a class="gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -64,13 +63,13 @@
   </div>
   <div class="drawer" id="drawer" hidden>
     <a href="#install">Install</a>
-    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
-    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
+    <a href="docs/guide/language-tour.html">Language tour</a>
+    <a href="docs/">Documentation</a>
     <a href="playground.html">Playground</a>
     <a href="blog/">Blog</a>
     <a href="#community">Community</a>
     <a href="https://github.com/davidiach/geno-lang">GitHub</a>
-    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between paper and night"><span class="theme-paper">Paper edition</span><span class="theme-night">Night edition</span></button>
+    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between light and dark themes"><span class="theme-paper">Light theme</span><span class="theme-night">Dark theme</span></button>
   </div>
 </header>
 
@@ -99,7 +98,7 @@
     <div class="p1-cta">
       <div class="p1-cta-row">
         <div class="cmd">
-          <code><span class="cmd-p">$</span> pip install <span class="nw">geno-lang</span></code>
+          <code tabindex="0"><span class="cmd-p">$</span> pip install <span class="nw">geno-lang</span></code>
           <button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button>
         </div>
         <a class="btn btn-solid" href="playground.html">Open the playground <span aria-hidden="true">→</span></a>
@@ -202,7 +201,24 @@ Compiled to score.js</pre>
         <p>Models are good at writing code that looks right. Geno is designed so that looking right is not enough. A function states its types, carries examples that run, and closes every block by name. A program cannot grant itself access to files, the network or other processes; the person running it grants each capability by name.</p>
         <p>The result reads like a small, strict functional language: immutable by default, with algebraic data types, <code>Result</code> and <code>Option</code> for errors, pipelines and traits. The checker makes sure every case is handled, and <code>geno test</code> makes sure every example still holds.</p>
         <p>Geno is in public preview. The parser and type checker are stable; the language surface may change before 1.0.</p>
+        <p>Why not Python with doctests and mypy? <a href="#why-not-python">Table 3-1</a> compares them.</p>
       </section>
+      <div class="p1-why" id="why-not-python">
+        <div class="tbl-wrap">
+          <table class="spec spec-stack why-table">
+            <caption><b>Table 3-1.</b> Python by convention, Geno by default</caption>
+            <thead><tr><th scope="col">Concern</th><th scope="col">Python, with doctest and mypy</th><th scope="col">Geno</th></tr></thead>
+            <tbody>
+              <tr><td data-label="Concern">Examples</td><td data-label="Python">Doctests are opt-in; a function without one passes.</td><td data-label="Geno">Ordinary functions must carry <code>example</code> clauses, and <code>geno test</code> runs every one.</td></tr>
+              <tr><td data-label="Concern">Types</td><td data-label="Python">Annotations are optional, and mypy skips unannotated functions by default.</td><td data-label="Geno">Parameters and results are typed, and the checker runs before anything executes.</td></tr>
+              <tr><td data-label="Concern">Missing cases</td><td data-label="Python">A <code>match</code> with no matching case does nothing, unless you add <code>assert_never</code> by hand.</td><td data-label="Geno">A <code>match</code> that misses a variant does not compile, and the error names the case.</td></tr>
+              <tr><td data-label="Concern">Block structure</td><td data-label="Python">A lost indent still parses, as different code.</td><td data-label="Geno"><code>end for</code>, <code>end func</code>: a mismatched close fails on its own line.</td></tr>
+              <tr><td data-label="Concern">Effects</td><td data-label="Python">Any function can open files, sockets or processes.</td><td data-label="Geno">Files, the network and other processes stay off until whoever runs the program grants them.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="fn">A disciplined Python team can get much of this with doctests everywhere, <code>mypy --strict</code> and a sandbox. Geno makes those the defaults and checks them, which matters most when a model writes the code and nobody reads every line. It compiles to Python, so deployment stays the same. Whether models write correct Geno more often than correct Python is not measured yet; see <a href="#performance">what we don&rsquo;t claim</a>.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -422,13 +438,13 @@ Compiled to score.js</pre>
         <li>
           <span class="step-n">01</span>
           <div><b>Install</b>
-            <div class="cmd cmd-block"><code><span class="cmd-p">$</span> pip install <span class="nw">geno-lang</span></code><button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
+            <div class="cmd cmd-block"><code tabindex="0"><span class="cmd-p">$</span> pip install <span class="nw">geno-lang</span></code><button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
           </div>
         </li>
         <li>
           <span class="step-n">02</span>
           <div><b>Create a project</b>
-            <div class="cmd cmd-block"><code><span class="cmd-p">$</span> geno init hello <span class="nw">--template</span> cli</code><button type="button" class="copy" data-copy="geno init hello --template cli" aria-label="Copy"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
+            <div class="cmd cmd-block"><code tabindex="0"><span class="cmd-p">$</span> geno init hello <span class="nw">--template</span> cli</code><button type="button" class="copy" data-copy="geno init hello --template cli" aria-label="Copy"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
           </div>
         </li>
         <li>
@@ -443,15 +459,15 @@ $ geno run Main.geno
           </div>
         </li>
       </ol>
-      <div class="tbl-wrap">
+      <div class="tbl-wrap" tabindex="0" role="region" aria-label="Project templates">
         <table class="spec spec-stack orderable">
-          <caption><b>Table 7-1.</b> Project templates<span class="alias" aria-hidden="true">Orderable part numbers</span></caption>
+          <caption><b>Table 7-1.</b> Project templates</caption>
           <thead><tr><th scope="col">Template</th><th scope="col">Command</th><th scope="col">Creates</th></tr></thead>
           <tbody>
-            <tr><td data-label="Template"><b>GENO-CLI</b></td><td data-label="Command"><code>geno init app --template cli</code></td><td data-label="Creates">Command-line program</td></tr>
-            <tr><td data-label="Template"><b>GENO-WEB</b></td><td data-label="Command"><code>geno init app --template web</code></td><td data-label="Creates">Browser app with canvas</td></tr>
-            <tr><td data-label="Template"><b>GENO-API</b></td><td data-label="Command"><code>geno init app --template api</code></td><td data-label="Creates">Multi-module API</td></tr>
-            <tr><td data-label="Template"><b>GENO-LIB</b></td><td data-label="Command"><code>geno init app --template lib</code></td><td data-label="Creates">Reusable library</td></tr>
+            <tr><td data-label="Template"><code>cli</code></td><td data-label="Command"><code>geno init app --template cli</code></td><td data-label="Creates">Command-line program</td></tr>
+            <tr><td data-label="Template"><code>web</code></td><td data-label="Command"><code>geno init app --template web</code></td><td data-label="Creates">Browser app with canvas</td></tr>
+            <tr><td data-label="Template"><code>api</code></td><td data-label="Command"><code>geno init app --template api</code></td><td data-label="Creates">Multi-module API</td></tr>
+            <tr><td data-label="Template"><code>lib</code></td><td data-label="Command"><code>geno init app --template lib</code></td><td data-label="Creates">Reusable library</td></tr>
           </tbody>
         </table>
         <p class="fn">From source: <code>git clone https://github.com/davidiach/geno-lang &amp;&amp; cd geno-lang &amp;&amp; pip install -e ".[dev]"</code></p>
@@ -468,7 +484,7 @@ $ geno run Main.geno
       <h3 id="h81" class="h-sub"><span class="no">8.1</span>Capabilities<span class="alias" aria-hidden="true">Isolation characteristics</span></h3>
       <p>Most computation is always available. Regular expressions and anything that reaches outside the program need a capability. Plain <code>geno run</code> grants <code>print</code>, <code>clock</code> and <code>random</code>; every other capability is granted by name by the person who runs the program, and a program cannot grant itself anything.</p>
       <div class="tbl-wrap">
-        <table class="spec spec-stack caps-table">
+        <table class="spec caps-table">
           <caption><b>Table 8-1.</b> Capabilities</caption>
           <thead><tr><th scope="col">Capability</th><th scope="col">Unlocks</th><th scope="col">Plain <code>geno run</code><sup>(1)</sup></th></tr></thead>
           <tbody>
@@ -485,7 +501,7 @@ $ geno run Main.geno
           </tbody>
         </table>
       </div>
-      <p class="fn">(1) <code>geno run app.geno</code> compiles to Python and runs it in an isolated process with <code>print</code>, <code>clock</code> and <code>random</code>. Every other call is refused where it happens, naming the capability it needs (reported as <code>E412</code> by <code>--json</code> and the embedding API).</p>
+      <p class="fn">(1) <code>geno run app.geno</code> compiles to Python and runs it in an isolated process with <code>print</code>, <code>clock</code> and <code>random</code>. Every other call is refused where it happens: this default lane names the <code>--cap</code> to grant, while <code>--unsafe</code>, <code>--json</code> and the embedding API name the refused builtin (code <code>E412</code>).</p>
       <div class="grant">
         <p class="grant-h">Granting a capability</p>
 <pre class="term term-static"><code data-lang="sh">$ geno run --unsafe --cap print,fs app.geno   # direct interpreter
@@ -513,8 +529,10 @@ $ python app.py --cap print,fs                # compiled Python</code></pre>
     </section>
 
     <section class="sub" id="conditions" aria-labelledby="h82">
-      <h3 id="h82" class="h-sub"><span class="no">8.2</span>Resource limits<span class="alias" aria-hidden="true">Absolute maximum ratings</span></h3>
-      <p>Every <code>geno run</code> is bounded: a program that exceeds a limit stops with an error instead of exhausting the machine. Standalone compiled Python and JavaScript keep the integer and collection guards, but have no timeout or step limit of their own.</p>
+      <h3 id="h82" class="h-sub"><span class="no">8.2</span>Resource limits</h3>
+      <p>Every <code>geno run</code> is bounded: a program that exceeds a limit stops with an error instead of exhausting the machine. By default a run gets a million interpreter steps, 500 call frames, 256&nbsp;MiB of memory and 30 seconds. Standalone compiled Python and JavaScript keep the integer and collection guards, but have no timeout or step limit of their own.</p>
+      <details class="more">
+      <summary>All default limits and their flags</summary>
       <div class="tbl-wrap">
         <table class="spec spec-stack roc">
           <caption><b>Table 8-2.</b> Default limits</caption>
@@ -526,12 +544,13 @@ $ python app.py --cap print,fs                # compiled Python</code></pre>
             <tr><td data-label="Parameter">Integer size</td><td data-label="Default" class="r">33,219</td><td data-label="Unit">bits</td><td data-label="Set with"><code>--max-integer-bits</code></td></tr>
             <tr><td data-label="Parameter">String and collection size</td><td data-label="Default" class="r">10,000,000</td><td data-label="Unit">elements</td><td data-label="Set with"><code>--max-collection-size</code></td></tr>
             <tr><td data-label="Parameter">Captured output</td><td data-label="Default" class="r">100,000</td><td data-label="Unit">characters</td><td data-label="Set with"><code>--max-output-length</code></td></tr>
-            <tr><td data-label="Parameter">Sandboxed memory, <code>geno run</code></td><td data-label="Default" class="r">268,435,456</td><td data-label="Unit">bytes (256 MiB)</td><td data-label="Set with"><code>--max-memory-bytes</code></td></tr>
+            <tr><td data-label="Parameter">Sandboxed memory, <code>geno run</code><sup>(3)</sup></td><td data-label="Default" class="r">268,435,456</td><td data-label="Unit">bytes (256 MiB)</td><td data-label="Set with"><code>--max-memory-bytes</code></td></tr>
             <tr><td data-label="Parameter">Wall-clock timeout, <code>geno run</code></td><td data-label="Default" class="r">30</td><td data-label="Unit">seconds</td><td data-label="Set with"><code>--timeout</code></td></tr>
           </tbody>
         </table>
       </div>
-      <p class="fn">(2) Applies to <code>geno run --unsafe</code> and <code>--json</code>. Every limit except memory is also a field of <code>RunConfig</code> in the embedding API, where the host sets it.</p>
+      <p class="fn">(2) Applies to <code>geno run --unsafe</code> and <code>--json</code>. Every limit except memory is also a field of <code>RunConfig</code> in the embedding API, where the host sets it.<br>(3) 512 MiB (536,870,912 bytes) on macOS.</p>
+      </details>
     </section>
   </section>
 
@@ -586,6 +605,7 @@ $ python app.py --cap print,fs                # compiled Python</code></pre>
   end match
 end func</code></pre>
         <p><code>Result</code> and <code>Option</code> replace null and unchecked exceptions. The <code>?</code> operator returns an error early.</p>
+        <a class="open-pg" href="playground.html" data-open-pg>Open in the playground <span aria-hidden="true">→</span></a>
       </article>
       <article class="fcard">
         <h3 class="h-feat"><span class="no">9.4</span>Pipelines</h3>
@@ -596,6 +616,7 @@ end func</code></pre>
       |> map(_, fn(x: Int) -> x * x)
 end func</code></pre>
         <p>Data flows left to right; <code>_</code> marks where the value goes. List comprehensions cover the rest.</p>
+        <a class="open-pg" href="playground.html" data-open-pg>Open in the playground <span aria-hidden="true">→</span></a>
       </article>
       <article class="fcard">
         <h3 class="h-feat"><span class="no">9.5</span>Traits</h3>
@@ -612,6 +633,7 @@ impl Describable for Planet
   end func
 end impl</code></pre>
         <p>Shared behaviour without inheritance. Methods carry examples like every other function.</p>
+        <a class="open-pg" href="playground.html" data-open-pg>Open in the playground <span aria-hidden="true">→</span></a>
       </article>
       <article class="fcard">
         <h3 class="h-feat"><span class="no">9.6</span>Async, data, modules</h3>
@@ -668,7 +690,7 @@ end func</code></pre>
     </section>
 
     <section class="sub" id="modes" aria-labelledby="h102">
-      <h3 id="h102" class="h-sub"><span class="no">10.2</span>Targets<span class="alias" aria-hidden="true">Device functional modes</span></h3>
+      <h3 id="h102" class="h-sub"><span class="no">10.2</span>Targets</h3>
       <p>One program, four places to run. A project declares its targets in <code>geno.toml</code>, and <code>geno check --target</code> rejects builtins a target does not provide before anything runs.</p>
       <div class="modes">
         <article class="mode">
@@ -696,13 +718,13 @@ $ geno dev   # live reload</code></pre>
 # POST /run · GET /healthz · GET /metrics</code></pre>
         </article>
       </div>
-      <aside class="caution" aria-label="Caution">
+      <div class="caution" role="note" aria-label="Caution">
         <svg class="caution-i" viewBox="0 0 40 36" aria-hidden="true"><path d="M20 3 L37 33 H3 Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M20 13v10" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="20" cy="28" r="1.8" fill="currentColor"/></svg>
         <div>
           <p class="caution-h">Execution boundary</p>
           <p>Generated JavaScript is trusted code. In Mode B, <code>--cap</code> selects which Node.js APIs are wired up; it does not sandbox the artifact. Run untrusted programs through <code>geno run</code>, which isolates the process, or behind <code>geno serve</code>. The in-process embedding API applies cooperative limits only.</p>
         </div>
-      </aside>
+      </div>
     </section>
   </section>
 
@@ -726,7 +748,7 @@ $ geno dev   # live reload</code></pre>
         </details>
       </figure>
     </div>
-    <aside class="claims" aria-labelledby="claims-h">
+    <section class="claims" aria-labelledby="claims-h">
       <p class="claims-k" id="claims-h">What we don&rsquo;t claim</p>
       <ul>
         <li><b>That models write correct Geno more often than correct Python.</b> The repository defines an LLM-correctness benchmark; no frontier-model results are published yet. <a href="blog/what-we-measure.html">Why we wait</a>.</li>
@@ -735,7 +757,7 @@ $ geno dev   # live reload</code></pre>
         <li><b>That generated JavaScript is a sandbox.</b> It is trusted code; <code>--cap</code> chooses which APIs are wired up.</li>
         <li><b>That constrained decoding improves models.</b> Block-structure validation of a prefix works; it has not been benchmarked against real models.</li>
       </ul>
-    </aside>
+    </section>
   </section>
 
   <!-- 12 APPLICATIONS -->
@@ -904,7 +926,7 @@ $ geno dev   # live reload</code></pre>
             <li><span class="x">True</span> <span class="ok-t">true</span></li>
             <li><span class="x">"a" ++ "b"</span> <span class="ok-t">"a" + "b"</span></li>
             <li><span class="x">end: Int</span> <span class="ok-t">stop: Int</span></li>
-            <li><span class="x">clamp(5, 0, 10)</span> <span class="ok-t">clamp(value: 5, lo: 0, hi: 10)</span></li>
+            <li><span class="x">clamp(5, 0, 10)</span> <span class="ok-t">clamp(value: 5, min: 0, max: 10)</span></li>
           </ul>
         </div>
         <div class="prompt-box">
@@ -914,12 +936,13 @@ $ geno dev   # live reload</code></pre>
 - Parameters and return values need type annotations.
 - Booleans are lowercase: true, false.
 - Concatenate strings with +. Integer division truncates: 7 / 2 = 3.
-- Close blocks by name: end func, end if, end for, end while, end match.
+- Close blocks by name: end func, end if, end for, end while, end match, end try.
 - Write then after if conditions and do after for and while.
-- Every function except main needs at least one example clause.
+- Every function except main and async functions needs at least one example clause.
 - Functions with 3 or more parameters take named arguments.
 - Use Option[T] instead of null and Result[T, E] for errors.
-- Do not name anything end, in, with, type, or a Python builtin.</pre>
+- Keywords cannot be names: avoid end, in, with, type, test, ref and where.
+- Do not name anything after a Python builtin such as len, id, map or str.</pre>
         </div>
       </div>
     </section>
@@ -949,9 +972,10 @@ $ geno dev   # live reload</code></pre>
           <div><dt>geno watch</dt><dd>Re-run on file changes</dd></div>
           <div><dt>geno lsp</dt><dd>Language server</dd></div>
         </dl>
+        <p class="fn cli-more">A selection: <code>geno --help</code> lists every command, including <code>bundle</code>, <code>install</code>, <code>search</code> and <code>update</code>.</p>
         <div class="tool-cards">
           <a class="tool" href="https://github.com/davidiach/geno-lang/tree/main/vscode-geno"><b>VS Code extension</b><span>Highlighting, snippets, diagnostics, go to definition, rename, hover.</span></a>
-          <a class="tool" href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/embedding-api.md"><b>Embedding API</b><span><code>geno.run()</code> and <code>geno.check()</code> with structured diagnostics, for agents and hosts.</span></a>
+          <a class="tool" href="docs/reference/embedding-api.html"><b>Embedding API</b><span><code>geno.run()</code> and <code>geno.check()</code> with structured diagnostics, for agents and hosts.</span></a>
           <a class="tool" href="https://github.com/davidiach/geno-lang/tree/main/selfhost"><b>Self-hosted front end</b><span>Lexer, parser, checker and interpreter written in 8,400 lines of Geno.</span></a>
         </div>
       </div>
@@ -963,20 +987,20 @@ $ geno dev   # live reload</code></pre>
         <div>
           <h4 class="h-mini">Learn</h4>
           <ul>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/getting-started.md">Getting started</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/first-app.md">Your first app</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/llm-prompting.md">Prompting guide</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/common-pitfalls.md">Common pitfalls</a></li>
+            <li><a href="docs/guide/getting-started.html">Getting started</a></li>
+            <li><a href="docs/guide/language-tour.html">Language tour</a></li>
+            <li><a href="docs/guide/first-app.html">Your first app</a></li>
+            <li><a href="docs/llm-prompting.html">Prompting guide</a></li>
+            <li><a href="docs/reference/common-pitfalls.html">Common pitfalls</a></li>
           </ul>
         </div>
         <div>
           <h4 class="h-mini">Reference</h4>
           <ul>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Language specification 0.5</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/capabilities.md">Capability reference</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/runtime-semantics.md">Runtime semantics</a></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/SUPPORTED_TARGETS.md">Supported targets</a></li>
+            <li><a href="docs/spec/v0.5.html">Language specification 0.5</a></li>
+            <li><a href="docs/reference/capabilities.html">Capability reference</a></li>
+            <li><a href="docs/reference/runtime-semantics.html">Runtime semantics</a></li>
+            <li><a href="docs/SUPPORTED_TARGETS.html">Supported targets</a></li>
             <li><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security policy</a></li>
           </ul>
         </div>
@@ -986,7 +1010,7 @@ $ geno dev   # live reload</code></pre>
             <li><a href="https://github.com/davidiach/geno-lang/discussions">Discussions</a><span>Questions, ideas, show and tell</span></li>
             <li><a href="https://github.com/davidiach/geno-lang/issues">Issues</a><span>Bugs and concrete requests</span></li>
             <li><a href="https://github.com/davidiach/geno-lang/blob/main/CONTRIBUTING.md">Contributing</a><span>Setup, tests and review</span></li>
-            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/proposals/README.md">Design proposals</a><span>How language changes are decided</span></li>
+            <li><a href="docs/proposals/README.html">Design proposals</a><span>How language changes are decided</span></li>
             <li><a href="https://github.com/davidiach/geno-lang/blob/main/GOVERNANCE.md">Governance</a><span>Who decides, and how</span></li>
           </ul>
         </div>
@@ -996,38 +1020,38 @@ $ geno dev   # live reload</code></pre>
 
     <section class="sub" id="status" aria-labelledby="h133">
       <h3 id="h133" class="h-sub"><span class="no">13.3</span>Status<span class="alias" aria-hidden="true">Component status</span></h3>
-      <p>Geno is in public preview. This is what you can rely on today, from <a href="https://github.com/davidiach/geno-lang/blob/main/docs/MATURITY.md">the maturity matrix</a>.</p>
+      <p>Geno is in public preview. This is what you can rely on today; <a href="docs/MATURITY.html">the maturity matrix</a> says why each part sits where it does.</p>
       <div class="board">
         <div class="board-col board-stable">
           <h4><span class="st st-stable">Stable</span></h4>
           <ul>
-            <li><b>Parser</b><span>Full language coverage, structured diagnostics</span></li>
-            <li><b>Type checker</b><span>Generics, ADTs, traits, exhaustiveness</span></li>
+            <li><b>Parser</b></li>
+            <li><b>Type checker</b></li>
           </ul>
         </div>
         <div class="board-col board-beta">
           <h4><span class="st st-beta">Beta</span></h4>
           <ul>
-            <li><b>Language core</b><span>The pre-1.0 surface may still change</span></li>
-            <li><b>Python and JavaScript backends</b><span>Projects, source maps, ESM, <code>.d.ts</code></span></li>
-            <li><b>Interpreter</b><span>Every feature, including capability gating</span></li>
-            <li><b>Browser apps</b><span><code>geno build</code> to <code>dist/</code> or one HTML file</span></li>
-            <li><b>Capability system</b><span>Enforced across interpreter and hosted entry points</span></li>
-            <li><b>Hosted runtime</b><span>Auth, rate limits, metrics; not yet proven under production load</span></li>
+            <li><b>Language core</b></li>
+            <li><b>Python and JavaScript backends</b></li>
+            <li><b>Interpreter</b></li>
+            <li><b>Browser apps</b></li>
+            <li><b>Capability system</b></li>
+            <li><b>Hosted runtime</b></li>
           </ul>
         </div>
         <div class="board-col board-exp">
           <h4><span class="st st-exp">Experimental</span></h4>
           <ul>
-            <li><b>Package manager</b><span>Git dependencies, pins, lockfile hashes</span></li>
-            <li><b>LSP, formatter, VS Code</b><span>Work for common cases</span></li>
-            <li><b>Self-hosted front end</b><span>Lexer to interpreter in Geno; no code generation yet</span></li>
+            <li><b>Package manager</b></li>
+            <li><b>LSP, formatter, VS Code</b></li>
+            <li><b>Self-hosted front end</b></li>
           </ul>
         </div>
         <div class="board-col board-res">
           <h4><span class="st st-res">Research</span></h4>
           <ul>
-            <li><b>Constrained decoding</b><span>Block-structure checks on a prefix work; not yet benchmarked with models</span></li>
+            <li><b>Constrained decoding</b></li>
           </ul>
         </div>
       </div>
@@ -1046,14 +1070,9 @@ $ geno dev   # live reload</code></pre>
             <tr><td data-label="Revision">0.5.0-rc.1</td><td data-label="Date">2026-10-14</td><td data-label="Changes"><code>main() -&gt; Int</code> becomes the exit status; named constructor arguments; an <code>Async</code> value runs once; module constants; normative 0.5 specification</td></tr>
             <tr><td data-label="Revision">0.4.4</td><td data-label="Date">2026-09-20</td><td data-label="Changes"><code>geno check</code> validates lowering through the Python backend</td></tr>
             <tr><td data-label="Revision">0.4.2</td><td data-label="Date">2026-07-22</td><td data-label="Changes">Versioned specification, frozen conformance corpus, weekly 2,000-case differential fuzzing</td></tr>
-            <tr><td data-label="Revision">0.4.0</td><td data-label="Date">2026-07-13</td><td data-label="Changes">Single builtin manifest; recursive exhaustiveness for nested patterns</td></tr>
-            <tr><td data-label="Revision">0.3.0</td><td data-label="Date">2026-04-06</td><td data-label="Changes">CSV and TOML builtins; <code>process</code> capability</td></tr>
-            <tr><td data-label="Revision">0.2.1</td><td data-label="Date">2026-03-31</td><td data-label="Changes">JavaScript backend</td></tr>
-            <tr><td data-label="Revision">0.2.0</td><td data-label="Date">2026-02-06</td><td data-label="Changes">Embedding API; capability-based security</td></tr>
-            <tr><td data-label="Revision">0.1.0</td><td data-label="Date">2024-12-01</td><td data-label="Changes">Initial release: lexer, parser, type checker, interpreter, Python compiler</td></tr>
           </tbody>
         </table>
-        <p class="fn">Complete history in the <a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">changelog</a>.</p>
+        <p class="fn">Earlier releases, back to 0.1.0, are in the <a href="docs/changelog.html">changelog</a>.</p>
       </div>
       <div class="notes">
         <div class="notes-head"><h3 class="h-sub"><span class="no">14.1</span>Blog<span class="alias" aria-hidden="true">Application notes</span></h3><a href="blog/">All posts <span aria-hidden="true">→</span></a></div>
@@ -1106,8 +1125,8 @@ $ geno dev   # live reload</code></pre>
       </div>
       <nav class="foot-nav" aria-label="Footer">
         <div><h3>Product</h3><a href="#install">Install</a><a href="playground.html">Playground</a><a href="#modes">Targets</a><a href="#performance">Benchmarks</a></div>
-        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="blog/">Blog</a></div>
-        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="blog/feed.xml">RSS</a></div>
+        <div><h3>Learn</h3><a href="docs/guide/language-tour.html">Tour</a><a href="docs/">Docs</a><a href="docs/spec/v0.5.html">Spec</a><a href="blog/">Blog</a></div>
+        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="docs/changelog.html">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="blog/feed.xml">RSS</a></div>
       </nav>
     </div>
     <div class="foot-line"><span>© 2026 <a href="https://github.com/davidiach">David Iach</a> · Apache-2.0</span><span>Datasheet revised October 2026</span></div>

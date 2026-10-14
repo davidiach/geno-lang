@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Geno Playground</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <meta name="description" content="Geno is a statically typed, functional-first programming language for code written with LLMs. Executable examples, named block endings and capability-gated effects. Compiles to Python and JavaScript.">
 <meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
@@ -17,11 +16,11 @@
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://geno-lang.org/playground.html">
+<link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="icon" href="shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="alternate" type="application/rss+xml" title="Geno blog" href="blog/feed.xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="assets/fonts.css">
 <link rel="stylesheet" href="assets/datasheet.css">
 <script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
@@ -43,16 +42,16 @@
     </a>
     <nav class="bar-nav" aria-label="Primary">
       <a href="./#install">Install</a>
-      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
-      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="docs/guide/language-tour.html">Tour</a>
+      <a href="docs/">Docs</a>
       <a href="playground.html">Playground</a>
       <a href="blog/">Blog</a>
       <a href="./#community">Community</a>
     </nav>
     <div class="bar-end">
       <a class="try" href="./#install">Install <span aria-hidden="true">→</span></a>
-      <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
-        <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch between light and dark themes">
+        <span class="theme-paper">Light</span><span class="theme-night">Dark</span>
       </button>
       <a class="gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -63,13 +62,13 @@
   </div>
   <div class="drawer" id="drawer" hidden>
     <a href="./#install">Install</a>
-    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
-    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
+    <a href="docs/guide/language-tour.html">Language tour</a>
+    <a href="docs/">Documentation</a>
     <a href="playground.html">Playground</a>
     <a href="blog/">Blog</a>
     <a href="./#community">Community</a>
     <a href="https://github.com/davidiach/geno-lang">GitHub</a>
-    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between paper and night"><span class="theme-paper">Paper edition</span><span class="theme-night">Night edition</span></button>
+    <button class="theme theme-drawer" type="button" data-theme-toggle aria-label="Switch between light and dark themes"><span class="theme-paper">Light theme</span><span class="theme-night">Dark theme</span></button>
   </div>
 </header>
 
@@ -151,8 +150,8 @@
       </div>
       <nav class="foot-nav" aria-label="Footer">
         <div><h3>Product</h3><a href="./#install">Install</a><a href="playground.html">Playground</a><a href="./#modes">Targets</a><a href="./#performance">Benchmarks</a></div>
-        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="blog/">Blog</a></div>
-        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="blog/feed.xml">RSS</a></div>
+        <div><h3>Learn</h3><a href="docs/guide/language-tour.html">Tour</a><a href="docs/">Docs</a><a href="docs/spec/v0.5.html">Spec</a><a href="blog/">Blog</a></div>
+        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="docs/changelog.html">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="blog/feed.xml">RSS</a></div>
       </nav>
     </div>
     <div class="foot-line"><span>© 2026 <a href="https://github.com/davidiach">David Iach</a> · Apache-2.0</span><span>Datasheet revised October 2026</span></div>
