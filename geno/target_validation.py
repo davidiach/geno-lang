@@ -28,12 +28,21 @@ class TargetValidationError(Exception):
 
 def _validate(action: Callable[[], object], profile: TargetProfile) -> None:
     """Run one compiler action and normalize backend-specific failures."""
-    from .compiler import CompileError
-    from .js_compiler import JSCompileError
+    # The selected backend is already loaded by the caller. Importing the
+    # other compiler just for its exception adds startup work to every check.
+    error_type: type[Exception]
+    if profile.backend_kind == "python":
+        from .compiler import CompileError
+
+        error_type = CompileError
+    else:
+        from .js_compiler import JSCompileError
+
+        error_type = JSCompileError
 
     try:
         action()
-    except (CompileError, JSCompileError) as exc:
+    except error_type as exc:
         raise TargetValidationError(profile.target, str(exc)) from None
 
 

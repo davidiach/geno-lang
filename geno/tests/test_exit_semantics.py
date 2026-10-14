@@ -109,10 +109,8 @@ def test_a_result_too_wide_to_print_still_reports_its_status(
     before reducing it dies in transport instead of exiting.  ``2 ** 16000 + 7``
     is 4_817 digits, comfortably either side of both limits.
 
-    ``--json`` is absent deliberately: its envelope reports the raw value, and
-    serializing that hits the same limit.  That is a defect in the envelope
-    rather than in the exit contract, it predates this change, and fixing it
-    means deciding how the envelope should represent such a value.
+    ``--json`` additionally reports the full numeric value; that envelope is
+    covered in ``test_large_integer_json.py``.
     """
     result = _run_cli(
         tmp_path,

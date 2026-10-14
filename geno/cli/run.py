@@ -130,6 +130,8 @@ def _format_json_run_output(result: Any) -> str:
     """Serialize embedding API run output for ``geno run --json``."""
     import json as json_mod
 
+    from ..json_encoding import GenoJSONEncoder
+
     output = {
         "ok": result.ok,
         "value": result.value,
@@ -144,7 +146,7 @@ def _format_json_run_output(result: Any) -> str:
         },
         "steps_used": result.steps_used,
     }
-    return json_mod.dumps(output, indent=2, allow_nan=False)
+    return json_mod.dumps(output, cls=GenoJSONEncoder, indent=2, allow_nan=False)
 
 
 def _is_unit_main_result(value: Any) -> bool:

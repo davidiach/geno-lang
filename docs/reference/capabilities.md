@@ -89,6 +89,13 @@ capability explicitly, for example `geno run myfile.geno --json --cap print`.
 Use the hosted server or a caller-managed worker process when JSON results are
 needed for untrusted code; JSON mode itself does not provide process isolation.
 
+Integer results remain exact JSON numbers, including values beyond Python's
+default 4,300-digit conversion limit. This also applies inside collections;
+map keys keep their string representation. Geno's integer resource limit still
+applies, and serialization does not change Python's process-global digit limit.
+Consumers must use a JSON number parser that supports the required precision
+(for example, Python's `json.loads(text, parse_int=decimal.Decimal)`).
+
 ### Server (`geno serve`)
 
 The HTTP server allows **print**, **clock**, and **random** by default, but a

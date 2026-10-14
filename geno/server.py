@@ -36,6 +36,7 @@ from .api import RunConfig, constrain_prefix, run
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES
 from .capabilities import CapabilityParseError, normalize_capability_values
 from .execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
+from .json_encoding import GenoJSONEncoder, int_to_decimal
 from .monitoring import HealthCheck, RunMetrics, RunOutcome, RuntimeMetricsCollector
 from .version_support import is_supported_python, unsupported_python_message
 
@@ -1065,58 +1066,13 @@ def _bounded_json_int_text(value: int) -> str:
     if estimated_digits + int(negative) > MAX_RESPONSE_BODY_BYTES:
         raise ResponseTooLarge("JSON response body exceeds configured limit")
 
-    base = 1_000_000_000
-    chunks: list[int] = []
-    while magnitude:
-        magnitude, remainder = divmod(magnitude, base)
-        chunks.append(remainder)
-    prefix = "-" if negative else ""
-    return (
-        prefix
-        + str(chunks[-1])
-        + "".join(f"{chunk:09d}" for chunk in reversed(chunks[:-1]))
-    )
+    return int_to_decimal(value)
 
 
-class _BoundedJSONEncoder(json.JSONEncoder):
-    """JSON encoder with a local large-integer renderer.
+class _BoundedJSONEncoder(GenoJSONEncoder):
+    """Keep the server's integer response budget around the shared renderer."""
 
-    Python's standard encoder uses ``int.__repr__``, which can raise for a valid
-    Geno integer when the interpreter's decimal digit safety limit is enabled.
-    Supplying the integer renderer to the pure-Python encoder avoids changing
-    that process-global setting (which would be unsafe in a threaded server).
-    """
-
-    def iterencode(self, value: Any, _one_shot: bool = False) -> Iterator[str]:
-        markers: dict[int, Any] | None = {} if self.check_circular else None
-        string_encoder = json.encoder.encode_basestring_ascii
-
-        def float_text(number: float) -> str:
-            if math.isfinite(number):
-                return float.__repr__(number)
-            if not self.allow_nan:
-                raise ValueError(
-                    "Out of range float values are not JSON compliant: " + repr(number)
-                )
-            if math.isnan(number):
-                return "NaN"
-            return "Infinity" if number > 0 else "-Infinity"
-
-        make_iterencode = json.encoder.__dict__["_make_iterencode"]
-        iterator = make_iterencode(
-            markers,
-            self.default,
-            string_encoder,
-            self.indent,
-            float_text,
-            self.key_separator,
-            self.item_separator,
-            self.sort_keys,
-            self.skipkeys,
-            _one_shot,
-            _intstr=_bounded_json_int_text,
-        )
-        return cast(Iterator[str], iterator(value, 0))
+    _intstr = staticmethod(_bounded_json_int_text)
 
 
 def _validate_json_response_prefix(payload: Any) -> None:
