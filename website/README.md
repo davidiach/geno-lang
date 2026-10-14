@@ -71,7 +71,7 @@ domain.
 |---|---|
 | Blog posts | `shared/posts/*.html`, front matter in the leading comment, then run `build.py` |
 | Playground examples | `shared/examples/NN-name.geno`; titles in `EXAMPLE_TITLES` in `build.py` |
-| Hero replay | `assets/replay.js`; every printed line was captured from the 0.5.0-rc.1 CLI |
+| Hero replay | `assets/replay.js`; every printed line was captured from the 0.5.0 CLI |
 | Interactive demos | `shared/js/demos.js`; same rule |
 | Benchmark data | `BENCH` in `shared/js/demos.js`, from `benchmarks/RESULTS.md` |
 | Landing copy | `index.html` |
@@ -84,7 +84,7 @@ domain.
   `/geno-lang/` paths in `404.html`.
 - Community links point to GitHub Discussions and Issues; add chat or social
   links if the project gets them.
-- The version (0.5.0-rc.1) is written into the pages by hand; search for it
+- The version (0.5.0) is written into the pages by hand; search for it
   when the next release ships.
 
 An earlier second design direction ("Dialogue") was retired in favour of this

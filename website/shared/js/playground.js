@@ -309,7 +309,7 @@
       out.innerHTML =
         '<span class="tok-fail">The in-browser runtime could not load.</span>\n<span class="pg-hint">' +
         H.escape(m.message || "") +
-        "\n\nGeno runs anywhere Python 3.10 to 3.13 does:\n  pip install --pre geno-lang\n  geno test Main.geno</span>";
+        "\n\nGeno runs anywhere Python 3.10 to 3.13 does:\n  pip install geno-lang\n  geno test Main.geno</span>";
     });
     if (R.state === "ready") setStatus("Geno " + R.version + " · running in this tab", "ready");
     else setStatus("Real compiler · loads on first run (about 13 MB)", "idle");

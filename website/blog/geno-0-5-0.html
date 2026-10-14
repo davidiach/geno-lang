@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Geno 0.5.0-rc.1: main now speaks in exit codes</title>
+<title>Geno 0.5.0: main now speaks in exit codes</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="The first published build of the 0.5 series makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.">
+<meta name="description" content="Geno 0.5.0 makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.">
 <meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
 <meta property="og:image" content="https://davidiach.github.io/geno-lang/og.png">
@@ -82,11 +82,11 @@
     <div class="an-head-in">
       <p class="an-kicker"><a href="./">Blog</a><span>/</span><span>Release</span></p>
       <p class="an-no">No. 007</p>
-      <h1 class="an-title">Geno 0.5.0-rc.1: main now speaks in exit codes</h1>
+      <h1 class="an-title">Geno 0.5.0: main now speaks in exit codes</h1>
       <p class="an-meta"><span>The Geno project</span><span>October 14, 2026</span><span>3 min read</span></p>
       <div class="an-abstract">
         <h2>Abstract</h2>
-        <p>The first published build of the 0.5 series makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</p>
+        <p>Geno 0.5.0 makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</p>
       </div>
     </div>
   </header>
@@ -102,11 +102,11 @@
       <p class="an-tags"><span class="tag">release</span> <span class="tag">cli</span> <span class="tag">spec</span></p>
     </nav>
     <article class="prose">
-<p class="lede">Geno 0.5.0-rc.1 is the first published build of the 0.5 series. It is a prerelease because it carries one deliberate breaking change: when <code>main</code> returns an <code>Int</code>, that integer is now the exit status of your program.</p>
+<p class="lede">Geno 0.5.0 is out. It carries one deliberate breaking change: when <code>main</code> returns an <code>Int</code>, that integer is now the exit status of your program. The release first shipped as 0.5.0-rc.1 and was promoted to 0.5.0 unchanged, under <a href="https://github.com/davidiach/geno-lang/blob/main/docs/proposals/0002-0.5-stable-promotion.md">proposal 0002</a>. Geno is still a pre-1.0 preview, so the language may change before 1.0.</p>
 
-<pre><code data-lang="sh">$ pip install --pre geno-lang
+<pre><code data-lang="sh">$ pip install geno-lang
 $ geno --version
-geno 0.5.0-rc.1</code></pre>
+geno 0.5.0</code></pre>
 
 <h2 id="exit-codes-on-every-boundary">Exit codes, on every boundary</h2>
 

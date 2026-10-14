@@ -75,7 +75,7 @@
   <div class="docline-in">
     <span><b>GENO</b></span>
     <span class="docline-mid">LANGUAGE DATASHEET · PUBLIC PREVIEW · OCTOBER 2026</span>
-    <span>REV. 0.5.0-rc.1</span>
+    <span>REV. 0.5.0</span>
   </div>
 </div>
 
@@ -87,7 +87,7 @@
     <div class="p1-head">
       <p class="status-line">
         <span class="chip-status"><i></i>Preview</span>
-        <a class="status-rel" href="blog/geno-0-5-0-rc-1.html">0.5.0-rc.1 release notes <span aria-hidden="true">→</span></a><span class="sl-more"><span class="sep">/</span><span>Apache-2.0</span><span class="sep">/</span><span>Python 3.10–3.13</span></span>
+        <a class="status-rel" href="blog/geno-0-5-0.html">0.5.0 release notes <span aria-hidden="true">→</span></a><span class="sl-more"><span class="sep">/</span><span>Apache-2.0</span><span class="sep">/</span><span>Python 3.10–3.13</span></span>
       </p>
       <p class="partno" aria-hidden="true"><span class="partno-g">GENO</span><span class="partno-v">0.5</span></p>
       <h1 id="title" class="p1-title">A programming language for code you didn&rsquo;t write.</h1>
@@ -96,12 +96,12 @@
     <div class="p1-cta">
       <div class="p1-cta-row">
         <div class="cmd">
-          <code><span class="cmd-p">$</span> pip install <span class="nw">--pre</span> <span class="nw">geno-lang</span></code>
-          <button type="button" class="copy" data-copy="pip install --pre geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button>
+          <code><span class="cmd-p">$</span> pip install <span class="nw">geno-lang</span></code>
+          <button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button>
         </div>
         <a class="btn btn-solid" href="playground.html">Open the playground <span aria-hidden="true">→</span></a>
       </div>
-      <p class="cta-note"><code>--pre</code> installs this 0.5 preview; without it, pip installs 0.4.4.<br><a href="#pinout">Read the datasheet <span aria-hidden="true">↓</span></a></p>
+      <p class="cta-note">Needs Python 3.10&ndash;3.13. Geno is pre-1.0, so the language may still change.<br><a href="#pinout">Read the datasheet <span aria-hidden="true">↓</span></a></p>
     </div>
 
     <figure class="fig rp" data-repair aria-labelledby="fig1-cap">
@@ -157,7 +157,7 @@ Compiled to score.js</pre>
           <li><code>geno compile</code> writes score.py and, with <code>--target js</code>, score.js.</li>
         </ol>
       </div>
-      <figcaption id="fig1-cap"><b>Figure 1.</b> Typical repair sequence. TV1&ndash;TV4 are its four examples, run as test vectors. Every line Geno prints here is real output from the 0.5.0-rc.1 CLI. Passing examples are evidence, not proof.</figcaption>
+      <figcaption id="fig1-cap"><b>Figure 1.</b> Typical repair sequence. TV1&ndash;TV4 are its four examples, run as test vectors. Every line Geno prints here is real output from the 0.5.0 CLI. Passing examples are evidence, not proof.</figcaption>
     </figure>
 
     <div class="p1-cols">
@@ -381,7 +381,7 @@ Compiled to score.js</pre>
   <!-- 6 PLAYGROUND -->
   <section class="sec" id="playground" aria-labelledby="h6">
     <h2 id="h6" class="h-main"><span class="no">6</span>Playground<span class="alias" aria-hidden="true">Evaluation module</span></h2>
-    <p class="sec-lede">The real Geno 0.5.0-rc.1 toolchain, running in this tab on CPython compiled to WebAssembly (Pyodide). The first run downloads Python, about 13 MB, and your browser caches it. Your code never leaves the page.</p>
+    <p class="sec-lede">The real Geno 0.5.0 toolchain, running in this tab on CPython compiled to WebAssembly (Pyodide). The first run downloads Python, about 13 MB, and your browser caches it. Your code never leaves the page.</p>
     <div class="evm" data-playground id="evm" data-example="0">
       <div class="evm-bar">
         <label class="evm-sel"><span class="sr">Example program</span><select data-pg="examples" id="evm-examples"></select></label>
@@ -413,13 +413,13 @@ Compiled to score.js</pre>
   <!-- 7 INSTALL -->
   <section class="sec" id="install" aria-labelledby="h7">
     <h2 id="h7" class="h-main"><span class="no">7</span>Install<span class="alias" aria-hidden="true">Ordering information</span></h2>
-    <p class="sec-lede">Geno needs Python 3.10 to 3.13. Install the CLI, create a project, and run its examples. 0.5.0-rc.1 is a pre-release, so pip needs <code>--pre</code>; without it you get 0.4.4.</p>
+    <p class="sec-lede">Geno needs Python 3.10 to 3.13. Install the CLI, create a project, and run its examples.</p>
     <div class="order">
       <ol class="steps">
         <li>
           <span class="step-n">01</span>
           <div><b>Install</b>
-            <div class="cmd cmd-block"><code><span class="cmd-p">$</span> pip install <span class="nw">--pre</span> <span class="nw">geno-lang</span></code><button type="button" class="copy" data-copy="pip install --pre geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
+            <div class="cmd cmd-block"><code><span class="cmd-p">$</span> pip install <span class="nw">geno-lang</span></code><button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
           </div>
         </li>
         <li>
@@ -1038,7 +1038,8 @@ $ geno dev   # live reload</code></pre>
         <table class="spec spec-stack rev">
           <thead><tr><th scope="col">Revision</th><th scope="col">Date</th><th scope="col">Changes</th></tr></thead>
           <tbody>
-            <tr class="rev-now"><td data-label="Revision"><b>0.5.0-rc.1</b></td><td data-label="Date">2026-10-14</td><td data-label="Changes"><code>main() -&gt; Int</code> becomes the exit status; named constructor arguments; an <code>Async</code> value runs once; module constants; normative 0.5 specification</td></tr>
+            <tr class="rev-now"><td data-label="Revision"><b>0.5.0</b></td><td data-label="Date">2026-10-14</td><td data-label="Changes">0.5.0-rc.1 promoted unchanged; still pre-1.0</td></tr>
+            <tr><td data-label="Revision">0.5.0-rc.1</td><td data-label="Date">2026-10-14</td><td data-label="Changes"><code>main() -&gt; Int</code> becomes the exit status; named constructor arguments; an <code>Async</code> value runs once; module constants; normative 0.5 specification</td></tr>
             <tr><td data-label="Revision">0.4.4</td><td data-label="Date">2026-09-20</td><td data-label="Changes"><code>geno check</code> validates lowering through the Python backend</td></tr>
             <tr><td data-label="Revision">0.4.2</td><td data-label="Date">2026-07-22</td><td data-label="Changes">Versioned specification, frozen conformance corpus, weekly 2,000-case differential fuzzing</td></tr>
             <tr><td data-label="Revision">0.4.0</td><td data-label="Date">2026-07-13</td><td data-label="Changes">Single builtin manifest; recursive exhaustiveness for nested patterns</td></tr>
@@ -1054,11 +1055,11 @@ $ geno dev   # live reload</code></pre>
         <div class="notes-head"><h3 class="h-sub"><span class="no">14.1</span>Blog<span class="alias" aria-hidden="true">Application notes</span></h3><a href="blog/">All posts <span aria-hidden="true">→</span></a></div>
         <div class="notes-list">
 <!-- blog:latest -->
-          <a class="note-card" href="blog/geno-0-5-0-rc-1.html">
+          <a class="note-card" href="blog/geno-0-5-0.html">
             <span class="note-no">NO.<b>007</b></span>
             <div>
-              <h4>Geno 0.5.0-rc.1: main now speaks in exit codes</h4>
-              <p>The first published build of the 0.5 series makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</p>
+              <h4>Geno 0.5.0: main now speaks in exit codes</h4>
+              <p>Geno 0.5.0 makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</p>
               <span class="note-meta">Release · October 14, 2026</span>
             </div>
           </a>

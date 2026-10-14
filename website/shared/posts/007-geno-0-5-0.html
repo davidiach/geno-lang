@@ -1,18 +1,18 @@
 <!--
-title: Geno 0.5.0-rc.1: main now speaks in exit codes
-slug: geno-0-5-0-rc-1
+title: Geno 0.5.0: main now speaks in exit codes
+slug: geno-0-5-0
 date: 2026-10-14
 number: 7
 author: The Geno project
 kicker: Release
 tags: release, cli, spec
-summary: The first published build of the 0.5 series makes main() -> Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.
+summary: Geno 0.5.0 makes main() -> Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.
 -->
-<p class="lede">Geno 0.5.0-rc.1 is the first published build of the 0.5 series. It is a prerelease because it carries one deliberate breaking change: when <code>main</code> returns an <code>Int</code>, that integer is now the exit status of your program.</p>
+<p class="lede">Geno 0.5.0 is out. It carries one deliberate breaking change: when <code>main</code> returns an <code>Int</code>, that integer is now the exit status of your program. The release first shipped as 0.5.0-rc.1 and was promoted to 0.5.0 unchanged, under <a href="https://github.com/davidiach/geno-lang/blob/main/docs/proposals/0002-0.5-stable-promotion.md">proposal 0002</a>. Geno is still a pre-1.0 preview, so the language may change before 1.0.</p>
 
-<pre><code data-lang="sh">$ pip install --pre geno-lang
+<pre><code data-lang="sh">$ pip install geno-lang
 $ geno --version
-geno 0.5.0-rc.1</code></pre>
+geno 0.5.0</code></pre>
 
 <h2>Exit codes, on every boundary</h2>
 

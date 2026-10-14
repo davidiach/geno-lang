@@ -5,11 +5,11 @@
   <link>https://davidiach.github.io/geno-lang/blog/</link>
   <description>Notes, releases and design writing from the Geno project.</description>
   <item>
-    <title>Geno 0.5.0-rc.1: main now speaks in exit codes</title>
-    <link>https://davidiach.github.io/geno-lang/blog/geno-0-5-0-rc-1.html</link>
-    <guid>https://davidiach.github.io/geno-lang/blog/geno-0-5-0-rc-1.html</guid>
+    <title>Geno 0.5.0: main now speaks in exit codes</title>
+    <link>https://davidiach.github.io/geno-lang/blog/geno-0-5-0.html</link>
+    <guid>https://davidiach.github.io/geno-lang/blog/geno-0-5-0.html</guid>
     <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
-    <description>The first published build of the 0.5 series makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</description>
+    <description>Geno 0.5.0 makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</description>
   </item>
   <item>
     <title>The playground runs the real compiler</title>

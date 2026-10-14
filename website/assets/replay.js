@@ -2,7 +2,7 @@
  *
  * A model writes score.geno, `geno test` finds the example it breaks, the
  * model repairs the threshold, the examples pass and the file compiles.
- * Every line Geno prints here was captured from the 0.5.0-rc.1 CLI.
+ * Every line Geno prints here was captured from the 0.5.0 CLI.
  *
  * The page ships the finished capture as static HTML, so readers without
  * JavaScript, or with reduced motion, see the complete last frame. With

@@ -5,7 +5,7 @@
  *
  *   <div data-demo="score">  <pre data-slot="code"></pre>  <pre data-slot="out"></pre> </div>
  *
- * Every message a demo prints was captured from the real Geno 0.5.0-rc.1
+ * Every message a demo prints was captured from the real Geno 0.5.0
  * CLI (geno check / geno test -v / geno run) for the same program; paths are
  * shortened to the bare file name.
  */
