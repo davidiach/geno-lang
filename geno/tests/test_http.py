@@ -411,6 +411,60 @@ class TestInterpreterHttpListenHardening:
             server.shutdown()
             server.server_close()
 
+    @pytest.mark.parametrize("method", ["OPTIONS", "PATCH"])
+    def test_options_and_patch_routes_are_dispatched(self, monkeypatch, method):
+        import http.client
+        import http.server
+        import time
+
+        from geno._serve import install_serve_callbacks
+        from geno.interpreter import Interpreter
+        from geno.parser import parse
+
+        captured: dict[str, Any] = {}
+
+        class CapturingServer(http.server.HTTPServer):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                captured["server"] = self
+
+        monkeypatch.setattr(http.server, "HTTPServer", CapturingServer)
+        interpreter = Interpreter(check_examples=False, capabilities={"serve"})
+        install_serve_callbacks(interpreter)
+        interpreter.run(
+            parse(
+                "func handle(req: HttpRequest) -> HttpResponse\n"
+                '    return http_respond(204, [("Access-Control-Allow-Origin", "*")], "")\n'
+                "end func\n"
+                "func main() -> Int\n"
+                f'    http_route("{method}", "/api", handle)\n'
+                "    return 0\n"
+                "end func\n"
+            )
+        )
+        http_listen = interpreter.global_env.bindings["http_listen"].func
+
+        thread = Thread(target=lambda: http_listen(0), daemon=True)
+        thread.start()
+        deadline = time.time() + 5
+        while "server" not in captured and time.time() < deadline:
+            time.sleep(0.01)
+        assert "server" in captured, "interpreter http_listen never bound a server"
+        server = captured["server"]
+        try:
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", server.server_port, timeout=5
+            )
+            conn.request(method, "/api")
+            response = conn.getresponse()
+            response.read()
+            conn.close()
+            assert response.status == 204
+            assert response.getheader("Access-Control-Allow-Origin") == "*"
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 class TestHttpTypeChecking:
     """Test that HTTP types are correctly checked."""
@@ -749,6 +803,32 @@ class TestCompiledHttpListenHardening:
                 assert resp.headers.get("Content-Length") == "7"
                 assert resp.headers.get("Connection") == "close"
                 assert resp.read().decode("utf-8") == "created"
+
+    @pytest.mark.parametrize("method", ["OPTIONS", "PATCH"])
+    def test_options_and_patch_routes_are_dispatched(self, monkeypatch, method):
+        from geno._runtime_support import HttpResponse
+
+        def preflight(_request):
+            return HttpResponse(
+                status=204, body="", headers=[("Access-Control-Allow-Origin", "*")]
+            )
+
+        with self._serve(monkeypatch, [(method, "/api", preflight)]) as (
+            base,
+            request,
+            _error,
+        ):
+            req = request.Request(base + "/api", method=method)
+            with request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 204
+                assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+    def test_unrouted_options_is_not_found(self, monkeypatch):
+        with self._serve(monkeypatch, []) as (base, request, error):
+            req = request.Request(base + "/api", method="OPTIONS")
+            with pytest.raises(error.HTTPError) as exc_info:
+                request.urlopen(req, timeout=5)
+            assert exc_info.value.code == 404
 
     def test_dns_rebinding_host_is_rejected(self, monkeypatch):
         import http.client

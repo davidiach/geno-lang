@@ -27,13 +27,13 @@ geno check examples/apps/geno-check
 geno test examples/apps/geno-check
 
 # Validate a JSON config
-geno run --cap fs,print,env examples/apps/geno-check -- config.json
+geno run --unsafe --cap fs,print,env examples/apps/geno-check -- config.json
 
 # Validate a CSV data file
-geno run --cap fs,print,env examples/apps/geno-check -- users.csv
+geno run --unsafe --cap fs,print,env examples/apps/geno-check -- users.csv
 
 # Validate a TOML config
-geno run --cap fs,print,env examples/apps/geno-check -- settings.toml
+geno run --unsafe --cap fs,print,env examples/apps/geno-check -- settings.toml
 ```
 
 ## Supported formats

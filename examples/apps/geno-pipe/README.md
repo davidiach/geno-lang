@@ -9,7 +9,7 @@ aligned table, Markdown).
 ### With a CSV file (requires `fs`, `print`, and `env` capabilities)
 
 ```bash
-geno run --cap fs,print,env examples/apps/geno-pipe -- input.csv
+geno run --unsafe --cap fs,print,env examples/apps/geno-pipe -- input.csv
 ```
 
 The file path is passed as a CLI argument after `--`. The tool validates
@@ -18,7 +18,7 @@ that the file has a `.csv` extension before reading it.
 ### With built-in sample data (no file needed)
 
 ```bash
-geno run --cap print,env examples/apps/geno-pipe
+geno run --unsafe --cap print,env examples/apps/geno-pipe
 ```
 
 When no arguments are provided after `--`, the pipeline runs against

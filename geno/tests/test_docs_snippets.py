@@ -102,3 +102,23 @@ def test_module_constant_snippet_executes_with_examples_enabled():
         Parser(Lexer(rejected, source).tokenize()).parse_program()
     assert "must be initialized by a literal" in str(excinfo.value)
     assert "an operator expression" in str(excinfo.value)
+
+
+def test_tour_list_snippet_typechecks_and_runs():
+    # The tour's map/filter/fold snippet must satisfy the named-argument rule
+    # for three-parameter builtins such as fold.
+    path = "docs/guide/language-tour.md"
+    heading = "### Lists (Immutable)"
+    snippet = _geno_snippet_after_heading(path, heading, 1)
+    body = "\n".join("    " + line for line in snippet.splitlines())
+    code = (
+        "func lists() -> Int\n"
+        "    example () -> 15\n"
+        f"{body}\n"
+        "    return total + length(doubled) + length(evens) - 7\n"
+        "end func\n"
+    )
+    source = f"{path}#{heading}"
+    program = Parser(Lexer(code, source).tokenize()).parse_program()
+    TypeChecker().check_program(program)
+    interpret(code, source, check_examples=True)
