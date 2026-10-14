@@ -7,27 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.5.0-rc.1] - 2026-10-14
 
-- **A method defined twice in one impl block is reported** as `E309` at the
-  second definition, for the entrypoint and for imported modules alike. Every
-  backend dispatched to the last definition, so the first body was dead code
-  and `geno test` failed its own examples against the other body. Section 4.6
-  of `docs/spec/v0.5.md` states the rule, a fourth place the 0.5 contract
-  differs from v0.4. Extracted from #43 (#51).
-- **`geno test` and the harness helpers compare example numbers one way.**
-  `run_harness_from_source` and `run_harness_from_compiled` compared Floats to
-  an absolute `1e-9`, and a Float inside a tuple, map or constructor exactly, so
-  an expectation `geno test` accepted could fail there, and from about `1e9` up
-  only the exact value passed. They now use `geno test`'s relative tolerance at
-  every depth. Two `Int` values also compare exactly in
-  `geno test`, where an example off by one had passed once the values reached
-  about `1e9`, and a correct one beyond Float range had failed with `int too
-  large to convert to float`. (#111)
-
-## [0.5.0-rc.1] - 2026-09-30
-
-The first published release of the 0.5 series, and the one that carries accepted
+Release candidate prepared for the first publication of the 0.5 series. It carries accepted
 proposal 0001. It is a **prerelease**, because that proposal's Rollout section
 permits the executable entrypoint change to be published only as a v0.5
 prerelease with curated breaking-change notes; taking it stable needs a new
@@ -150,10 +132,31 @@ has to read a perfectly valid envelope despite a nonzero exit.
 
 ### Fixed
 
-Twenty-one defects found by evaluating the 0.5 line. Three reject programs that
+This candidate includes the defects found by evaluating the 0.5 line. Three reject programs that
 0.4.4 accepted, each of which already failed at run time on at least one
 backend, and two change printed output; see Migration above for what that means
 for an upgrade.
+
+- **Large integer JSON results** remain exact numbers even beyond Python's
+  default 4,300-digit conversion ceiling, including nested collections, map
+  keys, and sets. `geno run --json` preserves the raw value and its normalized
+  exit status without a traceback or a change to Python's global safety limit.
+  The CLI and hosted server share the integer encoder; hosted response-size
+  checks remain enforced. (#116)
+- **Target validation imports only the selected compiler backend**, avoiding
+  JavaScript compiler startup during Python checks (and vice versa) while
+  preserving all lowering checks and diagnostics. Performance budgets are
+  unchanged.
+- **A method defined twice in one impl block is reported** as `E309` at the
+  second definition, for the entrypoint and for imported modules alike. Every
+  backend dispatched to the last definition, so the first body was dead code
+  and `geno test` failed its own examples against the other body. Section 4.6
+  of `docs/spec/v0.5.md` states the rule, a fourth place the 0.5 contract
+  differs from v0.4. Extracted from #43 (#51).
+- **`geno test` and the harness helpers compare example numbers one way.**
+  `run_harness_from_source` and `run_harness_from_compiled` now use the same
+  relative Float tolerance at every depth. Two `Int` values compare exactly,
+  including values beyond Float range. (#111)
 
 - **Checks that now reject what ran wrong before**: an entry `main` that
   declares parameters is reported as `E304`, since every host calls it as

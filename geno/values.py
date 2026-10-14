@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from .ast_nodes import Parameter, SpecBlock, Statement
 from .diagnostics import runtime_error_code_for_message
+from .json_encoding import safe_repr
 from .tokens import SourceLocation
 
 
@@ -164,7 +165,13 @@ class ConstructorValue:
     def __repr__(self) -> str:
         if not self._fields:
             return self.constructor
-        field_strs = ", ".join(f"{k}: {v!r}" for k, v in self._fields.items())
+        try:
+            # Keep the original recursion cost for ordinary constructor fields.
+            field_strs = ", ".join(f"{k}: {v!r}" for k, v in self._fields.items())
+        except ValueError:
+            field_strs = ", ".join(
+                f"{k}: {safe_repr(v)}" for k, v in self._fields.items()
+            )
         return f"{self.constructor}({field_strs})"
 
     def __eq__(self, other: object) -> bool:
@@ -413,6 +420,11 @@ def value_to_json(value: Any) -> Any:
     return _value_to_json(value, seen=set())
 
 
+def _json_key_text(value: Any) -> str:
+    """Preserve existing map keys and set ordering without a digit ceiling."""
+    return value if isinstance(value, str) else safe_repr(value)
+
+
 def _value_to_json(value: Any, seen: set[int]) -> Any:
     if value is None:
         return None
@@ -453,7 +465,8 @@ def _value_to_json(value: Any, seen: set[int]) -> Any:
             if isinstance(value, MutableMapValue):
                 return {
                     "_mutable_map": {
-                        str(k): _value_to_json(v, seen) for k, v in value._data.items()
+                        _json_key_text(k): _value_to_json(v, seen)
+                        for k, v in value._data.items()
                     }
                 }
             if isinstance(value, VecValue):
@@ -463,7 +476,8 @@ def _value_to_json(value: Any, seen: set[int]) -> Any:
             if isinstance(value, SetValue):
                 return {
                     "_set": sorted(
-                        [_value_to_json(item, seen) for item in value._data], key=str
+                        [_value_to_json(item, seen) for item in value._data],
+                        key=_json_key_text,
                     )
                 }
             if isinstance(value, list):
@@ -471,7 +485,9 @@ def _value_to_json(value: Any, seen: set[int]) -> Any:
             if isinstance(value, tuple):
                 return {"_tuple": [_value_to_json(item, seen) for item in value]}
             if isinstance(value, dict):
-                return {str(k): _value_to_json(v, seen) for k, v in value.items()}
+                return {
+                    _json_key_text(k): _value_to_json(v, seen) for k, v in value.items()
+                }
             if isinstance(value, ConstructorValue):
                 return {
                     "_constructor": value.constructor,
