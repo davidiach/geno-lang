@@ -87,8 +87,8 @@ and `404.html` uses root-absolute links because it is served at any depth.
 
 ## Placeholders to review
 
-- Blog posts are bylined "The Geno project" and dated 2026-10-14, the launch
-  date. Change the byline or dates in each post's front matter if you prefer.
+- Blog posts are bylined "David Iach" and dated 2026-10-14, the launch date.
+  Change the byline or dates in each post's front matter.
 - Community links point to GitHub Discussions and Issues; add chat or social
   links if the project gets them.
 - The version (0.5.0) is written into the pages by hand; search for it
