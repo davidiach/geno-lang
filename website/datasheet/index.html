@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geno Datasheet</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Geno is a statically typed, functional-first programming language for code written with LLMs. Executable examples, named block endings and capability-gated effects. Compiles to Python and JavaScript.">
+<meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Geno: a language for code you didn't write">
+<meta property="og:description" content="Executable examples, named block endings and permissioned effects. Runs directly; compiles to Python and JavaScript.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="alternate" type="application/rss+xml" title="Geno application notes" href="blog/feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="assets/datasheet.css">
+<script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="2 5 27 25">
+    <g fill="currentColor"><rect x="8" y="7" width="16" height="2"/><rect x="6" y="9" width="4" height="2"/><rect x="22" y="9" width="4" height="2"/><rect x="4" y="11" width="4" height="10"/><rect x="6" y="21" width="4" height="2"/><rect x="22" y="17" width="4" height="6"/><rect x="8" y="23" width="16" height="1"/><rect x="8" y="24" width="15" height="1"/></g>
+    <g fill="var(--teal)"><rect x="14" y="15" width="12" height="2"/><rect x="23" y="24" width="4" height="4"/></g>
+  </symbol>
+</svg>
+
+<header class="bar" data-bar>
+  <div class="bar-in">
+    <a class="brand" href="./" aria-label="Geno home">
+      <svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>
+      <span class="brand-word">GENO</span>
+    </a>
+    <nav class="bar-nav" aria-label="Primary">
+      <a href="#ordering">Install</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="playground.html">Playground</a>
+      <a href="blog/">App notes</a>
+      <a href="#community">Community</a>
+    </nav>
+    <div class="bar-end">
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
+        <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
+      </button>
+      <a class="gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <button class="menu" type="button" data-menu aria-expanded="false" aria-controls="drawer" aria-label="Open menu"><span></span><span></span></button>
+    </div>
+  </div>
+  <div class="drawer" id="drawer" hidden>
+    <a href="#ordering">Install</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
+    <a href="playground.html">Playground</a>
+    <a href="blog/">Application notes</a>
+    <a href="#community">Community</a>
+    <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+  </div>
+</header>
+
+<div class="docline" aria-hidden="true">
+  <div class="docline-in">
+    <span><b>GENO</b></span>
+    <span class="docline-mid">GNO-0.5 – SLGS001 – OCTOBER 2026</span>
+    <span>REV. 0.5.0-rc.1</span>
+  </div>
+</div>
+
+<main id="main">
+
+<!-- ============================ PAGE 1 ============================ -->
+<section class="p1" aria-labelledby="title">
+  <div class="p1-in">
+    <div class="p1-head">
+      <p class="status-line">
+        <span class="chip-status"><i></i>Preview</span>
+        <span>0.5.0-rc.1</span><span class="sep">/</span><span>Apache-2.0</span><span class="sep">/</span><span>Python 3.10–3.13</span>
+      </p>
+      <p class="partno" aria-hidden="true"><span class="partno-g">GENO</span><span class="partno-v">0.5</span></p>
+      <h1 id="title" class="p1-title">A programming language for code you didn&rsquo;t write.</h1>
+      <p class="p1-lede">Geno is a statically typed, functional-first language for programs written with LLMs. Every function carries examples that run as tests, every block closes by name, and nothing touches the outside world without permission. It runs directly and compiles to Python and JavaScript.</p>
+      <div class="p1-cta">
+        <div class="cmd">
+          <code><span class="cmd-p">$</span> pip install geno-lang</code>
+          <button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button>
+        </div>
+        <a class="btn btn-solid" href="playground.html">Open the playground <span aria-hidden="true">→</span></a>
+        <a class="btn btn-line" href="#pinout">Read the datasheet <span aria-hidden="true">↓</span></a>
+      </div>
+    </div>
+
+    <figure class="fig fig-chip" aria-labelledby="fig1-cap">
+      <div class="crop" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <svg class="chip" viewBox="0 0 400 300" role="img" aria-labelledby="chip-title chip-desc" data-chip>
+        <title id="chip-title">score_label drawn as an integrated circuit</title>
+        <desc id="chip-desc">A Geno function shown as a chip: input pin score of type Int, output pin String, a requires pin for the precondition, an example pin carrying three test vectors, a caps pin showing no effects, and an end func pin.</desc>
+        <!-- wires -->
+        <g class="wires">
+          <line x1="14" y1="122" x2="115" y2="122"/>
+          <line x1="14" y1="182" x2="115" y2="182"/>
+          <line x1="285" y1="122" x2="386" y2="122"/>
+          <line x1="285" y1="182" x2="386" y2="182"/>
+          <line x1="230" y1="34" x2="230" y2="72"/>
+          <line x1="200" y1="234" x2="200" y2="262"/>
+        </g>
+        <g class="terms">
+          <circle cx="12" cy="122" r="4"/><circle cx="12" cy="182" r="4"/>
+          <circle cx="388" cy="122" r="4"/><circle cx="388" cy="182" r="4"/>
+        </g>
+        <!-- legs -->
+        <g class="legs">
+          <rect x="115" y="117" width="20" height="10"/>
+          <rect x="115" y="177" width="20" height="10"/>
+          <rect x="265" y="117" width="20" height="10"/>
+          <rect x="265" y="177" width="20" height="10"/>
+          <rect x="225" y="72" width="10" height="20"/>
+          <rect x="195" y="214" width="10" height="20"/>
+        </g>
+        <!-- body -->
+        <path class="body" d="M141 92 H192 A8 8 0 0 0 208 92 H259 Q265 92 265 98 V208 Q265 214 259 214 H141 Q135 214 135 208 V98 Q135 92 141 92 Z"/>
+        <circle class="pin1" cx="147" cy="104" r="2.6"/>
+        <text class="desig" x="135" y="84">U1</text>
+        <text class="body-name" x="200" y="150" text-anchor="middle">score_label</text>
+        <text class="body-sub" x="200" y="168" text-anchor="middle">GENO 0.5 · FUNC</text>
+        <g class="pinno">
+          <text x="145" y="126">1</text><text x="145" y="186">2</text>
+          <text x="255" y="126" text-anchor="end">3</text><text x="255" y="186" text-anchor="end">4</text>
+          <text x="230" y="108" text-anchor="middle">5</text><text x="200" y="208" text-anchor="middle">6</text>
+        </g>
+        <!-- labels -->
+        <g class="lbl">
+          <text x="110" y="113" text-anchor="end">score: Int</text>
+          <text x="110" y="173" text-anchor="end">caps: none</text>
+          <text x="290" y="113">→ String</text>
+          <text x="290" y="173">example ×3</text>
+          <text x="230" y="26" text-anchor="middle">requires score &gt;= 0</text>
+          <text x="200" y="282" text-anchor="middle">end func</text>
+        </g>
+        <!-- live values -->
+        <g class="val">
+          <text x="18" y="140" data-chip-in>95</text>
+          <text x="18" y="200">pure</text>
+          <text x="290" y="140" data-chip-out>"excellent"</text>
+          <text x="290" y="200" data-chip-count>3/3 pass</text>
+        </g>
+        <circle class="pulse" r="4" cx="14" cy="122" data-pulse-in/>
+        <circle class="pulse" r="4" cx="285" cy="122" data-pulse-out/>
+      </svg>
+      <table class="vectors" data-vectors>
+        <caption class="sr">Test vectors from the example clauses of score_label</caption>
+        <thead><tr><th scope="col">Vector</th><th scope="col">score</th><th scope="col">Expected</th><th scope="col">Result</th></tr></thead>
+        <tbody>
+          <tr data-v="0"><td>TV1</td><td>95</td><td>"excellent"</td><td><span class="res">PASS</span></td></tr>
+          <tr data-v="1"><td>TV2</td><td>70</td><td>"passing"</td><td><span class="res">PASS</span></td></tr>
+          <tr data-v="2"><td>TV3</td><td>40</td><td>"needs work"</td><td><span class="res">PASS</span></td></tr>
+        </tbody>
+      </table>
+      <figcaption id="fig1-cap"><b>Figure 1.</b> <span>Functional diagram. Each <code>example</code> clause is a test vector, run by <code>geno test</code>.</span></figcaption>
+    </figure>
+
+    <div class="p1-cols">
+      <section class="p1-col" aria-labelledby="s1">
+        <h2 id="s1" class="h-sec"><span class="no">1</span>Features</h2>
+        <ul class="feat">
+          <li>Executable <code>example</code> clauses on every function</li>
+          <li><code>requires</code> and <code>ensures</code> contracts, compiled into every backend</li>
+          <li>Named block endings: <code>end func</code>, <code>end if</code>, <code>end match</code></li>
+          <li>Exhaustive pattern matching over algebraic data types</li>
+          <li>Capability-gated effects: files, network, processes, environment, clock</li>
+          <li>Static types with local inference, generics and traits</li>
+          <li>Runs directly; compiles to Python and JavaScript</li>
+          <li>Next-token constraints for guided generation</li>
+        </ul>
+      </section>
+      <section class="p1-col" aria-labelledby="s2">
+        <h2 id="s2" class="h-sec"><span class="no">2</span>Applications</h2>
+        <ul class="feat">
+          <li>Command-line tools and automation on Python or Node.js</li>
+          <li>Browser dashboards, internal tools and small games</li>
+          <li>Hosted request handlers behind <code>geno serve</code></li>
+          <li>Code paths written or repaired by coding agents</li>
+        </ul>
+        <table class="devinfo">
+          <caption>Device information<sup>(1)</sup></caption>
+          <thead><tr><th scope="col">Target</th><th scope="col">Runtime</th><th scope="col">Status</th></tr></thead>
+          <tbody>
+            <tr><td>python-cli</td><td>CPython 3.10–3.13</td><td>Beta</td></tr>
+            <tr><td>node-cli</td><td>Node.js</td><td>Beta</td></tr>
+            <tr><td>browser</td><td>Static HTML + JS</td><td>Beta</td></tr>
+            <tr><td>python-hosted</td><td><code>geno serve</code></td><td>Beta</td></tr>
+          </tbody>
+        </table>
+        <p class="fn">(1) For every mode, see <a href="#modes">Device Functional Modes</a>.</p>
+      </section>
+      <section class="p1-col" aria-labelledby="s3">
+        <h2 id="s3" class="h-sec"><span class="no">3</span>Description</h2>
+        <p>Models are good at writing code that looks right. Geno is designed so that looking right is not enough. A function states its types, carries examples that run, and closes every block by name. A program declares nothing about its effects; the person running it grants them, one capability at a time.</p>
+        <p>The result reads like a small, strict functional language: immutable by default, with algebraic data types, <code>Result</code> and <code>Option</code> for errors, pipelines and traits. The compiler checks that every case is handled and that every example still holds.</p>
+        <p>Geno is in public preview. The parser and type checker are stable; the language surface may change before 1.0.</p>
+      </section>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ DOCUMENT ============================ -->
+<div class="doc">
+  <nav class="toc" aria-label="Datasheet contents" data-toc>
+    <p class="toc-h">Table of contents</p>
+    <ol>
+      <li><a href="#pinout"><span>4</span>Pin configuration</a></li>
+      <li><a href="#specs"><span>5</span>Specifications</a></li>
+      <li><a href="#description"><span>6</span>Detailed description</a></li>
+      <li><a href="#application"><span>7</span>Application</a></li>
+      <li><a href="#support"><span>8</span>Tools and support</a></li>
+      <li><a href="#ordering"><span>9</span>Ordering information</a></li>
+      <li><a href="#revisions"><span>10</span>Revision history</a></li>
+    </ol>
+    <a class="toc-cta" href="playground.html">Try it in your browser <span aria-hidden="true">→</span></a>
+  </nav>
+
+  <div class="doc-body">
+
+  <!-- 4 PIN CONFIGURATION -->
+  <section class="sec" id="pinout" aria-labelledby="h4">
+    <h2 id="h4" class="h-main"><span class="no">4</span>Pin Configuration and Functions</h2>
+    <p class="sec-lede">A Geno function is a component with a published interface. Its signature is the pinout, its examples are the test conditions, and its last line says exactly what it closes.</p>
+    <div class="pinout" data-pinout>
+      <figure class="fig fig-code" aria-labelledby="fig41">
+        <div class="code-head"><span class="code-file">score.geno</span><span class="code-meta">14 lines · 3 examples</span></div>
+<pre class="code code-pins"><code><span class="ln" data-pinline="1 2"><span class="pinmark" data-pm="1">1</span><span class="tok-kw">func</span> <span class="tok-fn">score_label</span><span class="tok-punct">(</span>score<span class="tok-punct">:</span> <span class="tok-type">Int</span><span class="tok-punct">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">String</span></span>
+<span class="ln" data-pinline="3"><span class="pinmark" data-pm="3">3</span>    <span class="tok-spec">requires</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">0</span></span>
+<span class="ln" data-pinline="4"><span class="pinmark" data-pm="4">4</span>    <span class="tok-spec">example</span> <span class="tok-num">95</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"excellent"</span></span>
+<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">70</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span>
+<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">40</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"needs work"</span></span>
+<span class="ln"> </span>
+<span class="ln" data-pinline="5"><span class="pinmark" data-pm="5">5</span>    <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">90</span> <span class="tok-kw">then</span></span>
+<span class="ln" data-pinline="5">        <span class="tok-kw">return</span> <span class="tok-str">"excellent"</span></span>
+<span class="ln" data-pinline="5">    <span class="tok-kw">else</span> <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">60</span> <span class="tok-kw">then</span></span>
+<span class="ln" data-pinline="5">        <span class="tok-kw">return</span> <span class="tok-str">"passing"</span></span>
+<span class="ln" data-pinline="5">    <span class="tok-kw">else</span></span>
+<span class="ln" data-pinline="5">        <span class="tok-kw">return</span> <span class="tok-str">"needs work"</span></span>
+<span class="ln" data-pinline="6"><span class="pinmark" data-pm="6">6</span>    <span class="tok-end">end</span> <span class="tok-end">if</span></span>
+<span class="ln" data-pinline="6"><span class="tok-end">end</span> <span class="tok-end">func</span></span></code></pre>
+        <figcaption id="fig41"><b>Figure 4-1.</b> score.geno, the README example. Point at a pin to see what it does.</figcaption>
+      </figure>
+      <div class="tbl-wrap">
+        <table class="spec pin-table">
+          <caption><b>Table 4-1.</b> Pin functions</caption>
+          <thead><tr><th scope="col">Pin</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Description</th></tr></thead>
+          <tbody>
+            <tr data-pin="1" tabindex="0"><td class="num">1</td><td><code>score: Int</code></td><td>I</td><td>Parameters always carry types. Local <code>let</code> bindings may be inferred.</td></tr>
+            <tr data-pin="2" tabindex="0"><td class="num">2</td><td><code>-&gt; String</code></td><td>O</td><td>Return type, required. Errors are values: <code>Result[T, E]</code> and <code>Option[T]</code>, never null.</td></tr>
+            <tr data-pin="3" tabindex="0"><td class="num">3</td><td><code>requires</code></td><td>C</td><td>Precondition. Checked on every call in the interpreter, Python and JavaScript. <code>ensures</code> checks <code>result</code>.</td></tr>
+            <tr data-pin="4" tabindex="0"><td class="num">4</td><td><code>example</code></td><td>T</td><td>Executable specification. Required on every function except <code>main</code>; <code>geno test</code> runs each one.</td></tr>
+            <tr data-pin="5" tabindex="0"><td class="num">5</td><td><code>if … then</code></td><td>—</td><td>Body. Immutable by default (<code>let</code>), mutable on request (<code>var</code>). <code>then</code> and <code>do</code> are required.</td></tr>
+            <tr data-pin="6" tabindex="0"><td class="num">6</td><td><code>end if</code></td><td>T</td><td>Named terminator. A mismatched <code>end</code> fails at that line, so generated structure cannot drift silently.</td></tr>
+          </tbody>
+        </table>
+        <p class="fn">I = input, O = output, C = contract, T = checked by the toolchain.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 SPECIFICATIONS -->
+  <section class="sec" id="specs" aria-labelledby="h5">
+    <h2 id="h5" class="h-main"><span class="no">5</span>Specifications</h2>
+
+    <section class="sub" id="ratings" aria-labelledby="h51">
+      <h3 id="h51" class="h-sub"><span class="no">5.1</span>Absolute Maximum Ratings</h3>
+      <p>Over the default sandbox, unless otherwise granted.<sup>(1)</sup> Pure computation is always available. Anything that reaches outside the program needs a capability, granted by the person who runs it.</p>
+      <div class="tbl-wrap">
+        <table class="spec caps-table">
+          <thead><tr><th scope="col">Capability</th><th scope="col">Unlocks</th><th scope="col"><code>geno run</code></th><th scope="col">Grant with</th></tr></thead>
+          <tbody>
+            <tr><td><code>print</code></td><td>Console output</td><td><span class="ok">Granted</span></td><td><code>--cap print</code></td></tr>
+            <tr><td><code>clock</code></td><td>Timestamps, timing, <code>sleep_ms</code></td><td><span class="ok">Granted</span></td><td><code>--cap clock</code></td></tr>
+            <tr><td><code>random</code></td><td>Random numbers</td><td><span class="ok">Granted</span></td><td><code>--cap random</code></td></tr>
+            <tr><td><code>fs</code></td><td>Read, write and list files</td><td><span class="no-cap">Denied</span></td><td><code>--cap fs</code></td></tr>
+            <tr><td><code>http</code></td><td>Outbound HTTP and HTTPS</td><td><span class="no-cap">Denied</span></td><td><code>--cap http</code></td></tr>
+            <tr><td><code>env</code></td><td>Environment variables, CLI arguments</td><td><span class="no-cap">Denied</span></td><td><code>--cap env</code></td></tr>
+            <tr><td><code>process</code></td><td>Run other programs</td><td><span class="no-cap">Denied</span></td><td><code>--cap process</code></td></tr>
+            <tr><td><code>regex</code></td><td>Regular expressions</td><td><span class="no-cap">Denied</span></td><td><code>--cap regex</code></td></tr>
+            <tr><td><code>stdin</code></td><td>Standard input</td><td><span class="no-cap">Denied</span></td><td><code>--cap stdin</code></td></tr>
+            <tr><td><code>serve</code></td><td>Listen for HTTP requests</td><td><span class="no-cap">Denied</span></td><td><code>--cap serve</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fn">(1) Calls beyond the granted capabilities are refused at the call site with <code>E412</code>. Compiled Python enforces the same gates; generated JavaScript is trusted code and not a sandbox. See the <a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">security policy</a>.</p>
+
+      <div class="demo demo-caps" data-demo="caps" data-granted="print">
+        <div class="demo-head">
+          <p class="demo-title"><b>Figure 5-1.</b> Capability gating. Grant capabilities and watch where the program stops.</p>
+          <div class="toggles" role="group" aria-label="Granted capabilities">
+            <span class="toggles-l">--cap</span>
+            <button type="button" class="tg" data-cap="print" aria-pressed="true">print</button>
+            <button type="button" class="tg" data-cap="fs" aria-pressed="false">fs</button>
+            <button type="button" class="tg" data-cap="env" aria-pressed="false">env</button>
+          </div>
+        </div>
+        <div class="demo-grid">
+          <pre class="code" data-slot="code"></pre>
+          <pre class="term" data-slot="out" aria-live="polite"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="sub" id="conditions" aria-labelledby="h52">
+      <h3 id="h52" class="h-sub"><span class="no">5.2</span>Recommended Operating Conditions</h3>
+      <div class="tbl-wrap">
+        <table class="spec roc">
+          <thead><tr><th scope="col">Parameter</th><th scope="col" class="r">Min</th><th scope="col" class="r">Nom</th><th scope="col" class="r">Max</th><th scope="col">Unit</th></tr></thead>
+          <tbody>
+            <tr><td>Python (toolchain and compiled output)</td><td class="r">3.10</td><td class="r">3.12</td><td class="r">3.13</td><td>version</td></tr>
+            <tr><td>Interpreter steps per run<sup>(2)</sup></td><td class="r">—</td><td class="r">1,000,000</td><td class="r">set by host</td><td>steps</td></tr>
+            <tr><td>Call depth</td><td class="r">—</td><td class="r">500</td><td class="r">set by host</td><td>frames</td></tr>
+            <tr><td>Integer size</td><td class="r">—</td><td class="r">33,219</td><td class="r">set by host</td><td>bits</td></tr>
+            <tr><td>String and collection size</td><td class="r">—</td><td class="r">10,000,000</td><td class="r">set by host</td><td>elements</td></tr>
+            <tr><td>Captured output</td><td class="r">—</td><td class="r">100,000</td><td class="r">set by host</td><td>characters</td></tr>
+            <tr><td>Sandboxed memory, <code>geno run</code></td><td class="r">—</td><td class="r">256</td><td class="r">set by host</td><td>MiB</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fn">(2) Defaults for <code>geno run --unsafe</code> and <code>--json</code>. Every limit is a flag (<code>--max-steps</code>, <code>--max-integer-bits</code>, …) and a field of <code>RunConfig</code> in the embedding API.</p>
+    </section>
+
+    <section class="sub" id="tests" aria-labelledby="h53">
+      <h3 id="h53" class="h-sub"><span class="no">5.3</span>Test Conditions</h3>
+      <p>Every number below is live. Drag one sideways, or focus it and use the arrow keys. The examples are fixed; the implementation is yours to break. The output is what <code>geno test -v</code> prints for the same program.</p>
+      <div class="demo demo-score" data-demo="score">
+        <div class="demo-head">
+          <p class="demo-title"><b>Figure 5-2.</b> Example clauses under test. <span class="demo-sum" data-slot="summary">All 3 examples hold</span></p>
+          <button type="button" class="btn-mini" data-reset>Reset</button>
+        </div>
+        <div class="demo-grid demo-grid-tall">
+          <pre class="code code-score" data-slot="code"></pre>
+          <pre class="term" data-slot="out" aria-live="polite"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="sub" id="characteristics" aria-labelledby="h54">
+      <h3 id="h54" class="h-sub"><span class="no">5.4</span>Typical Characteristics</h3>
+      <p>Compiled Geno against hand-written Python on the same 53 problems. Geno keeps its safety checks in the compiled output, guarding integer growth, collection sizes and step counts, and pays for them here.</p>
+      <div class="chart-wrap">
+        <div class="kpis">
+          <div class="kpi"><span class="kpi-v">1.60×</span><span class="kpi-l">median time vs Python</span></div>
+          <div class="kpi"><span class="kpi-v">84.9%</span><span class="kpi-l">of problems at or under 2×</span></div>
+          <div class="kpi"><span class="kpi-v">0.92×</span><span class="kpi-l">best case, mutual recursion</span></div>
+          <div class="kpi"><span class="kpi-v">2.84×</span><span class="kpi-l">worst case, list building</span></div>
+        </div>
+        <figure class="fig fig-chart demo" data-demo="bench" aria-labelledby="fig53">
+          <div data-slot="chart" class="chart"></div>
+          <figcaption id="fig53"><b>Figure 5-3.</b> Runtime ratio, Geno compiled ÷ Python, one dot per problem. Teal dots meet the ≤ 2× target. Measured 2026-06-10, Python 3.11, Linux; problems under 5 ms on both sides excluded.</figcaption>
+          <details class="data-table">
+            <summary>Show the data</summary>
+            <div data-slot="table" class="tbl-wrap"></div>
+          </details>
+        </figure>
+      </div>
+      <p class="fn">The repository also defines an LLM-correctness benchmark, Geno against Python. No frontier-model results are published yet, so no correctness advantage is claimed. <a href="blog/what-we-measure.html">Why we wait</a>.</p>
+    </section>
+  </section>
+
+  <!-- 6 DETAILED DESCRIPTION -->
+  <section class="sec" id="description" aria-labelledby="h6">
+    <h2 id="h6" class="h-main"><span class="no">6</span>Detailed Description</h2>
+
+    <section class="sub" aria-labelledby="h61">
+      <h3 id="h61" class="h-sub"><span class="no">6.1</span>Functional Block Diagram</h3>
+      <p>One front end, three ways to execute. The type checker proves every match exhaustive and every effect declared before any backend sees the program, and the example harness runs before you ship.</p>
+      <figure class="fig fig-blocks" aria-labelledby="fig61">
+        <div class="bd" data-bd>
+          <div class="bd-col bd-in">
+            <div class="bd-ext"><span class="bd-k">IN</span><b>.geno source</b><span>written by you or a model</span></div>
+          </div>
+          <div class="bd-core">
+            <span class="bd-core-l">GENO 0.5 TOOLCHAIN</span>
+            <div class="bd-row">
+              <div class="bd-b"><b>Lexer</b><span>tokens</span></div>
+              <div class="bd-b"><b>Parser</b><span>AST, block stack</span></div>
+              <div class="bd-b bd-hl"><b>Type checker</b><span>generics, effects, exhaustiveness</span></div>
+              <div class="bd-b bd-hl"><b>Example harness</b><span><code>geno test</code></span></div>
+            </div>
+            <div class="bd-row bd-out">
+              <div class="bd-b"><b>Interpreter</b><span><code>geno run</code>, REPL</span></div>
+              <div class="bd-b"><b>Python backend</b><span><code>geno compile</code></span></div>
+              <div class="bd-b"><b>JavaScript backend</b><span>ESM, source maps, .d.ts</span></div>
+            </div>
+            <div class="bd-side"><b>Constrain</b><span>allowed next tokens, open blocks</span></div>
+          </div>
+          <div class="bd-col bd-targets">
+            <div class="bd-ext"><span class="bd-k">OUT</span><b>python-cli</b></div>
+            <div class="bd-ext"><b>node-cli</b></div>
+            <div class="bd-ext"><b>browser</b></div>
+            <div class="bd-ext"><b>python-hosted</b></div>
+          </div>
+        </div>
+        <figcaption id="fig61"><b>Figure 6-1.</b> Functional block diagram. Highlighted blocks are where generated code gets checked.</figcaption>
+      </figure>
+    </section>
+
+    <section class="sub" aria-labelledby="h62">
+      <h3 id="h62" class="h-sub"><span class="no">6.2</span>Feature Description</h3>
+
+      <div class="feature-pair">
+        <div class="feature-text">
+          <h4 class="h-feat"><span class="no">6.2.1</span>Named block endings</h4>
+          <p>A model writes one token at a time. With braces, the end of a loop and the end of a function are the same character, and losing count produces code that parses and means something else. In Geno every block closes by name, so a mistake fails at the exact line.</p>
+          <p>Because openers and closers always pair, Geno can say at any point in a partial program what is still open. That is what <code>geno constrain</code> reports, and what a constrained decoder uses to keep a model on the grammar.</p>
+          <p class="fn">Stack values in Figure 6-2 come from <code>geno.constraints.get_unclosed_blocks</code> on each prefix.</p>
+        </div>
+        <div class="demo demo-blocks" data-demo="blocks">
+          <div class="demo-head">
+            <p class="demo-title"><b>Figure 6-2.</b> A model streaming Geno. Open blocks, innermost first.</p>
+            <button type="button" class="btn-mini" data-replay>Replay</button>
+          </div>
+          <div class="stack" data-slot="stack" aria-live="polite"></div>
+          <pre class="code code-stream" data-slot="code"></pre>
+          <p class="stream-status" data-slot="status"></p>
+        </div>
+      </div>
+
+      <div class="feature-pair feature-pair-rev">
+        <div class="feature-text">
+          <h4 class="h-feat"><span class="no">6.2.2</span>Exhaustive matching</h4>
+          <p>Algebraic data types describe every shape a value can take, and the checker holds every <code>match</code> to all of them. Add a variant later and each match that ignores it stops compiling, naming the case it missed.</p>
+          <p>Click an arm to remove it or put it back. The output is <code>geno check</code>.</p>
+        </div>
+        <div class="demo demo-match" data-demo="match" data-arms="Circle,Rectangle">
+          <div class="demo-head">
+            <p class="demo-title"><b>Figure 6-3.</b> Click a match arm to toggle it.</p>
+          </div>
+          <pre class="code code-match" data-slot="code"></pre>
+          <pre class="term" data-slot="out" aria-live="polite"></pre>
+        </div>
+      </div>
+
+      <div class="fgrid">
+        <article class="fcard">
+          <h4 class="h-feat"><span class="no">6.2.3</span>Errors are values</h4>
+<pre class="code code-sm"><code data-lang="geno">func parse_port(arg: String) -> Result[Int, String]
+    example "8080" -> Ok(8080)
+    example "http" -> Err("not a number: http")
+    match parse_int(arg) with
+        | Some(n) -> return Ok(n)
+        | None -> return Err("not a number: " + arg)
+    end match
+end func</code></pre>
+          <p><code>Result</code> and <code>Option</code> replace null and unchecked exceptions. The <code>?</code> operator returns an error early.</p>
+        </article>
+        <article class="fcard">
+          <h4 class="h-feat"><span class="no">6.2.4</span>Pipelines</h4>
+<pre class="code code-sm"><code data-lang="geno">func squares_of_evens(xs: List[Int]) -> List[Int]
+    example [1, 2, 3, 4, 5] -> [4, 16]
+    return xs
+        |> filter(_, fn(x: Int) -> x % 2 == 0)
+        |> map(_, fn(x: Int) -> x * x)
+end func</code></pre>
+          <p>Data flows left to right; <code>_</code> marks where the value goes. List comprehensions cover the rest.</p>
+        </article>
+        <article class="fcard">
+          <h4 class="h-feat"><span class="no">6.2.5</span>Traits</h4>
+<pre class="code code-sm"><code data-lang="geno">trait Describable
+    func describe(self: Self) -> String
+end trait
+
+impl Describable for Planet
+    func describe(self: Planet) -> String
+        example Planet("Mars", 2) -> "Mars has 2 moons"
+        return f"{self.name} has {self.moons} moons"
+    end func
+end impl</code></pre>
+          <p>Shared behaviour without inheritance. Methods carry examples like every other function.</p>
+        </article>
+        <article class="fcard">
+          <h4 class="h-feat"><span class="no">6.2.6</span>Async, data, modules</h4>
+<pre class="code code-sm"><code data-lang="geno">async func page_size(url: String) -> Int
+    return length(http_fetch(url))
+end func
+
+func main() -> Int
+    let size = await page_size("https://example.com")
+    let rows = csv_parse_with_headers("name,age\nAda,36")
+    return size + length(rows)
+end func</code></pre>
+          <p><code>async</code> and <code>await</code>, built-in JSON, CSV and TOML, and modules with explicit <code>export</code>.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="sub" id="modes" aria-labelledby="h63">
+      <h3 id="h63" class="h-sub"><span class="no">6.3</span>Device Functional Modes</h3>
+      <p>One program, four places to run. A project declares its targets in <code>geno.toml</code>, and <code>geno check --target</code> rejects builtins a target does not provide before anything runs.</p>
+      <div class="modes">
+        <article class="mode">
+          <header><span class="mode-k">MODE A</span><h4>python-cli</h4><span class="badge">Beta</span></header>
+          <p>Command-line tools and automation. Multi-module projects compile to one Python file that runs without Geno installed.</p>
+          <pre class="code code-xs"><code data-lang="sh">$ geno compile app.geno -o app.py
+$ python app.py --cap fs</code></pre>
+        </article>
+        <article class="mode">
+          <header><span class="mode-k">MODE B</span><h4>node-cli</h4><span class="badge">Beta</span></header>
+          <p>The same program on Node.js, as a script or ES module with source maps and type declarations. Trusted execution only.</p>
+          <pre class="code code-xs"><code data-lang="sh">$ geno compile app.geno --target js -o app.js
+$ node app.js</code></pre>
+        </article>
+        <article class="mode">
+          <header><span class="mode-k">MODE C</span><h4>browser</h4><span class="badge">Beta</span></header>
+          <p>App-mode programs with <code>init</code>, <code>update</code> and <code>render</code> build to static files with canvas, keyboard and mouse.</p>
+          <pre class="code code-xs"><code data-lang="sh">$ geno build -o dist/
+$ geno dev   # live reload</code></pre>
+        </article>
+        <article class="mode">
+          <header><span class="mode-k">MODE D</span><h4>python-hosted</h4><span class="badge">Beta</span></header>
+          <p>An HTTP runtime with isolated execution, authentication, rate limits and Prometheus metrics.</p>
+          <pre class="code code-xs"><code data-lang="sh">$ geno serve
+# POST /run · GET /healthz · GET /metrics</code></pre>
+        </article>
+      </div>
+    </section>
+  </section>
+
+  <!-- 7 APPLICATION -->
+  <section class="sec" id="application" aria-labelledby="h7">
+    <h2 id="h7" class="h-main"><span class="no">7</span>Application and Implementation</h2>
+
+    <section class="sub" id="evm" aria-labelledby="h71">
+      <h3 id="h71" class="h-sub"><span class="no">7.1</span>Evaluation Module</h3>
+      <p>GENO-EVM is the real Geno 0.5.0-rc.1 toolchain compiled to WebAssembly, running in this tab. The first run downloads Python (about 13 MB, then cached). Your code never leaves the browser.</p>
+      <div class="evm" data-playground id="evm" data-example="0">
+        <div class="evm-bar">
+          <label class="evm-sel"><span class="sr">Example program</span><select data-pg="examples" id="evm-examples"></select></label>
+          <div class="evm-actions">
+            <button type="button" class="btn-act btn-act-main" data-pg="test" title="geno test -v (Ctrl+Shift+Enter)">Test</button>
+            <button type="button" class="btn-act" data-pg="run" title="geno run (Ctrl+Enter)">Run</button>
+            <button type="button" class="btn-act" data-pg="check" title="geno check">Check</button>
+            <button type="button" class="btn-act" data-pg="compile" data-target="py">→ Python</button>
+            <button type="button" class="btn-act" data-pg="compile" data-target="js">→ JS</button>
+          </div>
+        </div>
+        <div class="evm-main">
+          <div class="evm-editor-wrap">
+            <div data-pg="editor"></div>
+            <div class="evm-under">
+              <span data-pg="blocks" class="evm-blocks"></span>
+              <div data-pg="caps" class="evm-caps"></div>
+            </div>
+          </div>
+          <div class="evm-out">
+            <div class="evm-out-head"><span>Output</span><span data-pg="meta" class="evm-meta"></span></div>
+            <pre data-pg="out" class="evm-term" aria-live="polite"></pre>
+          </div>
+        </div>
+        <div class="evm-foot"><span data-pg="status" class="evm-status"></span><a href="playground.html">Open the full-size playground <span aria-hidden="true">→</span></a></div>
+      </div>
+    </section>
+
+    <section class="sub" aria-labelledby="h72">
+      <h3 id="h72" class="h-sub"><span class="no">7.2</span>Typical Applications</h3>
+      <p>Each reference app must check, test and build before a release is tagged. Together they cover all four modes.</p>
+      <div class="apps">
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-check">
+          <span class="app-fig" aria-hidden="true"><i class="af af-check"></i></span>
+          <span class="app-k">python-cli</span><b>geno-check</b><span>Validates JSON, CSV and TOML files against typed rules. Six modules; needs <code>fs</code> and <code>print</code>.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-dash">
+          <span class="app-fig" aria-hidden="true"><i class="af af-dash"></i></span>
+          <span class="app-k">browser</span><b>geno-dash</b><span>A live metrics dashboard drawn on canvas: bar charts, stat cards and sparklines.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-snap">
+          <span class="app-fig" aria-hidden="true"><i class="af af-snap"></i></span>
+          <span class="app-k">python-hosted</span><b>geno-snap</b><span>An API mock server. Example clauses are the mock responses; <code>requires</code> validates requests.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-log">
+          <span class="app-fig" aria-hidden="true"><i class="af af-log"></i></span>
+          <span class="app-k">node-cli</span><b>geno-log</b><span>Summarizes structured service events under Node.js, checked against golden output.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-pipe">
+          <span class="app-fig" aria-hidden="true"><i class="af af-pipe"></i></span>
+          <span class="app-k">python-cli</span><b>geno-pipe</b><span>A CSV pipeline: filter, sort, select and take, then write CSV, JSON, a table or Markdown.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-form">
+          <span class="app-fig" aria-hidden="true"><i class="af af-form"></i></span>
+          <span class="app-k">browser</span><b>geno-form</b><span>A form builder on canvas. Types drive the layout, constraints the validation, examples the placeholders.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/tree/main/examples/apps/geno-mark">
+          <span class="app-fig" aria-hidden="true"><i class="af af-mark"></i></span>
+          <span class="app-k">python-cli</span><b>geno-mark</b><span>Markdown to styled HTML: headings with anchors, lists, code blocks and inline formatting.</span>
+        </a>
+        <a class="app" href="https://github.com/davidiach/geno-lang/blob/main/examples/apps/tetris.geno">
+          <span class="app-fig" aria-hidden="true"><i class="af af-tetris"></i></span>
+          <span class="app-k">browser</span><b>tetris.geno</b><span>The classic in a single file, with keyboard input and the app-mode lifecycle.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="sub" id="prompting" aria-labelledby="h73">
+      <h3 id="h73" class="h-sub"><span class="no">7.3</span>Design Requirements for Generated Code</h3>
+      <div class="prompt-grid">
+        <div>
+          <p>Models arrive knowing Python and JavaScript. These rules cover the mistakes they make most often in Geno. Paste them into a system prompt, then let <code>geno test</code> report anything they miss.</p>
+          <ul class="pitfalls">
+            <li><span class="x">let mut</span> <span class="ok-t">var</span></li>
+            <li><span class="x">True</span> <span class="ok-t">true</span></li>
+            <li><span class="x">"a" ++ "b"</span> <span class="ok-t">"a" + "b"</span></li>
+            <li><span class="x">end: Int</span> <span class="ok-t">stop: Int</span></li>
+            <li><span class="x">clamp(5, 0, 10)</span> <span class="ok-t">clamp(value: 5, lo: 0, hi: 10)</span></li>
+          </ul>
+        </div>
+        <div class="prompt-box">
+          <div class="code-head"><span class="code-file">system-prompt.txt</span><button type="button" class="copy" data-copy-target="#prompt-text"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
+<pre class="code code-sm" id="prompt-text">You are writing code in Geno, a statically typed, functional-first language.
+- Immutable: let x = 5. Mutable: var count = 0.
+- Parameters and return values need type annotations.
+- Booleans are lowercase: true, false.
+- Concatenate strings with +. Integer division truncates: 7 / 2 = 3.
+- Close blocks by name: end func, end if, end for, end while, end match.
+- Write then after if conditions and do after for and while.
+- Every function except main needs at least one example clause.
+- Functions with 3 or more parameters take named arguments.
+- Use Option[T] instead of null and Result[T, E] for errors.
+- Do not name anything end, in, with, type, or a Python builtin.</pre>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- 8 SUPPORT -->
+  <section class="sec" id="support" aria-labelledby="h8">
+    <h2 id="h8" class="h-main"><span class="no">8</span>Tools and Documentation Support</h2>
+
+    <section class="sub" aria-labelledby="h81">
+      <h3 id="h81" class="h-sub"><span class="no">8.1</span>Development Tools</h3>
+      <div class="tools">
+        <dl class="cli">
+          <div><dt>geno run</dt><dd>Run a file, sandboxed by default</dd></div>
+          <div><dt>geno test</dt><dd>Run every example and test block</dd></div>
+          <div><dt>geno check</dt><dd>Types, exhaustiveness, target fit</dd></div>
+          <div><dt>geno compile</dt><dd>Emit Python or JavaScript</dd></div>
+          <div><dt>geno build</dt><dd>Static browser app in <code>dist/</code></dd></div>
+          <div><dt>geno dev</dt><dd>Dev server with live reload</dd></div>
+          <div><dt>geno constrain</dt><dd>Allowed next tokens for a prefix</dd></div>
+          <div><dt>geno fmt</dt><dd>Format source files</dd></div>
+          <div><dt>geno init</dt><dd>New project from a template</dd></div>
+          <div><dt>geno add</dt><dd>Add a dependency</dd></div>
+          <div><dt>geno doc</dt><dd>Generate HTML documentation</dd></div>
+          <div><dt>geno serve</dt><dd>Hosted HTTP runtime</dd></div>
+          <div><dt>geno repl</dt><dd>Interactive session</dd></div>
+          <div><dt>geno watch</dt><dd>Re-run on file changes</dd></div>
+          <div><dt>geno lsp</dt><dd>Language server</dd></div>
+        </dl>
+        <div class="tool-cards">
+          <a class="tool" href="https://github.com/davidiach/geno-lang/tree/main/vscode-geno"><b>VS Code extension</b><span>Highlighting, snippets, diagnostics, go to definition, rename, hover.</span></a>
+          <a class="tool" href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/embedding-api.md"><b>Embedding API</b><span><code>geno.run()</code> and <code>geno.check()</code> with structured diagnostics, for agents and hosts.</span></a>
+          <a class="tool" href="https://github.com/davidiach/geno-lang/tree/main/selfhost"><b>Self-hosted front end</b><span>Lexer, parser, checker and interpreter written in 8,400 lines of Geno.</span></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="sub" id="community" aria-labelledby="h82">
+      <h3 id="h82" class="h-sub"><span class="no">8.2</span>Documentation and Community</h3>
+      <div class="links3">
+        <div>
+          <h4 class="h-mini">Learn</h4>
+          <ul>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/getting-started.md">Getting started</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/first-app.md">Your first app</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/llm-prompting.md">Prompting guide</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/common-pitfalls.md">Common pitfalls</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="h-mini">Reference</h4>
+          <ul>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Language specification 0.5</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/capabilities.md">Capability reference</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/reference/runtime-semantics.md">Runtime semantics</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/SUPPORTED_TARGETS.md">Supported targets</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security policy</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="h-mini">Take part</h4>
+          <ul>
+            <li><a href="https://github.com/davidiach/geno-lang/discussions">Discussions</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/issues">Issues</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/CONTRIBUTING.md">Contributing</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/docs/proposals/README.md">Design proposals</a></li>
+            <li><a href="https://github.com/davidiach/geno-lang/blob/main/GOVERNANCE.md">Governance</a></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sub" aria-labelledby="h83">
+      <h3 id="h83" class="h-sub"><span class="no">8.3</span>Component Status</h3>
+      <div class="tbl-wrap">
+        <table class="spec status-table">
+          <thead><tr><th scope="col">Component</th><th scope="col">Status</th><th scope="col">Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Parser</td><td><span class="st st-stable">Stable</span></td><td>Full language coverage, structured diagnostics</td></tr>
+            <tr><td>Type checker</td><td><span class="st st-stable">Stable</span></td><td>Generics, ADTs, traits, exhaustiveness</td></tr>
+            <tr><td>Language core</td><td><span class="st st-beta">Beta</span></td><td>Pre-1.0 surface may still change</td></tr>
+            <tr><td>Python and JS backends</td><td><span class="st st-beta">Beta</span></td><td>Project compilation, source maps, ESM</td></tr>
+            <tr><td>Interpreter, browser apps, hosted runtime</td><td><span class="st st-beta">Beta</span></td><td>All features including capability gating</td></tr>
+            <tr><td>Package manager, LSP, formatter, VS Code</td><td><span class="st st-exp">Experimental</span></td><td>Works for common cases</td></tr>
+            <tr><td>Constrained decoding</td><td><span class="st st-res">Research</span></td><td>Prefix validation works; not yet benchmarked with models</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <!-- 9 ORDERING -->
+  <section class="sec" id="ordering" aria-labelledby="h9">
+    <h2 id="h9" class="h-main"><span class="no">9</span>Ordering Information</h2>
+    <p class="sec-lede">Geno needs Python 3.10 to 3.13. Install the CLI, create a project, and run its examples.</p>
+    <div class="order">
+      <ol class="steps">
+        <li>
+          <span class="step-n">01</span>
+          <div><b>Install</b>
+            <div class="cmd cmd-block"><code><span class="cmd-p">$</span> pip install geno-lang</code><button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
+          </div>
+        </li>
+        <li>
+          <span class="step-n">02</span>
+          <div><b>Create a project</b>
+            <div class="cmd cmd-block"><code><span class="cmd-p">$</span> geno init hello --template cli</code><button type="button" class="copy" data-copy="geno init hello --template cli" aria-label="Copy"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button></div>
+          </div>
+        </li>
+        <li>
+          <span class="step-n">03</span>
+          <div><b>Test and run</b>
+            <pre class="term term-static"><code data-lang="sh">$ cd hello &amp;&amp; geno test Main.geno
+  PASS  Main.geno (3/3) (1 untested)
+
+3 passed, 0 failed, 1 untested, in 0.11s
+$ geno run Main.geno
+&gt;&gt;&gt; Hello, World! &lt;&lt;&lt;</code></pre>
+          </div>
+        </li>
+      </ol>
+      <div class="tbl-wrap">
+        <table class="spec orderable">
+          <caption><b>Table 9-1.</b> Orderable templates</caption>
+          <thead><tr><th scope="col">Template</th><th scope="col">Command</th><th scope="col">Creates</th></tr></thead>
+          <tbody>
+            <tr><td><b>GENO-CLI</b></td><td><code>geno init app --template cli</code></td><td>Command-line program</td></tr>
+            <tr><td><b>GENO-WEB</b></td><td><code>geno init app --template web</code></td><td>Browser app with canvas</td></tr>
+            <tr><td><b>GENO-API</b></td><td><code>geno init app --template api</code></td><td>Multi-module API</td></tr>
+            <tr><td><b>GENO-LIB</b></td><td><code>geno init app --template lib</code></td><td>Reusable library</td></tr>
+          </tbody>
+        </table>
+        <p class="fn">From source: <code>git clone https://github.com/davidiach/geno-lang &amp;&amp; pip install -e ".[dev]"</code></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 REVISIONS -->
+  <section class="sec" id="revisions" aria-labelledby="h10">
+    <h2 id="h10" class="h-main"><span class="no">10</span>Revision History</h2>
+    <div class="rev-grid">
+      <div class="tbl-wrap">
+        <table class="spec rev">
+          <thead><tr><th scope="col">Revision</th><th scope="col">Date</th><th scope="col">Changes</th></tr></thead>
+          <tbody>
+            <tr class="rev-now"><td><b>0.5.0-rc.1</b></td><td>2026-10-14</td><td><code>main() -&gt; Int</code> becomes the exit status; named constructor arguments; an <code>Async</code> value runs once</td></tr>
+            <tr><td>0.5.0-rc.0</td><td>2026-09-24</td><td>Module constants; normative 0.5 specification and conformance corpus</td></tr>
+            <tr><td>0.4.4</td><td>2026-09-20</td><td><code>geno check</code> validates lowering through the Python backend</td></tr>
+            <tr><td>0.4.2</td><td>2026-07-22</td><td>Versioned specification, frozen conformance corpus, weekly 2,000-case differential fuzzing</td></tr>
+            <tr><td>0.4.0</td><td>2026-07-13</td><td>Single builtin manifest; recursive exhaustiveness for nested patterns</td></tr>
+            <tr><td>0.3.0</td><td>2026-04-06</td><td>CSV and TOML builtins; <code>process</code> capability</td></tr>
+            <tr><td>0.2.1</td><td>2026-03-31</td><td>JavaScript backend</td></tr>
+            <tr><td>0.2.0</td><td>2026-02-06</td><td>Embedding API; capability-based security</td></tr>
+            <tr><td>0.1.0</td><td>2024-12-01</td><td>Initial release: lexer, parser, type checker, interpreter, Python compiler</td></tr>
+          </tbody>
+        </table>
+        <p class="fn">Complete history in the <a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">changelog</a>.</p>
+      </div>
+      <div class="notes">
+        <div class="notes-head"><h3 class="h-sub"><span class="no">10.1</span>Application Notes</h3><a href="blog/">All notes <span aria-hidden="true">→</span></a></div>
+        <div class="notes-list">
+<!-- blog:latest -->
+          <a class="note-card" href="blog/geno-0-5-0-rc-1.html">
+            <span class="note-no">GNOA<b>007</b></span>
+            <div>
+              <h4>Geno 0.5.0-rc.1: main now speaks in exit codes</h4>
+              <p>The first published build of the 0.5 series makes main() -&gt; Int your process exit status, adds named constructor arguments, and runs an Async value at most once. Here is what changed and how to migrate.</p>
+              <span class="note-meta">Release · October 14, 2026</span>
+            </div>
+          </a>
+          <a class="note-card" href="blog/the-playground-runs-the-real-compiler.html">
+            <span class="note-no">GNOA<b>006</b></span>
+            <div>
+              <h4>The playground runs the real compiler</h4>
+              <p>Most language playgrounds send your code to a server. Geno&#x27;s runs the actual CLI inside your browser tab, with Python compiled to WebAssembly and a 600 KB bundle of the toolchain.</p>
+              <span class="note-meta">Tooling · October 14, 2026</span>
+            </div>
+          </a>
+          <a class="note-card" href="blog/examples-are-the-specification.html">
+            <span class="note-no">GNOA<b>005</b></span>
+            <div>
+              <h4>Examples are the specification</h4>
+              <p>Every Geno function except main carries at least one example clause, and geno test runs them all. Why we made examples mandatory, and what that buys you when a model writes the code.</p>
+              <span class="note-meta">Design · September 2, 2026</span>
+            </div>
+          </a>
+<!-- /blog:latest -->
+        </div>
+      </div>
+    </div>
+  </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <div class="notice">
+      <h2>Important notice and disclaimer</h2>
+      <p>GENO IS PREVIEW SOFTWARE, PROVIDED UNDER THE APACHE LICENSE 2.0 “AS IS” AND WITHOUT WARRANTIES OF ANY KIND. THE PRE-1.0 LANGUAGE AND TOOLING MAY CHANGE BETWEEN RELEASES; BREAKING CHANGES ARE RECORDED IN THE CHANGELOG. THE IN-PROCESS EMBEDDING API USES COOPERATIVE LIMITS, AND GENERATED JAVASCRIPT IS NOT A SECURITY BOUNDARY. BEFORE RUNNING UNTRUSTED PROGRAMS, READ THE SECURITY POLICY. EXAMPLES PASSING IS EVIDENCE, NOT PROOF.</p>
+    </div>
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <svg class="foot-mark" aria-hidden="true"><use href="#mark"/></svg>
+        <p>Geno. A language for code you didn&rsquo;t write.</p>
+      </div>
+      <nav class="foot-nav" aria-label="Footer">
+        <div><h3>Product</h3><a href="#ordering">Install</a><a href="playground.html">Playground</a><a href="#modes">Targets</a><a href="#characteristics">Benchmarks</a></div>
+        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="blog/">App notes</a></div>
+        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="blog/feed.xml">RSS</a></div>
+      </nav>
+    </div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span><a href="../">Design versions</a></div>
+  </div>
+</footer>
+
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
+<script src="../shared/js/examples.js"></script>
+<script src="../shared/js/runtime.js"></script>
+<script src="../shared/js/playground.js"></script>
+<script src="assets/datasheet.js"></script>
+</body>
+</html>

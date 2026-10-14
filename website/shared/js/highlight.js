@@ -76,8 +76,9 @@
     var out = "";
     var m;
     var prevWord = "";
-    GENO_RE.lastIndex = 0;
-    while ((m = GENO_RE.exec(code))) {
+    // Fresh regex per call: f-string holes re-enter this function.
+    var re = new RegExp(GENO_RE.source, "g");
+    while ((m = re.exec(code))) {
       if (m[1]) out += wrap("doc", m[1]);
       else if (m[2]) out += wrap("com", m[2]);
       else if (m[3]) out += wrap("com", m[3]);

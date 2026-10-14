@@ -365,7 +365,7 @@
     MATCH_ARMS.forEach(function (arm) {
       html.push(
         '<span class="ln arm" data-arm-line="' + arm.id + '" role="button" tabindex="0" aria-pressed="false" title="Toggle this match arm">' +
-          H.highlight(arm.src, "geno") +
+          arm.src.match(/^\s*/)[0] + '<span class="arm-code">' + H.highlight(arm.src.trim(), "geno") + "</span>" +
           '<span class="arm-tag"></span></span>'
       );
     });
@@ -535,12 +535,13 @@
       tick();
     }
 
-    if (reduceMotion) {
-      paint(tokens.length);
-      return;
-    }
-    paint(0);
-    onVisible(root, run, { threshold: 0.35 });
+    // At rest the finished program is shown; streaming starts once it is seen.
+    paint(tokens.length);
+    if (reduceMotion) return;
+    onVisible(root, function () {
+      lastKey = "";
+      run();
+    }, { threshold: 0.35 });
     var replay = $(root, "[data-replay]");
     if (replay)
       replay.addEventListener("click", function () {
@@ -651,22 +652,11 @@
         var col = d[3] <= 2.0 ? accent : over;
         var cy = L.cy + p.y;
         s +=
-          '<circle class="dot" data-i="' + p.i + '" cx="' + p.x.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + L.r + '" fill="' + col + '" stroke="' + surface + '" stroke-width="2"' +
-          (animate && !drawn ? ' style="opacity:0;transform:translateY(' + (-18 - (k % 5) * 3) + 'px);transition:opacity .5s ' + (k * 18) + "ms, transform .7s cubic-bezier(.2,.9,.25,1.2) " + (k * 18) + 'ms"' : "") +
+          '<circle class="dot" data-i="' + p.i + '" data-k="' + k + '" cx="' + p.x.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + L.r + '" fill="' + col + '" stroke="' + surface + '" stroke-width="2"' +
           ' tabindex="0" aria-label="' + d[0] + ": " + d[3].toFixed(2) + 'x"/>';
       });
       s += "</svg>";
       host.innerHTML = s;
-      if (animate && !drawn) {
-        requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            host.querySelectorAll(".dot").forEach(function (c) {
-              c.style.opacity = "1";
-              c.style.transform = "none";
-            });
-          });
-        });
-      }
       drawn = true;
       host.querySelectorAll(".dot").forEach(function (c) {
         function show() {
@@ -708,19 +698,24 @@
       tableSlot.innerHTML = "<table><thead><tr><th>Problem</th><th>Geno ms</th><th>Python ms</th><th>Ratio</th></tr></thead><tbody>" + rows + "</tbody></table>";
     }
 
-    var started = false;
-    function start() {
-      if (started) return;
-      started = true;
-      draw();
+    // Draw at rest so the figure is complete without scrolling; the first
+    // time it comes into view, the dots settle into place.
+    var started = true;
+    draw();
+    if (animate && host.animate) {
+      onVisible(root, function () {
+        host.querySelectorAll(".dot").forEach(function (c) {
+          var k = +c.dataset.k;
+          c.animate(
+            [
+              { opacity: 0, transform: "translateY(" + (-22 - (k % 5) * 4) + "px)" },
+              { opacity: 1, transform: "none" },
+            ],
+            { duration: 700, delay: k * 16, easing: "cubic-bezier(.2,.9,.25,1.15)", fill: "backwards" }
+          );
+        });
+      }, { threshold: 0.35 });
     }
-    // Draw at rest so the figure exists without scrolling; animate on view.
-    if (animate) {
-      onVisible(root, start, { threshold: 0.3 });
-      setTimeout(function () {
-        if (!started && root.getBoundingClientRect().top < innerHeight) start();
-      }, 1200);
-    } else start();
     var rw = 0;
     if ("ResizeObserver" in global)
       new ResizeObserver(function () {

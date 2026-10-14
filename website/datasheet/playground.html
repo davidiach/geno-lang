@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geno Playground</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Geno is a statically typed, functional-first programming language for code written with LLMs. Executable examples, named block endings and capability-gated effects. Compiles to Python and JavaScript.">
+<meta name="theme-color" content="#F4F6F5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1211" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Geno: a language for code you didn't write">
+<meta property="og:description" content="Executable examples, named block endings and permissioned effects. Runs directly; compiles to Python and JavaScript.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../shared/brand/geno-mark.svg" type="image/svg+xml">
+<link rel="alternate" type="application/rss+xml" title="Geno application notes" href="blog/feed.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="assets/datasheet.css">
+<script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="2 5 27 25">
+    <g fill="currentColor"><rect x="8" y="7" width="16" height="2"/><rect x="6" y="9" width="4" height="2"/><rect x="22" y="9" width="4" height="2"/><rect x="4" y="11" width="4" height="10"/><rect x="6" y="21" width="4" height="2"/><rect x="22" y="17" width="4" height="6"/><rect x="8" y="23" width="16" height="1"/><rect x="8" y="24" width="15" height="1"/></g>
+    <g fill="var(--teal)"><rect x="14" y="15" width="12" height="2"/><rect x="23" y="24" width="4" height="4"/></g>
+  </symbol>
+</svg>
+
+<header class="bar" data-bar>
+  <div class="bar-in">
+    <a class="brand" href="./" aria-label="Geno home">
+      <svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>
+      <span class="brand-word">GENO</span>
+    </a>
+    <nav class="bar-nav" aria-label="Primary">
+      <a href="./#ordering">Install</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a>
+      <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a>
+      <a href="playground.html">Playground</a>
+      <a href="blog/">App notes</a>
+      <a href="./#community">Community</a>
+    </nav>
+    <div class="bar-end">
+      <button class="theme" type="button" data-theme-toggle aria-label="Switch between paper and night">
+        <span class="theme-paper">Paper</span><span class="theme-night">Night</span>
+      </button>
+      <a class="gh" href="https://github.com/davidiach/geno-lang" aria-label="Geno on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <button class="menu" type="button" data-menu aria-expanded="false" aria-controls="drawer" aria-label="Open menu"><span></span><span></span></button>
+    </div>
+  </div>
+  <div class="drawer" id="drawer" hidden>
+    <a href="./#ordering">Install</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Language tour</a>
+    <a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Documentation</a>
+    <a href="playground.html">Playground</a>
+    <a href="blog/">Application notes</a>
+    <a href="./#community">Community</a>
+    <a href="https://github.com/davidiach/geno-lang">GitHub</a>
+  </div>
+</header>
+
+<div class="docline" aria-hidden="true">
+  <div class="docline-in">
+    <span><b>GENO-EVM</b> USER&rsquo;S GUIDE</span>
+    <span class="docline-mid">EVALUATION MODULE FOR GENO 0.5</span>
+    <span>RUNS LOCALLY</span>
+  </div>
+</div>
+
+<main id="main" class="pg-page">
+  <div class="pg-page-in">
+    <header class="pg-page-head">
+      <div>
+        <p class="an-kicker"><a href="./">Geno datasheet</a><span>/</span><span>Evaluation module</span></p>
+        <h1 class="pg-page-title">GENO-EVM</h1>
+      </div>
+      <p class="pg-page-lede">The real Geno toolchain, compiled to WebAssembly and running in this tab. Edit the program, then test, run, check or compile it. Nothing is sent anywhere.</p>
+    </header>
+
+    <div class="evm evm-full" data-playground id="pg-full" data-autoboot data-restore data-example="0">
+      <div class="evm-bar">
+        <label class="evm-sel"><span class="sr">Example program</span><select data-pg="examples" id="pg-full-examples"></select></label>
+        <div class="evm-actions">
+          <button type="button" class="btn-act btn-act-main" data-pg="test" title="geno test -v (Ctrl+Shift+Enter)">Test</button>
+          <button type="button" class="btn-act" data-pg="run" title="geno run (Ctrl+Enter)">Run</button>
+          <button type="button" class="btn-act" data-pg="check" title="geno check">Check</button>
+          <button type="button" class="btn-act" data-pg="compile" data-target="py">→ Python</button>
+          <button type="button" class="btn-act" data-pg="compile" data-target="js">→ JS</button>
+          <button type="button" class="btn-act" data-pg="share" title="Copy a link with this program">Share</button>
+        </div>
+      </div>
+      <div class="evm-main">
+        <div class="evm-editor-wrap">
+          <div data-pg="editor"></div>
+          <div class="evm-under">
+            <span data-pg="blocks" class="evm-blocks"></span>
+            <div data-pg="caps" class="evm-caps"></div>
+          </div>
+        </div>
+        <div class="evm-out">
+          <div class="evm-out-head"><span>Output</span><span data-pg="meta" class="evm-meta"></span></div>
+          <pre data-pg="out" class="evm-term" aria-live="polite"></pre>
+        </div>
+      </div>
+      <div class="evm-foot"><span data-pg="status" class="evm-status"></span><span>Ctrl+Enter run · Ctrl+Shift+Enter test · Esc then Tab leaves the editor</span></div>
+    </div>
+
+    <section class="pg-guide" aria-labelledby="guide-h">
+      <h2 id="guide-h" class="h-sub"><span class="no">1</span>Board Description</h2>
+      <div class="tbl-wrap">
+        <table class="spec">
+          <thead><tr><th scope="col">Control</th><th scope="col">Runs</th><th scope="col">Notes</th></tr></thead>
+          <tbody>
+            <tr><td><b>Test</b></td><td><code>geno test -v Main.geno</code></td><td>Every <code>example</code> clause, with the value each failure actually produced.</td></tr>
+            <tr><td><b>Run</b></td><td><code>geno run --unsafe --cap … Main.geno</code></td><td>Grants exactly the capabilities ticked under the editor. With none ticked it uses <code>geno run --json</code>, which grants nothing.</td></tr>
+            <tr><td><b>Check</b></td><td><code>geno check Main.geno</code></td><td>Types, exhaustiveness and named arguments, without running anything.</td></tr>
+            <tr><td><b>→ Python / → JS</b></td><td><code>geno compile Main.geno --target …</code></td><td>Shows the code generated for your program; the runtime prelude above it is folded away.</td></tr>
+            <tr><td><b>Open</b></td><td><code>geno.constraints</code></td><td>The blocks still open at your cursor, innermost first.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fn">The browser cannot start processes, so the sandboxed default <code>geno run</code> lane is replaced by the direct interpreter with explicit capabilities. Files written with <code>fs</code> live in memory and vanish with the tab. <a href="blog/the-playground-runs-the-real-compiler.html">How the playground works</a>.</p>
+    </section>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <div class="notice">
+      <h2>Important notice and disclaimer</h2>
+      <p>GENO IS PREVIEW SOFTWARE, PROVIDED UNDER THE APACHE LICENSE 2.0 “AS IS” AND WITHOUT WARRANTIES OF ANY KIND. THE PRE-1.0 LANGUAGE AND TOOLING MAY CHANGE BETWEEN RELEASES; BREAKING CHANGES ARE RECORDED IN THE CHANGELOG. THE IN-PROCESS EMBEDDING API USES COOPERATIVE LIMITS, AND GENERATED JAVASCRIPT IS NOT A SECURITY BOUNDARY. BEFORE RUNNING UNTRUSTED PROGRAMS, READ THE SECURITY POLICY. EXAMPLES PASSING IS EVIDENCE, NOT PROOF.</p>
+    </div>
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <svg class="foot-mark" aria-hidden="true"><use href="./#mark"/></svg>
+        <p>Geno. A language for code you didn&rsquo;t write.</p>
+      </div>
+      <nav class="foot-nav" aria-label="Footer">
+        <div><h3>Product</h3><a href="./#ordering">Install</a><a href="playground.html">Playground</a><a href="./#modes">Targets</a><a href="./#characteristics">Benchmarks</a></div>
+        <div><h3>Learn</h3><a href="https://github.com/davidiach/geno-lang/blob/main/docs/guide/language-tour.md">Tour</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/INDEX.md">Docs</a><a href="https://github.com/davidiach/geno-lang/blob/main/docs/spec/v0.5.md">Spec</a><a href="blog/">App notes</a></div>
+        <div><h3>Project</h3><a href="https://github.com/davidiach/geno-lang">GitHub</a><a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">Security</a><a href="blog/feed.xml">RSS</a></div>
+      </nav>
+    </div>
+    <div class="foot-line"><span>© 2026 The Geno authors · Apache-2.0</span><span>GNO-0.5 – SLGS001 – OCTOBER 2026</span><a href="../">Design versions</a></div>
+  </div>
+</footer>
+<script src="../shared/js/highlight.js"></script>
+<script src="../shared/js/demos.js"></script>
+<script src="../shared/js/examples.js"></script>
+<script src="../shared/js/runtime.js"></script>
+<script src="../shared/js/playground.js"></script>
+<script src="assets/datasheet.js"></script>
+</body>
+</html>
