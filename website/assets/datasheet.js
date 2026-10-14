@@ -33,15 +33,21 @@
   var menu = document.querySelector("[data-menu]");
   var drawer = document.getElementById("drawer");
   if (menu && drawer) {
-    menu.addEventListener("click", function () {
-      var open = menu.getAttribute("aria-expanded") !== "true";
+    var setMenu = function (open) {
       menu.setAttribute("aria-expanded", String(open));
+      menu.setAttribute("aria-label", open ? "Close menu" : "Open menu");
       drawer.hidden = !open;
+    };
+    menu.addEventListener("click", function () {
+      setMenu(menu.getAttribute("aria-expanded") !== "true");
     });
     drawer.addEventListener("click", function (e) {
-      if (e.target.closest("a")) {
-        menu.setAttribute("aria-expanded", "false");
-        drawer.hidden = true;
+      if (e.target.closest("a")) setMenu(false);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !drawer.hidden) {
+        setMenu(false);
+        menu.focus();
       }
     });
   }
@@ -228,10 +234,24 @@
         inView = es[0].isIntersecting;
       }).observe(chip);
     }
-    setTimeout(function loop() {
-      if (inView && !document.hidden) cycle();
-      setTimeout(loop, 9000);
-    }, 1900);
+    // Run the vectors twice each time the figure comes into view, then rest.
+    var runs = 0;
+    var timer = null;
+    var loop = function () {
+      timer = null;
+      if (!inView || document.hidden || runs >= 2) return;
+      runs++;
+      cycle();
+      timer = setTimeout(loop, 9000);
+    };
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (es) {
+        if (es[0].isIntersecting && !timer) {
+          runs = 0;
+          timer = setTimeout(loop, 700);
+        }
+      }).observe(chip);
+    } else setTimeout(loop, 1900);
   }
 
   /* Figure 4-1 chip: hover a pin to read its function (from Table 4-1) --- */

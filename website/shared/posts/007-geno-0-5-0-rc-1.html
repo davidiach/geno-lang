@@ -55,7 +55,10 @@ end func</code></pre>
 
 <pre><code data-lang="geno">type Point = Point(x: Int, y: Int)
 
-let origin = Point(x: 0, y: 0)</code></pre>
+func origin() -> Point
+    example () -> Point(x: 0, y: 0)
+    return Point(x: 0, y: 0)
+end func</code></pre>
 
 <h2>An Async value runs once</h2>
 
@@ -78,7 +81,7 @@ let numerals: List[String] = ["I", "V", "X", "L", "C", "D", "M"]</code></pre>
   <li>The REPL shows <code>print</code> output and type-checks expressions.</li>
 </ul>
 
-<p>Three of these reject programs that 0.4.4 accepted. Each of those programs already failed at run time on at least one backend, so the checker now says so earlier. The full list is in the <a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">changelog</a>.</p>
+<p>Three further checks reject programs that 0.4.4 accepted: an entry <code>main</code> that declares parameters (<code>E304</code>), a bare name that two imports both export, and a repeated or built-in type name. Each of those programs already failed or misbehaved at run time on at least one backend, so the checker now says so earlier. The full list is in the <a href="https://github.com/davidiach/geno-lang/blob/main/CHANGELOG.md">changelog</a>.</p>
 
 <h2>Try it</h2>
 

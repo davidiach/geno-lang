@@ -114,20 +114,20 @@
           <pre data-pg="out" class="evm-term" aria-live="polite"></pre>
         </div>
       </div>
-      <div class="evm-foot"><span data-pg="status" class="evm-status"></span><span>Ctrl+Enter run · Ctrl+Shift+Enter test · Esc then Tab leaves the editor</span></div>
+      <div class="evm-foot"><span data-pg="status" class="evm-status"></span><span data-pg="kbd-hint">Ctrl+Enter run · Ctrl+Shift+Enter test · Esc, then Tab, leaves the editor</span></div>
     </div>
 
     <section class="pg-guide" aria-labelledby="guide-h">
-      <h2 id="guide-h" class="h-sub"><span class="no">1</span>Board Description</h2>
+      <h2 id="guide-h" class="h-sub"><span class="no">1</span>Controls<span class="alias" aria-hidden="true">Board description</span></h2>
       <div class="tbl-wrap">
-        <table class="spec">
+        <table class="spec spec-stack">
           <thead><tr><th scope="col">Control</th><th scope="col">Runs</th><th scope="col">Notes</th></tr></thead>
           <tbody>
-            <tr><td><b>Test</b></td><td><code>geno test -v Main.geno</code></td><td>Every <code>example</code> clause, with the value each failure actually produced.</td></tr>
-            <tr><td><b>Run</b></td><td><code>geno run --unsafe --cap … Main.geno</code></td><td>Grants exactly the capabilities ticked under the editor. With none ticked it uses <code>geno run --json</code>, which grants nothing.</td></tr>
-            <tr><td><b>Check</b></td><td><code>geno check Main.geno</code></td><td>Types, exhaustiveness and named arguments, without running anything.</td></tr>
-            <tr><td><b>→ Python / → JS</b></td><td><code>geno compile Main.geno --target …</code></td><td>Shows the code generated for your program; the runtime prelude above it is folded away.</td></tr>
-            <tr><td><b>Open</b></td><td><code>geno.constraints</code></td><td>The blocks still open at your cursor, innermost first.</td></tr>
+            <tr><td data-label="Control"><b>Test</b></td><td data-label="Runs"><code>geno test -v Main.geno</code></td><td data-label="Notes">Every <code>example</code> clause, with the value each failure actually produced.</td></tr>
+            <tr><td data-label="Control"><b>Run</b></td><td data-label="Runs"><code>geno run --unsafe --cap … Main.geno</code></td><td data-label="Notes">Grants exactly the capabilities ticked under the editor. With none ticked it uses <code>geno run --json</code>, which grants nothing.</td></tr>
+            <tr><td data-label="Control"><b>Check</b></td><td data-label="Runs"><code>geno check Main.geno</code></td><td data-label="Notes">Types, exhaustiveness and named arguments, without running anything.</td></tr>
+            <tr><td data-label="Control"><b>→ Python / → JS</b></td><td data-label="Runs"><code>geno compile Main.geno --target …</code></td><td data-label="Notes">Shows the code generated for your program; the runtime prelude above it is folded away.</td></tr>
+            <tr><td data-label="Control"><b>Open</b></td><td data-label="Runs"><code>geno.constraints</code></td><td data-label="Notes">The blocks still open at your cursor, innermost first.</td></tr>
           </tbody>
         </table>
       </div>

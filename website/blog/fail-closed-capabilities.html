@@ -100,7 +100,7 @@
       <p class="an-tags"><span class="tag">security</span> <span class="tag">capabilities</span></p>
     </nav>
     <article class="prose">
-<p class="lede">Pure computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, with the capability it was missing.</p>
+<p class="lede">Most computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, naming the builtin that needed it.</p>
 
 <pre><code data-lang="sh">$ geno run notes.geno
 Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre>

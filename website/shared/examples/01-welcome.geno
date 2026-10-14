@@ -1,5 +1,6 @@
-// Welcome to Geno. Functions carry examples, and geno test runs them.
-// Try: change 60 to 75 below, then press Test.
+// Welcome to Geno. Functions carry examples,
+// and geno test runs them. Try changing the
+// threshold `score >= 60` to 75, then press Test.
 
 func score_label(score: Int) -> String
     requires score >= 0

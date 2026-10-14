@@ -67,7 +67,7 @@
         if (msg.type === "error" && msg.id == null && bootPromise && bootPromise.reject) {
           setState("error", msg);
           emit("error", msg);
-          bootPromise.reject(new Error(msg.message));
+          failBoot(new Error(msg.message));
           return;
         }
         if (!p) return;
@@ -81,8 +81,17 @@
       var message = (e && e.message) || "The playground worker failed to start.";
       setState("error", { message: message });
       emit("error", { message: message });
-      if (bootPromise && bootPromise.reject) bootPromise.reject(new Error(message));
+      failBoot(new Error(message));
     };
+  }
+
+  // A failed load is not cached: the next request starts a fresh worker.
+  function failBoot(err) {
+    var b = bootPromise;
+    bootPromise = null;
+    if (worker) worker.terminate();
+    worker = null;
+    if (b && b.reject) b.reject(err);
   }
 
   function boot() {
@@ -107,33 +116,52 @@
     return promise;
   }
 
-  function reset() {
+  // Restart the worker. Every request still waiting is settled, so no
+  // caller is left holding a promise that never resolves.
+  function reset(reason) {
     if (worker) worker.terminate();
     worker = null;
     bootPromise = null;
-    pending.forEach(function (p) {
-      clearTimeout(p.timer);
-    });
+    var waiting = Array.from(pending.values());
     pending.clear();
+    waiting.forEach(function (p) {
+      clearTimeout(p.timer);
+      p.resolve({ code: 124, output: reason || "Stopped: the runtime restarted.", ms: 0, timedOut: true });
+    });
     setState("idle");
   }
 
-  function request(payload, timeoutMs) {
+  function request(payload, timeoutMs, soft) {
     return boot().then(function () {
       return new Promise(function (resolve, reject) {
         var id = ++seq;
         payload.id = id;
         var timer = setTimeout(function () {
+          var p = pending.get(id);
           pending.delete(id);
+          if (soft) {
+            // Advisory requests (the open-blocks hint) just give up.
+            resolve({ timedOut: true });
+            return;
+          }
           // A runaway program: restart the interpreter so the next run is clean.
-          reset();
-          boot();
           resolve({ code: 124, output: "Stopped: the program ran longer than " + Math.round(timeoutMs / 1000) + " s in the browser.", ms: timeoutMs, timedOut: true });
+          if (p) {
+            reset();
+            boot();
+          }
         }, timeoutMs || 20000);
-        pending.set(id, { resolve: resolve, reject: reject, timer: timer });
+        pending.set(id, { resolve: resolve, reject: reject, timer: timer, kind: payload.type });
         worker.postMessage(payload);
       });
     });
+  }
+  function cliPending() {
+    var busy = false;
+    pending.forEach(function (p) {
+      if (p.kind === "cli") busy = true;
+    });
+    return busy;
   }
 
   global.GenoRuntime = {
@@ -154,9 +182,10 @@
       return request({ type: "cli", args: args, files: files, readBack: opts.readBack }, opts.timeoutMs || 20000);
     },
     unclosed: function (prefix) {
-      if (state !== "ready") return Promise.resolve(null);
-      return request({ type: "unclosed", prefix: prefix }, 4000).then(function (r) {
-        return r.blocks || null;
+      // The worker runs one thing at a time; never queue behind a program.
+      if (state !== "ready" || cliPending()) return Promise.resolve(null);
+      return request({ type: "unclosed", prefix: prefix }, 4000, true).then(function (r) {
+        return (r && r.blocks) || null;
       });
     },
   };

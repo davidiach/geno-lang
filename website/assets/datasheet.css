@@ -17,7 +17,7 @@
   --teal-wash: #e0f2ef;
   --fail: #c2410c;
   --fail-wash: #fcebe2;
-  --amber: #a16207;
+  --amber: #9a5b06;
   --grid: rgba(15, 23, 42, 0.045);
   --code-bg: #fbfcfb;
   --term-bg: #0f172a;
@@ -42,7 +42,7 @@
   --chart-muted: var(--ink-3);
   --chart-grid: var(--rule-2);
   --chart-accent: var(--teal);
-  --chart-over: #a7b3bf;
+  --chart-over: #8593a3;
   --chart-surface: var(--sheet);
   --chart-font: "IBM Plex Mono", ui-monospace, monospace;
 
@@ -89,7 +89,7 @@
     --s-type: #a9b8ff;
     --s-fn: #f8fafc;
     --s-builtin: #c3cdd6;
-    --chart-over: #4b5a66;
+    --chart-over: #6b7b88;
     color-scheme: dark;
   }
 }
@@ -123,7 +123,7 @@
   --s-type: #a9b8ff;
   --s-fn: #f8fafc;
   --s-builtin: #c3cdd6;
-  --chart-over: #4b5a66;
+  --chart-over: #6b7b88;
   color-scheme: dark;
 }
 
@@ -1053,7 +1053,6 @@ html.is-scrubbing * {
   text-align: right;
   font-size: 11px;
   color: var(--ink-3);
-  opacity: 0.75;
   user-select: none;
 }
 .rl-c {
@@ -1130,9 +1129,9 @@ html.is-scrubbing * {
   background: var(--term-pass);
   height: 14px;
 }
-.rp.is-rewinding .rp-src code,
-.rp.is-rewinding .rp-say,
-.rp.is-rewinding .rp-term {
+.rp.is-rewinding.is-playing .rp-src code,
+.rp.is-rewinding.is-playing .rp-say,
+.rp.is-rewinding.is-playing .rp-term {
   opacity: 0;
 }
 
@@ -1545,7 +1544,7 @@ sup {
     margin-top: 28px;
   }
 }
-@media (max-width: 560px), (min-width: 1081px) and (max-width: 1320px) {
+@media (max-width: 560px), (min-width: 1081px) {
   .sl-more {
     display: none;
   }
@@ -2161,8 +2160,10 @@ sup {
 .ln.is-denied .cap-tag {
   color: var(--fail);
 }
-.ln.is-unreached {
-  opacity: 0.4;
+.ln.is-unreached,
+.ln.is-unreached [class^="tok-"] {
+  color: var(--ink-3);
+  font-weight: 400;
 }
 
 /* match demo */
@@ -2173,8 +2174,10 @@ sup {
 .code-match .arm:hover {
   background: var(--rule-2);
 }
-.code-match .arm.is-off .arm-code {
-  opacity: 0.38;
+.code-match .arm.is-off .arm-code,
+.code-match .arm.is-off .arm-code [class^="tok-"] {
+  color: var(--ink-3);
+  font-weight: 400;
   text-decoration: line-through;
   text-decoration-color: var(--fail);
   text-decoration-thickness: 1.5px;
@@ -3030,7 +3033,11 @@ sup {
 }
 .evm-status[data-state="loading"]::before {
   background: var(--amber);
-  animation: blink 0.8s steps(2) infinite;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .evm-status[data-state="loading"]::before {
+    animation: blink 0.8s steps(2) infinite;
+  }
 }
 .evm-status[data-state="error"]::before {
   background: var(--fail);
@@ -3327,8 +3334,10 @@ sup {
 }
 .pitfalls .x {
   color: var(--fail);
-  text-decoration: line-through;
-  text-decoration-thickness: 1.5px;
+}
+.pitfalls .x::before {
+  content: "✕ ";
+  font-weight: 600;
 }
 .pitfalls .ok-t {
   color: var(--teal-ink);
@@ -3890,7 +3899,7 @@ sup {
   margin-top: 26px;
   font: 700 18px/1 var(--f-display);
   letter-spacing: 0.16em;
-  color: var(--teal);
+  color: var(--teal-ink);
 }
 .an-title {
   margin-top: 10px;
@@ -4176,6 +4185,7 @@ sup {
 }
 .an-row-title {
   display: block;
+  text-wrap: balance;
   font: 700 22px/1.15 var(--f-display);
   text-decoration: none;
   color: var(--ink);
@@ -4883,4 +4893,139 @@ sup {
 }
 .notes-head .alias {
   display: none;
+}
+
+/* ------------------------------------------------------ review fixes */
+/* phones: commands wrap instead of hiding their ends */
+@media (max-width: 560px) {
+  .cmd {
+    height: auto;
+    min-height: 46px;
+  }
+  .cmd code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 11px 12px;
+    line-height: 1.4;
+    font-size: 13px;
+  }
+  .copy {
+    align-self: stretch;
+    height: auto;
+    padding: 0 11px;
+  }
+  .steps li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .step-n {
+    font-size: 24px;
+  }
+  .pinmark-r {
+    display: none;
+  }
+  .demo-caps .cap-tag {
+    display: block;
+    margin: 2px 0 2px 4ch;
+  }
+  .evm-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .evm-actions .btn-act {
+    padding: 0 6px;
+  }
+}
+/* anchors clear the sticky contents control as well as the bar */
+@media (max-width: 1080px) {
+  html {
+    scroll-padding-top: calc(var(--bar-h) + env(safe-area-inset-top, 0px) + 46px + 18px);
+  }
+  .toc-m[open] {
+    background: var(--paper);
+  }
+  .toc-m ol {
+    max-height: min(75vh, 560px);
+  }
+  .fig-chip .chip {
+    max-width: 520px;
+    margin-inline: auto;
+  }
+  .fig-chip .vectors {
+    max-width: 520px;
+    margin-inline: auto;
+  }
+}
+/* touch: larger hit areas on scrubbable numbers and match arms */
+@media (pointer: coarse) {
+  .scrub::before {
+    content: "";
+    position: absolute;
+    inset: -4px -3px;
+  }
+  .code-match .arm {
+    padding-block: 2px;
+  }
+}
+/* small print on muted surfaces stays legible */
+.fn code,
+.cta-note code,
+.cli dd code {
+  color: var(--ink-2);
+}
+:root[data-theme="dark"] .bd-hl.bd-b span {
+  color: var(--ink-2);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .bd-hl.bd-b span {
+    color: var(--ink-2);
+  }
+}
+/* night: terminals keep an edge against the page */
+:root[data-theme="dark"] .term,
+:root[data-theme="dark"] .evm-out,
+:root[data-theme="dark"] .prose pre:has(code[data-lang="sh"]) {
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .term,
+  :root:not([data-theme="light"]) .evm-out,
+  :root:not([data-theme="light"]) .prose pre:has(code[data-lang="sh"]) {
+    box-shadow: inset 0 0 0 1px var(--rule);
+  }
+}
+/* touch: the always-visible copy button sits above the first line */
+@media (hover: none) {
+  .pre-wrap > pre {
+    padding-top: 40px;
+  }
+}
+/* tables keep air below the paragraph before them */
+.sub > p + .tbl-wrap,
+.sub > p + .fn + .tbl-wrap {
+  margin-top: 22px;
+}
+.orderable td:last-child {
+  min-width: 15ch;
+}
+/* one numeral style for second-level headings */
+.h-feat .no {
+  font: 600 1em/1 var(--f-display);
+  color: var(--ink-3);
+}
+.cta-note a {
+  margin-left: 0;
+  margin-top: 4px;
+}
+.evm-kbd {
+  margin-right: auto;
+}
+@media (max-width: 640px) {
+  .evm-kbd {
+    display: none;
+  }
+}
+/* commands may wrap between words, never inside a flag or package name */
+.cmd .nw {
+  white-space: nowrap;
 }

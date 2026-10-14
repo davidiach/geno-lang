@@ -152,34 +152,56 @@
   var stepLen = 1;
   var cycles = 0;
   var ABORT = {};
+  // Sleeps are scheduled from the previous sleep's due time, not from the
+  // frame that happened to resolve it, so a step lasts exactly as long as
+  // its sleeps add up to and the cursor keeps pace.
+  var due = null;
+  // Dry runs add up a step's sleeps without waiting, to size the cursor.
+  var dry = false;
+  var dryTotal = 0;
 
   function sleep(ms, g) {
+    if (dry) {
+      dryTotal += ms;
+      return Promise.resolve();
+    }
+    var start = due != null ? due : vnow;
     return new Promise(function (res, rej) {
-      waiters.push({ t: vnow + ms, res: res, rej: rej, g: g });
+      waiters.push({ t: start + ms, res: res, rej: rej, g: g });
+    });
+  }
+  function flush() {
+    waiters = waiters.filter(function (w) {
+      if (w.g === gen) return true;
+      w.rej(ABORT);
+      return false;
     });
   }
   function tick(ts) {
     var dt = last ? Math.min(64, ts - last) : 16;
     last = ts;
     if (playing && visible && !document.hidden) vnow += dt;
-    var keep = [];
-    waiters.forEach(function (w) {
-      if (w.g !== gen) w.rej(ABORT);
-      else if (w.t <= vnow) w.res();
-      else keep.push(w);
+    flush();
+    var ready = waiters.filter(function (w) {
+      return w.t <= vnow;
     });
-    waiters = keep;
+    waiters = waiters.filter(function (w) {
+      return w.t > vnow;
+    });
+    ready.forEach(function (w) {
+      due = w.t;
+      w.res();
+    });
     drawCursor();
-    if (rafOn) global.requestAnimationFrame(tick);
+    // Frames are requested only while something is moving.
+    if (playing && visible) global.requestAnimationFrame(tick);
+    else rafOn = false;
   }
-  function startTicker() {
-    if (rafOn) return;
+  function wake() {
+    if (rafOn || !playing || !visible) return;
     rafOn = true;
     last = 0;
     global.requestAnimationFrame(tick);
-  }
-  function stopTicker() {
-    rafOn = false;
   }
 
   /* ------------------------------------------------------------ drawing */
@@ -196,7 +218,8 @@
     stepIdx = i;
     stepLen = len || 1;
     // A jump (no length) lands on the end of the step.
-    stepStart = len ? vnow : vnow - 1;
+    var now = due != null ? due : vnow;
+    stepStart = len ? now : now - 1;
     steps.forEach(function (b, k) {
       b.classList.toggle("is-done", k < i);
       b.classList.toggle("is-now", k === i);
@@ -205,6 +228,7 @@
     });
     strip.dataset.at = String(i);
     stateEl.textContent = "t" + i + " · " + STEP_NAMES[i].toUpperCase();
+    drawCursor();
   }
   function say(text, past) {
     if (text != null) lastSaid = text;
@@ -229,6 +253,7 @@
     root.classList.toggle("is-playing", on);
     toggle.querySelector("span").textContent = on ? "Pause" : "Play";
     toggle.setAttribute("aria-label", on ? "Pause the replay" : "Play the replay");
+    if (on) wake();
   }
 
   /* -------------------------------------------------------------- steps */
@@ -337,6 +362,8 @@
 
   async function run(from) {
     var g = ++gen;
+    due = null;
+    flush();
     try {
       for (;;) {
         for (var i = from; i < RUN.length; i++) {
@@ -359,7 +386,7 @@
   }
   async function rewind(g) {
     var from = (stepIdx + Math.max(0, Math.min(1, (vnow - stepStart) / stepLen))) / 5;
-    rw = { t0: vnow, from: from, len: 520 };
+    rw = { t0: due != null ? due : vnow, from: from, len: 520 };
     root.classList.add("is-rewinding");
     try {
       await sleep(520, g);
@@ -369,13 +396,17 @@
     }
     codeEl.innerHTML = "";
     stepIdx = 0;
-    stepStart = vnow;
+    stepStart = due != null ? due : vnow;
     stepLen = 1e9;
   }
 
   /* ----------------------------------------------------------- controls */
   function jump(i) {
     gen++;
+    due = null;
+    flush();
+    rw = null;
+    root.classList.remove("is-rewinding");
     setPlaying(false);
     paint(i);
   }
@@ -404,6 +435,8 @@
   });
   restart.addEventListener("click", function () {
     cycles = 2;
+    rw = null;
+    root.classList.remove("is-rewinding");
     setPlaying(true);
     run(0);
   });
@@ -412,23 +445,30 @@
     new IntersectionObserver(
       function (es) {
         visible = es[0].isIntersecting;
-        if (visible) startTicker();
-        else stopTicker();
+        wake();
       },
       { threshold: 0.15 }
     ).observe(root);
   }
-  startTicker();
   root.classList.add("is-live");
-  paint(4);
 
   if (reduce) {
+    paint(4);
     setPlaying(false);
     return;
   }
-  // Open on the finished capture, then rewind and play it.
-  setPlaying(true);
+  // Open on the finished capture, then rewind and play it. First size each
+  // step from its own sleeps so the cursor crosses each boundary on time.
   (async function () {
+    dry = true;
+    for (var i = 0; i < RUN.length; i++) {
+      dryTotal = 0;
+      await RUN[i](gen);
+      LEN[i] = dryTotal;
+    }
+    dry = false;
+    paint(4);
+    setPlaying(true);
     var g = gen;
     try {
       await sleep(1400, g);

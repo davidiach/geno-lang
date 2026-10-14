@@ -370,9 +370,9 @@
     });
     MATCH_ARMS.forEach(function (arm) {
       html.push(
-        '<span class="ln arm" data-arm-line="' + arm.id + '" role="button" tabindex="0" aria-pressed="false" title="Toggle this match arm">' +
+        '<span class="ln arm" data-arm-line="' + arm.id + '" role="button" tabindex="0" aria-pressed="false" aria-label="' + (arm.id === "_" ? "Wildcard" : arm.id) + ' arm" title="Toggle this match arm">' +
           arm.src.match(/^\s*/)[0] + '<span class="arm-code">' + H.highlight(arm.src.trim(), "geno") + "</span>" +
-          '<span class="arm-tag"></span></span>'
+          '<span class="arm-tag" aria-hidden="true"></span></span>'
       );
     });
     MATCH_TAIL.forEach(function (l) {
@@ -533,6 +533,10 @@
           running = false;
           if (root.dataset.loop !== "false")
             timer = setTimeout(function () {
+              if (!onScreen) {
+                pending = true;
+                return;
+              }
               lastKey = "";
               run();
             }, 5200);
@@ -541,14 +545,33 @@
       tick();
     }
 
-    // At rest the finished program is shown; streaming starts once it is seen.
+    // At rest the finished program is shown; streaming starts once it is
+    // seen, and the loop waits while the figure is off screen.
     paint(tokens.length);
-    if (reduceMotion) return;
-    onVisible(root, function () {
-      lastKey = "";
-      run();
-    }, { threshold: 0.35 });
     var replay = $(root, "[data-replay]");
+    if (reduceMotion) {
+      if (replay) replay.hidden = true;
+      return;
+    }
+    var onScreen = false;
+    var pending = true;
+    if ("IntersectionObserver" in global) {
+      new IntersectionObserver(
+        function (es) {
+          onScreen = es[0].isIntersecting;
+          if (onScreen && pending && !running) {
+            pending = false;
+            lastKey = "";
+            run();
+          }
+        },
+        { threshold: 0.35 }
+      ).observe(root);
+    } else {
+      onScreen = true;
+      pending = false;
+      run();
+    }
     if (replay)
       replay.addEventListener("click", function () {
         clearTimeout(timer);
@@ -659,7 +682,7 @@
         var cy = L.cy + p.y;
         s +=
           '<circle class="dot" data-i="' + p.i + '" data-k="' + k + '" cx="' + p.x.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + L.r + '" fill="' + col + '" stroke="' + surface + '" stroke-width="2"' +
-          ' tabindex="0" aria-label="' + d[0] + ": " + d[3].toFixed(2) + 'x"/>';
+          '/>';
       });
       s += "</svg>";
       host.innerHTML = s;
@@ -686,8 +709,6 @@
         }
         c.addEventListener("pointerenter", show);
         c.addEventListener("pointerleave", hide);
-        c.addEventListener("focus", show);
-        c.addEventListener("blur", hide);
       });
     }
 
@@ -744,7 +765,7 @@
   /* Small utilities: copy buttons, tabs                                 */
   /* ------------------------------------------------------------------ */
   function copyButtons(root) {
-    (root || document).querySelectorAll("[data-copy]").forEach(function (btn) {
+    (root || document).querySelectorAll("[data-copy], [data-copy-target]").forEach(function (btn) {
       if (btn.dataset.copyBound) return;
       btn.dataset.copyBound = "1";
       btn.addEventListener("click", function () {

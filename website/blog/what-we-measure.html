@@ -119,7 +119,7 @@
 
 <h3>Where the overhead comes from</h3>
 
-<p>Geno enforces resource limits that Python does not: integer bit lengths, collection sizes, step counts. The slowest problems are dominated by <code>i * i</code> products in tight loops, where each multiplication keeps a bit-length guard because multiplying adds the operands' bit lengths, which makes it a real integer-bomb path. The compiler moves every other check to where it is provably needed, and the <a href="https://github.com/davidiach/geno-lang/blob/main/benchmarks/RESULTS.md">results page</a> documents each relaxation alongside the test that pins it.</p>
+<p>Compiled Geno keeps guards that Python does not have: integer bit lengths and collection sizes. The slowest problems are dominated by <code>i * i</code> products in tight loops, where each multiplication keeps a bit-length guard because multiplying adds the operands' bit lengths, which makes it a real integer-bomb path. The compiler moves every other check to where it is provably needed, and the <a href="https://github.com/davidiach/geno-lang/blob/main/benchmarks/RESULTS.md">results page</a> documents each relaxation alongside the test that pins it.</p>
 
 <h2 id="correctness-the-benchmark-we-have-not-published">Correctness: the benchmark we have not published</h2>
 

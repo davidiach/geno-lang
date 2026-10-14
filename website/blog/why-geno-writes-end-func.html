@@ -124,16 +124,22 @@ end func</code></pre>
 
 <p>Because every opener has a matching closer, Geno can tell you at any point in a partial program which blocks are still open. <code>geno constrain</code> exposes that directly:</p>
 
-<pre><code data-lang="sh">$ printf 'func f(x: Int) -> Int\n    example 1 -> 1\n    if x > 0 then\n' | geno constrain
-AllowedNext(keywords=[...], need_to_close=['if', 'func'])</code></pre>
+<pre><code data-lang="sh">$ printf 'func f(x: Int) -> Int\n    example 1 -> 1\n    if x > 0 then\n' \
+    | geno constrain
+AllowedNext(keywords=['and', 'assert', ...], IDENT, INT, FLOAT, STRING, BOOL,
+            punct=['!=', '%', '(', ...], need_to_close=['if', 'func'])</code></pre>
 
-<p>That is the foundation for constrained decoding: a generator can be steered so that it never emits a token the grammar cannot accept, and never stops while a block is still open. The module is marked Research in the maturity matrix because we have not yet benchmarked it against real models. The prefix validation itself works today.</p>
+<p>The lists are shortened here; <code>need_to_close</code> is printed in full, innermost block first.</p>
+
+<p>That is the foundation for constrained decoding: a generator can be steered so that it never stops while a block is still open and never closes the wrong one. Block-structure validation works today; full token-level grammar constraints are not implemented. The module is marked Research in the maturity matrix because we have not yet benchmarked it against real models.</p>
 
 <h2 id="labels-for-people-too">Labels for people, too</h2>
 
 <p>The terminator can carry a label, which helps long functions and loops read well in review:</p>
 
-<pre><code data-lang="geno">    while i &lt;= n do
+<pre><code data-lang="geno">func fib_iterative(n: Int) -> Int
+    ...
+    while i &lt;= n do
         let next = prev + curr
         prev = curr
         curr = next

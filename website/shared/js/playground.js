@@ -133,9 +133,15 @@
     editorHost.classList.add("pg-editor");
     editorHost.innerHTML =
       '<pre class="pg-gutter" aria-hidden="true"></pre>' +
-      '<div class="pg-code"><pre class="pg-hl" aria-hidden="true"><code></code></pre>' +
+      '<div class="pg-code"><pre class="pg-hl" aria-hidden="true" tabindex="-1"><code></code></pre>' +
       '<textarea class="pg-input" id="' + (root.id || "pg") + '-src" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="Geno source code, ' + FILE + '"></textarea></div>';
     var ta = editorHost.querySelector("textarea");
+    // Tab indents inside the editor; say how to leave it.
+    var kbdHint = root.querySelector('[data-pg="kbd-hint"]');
+    if (kbdHint) {
+      if (!kbdHint.id) kbdHint.id = (root.id || "pg") + "-kbd";
+      ta.setAttribute("aria-describedby", kbdHint.id);
+    }
     var hl = editorHost.querySelector(".pg-hl code");
     var hlPre = editorHost.querySelector(".pg-hl");
     var gutter = editorHost.querySelector(".pg-gutter");
@@ -303,7 +309,7 @@
       out.innerHTML =
         '<span class="tok-fail">The in-browser runtime could not load.</span>\n<span class="pg-hint">' +
         H.escape(m.message || "") +
-        "\n\nGeno runs anywhere Python 3.10 to 3.13 does:\n  pip install geno-lang\n  geno test Main.geno</span>";
+        "\n\nGeno runs anywhere Python 3.10 to 3.13 does:\n  pip install --pre geno-lang\n  geno test Main.geno</span>";
     });
     if (R.state === "ready") setStatus("Geno " + R.version + " · running in this tab", "ready");
     else setStatus("Real compiler · loads on first run (about 13 MB)", "idle");

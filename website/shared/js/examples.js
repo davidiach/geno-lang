@@ -3,8 +3,8 @@ window.GenoExamples = [
  {
   "id": "welcome",
   "title": "Examples as specs",
-  "blurb": "Welcome to Geno. Functions carry examples, and geno test runs them. Try: change 60 to 75 below, then press Test.",
-  "source": "// Welcome to Geno. Functions carry examples, and geno test runs them.\n// Try: change 60 to 75 below, then press Test.\n\nfunc score_label(score: Int) -> String\n    requires score >= 0\n    example 90 -> \"excellent\"\n    example 89 -> \"passing\"\n    example 60 -> \"passing\"\n    example 59 -> \"needs work\"\n\n    if score >= 90 then\n        return \"excellent\"\n    else if score >= 60 then\n        return \"passing\"\n    else\n        return \"needs work\"\n    end if\nend func\n\nfunc main() -> Unit\n    for s: Int in [90, 89, 60, 59] do\n        print(f\"{s} -> {score_label(s)}\")\n    end for\n    return ()\nend func\n"
+  "blurb": "Welcome to Geno. Functions carry examples, and geno test runs them. Try changing the threshold `score >= 60` to 75, then press Test.",
+  "source": "// Welcome to Geno. Functions carry examples,\n// and geno test runs them. Try changing the\n// threshold `score >= 60` to 75, then press Test.\n\nfunc score_label(score: Int) -> String\n    requires score >= 0\n    example 90 -> \"excellent\"\n    example 89 -> \"passing\"\n    example 60 -> \"passing\"\n    example 59 -> \"needs work\"\n\n    if score >= 90 then\n        return \"excellent\"\n    else if score >= 60 then\n        return \"passing\"\n    else\n        return \"needs work\"\n    end if\nend func\n\nfunc main() -> Unit\n    for s: Int in [90, 89, 60, 59] do\n        print(f\"{s} -> {score_label(s)}\")\n    end for\n    return ()\nend func\n"
  },
  {
   "id": "results",

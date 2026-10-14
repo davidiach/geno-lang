@@ -8,7 +8,7 @@ kicker: Security
 tags: security, capabilities
 summary: A Geno program cannot read a file, open a socket or start a process unless the command that runs it says so. Here is how capability gating works on each surface, including where it does not protect you.
 -->
-<p class="lede">Pure computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, with the capability it was missing.</p>
+<p class="lede">Most computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, naming the builtin that needed it.</p>
 
 <pre><code data-lang="sh">$ geno run notes.geno
 Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre>
