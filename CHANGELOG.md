@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `http_listen` dispatches `OPTIONS` and `PATCH` requests to routes registered
+  for them in the interpreter and in generated Python. Before, both methods
+  were answered with 501 Unsupported method, so CORS preflight handlers never
+  ran. Unregistered paths still return 404.
+- Reference apps:
+  - geno-form stacks its fields and highlights the active tab.
+  - tetris.geno draws all seven pieces correctly and fits the default canvas.
+  - App READMEs use `geno run --unsafe --cap`.
+
 ## [0.5.0] - 2026-10-14
 
 ### Changed

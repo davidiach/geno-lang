@@ -3843,6 +3843,14 @@ def http_listen(port):
         def do_DELETE(self):
             self._handle()
 
+        # http_route accepts any method; dispatch the common ones that
+        # BaseHTTPRequestHandler would otherwise answer with 501.
+        def do_PATCH(self) -> None:
+            self._handle()
+
+        def do_OPTIONS(self) -> None:
+            self._handle()
+
         def log_message(self, format, *args):
             pass
 

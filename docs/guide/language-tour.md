@@ -366,7 +366,7 @@ let msg: String = f"Hello {name}, you are {age} years old"
 let nums: List[Int] = [1, 2, 3, 4, 5]
 let doubled: List[Int] = map(nums, fn(x: Int) -> x * 2)
 let evens: List[Int] = filter(nums, fn(x: Int) -> x % 2 == 0)
-let total: Int = fold(nums, 0, fn(acc: Int, x: Int) -> acc + x)
+let total: Int = fold(list: nums, initial: 0, reducer: fn(acc: Int, x: Int) -> acc + x)
 ```
 
 Replacing one element returns a new list rather than mutating in place.

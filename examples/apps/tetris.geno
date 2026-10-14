@@ -15,6 +15,9 @@ type State = State(
 )
 
 func piece_dx(piece: Int, rot: Int, cell: Int) -> Int
+    example 2, 0, 3 -> 1
+    example 5, 0, 0 -> 2
+    example 6, 2, 3 -> 2
     if piece == 0 then
         if rot % 2 == 0 then return cell end if
         return 1
@@ -53,33 +56,19 @@ func piece_dx(piece: Int, rot: Int, cell: Int) -> Int
         if cell < 2 then return 1 else return 0 end if
     end if
     if piece == 5 then
-        if rot == 0 then
-            if cell < 2 then return 0 end if
-            return cell - 1
-        end if
-        if rot == 1 then
-            if cell == 1 then return 1 else return 0 end if
-        end if
-        if rot == 2 then
-            if cell == 3 then return 2 else return cell end if
-        end if
-        if cell == 1 then return 0 else return 1 end if
+        // L: ..#/###, ##/.#/.#, ###/#.., #./#./##
+        let l_dx: List[List[Int]] = [[2, 0, 1, 2], [0, 1, 1, 1], [0, 1, 2, 0], [0, 0, 0, 1]]
+        return l_dx[rot][cell]
     end if
-    if rot == 0 then
-        if cell == 0 then return 2 end if
-        return cell - 1
-    end if
-    if rot == 1 then
-        if cell == 2 then return 1 else return 0 end if
-    end if
-    if rot == 2 then
-        if cell == 3 then return 0 else return cell end if
-    end if
-    if cell == 0 then return 1 end if
-    if cell == 2 then return 0 else return 1 end if
+    // J: #../###, .#/.#/##, ###/..#, ##/#./#.
+    let j_dx: List[List[Int]] = [[0, 0, 1, 2], [1, 1, 0, 1], [0, 1, 2, 2], [0, 1, 0, 0]]
+    return j_dx[rot][cell]
 end func piece_dx
 
 func piece_dy(piece: Int, rot: Int, cell: Int) -> Int
+    example 2, 0, 3 -> 1
+    example 5, 3, 3 -> 2
+    example 6, 0, 0 -> 0
     if piece == 0 then
         if rot % 2 == 0 then return 0 end if
         return cell
@@ -120,31 +109,11 @@ func piece_dy(piece: Int, rot: Int, cell: Int) -> Int
         return 2
     end if
     if piece == 5 then
-        if rot == 0 then
-            if cell == 3 then return 0 else return 1 end if
-        end if
-        if rot == 1 then
-            if cell < 2 then return 0 end if
-            if cell == 2 then return 1 else return 2 end if
-        end if
-        if rot == 2 then
-            if cell == 0 then return 1 else return 0 end if
-        end if
-        if cell == 0 then return 0 end if
-        if cell == 1 then return 1 end if
-        return 2
+        let l_dy: List[List[Int]] = [[0, 1, 1, 1], [0, 0, 1, 2], [0, 0, 0, 1], [0, 1, 2, 2]]
+        return l_dy[rot][cell]
     end if
-    if rot == 0 then
-        if cell == 0 then return 0 else return 1 end if
-    end if
-    if rot == 1 then
-        if cell < 2 then return cell else return cell - 1 end if
-    end if
-    if rot == 2 then
-        if cell == 3 then return 0 else return 1 end if
-    end if
-    if cell < 2 then return cell end if
-    return 2
+    let j_dy: List[List[Int]] = [[0, 1, 1, 1], [0, 1, 2, 2], [0, 0, 0, 1], [0, 0, 1, 2]]
+    return j_dy[rot][cell]
 end func piece_dy
 
 func piece_color(p: Int) -> String
@@ -307,9 +276,9 @@ func render(state: State) -> Unit
         while x < 10 do
             let val: Int = array_get(array: state.grid, index: y * 10 + x)
             if val > 0 then
-                draw_rect(x: 50 + x * 30, y: 20 + y * 30, width: 29, height: 29, color: grid_color(val))
+                draw_rect(x: 50 + x * 28, y: 20 + y * 28, width: 27, height: 27, color: grid_color(val))
             else
-                draw_rect_outline(x: 50 + x * 30, y: 20 + y * 30, width: 29, height: 29, color: "#333333")
+                draw_rect_outline(x: 50 + x * 28, y: 20 + y * 28, width: 27, height: 27, color: "#333333")
             end if
             x = x + 1
         end while
@@ -324,14 +293,14 @@ func render(state: State) -> Unit
             let cx: Int = state.piece_x + piece_dx(piece: state.piece_type, rot: state.piece_rot, cell: i)
             let cy: Int = state.piece_y + piece_dy(piece: state.piece_type, rot: state.piece_rot, cell: i)
             if cy >= 0 then
-                draw_rect(x: 50 + cx * 30, y: 20 + cy * 30, width: 29, height: 29, color: color)
+                draw_rect(x: 50 + cx * 28, y: 20 + cy * 28, width: 27, height: 27, color: color)
             end if
             i = i + 1
         end while
     end if
 
-    // Score
-    draw_text(text: format("Score: {}", [to_string(state.score)]), x: 50, y: 640, size: 20, color: "#FFFFFF")
+    // Score, under the preview so it stays on the 800x600 canvas
+    draw_text(text: format("Score: {}", [to_string(state.score)]), x: 380, y: 170, size: 20, color: "#FFFFFF")
 
     // Next piece preview
     draw_text(text: "Next:", x: 380, y: 30, size: 16, color: "#AAAAAA")
@@ -344,6 +313,6 @@ func render(state: State) -> Unit
     end while
 
     if state.game_over then
-        draw_text(text: "GAME OVER", x: 80, y: 320, size: 30, color: "#FF0000")
+        draw_text(text: "GAME OVER", x: 105, y: 300, size: 30, color: "#FF0000")
     end if
 end func render

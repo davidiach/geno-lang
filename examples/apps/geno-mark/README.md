@@ -36,7 +36,7 @@ node mark.js --cap env,print
 node mark.js --cap env,print,fs -- readme.md --fragment
 ```
 
-`geno run --cap ...` also works for quick local smoke checks, but it auto-switches to interpreter mode and prints strings in a quoted debug format rather than raw HTML.
+`geno run --unsafe --cap print,env examples/apps/geno-mark` also works for quick local checks. It runs the direct interpreter, without the process isolation of the default `geno run` lane, which refuses `--cap`.
 
 ## Module structure
 

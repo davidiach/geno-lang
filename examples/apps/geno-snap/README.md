@@ -1,7 +1,8 @@
 # geno-snap
 
-A single-command API mock server written in Geno. Example clauses define mock
-responses and double as self-tests via `geno test`.
+A single-command API mock server written in Geno. It serves fixed JSON
+fixtures, rejects malformed requests with 400 or 404, and answers CORS
+preflight requests. Its example clauses double as self-tests via `geno test`.
 
 ## Usage
 
@@ -13,10 +14,10 @@ geno check examples/apps/geno-snap
 geno test examples/apps/geno-snap
 
 # Start the mock server on port 8080
-geno run --cap serve,env examples/apps/geno-snap
+geno run --unsafe --cap serve,env examples/apps/geno-snap
 
 # Start on a custom port
-GENO_PORT=3000 geno run --cap serve,env examples/apps/geno-snap
+GENO_PORT=3000 geno run --unsafe --cap serve,env examples/apps/geno-snap
 ```
 
 ## Endpoints
