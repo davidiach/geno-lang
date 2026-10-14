@@ -19,7 +19,7 @@
 <link rel="alternate" type="application/rss+xml" title="Geno application notes" href="blog/feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Newsreader:ital,wght@1,400&display=swap">
 <link rel="stylesheet" href="assets/datasheet.css">
 <script>try{var t=localStorage.getItem("geno-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
@@ -85,97 +85,77 @@
     <div class="p1-head">
       <p class="status-line">
         <span class="chip-status"><i></i>Preview</span>
-        <a class="status-rel" href="blog/geno-0-5-0-rc-1.html">0.5.0-rc.1 release notes <span aria-hidden="true">→</span></a><span class="sep">/</span><span>Apache-2.0</span><span class="sep">/</span><span>Python 3.10–3.13</span>
+        <a class="status-rel" href="blog/geno-0-5-0-rc-1.html">0.5.0-rc.1 release notes <span aria-hidden="true">→</span></a><span class="sl-more"><span class="sep">/</span><span>Apache-2.0</span><span class="sep">/</span><span>Python 3.10–3.13</span></span>
       </p>
       <p class="partno" aria-hidden="true"><span class="partno-g">GENO</span><span class="partno-v">0.5</span></p>
       <h1 id="title" class="p1-title">A programming language for code you didn&rsquo;t write.</h1>
-      <p class="p1-lede">Geno is a statically typed, functional-first language for programs written with LLMs. Every function carries examples that run as tests, every block closes by name, and nothing touches the outside world without permission. It runs directly and compiles to Python and JavaScript.</p>
-      <div class="p1-cta">
+      <p class="p1-lede">Geno is a statically typed, functional-first language for programs written with LLMs. <span class="lede-more">Functions carry examples that run as tests, every block closes by name, and files, the network and other processes stay off until you grant them. </span>It runs directly and compiles to Python and JavaScript.</p>
+    </div>
+    <div class="p1-cta">
+      <div class="p1-cta-row">
         <div class="cmd">
-          <code><span class="cmd-p">$</span> pip install geno-lang</code>
-          <button type="button" class="copy" data-copy="pip install geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button>
+          <code><span class="cmd-p">$</span> pip install --pre geno-lang</code>
+          <button type="button" class="copy" data-copy="pip install --pre geno-lang" aria-label="Copy install command"><span class="copy-a">Copy</span><span class="copy-b">Copied</span></button>
         </div>
         <a class="btn btn-solid" href="playground.html">Open the playground <span aria-hidden="true">→</span></a>
-        <a class="btn btn-line" href="#pinout">Read the datasheet <span aria-hidden="true">↓</span></a>
       </div>
+      <p class="cta-note"><code>--pre</code> installs this 0.5 preview; without it, pip installs 0.4.4. <a href="#pinout">Read the datasheet <span aria-hidden="true">↓</span></a></p>
     </div>
 
-    <figure class="fig fig-chip" aria-labelledby="fig1-cap">
+    <figure class="fig rp" data-replay aria-labelledby="fig1-cap">
       <div class="crop" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-      <svg class="chip" viewBox="0 0 400 300" role="img" aria-labelledby="chip-title chip-desc" data-chip>
-        <title id="chip-title">score_label drawn as an integrated circuit</title>
-        <desc id="chip-desc">A Geno function shown as a chip: input pin score of type Int, output pin String, a requires pin for the precondition, an example pin carrying three test vectors, a caps pin showing no effects, and an end func pin.</desc>
-        <!-- wires -->
-        <g class="wires">
-          <line x1="14" y1="122" x2="115" y2="122"/>
-          <line x1="14" y1="182" x2="115" y2="182"/>
-          <line x1="285" y1="122" x2="386" y2="122"/>
-          <line x1="285" y1="182" x2="386" y2="182"/>
-          <line x1="230" y1="34" x2="230" y2="72"/>
-          <line x1="200" y1="234" x2="200" y2="262"/>
-        </g>
-        <g class="terms">
-          <circle cx="12" cy="122" r="4"/><circle cx="12" cy="182" r="4"/>
-          <circle cx="388" cy="122" r="4"/><circle cx="388" cy="182" r="4"/>
-        </g>
-        <!-- legs -->
-        <g class="legs">
-          <rect x="115" y="117" width="20" height="10"/>
-          <rect x="115" y="177" width="20" height="10"/>
-          <rect x="265" y="117" width="20" height="10"/>
-          <rect x="265" y="177" width="20" height="10"/>
-          <rect x="225" y="72" width="10" height="20"/>
-          <rect x="195" y="214" width="10" height="20"/>
-        </g>
-        <!-- body -->
-        <path class="body" d="M141 92 H192 A8 8 0 0 0 208 92 H259 Q265 92 265 98 V208 Q265 214 259 214 H141 Q135 214 135 208 V98 Q135 92 141 92 Z"/>
-        <circle class="pin1" cx="147" cy="104" r="2.6"/>
-        <text class="desig" x="135" y="84">U1</text>
-        <text class="body-name" x="200" y="150" text-anchor="middle">score_label</text>
-        <text class="body-sub" x="200" y="168" text-anchor="middle">GENO 0.5 · FUNC</text>
-        <g class="pinno">
-          <text x="145" y="126">1</text><text x="145" y="186">2</text>
-          <text x="255" y="126" text-anchor="end">3</text><text x="255" y="186" text-anchor="end">4</text>
-          <text x="230" y="108" text-anchor="middle">5</text><text x="200" y="208" text-anchor="middle">6</text>
-        </g>
-        <!-- labels -->
-        <g class="lbl">
-          <text x="110" y="113" text-anchor="end">score: Int</text>
-          <text x="110" y="173" text-anchor="end">caps: none</text>
-          <text x="290" y="113">→ String</text>
-          <text x="290" y="173">example ×3</text>
-          <text x="230" y="26" text-anchor="middle">requires score &gt;= 0</text>
-          <text x="200" y="282" text-anchor="middle">end func</text>
-        </g>
-        <!-- live values -->
-        <g class="val">
-          <text x="18" y="140" data-chip-in>95</text>
-          <text x="18" y="200">pure</text>
-          <text x="290" y="140" data-chip-out>"excellent"</text>
-          <text x="290" y="200" data-chip-count>3/3 pass</text>
-        </g>
-        <g class="hits">
-          <rect data-chip-pin="1" x="0" y="100" width="135" height="44"/>
-          <rect data-chip-pin="2" x="0" y="160" width="135" height="44"/>
-          <rect data-chip-pin="3" x="265" y="100" width="135" height="44"/>
-          <rect data-chip-pin="4" x="265" y="160" width="135" height="44"/>
-          <rect data-chip-pin="5" x="150" y="8" width="160" height="84"/>
-          <rect data-chip-pin="6" x="150" y="214" width="100" height="78"/>
-        </g>
-        <circle class="pulse" r="4" cx="14" cy="122" data-pulse-in/>
-        <circle class="pulse" r="4" cx="285" cy="122" data-pulse-out/>
-      </svg>
-      <p class="chip-tip" data-chip-tip hidden></p>
-      <table class="vectors" data-vectors>
-        <caption class="sr">Test vectors from the example clauses of score_label</caption>
-        <thead><tr><th scope="col">Vector</th><th scope="col">score</th><th scope="col">Expected</th><th scope="col">Result</th></tr></thead>
-        <tbody>
-          <tr data-v="0"><td>TV1</td><td>95</td><td>"excellent"</td><td><span class="res">PASS</span></td></tr>
-          <tr data-v="1"><td>TV2</td><td>70</td><td>"passing"</td><td><span class="res">PASS</span></td></tr>
-          <tr data-v="2"><td>TV3</td><td>40</td><td>"needs work"</td><td><span class="res">PASS</span></td></tr>
-        </tbody>
-      </table>
-      <figcaption id="fig1-cap"><b>Figure 1.</b> <span>Functional diagram. Each <code>example</code> clause is a test vector, run by <code>geno test</code>. Pin functions in <a href="#pinout">Table 4-1</a>.</span></figcaption>
+      <div class="rp-head">
+        <p class="rp-k" aria-hidden="true"><b>FIG. 1</b> Repair sequence</p>
+        <div class="rp-ctl">
+          <span class="rp-state" data-rp-state aria-hidden="true">t4 · SHIP</span>
+          <button type="button" class="rp-btn" data-rp-toggle aria-label="Play the replay" hidden><svg viewBox="0 0 12 12" aria-hidden="true"><path class="i-pause" d="M3 2h2v8H3zM7 2h2v8H7z"/><path class="i-play" d="M3 1.8 10 6 3 10.2z"/></svg><span>Play</span></button>
+          <button type="button" class="rp-btn" data-rp-restart hidden><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2.2a3.8 3.8 0 1 1-3.6 2.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M1.2 1.6 4.6 2.4 2.6 5.2z"/></svg><span>Replay</span></button>
+        </div>
+      </div>
+      <div class="rp-stage" aria-hidden="true">
+        <div class="rp-voice rp-model">
+          <span class="rp-who"><i></i>Model</span>
+          <p class="rp-say" data-rp-say>All four examples hold. Shipping it.</p>
+        </div>
+        <div class="rp-code">
+          <div class="rp-code-head"><span class="code-file">score.geno</span><span class="rp-open">open blocks <b data-rp-open>none</b></span></div>
+          <pre class="rp-src"><code data-rp-code><span class="rl"><span class="rl-n">1</span><span class="rl-c"><span class="tok-kw">func</span> <span class="tok-fn">score_label</span><span class="tok-punct">(</span>score<span class="tok-punct">:</span> <span class="tok-type">Int</span><span class="tok-punct">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">String</span></span></span><span class="rl"><span class="rl-n">2</span><span class="rl-c">    <span class="tok-spec">requires</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">0</span></span></span><span class="rl"><span class="rl-n">3</span><span class="rl-c">    <span class="tok-spec">example</span> <span class="tok-num">90</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"excellent"</span></span><span class="rp-b rp-b-pass"><i>TV1</i>PASS</span></span><span class="rl"><span class="rl-n">4</span><span class="rl-c">    <span class="tok-spec">example</span> <span class="tok-num">89</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span><span class="rp-b rp-b-pass"><i>TV2</i>PASS</span></span><span class="rl"><span class="rl-n">5</span><span class="rl-c">    <span class="tok-spec">example</span> <span class="tok-num">60</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span><span class="rp-b rp-b-pass"><i>TV3</i>PASS</span></span><span class="rl"><span class="rl-n">6</span><span class="rl-c">    <span class="tok-spec">example</span> <span class="tok-num">59</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"needs work"</span></span><span class="rp-b rp-b-pass"><i>TV4</i>PASS</span></span><span class="rl"><span class="rl-n">7</span><span class="rl-c"> </span></span><span class="rl"><span class="rl-n">8</span><span class="rl-c">    <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">90</span> <span class="tok-kw">then</span></span></span><span class="rl"><span class="rl-n">9</span><span class="rl-c">        <span class="tok-kw">return</span> <span class="tok-str">"excellent"</span></span></span><span class="rl"><span class="rl-n">10</span><span class="rl-c">    <span class="tok-kw">else</span> <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">60</span> <span class="tok-kw">then</span></span></span><span class="rl"><span class="rl-n">11</span><span class="rl-c">        <span class="tok-kw">return</span> <span class="tok-str">"passing"</span></span></span><span class="rl"><span class="rl-n">12</span><span class="rl-c">    <span class="tok-kw">else</span></span></span><span class="rl"><span class="rl-n">13</span><span class="rl-c">        <span class="tok-kw">return</span> <span class="tok-str">"needs work"</span></span></span><span class="rl"><span class="rl-n">14</span><span class="rl-c">    <span class="tok-end">end</span> <span class="tok-end">if</span></span></span><span class="rl"><span class="rl-n">15</span><span class="rl-c"><span class="tok-end">end</span> <span class="tok-end">func</span></span></span></code></pre>
+        </div>
+        <div class="rp-voice rp-geno">
+          <span class="rp-who"><i></i>Geno</span>
+          <pre class="term rp-term" data-rp-term><span class="tok-prompt">$</span> <span class="tok-cmd">geno</span> compile score.geno <span class="tok-flag">-o</span> score.py
+Compiled to score.py
+<span class="tok-prompt">$</span> <span class="tok-cmd">geno</span> compile score.geno <span class="tok-flag">--target</span> js <span class="tok-flag">-o</span> score.js
+Compiled to score.js</pre>
+        </div>
+      </div>
+      <div class="rp-strip" data-rp-strip data-at="4" style="--rp-pos:1">
+        <div class="rp-axis" aria-hidden="true"><span>t0</span><span>t1</span><span>t2</span><span>t3</span><span>t4</span></div>
+        <span class="rp-rl rp-rl-step" aria-hidden="true">Step</span>
+        <ol class="rp-steps" aria-label="Replay steps">
+          <li><button type="button" class="is-done" data-step="0" disabled aria-label="Step 1, write: the model writes score.geno"><span>Write</span></button></li>
+          <li><button type="button" class="is-done" data-step="1" disabled aria-label="Step 2, fail: geno test passes 3 of 4 examples"><span>Fail</span></button></li>
+          <li><button type="button" class="is-done" data-step="2" disabled aria-label="Step 3, repair: the threshold changes from 75 to 60"><span>Repair</span></button></li>
+          <li><button type="button" class="is-done" data-step="3" disabled aria-label="Step 4, pass: geno test passes 4 of 4 examples"><span>Pass</span></button></li>
+          <li><button type="button" class="is-now" data-step="4" disabled aria-current="step" aria-label="Step 5, ship: geno compile writes Python and JavaScript"><span>Ship</span></button></li>
+        </ol>
+        <span class="rp-rl rp-rl-sig" aria-hidden="true">Examples</span>
+        <div class="rp-sig" aria-hidden="true">
+          <span class="sg sg-x"></span><span class="sg sg-lo"><b>3/4</b></span><span class="sg sg-x"></span><span class="sg sg-hi"><b>4/4</b></span><span class="sg sg-hi"></span>
+        </div>
+        <span class="rp-cursor" aria-hidden="true"></span>
+      </div>
+      <div class="sr">
+        <p>The replay in five steps:</p>
+        <ol>
+          <li>A model writes score_label, a function that labels exam scores. It has four examples: 90 is excellent, 89 and 60 are passing, 59 needs work. The model sets the passing threshold at 75.</li>
+          <li><code>geno test -v score.geno</code> prints: FAIL score.geno (3/4). x score_label: expected "passing", got "needs work".</li>
+          <li>The model reads the examples: 60 passes and 59 does not, so it changes the threshold from 75 to 60.</li>
+          <li><code>geno test -v score.geno</code> prints: PASS score.geno (4/4). 4 passed, 0 failed.</li>
+          <li><code>geno compile</code> writes score.py and, with <code>--target js</code>, score.js.</li>
+        </ol>
+      </div>
+      <figcaption id="fig1-cap"><b>Figure 1.</b> Typical repair sequence. Every line Geno prints here is real output from the 0.5.0-rc.1 CLI. Passing examples are evidence, not proof.</figcaption>
     </figure>
 
     <div class="p1-cols">
@@ -246,13 +226,92 @@
     <h2 id="h4" class="h-main"><span class="no">4</span>Pin Configuration and Functions</h2>
     <p class="sec-lede">A Geno function is a component with a published interface. Its signature is the pinout, its examples are the test conditions, and its last line says exactly what it closes.</p>
     <div class="pinout" data-pinout>
-      <figure class="fig fig-code" aria-labelledby="fig41">
-        <div class="code-head"><span class="code-file">score.geno</span><span class="code-meta">14 lines · 3 examples</span></div>
+      <figure class="fig fig-chip" aria-labelledby="fig41-cap">
+        <div class="crop" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <svg class="chip" viewBox="0 0 400 300" role="img" aria-labelledby="chip-title chip-desc" data-chip>
+          <title id="chip-title">score_label drawn as an integrated circuit</title>
+          <desc id="chip-desc">A Geno function shown as a chip: input pin score of type Int, output pin String, a requires pin for the precondition, an example pin carrying four test vectors, a caps pin showing no effects, and an end func pin.</desc>
+          <!-- wires -->
+          <g class="wires">
+            <line x1="14" y1="122" x2="115" y2="122"/>
+            <line x1="14" y1="182" x2="115" y2="182"/>
+            <line x1="285" y1="122" x2="386" y2="122"/>
+            <line x1="285" y1="182" x2="386" y2="182"/>
+            <line x1="230" y1="34" x2="230" y2="72"/>
+            <line x1="200" y1="234" x2="200" y2="262"/>
+          </g>
+          <g class="terms">
+            <circle cx="12" cy="122" r="4"/><circle cx="12" cy="182" r="4"/>
+            <circle cx="388" cy="122" r="4"/><circle cx="388" cy="182" r="4"/>
+          </g>
+          <!-- legs -->
+          <g class="legs">
+            <rect x="115" y="117" width="20" height="10"/>
+            <rect x="115" y="177" width="20" height="10"/>
+            <rect x="265" y="117" width="20" height="10"/>
+            <rect x="265" y="177" width="20" height="10"/>
+            <rect x="225" y="72" width="10" height="20"/>
+            <rect x="195" y="214" width="10" height="20"/>
+          </g>
+          <!-- body -->
+          <path class="body" d="M141 92 H192 A8 8 0 0 0 208 92 H259 Q265 92 265 98 V208 Q265 214 259 214 H141 Q135 214 135 208 V98 Q135 92 141 92 Z"/>
+          <circle class="pin1" cx="147" cy="104" r="2.6"/>
+          <text class="desig" x="135" y="84">U1</text>
+          <text class="body-name" x="200" y="150" text-anchor="middle">score_label</text>
+          <text class="body-sub" x="200" y="168" text-anchor="middle">GENO 0.5 · FUNC</text>
+          <g class="pinno">
+            <text x="145" y="126">1</text><text x="145" y="186">2</text>
+            <text x="255" y="126" text-anchor="end">3</text><text x="255" y="186" text-anchor="end">4</text>
+            <text x="230" y="108" text-anchor="middle">5</text><text x="200" y="208" text-anchor="middle">6</text>
+          </g>
+          <!-- labels -->
+          <g class="lbl">
+            <text x="110" y="113" text-anchor="end">score: Int</text>
+            <text x="110" y="173" text-anchor="end">caps: none</text>
+            <text x="290" y="113">→ String</text>
+            <text x="290" y="173">example ×4</text>
+            <text x="230" y="26" text-anchor="middle">requires score &gt;= 0</text>
+            <text x="200" y="282" text-anchor="middle">end func</text>
+          </g>
+          <!-- live values -->
+          <g class="val">
+            <text x="18" y="140" data-chip-in>90</text>
+            <text x="18" y="200">pure</text>
+            <text x="290" y="140" data-chip-out>"excellent"</text>
+            <text x="290" y="200" data-chip-count>4/4 pass</text>
+          </g>
+          <g class="hits">
+            <rect data-chip-pin="1" x="0" y="100" width="135" height="44"/>
+            <rect data-chip-pin="2" x="0" y="160" width="135" height="44"/>
+            <rect data-chip-pin="3" x="265" y="100" width="135" height="44"/>
+            <rect data-chip-pin="4" x="265" y="160" width="135" height="44"/>
+            <rect data-chip-pin="5" x="150" y="8" width="160" height="84"/>
+            <rect data-chip-pin="6" x="150" y="214" width="100" height="78"/>
+          </g>
+          <circle class="pulse" r="4" cx="14" cy="122" data-pulse-in/>
+          <circle class="pulse" r="4" cx="285" cy="122" data-pulse-out/>
+        </svg>
+        <p class="chip-tip" data-chip-tip hidden></p>
+        <table class="vectors" data-vectors>
+          <caption class="sr">Test vectors from the example clauses of score_label</caption>
+          <thead><tr><th scope="col">Vector</th><th scope="col">score</th><th scope="col">Expected</th><th scope="col">Result</th></tr></thead>
+          <tbody>
+            <tr data-v="0"><td>TV1</td><td>90</td><td>"excellent"</td><td><span class="res">PASS</span></td></tr>
+            <tr data-v="1"><td>TV2</td><td>89</td><td>"passing"</td><td><span class="res">PASS</span></td></tr>
+            <tr data-v="2"><td>TV3</td><td>60</td><td>"passing"</td><td><span class="res">PASS</span></td></tr>
+            <tr data-v="3"><td>TV4</td><td>59</td><td>"needs work"</td><td><span class="res">PASS</span></td></tr>
+          </tbody>
+        </table>
+        <figcaption id="fig41-cap"><b>Figure 4-1.</b> <span>Functional diagram of <code>score_label</code>. Each <code>example</code> clause is a test vector, run by <code>geno test</code>. Point at a pin to read its function.</span></figcaption>
+      </figure>
+      <figure class="fig fig-code" aria-labelledby="fig42">
+        <div class="code-head"><span class="code-file">score.geno</span><span class="code-meta">15 lines · 4 examples</span></div>
 <pre class="code code-pins"><code><span class="ln" data-pinline="1 3"><span class="pinmark" data-pm="1">1</span><span class="tok-kw">func</span> <span class="tok-fn">score_label</span><span class="tok-punct">(</span>score<span class="tok-punct">:</span> <span class="tok-type">Int</span><span class="tok-punct">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">String</span><span class="pinmark pinmark-r" data-pm="3">3</span></span>
 <span class="ln" data-pinline="5"><span class="pinmark" data-pm="5">5</span>    <span class="tok-spec">requires</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">0</span></span>
-<span class="ln" data-pinline="4"><span class="pinmark" data-pm="4">4</span>    <span class="tok-spec">example</span> <span class="tok-num">95</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"excellent"</span></span>
-<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">70</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span>
-<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">40</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"needs work"</span></span>
+<span class="ln" data-pinline="4"><span class="pinmark" data-pm="4">4</span>    <span class="tok-spec">example</span> <span class="tok-num">90</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"excellent"</span></span>
+<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">89</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span>
+<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">60</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"passing"</span></span>
+<span class="ln" data-pinline="4">    <span class="tok-spec">example</span> <span class="tok-num">59</span> <span class="tok-op">-&gt;</span> <span class="tok-str">"needs work"</span></span>
 <span class="ln"> </span>
 <span class="ln" data-pinline="2">    <span class="tok-kw">if</span> score <span class="tok-op">&gt;=</span> <span class="tok-num">90</span> <span class="tok-kw">then</span></span>
 <span class="ln" data-pinline="2">        <span class="tok-kw">return</span> <span class="tok-str">"excellent"</span></span>
@@ -262,8 +321,9 @@
 <span class="ln" data-pinline="2">        <span class="tok-kw">return</span> <span class="tok-str">"needs work"</span></span>
 <span class="ln" data-pinline="6">    <span class="tok-end">end</span> <span class="tok-end">if</span></span>
 <span class="ln" data-pinline="6"><span class="pinmark" data-pm="6">6</span><span class="tok-end">end</span> <span class="tok-end">func</span></span></code></pre>
-        <figcaption id="fig41"><b>Figure 4-1.</b> score.geno, the README example. Point at a pin to see what it does.</figcaption>
+        <figcaption id="fig42"><b>Figure 4-2.</b> <code>score.geno</code> after the repair in Figure 1, with its pins marked.</figcaption>
       </figure>
+    </div>
       <div class="tbl-wrap">
         <table class="spec pin-table">
           <caption><b>Table 4-1.</b> Pin functions</caption>
@@ -277,9 +337,8 @@
             <tr data-pin="6" tabindex="0"><td class="num">6</td><td><code>end func</code></td><td>T</td><td>Named terminator. A mismatched <code>end</code> fails on its own line, so generated structure cannot drift silently.</td></tr>
           </tbody>
         </table>
-        <p class="fn">I = input, O = output, P = permission, C = contract, T = checked by the toolchain. Pin numbers match Figure 1.</p>
+        <p class="fn">I = input, O = output, P = permission, C = contract, T = checked by the toolchain. Pin numbers match Figure 4-1.</p>
       </div>
-    </div>
   </section>
 
   <footer class="pagefoot" aria-label="Page 2"><span>GNO-0.5 – SLGS001</span><a href="https://github.com/davidiach/geno-lang/issues/new/choose">Submit document feedback</a><span class="pf-n">2</span></footer>
@@ -886,6 +945,7 @@ $ geno run Main.geno
 <script src="shared/js/examples.js"></script>
 <script src="shared/js/runtime.js"></script>
 <script src="shared/js/playground.js"></script>
+<script src="assets/replay.js"></script>
 <script src="assets/datasheet.js"></script>
 </body>
 </html>

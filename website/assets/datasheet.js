@@ -80,11 +80,13 @@
     });
   }
 
-  /* pinout: table rows <-> code lines ------------------------------------ */
+  /* pinout: table rows <-> code lines <-> chip pins ----------------------- */
+  var chipPin = function () {};
+  var pinLight = function () {};
   var pinout = document.querySelector("[data-pinout]");
   if (pinout) {
     var lines = pinout.querySelectorAll("[data-pinline]");
-    var rows = pinout.querySelectorAll("tr[data-pin]");
+    var rows = document.querySelectorAll("tr[data-pin]");
     var light = function (pin) {
       lines.forEach(function (ln) {
         ln.classList.toggle("is-lit", pin !== null && ln.dataset.pinline.split(" ").indexOf(pin) !== -1);
@@ -92,7 +94,9 @@
       rows.forEach(function (r) {
         r.classList.toggle("is-lit", r.dataset.pin === pin);
       });
+      chipPin(pin === null ? 0 : +pin);
     };
+    pinLight = light;
     rows.forEach(function (r) {
       r.addEventListener("pointerenter", function () {
         light(r.dataset.pin);
@@ -117,14 +121,15 @@
     });
   }
 
-  /* hero chip: run the three test vectors -------------------------------- */
+  /* Figure 4-1 chip: run the four test vectors --------------------------- */
   var chip = document.querySelector("[data-chip]");
   var vectors = document.querySelector("[data-vectors]");
   if (chip && vectors && !reduce && chip.animate) {
     var VEC = [
-      ["95", '"excellent"'],
-      ["70", '"passing"'],
-      ["40", '"needs work"'],
+      ["90", '"excellent"'],
+      ["89", '"passing"'],
+      ["60", '"passing"'],
+      ["59", '"needs work"'],
     ];
     var inText = chip.querySelector("[data-chip-in]");
     var outText = chip.querySelector("[data-chip-out]");
@@ -133,7 +138,7 @@
     var pOut = chip.querySelector("[data-pulse-out]");
     var vrows = vectors.querySelectorAll("tbody tr");
     var running = false;
-    var inView = true;
+    var inView = !("IntersectionObserver" in window);
 
     function wait(ms) {
       return new Promise(function (r) {
@@ -158,7 +163,7 @@
         r.classList.add("is-pending");
         r.querySelector(".res").textContent = "····";
       });
-      count.textContent = "0/3 pass";
+      count.textContent = "0/" + VEC.length + " pass";
       for (var i = 0; i < VEC.length; i++) {
         inText.textContent = VEC[i][0];
         outText.textContent = "";
@@ -174,14 +179,14 @@
         vrows[i].classList.remove("is-pending");
         vrows[i].classList.add("is-hit");
         vrows[i].querySelector(".res").textContent = "PASS";
-        count.textContent = i + 1 + "/3 pass";
+        count.textContent = i + 1 + "/" + VEC.length + " pass";
         await wait(380);
       }
       await wait(900);
       vrows.forEach(function (r) {
         r.classList.remove("is-hit");
       });
-      inText.textContent = "95";
+      inText.textContent = VEC[0][0];
       outText.textContent = '"excellent"';
       running = false;
     }
@@ -196,7 +201,7 @@
     }, 1900);
   }
 
-  /* hero chip: hover a pin to read its function (from Table 4-1) --------- */
+  /* Figure 4-1 chip: hover a pin to read its function (from Table 4-1) --- */
   var chipEl = document.querySelector("[data-chip]");
   var tip = document.querySelector("[data-chip-tip]");
   if (chipEl && tip) {
@@ -214,19 +219,25 @@
       });
       tip.hidden = true;
     };
+    var mark = function (n) {
+      clear();
+      if (!n) return;
+      chipEl.classList.add("has-pin");
+      groups.forEach(function (g) {
+        var el = g[n - 1];
+        if (el) {
+          el.classList.add("is-on");
+          el.setAttribute("data-pinset", "");
+        }
+      });
+    };
+    chipPin = mark;
     chipEl.querySelectorAll("[data-chip-pin]").forEach(function (hit) {
       var n = +hit.dataset.chipPin;
       var row = document.querySelector('tr[data-pin="' + n + '"]');
       hit.addEventListener("pointerenter", function () {
-        clear();
-        chipEl.classList.add("has-pin");
-        groups.forEach(function (g) {
-          var el = g[n - 1];
-          if (el) {
-            el.classList.add("is-on");
-            el.setAttribute("data-pinset", "");
-          }
-        });
+        pinLight(String(n));
+        mark(n);
         if (row) {
           var cells = row.querySelectorAll("td");
           tip.innerHTML = "<b>PIN " + n + " · " + cells[1].textContent + "</b>" + cells[3].innerHTML;
@@ -240,15 +251,14 @@
         tip.style.left = left + "px";
         tip.style.top = top + "px";
       });
-      hit.addEventListener("pointerleave", clear);
+      hit.addEventListener("pointerleave", function () {
+        pinLight(null);
+        clear();
+      });
       hit.addEventListener("click", function () {
-        var target = document.getElementById("pinout");
-        if (target) target.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
-        if (row) {
-          setTimeout(function () {
-            row.focus({ preventScroll: true });
-          }, reduce ? 0 : 700);
-        }
+        if (!row) return;
+        row.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
+        row.focus({ preventScroll: true });
       });
     });
   }
