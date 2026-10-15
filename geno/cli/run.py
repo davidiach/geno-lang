@@ -34,6 +34,7 @@ from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 # inside the two paths that already hold the frontend.
 from ..exit_status import exit_status_for_int_result
 from ._util import (
+    _format_error,
     _format_source_snippet,
     _print_error,
     _print_runtime_error,
@@ -442,7 +443,7 @@ def _format_process_frontend_error(filename: str, error: BaseException) -> str:
     if isinstance(error, ValueError):
         return f"Manifest Error: {error}"
     if isinstance(error, LexerError):
-        return f"Lexer Error: {error}{_format_source_snippet(error.location)}"
+        return _format_error("Lexer Error", error)
     if isinstance(error, ParseErrors):
         lines = [f"Parse Errors ({len(error.errors)} errors):"]
         lines.extend(
@@ -451,9 +452,9 @@ def _format_process_frontend_error(filename: str, error: BaseException) -> str:
         )
         return "\n".join(lines)
     if isinstance(error, ParseError):
-        return f"Parse Error: {error}{_format_source_snippet(error.location)}"
+        return _format_error("Parse Error", error)
     if isinstance(error, GenoTypeError):
-        return f"Type Error: {error}{_format_source_snippet(error.location)}"
+        return _format_error("Type Error", error)
     if isinstance(error, (CompileError, JSCompileError)):
         # Backend rejections (reserved runtime names, unsupported constructs)
         # carry the only actionable text, so surface the same message the

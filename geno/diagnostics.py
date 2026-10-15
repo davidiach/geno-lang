@@ -111,6 +111,35 @@ def runtime_error_code_for_message(message: str) -> ErrorCode | None:
     return None
 
 
+def error_parts(error: object) -> list[tuple[SourceLocation | None, str]]:
+    """Split a toolchain error into ``(location, message)`` parts.
+
+    ``str()`` of some errors already carries a phase label (a type error renders
+    as ``"<loc>: Type Error: <msg>"``), so callers that print their own label
+    must build the line from these structured parts instead of ``str(error)``.
+    Aggregate errors (``TypeErrors``) yield one part per contained error; an
+    error without a ``message`` falls back to its ``str()``.
+    """
+    errors = getattr(error, "errors", None) or [error]
+    parts: list[tuple[SourceLocation | None, str]] = []
+    for err in errors:
+        message = getattr(err, "message", None)
+        if isinstance(message, str):
+            parts.append((getattr(err, "location", None), message))
+        else:
+            parts.append((None, str(err)))
+    return parts
+
+
+def format_labeled_error(label: str, error: object) -> list[str]:
+    """Render ``"<label>: <loc>: <message>"`` lines, one per contained error."""
+    lines = []
+    for location, message in error_parts(error):
+        where = f"{location}: " if location is not None else ""
+        lines.append(f"{label}: {where}{message}")
+    return lines
+
+
 @dataclass(frozen=True)
 class Diagnostic:
     """

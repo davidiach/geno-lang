@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List
 
 from .ast_nodes import FunctionDef, TestBlock
+from .diagnostics import format_labeled_error
 from .execution_limits import (
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
@@ -417,7 +418,7 @@ def run_project_test_suite(
     except ValueError as e:
         return _project_error_result(f"Manifest Error: {e}")
     except TypeError as e:
-        return _project_error_result(f"Type Error: {e}")
+        return _project_error_result("\n".join(format_labeled_error("Type Error", e)))
     except TargetValidationError as e:
         return _project_error_result(f"Compile Error: {e.backend_message}")
 

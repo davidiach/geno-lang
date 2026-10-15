@@ -408,8 +408,8 @@
         t.setAttribute("aria-pressed", on.has(t.dataset.arm) ? "true" : "false");
       });
       var text = "$ geno check shapes.geno\n";
-      if (!missing.length) text += "Type check passed: shapes.geno\n  2 definitions, 1 modules";
-      else text += "Type Error: shapes.geno:7:5: Type Error: Non-exhaustive patterns: missing " + missing.join(", ") + "\n      match s with\n      ^";
+      if (!missing.length) text += "Type check passed: shapes.geno\n  2 definitions, 1 module";
+      else text += "Type Error: shapes.geno:7:5: Non-exhaustive patterns: missing " + missing.join(", ") + "\n      match s with\n      ^";
       out.innerHTML = H.highlight(text, "sh");
       root.classList.toggle("is-failing", missing.length > 0);
       var matchLn = $(code, '[data-ln="7"]');
