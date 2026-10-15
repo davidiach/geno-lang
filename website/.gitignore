@@ -1,3 +1,5 @@
 # Built by website/build.py; the Pages workflow rebuilds it from geno/.
 shared/playground/geno.zip
 shared/playground/pyodide
+# Rendered from docs/*.md and CHANGELOG.md by build.py.
+docs/
