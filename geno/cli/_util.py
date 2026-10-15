@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-from ..diagnostics import Diagnostic, ErrorCode
+from ..diagnostics import Diagnostic, ErrorCode, error_parts
 from ..version_support import is_supported_python, unsupported_python_message
 
 
@@ -27,11 +27,24 @@ def _format_source_snippet(location) -> str:
         return ""
 
 
+def _format_error(label: str, error) -> str:
+    """Format an error under ``label`` with source snippets if available.
+
+    The label appears exactly once per error: each line is built from the
+    error's structured location and message, never its ``str()``, which may
+    already carry a phase label of its own (type errors do).
+    """
+    lines = []
+    for location, message in error_parts(error):
+        where = f"{location}: " if location is not None else ""
+        snippet = _format_source_snippet(location)
+        lines.append(f"{label}: {where}{message}{snippet}")
+    return "\n".join(lines)
+
+
 def _print_error(label: str, error, file=sys.stderr):
-    """Print an error with source line snippet if available."""
-    loc = getattr(error, "location", None)
-    snippet = _format_source_snippet(loc)
-    print(f"{label}: {error}{snippet}", file=file)
+    """Print an error under ``label`` with a source snippet if available."""
+    print(_format_error(label, error), file=file)
 
 
 def _print_warning(diagnostic: Diagnostic, file: TextIO | None = None) -> None:

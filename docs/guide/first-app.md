@@ -73,7 +73,7 @@ geno run Main.geno --unsafe
 ```bash
 geno check Main.geno
 # Type check passed: Main.geno
-#   1 definitions, 1 modules
+#   1 definition, 1 module
 ```
 
 ## Key Takeaways
