@@ -117,9 +117,10 @@ def test_compiled_python_denies_gated_builtins_without_capability(
     )
 
     assert result.returncode != 0
-    assert "Capability denied" in result.stderr
-    assert builtin_name in result.stderr
-    assert f"--cap {capability}" in result.stderr
+    assert (
+        f"Capability denied: '{builtin_name}' requires the '{capability}' "
+        f"capability; pass '--cap {capability}' to grant it"
+    ) in result.stderr
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
@@ -132,9 +133,10 @@ def test_compiled_js_denies_gated_builtins_without_capability(
     result = run_node_code(compile_to_js(source), timeout=10)
 
     assert result.returncode != 0
-    assert "Capability denied" in result.stderr
-    assert builtin_name in result.stderr
-    assert f"--cap {capability}" in result.stderr
+    assert (
+        f"Capability denied: '{builtin_name}' requires the '{capability}' "
+        f"capability; pass '--cap {capability}' to grant it"
+    ) in result.stderr
 
 
 def test_compiled_js_rejects_unavailable_http_respond() -> None:

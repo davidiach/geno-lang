@@ -86,8 +86,10 @@ from .builtin_registry import (
     ALWAYS_AVAILABLE_BUILTINS,
     DEFAULT_ALLOWED_CAPABILITIES,
     allowed_gated_builtins,
+    capability_for_source_builtin,
     interpreter_builtin_param_name_lists,
 )
+from .capabilities import capability_denied_message
 from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .float_promotion import float_shape
@@ -505,10 +507,14 @@ class Interpreter:
         allowed_gated = allowed_gated_builtins(capabilities)
 
         def _make_denied_stub(builtin_name: str):
+            message = capability_denied_message(
+                builtin_name, capability_for_source_builtin(builtin_name)
+            )
+
             def denied(*args):
+                # No location here: _call_function attaches the call site.
                 raise RuntimeError(
-                    f"Capability denied: '{builtin_name}' requires a capability "
-                    f"that was not granted",
+                    message,
                     error_code=ErrorCode.RUNTIME_CAPABILITY_DENIED,
                 )
 
@@ -2557,7 +2563,20 @@ class Interpreter:
                 result = func.func(*args)
             except SandboxError:
                 raise
-            except (RuntimeError, GenoRuntimeError):
+            except (RuntimeError, GenoRuntimeError) as e:
+                if (
+                    e.location is None
+                    and e.error_code is ErrorCode.RUNTIME_CAPABILITY_DENIED
+                    and location is not None
+                ):
+                    # Denial stubs and host policy wrappers do not know the
+                    # call site; report the call instead of letting the trace
+                    # fall back to the enclosing function's definition.
+                    raise RuntimeError(
+                        e.message,
+                        location,
+                        error_code=e.error_code,
+                    ) from None
                 raise
             except _EXPECTED_BUILTIN_ERRORS as e:
                 # Ordinary user-facing error from a builtin (bad argument,

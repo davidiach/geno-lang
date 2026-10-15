@@ -121,6 +121,9 @@ def _print_runtime_error(error, file=sys.stderr):
             else:
                 line = f"  in {name}"
             print(line, file=file)
+        if loc is not None:
+            # Frames carry definition sites; this is where the error happened.
+            print(f"  at {loc}", file=file)
     print(f"Runtime Error: {msg}{snippet}", file=file)
 
 

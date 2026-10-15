@@ -3435,7 +3435,7 @@ def _compiled_runtime_capability_assignment(
         caps_literal = f"{{{values}}}"
     else:
         caps_literal = "set()"
-    return f"\n\n_GENO_CAPS = {caps_literal}\n"
+    return f"\n\n_GENO_CAPS = {caps_literal}\n_GENO_CAPS_FROM_ARGV = False\n"
 
 
 def _insert_compiled_runtime_capability_assignment(

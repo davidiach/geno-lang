@@ -4050,18 +4050,33 @@ def _geno_parse_caps():
 
 
 _GENO_CAPS: frozenset[str]
+# Whether the grant came from this script's own ``--cap`` flags.  Only then is
+# "pass --cap" advice true: hosts that inject ``_GENO_CAPS`` (the ``geno run``
+# worker, embedded execution) decide grants some other way.
+_GENO_CAPS_FROM_ARGV: bool
 try:
     _GENO_CAPS = frozenset(_GENO_CAPS)
+    _GENO_CAPS_FROM_ARGV = False
 except NameError:
     _GENO_CAPS = frozenset(_geno_parse_caps())
+    _GENO_CAPS_FROM_ARGV = True
 
 
 def _require_cap(cap_name: str, builtin_name: str) -> None:
     """Raise if the capability is not granted."""
     if cap_name not in _GENO_CAPS:
-        raise RuntimeError(
-            f"Capability denied: '{builtin_name}' requires '--cap {cap_name}'"
+        # Same wording as geno.capabilities.capability_denied_message.
+        message = (
+            f"Capability denied: '{builtin_name}' requires the '{cap_name}' capability"
         )
+        if _GENO_CAPS_FROM_ARGV:
+            message += f"; pass '--cap {cap_name}' to grant it"
+        error: Any = RuntimeError(message)
+        # Provenance for the process-sandbox worker: only this helper sets it,
+        # so a program cannot forge a denial by throwing the same text.  The
+        # type stays RuntimeError so compiled `catch e: String` still works.
+        error._geno_capability_denied = cap_name
+        raise error
 
 
 def _minimal_process_env():

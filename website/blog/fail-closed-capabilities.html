@@ -105,10 +105,13 @@
       <p class="an-tags"><span class="tag">security</span> <span class="tag">capabilities</span></p>
     </nav>
     <article class="prose">
-<p class="lede">Most computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, naming the builtin that needed it.</p>
+<p class="lede">Most computation in Geno is always allowed. Anything that touches the world outside the program needs a capability granted on the command line. If you do not grant it, the call fails at the moment it is made, naming the builtin and the capability it needs.</p>
 
 <pre><code data-lang="sh">$ geno run notes.geno
-Runtime Error: Capability denied: 'fs_read_text' requires '--cap fs'</code></pre>
+Runtime Error: Capability denied: 'fs_read_text' requires the 'fs' capability
+Hint: the default 'geno run' lane grants only clock, print, random and does not accept --cap.
+  To grant 'fs', rerun without process isolation (trusted code only):
+  geno run --unsafe --cap clock,fs,print,random notes.geno</code></pre>
 
 <h2 id="the-ten-capabilities">The ten capabilities</h2>
 

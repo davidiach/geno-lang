@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -25,7 +26,7 @@ from .._serve import (
 from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
-from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES
+from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES, KNOWN_CAPABILITIES
 from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 
 # A leaf module by design: the parent side of the process-isolated lane needs
@@ -404,6 +405,37 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _default_lane_capability_hint(
+    capability: str | None,
+    filename: str,
+    program_args: list[str] | None = None,
+) -> str | None:
+    """Explain how to grant a capability the default process lane denied.
+
+    The default lane rejects ``--cap``, so the runtime's denial alone is not
+    actionable there. ``capability`` must come from the worker's structured
+    denial tag (``ProcessSandbox.last_capability_denied``), never from the
+    error text: a program can throw any message, and this hint recommends
+    leaving process isolation.
+    """
+    if capability is None or capability not in KNOWN_CAPABILITIES:
+        return None
+    if capability in DEFAULT_ALLOWED_CAPABILITIES:
+        return None
+    caps = ",".join(sorted(DEFAULT_ALLOWED_CAPABILITIES | {capability}))
+    defaults = ", ".join(sorted(DEFAULT_ALLOWED_CAPABILITIES))
+    command = f"geno run --unsafe --cap {caps} {shlex.quote(filename)}"
+    if program_args:
+        command += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
+    return (
+        f"Hint: the default 'geno run' lane grants only {defaults} and does "
+        "not accept --cap.\n"
+        f"  To grant '{capability}', rerun without process isolation "
+        "(trusted code only):\n"
+        f"  {command}"
+    )
+
+
 def _format_process_frontend_error(filename: str, error: BaseException) -> str:
     """Format a frontend failure without leaking a worker traceback."""
     from io import StringIO
@@ -664,9 +696,10 @@ def run_file(
             )
             _set_cli_args_env()
             try:
-                result, run_output, error = ProcessSandbox(
-                    process_config
-                ).execute_geno_request(request)
+                process_sandbox = ProcessSandbox(process_config)
+                result, run_output, error = process_sandbox.execute_geno_request(
+                    request
+                )
             finally:
                 _restore_cli_args_env()
 
@@ -683,6 +716,13 @@ def run_file(
                     )
                 else:
                     _print_runtime_error(RuntimeError(error))
+                    hint = _default_lane_capability_hint(
+                        process_sandbox.last_capability_denied,
+                        filename,
+                        program_args,
+                    )
+                    if hint:
+                        print(hint, file=sys.stderr)
                 sys.exit(1)
             # Captured output is printed before the status is returned, so a
             # nonzero exit never costs the program its output.
