@@ -251,6 +251,7 @@ def safe_read(path):
         raise ValueError("path not allowed")
     return open(path).read()
 
+
 config = geno.RunConfig(
     capabilities={"fs"},
     host_callbacks={"fs_read_text": safe_read},

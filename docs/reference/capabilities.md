@@ -160,9 +160,7 @@ result = geno.run(source)
 result = geno.run(source, config=RunConfig(capabilities=set()))
 
 # Grant specific capabilities
-result = geno.run(source, config=RunConfig(
-    capabilities={"print", "fs", "http"}
-))
+result = geno.run(source, config=RunConfig(capabilities={"print", "fs", "http"}))
 ```
 
 ## Always-Available Builtins

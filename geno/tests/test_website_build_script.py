@@ -271,6 +271,21 @@ class TestBuildDocs:
         assert broken == []
 
 
+class TestBuildBlog:
+    def test_fragments_join_without_blank_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shutil.copytree(SITE / "_templates", tmp_path / "_templates")
+        shutil.copy(SITE / "index.html", tmp_path / "index.html")
+        monkeypatch.setattr(build, "SITE", tmp_path)
+        build.build_blog()
+        assert "</tr>\n\n" not in (tmp_path / "blog" / "index.html").read_text()
+        landing = (tmp_path / "index.html").read_text()
+        start = landing.index("<!-- blog:latest -->")
+        latest = landing[start : landing.index("<!-- /blog:latest -->")]
+        assert "\n\n" not in latest
+
+
 class TestFeed:
     def test_posts_sharing_a_date_keep_their_number_order(self) -> None:
         def post(n: int) -> Any:
