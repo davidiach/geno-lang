@@ -199,7 +199,7 @@ class _Renderer:
                 and body[-1].strip()
                 and not self.starts_block(lines, i)
             ):
-                body.append(lines[i].strip())  # lazy continuation
+                body.append(lines[i].lstrip())  # lazy continuation
             else:
                 break
             i += 1
@@ -309,7 +309,7 @@ class _Renderer:
                 and items[-1][-1].strip()
                 and not self.starts_block(lines, i)
             ):
-                items[-1].append(line.strip())  # lazy continuation
+                items[-1].append(line.lstrip())  # lazy continuation
                 i += 1
                 continue
             break
@@ -388,7 +388,8 @@ class _Renderer:
             i += 1
         if not text:
             return i
-        joined = "\n".join(t.strip() if k else t.lstrip() for k, t in enumerate(text))
+        # Keep trailing spaces until inline(): two or more end a hard break.
+        joined = "\n".join(t.lstrip() for t in text).rstrip()
         inner = self.inline(joined)
         if not self.description:
             self.description = " ".join(plain(inner).split())
