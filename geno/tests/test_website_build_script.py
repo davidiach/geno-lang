@@ -183,6 +183,22 @@ class TestMarkdownInline:
     def test_backslash_escapes(self) -> None:
         assert _html(r"\*not em\* and \[not link\]") == "<p>*not em* and [not link]</p>"
 
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("a  \nb  \nc  \n", "<p>a<br>\nb<br>\nc</p>"),
+            ("a\\\nb\\\nc\n", "<p>a<br>\nb<br>\nc</p>"),
+            ("- a  \n  b  \n  c\n", "<ul>\n<li>a<br>\nb<br>\nc</li>\n</ul>"),
+            ("- a  \nb  \nc\n", "<ul>\n<li>a<br>\nb<br>\nc</li>\n</ul>"),
+            (
+                "> a  \nb  \nc\n",
+                "<blockquote>\n<p>a<br>\nb<br>\nc</p>\n</blockquote>",
+            ),
+        ],
+    )
+    def test_every_hard_break_in_a_paragraph(self, source: str, expected: str) -> None:
+        assert _html(source) == expected
+
 
 class TestDocLinks:
     def test_relative_links_map_to_hosted_pages_or_github(self) -> None:
