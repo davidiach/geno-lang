@@ -192,9 +192,14 @@ Three kinds of input reach the worker, and none of them comes from the program:
   untrusted input. Reading the grant early lets the worker preload the host
   modules for granted capabilities before it freezes the Darwin address-space
   baseline (see [HTTP](#http-http)).
-- **Data the program may read** travels in the request the parent writes: the
-  program arguments, the environment snapshot and the stdin text. Each is sent
-  only when its capability is granted.
+- **Data the program may read** travels in the request the parent writes. The
+  environment snapshot and the stdin text are sent only when `env` or `stdin`
+  is granted.
+- **The program arguments are always sent.** They already reach the worker
+  today through `GENO_CLI_ARGS`, and trusted setup needs them to compute the
+  `fs` roots even when `env` is not granted, as in
+  `geno run --cap fs,print main.geno -- /data/input.csv`. Only the
+  program-visible binding is gated: `cli_args` still requires `env`.
 - **The `fs` roots** are computed by trusted code in the worker, before the
   program runs, from the file name, the resolved project root and the program
   arguments. This is how `--unsafe` computes them (see
@@ -470,8 +475,10 @@ output, collection size, integer size and recursion. On top of that:
     caller's `HOME` rather than the sandbox's;
   - `stdin`: UTF-8, invalid UTF-8 and over-limit input;
   - `fs`: read, write, list, metadata and canonicalize; `..` and symlink
-    escapes; absolute paths inside and outside the roots;
-    `GENO_FS_READ_ONLY`; the over-limit write message;
+    escapes; absolute paths inside and outside the roots; a path argument
+    after `--` authorizing its directory under an `fs`-only grant, while
+    `cli_args` is still denied; `GENO_FS_READ_ONLY`; the over-limit write
+    message;
   - `http`: a local test server with `GENO_HTTP_ALLOW_PRIVATE`, scheme and
     private-address rejection, redirects and size limits.
 - **Parity:** the same programs under `--cap` and `--unsafe --cap` produce
