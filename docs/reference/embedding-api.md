@@ -15,8 +15,8 @@ func main() -> Int
 end func
 """)
 
-print(result.ok)      # True
-print(result.value)   # 42
+print(result.ok)  # True
+print(result.value)  # 42
 ```
 
 `geno.run()` is value-oriented: it returns `main()`'s value in `RunResult` and
@@ -32,10 +32,13 @@ Parse, type-check, and execute a Geno program.
 ```python
 from geno import RunConfig
 
-result = geno.run(source, config=RunConfig(
-    timeout=10.0,
-    capabilities={"print", "fs"},
-))
+result = geno.run(
+    source,
+    config=RunConfig(
+        timeout=10.0,
+        capabilities={"print", "fs"},
+    ),
+)
 ```
 
 ### `geno.run_path(path, config=None) -> RunResult`
@@ -44,9 +47,12 @@ Resolve a Geno file or project from disk, then execute it. Discovers the
 project graph and dependency modules automatically.
 
 ```python
-result = geno.run_path("my_project/Main.geno", config=RunConfig(
-    capabilities={"print", "http"},
-))
+result = geno.run_path(
+    "my_project/Main.geno",
+    config=RunConfig(
+        capabilities={"print", "http"},
+    ),
+)
 ```
 
 ### `geno.check(source, filename="<api>", modules=None) -> CheckResult`
@@ -75,8 +81,8 @@ runtimes to guide code generation.
 
 ```python
 result = geno.constrain_prefix("func main() -> ")
-print(result.valid)          # True
-print(result.unclosed_blocks) # ("func",)
+print(result.valid)  # True
+print(result.unclosed_blocks)  # ("func",)
 ```
 
 ## Configuration: RunConfig
@@ -117,13 +123,13 @@ those process-isolation limits.
 ```python
 @dataclass
 class RunResult:
-    ok: bool                      # True if execution succeeded
-    value: Any                    # Return value of main() (JSON-serializable)
-    value_raw: Any                # Raw Python value before conversion
-    output: str                   # Captured print() output
-    diagnostics: list[Diagnostic] # Structured error/warning list
-    timing: Timing                # Per-phase timing breakdown
-    steps_used: int               # Interpreter steps consumed
+    ok: bool  # True if execution succeeded
+    value: Any  # Return value of main() (JSON-serializable)
+    value_raw: Any  # Raw Python value before conversion
+    output: str  # Captured print() output
+    diagnostics: list[Diagnostic]  # Structured error/warning list
+    timing: Timing  # Per-phase timing breakdown
+    steps_used: int  # Interpreter steps consumed
     entrypoint_kind: EntrypointResultKind | None  # How a host would treat the result
 ```
 
@@ -159,9 +165,9 @@ status is the host's decision, and `geno.run()` never takes it.
 ```python
 @dataclass
 class CheckResult:
-    ok: bool                      # True if type-checking passed
-    diagnostics: list[Diagnostic] # Structured error/warning list
-    timing: Timing                # Per-phase timing breakdown
+    ok: bool  # True if type-checking passed
+    diagnostics: list[Diagnostic]  # Structured error/warning list
+    timing: Timing  # Per-phase timing breakdown
 ```
 
 `ok` is true when the program type-checks. `diagnostics` can still hold
@@ -175,10 +181,10 @@ standard library or installed dependencies.
 ```python
 @dataclass
 class ConstraintResult:
-    allowed_next: AllowedNext     # Valid next tokens
-    valid: bool                   # Whether the prefix is valid so far
-    error: str | None             # Error message if invalid
-    unclosed_blocks: tuple[str, ...] # Open block types
+    allowed_next: AllowedNext  # Valid next tokens
+    valid: bool  # Whether the prefix is valid so far
+    error: str | None  # Error message if invalid
+    unclosed_blocks: tuple[str, ...]  # Open block types
 ```
 
 ### Timing
@@ -186,11 +192,11 @@ class ConstraintResult:
 ```python
 @dataclass
 class Timing:
-    total_ms: float    # Total wall-clock time
-    lex_ms: float      # Lexing phase
-    parse_ms: float    # Parsing phase
-    typecheck_ms: float # Type-checking phase
-    run_ms: float      # Execution phase
+    total_ms: float  # Total wall-clock time
+    lex_ms: float  # Lexing phase
+    parse_ms: float  # Parsing phase
+    typecheck_ms: float  # Type-checking phase
+    run_ms: float  # Execution phase
 ```
 
 ### Diagnostic
@@ -198,9 +204,9 @@ class Timing:
 ```python
 @dataclass
 class Diagnostic:
-    code: ErrorCode       # Machine-readable error code (e.g., E300)
-    message: str          # Human-readable description
-    severity: Severity    # ERROR, WARNING, or INFO
+    code: ErrorCode  # Machine-readable error code (e.g., E300)
+    message: str  # Human-readable description
+    severity: Severity  # ERROR, WARNING, or INFO
     location: SourceLocation | None
 ```
 
@@ -213,12 +219,16 @@ def my_fs_read(path):
     # Custom file reading logic
     return open(path).read()
 
-result = geno.run(source, config=RunConfig(
-    capabilities={"fs"},
-    host_callbacks={
-        "fs_read_text": my_fs_read,
-    },
-))
+
+result = geno.run(
+    source,
+    config=RunConfig(
+        capabilities={"fs"},
+        host_callbacks={
+            "fs_read_text": my_fs_read,
+        },
+    ),
+)
 ```
 
 The same explicit-callback rule applies to `fs_metadata`,
@@ -251,9 +261,12 @@ func main() -> Int
 end func
 """
 
-result = geno.run(main_source, config=RunConfig(
-    modules={"Math": math_module},
-))
+result = geno.run(
+    main_source,
+    config=RunConfig(
+        modules={"Math": math_module},
+    ),
+)
 print(result.value)  # 42
 ```
 

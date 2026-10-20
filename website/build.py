@@ -303,8 +303,9 @@ def build_blog() -> list[Post]:
     out.mkdir(parents=True, exist_ok=True)
     post_t = (tdir / "post.html").read_text()
     index_t = (tdir / "blog.html").read_text()
-    row_t = (tdir / "blog-row.html").read_text()
-    card_t = (tdir / "blog-card.html").read_text()
+    # Row and card fragments are joined with "\n", so drop their final newline.
+    row_t = (tdir / "blog-row.html").read_text().rstrip("\n")
+    card_t = (tdir / "blog-card.html").read_text().rstrip("\n")
     for i, p in enumerate(posts):
         older = posts[i + 1] if i + 1 < len(posts) else None
         newer = posts[i - 1] if i > 0 else None

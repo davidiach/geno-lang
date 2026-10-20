@@ -17,7 +17,6 @@ import argparse
 import os
 import re
 import sys
-import traceback
 
 # Ensure the project root is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
