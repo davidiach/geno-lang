@@ -1,7 +1,7 @@
 # ADR: Shared IR for Python and JavaScript Backends
 
-**Status:** Decided — skip shared IR, extract shared data instead  
-**Date:** 2026-04-06  
+**Status:** Decided — skip shared IR, extract shared data instead\
+**Date:** 2026-04-06\
 **Issue:** #161
 
 ## Context
@@ -88,11 +88,11 @@ results remain aligned.
 
 Two targeted extractions that capture ~80% of the deduplication benefit:
 
-1. **Extract `_BUILTIN_PARAM_NAMES` to `geno/_builtin_params.py`.**  
+1. **Extract `_BUILTIN_PARAM_NAMES` to `geno/_builtin_params.py`.**\
    Single source of truth for the ~150-entry param name dict. Both compilers import
    it instead of maintaining their own copy.
 
-2. **Extract first-pass collection to a shared helper.**  
+2. **Extract first-pass collection to a shared helper.**\
    A function like `collect_definitions(program) -> DefinitionIndex` that returns
    `type_defs`, `func_param_names`, `trait_defs`, `impl_defs`, and `trait_dispatch`.
    Both compilers call it instead of duplicating the collection loop.

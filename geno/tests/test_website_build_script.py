@@ -183,6 +183,22 @@ class TestMarkdownInline:
     def test_backslash_escapes(self) -> None:
         assert _html(r"\*not em\* and \[not link\]") == "<p>*not em* and [not link]</p>"
 
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("a  \nb  \nc  \n", "<p>a<br>\nb<br>\nc</p>"),
+            ("a\\\nb\\\nc\n", "<p>a<br>\nb<br>\nc</p>"),
+            ("- a  \n  b  \n  c\n", "<ul>\n<li>a<br>\nb<br>\nc</li>\n</ul>"),
+            ("- a  \nb  \nc\n", "<ul>\n<li>a<br>\nb<br>\nc</li>\n</ul>"),
+            (
+                "> a  \nb  \nc\n",
+                "<blockquote>\n<p>a<br>\nb<br>\nc</p>\n</blockquote>",
+            ),
+        ],
+    )
+    def test_every_hard_break_in_a_paragraph(self, source: str, expected: str) -> None:
+        assert _html(source) == expected
+
 
 class TestDocLinks:
     def test_relative_links_map_to_hosted_pages_or_github(self) -> None:
@@ -269,6 +285,21 @@ class TestBuildDocs:
                 elif frag and frag not in anchors(dest):
                     broken.append(f"{page}: {href} (no #{frag})")
         assert broken == []
+
+
+class TestBuildBlog:
+    def test_fragments_join_without_blank_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shutil.copytree(SITE / "_templates", tmp_path / "_templates")
+        shutil.copy(SITE / "index.html", tmp_path / "index.html")
+        monkeypatch.setattr(build, "SITE", tmp_path)
+        build.build_blog()
+        assert "</tr>\n\n" not in (tmp_path / "blog" / "index.html").read_text()
+        landing = (tmp_path / "index.html").read_text()
+        start = landing.index("<!-- blog:latest -->")
+        latest = landing[start : landing.index("<!-- /blog:latest -->")]
+        assert "\n\n" not in latest
 
 
 class TestFeed:

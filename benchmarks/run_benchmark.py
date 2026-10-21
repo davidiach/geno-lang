@@ -63,7 +63,9 @@ Problem = Tuple[str, str, Callable, Callable[[Any], Callable]]
 _PROBLEMS: List[Problem] = []
 
 
-def _reg(name: str, geno_src: str, hw_fn: Callable, call_builder: Callable | None = None):
+def _reg(
+    name: str, geno_src: str, hw_fn: Callable, call_builder: Callable | None = None
+):
     """Register a benchmark problem.
 
     *hw_fn*: zero-arg callable giving the hand-written result.
@@ -106,7 +108,9 @@ def _py_ackermann(m, n):
 
 # --- 1-10: Recursive / simple arithmetic ---
 
-_reg("01_fib_rec_25", """
+_reg(
+    "01_fib_rec_25",
+    """
 @untested("bench")
 func fibonacci(n: Int) -> Int
     if n <= 1 then
@@ -119,9 +123,13 @@ end func
 func run() -> Int
     return fibonacci(25)
 end func
-""", lambda: _py_fib_recursive(25))
+""",
+    lambda: _py_fib_recursive(25),
+)
 
-_reg("02_factorial_20", """
+_reg(
+    "02_factorial_20",
+    """
 @untested("bench")
 func factorial(n: Int) -> Int
     if n <= 1 then
@@ -134,9 +142,13 @@ end func
 func run() -> Int
     return factorial(20)
 end func
-""", lambda: _py_factorial(20))
+""",
+    lambda: _py_factorial(20),
+)
 
-_reg("03_ackermann_3_6", """
+_reg(
+    "03_ackermann_3_6",
+    """
 @untested("bench")
 func ackermann(m: Int, n: Int) -> Int
     if m == 0 then
@@ -152,9 +164,13 @@ end func
 func run() -> Int
     return ackermann(3, 6)
 end func
-""", lambda: _py_ackermann(3, 6))
+""",
+    lambda: _py_ackermann(3, 6),
+)
 
-_reg("04_gcd_iterative", """
+_reg(
+    "04_gcd_iterative",
+    """
 @untested("bench")
 func gcd(a: Int, b: Int) -> Int
     var x: Int = a
@@ -177,25 +193,51 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: (lambda: [
-    (s := [0]),
-    [s.__setitem__(0, s[0] + (lambda a, b: (
-        lambda: [
-            (r := [a, b]),
-            [(r.__setitem__(0, r[0] % r[1]) if r[0] > r[1] else r.__setitem__(1, r[1] % r[0]))
-             for _ in iter(lambda: r[0] != 0 and r[1] != 0, False)],
-            r[0] + r[1],
-        ][-1])()
-    )(i * 7, i * 13 + 1)) for i in range(1, 5001)],
-    s[0],
-][-1])()
-if False else (lambda: (
-    _gcd := lambda a, b: a if b == 0 else _gcd.__func__(b, a % b),
-    sum(_gcd(i * 7, i * 13 + 1) for i in range(1, 5001)),
-)[-1])()
-if False else
-# Just use a simple loop like the Geno code:
-(lambda: _py_gcd_batch())())
+""",
+    lambda: (
+        (
+            lambda: [
+                (s := [0]),
+                [
+                    s.__setitem__(
+                        0,
+                        s[0]
+                        + (
+                            lambda a, b: (
+                                lambda: [
+                                    (r := [a, b]),
+                                    [
+                                        (
+                                            r.__setitem__(0, r[0] % r[1])
+                                            if r[0] > r[1]
+                                            else r.__setitem__(1, r[1] % r[0])
+                                        )
+                                        for _ in iter(
+                                            lambda: r[0] != 0 and r[1] != 0, False
+                                        )
+                                    ],
+                                    r[0] + r[1],
+                                ][-1]
+                            )()
+                        )(i * 7, i * 13 + 1),
+                    )
+                    for i in range(1, 5001)
+                ],
+                s[0],
+            ][-1]
+        )()
+        if False
+        else (
+            lambda: (
+                _gcd := lambda a, b: a if b == 0 else _gcd.__func__(b, a % b),
+                sum(_gcd(i * 7, i * 13 + 1) for i in range(1, 5001)),
+            )[-1]
+        )()
+        if False
+        # Just use a simple loop like the Geno code:
+        else (lambda: _py_gcd_batch())()
+    ),
+)
 
 
 def _py_gcd_batch():
@@ -214,7 +256,9 @@ def _py_gcd_batch():
 # Fix reg #4 with simple function
 _PROBLEMS[-1] = ("04_gcd_iterative", _PROBLEMS[-1][1], _py_gcd_batch, _PROBLEMS[-1][3])
 
-_reg("05_power_fast", """
+_reg(
+    "05_power_fast",
+    """
 @untested("bench")
 func power(base: Int, exp: Int) -> Int
     if exp == 0 then
@@ -237,7 +281,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_power_batch():
@@ -259,7 +305,9 @@ def _py_power_batch():
 
 _PROBLEMS[-1] = ("05_power_fast", _PROBLEMS[-1][1], _py_power_batch, _PROBLEMS[-1][3])
 
-_reg("06_sum_to_n", """
+_reg(
+    "06_sum_to_n",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -270,7 +318,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sum_to_n():
@@ -284,7 +334,9 @@ def _py_sum_to_n():
 
 _PROBLEMS[-1] = ("06_sum_to_n", _PROBLEMS[-1][1], _py_sum_to_n, _PROBLEMS[-1][3])
 
-_reg("07_collatz_batch", """
+_reg(
+    "07_collatz_batch",
+    """
 @untested("bench")
 func collatz_steps(n: Int) -> Int
     var steps: Int = 0
@@ -310,7 +362,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_collatz_batch():
@@ -333,9 +387,16 @@ def _py_collatz_batch():
     return total
 
 
-_PROBLEMS[-1] = ("07_collatz_batch", _PROBLEMS[-1][1], _py_collatz_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "07_collatz_batch",
+    _PROBLEMS[-1][1],
+    _py_collatz_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("08_is_prime_batch", """
+_reg(
+    "08_is_prime_batch",
+    """
 @untested("bench")
 func is_prime(n: Int) -> Bool
     if n < 2 then
@@ -363,7 +424,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_is_prime_batch():
@@ -386,9 +449,16 @@ def _py_is_prime_batch():
     return count
 
 
-_PROBLEMS[-1] = ("08_is_prime_batch", _PROBLEMS[-1][1], _py_is_prime_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "08_is_prime_batch",
+    _PROBLEMS[-1][1],
+    _py_is_prime_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("09_digit_sum_batch", """
+_reg(
+    "09_digit_sum_batch",
+    """
 @untested("bench")
 func digit_sum(n: Int) -> Int
     var total: Int = 0
@@ -410,7 +480,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_digit_sum_batch():
@@ -430,9 +502,16 @@ def _py_digit_sum_batch():
     return s
 
 
-_PROBLEMS[-1] = ("09_digit_sum_batch", _PROBLEMS[-1][1], _py_digit_sum_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "09_digit_sum_batch",
+    _PROBLEMS[-1][1],
+    _py_digit_sum_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("10_choose_recursive", """
+_reg(
+    "10_choose_recursive",
+    """
 @untested("bench")
 func choose(n: Int, k: Int) -> Int
     if k == 0 then
@@ -454,7 +533,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_choose_recursive():
@@ -473,11 +554,18 @@ def _py_choose_recursive():
     return total
 
 
-_PROBLEMS[-1] = ("10_choose_recursive", _PROBLEMS[-1][1], _py_choose_recursive, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "10_choose_recursive",
+    _PROBLEMS[-1][1],
+    _py_choose_recursive,
+    _PROBLEMS[-1][3],
+)
 
 # --- 11-20: Loop-heavy arithmetic ---
 
-_reg("11_nested_loop_sum", """
+_reg(
+    "11_nested_loop_sum",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -492,7 +580,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_nested_loop_sum():
@@ -507,9 +597,16 @@ def _py_nested_loop_sum():
     return total
 
 
-_PROBLEMS[-1] = ("11_nested_loop_sum", _PROBLEMS[-1][1], _py_nested_loop_sum, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "11_nested_loop_sum",
+    _PROBLEMS[-1][1],
+    _py_nested_loop_sum,
+    _PROBLEMS[-1][3],
+)
 
-_reg("12_sum_of_squares", """
+_reg(
+    "12_sum_of_squares",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -520,7 +617,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sum_of_squares():
@@ -532,9 +631,16 @@ def _py_sum_of_squares():
     return total
 
 
-_PROBLEMS[-1] = ("12_sum_of_squares", _PROBLEMS[-1][1], _py_sum_of_squares, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "12_sum_of_squares",
+    _PROBLEMS[-1][1],
+    _py_sum_of_squares,
+    _PROBLEMS[-1][3],
+)
 
-_reg("13_euler_totient", """
+_reg(
+    "13_euler_totient",
+    """
 @untested("bench")
 func euler_totient(n: Int) -> Int
     var result: Int = n
@@ -565,7 +671,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_euler_totient():
@@ -591,9 +699,16 @@ def _py_euler_totient():
     return s
 
 
-_PROBLEMS[-1] = ("13_euler_totient", _PROBLEMS[-1][1], _py_euler_totient, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "13_euler_totient",
+    _PROBLEMS[-1][1],
+    _py_euler_totient,
+    _PROBLEMS[-1][3],
+)
 
-_reg("14_modpow_batch", """
+_reg(
+    "14_modpow_batch",
+    """
 @untested("bench")
 func modpow(base: Int, exp: Int, m: Int) -> Int
     var result: Int = 1
@@ -619,7 +734,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_modpow_batch():
@@ -642,9 +759,16 @@ def _py_modpow_batch():
     return s
 
 
-_PROBLEMS[-1] = ("14_modpow_batch", _PROBLEMS[-1][1], _py_modpow_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "14_modpow_batch",
+    _PROBLEMS[-1][1],
+    _py_modpow_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("15_catalan_12", """
+_reg(
+    "15_catalan_12",
+    """
 @untested("bench")
 func catalan(n: Int) -> Int
     if n <= 1 then
@@ -663,7 +787,9 @@ end func
 func run() -> Int
     return catalan(12)
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_catalan_12():
@@ -676,12 +802,15 @@ def _py_catalan_12():
             result = result + catalan(i) * catalan(n - 1 - i)
             i = i + 1
         return result
+
     return catalan(12)
 
 
 _PROBLEMS[-1] = ("15_catalan_12", _PROBLEMS[-1][1], _py_catalan_12, _PROBLEMS[-1][3])
 
-_reg("16_while_countdown", """
+_reg(
+    "16_while_countdown",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -692,7 +821,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_while_countdown():
@@ -704,9 +835,16 @@ def _py_while_countdown():
     return total
 
 
-_PROBLEMS[-1] = ("16_while_countdown", _PROBLEMS[-1][1], _py_while_countdown, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "16_while_countdown",
+    _PROBLEMS[-1][1],
+    _py_while_countdown,
+    _PROBLEMS[-1][3],
+)
 
-_reg("17_sum_divisors", """
+_reg(
+    "17_sum_divisors",
+    """
 @untested("bench")
 func sum_divisors(n: Int) -> Int
     var total: Int = 0
@@ -730,7 +868,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sum_divisors():
@@ -751,9 +891,16 @@ def _py_sum_divisors():
     return s
 
 
-_PROBLEMS[-1] = ("17_sum_divisors", _PROBLEMS[-1][1], _py_sum_divisors, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "17_sum_divisors",
+    _PROBLEMS[-1][1],
+    _py_sum_divisors,
+    _PROBLEMS[-1][3],
+)
 
-_reg("18_fizzbuzz_count", """
+_reg(
+    "18_fizzbuzz_count",
+    """
 @untested("bench")
 func run() -> Int
     var count: Int = 0
@@ -766,7 +913,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_fizzbuzz_count():
@@ -779,9 +928,16 @@ def _py_fizzbuzz_count():
     return count
 
 
-_PROBLEMS[-1] = ("18_fizzbuzz_count", _PROBLEMS[-1][1], _py_fizzbuzz_count, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "18_fizzbuzz_count",
+    _PROBLEMS[-1][1],
+    _py_fizzbuzz_count,
+    _PROBLEMS[-1][3],
+)
 
-_reg("19_conditional_chain", """
+_reg(
+    "19_conditional_chain",
+    """
 @untested("bench")
 func classify(n: Int) -> Int
     if n < 10 then
@@ -806,7 +962,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_conditional_chain():
@@ -827,9 +985,16 @@ def _py_conditional_chain():
     return s
 
 
-_PROBLEMS[-1] = ("19_conditional_chain", _PROBLEMS[-1][1], _py_conditional_chain, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "19_conditional_chain",
+    _PROBLEMS[-1][1],
+    _py_conditional_chain,
+    _PROBLEMS[-1][3],
+)
 
-_reg("20_multi_return", """
+_reg(
+    "20_multi_return",
+    """
 @untested("bench")
 func compute(a: Int, b: Int) -> Int
     if a > b then
@@ -851,7 +1016,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_multi_return():
@@ -870,11 +1037,18 @@ def _py_multi_return():
     return s
 
 
-_PROBLEMS[-1] = ("20_multi_return", _PROBLEMS[-1][1], _py_multi_return, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "20_multi_return",
+    _PROBLEMS[-1][1],
+    _py_multi_return,
+    _PROBLEMS[-1][3],
+)
 
 # --- 21-30: Nested function calls / mixed ---
 
-_reg("21_nested_fn_calls", """
+_reg(
+    "21_nested_fn_calls",
+    """
 @untested("bench")
 func add1(n: Int) -> Int
     return n + 1
@@ -900,7 +1074,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_nested_fn_calls():
@@ -921,9 +1097,16 @@ def _py_nested_fn_calls():
     return total
 
 
-_PROBLEMS[-1] = ("21_nested_fn_calls", _PROBLEMS[-1][1], _py_nested_fn_calls, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "21_nested_fn_calls",
+    _PROBLEMS[-1][1],
+    _py_nested_fn_calls,
+    _PROBLEMS[-1][3],
+)
 
-_reg("22_deeply_nested_ifs", """
+_reg(
+    "22_deeply_nested_ifs",
+    """
 @untested("bench")
 func classify_deep(n: Int) -> Int
     if n % 2 == 0 then
@@ -963,7 +1146,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_deeply_nested_ifs():
@@ -996,9 +1181,16 @@ def _py_deeply_nested_ifs():
     return s
 
 
-_PROBLEMS[-1] = ("22_deeply_nested_ifs", _PROBLEMS[-1][1], _py_deeply_nested_ifs, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "22_deeply_nested_ifs",
+    _PROBLEMS[-1][1],
+    _py_deeply_nested_ifs,
+    _PROBLEMS[-1][3],
+)
 
-_reg("23_accumulator_3var", """
+_reg(
+    "23_accumulator_3var",
+    """
 @untested("bench")
 func run() -> Int
     var a: Int = 0
@@ -1013,7 +1205,9 @@ func run() -> Int
     end while
     return a + b + c
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_accumulator_3var():
@@ -1029,9 +1223,16 @@ def _py_accumulator_3var():
     return a + b + c
 
 
-_PROBLEMS[-1] = ("23_accumulator_3var", _PROBLEMS[-1][1], _py_accumulator_3var, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "23_accumulator_3var",
+    _PROBLEMS[-1][1],
+    _py_accumulator_3var,
+    _PROBLEMS[-1][3],
+)
 
-_reg("24_many_locals", """
+_reg(
+    "24_many_locals",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -1047,7 +1248,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_many_locals():
@@ -1066,7 +1269,9 @@ def _py_many_locals():
 
 _PROBLEMS[-1] = ("24_many_locals", _PROBLEMS[-1][1], _py_many_locals, _PROBLEMS[-1][3])
 
-_reg("25_mixed_arith", """
+_reg(
+    "25_mixed_arith",
+    """
 @untested("bench")
 func run() -> Int
     var sum: Int = 0
@@ -1077,7 +1282,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_mixed_arith():
@@ -1091,7 +1298,9 @@ def _py_mixed_arith():
 
 _PROBLEMS[-1] = ("25_mixed_arith", _PROBLEMS[-1][1], _py_mixed_arith, _PROBLEMS[-1][3])
 
-_reg("26_repeated_fn", """
+_reg(
+    "26_repeated_fn",
+    """
 @untested("bench")
 func inc(n: Int) -> Int
     return n + 1
@@ -1107,7 +1316,9 @@ func run() -> Int
     end while
     return val
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_repeated_fn():
@@ -1124,7 +1335,9 @@ def _py_repeated_fn():
 
 _PROBLEMS[-1] = ("26_repeated_fn", _PROBLEMS[-1][1], _py_repeated_fn, _PROBLEMS[-1][3])
 
-_reg("27_mutual_recursion", """
+_reg(
+    "27_mutual_recursion",
+    """
 @untested("bench")
 func is_even_r(n: Int) -> Bool
     if n == 0 then
@@ -1153,7 +1366,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_mutual_recursion():
@@ -1176,9 +1391,16 @@ def _py_mutual_recursion():
     return count
 
 
-_PROBLEMS[-1] = ("27_mutual_recursion", _PROBLEMS[-1][1], _py_mutual_recursion, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "27_mutual_recursion",
+    _PROBLEMS[-1][1],
+    _py_mutual_recursion,
+    _PROBLEMS[-1][3],
+)
 
-_reg("28_harmonic_int", """
+_reg(
+    "28_harmonic_int",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -1189,7 +1411,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_harmonic_int():
@@ -1201,9 +1425,16 @@ def _py_harmonic_int():
     return total
 
 
-_PROBLEMS[-1] = ("28_harmonic_int", _PROBLEMS[-1][1], _py_harmonic_int, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "28_harmonic_int",
+    _PROBLEMS[-1][1],
+    _py_harmonic_int,
+    _PROBLEMS[-1][3],
+)
 
-_reg("29_fib_iterative", """
+_reg(
+    "29_fib_iterative",
+    """
 @untested("bench")
 func fib_iter(n: Int) -> Int
     var a: Int = 0
@@ -1228,7 +1459,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_fib_iterative():
@@ -1251,9 +1484,16 @@ def _py_fib_iterative():
     return s
 
 
-_PROBLEMS[-1] = ("29_fib_iterative", _PROBLEMS[-1][1], _py_fib_iterative, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "29_fib_iterative",
+    _PROBLEMS[-1][1],
+    _py_fib_iterative,
+    _PROBLEMS[-1][3],
+)
 
-_reg("30_triangular_batch", """
+_reg(
+    "30_triangular_batch",
+    """
 @untested("bench")
 func triangular(n: Int) -> Int
     return n * (n + 1) / 2
@@ -1269,7 +1509,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_triangular_batch():
@@ -1284,11 +1526,18 @@ def _py_triangular_batch():
     return s
 
 
-_PROBLEMS[-1] = ("30_triangular_batch", _PROBLEMS[-1][1], _py_triangular_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "30_triangular_batch",
+    _PROBLEMS[-1][1],
+    _py_triangular_batch,
+    _PROBLEMS[-1][3],
+)
 
 # --- 31-40: List operations ---
 
-_reg("31_list_sum", """
+_reg(
+    "31_list_sum",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -1304,7 +1553,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_sum():
@@ -1322,7 +1573,9 @@ def _py_list_sum():
 
 _PROBLEMS[-1] = ("31_list_sum", _PROBLEMS[-1][1], _py_list_sum, _PROBLEMS[-1][3])
 
-_reg("32_list_max", """
+_reg(
+    "32_list_max",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9]
@@ -1342,7 +1595,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_max():
@@ -1363,7 +1618,9 @@ def _py_list_max():
 
 _PROBLEMS[-1] = ("32_list_max", _PROBLEMS[-1][1], _py_list_max, _PROBLEMS[-1][3])
 
-_reg("33_list_filter_count", """
+_reg(
+    "33_list_filter_count",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
@@ -1381,7 +1638,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_filter_count():
@@ -1398,9 +1657,16 @@ def _py_list_filter_count():
     return count
 
 
-_PROBLEMS[-1] = ("33_list_filter_count", _PROBLEMS[-1][1], _py_list_filter_count, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "33_list_filter_count",
+    _PROBLEMS[-1][1],
+    _py_list_filter_count,
+    _PROBLEMS[-1][3],
+)
 
-_reg("34_list_dot_product", """
+_reg(
+    "34_list_dot_product",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -1417,7 +1683,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_dot_product():
@@ -1434,9 +1702,16 @@ def _py_list_dot_product():
     return total
 
 
-_PROBLEMS[-1] = ("34_list_dot_product", _PROBLEMS[-1][1], _py_list_dot_product, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "34_list_dot_product",
+    _PROBLEMS[-1][1],
+    _py_list_dot_product,
+    _PROBLEMS[-1][3],
+)
 
-_reg("35_list_contains", """
+_reg(
+    "35_list_contains",
+    """
 @untested("bench")
 func list_contains(xs: List[Int], val: Int) -> Bool
     var i: Int = 0
@@ -1466,7 +1741,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_contains():
@@ -1491,9 +1768,16 @@ def _py_list_contains():
     return count
 
 
-_PROBLEMS[-1] = ("35_list_contains", _PROBLEMS[-1][1], _py_list_contains, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "35_list_contains",
+    _PROBLEMS[-1][1],
+    _py_list_contains,
+    _PROBLEMS[-1][3],
+)
 
-_reg("36_binary_search", """
+_reg(
+    "36_binary_search",
+    """
 @untested("bench")
 func binary_search(xs: List[Int], target: Int) -> Int
     var lo: Int = 0
@@ -1527,7 +1811,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_binary_search():
@@ -1556,9 +1842,16 @@ def _py_binary_search():
     return s
 
 
-_PROBLEMS[-1] = ("36_binary_search", _PROBLEMS[-1][1], _py_binary_search, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "36_binary_search",
+    _PROBLEMS[-1][1],
+    _py_binary_search,
+    _PROBLEMS[-1][3],
+)
 
-_reg("37_list_count_val", """
+_reg(
+    "37_list_count_val",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2]
@@ -1578,7 +1871,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_count_val():
@@ -1597,9 +1892,16 @@ def _py_list_count_val():
     return total
 
 
-_PROBLEMS[-1] = ("37_list_count_val", _PROBLEMS[-1][1], _py_list_count_val, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "37_list_count_val",
+    _PROBLEMS[-1][1],
+    _py_list_count_val,
+    _PROBLEMS[-1][3],
+)
 
-_reg("38_list_map_manual", """
+_reg(
+    "38_list_map_manual",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -1615,7 +1917,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_map_manual():
@@ -1631,9 +1935,16 @@ def _py_list_map_manual():
     return total
 
 
-_PROBLEMS[-1] = ("38_list_map_manual", _PROBLEMS[-1][1], _py_list_map_manual, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "38_list_map_manual",
+    _PROBLEMS[-1][1],
+    _py_list_map_manual,
+    _PROBLEMS[-1][3],
+)
 
-_reg("39_recursive_sum", """
+_reg(
+    "39_recursive_sum",
+    """
 @untested("bench")
 func rec_sum(xs: List[Int], idx: Int) -> Int
     if idx >= length(xs) then
@@ -1653,7 +1964,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_recursive_sum():
@@ -1671,9 +1984,16 @@ def _py_recursive_sum():
     return total
 
 
-_PROBLEMS[-1] = ("39_recursive_sum", _PROBLEMS[-1][1], _py_recursive_sum, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "39_recursive_sum",
+    _PROBLEMS[-1][1],
+    _py_recursive_sum,
+    _PROBLEMS[-1][3],
+)
 
-_reg("40_list_index_of", """
+_reg(
+    "40_list_index_of",
+    """
 @untested("bench")
 func index_of(xs: List[Int], val: Int) -> Int
     var i: Int = 0
@@ -1701,7 +2021,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_index_of():
@@ -1725,11 +2047,18 @@ def _py_list_index_of():
     return s
 
 
-_PROBLEMS[-1] = ("40_list_index_of", _PROBLEMS[-1][1], _py_list_index_of, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "40_list_index_of",
+    _PROBLEMS[-1][1],
+    _py_list_index_of,
+    _PROBLEMS[-1][3],
+)
 
 # --- 41-50: String operations ---
 
-_reg("41_str_concat", """
+_reg(
+    "41_str_concat",
+    """
 @untested("bench")
 func run() -> Int
     var s: String = ""
@@ -1740,7 +2069,9 @@ func run() -> Int
     end while
     return length(s)
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_concat():
@@ -1754,7 +2085,9 @@ def _py_str_concat():
 
 _PROBLEMS[-1] = ("41_str_concat", _PROBLEMS[-1][1], _py_str_concat, _PROBLEMS[-1][3])
 
-_reg("42_str_to_upper", """
+_reg(
+    "42_str_to_upper",
+    """
 @untested("bench")
 func run() -> Int
     let s: String = "hello world this is a benchmark"
@@ -1767,7 +2100,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_to_upper():
@@ -1781,9 +2116,16 @@ def _py_str_to_upper():
     return count
 
 
-_PROBLEMS[-1] = ("42_str_to_upper", _PROBLEMS[-1][1], _py_str_to_upper, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "42_str_to_upper",
+    _PROBLEMS[-1][1],
+    _py_str_to_upper,
+    _PROBLEMS[-1][3],
+)
 
-_reg("43_str_char_scan", """
+_reg(
+    "43_str_char_scan",
+    """
 @untested("bench")
 func run() -> Int
     let s: String = "the quick brown fox jumps over the lazy dog"
@@ -1801,7 +2143,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_char_scan():
@@ -1818,9 +2162,16 @@ def _py_str_char_scan():
     return total
 
 
-_PROBLEMS[-1] = ("43_str_char_scan", _PROBLEMS[-1][1], _py_str_char_scan, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "43_str_char_scan",
+    _PROBLEMS[-1][1],
+    _py_str_char_scan,
+    _PROBLEMS[-1][3],
+)
 
-_reg("44_str_palindrome", """
+_reg(
+    "44_str_palindrome",
+    """
 @untested("bench")
 func is_palindrome(s: String) -> Bool
     var lo: Int = 0
@@ -1853,7 +2204,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_palindrome():
@@ -1880,9 +2233,16 @@ def _py_str_palindrome():
     return count
 
 
-_PROBLEMS[-1] = ("44_str_palindrome", _PROBLEMS[-1][1], _py_str_palindrome, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "44_str_palindrome",
+    _PROBLEMS[-1][1],
+    _py_str_palindrome,
+    _PROBLEMS[-1][3],
+)
 
-_reg("45_str_count_vowels", """
+_reg(
+    "45_str_count_vowels",
+    """
 @untested("bench")
 func count_vowels(s: String) -> Int
     var count: Int = 0
@@ -1920,7 +2280,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_count_vowels():
@@ -1951,9 +2313,16 @@ def _py_str_count_vowels():
     return total
 
 
-_PROBLEMS[-1] = ("45_str_count_vowels", _PROBLEMS[-1][1], _py_str_count_vowels, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "45_str_count_vowels",
+    _PROBLEMS[-1][1],
+    _py_str_count_vowels,
+    _PROBLEMS[-1][3],
+)
 
-_reg("46_str_starts_with", """
+_reg(
+    "46_str_starts_with",
+    """
 @untested("bench")
 func starts_with(s: String, prefix: String) -> Bool
     if length(prefix) > length(s) then
@@ -1974,14 +2343,16 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_starts_with():
     def starts_with(s, prefix):
         if len(prefix) > len(s):
             return False
-        return s[:len(prefix)] == prefix
+        return s[: len(prefix)] == prefix
 
     count = 0
     rep = 0
@@ -1992,9 +2363,16 @@ def _py_str_starts_with():
     return count
 
 
-_PROBLEMS[-1] = ("46_str_starts_with", _PROBLEMS[-1][1], _py_str_starts_with, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "46_str_starts_with",
+    _PROBLEMS[-1][1],
+    _py_str_starts_with,
+    _PROBLEMS[-1][3],
+)
 
-_reg("47_str_length_batch", """
+_reg(
+    "47_str_length_batch",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -2005,7 +2383,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_length_batch():
@@ -2017,9 +2397,16 @@ def _py_str_length_batch():
     return total
 
 
-_PROBLEMS[-1] = ("47_str_length_batch", _PROBLEMS[-1][1], _py_str_length_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "47_str_length_batch",
+    _PROBLEMS[-1][1],
+    _py_str_length_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("48_str_substring", """
+_reg(
+    "48_str_substring",
+    """
 @untested("bench")
 func run() -> Int
     let s: String = "abcdefghijklmnopqrstuvwxyz"
@@ -2032,7 +2419,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_substring():
@@ -2046,9 +2435,16 @@ def _py_str_substring():
     return total
 
 
-_PROBLEMS[-1] = ("48_str_substring", _PROBLEMS[-1][1], _py_str_substring, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "48_str_substring",
+    _PROBLEMS[-1][1],
+    _py_str_substring,
+    _PROBLEMS[-1][3],
+)
 
-_reg("49_str_to_lower", """
+_reg(
+    "49_str_to_lower",
+    """
 @untested("bench")
 func run() -> Int
     let s: String = "HELLO WORLD THIS IS A BENCHMARK"
@@ -2061,7 +2457,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_to_lower():
@@ -2075,9 +2473,16 @@ def _py_str_to_lower():
     return count
 
 
-_PROBLEMS[-1] = ("49_str_to_lower", _PROBLEMS[-1][1], _py_str_to_lower, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "49_str_to_lower",
+    _PROBLEMS[-1][1],
+    _py_str_to_lower,
+    _PROBLEMS[-1][3],
+)
 
-_reg("50_str_trim_batch", """
+_reg(
+    "50_str_trim_batch",
+    """
 @untested("bench")
 func run() -> Int
     let s: String = "   hello world   "
@@ -2090,7 +2495,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_str_trim_batch():
@@ -2104,11 +2511,18 @@ def _py_str_trim_batch():
     return total
 
 
-_PROBLEMS[-1] = ("50_str_trim_batch", _PROBLEMS[-1][1], _py_str_trim_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "50_str_trim_batch",
+    _PROBLEMS[-1][1],
+    _py_str_trim_batch,
+    _PROBLEMS[-1][3],
+)
 
 # --- 51-60: More mixed benchmarks ---
 
-_reg("51_compose_apply", """
+_reg(
+    "51_compose_apply",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -2119,7 +2533,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_compose_apply():
@@ -2131,9 +2547,16 @@ def _py_compose_apply():
     return total
 
 
-_PROBLEMS[-1] = ("51_compose_apply", _PROBLEMS[-1][1], _py_compose_apply, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "51_compose_apply",
+    _PROBLEMS[-1][1],
+    _py_compose_apply,
+    _PROBLEMS[-1][3],
+)
 
-_reg("52_apply_n_times", """
+_reg(
+    "52_apply_n_times",
+    """
 @untested("bench")
 func apply_n(n: Int, x: Int) -> Int
     var val: Int = x
@@ -2155,7 +2578,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_apply_n_times():
@@ -2175,9 +2600,16 @@ def _py_apply_n_times():
     return s
 
 
-_PROBLEMS[-1] = ("52_apply_n_times", _PROBLEMS[-1][1], _py_apply_n_times, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "52_apply_n_times",
+    _PROBLEMS[-1][1],
+    _py_apply_n_times,
+    _PROBLEMS[-1][3],
+)
 
-_reg("53_map_filter_sum", """
+_reg(
+    "53_map_filter_sum",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -2196,7 +2628,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_map_filter_sum():
@@ -2214,9 +2648,16 @@ def _py_map_filter_sum():
     return total
 
 
-_PROBLEMS[-1] = ("53_map_filter_sum", _PROBLEMS[-1][1], _py_map_filter_sum, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "53_map_filter_sum",
+    _PROBLEMS[-1][1],
+    _py_map_filter_sum,
+    _PROBLEMS[-1][3],
+)
 
-_reg("54_sieve_200", """
+_reg(
+    "54_sieve_200",
+    """
 @untested("bench")
 func run() -> Int
     let limit: Int = 200
@@ -2247,7 +2688,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sieve_200():
@@ -2276,7 +2719,9 @@ def _py_sieve_200():
 
 _PROBLEMS[-1] = ("54_sieve_200", _PROBLEMS[-1][1], _py_sieve_200, _PROBLEMS[-1][3])
 
-_reg("55_matrix_trace", """
+_reg(
+    "55_matrix_trace",
+    """
 @untested("bench")
 func run() -> Int
     let n: Int = 20
@@ -2293,7 +2738,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_matrix_trace():
@@ -2310,9 +2757,16 @@ def _py_matrix_trace():
     return total
 
 
-_PROBLEMS[-1] = ("55_matrix_trace", _PROBLEMS[-1][1], _py_matrix_trace, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "55_matrix_trace",
+    _PROBLEMS[-1][1],
+    _py_matrix_trace,
+    _PROBLEMS[-1][3],
+)
 
-_reg("56_lcm_batch", """
+_reg(
+    "56_lcm_batch",
+    """
 @untested("bench")
 func gcd(a: Int, b: Int) -> Int
     var x: Int = a
@@ -2340,7 +2794,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_lcm_batch():
@@ -2364,7 +2820,9 @@ def _py_lcm_batch():
 
 _PROBLEMS[-1] = ("56_lcm_batch", _PROBLEMS[-1][1], _py_lcm_batch, _PROBLEMS[-1][3])
 
-_reg("57_abs_batch", """
+_reg(
+    "57_abs_batch",
+    """
 @untested("bench")
 func abs_val(n: Int) -> Int
     if n < 0 then
@@ -2383,7 +2841,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_abs_batch():
@@ -2402,7 +2862,9 @@ def _py_abs_batch():
 
 _PROBLEMS[-1] = ("57_abs_batch", _PROBLEMS[-1][1], _py_abs_batch, _PROBLEMS[-1][3])
 
-_reg("58_is_even_batch", """
+_reg(
+    "58_is_even_batch",
+    """
 @untested("bench")
 func run() -> Int
     var count: Int = 0
@@ -2415,7 +2877,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_is_even_batch():
@@ -2428,9 +2892,16 @@ def _py_is_even_batch():
     return count
 
 
-_PROBLEMS[-1] = ("58_is_even_batch", _PROBLEMS[-1][1], _py_is_even_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "58_is_even_batch",
+    _PROBLEMS[-1][1],
+    _py_is_even_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("59_simple_counter", """
+_reg(
+    "59_simple_counter",
+    """
 @untested("bench")
 func run() -> Int
     var state: Int = 0
@@ -2441,7 +2912,9 @@ func run() -> Int
     end while
     return state
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_simple_counter():
@@ -2453,9 +2926,16 @@ def _py_simple_counter():
     return state
 
 
-_PROBLEMS[-1] = ("59_simple_counter", _PROBLEMS[-1][1], _py_simple_counter, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "59_simple_counter",
+    _PROBLEMS[-1][1],
+    _py_simple_counter,
+    _PROBLEMS[-1][3],
+)
 
-_reg("60_nested_fn_chain", """
+_reg(
+    "60_nested_fn_chain",
+    """
 @untested("bench")
 func f1(n: Int) -> Int
     return n + 1
@@ -2481,7 +2961,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_nested_fn_chain():
@@ -2502,11 +2984,18 @@ def _py_nested_fn_chain():
     return total
 
 
-_PROBLEMS[-1] = ("60_nested_fn_chain", _PROBLEMS[-1][1], _py_nested_fn_chain, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "60_nested_fn_chain",
+    _PROBLEMS[-1][1],
+    _py_nested_fn_chain,
+    _PROBLEMS[-1][3],
+)
 
 # --- 61-70: More variants ---
 
-_reg("61_sum_cubes", """
+_reg(
+    "61_sum_cubes",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -2517,7 +3006,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sum_cubes():
@@ -2531,7 +3022,9 @@ def _py_sum_cubes():
 
 _PROBLEMS[-1] = ("61_sum_cubes", _PROBLEMS[-1][1], _py_sum_cubes, _PROBLEMS[-1][3])
 
-_reg("62_interleaved_ops", """
+_reg(
+    "62_interleaved_ops",
+    """
 @untested("bench")
 func run() -> Int
     var a: Int = 1
@@ -2545,7 +3038,9 @@ func run() -> Int
     end while
     return b
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_interleaved_ops():
@@ -2560,9 +3055,16 @@ def _py_interleaved_ops():
     return b
 
 
-_PROBLEMS[-1] = ("62_interleaved_ops", _PROBLEMS[-1][1], _py_interleaved_ops, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "62_interleaved_ops",
+    _PROBLEMS[-1][1],
+    _py_interleaved_ops,
+    _PROBLEMS[-1][3],
+)
 
-_reg("63_boolean_chain", """
+_reg(
+    "63_boolean_chain",
+    """
 @untested("bench")
 func check(a: Int, b: Int, c: Int) -> Bool
     if a > 0 then
@@ -2587,7 +3089,9 @@ func run() -> Int
     end while
     return count
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_boolean_chain():
@@ -2607,9 +3111,16 @@ def _py_boolean_chain():
     return count
 
 
-_PROBLEMS[-1] = ("63_boolean_chain", _PROBLEMS[-1][1], _py_boolean_chain, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "63_boolean_chain",
+    _PROBLEMS[-1][1],
+    _py_boolean_chain,
+    _PROBLEMS[-1][3],
+)
 
-_reg("64_digit_root_batch", """
+_reg(
+    "64_digit_root_batch",
+    """
 @untested("bench")
 func digit_sum(n: Int) -> Int
     var total: Int = 0
@@ -2640,7 +3151,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_digit_root_batch():
@@ -2666,9 +3179,16 @@ def _py_digit_root_batch():
     return s
 
 
-_PROBLEMS[-1] = ("64_digit_root_batch", _PROBLEMS[-1][1], _py_digit_root_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "64_digit_root_batch",
+    _PROBLEMS[-1][1],
+    _py_digit_root_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("65_max_min_batch", """
+_reg(
+    "65_max_min_batch",
+    """
 @untested("bench")
 func run() -> Int
     var mx: Int = 0
@@ -2686,7 +3206,9 @@ func run() -> Int
     end while
     return mx - mn
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_max_min_batch():
@@ -2703,9 +3225,16 @@ def _py_max_min_batch():
     return mx - mn
 
 
-_PROBLEMS[-1] = ("65_max_min_batch", _PROBLEMS[-1][1], _py_max_min_batch, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "65_max_min_batch",
+    _PROBLEMS[-1][1],
+    _py_max_min_batch,
+    _PROBLEMS[-1][3],
+)
 
-_reg("66_alternating_sum", """
+_reg(
+    "66_alternating_sum",
+    """
 @untested("bench")
 func run() -> Int
     var sum: Int = 0
@@ -2720,7 +3249,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_alternating_sum():
@@ -2735,9 +3266,16 @@ def _py_alternating_sum():
     return s
 
 
-_PROBLEMS[-1] = ("66_alternating_sum", _PROBLEMS[-1][1], _py_alternating_sum, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "66_alternating_sum",
+    _PROBLEMS[-1][1],
+    _py_alternating_sum,
+    _PROBLEMS[-1][3],
+)
 
-_reg("67_xor_accumulate", """
+_reg(
+    "67_xor_accumulate",
+    """
 @untested("bench")
 func run() -> Int
     var result: Int = 0
@@ -2748,7 +3286,9 @@ func run() -> Int
     end while
     return result
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_xor_accumulate():
@@ -2760,9 +3300,16 @@ def _py_xor_accumulate():
     return result
 
 
-_PROBLEMS[-1] = ("67_xor_accumulate", _PROBLEMS[-1][1], _py_xor_accumulate, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "67_xor_accumulate",
+    _PROBLEMS[-1][1],
+    _py_xor_accumulate,
+    _PROBLEMS[-1][3],
+)
 
-_reg("68_triple_nested_if", """
+_reg(
+    "68_triple_nested_if",
+    """
 @untested("bench")
 func run() -> Int
     var sum: Int = 0
@@ -2785,7 +3332,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_triple_nested_if():
@@ -2806,9 +3355,16 @@ def _py_triple_nested_if():
     return s
 
 
-_PROBLEMS[-1] = ("68_triple_nested_if", _PROBLEMS[-1][1], _py_triple_nested_if, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "68_triple_nested_if",
+    _PROBLEMS[-1][1],
+    _py_triple_nested_if,
+    _PROBLEMS[-1][3],
+)
 
-_reg("69_sum_multiples", """
+_reg(
+    "69_sum_multiples",
+    """
 @untested("bench")
 func run() -> Int
     var sum: Int = 0
@@ -2824,7 +3380,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sum_multiples():
@@ -2839,9 +3397,16 @@ def _py_sum_multiples():
     return s
 
 
-_PROBLEMS[-1] = ("69_sum_multiples", _PROBLEMS[-1][1], _py_sum_multiples, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "69_sum_multiples",
+    _PROBLEMS[-1][1],
+    _py_sum_multiples,
+    _PROBLEMS[-1][3],
+)
 
-_reg("70_list_scan_sum", """
+_reg(
+    "70_list_scan_sum",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29]
@@ -2857,7 +3422,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_scan_sum():
@@ -2873,11 +3440,18 @@ def _py_list_scan_sum():
     return total
 
 
-_PROBLEMS[-1] = ("70_list_scan_sum", _PROBLEMS[-1][1], _py_list_scan_sum, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "70_list_scan_sum",
+    _PROBLEMS[-1][1],
+    _py_list_scan_sum,
+    _PROBLEMS[-1][3],
+)
 
 # --- 71-77: Final batch ---
 
-_reg("71_power_of_two", """
+_reg(
+    "71_power_of_two",
+    """
 @untested("bench")
 func run() -> Int
     var sum: Int = 0
@@ -2894,7 +3468,9 @@ func run() -> Int
     end while
     return sum
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_power_of_two():
@@ -2911,9 +3487,16 @@ def _py_power_of_two():
     return s
 
 
-_PROBLEMS[-1] = ("71_power_of_two", _PROBLEMS[-1][1], _py_power_of_two, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "71_power_of_two",
+    _PROBLEMS[-1][1],
+    _py_power_of_two,
+    _PROBLEMS[-1][3],
+)
 
-_reg("72_nested_300", """
+_reg(
+    "72_nested_300",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -2930,7 +3513,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_nested_300():
@@ -2948,7 +3533,9 @@ def _py_nested_300():
 
 _PROBLEMS[-1] = ("72_nested_300", _PROBLEMS[-1][1], _py_nested_300, _PROBLEMS[-1][3])
 
-_reg("73_list_two_pointer", """
+_reg(
+    "73_list_two_pointer",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
@@ -2966,7 +3553,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_list_two_pointer():
@@ -2984,9 +3573,16 @@ def _py_list_two_pointer():
     return total
 
 
-_PROBLEMS[-1] = ("73_list_two_pointer", _PROBLEMS[-1][1], _py_list_two_pointer, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "73_list_two_pointer",
+    _PROBLEMS[-1][1],
+    _py_list_two_pointer,
+    _PROBLEMS[-1][3],
+)
 
-_reg("74_countdown_sum", """
+_reg(
+    "74_countdown_sum",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -3001,7 +3597,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_countdown_sum():
@@ -3016,9 +3614,16 @@ def _py_countdown_sum():
     return total
 
 
-_PROBLEMS[-1] = ("74_countdown_sum", _PROBLEMS[-1][1], _py_countdown_sum, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "74_countdown_sum",
+    _PROBLEMS[-1][1],
+    _py_countdown_sum,
+    _PROBLEMS[-1][3],
+)
 
-_reg("75_pascal_row", """
+_reg(
+    "75_pascal_row",
+    """
 @untested("bench")
 func run() -> Int
     var total: Int = 0
@@ -3042,7 +3647,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_pascal_row():
@@ -3067,7 +3674,9 @@ def _py_pascal_row():
 
 _PROBLEMS[-1] = ("75_pascal_row", _PROBLEMS[-1][1], _py_pascal_row, _PROBLEMS[-1][3])
 
-_reg("76_running_max", """
+_reg(
+    "76_running_max",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4]
@@ -3087,7 +3696,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_running_max():
@@ -3108,7 +3719,9 @@ def _py_running_max():
 
 _PROBLEMS[-1] = ("76_running_max", _PROBLEMS[-1][1], _py_running_max, _PROBLEMS[-1][3])
 
-_reg("77_sum_abs_diff", """
+_reg(
+    "77_sum_abs_diff",
+    """
 @untested("bench")
 func run() -> Int
     let xs: List[Int] = [5, 12, 3, 18, 7, 15, 9, 1, 20, 11]
@@ -3129,7 +3742,9 @@ func run() -> Int
     end while
     return total
 end func
-""", lambda: None)
+""",
+    lambda: None,
+)
 
 
 def _py_sum_abs_diff():
@@ -3149,7 +3764,12 @@ def _py_sum_abs_diff():
     return total
 
 
-_PROBLEMS[-1] = ("77_sum_abs_diff", _PROBLEMS[-1][1], _py_sum_abs_diff, _PROBLEMS[-1][3])
+_PROBLEMS[-1] = (
+    "77_sum_abs_diff",
+    _PROBLEMS[-1][1],
+    _py_sum_abs_diff,
+    _PROBLEMS[-1][3],
+)
 
 
 # ===========================================================================
@@ -3161,7 +3781,9 @@ def run_benchmarks(verbose: bool = False) -> bool:
     """Require correct results everywhere and ≥80 % of eligible cases at ≤2×."""
     print(f"\nGeno vs Python Benchmark Suite  ({len(_PROBLEMS)} problems)")
     print("=" * 72)
-    print(f"{'#':>3}  {'Problem':<28} {'Geno (ms)':>10} {'Python (ms)':>11} {'Ratio':>7} {'Pass':>5}")
+    print(
+        f"{'#':>3}  {'Problem':<28} {'Geno (ms)':>10} {'Python (ms)':>11} {'Ratio':>7} {'Pass':>5}"
+    )
     print("-" * 72)
 
     ratios: List[float] = []
@@ -3181,7 +3803,9 @@ def run_benchmarks(verbose: bool = False) -> bool:
             h_result = hw_fn()
             if g_result != h_result:
                 mismatches += 1
-                print(f"{idx:3}  {name:<28} {'MISMATCH':>10} {'':>11} {'':>7} {'FAIL':>5}")
+                print(
+                    f"{idx:3}  {name:<28} {'MISMATCH':>10} {'':>11} {'':>7} {'FAIL':>5}"
+                )
                 print(f"     MISMATCH: geno={g_result!r} python={h_result!r}")
                 continue
 
@@ -3190,7 +3814,9 @@ def run_benchmarks(verbose: bool = False) -> bool:
 
             if t_hw < MIN_TIME_S and t_geno < MIN_TIME_S:
                 skipped += 1
-                print(f"{idx:3}  {name:<28} {t_geno*1000:10.2f} {t_hw*1000:11.2f} {'---':>7} {'skip':>5}")
+                print(
+                    f"{idx:3}  {name:<28} {t_geno * 1000:10.2f} {t_hw * 1000:11.2f} {'---':>7} {'skip':>5}"
+                )
             else:
                 ratio = t_geno / max(t_hw, 1e-9)
                 ratios.append(ratio)
@@ -3198,7 +3824,9 @@ def run_benchmarks(verbose: bool = False) -> bool:
                 if ok:
                     passed += 1
                 status = "OK" if ok else "SLOW"
-                print(f"{idx:3}  {name:<28} {t_geno*1000:10.2f} {t_hw*1000:11.2f} {ratio:7.2f}x {status:>5}")
+                print(
+                    f"{idx:3}  {name:<28} {t_geno * 1000:10.2f} {t_hw * 1000:11.2f} {ratio:7.2f}x {status:>5}"
+                )
         except Exception as e:
             errors += 1
             print(f"{idx:3}  {name:<28} {'ERROR':>10} {'':>11} {'':>7} {'ERR':>5}")
@@ -3215,17 +3843,23 @@ def run_benchmarks(verbose: bool = False) -> bool:
     mean_ratio = statistics.mean(ratios) if ratios else 0
     p90 = sorted(ratios)[int(len(ratios) * 0.9)] if ratios else 0
 
-    print(f"\nResults: {total_measured} measured, {passed} passed (≤2×), "
-          f"{total_measured - passed} slow, {skipped} skipped, "
-          f"{mismatches} mismatches, {errors} errors")
-    print(f"Correctness: {len(_PROBLEMS) - errors - mismatches}/{len(_PROBLEMS)} problems")
+    print(
+        f"\nResults: {total_measured} measured, {passed} passed (≤2×), "
+        f"{total_measured - passed} slow, {skipped} skipped, "
+        f"{mismatches} mismatches, {errors} errors"
+    )
+    print(
+        f"Correctness: {len(_PROBLEMS) - errors - mismatches}/{len(_PROBLEMS)} problems"
+    )
     print(f"Pass rate: {pass_pct:.1f}% (target: ≥80%)")
     print(f"Median ratio: {median_ratio:.2f}x")
     print(f"Mean ratio:   {mean_ratio:.2f}x")
     print(f"P90 ratio:    {p90:.2f}x")
 
     success = errors == 0 and mismatches == 0 and pass_pct >= 80.0
-    print(f"\n{'PASS' if success else 'FAIL'}: requires all problems correct and ≥80% within 2× of hand-written Python")
+    print(
+        f"\n{'PASS' if success else 'FAIL'}: requires all problems correct and ≥80% within 2× of hand-written Python"
+    )
     return success
 
 
