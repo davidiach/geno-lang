@@ -43,9 +43,15 @@ retrospective proposal or advisory once disclosure is safe.
 
 Maintainers should seek consensus and record material objections. For a
 substantial proposal, acceptance requires the project lead plus at least one
-independent technical review. While Geno has only one active maintainer, this
-means an external reviewer must be identified; the author approving their own
-proposal is not independent review.
+independent technical review. The author approving their own proposal is not
+independent review.
+
+While Geno has only one active maintainer, the project lead may accept a
+substantial proposal without independent review. The proposal then records
+that no independent review took place and names the review it did receive,
+such as automated review and CI, without presenting either as independent
+approval. Independent review becomes required again once a second active
+maintainer is appointed.
 
 When consensus is not possible, the project lead decides and records the
 reasoning. Contributors may request reconsideration when they present new
@@ -76,6 +82,5 @@ account's documented recovery process.
 
 ## Amendments
 
-Governance changes use the substantial-proposal process and remain open for at
-least 14 calendar days before acceptance, except for corrections that do not
-alter decision rights.
+Governance changes use the substantial-proposal process, except for
+corrections that do not alter decision rights.
