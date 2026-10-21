@@ -501,3 +501,328 @@ end func use_touch
         ft = checker.global_env.lookup("use_touch")
         assert isinstance(ft, FuncType)
         assert ft.effects == frozenset({"io"})
+
+
+class TestTryCatchThrowRetention:
+    """A catch masks the body's throw effect only when the handler is known to
+    take over every value the body can throw (#197)."""
+
+    def test_unmatched_catch_retains_throw_effect(self):
+        """The issue's reproduction: a typed catch that cannot match the thrown
+        string must leave the throw effect on the function."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int
+    try
+        throw "unexpected"
+    catch e: ExpectedError
+        return 0
+    end try
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_unmatched_catch_rejected_without_declared_throw(self):
+        errors = _typecheck_errors("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int with io
+    example () -> 0
+    try
+        throw "unexpected"
+    catch e: ExpectedError
+        return 0
+    end try
+end func main
+""")
+        assert any("undeclared effects" in e and "throw" in e for e in errors), errors
+
+    def test_unmatched_catch_accepted_with_declared_throw(self):
+        """Declaring the retained effect is the documented way out."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int with io, throw
+    try
+        throw "unexpected"
+    catch e: ExpectedError
+        return 0
+    end try
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_matching_adt_catch_masks_throw(self):
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int
+    try
+        throw ExpectedError("boom")
+    catch e: ExpectedError
+        return 0
+    end try
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects
+
+    def test_call_to_throwing_function_retains_throw(self):
+        """A call whose callee declares throw may throw any value, so the
+        handler cannot be proven to cover it (conservative retention)."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func risky() -> Int with throw
+    example () -> 0
+    throw "boom"
+end func risky
+
+func main() -> Int
+    example () -> 0
+    try
+        risky()
+    catch e: ExpectedError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_outer_catch_covering_inner_unmatched_throw_masks(self):
+        """An inner catch that cannot take the value still lets it reach an
+        outer handler that can, so no throw escapes the function."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int
+    example () -> 0
+    try
+        try
+            throw "unexpected"
+        catch e: ExpectedError
+            return 1
+        end try
+    catch e: String
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects
+
+    def test_inner_unmatched_throw_without_outer_handler_retains(self):
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int
+    example () -> 0
+    try
+        try
+            throw "unexpected"
+        catch e: ExpectedError
+            return 1
+        end try
+    catch e: ExpectedError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_string_catch_masks_adt_throw(self):
+        """At runtime, 'catch e: String' stringifies/catches any error, so it
+        covers ADT throws as well."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int
+    example () -> 0
+    try
+        throw ExpectedError("boom")
+    catch e: String
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects
+
+    def test_string_catch_masks_throwing_function_call(self):
+        """A string catch covers calls to functions declared with throw."""
+        checker = _typecheck("""
+func risky() -> Int with throw
+    example () -> 0
+    throw "boom"
+end func risky
+
+func main() -> Int
+    example () -> 0
+    try
+        risky()
+    catch e: String
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects
+
+    def test_tuple_destructure_throw_in_try(self):
+        """Tuple destructuring inside try binds names correctly without leaking effects."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func main() -> Int
+    example () -> 0
+    try
+        let (a, b): (ExpectedError, Int) = (ExpectedError("err"), 1)
+        throw a
+    catch e: ExpectedError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects
+
+    def test_index_assign_throwing_index_retains_throw(self):
+        """A throwing expression in the index of an IndexAssignStatement retains throw."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func pick(x: Int) -> Int with throw
+    example (1) -> 0
+    throw "fail"
+end func pick
+
+func main() -> Int
+    example () -> 0
+    var arr: Array[Int] = array_new(3, 0)
+    try
+        arr[pick(1)] = 9
+    catch e: ExpectedError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_throw_expression_nested_throw_retains_throw(self):
+        """Evaluating the thrown value itself may throw an unmatched error."""
+        checker = _typecheck("""
+type ExpectedError = ExpectedError(message: String)
+
+func describe() -> String with throw
+    example () -> "test"
+    throw "fail"
+end func describe
+
+func main() -> Int
+    example () -> 0
+    try
+        throw ExpectedError(describe())
+    catch e: ExpectedError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_nested_try_inner_handler_masks_its_own_adt(self):
+        """An inner try handles its own ADT, so only the outer throw remains for outer catch."""
+        checker = _typecheck("""
+type InnerError = InnerError(message: String)
+type OuterError = OuterError(message: String)
+
+func main() -> Int
+    example () -> 0
+    try
+        try
+            throw InnerError("inner")
+        catch e: InnerError
+            return 1
+        end try
+        throw OuterError("outer")
+    catch e: OuterError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects
+
+    def test_string_alias_catch_acts_as_adt_catch_and_retains_string_throw(self):
+        """Catching a type alias for String dispatches on the alias name at runtime,
+        so it acts as an ADT catch and does not catch a raw string."""
+        checker = _typecheck("""
+type Message = String
+
+func main() -> Int
+    example () -> 0
+    try
+        throw "boom"
+    catch e: Message
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" in ft.effects
+
+    def test_matching_inferred_callee_thrown_adt_masks_throw(self):
+        """Calling a function that throws a known ADT is masked by catching that ADT."""
+        checker = _typecheck("""
+type ValidationError = ValidationError(message: String)
+
+func validate_age(age: Int) -> Int
+    example (5) -> 5
+    if age < 0 then
+        throw ValidationError("negative age")
+    end if
+    return age
+end func validate_age
+
+func main() -> Int
+    example () -> 0
+    try
+        validate_age(-1)
+    catch e: ValidationError
+        return 0
+    end try
+    return 0
+end func main
+""")
+        ft = checker.global_env.lookup("main")
+        assert isinstance(ft, FuncType)
+        assert "throw" not in ft.effects

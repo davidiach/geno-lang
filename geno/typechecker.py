@@ -605,6 +605,38 @@ def _suggest_project_import(
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class InferredEffects:
+    """Effects and thrown types inferred for a statement, expression, or block."""
+
+    effects: frozenset[str] = frozenset()
+    throws: frozenset[str] = frozenset()
+
+    def __or__(self, other: InferredEffects) -> InferredEffects:
+        return InferredEffects(
+            effects=self.effects | other.effects,
+            throws=self.throws | other.throws,
+        )
+
+    def with_effects(self, *effs: str) -> InferredEffects:
+        return InferredEffects(
+            effects=self.effects | frozenset(effs),
+            throws=self.throws,
+        )
+
+    def with_throws(self, *throws: str) -> InferredEffects:
+        return InferredEffects(
+            effects=self.effects | frozenset(["throw"]),
+            throws=self.throws | frozenset(throws),
+        )
+
+    def without_throw(self) -> InferredEffects:
+        return InferredEffects(
+            effects=self.effects - frozenset(["throw"]),
+            throws=frozenset(),
+        )
+
+
 class TypeChecker(ExhaustivenessMixin):
     """
     Type checker for Geno programs.
@@ -654,6 +686,7 @@ class TypeChecker(ExhaustivenessMixin):
         self._ambiguous_imported_names: dict[str, tuple[str, ...]] = {}
         self._project_module_index: dict[str, dict[str, tuple[str, ...]]] = {}
         self._fresh_tv_counter: int = 0
+        self._function_thrown_types: dict[str, frozenset[str]] = {}
 
         # Module namespace for qualified imports: alias/name → {symbol: Type}
         self._module_exports: dict[str, dict[str, Type]] = {}
@@ -872,6 +905,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         self._declared_user_types.append(declared)
         self._resolved_type_cache.clear()
+        self._function_thrown_types.clear()
         try:
             yield
         finally:
@@ -2449,7 +2483,7 @@ class TypeChecker(ExhaustivenessMixin):
         if validate_effects:
             inferred = self._infer_function_effects(
                 defn, self._effect_env_for_function(defn)
-            )
+            ).effects
             declared = frozenset(defn.effects) if defn.effects else None
 
             if declared is not None:
@@ -2666,7 +2700,7 @@ class TypeChecker(ExhaustivenessMixin):
     def _stable_effects_for_function(self, defn: FunctionDef) -> frozenset[str]:
         """Return the final effect set for a function definition."""
         local_env = self._effect_env_for_function(defn)
-        inferred = self._infer_function_effects(defn, local_env)
+        inferred = self._infer_function_effects(defn, local_env).effects
         if defn.effects:
             return frozenset(defn.effects)
         return inferred
@@ -2690,7 +2724,11 @@ class TypeChecker(ExhaustivenessMixin):
                 existing_type = self.global_env.lookup(defn.name)
                 if not isinstance(existing_type, FuncType):
                     continue
-                final_effects = self._stable_effects_for_function(defn)
+                local_env = self._effect_env_for_function(defn)
+                inferred_res = self._infer_function_effects(defn, local_env)
+                final_effects = (
+                    frozenset(defn.effects) if defn.effects else inferred_res.effects
+                )
                 if existing_type.effects != final_effects:
                     self.global_env.bind(
                         defn.name,
@@ -2700,6 +2738,19 @@ class TypeChecker(ExhaustivenessMixin):
                             final_effects,
                         ),
                     )
+                    changed = True
+
+                current_throws = (
+                    inferred_res.throws
+                    if inferred_res.throws
+                    else (
+                        frozenset(["<unknown>"])
+                        if "throw" in final_effects
+                        else frozenset()
+                    )
+                )
+                if self._function_thrown_types.get(defn.name) != current_throws:
+                    self._function_thrown_types[defn.name] = current_throws
                     changed = True
 
             for impl_def, method in impl_methods:
@@ -2723,130 +2774,174 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _infer_body_effects(
         self, stmts: list[Statement], env: TypeEnv
-    ) -> frozenset[str]:
-        """Infer effects from a list of statements."""
-        effects: set[str] = set()
+    ) -> InferredEffects:
+        """Infer effects and thrown types from a list of statements."""
+        res = InferredEffects()
         for stmt in stmts:
-            effects |= self._infer_stmt_effects(stmt, env)
-        return frozenset(effects)
+            res |= self._infer_stmt_effects(stmt, env)
+        return res
 
     def _infer_function_effects(
         self, defn: FunctionDef, env: TypeEnv
-    ) -> frozenset[str]:
-        """Infer effects from defaults, specs, and the function body.
-
-        Defaults run in the declaration's global scope. Include their effects
-        conservatively in the signature, even at calls supplying every argument.
-        """
-        # Effect inference may revisit an unannotated initializer to learn its
-        # type. That visit needs this function's context even during the global
-        # signature-stabilization pass, where no function is otherwise active.
+    ) -> InferredEffects:
+        """Infer effects from defaults, specs, and the function body."""
         with self._function_context(
             self._resolve_type(defn.return_type),
             is_async=defn.is_async,
             is_main=defn.name == "main",
         ):
-            effects: set[str] = set(self._infer_specs_effects(defn, env))
+            res = self._infer_specs_effects(defn, env)
             for param in defn.params:
                 if param.default_value is not None:
-                    effects |= self._infer_expr_effects(
+                    res |= self._infer_expr_effects(
                         param.default_value, self.global_env
                     )
-            effects |= self._infer_body_effects(defn.body, env)
-            return frozenset(effects)
+            res |= self._infer_body_effects(defn.body, env)
+            return res
 
-    def _infer_specs_effects(self, defn: FunctionDef, env: TypeEnv) -> frozenset[str]:
+    def _infer_specs_effects(self, defn: FunctionDef, env: TypeEnv) -> InferredEffects:
         """Infer effects from requires and ensures clauses."""
-        effects: set[str] = set()
+        res = InferredEffects()
         for req in defn.specs.requires:
-            effects |= self._infer_expr_effects(req.condition, env)
+            res |= self._infer_expr_effects(req.condition, env)
 
         ensures_env = env.child()
         ensures_env.bind("result", self._resolve_type(defn.return_type))
         for ens in defn.specs.ensures:
-            effects |= self._infer_expr_effects(ens.condition, ensures_env)
-        return frozenset(effects)
+            res |= self._infer_expr_effects(ens.condition, ensures_env)
+        return res
 
-    def _infer_stmt_effects(self, stmt: Statement, env: TypeEnv) -> set[str]:
-        """Infer effects from a single statement."""
-        effects: set[str] = set()
-
+    def _infer_stmt_effects(self, stmt: Statement, env: TypeEnv) -> InferredEffects:
+        """Infer effects and thrown types from a single statement."""
         if isinstance(stmt, ExpressionStatement):
-            effects |= self._infer_expr_effects(stmt.expression, env)
-        elif isinstance(stmt, LetStatement):
-            effects |= self._infer_expr_effects(stmt.value, env)
+            return self._infer_expr_effects(stmt.expression, env)
+
+        if isinstance(stmt, LetStatement):
+            res = self._infer_expr_effects(stmt.value, env)
             binding_type = (
                 self._resolve_type(stmt.type_annotation)
                 if stmt.type_annotation is not None
                 else self._check_expression(stmt.value, env)
             )
             env.bind(stmt.name, binding_type)
-        elif isinstance(
+            return res
+
+        if isinstance(
             stmt,
             (AssignStatement, FieldAssignStatement, IndexAssignStatement),
         ):
-            effects.add("mutation")
+            res = InferredEffects(frozenset(["mutation"]))
             if isinstance(stmt, (FieldAssignStatement, IndexAssignStatement)):
-                effects |= self._infer_expr_effects(stmt.target, env)
+                res |= self._infer_expr_effects(stmt.target, env)
             if isinstance(stmt, IndexAssignStatement):
-                effects |= self._infer_expr_effects(stmt.index, env)
-            effects |= self._infer_expr_effects(stmt.value, env)
-        elif isinstance(stmt, VarStatement):
-            effects.add("mutation")
-            effects |= self._infer_expr_effects(stmt.value, env)
+                res |= self._infer_expr_effects(stmt.index, env)
+            res |= self._infer_expr_effects(stmt.value, env)
+            return res
+
+        if isinstance(stmt, VarStatement):
+            res = InferredEffects(frozenset(["mutation"])) | self._infer_expr_effects(
+                stmt.value, env
+            )
             binding_type = (
                 self._resolve_type(stmt.type_annotation)
                 if stmt.type_annotation is not None
                 else self._check_expression(stmt.value, env)
             )
             env.bind(stmt.name, binding_type, mutable=True)
-        elif isinstance(stmt, ReturnStatement):
+            return res
+
+        if isinstance(stmt, ReturnStatement):
             if stmt.value is not None:
-                effects |= self._infer_expr_effects(stmt.value, env)
-        elif isinstance(stmt, IfStatement):
-            effects |= self._infer_expr_effects(stmt.condition, env)
-            effects |= self._infer_body_effects(stmt.then_body, env.child())
+                return self._infer_expr_effects(stmt.value, env)
+            return InferredEffects()
+
+        if isinstance(stmt, IfStatement):
+            res = self._infer_expr_effects(stmt.condition, env)
+            res |= self._infer_body_effects(stmt.then_body, env.child())
             if stmt.else_body:
-                effects |= self._infer_body_effects(stmt.else_body, env.child())
-        elif isinstance(stmt, WhileStatement):
-            effects |= self._infer_expr_effects(stmt.condition, env)
-            effects |= self._infer_body_effects(stmt.body, env.child())
-        elif isinstance(stmt, ForStatement):
-            effects |= self._infer_expr_effects(stmt.iterable, env)
+                res |= self._infer_body_effects(stmt.else_body, env.child())
+            return res
+
+        if isinstance(stmt, WhileStatement):
+            res = self._infer_expr_effects(stmt.condition, env)
+            res |= self._infer_body_effects(stmt.body, env.child())
+            return res
+
+        if isinstance(stmt, ForStatement):
+            res = self._infer_expr_effects(stmt.iterable, env)
             body_env = env.child()
             body_env.bind(stmt.variable, self._resolve_type(stmt.var_type))
-            effects |= self._infer_body_effects(stmt.body, body_env)
-        elif isinstance(stmt, TryStatement):
-            body_effects = self._infer_body_effects(stmt.try_body, env.child())
-            # try/catch masks the "throw" effect from the try body
-            effects |= body_effects - {"throw"}
+            res |= self._infer_body_effects(stmt.body, body_env)
+            return res
+
+        if isinstance(stmt, TryStatement):
+            body_res = self._infer_body_effects(stmt.try_body, env.child())
+            catch_annot = stmt.catch_clause.type_annotation
+            catch_raw_name = getattr(catch_annot, "name", None)
+
+            if "throw" in body_res.effects:
+                # String catch is a catch-all at runtime on all backends (#197).
+                # Raw annotation must name String directly (aliases act as ADTs).
+                if catch_raw_name == "String":
+                    try_res = body_res.without_throw()
+                else:
+                    resolved_catch = self._constructor_to_type.get(
+                        catch_raw_name, catch_raw_name
+                    )
+                    unmasked_throws: set[str] = set()
+                    for t in body_res.throws:
+                        if t == "<unknown>":
+                            unmasked_throws.add(t)
+                        else:
+                            resolved_t = self._constructor_to_type.get(t, t)
+                            if resolved_t != resolved_catch:
+                                unmasked_throws.add(t)
+                    if not body_res.throws or unmasked_throws:
+                        try_res = InferredEffects(
+                            body_res.effects,
+                            frozenset(unmasked_throws or ["<unknown>"]),
+                        )
+                    else:
+                        try_res = body_res.without_throw()
+            else:
+                try_res = body_res
+
             catch_env = env.child()
             catch_env.bind(
                 stmt.catch_clause.variable,
                 self._resolve_type(stmt.catch_clause.type_annotation),
             )
-            effects |= self._infer_body_effects(stmt.catch_clause.body, catch_env)
-        elif isinstance(stmt, MatchStatement):
-            effects |= self._infer_expr_effects(stmt.scrutinee, env)
+            catch_res = self._infer_body_effects(stmt.catch_clause.body, catch_env)
+            return try_res | catch_res
+
+        if isinstance(stmt, MatchStatement):
+            res = self._infer_expr_effects(stmt.scrutinee, env)
             scrutinee_type = self._check_expression(stmt.scrutinee, env)
             for arm in stmt.arms:
                 arm_env = env.child()
                 self._bind_pattern_effect_env(arm.pattern, scrutinee_type, arm_env)
                 if arm.guard is not None:
-                    effects |= self._infer_expr_effects(arm.guard, arm_env)
-                effects |= self._infer_body_effects(arm.body, arm_env)
-        elif isinstance(stmt, AssertStatement):
-            effects |= self._infer_expr_effects(stmt.expression, env)
-        elif isinstance(stmt, TupleDestructureStatement):
-            if stmt.mutable:
-                effects.add("mutation")
-            effects |= self._infer_expr_effects(stmt.value, env)
+                    res |= self._infer_expr_effects(arm.guard, arm_env)
+                res |= self._infer_body_effects(arm.body, arm_env)
+            return res
+
+        if isinstance(stmt, AssertStatement):
+            return self._infer_expr_effects(stmt.expression, env)
+
+        if isinstance(stmt, TupleDestructureStatement):
+            res = (
+                InferredEffects(frozenset(["mutation"]))
+                if stmt.mutable
+                else InferredEffects()
+            )
+            res |= self._infer_expr_effects(stmt.value, env)
             tuple_type = self._resolve_type(stmt.type_annotation)
             if isinstance(tuple_type, TupleType):
                 for name, element_type in zip(stmt.names, tuple_type.element_types):
                     env.bind(name, element_type, mutable=stmt.mutable)
+            return res
 
-        return effects
+        return InferredEffects()
 
     def _trait_dispatch_effects(
         self, expr: FunctionCall, env: TypeEnv
@@ -2886,121 +2981,180 @@ class TypeChecker(ExhaustivenessMixin):
             return method_types[callee.name], param_names, ordered_args
         return None
 
-    def _infer_expr_effects(self, expr: Expression, env: TypeEnv) -> set[str]:
-        """Infer effects from an expression."""
-        effects: set[str] = set()
-
+    def _infer_expr_effects(self, expr: Expression, env: TypeEnv) -> InferredEffects:
+        """Infer effects and thrown types from an expression."""
         if isinstance(expr, FunctionCall):
-            # Infer effects from arguments first
+            res = InferredEffects()
             for arg in expr.arguments:
-                effects |= self._infer_expr_effects(arg.value, env)
+                res |= self._infer_expr_effects(arg.value, env)
 
-            # Calling any expression invokes the effects carried by its
-            # function type. This includes indexed/computed callees, not only
-            # identifiers and inline lambdas.
             callee = expr.function
-            effects |= self._infer_expr_effects(callee, env)
+            res |= self._infer_expr_effects(callee, env)
             callee_type = self._check_expression(callee, env)
             if isinstance(callee_type, FuncType):
-                effects |= callee_type.effects
+                res = res.with_effects(*callee_type.effects)
+                if "throw" in callee_type.effects:
+                    callee_throws = self._get_callee_thrown_types(callee, env)
+                    res = res.with_throws(*callee_throws)
 
             if isinstance(callee, Identifier):
-                effects |= self._trait_dispatch_effects(expr, env)
+                trait_effs = self._trait_dispatch_effects(expr, env)
+                res = res.with_effects(*trait_effs)
+                if "throw" in trait_effs:
+                    res = res.with_throws("<unknown>")
             elif isinstance(callee, FieldAccess):
-                # Module-qualified call: mod.func(...)
                 if isinstance(callee.target, Identifier):
                     mod_exports = self._module_exports.get(callee.target.name)
                     if mod_exports:
                         module_callee_type = mod_exports.get(callee.field_name)
                         if isinstance(module_callee_type, FuncType):
-                            effects |= module_callee_type.effects
-        elif isinstance(expr, ThrowExpression):
-            effects.add("throw")
-            effects |= self._infer_expr_effects(expr.value, env)
+                            res = res.with_effects(*module_callee_type.effects)
+                            if "throw" in module_callee_type.effects:
+                                res = res.with_throws("<unknown>")
+            return res
 
-        elif isinstance(expr, BinaryOp):
-            effects |= self._infer_expr_effects(expr.left, env)
-            effects |= self._infer_expr_effects(expr.right, env)
+        if isinstance(expr, ThrowExpression):
+            res = self._infer_expr_effects(expr.value, env)
+            thrown_type = self._get_thrown_type_name(expr.value, env)
+            return res.with_throws(thrown_type)
 
-        elif isinstance(expr, UnaryOp):
-            effects |= self._infer_expr_effects(expr.operand, env)
+        if isinstance(expr, BinaryOp):
+            return self._infer_expr_effects(expr.left, env) | self._infer_expr_effects(
+                expr.right, env
+            )
 
-        elif isinstance(expr, IfStatement):
-            # If-expression
-            effects |= self._infer_expr_effects(expr.condition, env)
-            effects |= self._infer_body_effects(expr.then_body, env.child())
+        if isinstance(expr, UnaryOp):
+            return self._infer_expr_effects(expr.operand, env)
+
+        if isinstance(expr, IfStatement):
+            res = self._infer_expr_effects(expr.condition, env)
+            res |= self._infer_body_effects(expr.then_body, env.child())
             if expr.else_body:
-                effects |= self._infer_body_effects(expr.else_body, env.child())
+                res |= self._infer_body_effects(expr.else_body, env.child())
+            return res
 
-        elif isinstance(expr, MatchExpr):
-            effects |= self._infer_expr_effects(expr.scrutinee, env)
+        if isinstance(expr, MatchExpr):
+            res = self._infer_expr_effects(expr.scrutinee, env)
             scrutinee_type = self._check_expression(expr.scrutinee, env)
             for arm in expr.arms:
                 arm_env = env.child()
                 self._bind_pattern_effect_env(arm.pattern, scrutinee_type, arm_env)
                 if arm.guard is not None:
-                    effects |= self._infer_expr_effects(arm.guard, arm_env)
-                effects |= self._infer_body_effects(arm.body, arm_env)
+                    res |= self._infer_expr_effects(arm.guard, arm_env)
+                res |= self._infer_body_effects(arm.body, arm_env)
+            return res
 
-        elif isinstance(expr, Pipeline):
-            effects |= self._infer_expr_effects(expr.initial, env)
+        if isinstance(expr, Pipeline):
+            res = self._infer_expr_effects(expr.initial, env)
             for stage in expr.stages:
-                effects |= self._infer_expr_effects(stage.function, env)
+                res |= self._infer_expr_effects(stage.function, env)
                 callee_type = self._check_expression(stage.function, env)
                 if isinstance(callee_type, FuncType):
-                    effects |= callee_type.effects
+                    res = res.with_effects(*callee_type.effects)
+                    if "throw" in callee_type.effects:
+                        callee_throws = self._get_callee_thrown_types(
+                            stage.function, env
+                        )
+                        res = res.with_throws(*callee_throws)
                 for stage_arg in stage.arguments:
-                    effects |= self._infer_expr_effects(stage_arg, env)
+                    res |= self._infer_expr_effects(stage_arg, env)
+            return res
 
-        elif isinstance(expr, ConstructorCall):
+        if isinstance(expr, ConstructorCall):
+            res = InferredEffects()
             for ctor_arg in expr.arguments:
-                effects |= self._infer_expr_effects(ctor_arg, env)
+                res |= self._infer_expr_effects(ctor_arg, env)
+            return res
 
-        elif isinstance(expr, FieldAccess):
-            effects |= self._infer_expr_effects(expr.target, env)
+        if isinstance(expr, FieldAccess):
+            return self._infer_expr_effects(expr.target, env)
 
-        elif isinstance(expr, IndexAccess):
-            effects |= self._infer_expr_effects(expr.target, env)
-            effects |= self._infer_expr_effects(expr.index, env)
+        if isinstance(expr, IndexAccess):
+            return self._infer_expr_effects(
+                expr.target, env
+            ) | self._infer_expr_effects(expr.index, env)
 
-        elif isinstance(expr, LambdaExpr):
-            # Lambda effects are not propagated to the enclosing function —
-            # they only matter when the lambda is actually called
-            pass
+        if isinstance(expr, LambdaExpr):
+            return InferredEffects()
 
-        elif isinstance(expr, ListLiteral):
+        if isinstance(expr, ListLiteral):
+            res = InferredEffects()
             for elem in expr.elements:
-                effects |= self._infer_expr_effects(elem, env)
+                res |= self._infer_expr_effects(elem, env)
+            return res
 
-        elif isinstance(expr, ListComprehension):
-            effects |= self._infer_expr_effects(expr.iterable, env)
+        if isinstance(expr, ListComprehension):
+            res = self._infer_expr_effects(expr.iterable, env)
             comp_env = env.child()
             comp_env.bind(expr.variable, self._resolve_type(expr.var_type))
-            effects |= self._infer_expr_effects(expr.element_expr, comp_env)
+            res |= self._infer_expr_effects(expr.element_expr, comp_env)
             if expr.condition:
-                effects |= self._infer_expr_effects(expr.condition, comp_env)
+                res |= self._infer_expr_effects(expr.condition, comp_env)
+            return res
 
-        elif isinstance(expr, TupleExpr):
+        if isinstance(expr, TupleExpr):
+            res = InferredEffects()
             for elem in expr.elements:
-                effects |= self._infer_expr_effects(elem, env)
+                res |= self._infer_expr_effects(elem, env)
+            return res
 
-        elif isinstance(expr, FStringExpr):
+        if isinstance(expr, FStringExpr):
+            res = InferredEffects()
             for part in expr.parts:
                 if not isinstance(part, str):
-                    effects |= self._infer_expr_effects(part, env)
+                    res |= self._infer_expr_effects(part, env)
+            return res
 
-        elif isinstance(expr, AwaitExpr):
-            effects |= self._infer_expr_effects(expr.expr, env)
+        if isinstance(expr, AwaitExpr):
+            return self._infer_expr_effects(expr.expr, env)
 
-        elif isinstance(expr, PropagateExpr):
-            effects |= self._infer_expr_effects(expr.operand, env)
+        if isinstance(expr, PropagateExpr):
+            return self._infer_expr_effects(expr.operand, env)
 
-        elif isinstance(expr, WithExpr):
+        if isinstance(expr, WithExpr):
+            res = InferredEffects()
             for _field_name, update_expr in expr.updates:
-                effects |= self._infer_expr_effects(update_expr, env)
-            effects |= self._infer_expr_effects(expr.target, env)
+                res |= self._infer_expr_effects(update_expr, env)
+            res |= self._infer_expr_effects(expr.target, env)
+            return res
 
-        return effects
+        return InferredEffects()
+
+    def _get_thrown_type_name(self, value_expr: Expression, env: TypeEnv) -> str:
+        """Resolve the thrown type name for a throw expression value."""
+        if isinstance(value_expr, StringLiteral):
+            return "String"
+        if isinstance(value_expr, ConstructorCall):
+            return self._constructor_to_type.get(
+                value_expr.constructor, value_expr.constructor
+            )
+        if isinstance(value_expr, Identifier):
+            binding = env.lookup(value_expr.name)
+            if isinstance(binding, UserType):
+                return self._constructor_to_type.get(binding.name, binding.name)
+            if isinstance(binding, StringType):
+                return "String"
+        if isinstance(value_expr, FunctionCall) and isinstance(
+            value_expr.function, Identifier
+        ):
+            binding = env.lookup(value_expr.function.name)
+            if isinstance(binding, FuncType):
+                ret = binding.return_type
+                if isinstance(ret, UserType):
+                    return self._constructor_to_type.get(ret.name, ret.name)
+                if isinstance(ret, StringType):
+                    return "String"
+        return "<unknown>"
+
+    def _get_callee_thrown_types(
+        self, callee: Expression, env: TypeEnv
+    ) -> frozenset[str]:
+        """Lookup inferred thrown types for a callee."""
+        if isinstance(callee, Identifier):
+            known = self._function_thrown_types.get(callee.name)
+            if known:
+                return known
+        return frozenset(["<unknown>"])
 
     def _definitely_returns(self, stmts: list[Statement]) -> bool:
         """Check if a list of statements definitely returns on all paths."""
@@ -5085,12 +5239,14 @@ class TypeChecker(ExhaustivenessMixin):
                         expr.location,
                     )
 
-            lambda_effects = self._infer_body_effects(expr.block_body, effect_env)
+            lambda_effects = self._infer_body_effects(
+                expr.block_body, effect_env
+            ).effects
             return FuncType(tuple(param_types), return_type, lambda_effects)
 
         assert expr.body is not None
         body_type = self._check_expression(expr.body, lambda_env)
-        lambda_effects = frozenset(self._infer_expr_effects(expr.body, effect_env))
+        lambda_effects = self._infer_expr_effects(expr.body, effect_env).effects
         return FuncType(tuple(param_types), body_type, lambda_effects)
 
     def _check_constructor_call(self, expr: ConstructorCall, env: TypeEnv) -> Type:
