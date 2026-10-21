@@ -5,6 +5,8 @@
 - Created: YYYY-MM-DD
 - Discussion: URL
 - Supersedes: None
+- Review: Independent reviewer(s), or "None (single-maintainer acceptance)"
+  plus the automated review received
 
 ## Summary
 
