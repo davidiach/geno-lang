@@ -707,6 +707,21 @@ class BaseCompiler(ABC):
     # Shared constructor field resolution
     # =========================================================================
 
+    def _catch_variant_names(self, stmt: TryStatement) -> tuple[str, ...]:
+        """Return the constructor class names a typed catch binds, or empty tuple."""
+        if stmt.catch_clause.resolved_variants is not None:
+            return stmt.catch_clause.resolved_variants
+        catch_type_annot = stmt.catch_clause.type_annotation
+        catch_type_name = getattr(catch_type_annot, "name", None)
+        if not catch_type_name or catch_type_name == "String":
+            return ()
+        type_def = self.type_defs.get(catch_type_name)
+        if type_def is not None:
+            return tuple(v.name for v in type_def.variants)
+        if catch_type_name in self._constructor_to_variant:
+            return (catch_type_name,)
+        return ()
+
     def _get_constructor_field_name(self, constructor: str, index: int) -> str:
         """Get the field name for a constructor at a given index.
 

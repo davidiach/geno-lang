@@ -4626,3 +4626,296 @@ class TestBackendParityProperties:
             py_out=py_out,
             js_out=js_out,
         )
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+class TestTypedCatchParity:
+    """#193: a typed catch binds only values of the ADT its clause names.
+
+    The compiled backends used to catch every thrown value, so an unrelated
+    ADT entered the wrong recovery branch while the interpreter correctly
+    propagated it. These programs pin the interpreter's behaviour on all three
+    backends.
+    """
+
+    @staticmethod
+    def _check_all(source: str, expected: str, label: str) -> None:
+        _assert_expected_backend_outputs(
+            label=label,
+            context=f"--- source ---\n{source}\n",
+            expected=expected,
+            interp_out=_interpreter_output(source),
+            py_out=_compiled_python_output(source),
+            js_out=_compiled_js_output(source),
+        )
+
+    def test_unrelated_adt_is_not_caught_by_a_typed_catch(self):
+        source = """
+        type ExpectedError = Expected(message: String)
+        type OtherError = Other(message: String)
+
+        func main() -> Unit
+            try
+                try
+                    throw Other("oops")
+                catch err: ExpectedError
+                    print(1)
+                end try
+            catch err: OtherError
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(source, "2\n", "unrelated-ADT typed catch (#193)")
+
+    def test_a_string_thrown_inside_an_adt_catch_propagates(self):
+        source = """
+        type ExpectedError = Expected(message: String)
+
+        func main() -> Unit
+            try
+                try
+                    throw "oops"
+                catch err: ExpectedError
+                    print(1)
+                end try
+            catch msg: String
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(source, "2\n", "string thrown into a typed catch (#193)")
+
+    def test_matching_typed_catches_still_bind(self):
+        source = """
+        type ExpectedError = Expected(message: String)
+
+        func main() -> Unit
+            try
+                throw Expected("planned")
+            catch err: ExpectedError
+                print(1)
+            end try
+            try
+                throw "plain string"
+            catch msg: String
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(source, "1\n2\n", "matching typed catch control (#193)")
+
+    def test_multi_variant_adt_typed_catch(self):
+        source = """
+        type ShapeError = BadCircle(r: Int) | BadRect(w: Int, h: Int)
+        type OtherError = Unrelated(msg: String)
+
+        func main() -> Unit
+            try
+                try
+                    throw BadRect(1, 2)
+                catch err: OtherError
+                    print(1)
+                end try
+            catch err: ShapeError
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(source, "2\n", "multi-variant ADT typed catch (#193)")
+
+    def test_type_alias_typed_catch(self):
+        source = """
+        type BaseError = Base(msg: String)
+        type AliasError = BaseError
+        type OtherError = Other(msg: String)
+
+        func main() -> Unit
+            try
+                try
+                    throw Base("alias test")
+                catch err: OtherError
+                    print(1)
+                end try
+            catch err: AliasError
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(source, "2\n", "type alias typed catch (#193)")
+
+    def test_builtin_adt_typed_catch(self):
+        source = """
+        type OtherError = Other(msg: String)
+
+        func main() -> Unit
+            try
+                try
+                    throw JsonString("json error")
+                catch err: OtherError
+                    print(1)
+                end try
+            catch err: JsonValue
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(source, "2\n", "builtin ADT typed catch (#193)")
+
+    def test_multi_module_project_typed_catch(self):
+        modules = {
+            "Unrelated": """
+type CustomError = FromUnrelated(msg: String)
+""",
+            "Lib": """
+export type CustomError = FromLib(msg: String)
+
+export
+@untested("helper")
+func fail() -> Unit
+    throw FromLib("hello")
+end func
+""",
+        }
+        main_source = """
+import Lib
+
+func main() -> Unit
+    try
+        Lib.fail()
+    catch err: CustomError
+        print(2)
+    end try
+    return ()
+end func
+"""
+        interp_out = _interpreter_project_output(
+            main_source=main_source,
+            modules=modules,
+        )
+        py_out = _compiled_python_project_output(
+            main_source=main_source,
+            modules=modules,
+        )
+        js_out = _compiled_js_project_output(
+            main_source=main_source,
+            modules=modules,
+        )
+        assert interp_out == "2\n"
+        assert py_out == "2\n"
+        assert js_out == "2\n"
+
+    def test_multi_module_ambiguous_constructor_name_typed_catch(self):
+        # Two modules define a constructor with the same name.
+        # Matching by constructor name across modules succeeds without NameError (#193 review).
+        modules = {
+            "A": """
+export type AErr = Expected(message: String)
+""",
+            "B": """
+export type BErr = Expected(message: String)
+
+export
+@untested("helper")
+func fb() -> Unit
+    throw Expected("b")
+end func
+""",
+        }
+        main_source = """
+import A
+import B
+
+func main() -> Unit with io
+    try
+        try
+            B.fb()
+        catch err: AErr
+            print(1)
+        end try
+    catch err: BErr
+        print(2)
+    end try
+    return ()
+end func
+"""
+        py_out = _compiled_python_project_output(
+            main_source=main_source,
+            modules=modules,
+        )
+        js_out = _compiled_js_project_output(
+            main_source=main_source,
+            modules=modules,
+        )
+        assert py_out == "1\n"
+        assert js_out == "1\n"
+
+    def test_typed_catch_when_type_names_another_constructor(self):
+        # A type named like another type's constructor:
+        # Inner = Leaf does not shadow constructor class Inner in module globals.
+        # Thrown Inner(1) rethrows under catch err: Inner and is caught by catch e2: Outer (#193 review).
+        source = """
+        type Outer = Inner(x: Int)
+        type Inner = Leaf(y: Int)
+
+        func main() -> Unit with io
+            try
+                try
+                    throw Inner(1)
+                catch err: Inner
+                    print(1)
+                end try
+            catch e2: Outer
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        self._check_all(
+            source,
+            "2\n",
+            "type named like another type's constructor rethrows to outer catch (#193 review)",
+        )
+
+    def test_unresolved_catch_type_rethrows_across_backends(self):
+        # When resolved_variants is empty (an unresolved user type),
+        # all backends rethrow rather than catching everything (#193 review).
+        import pytest
+
+        from geno.compiler import Compiler
+        from geno.interpreter import GenoThrowError, Interpreter
+        from geno.js_compiler import JSCompiler
+        from geno.lexer import Lexer
+        from geno.parser import Parser
+
+        source = """
+        type MyErr = Fail(msg: String)
+        func main() -> Unit
+            try
+                throw Fail("oops")
+            catch err: MyErr
+                return ()
+            end try
+            return ()
+        end func
+        """
+        program = Parser(Lexer(source).tokenize()).parse_program()
+        try_stmt = program.definitions[1].body[0]
+        try_stmt.catch_clause.resolved_variants = ()
+
+        py_code = Compiler().compile(program)
+        assert "raise" in py_code
+        assert "type(__geno_err__.value).__name__" not in py_code
+
+        js_code = JSCompiler().compile(program)
+        assert "throw __geno_err__;" in js_code
+
+        interp = Interpreter()
+        with pytest.raises(GenoThrowError):
+            interp.run(program)

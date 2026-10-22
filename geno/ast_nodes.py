@@ -691,6 +691,7 @@ class CatchClause:
     type_annotation: TypeAnnotation
     body: list[Statement]
     location: SourceLocation
+    resolved_variants: tuple[str, ...] | None = None
 
 
 @dataclass
