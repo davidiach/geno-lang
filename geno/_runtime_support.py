@@ -3013,7 +3013,9 @@ _JSON_MAX_INDENT = 10
 _JSON_SIZE_UNKNOWN = 1 << 62
 
 
-def _json_size_bounds(obj, pretty, ensure_ascii):
+def _json_size_bounds(
+    obj: Any, pretty: bool, ensure_ascii: bool
+) -> tuple[int, int, int, int]:
     """Bound the length of ``obj``'s JSON encoding without building it.
 
     Returns ``(min_chars, max_chars, lines, indent_units)``. At nesting depth
@@ -3034,7 +3036,9 @@ def _json_size_bounds(obj, pretty, ensure_ascii):
     return min_chars - 2, max_chars - 2, 0, 0
 
 
-def _json_container_bounds(obj, pretty, escape_width):
+def _json_container_bounds(
+    obj: Any, pretty: bool, escape_width: int
+) -> tuple[int, int, int, int]:
     """``_json_size_bounds`` for a list or dict."""
     count = len(obj)
     if count == 0:
