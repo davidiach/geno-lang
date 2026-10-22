@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converted once instead of once per repeat.
 - `json_stringify_pretty` treats an `indent` above 10 as 10 in the interpreter
   and in generated Python, as generated JavaScript already did.
+- Generated JavaScript renames variables, parameters and functions named
+  `eval` or `arguments`, which strict-mode JavaScript forbids. Before, such a
+  program compiled but Node.js rejected it with a SyntaxError. A constructor
+  field with either name is now a JavaScript compile error, as `class` already
+  was.
 - Reference apps:
   - geno-form stacks its fields and highlights the active tab.
   - tetris.geno draws all seven pieces correctly and fits the default canvas.
