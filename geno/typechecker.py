@@ -532,6 +532,8 @@ _FOREIGN_NAMES: dict[str, tuple[str, ...]] = {
     "put": ("insert",),
     "flat_map": ("and_then",),
     "get_or": ("unwrap_or",),
+    "get_or_default": ("get",),
+    "getOrDefault": ("get",),
     "to_float": ("int_to_float",),
     "float": ("int_to_float",),
     "to_int": ("float_to_int", "parse_int"),
@@ -5058,11 +5060,13 @@ class TypeChecker(ExhaustivenessMixin):
             expr._resolved_builtin_name = builtin_name
             self._record_captured_binding(identifier_func.name, env)
 
-        # Special case: range accepts 2 or 3 arguments
-        if builtin_name == "range" and len(arguments) in (2, 3):
+        # Special case: range accepts 1 to 3 arguments; `range(n)` is `range(0, n)`
+        if builtin_name == "range" and len(arguments) in (1, 2, 3):
             if any(arg.name is not None for arg in arguments):
                 self._validate_special_builtin_named_args(
-                    arguments, ["start", "end"], expr.location
+                    arguments,
+                    ["end"] if len(arguments) == 1 else ["start", "end"],
+                    expr.location,
                 )
             for arg in arguments:
                 arg_type = self._check_expression(arg.value, env)
@@ -5215,6 +5219,17 @@ class TypeChecker(ExhaustivenessMixin):
         min_args = len(func_type.param_types) - num_defaults
         max_args = len(func_type.param_types)
 
+        if (
+            not (min_args <= len(arguments) <= max_args)
+            and arguments
+            and not self._needs_context(arguments[0].value)
+        ):
+            # `max(xs)`: a call the named function rejects by its argument
+            # count may still be the method call it spells (`xs.max()`).
+            first_type = self._check_expression(arguments[0].value, env)
+            target = self._overload_target(expr, first_type, env)
+            if target is not None:
+                return self._check_overloaded_call(expr, target, env)
         if not (min_args <= len(arguments) <= max_args):
             callee_desc = (
                 f"'{func_name_for_defaults}'" if func_name_for_defaults else "function"
@@ -5451,6 +5466,14 @@ class TypeChecker(ExhaustivenessMixin):
 
         method_name = callee.field_name
         chosen = self._method_target(method_name, receiver_type, env)
+        if (
+            chosen == "map_get"
+            and len(expr.arguments) == 2
+            and self._identifier_resolves_to_builtin("map_get_or", env)
+        ):
+            # `m.get(key, default)`: the value, or the default, as Python's
+            # dict.get; `m.get(key)` stays an Option.
+            chosen = "map_get_or"
         if chosen is None:
             if not callee._method_error_reported:
                 candidates = self._method_names_for(receiver_type, env)
@@ -5511,7 +5534,17 @@ class TypeChecker(ExhaustivenessMixin):
         if scope is not self.global_env:
             return None  # a local binding is not overloaded
         chosen = self._method_target(name, first_type, env)
-        return None if chosen is None or chosen == name else chosen
+        if chosen is None or chosen == name:
+            return None
+        # Only a function that takes as many arguments as the call writes:
+        # `max(xs)` is `xs.max()`, but `max(xs, 2, 3)` stays a call of `max`.
+        chosen_type = env.lookup(chosen)
+        if not (
+            isinstance(chosen_type, FuncType)
+            and len(chosen_type.param_types) == len(expr.arguments)
+        ):
+            return None
+        return chosen
 
     def _check_overloaded_call(
         self, expr: FunctionCall, target: str, env: TypeEnv
@@ -5555,6 +5588,15 @@ class TypeChecker(ExhaustivenessMixin):
             and self._first_param_accepts(env.lookup(method_name), receiver_type)
         ):
             return method_name
+
+        if (
+            method_name == "sum"
+            and isinstance(receiver_type, ListType)
+            and isinstance(receiver_type.element_type, FloatType)
+            and self._identifier_resolves_to_builtin("float_sum", env)
+        ):
+            # `sum` takes a List[Int]; a List[Float] sums from 0.0.
+            return "float_sum"
 
         prefix = _METHOD_PREFIXES.get(type(receiver_type))
         if prefix is not None:

@@ -59,7 +59,8 @@ URI = "untitled:Typed.geno"
 
 
 class _Editor:
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, uri: str = URI) -> None:
+        self.uri = uri
         self.server = create_server(diag_debounce_sec=0)
         self.server.lsp._workspace = workspace.Workspace(
             None, sync_kind=types.TextDocumentSyncKind.Full
@@ -72,7 +73,7 @@ class _Editor:
         self._handler(types.TEXT_DOCUMENT_DID_OPEN)(
             types.DidOpenTextDocumentParams(
                 text_document=types.TextDocumentItem(
-                    uri=URI, language_id="geno", version=1, text=source
+                    uri=self.uri, language_id="geno", version=1, text=source
                 )
             )
         )
@@ -84,7 +85,9 @@ class _Editor:
         self.source = source
         self._handler(types.TEXT_DOCUMENT_DID_CHANGE)(
             types.DidChangeTextDocumentParams(
-                text_document=types.VersionedTextDocumentIdentifier(uri=URI, version=2),
+                text_document=types.VersionedTextDocumentIdentifier(
+                    uri=self.uri, version=2
+                ),
                 content_changes=[
                     types.TextDocumentContentChangeEvent_Type2(text=source)
                 ],
@@ -100,7 +103,7 @@ class _Editor:
 
     @property
     def document(self):
-        return types.TextDocumentIdentifier(uri=URI)
+        return types.TextDocumentIdentifier(uri=self.uri)
 
     def hover(self, needle: str, offset: int = 0) -> str | None:
         result = self._handler(types.TEXT_DOCUMENT_HOVER)(
@@ -243,3 +246,53 @@ def test_a_fix_becomes_a_quick_fix_over_the_misspelled_name() -> None:
     [edit] = fix.edit.changes[URI]
     assert edit.new_text == "length"
     assert (edit.range.start.character, edit.range.end.character) == (14, 20)
+
+
+def test_a_local_may_be_renamed_to_or_from_a_builtins_name(tmp_path) -> None:
+    """A local shadows a builtin only in its scope (proposals 0011, 0012)."""
+    source = (
+        "func main() -> Unit\n"
+        "    let total = [1, 2].sum()\n"
+        "    let count = total + 1\n"
+        "    print(count)\n"
+        "end func\n"
+    )
+    path = tmp_path / "Main.geno"
+    path.write_text(source, encoding="utf-8")
+    editor = _Editor(source, path.as_uri())
+    rename = editor._handler(types.TEXT_DOCUMENT_RENAME)
+
+    def rename_at(needle: str, new_name: str):
+        return rename(
+            types.RenameParams(
+                text_document=editor.document,
+                position=editor.position(needle),
+                new_name=new_name,
+            )
+        )
+
+    to_builtin = rename_at("total =", "sum")
+    assert to_builtin is not None
+    assert {edit.new_text for edit in to_builtin.changes[editor.uri]} == {"sum"}
+    from_builtin = rename_at("count =", "tally")
+    assert from_builtin is not None
+    assert len(from_builtin.changes[editor.uri]) == 2
+
+
+def test_a_top_level_function_keeps_off_builtin_names(tmp_path) -> None:
+    """Renaming one to `count` would capture every call of the builtin."""
+    source = (
+        "func helper(n: Int) -> Int\n    example 1 -> 1\n    return n\nend func\n\n"
+        "func main() -> Unit\n    print(helper(1))\nend func\n"
+    )
+    path = tmp_path / "Main.geno"
+    path.write_text(source, encoding="utf-8")
+    editor = _Editor(source, path.as_uri())
+    result = editor._handler(types.TEXT_DOCUMENT_RENAME)(
+        types.RenameParams(
+            text_document=editor.document,
+            position=editor.position("helper(n"),
+            new_name="count",
+        )
+    )
+    assert result is None

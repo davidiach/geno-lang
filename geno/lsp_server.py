@@ -2992,22 +2992,23 @@ class GenoLanguageServer:
         if not old_name:
             return None
 
-        # Reject renaming builtins or keywords
-        if old_name in _get_builtin_names() or old_name in _KEYWORDS:
+        if old_name in _KEYWORDS:
             return None
-
-        # Validate new name is a valid identifier
+        # Validate new name is a valid identifier that is not a keyword
         if not new_name or not re.match(r"^[a-zA-Z_]\w*$", new_name):
             return None
-
-        # Reject if new name is a keyword or builtin
-        if new_name in _KEYWORDS or new_name in _get_builtin_names():
+        if new_name in _KEYWORDS:
             return None
+        builtin_names = _get_builtin_names()
 
-        # Try semantic rename first
+        # Try semantic rename first. A program's own binding may share a
+        # builtin's name (proposal 0011), so the symbol decides, not the name:
+        # a local may take a builtin's name, which it shadows only in its scope.
         result = self._semantic_locations(uri, doc.source, line, char, word=old_name)
         if result:
             defn, locs = result
+            if new_name in builtin_names and defn.kind not in {"variable", "parameter"}:
+                return None
             if defn.kind not in {"variable", "parameter"} and not (
                 self._rename_project_is_complete(uri, doc.source)
             ):
@@ -3025,7 +3026,9 @@ class GenoLanguageServer:
                 changes.setdefault(loc_uri, []).append(edit)
             return types.WorkspaceEdit(changes=changes) if changes else None
 
-        # Fallback to text-based rename
+        # Fallback to text-based rename, which cannot tell a builtin's uses apart
+        if old_name in builtin_names or new_name in builtin_names:
+            return None
         if not self._rename_project_is_complete(uri, doc.source):
             return None
         changes = {}

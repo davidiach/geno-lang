@@ -679,6 +679,7 @@ class Interpreter:
             ("take_while", self._builtin_take_while, 2, ["list", "predicate"]),
             ("all", self._builtin_all, 2, ["list", "predicate"]),
             ("sort", self._builtin_sort, -1, ["list", "comparator"]),
+            ("count", self._builtin_count, 2, ["list", "predicate"]),
             ("sort_by", self._builtin_sort_by, 2, ["list", "key_fn"]),
             ("zip", _builtins.builtin_zip, 2, ["list1", "list2"]),
             ("enumerate", _builtins.builtin_enumerate, 1, ["list"]),
@@ -897,6 +898,34 @@ class Interpreter:
             ("ceil", _builtins.builtin_ceil, 1, ["value"]),
             ("round", _builtins.builtin_round, 1, ["value"]),
             ("max", _builtins.builtin_max, 2, ["a", "b"]),
+            ("min", _builtins.builtin_min, 2, ["a", "b"]),
+            ("sum", _builtins.builtin_sum, 1, ["list"]),
+            ("float_sum", _builtins.builtin_float_sum, 1, ["list"]),
+            ("list_min", _builtins.builtin_list_min, 1, ["list"]),
+            ("list_max", _builtins.builtin_list_max, 1, ["list"]),
+            ("is_empty", _builtins.builtin_is_empty, 1, ["list"]),
+            ("list_index_of", _builtins.builtin_list_index_of, 2, ["list", "element"]),
+            ("unique", _builtins.builtin_unique, 1, ["list"]),
+            ("string_is_empty", _builtins.builtin_string_is_empty, 1, ["text"]),
+            ("string_reverse", _builtins.builtin_string_reverse, 1, ["text"]),
+            ("string_lines", _builtins.builtin_string_lines, 1, ["text"]),
+            ("string_words", _builtins.builtin_string_words, 1, ["text"]),
+            ("string_is_digit", _builtins.builtin_string_is_digit, 1, ["text"]),
+            ("string_is_alpha", _builtins.builtin_string_is_alpha, 1, ["text"]),
+            (
+                "string_is_alphanumeric",
+                _builtins.builtin_string_is_alphanumeric,
+                1,
+                ["text"],
+            ),
+            (
+                "string_is_whitespace",
+                _builtins.builtin_string_is_whitespace,
+                1,
+                ["text"],
+            ),
+            ("string_is_upper", _builtins.builtin_string_is_upper, 1, ["text"]),
+            ("string_is_lower", _builtins.builtin_string_is_lower, 1, ["text"]),
             ("clamp", _builtins.builtin_clamp, 3, ["value", "min", "max"]),
             ("abs", lambda x: abs(x), 1, ["value"]),
             # Type predicates
@@ -932,6 +961,13 @@ class Interpreter:
             ("map_get", _builtins.builtin_map_get, 2, ["map", "key"]),
             ("map_size", _builtins.builtin_map_size, 1, ["map"]),
             ("map_contains_key", _builtins.builtin_map_contains_key, 2, ["map", "key"]),
+            (
+                "map_get_or",
+                _builtins.builtin_map_get_or,
+                3,
+                ["map", "key", "default"],
+            ),
+            ("map_is_empty", _builtins.builtin_map_is_empty, 1, ["map"]),
             ("map_remove", _builtins.builtin_map_remove, 2, ["map", "key"]),
             ("map_keys", _builtins.builtin_map_keys, 1, ["map"]),
             ("map_values", _builtins.builtin_map_values, 1, ["map"]),
@@ -1117,6 +1153,12 @@ class Interpreter:
                 ["map", "key"],
             ),
             ("mutable_map_size", _builtins.builtin_mutable_map_size, 1, ["map"]),
+            (
+                "mutable_map_is_empty",
+                _builtins.builtin_mutable_map_is_empty,
+                1,
+                ["map"],
+            ),
             ("mutable_map_keys", _builtins.builtin_mutable_map_keys, 1, ["map"]),
             # Vec operations
             ("vec_new", _builtins.builtin_vec_new, 0, []),
@@ -1134,6 +1176,7 @@ class Interpreter:
             ("set_remove", _builtins.builtin_set_remove, 2, ["set", "item"]),
             ("set_contains", _builtins.builtin_set_contains, 2, ["set", "item"]),
             ("set_size", _builtins.builtin_set_size, 1, ["set"]),
+            ("set_is_empty", _builtins.builtin_set_is_empty, 1, ["set"]),
             ("set_to_list", _builtins.builtin_set_to_list, 1, ["set"]),
             ("set_union", _builtins.builtin_set_union, 2, ["a", "b"]),
             ("set_intersection", _builtins.builtin_set_intersection, 2, ["a", "b"]),
@@ -1201,6 +1244,11 @@ class Interpreter:
             if self._call_function(pred, [item]):
                 result.append(item)
         return result
+
+    def _builtin_count(self, lst: Any, pred: Any) -> int:
+        if not isinstance(lst, list):
+            raise RuntimeError(f"count expects list, got {type(lst).__name__}")
+        return sum(1 for item in lst if self._call_function(pred, [item]))
 
     def _builtin_map(self, lst: Any, func: Any) -> list:
         if not isinstance(lst, list):

@@ -174,7 +174,8 @@ These builtins are pure computation and require no capability grant:
 `list_filter`, `list_all`, `list_any`, `list_chunk`, `list_drop`,
 `list_enumerate`, `list_find`, `list_find_index`, `list_flatten`,
 `list_fold_right`, `list_group_by`, `list_intersperse`, `list_take`,
-`list_zip`, `list_get`, `list_first`, `list_last`
+`list_zip`, `list_get`, `list_first`, `list_last`, `sum`, `float_sum`,
+`list_min`, `list_max`, `is_empty`, `list_index_of`, `count`, `unique`
 
 **String operations:**
 `split`, `join`, `trim`, `to_lower`, `to_upper`, `split_once`, `starts_with`,
@@ -184,11 +185,14 @@ These builtins are pure computation and require no capability grant:
 `string_ends_with`, `string_contains`, `string_split_once`, `string_char_at`,
 `string_index_of`, `string_last_index_of`, `string_pad_left`,
 `string_pad_right`, `string_repeat`, `string_substring`, `string_trim`,
-`string_trim_end`, `string_trim_start`
+`string_trim_end`, `string_trim_start`, `string_is_empty`, `string_reverse`,
+`string_lines`, `string_words`, `string_is_digit`, `string_is_alpha`,
+`string_is_alphanumeric`, `string_is_whitespace`, `string_is_upper`,
+`string_is_lower`
 
 **Math operations:**
 `add`, `subtract`, `multiply`, `divide`, `sqrt`, `floor`, `ceil`, `round`,
-`max`, `clamp`, `abs`, `bit_or`, `math_abs`, `math_ceil`,
+`max`, `min`, `clamp`, `abs`, `bit_or`, `math_abs`, `math_ceil`,
 `math_clamp`, `math_cos`, `math_e`, `math_floor`, `math_log`, `math_max`,
 `math_min`, `math_pi`, `math_round`, `math_sin`, `math_sqrt`
 
@@ -211,7 +215,7 @@ These builtins are pure computation and require no capability grant:
 **Map operations:**
 `map_insert`, `map_get`, `map_size`, `map_contains_key`, `map_remove`,
 `map_keys`, `map_values`, `map_entries`, `map_filter_map`, `map_from_entries`,
-`map_from_list`, `map_map_values`, `map_merge`
+`map_from_list`, `map_map_values`, `map_merge`, `map_get_or`, `map_is_empty`
 
 **Path operations** (pure string manipulation):
 `path_extension`, `path_filename`, `path_is_absolute`, `path_join`,
@@ -225,7 +229,7 @@ recognizes canonical Windows drive paths such as `C:/work/file`.
 **MutableMap operations:**
 `mutable_map_new`, `mutable_map_set`, `mutable_map_get`,
 `mutable_map_contains`, `mutable_map_delete`, `mutable_map_size`,
-`mutable_map_keys`
+`mutable_map_is_empty`, `mutable_map_keys`
 
 **Vec operations:**
 `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_length`, `vec_pop`,
@@ -233,7 +237,7 @@ recognizes canonical Windows drive paths such as `C:/work/file`.
 
 **Set operations:**
 `set_new`, `set_from_list`, `set_add`, `set_remove`, `set_contains`,
-`set_size`, `set_to_list`, `set_union`, `set_intersection`
+`set_size`, `set_is_empty`, `set_to_list`, `set_union`, `set_intersection`
 
 **Data parsing:**
 `json_parse`, `json_stringify`, `json_stringify_pretty`, `json_to_string`, `csv_parse`,

@@ -211,7 +211,15 @@
       {"name": "all", "signature": "(list: List[T], predicate: (T) -> Bool) -> Bool"},
       {"name": "any", "signature": "(list: List[T], predicate: (T) -> Bool) -> Bool"},
       {"name": "intersperse", "signature": "(list: List[T], separator: T) -> List[T]"},
-      {"name": "group_by", "signature": "(list: List[T], key_fn: (T) -> K) -> List[(K, List[T])]"}
+      {"name": "group_by", "signature": "(list: List[T], key_fn: (T) -> K) -> List[(K, List[T])]"},
+      {"name": "sum", "signature": "(list: List[Int]) -> Int", "notes": "xs.sum() and sum(xs) on a List[Float] call float_sum"},
+      {"name": "float_sum", "signature": "(list: List[Float]) -> Float"},
+      {"name": "list_min", "signature": "(list: List[T]) -> Option[T]", "notes": "xs.min(), min(xs); natural order, None when empty"},
+      {"name": "list_max", "signature": "(list: List[T]) -> Option[T]", "notes": "xs.max(), max(xs); natural order, None when empty"},
+      {"name": "is_empty", "signature": "(list: List[T]) -> Bool", "notes": "Also on String, Map, MutableMap and Set as s.is_empty()"},
+      {"name": "list_index_of", "signature": "(list: List[T], element: T) -> Option[Int]"},
+      {"name": "count", "signature": "(list: List[T], predicate: (T) -> Bool) -> Int"},
+      {"name": "unique", "signature": "(list: List[T]) -> List[T]", "notes": "First occurrence of each element, in order"}
     ],
     "higher_order": [
       {"name": "map", "signature": "(list: List[T], transform: (T) -> U) -> List[U]"},
@@ -234,6 +242,16 @@
       {"name": "char_code", "signature": "(text: String) -> Int"},
       {"name": "from_char_code", "signature": "(code: Int) -> String"},
       {"name": "to_chars", "signature": "(text: String) -> List[String]"},
+      {"name": "string_is_empty", "signature": "(text: String) -> Bool"},
+      {"name": "string_reverse", "signature": "(text: String) -> String"},
+      {"name": "string_lines", "signature": "(text: String) -> List[String]", "notes": "Split at \\n, dropping a trailing \\r on each line and a final empty line"},
+      {"name": "string_words", "signature": "(text: String) -> List[String]", "notes": "Split at runs of ASCII whitespace"},
+      {"name": "string_is_digit", "signature": "(text: String) -> Bool", "notes": "Non-empty and every character is an ASCII digit; is_alpha, is_alphanumeric, is_whitespace, is_upper and is_lower likewise"},
+      {"name": "string_is_alpha", "signature": "(text: String) -> Bool"},
+      {"name": "string_is_alphanumeric", "signature": "(text: String) -> Bool"},
+      {"name": "string_is_whitespace", "signature": "(text: String) -> Bool"},
+      {"name": "string_is_upper", "signature": "(text: String) -> Bool"},
+      {"name": "string_is_lower", "signature": "(text: String) -> Bool"},
       {"name": "trim_start", "signature": "(text: String) -> String"},
       {"name": "trim_end", "signature": "(text: String) -> String"},
       {"name": "pad_left", "signature": "(text: String, width: Int, fill_char: String) -> String"},
@@ -247,6 +265,7 @@
       {"name": "abs", "signature": "(value: Num) -> Num"},
       {"name": "min", "signature": "(a: Num, b: Num) -> Num"},
       {"name": "max", "signature": "(a: Num, b: Num) -> Num"},
+      {"name": "min", "signature": "(a: Num, b: Num) -> Num"},
       {"name": "clamp", "signature": "(value: Num, lo: Num, hi: Num) -> Num"},
       {"name": "floor", "signature": "(value: Float) -> Int"},
       {"name": "ceil", "signature": "(value: Float) -> Int"},
@@ -260,7 +279,7 @@
       {"name": "random_int", "signature": "(lo: Int, hi: Int) -> Int"},
       {"name": "random_float", "signature": "() -> Float"},
       {"name": "divide", "signature": "(a: Num, b: Num) -> Num"},
-      {"name": "range", "signature": "(start: Int, end: Int, step?: Int positional-only) -> List[Int]"}
+      {"name": "range", "signature": "(start: Int, end: Int, step?: Int positional-only) -> List[Int]", "notes": "range(n) is range(0, n)"}
     ],
     "parsing": [
       {"name": "parse_int", "signature": "(text: String) -> Option[Int]"},
@@ -290,6 +309,8 @@
       {"name": "map_from_entries", "signature": "(entries: List[(K, V)]) -> Map[K, V]"},
       {"name": "map_size", "signature": "(map: Map[K, V]) -> Int"},
       {"name": "map_contains_key", "signature": "(map: Map[K, V], key: K) -> Bool"},
+      {"name": "map_get_or", "signature": "(map: Map[K, V], key: K, default: V) -> V", "notes": "m.get(key, default)"},
+      {"name": "map_is_empty", "signature": "(map: Map[K, V]) -> Bool"},
       {"name": "map_remove", "signature": "(map: Map[K, V], key: K) -> Map[K, V]"},
       {"name": "map_keys", "signature": "(map: Map[K, V]) -> List[K]"},
       {"name": "map_values", "signature": "(map: Map[K, V]) -> List[V]"}
@@ -311,6 +332,7 @@
       {"name": "mutable_map_contains", "signature": "(map: MutableMap[K, V], key: K) -> Bool"},
       {"name": "mutable_map_delete", "signature": "(map: MutableMap[K, V], key: K) -> Unit"},
       {"name": "mutable_map_size", "signature": "(map: MutableMap[K, V]) -> Int"},
+      {"name": "mutable_map_is_empty", "signature": "(map: MutableMap[K, V]) -> Bool"},
       {"name": "mutable_map_keys", "signature": "(map: MutableMap[K, V]) -> List[K]"},
       {"name": "vec_new", "signature": "() -> Vec[T]"},
       {"name": "vec_push", "signature": "(vec: Vec[T], item: T) -> Unit"},
@@ -326,6 +348,7 @@
       {"name": "set_remove", "signature": "(set: Set[T], item: T) -> Unit"},
       {"name": "set_contains", "signature": "(set: Set[T], item: T) -> Bool"},
       {"name": "set_size", "signature": "(set: Set[T]) -> Int"},
+      {"name": "set_is_empty", "signature": "(set: Set[T]) -> Bool"},
       {"name": "set_to_list", "signature": "(set: Set[T]) -> List[T]"},
       {"name": "set_union", "signature": "(a: Set[T], b: Set[T]) -> Set[T]"},
       {"name": "set_intersection", "signature": "(a: Set[T], b: Set[T]) -> Set[T]"}

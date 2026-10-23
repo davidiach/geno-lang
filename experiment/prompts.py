@@ -62,9 +62,13 @@ Key syntax rules:
   too: `map(opt, f)` is `opt.map(f)`
 - Membership: `x in xs`, `c in "aeiou"`, `key in m`, `x not in xs`. Lists
   concatenate with `+`: `xs + [4]`
-- Every collection has `length()`. Maps: `m.get(k)` (Option), `m.contains_key(k)`,
-  `m.insert(k, v)`, `m.remove(k)`, `m.keys()`, `m.values()`.
-  `xs.sort()` needs no comparator. `s.index_of(t)` returns `Option[Int]`
+- Every collection has `length()` and `is_empty()`. Maps: `m.get(k)` (Option),
+  `m.get(k, default)`, `m.contains_key(k)`, `m.insert(k, v)`, `m.remove(k)`,
+  `m.keys()`, `m.values()`. `xs.sort()` needs no comparator. Lists:
+  `xs.sum()`, `xs.min()` and `xs.max()` (Option), `xs.index_of(x)` (Option),
+  `xs.count(pred)`, `xs.unique()`. Strings: `s.index_of(t)` (Option),
+  `s.reverse()`, `s.lines()`, `s.words()`, `c.is_digit()`, `c.is_alpha()`.
+  `min(a, b)`, `max(a, b)`, `range(n)`, `n.to_float()`, `f.to_int()`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 - Any ordinary name works, including host names such as `len`, `id`, `list`,

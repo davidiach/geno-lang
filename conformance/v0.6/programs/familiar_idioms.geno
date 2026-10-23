@@ -1,0 +1,31 @@
+// The operations models reach for (proposal 0012).
+func vowel_count(word: String) -> Int
+    example "kiwi" -> 2
+    return word.to_chars().count(fn(c) -> c in "aeiou")
+end func
+
+func main() -> Unit
+    let words = "the kiwi and the fig".words()
+    var seen: List[String] = []
+    for word in words do
+        if word not in seen then
+            seen = seen + [word]
+        end if
+    end for
+    print(seen)
+    print(words.unique() == seen)
+    let counts = {"kiwi": 2}
+    print(counts.get("kiwi", 0) + counts.get("fig", 0))
+    print("fig" in counts)
+    let lengths = words.map(fn(w) -> w.length())
+    print(lengths.sum())
+    print(lengths.max().unwrap_or(0))
+    print(min(3, 7))
+    print([1.5, 2.5].sum())
+    print(lengths.fold(0, fn(acc, n) -> acc + n))
+    print(vowel_count("banana"))
+    print("racecar".reverse() == "racecar")
+    print("7".is_digit())
+    print(range(3).index_of(2))
+    print(7.to_float() / 2.0)
+end func

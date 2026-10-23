@@ -1179,13 +1179,15 @@ function bit_or(a, b) {
 
 function range_(...args) {
     let start, end, step;
-    if (args.length === 2) {
+    if (args.length === 1) {
+        [start, end, step] = [0, args[0], 1];
+    } else if (args.length === 2) {
         [start, end] = args;
         step = 1;
     } else if (args.length === 3) {
         [start, end, step] = args;
     } else {
-        throw new Error(`range expects 2 or 3 arguments, got ${args.length}`);
+        throw new Error(`range expects 1 to 3 arguments, got ${args.length}`);
     }
     _requireInt("range", start, "start");
     _requireInt("range", end, "end");
@@ -1342,6 +1344,50 @@ function _roundNearest(x, context) {
 function round_(x) { return _roundNearest(x, "round result"); }
 
 function max_(a, b) { return a >= b ? a : b; }
+function min_(a, b) { return a <= b ? a : b; }
+function sum(lst) {
+    let total = 0;
+    for (const x of lst) total = _safe_add(total, x);
+    return total;
+}
+function float_sum(lst) {
+    let total = 0.0;
+    for (const x of lst) total += x;
+    return total;
+}
+function _listExtreme(lst, sign) {
+    if (lst.length === 0) return None_;
+    let best = lst[0];
+    for (const x of lst) {
+        if (sign * _compareGenoValues(x, best) < 0) best = x;
+    }
+    return Some(best);
+}
+function list_min(lst) { return _listExtreme(lst, 1); }
+function list_max(lst) { return _listExtreme(lst, -1); }
+function is_empty(lst) { return lst.length === 0; }
+function list_index_of(lst, item) {
+    for (let i = 0; i < lst.length; i++) {
+        if (_valuesEqual(lst[i], item)) return Some(i);
+    }
+    return None_;
+}
+function count(lst, pred) {
+    let n = 0;
+    for (const x of lst) if (pred(x)) n += 1;
+    return n;
+}
+function unique(lst) {
+    const seen = new _GENO_SET();
+    const result = [];
+    for (const x of lst) {
+        const key = _setKey(x);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(x);
+    }
+    return result;
+}
 function abs_(x) { return _GENO_MATH.abs(x); }
 function add(a, b) { return _safe_add(a, b); }
 function subtract(a, b) { return _safe_sub(a, b); }
@@ -1448,6 +1494,13 @@ function map_insert(m, key, value) {
 
 function map_size(m) {
     return m.size;
+}
+
+function map_is_empty(m) { return m.size === 0; }
+
+function map_get_or(m, key, fallback) {
+    const value = _mapGetValue(m, key);
+    return value === _MAP_MISSING ? fallback : value;
 }
 
 function map_contains_key(m, key) {
@@ -1788,6 +1841,11 @@ function mutable_map_delete(m, key) {
     return null;
 }
 
+function mutable_map_is_empty(m) {
+    if (!(m instanceof GenoMutableMap)) throw new Error("mutable_map_is_empty expects MutableMap");
+    return m._data.size === 0;
+}
+
 function mutable_map_size(m) {
     if (!(m instanceof GenoMutableMap)) throw new Error("mutable_map_size expects MutableMap");
     return _requireSafeJsInt(m._data.size, "mutable_map_size result");
@@ -1910,6 +1968,11 @@ function set_remove(s, item) {
 function set_contains(s, item) {
     if (!(s instanceof GenoSet)) throw new Error("set_contains expects Set");
     return s._data.has(_setKey(item));
+}
+
+function set_is_empty(s) {
+    if (!(s instanceof GenoSet)) throw new Error("set_is_empty expects Set");
+    return s.size === 0;
 }
 
 function set_size(s) {
@@ -4228,6 +4291,36 @@ function string_pad_right(text, width, fill_char) {
     return _stringPad(text, width, fill_char, false);
 }
 function string_char_at(text, index) { return _stringCharAt(text, index); }
+const _ASCII_WHITESPACE = " \t\n\r\f\v";
+const _ASCII_DIGITS = "0123456789";
+const _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz";
+function _asciiTest(text, allowed) {
+    if (text.length === 0) return false;
+    for (const ch of text) if (!allowed.includes(ch)) return false;
+    return true;
+}
+function string_is_empty(text) { return text.length === 0; }
+function string_reverse(text) { return Array.from(text).reverse().join(""); }
+function string_lines(text) {
+    const lines = text.split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.map(line => line.endsWith("\r") ? line.slice(0, -1) : line);
+}
+function string_words(text) {
+    let spaced = "";
+    for (const ch of text) spaced += _ASCII_WHITESPACE.includes(ch) ? " " : ch;
+    return spaced.split(" ").filter(word => word.length > 0);
+}
+function string_is_digit(text) { return _asciiTest(text, _ASCII_DIGITS); }
+function string_is_alpha(text) { return _asciiTest(text, _ASCII_UPPER + _ASCII_LOWER); }
+function string_is_alphanumeric(text) {
+    return _asciiTest(text, _ASCII_UPPER + _ASCII_LOWER + _ASCII_DIGITS);
+}
+function string_is_whitespace(text) { return _asciiTest(text, _ASCII_WHITESPACE); }
+function string_is_upper(text) { return _asciiTest(text, _ASCII_UPPER); }
+function string_is_lower(text) { return _asciiTest(text, _ASCII_LOWER); }
+
 function string_index_of(text, sub) {
     const index = _stringIndexOf(text, sub);
     return index < 0 ? None_ : Some(_requireSafeJsInt(index, "string_index_of result"));

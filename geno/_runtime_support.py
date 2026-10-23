@@ -823,6 +823,57 @@ def max_(a: Any, b: Any) -> Any:
     return _widen_mixed(a if a >= b else b, a, b)
 
 
+def min_(a: Any, b: Any) -> Any:
+    return _widen_mixed(a if a <= b else b, a, b)
+
+
+def sum_(lst: list) -> int:
+    total: int = _check_int_bits(sum(lst, 0))
+    return total
+
+
+def float_sum(lst: list) -> float:
+    return float(sum(lst, 0.0))
+
+
+def list_min(lst: list) -> Any:
+    return Some(_builtin_min(lst, key=_geno_sort_key)) if lst else None_
+
+
+def list_max(lst: list) -> Any:
+    return Some(_builtin_max(lst, key=_geno_sort_key)) if lst else None_
+
+
+def is_empty(lst: list) -> bool:
+    return not lst
+
+
+def list_index_of(lst: list, item: Any) -> Any:
+    for index, element in enumerate(lst):
+        if element == item:
+            return Some(index)
+    return None_
+
+
+def count(lst: list, pred: Callable) -> int:
+    return sum(1 for item in lst if pred(item))
+
+
+def unique(lst: list) -> list:
+    result: list = []
+    seen: set = set()
+    for item in lst:
+        try:
+            if item in seen:
+                continue
+            seen.add(item)
+        except TypeError:  # an unhashable value (a list): compare instead
+            if item in result:
+                continue
+        result.append(item)
+    return result
+
+
 def parse_int(s: str) -> Any:
     if not isinstance(s, str):
         raise RuntimeError(f"parse_int expects string, got {type(s).__name__}")
@@ -940,13 +991,15 @@ def bit_or(a: int, b: int) -> int:
 
 
 def range_(*args: int) -> list[int]:
-    if len(args) == 2:
+    if len(args) == 1:
+        start, end, step = 0, args[0], 1
+    elif len(args) == 2:
         start, end = args
         step = 1
     elif len(args) == 3:
         start, end, step = args
     else:
-        raise RuntimeError(f"range expects 2 or 3 arguments, got {len(args)}")
+        raise RuntimeError(f"range expects 1 to 3 arguments, got {len(args)}")
     _require_int("range", start, "start")
     _require_int("range", end, "end")
     _require_int("range", step, "step")
@@ -1034,6 +1087,14 @@ def map_insert(m: dict[Any, Any], key: Any, value: Any) -> dict[Any, Any]:
     new_map = dict(m)
     new_map[key] = value
     return new_map
+
+
+def map_is_empty(m: dict[Any, Any]) -> bool:
+    return not m
+
+
+def map_get_or(m: dict[Any, Any], key: Any, default: Any) -> Any:
+    return m.get(key, default)
 
 
 def map_size(m: dict[Any, Any]) -> int:
@@ -1667,6 +1728,12 @@ def mutable_map_delete(m, key):
     return None
 
 
+def mutable_map_is_empty(m):
+    if not isinstance(m, _GenoMutableMap):
+        raise RuntimeError("mutable_map_is_empty expects MutableMap")
+    return not m._data
+
+
 def mutable_map_size(m):
     if not isinstance(m, _GenoMutableMap):
         raise RuntimeError("mutable_map_size expects MutableMap")
@@ -1861,6 +1928,12 @@ def set_contains(s, item):
     if not isinstance(s, _GenoSet):
         raise RuntimeError("set_contains expects Set")
     return item in s._data
+
+
+def set_is_empty(s):
+    if not isinstance(s, _GenoSet):
+        raise RuntimeError("set_is_empty expects Set")
+    return not s._data
 
 
 def set_size(s):
@@ -3284,6 +3357,60 @@ def string_char_at(text, index):
     if index < 0 or index >= len(text):
         return ""
     return text[index]
+
+
+_ASCII_WHITESPACE = " \t\n\r\f\v"
+_ASCII_DIGITS = "0123456789"
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _ascii_test(text: str, allowed: str) -> bool:
+    return bool(text) and all(char in allowed for char in text)
+
+
+def string_is_empty(text: str) -> bool:
+    return text == ""
+
+
+def string_reverse(text: str) -> str:
+    return text[::-1]
+
+
+def string_lines(text: str) -> list:
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
+def string_words(text: str) -> list:
+    spaced = "".join(" " if char in _ASCII_WHITESPACE else char for char in text)
+    return [word for word in spaced.split(" ") if word]
+
+
+def string_is_digit(text: str) -> bool:
+    return _ascii_test(text, _ASCII_DIGITS)
+
+
+def string_is_alpha(text: str) -> bool:
+    return _ascii_test(text, _ASCII_UPPER + _ASCII_LOWER)
+
+
+def string_is_alphanumeric(text: str) -> bool:
+    return _ascii_test(text, _ASCII_UPPER + _ASCII_LOWER + _ASCII_DIGITS)
+
+
+def string_is_whitespace(text: str) -> bool:
+    return _ascii_test(text, _ASCII_WHITESPACE)
+
+
+def string_is_upper(text: str) -> bool:
+    return _ascii_test(text, _ASCII_UPPER)
+
+
+def string_is_lower(text: str) -> bool:
+    return _ascii_test(text, _ASCII_LOWER)
 
 
 def string_index_of(text: str, sub: str) -> Any:

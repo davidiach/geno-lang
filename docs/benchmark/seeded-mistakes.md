@@ -21,11 +21,11 @@ mistake. See `benchmark/seeded_mistakes.py` for the definitions.
 
 ## Summary
 
-- Mutants: 834 (0 accepted as valid Geno)
-- Rejected: 834
-- Located on the mistake's line: 834 (100%)
-- Carry a fix: 678 (81.3%)
-- Repaired by `geno check --fix`: 678 (81.3%)
+- Mutants: 840 (0 accepted as valid Geno)
+- Rejected: 840
+- Located on the mistake's line: 840 (100%)
+- Carry a fix: 684 (81.4%)
+- Repaired by `geno check --fix`: 684 (81.4%)
 - Misrepaired: 0
 
 ## By Mistake
@@ -52,6 +52,7 @@ mistake. See `benchmark/seeded_mistakes.py` for the definitions.
 | len | Python | `len(xs)` | 55 | 55 | 100% | 100% | 100% | 0 |
 | str | Python | `str(n)` | 1 | 1 | 100% | 100% | 100% | 0 |
 | strip | Python | `s.strip()` | 1 | 1 | 100% | 100% | 100% | 0 |
+| chars | Rust | `s.chars()` | 6 | 6 | 100% | 100% | 100% | 0 |
 | startswith | Python | `s.startswith(p)` | 3 | 3 | 100% | 100% | 100% | 0 |
 | misspelled function | a slip | `lenght(xs)` | 58 | 58 | 100% | 100% | 100% | 0 |
 | misspelled variable | a slip | `nusm[0]` | 37 | 37 | 100% | 100% | 100% | 0 |

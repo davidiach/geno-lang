@@ -560,6 +560,7 @@ MISTAKES: tuple[Mistake, ...] = (
     Mistake("len", "Python", "len(xs)", _rename_call("length", "len")),
     Mistake("str", "Python", "str(n)", _rename_call("to_string", "str")),
     Mistake("strip", "Python", "s.strip()", _rename_call("trim", "strip")),
+    Mistake("chars", "Rust", "s.chars()", _rename_call("to_chars", "chars")),
     Mistake(
         "startswith",
         "Python",

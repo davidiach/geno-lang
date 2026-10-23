@@ -24,11 +24,11 @@ The reproducible run configuration and methodology are in:
 ## Key-Free Result: Seeded Mistakes
 
 `docs/benchmark/seeded-mistakes.md` is a result anyone can reproduce without a
-model: 26 mistakes that models carry over from other languages (`let mut`,
+model: 27 mistakes that models carry over from other languages (`let mut`,
 `True`, `&&`, `elif`, `len(xs)`, an implicit return, ...) or make by slip are
-seeded into each of the 78 reference solutions, and the 834 mutants are
+seeded into each of the 78 reference solutions, and the 840 mutants are
 checked and repaired with `geno.fix`. Every mutant is rejected and reported on
-the line of its mistake; the fixes repair all 678 mutants of the 24 mistakes
+the line of its mistake; the fixes repair all 684 mutants of the 25 mistakes
 that have a fix, and none of the 156 mutants of the two that do not (a missing
 return type, missing `example` clauses). No repaired program fails a test. It
 measures the repair path only, not how often models make each mistake;

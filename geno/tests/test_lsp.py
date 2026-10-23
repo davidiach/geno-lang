@@ -2061,7 +2061,7 @@ class TestSemanticInvariants:
             types.RenameParams(
                 text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
                 position=types.Position(line=2, character=10),
-                new_name="count",
+                new_name="tally",
             )
         )
 
@@ -4180,7 +4180,7 @@ class TestSemanticInvariants:
             types.RenameParams(
                 text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
                 position=types.Position(line=2, character=11),
-                new_name="count",
+                new_name="tally",
             )
         )
 

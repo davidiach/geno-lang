@@ -360,13 +360,15 @@ def builtin_bit_or(a: int, b: int) -> int:
 def builtin_range(
     *args: int, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
 ) -> list[int]:
-    if len(args) == 2:
+    if len(args) == 1:
+        start, end, step = 0, args[0], 1
+    elif len(args) == 2:
         start, end = args
         step = 1
     elif len(args) == 3:
         start, end, step = args
     else:
-        raise RuntimeError(f"range expects 2 or 3 arguments, got {len(args)}")
+        raise RuntimeError(f"range expects 1 to 3 arguments, got {len(args)}")
     _require_int("range", start, "start")
     _require_int("range", end, "end")
     _require_int("range", step, "step")
@@ -456,6 +458,69 @@ def _widen_mixed(result: Any, a: Any, b: Any) -> Any:
 
 def builtin_max(a: Any, b: Any) -> Any:
     return _widen_mixed(a if a >= b else b, a, b)
+
+
+def builtin_min(a: Any, b: Any) -> Any:
+    return _widen_mixed(a if a <= b else b, a, b)
+
+
+def builtin_sum(lst: list[Any]) -> int:
+    _require_list("sum", lst)
+    total: int = sum(lst, 0)
+    return total
+
+
+def builtin_float_sum(lst: list[Any]) -> float:
+    _require_list("float_sum", lst)
+    return float(sum(lst, 0.0))
+
+
+def _extreme_option(name: str, lst: list[Any], pick: Any) -> ConstructorValue:
+    _require_list(name, lst)
+    if not lst:
+        return ConstructorValue("None", {})
+    return ConstructorValue("Some", {"value": pick(lst, key=_geno_sort_key)})
+
+
+def builtin_list_min(lst: list[Any]) -> ConstructorValue:
+    """The least element in the natural order, or None for an empty list."""
+    return _extreme_option("list_min", lst, min)
+
+
+def builtin_list_max(lst: list[Any]) -> ConstructorValue:
+    """The greatest element in the natural order, or None for an empty list."""
+    return _extreme_option("list_max", lst, max)
+
+
+def builtin_is_empty(lst: list[Any]) -> bool:
+    _require_list("is_empty", lst)
+    return not lst
+
+
+def builtin_list_index_of(lst: list[Any], item: Any) -> ConstructorValue:
+    """The index of the first element equal to ``item``, or None."""
+    _require_list("list_index_of", lst)
+    for index, element in enumerate(lst):
+        if element == item:
+            return ConstructorValue("Some", {"value": index})
+    return ConstructorValue("None", {})
+
+
+def builtin_unique(lst: list[Any]) -> list[Any]:
+    """The first occurrence of each element, in order."""
+    _require_list("unique", lst)
+    result: list[Any] = []
+    seen: set[Any] = set()
+    for item in lst:
+        try:
+            if item in seen:
+                continue
+            seen.add(item)
+        except TypeError:  # an unhashable value (a list): compare instead
+            if item in result:
+                continue
+        result.append(item)
+    return result
 
 
 def builtin_starts_with(s: str, prefix: str) -> bool:
@@ -1113,6 +1178,12 @@ def builtin_mutable_map_delete(m: MutableMapValue, key: Any) -> None:
     return None
 
 
+def builtin_mutable_map_is_empty(m: MutableMapValue) -> bool:
+    if not isinstance(m, MutableMapValue):
+        raise RuntimeError("mutable_map_is_empty expects MutableMap")
+    return not m._data
+
+
 def builtin_mutable_map_size(m: MutableMapValue) -> int:
     if not isinstance(m, MutableMapValue):
         raise RuntimeError("mutable_map_size expects MutableMap")
@@ -1254,6 +1325,12 @@ def builtin_set_contains(s: SetValue, item: Any) -> bool:
         raise RuntimeError("set_contains expects Set")
     _require_hashable("set_contains", item)
     return item in s._data
+
+
+def builtin_set_is_empty(s: SetValue) -> bool:
+    if not isinstance(s, SetValue):
+        raise RuntimeError("set_is_empty expects Set")
+    return not s._data
 
 
 def builtin_set_size(s: SetValue) -> int:
@@ -2595,6 +2672,69 @@ def builtin_string_last_index_of(text: str, sub: str) -> ConstructorValue:
     return _index_option(text.rfind(sub))
 
 
+_ASCII_WHITESPACE = " \t\n\r\f\v"
+
+
+def _ascii_test(name: str, text: str, allowed: str) -> bool:
+    _require_str(name, text)
+    return bool(text) and all(char in allowed for char in text)
+
+
+_DIGITS = "0123456789"
+_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+def builtin_string_is_empty(text: str) -> bool:
+    _require_str("string_is_empty", text)
+    return text == ""
+
+
+def builtin_string_reverse(text: str) -> str:
+    _require_str("string_reverse", text)
+    return text[::-1]
+
+
+def builtin_string_lines(text: str) -> list[str]:
+    """The lines of ``text``: split at line breaks, without a final empty one."""
+    _require_str("string_lines", text)
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
+def builtin_string_words(text: str) -> list[str]:
+    """The words of ``text``: split at runs of ASCII whitespace."""
+    _require_str("string_words", text)
+    spaced = "".join(" " if char in _ASCII_WHITESPACE else char for char in text)
+    return [word for word in spaced.split(" ") if word]
+
+
+def builtin_string_is_digit(text: str) -> bool:
+    return _ascii_test("string_is_digit", text, _DIGITS)
+
+
+def builtin_string_is_alpha(text: str) -> bool:
+    return _ascii_test("string_is_alpha", text, _UPPER + _LOWER)
+
+
+def builtin_string_is_alphanumeric(text: str) -> bool:
+    return _ascii_test("string_is_alphanumeric", text, _UPPER + _LOWER + _DIGITS)
+
+
+def builtin_string_is_whitespace(text: str) -> bool:
+    return _ascii_test("string_is_whitespace", text, _ASCII_WHITESPACE)
+
+
+def builtin_string_is_upper(text: str) -> bool:
+    return _ascii_test("string_is_upper", text, _UPPER)
+
+
+def builtin_string_is_lower(text: str) -> bool:
+    return _ascii_test("string_is_lower", text, _LOWER)
+
+
 def _index_option(index: int) -> ConstructorValue:
     from .values import ConstructorValue
 
@@ -2802,6 +2942,17 @@ def builtin_map_entries(
 def _require_map(name: str, m: Any) -> None:
     if not isinstance(m, dict):
         raise RuntimeError(f"{name}: expected map, got {type(m).__name__}")
+
+
+def builtin_map_is_empty(m: dict[Any, Any]) -> bool:
+    _require_map("map_is_empty", m)
+    return not m
+
+
+def builtin_map_get_or(m: dict[Any, Any], key: Any, default: Any) -> Any:
+    """The value at ``key``, or ``default`` when the map has no such key."""
+    _require_map("map_get_or", m)
+    return m.get(key, default)
 
 
 def builtin_map_size(m: dict[Any, Any]) -> int:

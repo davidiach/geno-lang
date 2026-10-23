@@ -75,7 +75,7 @@ New operations:
 | Operation | Notes |
 | --- | --- |
 | `min(a, b)` | Builtin, like `max(a, b)` |
-| `xs.sum()`, `sum(xs)` | `T: Num`; `0` (or `0.0`) for an empty list |
+| `xs.sum()`, `sum(xs)` | A `List[Int]` or `List[Float]`; `0` or `0.0` for an empty list |
 | `xs.min()`, `xs.max()` | `Option[T]`, `None` for an empty list; also `min(xs)`, `max(xs)` |
 | `xs.is_empty()` | Also on `String`, `Map` and `Set`, and as `is_empty(x)` |
 | `xs.index_of(x)` | `Option[Int]`, like `String.index_of` |
@@ -138,9 +138,17 @@ rejects (`max(xs)`, `reverse(s)`, `is_empty(m)`) resolves as its method call
 (proposal 0010). `Int` and `Float` gain the method prefixes `int_` and
 `float_`, so `int_to_float` is `n.to_float()`.
 
+A free call rejected by its argument count resolves as its method call too,
+when the method takes as many arguments as the call writes: `max(xs)` is
+`xs.max()`, while `max(xs, 2, 3)` keeps the error about `max`.
+
 `m.get(key, default)` is `map_get_or`: a method call `get` with two arguments
-on a `Map` calls it. `sum` of an empty `List[Float]` is `0.0` on every backend.
-The character tests are ASCII so that every backend agrees.
+on a `Map` calls it. `sum` takes a `List[Int]`; `xs.sum()` and `sum(xs)` on a
+`List[Float]` call `float_sum`, which starts from `0.0`. Two builtins rather
+than one over `Num` keep an empty `List[Float]`'s sum a Float on every backend
+without a runtime type tag, and passing `sum` where a `(List[Float]) -> Float`
+is expected is a type error instead of a silent `0`. The character tests are
+ASCII so that every backend agrees.
 
 ### Fixes
 

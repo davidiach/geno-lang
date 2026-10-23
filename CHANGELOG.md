@@ -102,6 +102,17 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   type (a `List[Int]` joining a `List[Float]` as Floats). Both run through the
   builtins they spell (`contains`, `string_contains`, `map_contains_key`,
   `set_contains`, `concat`) with identical output on every backend.
+- Everyday operations models reach for
+  ([proposal 0012](docs/proposals/0012-what-models-reach-for.md)):
+  `min(a, b)`; `xs.sum()` (Int, or Float for a `List[Float]`, `0.0` when
+  empty), `xs.min()` and `xs.max()` (Option, also `min(xs)`, `max(xs)`),
+  `xs.is_empty()` (also on strings, maps and sets), `xs.index_of(x)`,
+  `xs.count(pred)`, `xs.unique()`; `s.reverse()`, `s.lines()`, `s.words()`
+  and the ASCII tests `is_digit`, `is_alpha`, `is_alphanumeric`,
+  `is_whitespace`, `is_upper`, `is_lower`; `range(n)`; and
+  `m.get(key, default)`. A free call rejected by its argument count
+  (`max(xs)`) resolves as the method call it spells, like one rejected by
+  its argument type. `conformance/v0.6` adds `familiar-idioms`.
 - A method call names its arguments only when it writes three or more: the
   receiver before the dot no longer counts, so `xs.fold(0, f)`,
   `s.replace("a", "b")`, `xs.slice(1, 3)` and `m.insert(k, v)` are accepted.
@@ -128,10 +139,10 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   left and returns the fixed source, the number applied and its check
   (`FixResult`).
 - Seeded-mistake results (`docs/benchmark/seeded-mistakes.md`,
-  `scripts/seeded_mistakes.py`): 26 mistakes models carry over from other
-  languages, seeded into the 78 benchmark reference solutions. All 834
+  `scripts/seeded_mistakes.py`): 27 mistakes models carry over from other
+  languages, seeded into the 78 benchmark reference solutions. All 840
   mutants are rejected and reported on the mistake's line, and `geno.fix`
-  repairs every mutant of the 24 mistakes that have a fix with no change in
+  repairs every mutant of the 25 mistakes that have a fix with no change in
   what the program computes. No model or API key is needed to reproduce it.
 - The LLM benchmark speaks 0.6: the Geno prompt carries the rules from
   `docs/llm-prompting.md` (a test keeps them identical) and a reference
