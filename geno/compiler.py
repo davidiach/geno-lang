@@ -85,8 +85,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     SimpleType,
     Statement,
     StringLiteral,
-    ThrowExpression,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -286,11 +284,10 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             # ? operator support
             "_propagate",
             "_PropagateReturn",
-            # throw/catch support
-            "_GenoThrow",
+            # contracts and panics
             "_GenoContractViolation",
             "_GENO_MISSING",
-            "_geno_throw",
+            "_geno_panic",
         }
     )
     | _PYTHON_EMITTED_LOCAL_HELPER_NAMES
@@ -381,11 +378,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         # expression, where Python forbids assignment expressions, so the
         # inline integer guard must fall back to its call form.
         self._in_comprehension_iterable = 0
-        # Depth counter: >0 while compiling statements inside a try block.
-        # Statement-form integer guards assign before checking, which a
-        # same-function catch could observe, so try bodies keep the
-        # expression-form guard (target stays unassigned on failure).
-        self._try_depth = 0
         # Stack of active block scopes for the function being compiled.
         # Python has no block scope, so a `let` inside a nested Geno block
         # would otherwise overwrite a same-named binding from an enclosing
@@ -717,16 +709,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                     self._collect_loop_var_refs_in_statements(
                         arm.body, arm_scope, referenced, active
                     )
-                continue
-            if isinstance(stmt, TryStatement):
-                self._collect_loop_var_refs_in_statements(
-                    stmt.try_body, set(scope), referenced, active
-                )
-                catch_scope = set(scope)
-                catch_scope.add(stmt.catch_clause.variable)
-                self._collect_loop_var_refs_in_statements(
-                    stmt.catch_clause.body, catch_scope, referenced, active
-                )
                 continue
 
             for value in vars(stmt).values():
@@ -1460,7 +1442,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             ForStatement,
             MatchStatement,
             ReturnStatement,
-            TryStatement,
         ) or isinstance(
             stmt,
             (
@@ -1471,7 +1452,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 ForStatement,
                 MatchStatement,
                 ReturnStatement,
-                TryStatement,
             ),
         ):
             self._emit_source_location(stmt.location)
@@ -1502,8 +1482,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("break")
         elif stmt_type is ContinueStatement:
             self._writeln("continue")
-        elif stmt_type is TryStatement:
-            self._compile_try_statement(cast(TryStatement, stmt))
         elif stmt_type is ExpressionStatement:
             expr_stmt = cast(ExpressionStatement, stmt)
             self._writeln(self._compile_expr(expr_stmt.expression))
@@ -1538,8 +1516,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("break")
         elif isinstance(stmt, ContinueStatement):
             self._writeln("continue")
-        elif isinstance(stmt, TryStatement):
-            self._compile_try_statement(stmt)
         elif isinstance(stmt, ExpressionStatement):
             self._writeln(self._compile_expr(stmt.expression))
         else:
@@ -1564,53 +1540,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             index = self._compile_expr(expr.index)
             return f"_geno_own_index({parent}, {index})"
         return self._compile_expr(expr)
-
-    def _compile_try_statement(self, stmt: TryStatement) -> None:
-        """Compile a try/catch statement to Python try/except."""
-        catch_type_annot = stmt.catch_clause.type_annotation
-        catch_type_name = getattr(catch_type_annot, "name", "String")
-        is_string_catch = catch_type_name == "String"
-
-        self._writeln("try:")
-        self._indent()
-        self._try_depth += 1
-        try:
-            if stmt.try_body:
-                with self._block_scope():
-                    for s in stmt.try_body:
-                        self._compile_statement(s)
-            else:
-                self._writeln("pass")
-        finally:
-            self._try_depth -= 1
-        self._dedent()
-        if is_string_catch:
-            self._writeln(
-                "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
-            )
-        else:
-            self._writeln("except _GenoThrow as __geno_err__:")
-        self._indent()
-        with self._block_scope([stmt.catch_clause.variable]):
-            var_name = self._compiled_identifier_name(stmt.catch_clause.variable)
-            if is_string_catch:
-                self._writeln("if isinstance(__geno_err__, _GenoThrow):")
-                self._indent()
-                self._writeln(f"{var_name} = str(__geno_err__.value)")
-                self._dedent()
-                self._writeln("elif type(__geno_err__) in (RuntimeError, IndexError):")
-                self._indent()
-                self._writeln(f"{var_name} = str(__geno_err__)")
-                self._dedent()
-                self._writeln("else: raise")
-            else:
-                self._writeln(f"{var_name} = __geno_err__.value")
-            if stmt.catch_clause.body:
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-            else:
-                self._writeln("pass")
-            self._dedent()
 
     def _compile_while_statement(self, stmt: WhileStatement) -> None:
         self._loop_capture_names.append(self._loop_lambda_names(stmt.body))
@@ -1800,11 +1729,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         needs a post-assignment bits check.
 
         The statement form (assign raw, then check the target name) saves
-        the assignment-expression temp of the inline guard. It is skipped
-        inside try blocks, where a same-function catch could observe the
-        over-limit value already bound to the target.
+        the assignment-expression temp of the inline guard. Nothing can
+        observe the over-limit value it binds first: the check panics.
         """
-        if self._try_depth or self._in_comprehension_iterable:
+        if self._in_comprehension_iterable:
             return None
         if self._is_int_addsub(value_expr):
             binary = cast(BinaryOp, value_expr)
@@ -2204,11 +2132,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                     return f"_check_collection_size([{elem} for {var} in {iterable} if {cond}])"
                 return f"_check_collection_size([{elem} for {var} in {iterable}])"
 
-        if expr_type is ThrowExpression:
-            throw_expr = cast(ThrowExpression, expr)
-            value = self._compile_expr(throw_expr.value)
-            return f"_geno_throw({value})"
-
         if expr_type is AwaitExpr:
             await_expr = cast(AwaitExpr, expr)
             inner = self._compile_await_operand(await_expr.expr)
@@ -2360,10 +2283,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 cond = self._compile_expr(expr.condition)
                 return f"_check_collection_size([{elem} for {var} in {iterable} if {cond}])"
             return f"_check_collection_size([{elem} for {var} in {iterable}])"
-
-        if isinstance(expr, ThrowExpression):
-            value = self._compile_expr(expr.value)
-            return f"_geno_throw({value})"
 
         if isinstance(expr, AwaitExpr):
             inner = self._compile_await_operand(expr.expr)
@@ -3212,7 +3131,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         # that raises at runtime — a trailing `# no match` comment turns the
         # surrounding ternary into a truncated line and produces a SyntaxError
         # (see issue #657).
-        result = '_geno_throw("Non-exhaustive match expression")'
+        result = '_geno_panic("Non-exhaustive match expression")'
         for cond, body in reversed(result_parts):
             result = f"({body} if {cond} else {result})"
 

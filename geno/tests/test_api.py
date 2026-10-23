@@ -290,30 +290,6 @@ class TestRunErrors:
         diag = result.diagnostics[0]
         assert diag.code is not None
 
-    def test_contract_failure_is_not_caught_as_string_runtime_error(self):
-        source = """
-        @untested("contract repro")
-        func f(x: Int) -> Int
-            requires false
-            return x
-        end func
-
-        func main() -> String
-            try
-                let y: Int = f(1)
-                return "not caught"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        result = run(source, RunConfig(check_examples=False))
-
-        assert result.ok is False
-        assert result.value is None
-        assert result.diagnostics
-        assert "Precondition failed" in result.diagnostics[0].message
-
     def test_negative_shift_reports_runtime_diagnostic(self):
         source = """
         func main() -> Int
@@ -1382,7 +1358,7 @@ class TestHostCallbacks:
     def test_fs_read_text_with_callback(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
 
@@ -1400,7 +1376,7 @@ class TestHostCallbacks:
     def test_http_fetch_with_callback(self):
         source = """
         func main() -> String
-            return http_fetch(url: "https://example.com")
+            return http_fetch(url: "https://example.com").unwrap()
         end func
         """
 
@@ -1418,7 +1394,7 @@ class TestHostCallbacks:
     def test_fs_read_text_denied_without_capability(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         config = RunConfig(capabilities=set())  # No fs cap
@@ -1434,7 +1410,7 @@ class TestHostCallbacks:
     def test_fs_callback_not_installed_without_capability(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
 
@@ -1454,7 +1430,7 @@ class TestHostCallbacks:
     def test_host_callback_missing_when_cap_granted_but_no_callback(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         config = RunConfig(capabilities={"fs"})  # Cap granted, no callback
@@ -1470,7 +1446,7 @@ class TestHostCallbacks:
     def test_http_fetch_missing_when_cap_granted_but_no_callback(self):
         source = """
         func main() -> String
-            return http_fetch(url: "https://example.com")
+            return http_fetch(url: "https://example.com").unwrap()
         end func
         """
         config = RunConfig(capabilities={"http"})  # Cap granted, no callback
@@ -1566,7 +1542,7 @@ class TestTimeoutBehavior:
         from geno.parser import parse
         from geno.sandbox import SandboxConfig
 
-        source = 'let answer = 42\nfunc main() -> Int\n    throw "called"\nend func\n'
+        source = 'let answer = 42\nfunc main() -> Int\n    panic("called")\nend func\n'
         interpreter = Interpreter(sandbox_config=SandboxConfig(timeout=0.25))
 
         assert interpreter.run(parse(source), execute_main=False) is None
@@ -1649,7 +1625,7 @@ class TestTimeoutBehavior:
     def test_timeout_waits_for_host_callback_completion(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         side_effects = []

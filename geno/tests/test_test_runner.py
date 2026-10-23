@@ -516,7 +516,7 @@ end func
             """
 func tricky(x: Int) -> Int
     example 1 -> 1
-    throw "user says: Precondition failed for demo"
+    panic("user says: Precondition failed for demo")
 end func
 
 func main() -> Int

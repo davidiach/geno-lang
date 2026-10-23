@@ -283,7 +283,7 @@ class AnyType(Type):
 
 @dataclass(frozen=True)
 class NeverType(Type):
-    """Bottom type for divergent expressions (throw, unreachable branches).
+    """Bottom type for divergent expressions (panic, unreachable branches).
 
     Assignable TO any type (a divergent expression can appear anywhere a
     value is expected), but no value can be assigned FROM NeverType.

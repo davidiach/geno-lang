@@ -864,7 +864,7 @@ class TestBenchmarkRunner:
                 let y: Int =
             end func identity
             func other() -> Int
-                return
+                let = 5
             end func other
             """,
         )

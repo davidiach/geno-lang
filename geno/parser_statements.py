@@ -10,7 +10,6 @@ from __future__ import annotations
 from .ast_nodes import (
     AssignStatement,
     BreakStatement,
-    CatchClause,
     ContinueStatement,
     Expression,
     ExpressionStatement,
@@ -26,14 +25,14 @@ from .ast_nodes import (
     MatchStatement,
     ReturnStatement,
     Statement,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TypeAnnotation,
     VarStatement,
     WhileStatement,
 )
-from .parser_base import ParseError, ParserBase
+from .diagnostics import ErrorCode
+from .parser_base import REMOVED_TRY, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType
 
 
@@ -44,7 +43,7 @@ class StatementParserMixin(ParserBase):
         """Parse statements until we hit a block terminator."""
         statements: list[Statement] = []
         while not self._check(
-            TokenType.END, TokenType.ELSE, TokenType.BAR, TokenType.CATCH, TokenType.EOF
+            TokenType.END, TokenType.ELSE, TokenType.BAR, TokenType.EOF
         ):
             statements.append(self._parse_statement())
         return statements
@@ -55,9 +54,7 @@ class StatementParserMixin(ParserBase):
             return self._parse_let_statement()
         elif self._check(TokenType.VAR):
             return self._parse_var_statement()
-        elif self._check(
-            TokenType.IF, TokenType.WHILE, TokenType.FOR, TokenType.MATCH, TokenType.TRY
-        ):
+        elif self._check(TokenType.IF, TokenType.WHILE, TokenType.FOR, TokenType.MATCH):
             # Track nesting depth for compound statements to prevent
             # deeply nested code from causing Python RecursionError.
             self._nesting_depth += 1
@@ -73,12 +70,12 @@ class StatementParserMixin(ParserBase):
                     return self._parse_while_statement()
                 elif self._check(TokenType.FOR):
                     return self._parse_for_statement()
-                elif self._check(TokenType.TRY):
-                    return self._parse_try_statement()
                 else:
                     return self._parse_match_statement()
             finally:
                 self._nesting_depth -= 1
+        elif self._check(TokenType.TRY, TokenType.CATCH):
+            raise self._error(REMOVED_TRY, ErrorCode.PARSE_REMOVED_SYNTAX)
         elif self._check(TokenType.RETURN):
             return self._parse_return_statement()
         elif self._check(TokenType.BREAK):
@@ -275,35 +272,6 @@ class StatementParserMixin(ParserBase):
             label=label,
         )
 
-    def _parse_try_statement(self) -> TryStatement:
-        """Parse: try ... catch e: Type ... end try"""
-        location = self._current().location
-        self._expect(TokenType.TRY)
-        try_body = self._parse_statement_list()
-
-        catch_loc = self._current().location
-        self._expect(TokenType.CATCH)
-        var_name = self._expect(TokenType.IDENTIFIER).value
-        self._expect(TokenType.COLON)
-        type_annotation = self._parse_type()
-        catch_body = self._parse_statement_list()
-
-        catch_clause = CatchClause(
-            variable=var_name,
-            type_annotation=type_annotation,
-            body=catch_body,
-            location=catch_loc,
-        )
-
-        self._expect(TokenType.END)
-        self._expect(TokenType.TRY)
-
-        return TryStatement(
-            location=location,
-            try_body=try_body,
-            catch_clause=catch_clause,
-        )
-
     def _parse_match_statement(self) -> MatchStatement:
         """Parse: match expr with | pattern -> body ... end match [label]"""
         location = self._current().location
@@ -353,7 +321,6 @@ class StatementParserMixin(ParserBase):
             TokenType.END,
             TokenType.ELSE,
             TokenType.BAR,
-            TokenType.CATCH,
             TokenType.EOF,
         )
         if self._check(*terminators) or self._current().location.line > location.line:

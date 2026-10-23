@@ -1,0 +1,55 @@
+// Geno 0.6 error model (proposal 0009): Result and ? for failures a caller
+// handles, panic for bugs, total accessors that return Option.
+type ParseError = Empty | NotANumber(text: String)
+
+func parse_number(text: String) -> Result[Int, ParseError]
+    example "42" -> Ok(42)
+    example "" -> Err(Empty)
+    if length(text) == 0 then
+        return Err(Empty)
+    end if
+    match parse_int(text) with
+        | Some(n) -> return Ok(n)
+        | None -> return Err(NotANumber(text))
+    end match
+end func
+
+func sum_pair(a: String, b: String) -> Result[Int, ParseError]
+    example "1", "2" -> Ok(3)
+    let x = parse_number(a)?
+    let y = parse_number(b)?
+    return Ok(x + y)
+end func
+
+func describe(r: Result[Int, ParseError]) -> String
+    example Ok(1) -> "ok 1"
+    return match r with
+        | Ok(n) -> f"ok {n}"
+        | Err(Empty) -> "empty"
+        | Err(NotANumber(t)) -> f"not a number: {t}"
+    end match
+end func
+
+func halve(n: Int) -> Int
+    example 4 -> 2
+    if n % 2 != 0 then
+        panic("halve expects an even number")
+    end if
+    return n / 2
+end func
+
+func main() -> Unit
+    print(describe(sum_pair("20", "22")))
+    print(describe(sum_pair("", "1")))
+    print(describe(sum_pair("1", "x")))
+    let xs = [3, 5, 8]
+    print(xs.get(1))
+    print(xs.get(7))
+    print(xs.first().unwrap_or(0))
+    print(xs.last())
+    print(halve(xs.last().expect("xs is not empty")))
+    let ok: Result[Int, String] = Ok(7)
+    print(ok.unwrap())
+    let label = if halve(8) == 4 then "four" else panic("unreachable") end if
+    print(label)
+end func

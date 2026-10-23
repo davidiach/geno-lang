@@ -36,7 +36,6 @@ BLOCK_STARTERS = {
     "trait": "trait",
     "impl": "impl",
     "test": "test",
-    "try": "try",
 }
 
 # All keyword token types (Geno uses individual token types for each keyword).
@@ -309,10 +308,6 @@ def step(
 
         if token.type == TokenType.TEST:
             state.open_blocks.append("test")
-            return state
-
-        if token.type == TokenType.TRY:
-            state.open_blocks.append("try")
             return state
 
         # Check if this closes a block (e.g., "end func")

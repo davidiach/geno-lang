@@ -1662,14 +1662,18 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     end if
     if name == "fs_read_text" then
         let path: String = as_str(head(args))
-        let content: String = fs_read_text(path)
-        return StringVal(content)
+        match fs_read_text(path) with
+            | Ok(content) -> return CtorVal("Ok", [ValueField("value", StringVal(content))])
+            | Err(message) -> return CtorVal("Err", [ValueField("error", StringVal(message))])
+        end match
     end if
     if name == "fs_write_text" then
         let fpath: String = as_str(head(args))
         let fcontent: String = as_str(head(tail(args)))
-        fs_write_text(path: fpath, content: fcontent)
-        return UnitVal
+        match fs_write_text(path: fpath, content: fcontent) with
+            | Ok(_) -> return CtorVal("Ok", [ValueField("value", UnitVal)])
+            | Err(message) -> return CtorVal("Err", [ValueField("error", StringVal(message))])
+        end match
     end if
     if name == "http_fetch" then
         return rt_error(st, "http_fetch: host callback not available")

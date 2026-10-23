@@ -1352,6 +1352,29 @@ def _apply_capabilities(interp, capabilities: set[str] | None) -> None:
     interp.apply_capabilities(capabilities)
 
 
+# Builtins that return Result since Geno 0.6 (proposal 0009). A host callback
+# for one keeps the 0.5 contract: it returns the success value and raises on
+# failure, and the interpreter sees Ok(value) or Err(message).
+_RESULT_HOST_CALLBACKS = frozenset(
+    {"fs_read_text", "fs_write_text", "http_fetch", "http_post"}
+)
+
+
+def _result_host_callback(callback: Callable) -> Callable:
+    from .values import ConstructorValue
+
+    def call(*args: Any) -> Any:
+        try:
+            value = callback(*args)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        if isinstance(value, ConstructorValue) and value.constructor in {"Ok", "Err"}:
+            return value
+        return ConstructorValue("Ok", {"value": value})
+
+    return call
+
+
 def _install_host_callbacks(
     interp, host_callbacks: dict[str, Callable], capabilities: set[str] | None
 ) -> None:
@@ -1384,7 +1407,11 @@ def _install_host_callbacks(
         if isinstance(current, BuiltinFunction):
             env.bindings[name] = BuiltinFunction(
                 name=current.name,
-                func=callback,
+                func=(
+                    _result_host_callback(callback)
+                    if name in _RESULT_HOST_CALLBACKS
+                    else callback
+                ),
                 arity=current.arity,
                 param_names=current.param_names,
             )

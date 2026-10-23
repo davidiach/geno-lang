@@ -415,7 +415,7 @@ def _default_lane_capability_hint(
     The default lane rejects ``--cap``, so the runtime's denial alone is not
     actionable there. ``capability`` must come from the worker's structured
     denial tag (``ProcessSandbox.last_capability_denied``), never from the
-    error text: a program can throw any message, and this hint recommends
+    error text: a program can panic with any message, and this hint recommends
     leaving process isolation.
     """
     if capability is None or capability not in KNOWN_CAPABILITIES:

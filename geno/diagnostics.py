@@ -45,6 +45,7 @@ class ErrorCode(Enum):
     PARSE_INVALID_SYNTAX = "E202"
     PARSE_RECOVERY = "E203"
     PROJECT_RESOLUTION_ERROR = "E204"
+    PARSE_REMOVED_SYNTAX = "E205"  # Form removed in this series; names its replacement
 
     # Type errors (3xx)
     TYPE_MISMATCH = "E300"
@@ -88,6 +89,7 @@ class ErrorCode(Enum):
     RUNTIME_UNFILLED_HOLE = "E411"
     RUNTIME_CAPABILITY_DENIED = "E412"
     RUNTIME_HOST_CALLBACK_MISSING = "E413"
+    RUNTIME_PANIC = "E414"  # The program called panic(...)
     RUNTIME_UNKNOWN = "E499"
 
     # Sandbox / resource errors (5xx)

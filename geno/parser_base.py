@@ -56,6 +56,21 @@ class ParseErrors(Exception):
 T = TypeVar("T")
 
 
+# Geno 0.6 removed exceptions (proposal 0009). The keywords stay reserved so
+# that 0.5 code gets one error naming the replacement instead of a cascade.
+REMOVED_THROW = (
+    "'throw' was removed in Geno 0.6. Return Err(...) from a function that "
+    'returns Result, or call panic("...") for a bug'
+)
+REMOVED_TRY = (
+    "'try'/'catch' was removed in Geno 0.6. Call a function that returns "
+    "Result and handle Err with match, or pass it on with ?"
+)
+REMOVED_THROW_EFFECT = (
+    "The 'throw' effect was removed in Geno 0.6; delete it from the effect list"
+)
+
+
 class ParserBase:
     """
     Base class for the Geno parser.
@@ -247,6 +262,8 @@ class ParserBase:
         self._panic_mode = False
 
         while not self._check(TokenType.EOF):
+            # `end func` closes the definition that failed; stopping at its
+            # `func` would report "Expected function name" as a second error.
             if self._current().type in {
                 TokenType.FUNC,
                 TokenType.TYPE,
@@ -254,7 +271,9 @@ class ParserBase:
                 TokenType.TRAIT,
                 TokenType.IMPL,
                 TokenType.TEST,
-            }:
+            } and (
+                self.pos == 0 or self.tokens[self.pos - 1].type is not TokenType.END
+            ):
                 return
             self._advance()
 
@@ -292,26 +311,19 @@ class ParserBase:
         raise NotImplementedError
 
     def _parse_effect_list(self) -> list[str]:
-        """Parse a comma-separated list of effect names.
-
-        Effect names are typically identifiers (fs, io, http, etc.) but
-        'throw' is also valid and is a keyword token.
-        """
-        _EFFECT_TOKENS = (TokenType.IDENTIFIER, TokenType.THROW)
-
+        """Parse a comma-separated list of effect names."""
         effects: list[str] = []
-        tok = self._current()
-        if tok.type not in _EFFECT_TOKENS:
-            raise self._error("Expected effect name after 'with'")
-        self._advance()
-        effects.append(tok.value)
-        while self._match(TokenType.COMMA):
+        while True:
             tok = self._current()
-            if tok.type not in _EFFECT_TOKENS:
-                raise self._error("Expected effect name after ','")
+            if tok.type is TokenType.THROW:
+                raise self._error(REMOVED_THROW_EFFECT, ErrorCode.PARSE_REMOVED_SYNTAX)
+            if tok.type is not TokenType.IDENTIFIER:
+                after = "','" if effects else "'with'"
+                raise self._error(f"Expected effect name after {after}")
             self._advance()
             effects.append(tok.value)
-        return effects
+            if not self._match(TokenType.COMMA):
+                return effects
 
     def _parse_function_def(self, is_async: bool = False) -> FunctionDef:
         raise NotImplementedError

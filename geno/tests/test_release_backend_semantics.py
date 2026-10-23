@@ -138,38 +138,32 @@ end func
 def test_compiled_python_oob_index_uses_geno_runtime_error() -> None:
     source = """
 func main() -> Unit
-    try
-        let values: List[Int] = []
-        print(values[0])
-    catch message: String
-        print(message)
-    end try
+    let values: List[Int] = []
+    print(values[0])
 end func
 """
 
-    python_output = _compiled_python_output(source)
-    assert "Index 0 out of bounds" in python_output
-    assert "list index out of range" not in python_output
+    with pytest.raises(RuntimeError) as failure:
+        _compiled_python_output(source)
+    assert "Index 0 out of bounds" in str(failure.value)
+    assert "list index out of range" not in str(failure.value)
 
 
 def test_js_rejects_overlapping_noncapturing_regex() -> None:
     source = r"""
 func main() -> Unit with regex, io
-    try
-        regex_match(pattern: "(?:a|a)*b", text: "aaaaaaaa")
-        print("accepted")
-    catch message: String
-        print(message)
-    end try
+    regex_match(pattern: "(?:a|a)*b", text: "aaaaaaaa")
+    print("accepted")
 end func
 """
 
-    output = _compiled_js_output(source, {"print", "regex"})
+    with pytest.raises(RuntimeError) as failure:
+        _compiled_js_output(source, {"print", "regex"})
     assert any(
-        message in output
+        message in str(failure.value)
         for message in ("overlapping alternation", "advanced or encoded")
     )
-    assert "accepted" not in output
+    assert "accepted" not in str(failure.value)
 
 
 def test_deep_json_returns_err_in_compiled_js() -> None:
@@ -325,18 +319,15 @@ end func
 def test_js_rejects_equivalent_repeated_regex_alternatives() -> None:
     source = r"""
 func main() -> Unit with regex, io
-    try
-        regex_match(pattern: "(a|[a])*b", text: "aaaaaaaa")
-        print("accepted")
-    catch message: String
-        print(message)
-    end try
+    regex_match(pattern: "(a|[a])*b", text: "aaaaaaaa")
+    print("accepted")
 end func
 """
 
-    output = _compiled_js_output(source, {"print", "regex"})
-    assert "overlapping alternation" in output
-    assert "accepted" not in output
+    with pytest.raises(RuntimeError) as failure:
+        _compiled_js_output(source, {"print", "regex"})
+    assert "overlapping alternation" in str(failure.value)
+    assert "accepted" not in str(failure.value)
 
 
 def test_first_class_divide_uses_context_in_callbacks_and_containers() -> None:
@@ -363,18 +354,15 @@ end func
 def test_js_rejects_nested_optional_quantifier() -> None:
     source = r"""
 func main() -> Unit with regex, io
-    try
-        regex_match(pattern: "(a?){25}a{25}", text: "aaaaaaaaaaaaaaaaaaaaaaaaa")
-        print("accepted")
-    catch message: String
-        print(message)
-    end try
+    regex_match(pattern: "(a?){25}a{25}", text: "aaaaaaaaaaaaaaaaaaaaaaaaa")
+    print("accepted")
 end func
 """
 
-    output = _compiled_js_output(source, {"print", "regex"})
-    assert "nested quantifiers" in output
-    assert "accepted" not in output
+    with pytest.raises(RuntimeError) as failure:
+        _compiled_js_output(source, {"print", "regex"})
+    assert "nested quantifiers" in str(failure.value)
+    assert "accepted" not in str(failure.value)
 
 
 def test_first_class_divide_context_covers_updates_matches_and_generics() -> None:

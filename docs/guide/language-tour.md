@@ -403,46 +403,69 @@ end impl
 
 ## Error Handling
 
-### Try/Catch
+Geno has one error model. A failure the caller should handle is a value of
+type `Result[T, E]`; a bug ends the program with a panic.
 
-```geno
-func safe_head(items: List[Int]) -> Int
-    example [1, 2, 3] -> 1
-    example [] -> 0
-    try
-        return head(items)
-    catch e: String
-        return 0
-    end try
-end func
-```
-
-### Throw and Structured Errors
-
-Throw string errors or user-defined error types:
+### Returning and Propagating Errors
 
 ```geno
 type ValidationError = ValidationError(field: String, message: String)
 
-func validate_age(age: Int) -> Int
-    example 25 -> 25
+func validate_age(age: Int) -> Result[Int, ValidationError]
+    example 25 -> Ok(25)
     if age < 0 then
-        throw ValidationError("age", "must be non-negative")
+        return Err(ValidationError("age", "must be non-negative"))
     end if
-    return age
+    return Ok(age)
+end func
+
+func describe_age(age: Int) -> Result[String, ValidationError]
+    example 30 -> Ok("30 years")
+    let valid = validate_age(age)?
+    return Ok(f"{valid} years")
 end func
 
 func main() -> String
-    try
-        let age: Int = validate_age(-1)
-        return to_string(age)
-    catch e: ValidationError
-        return f"Invalid {e.field}: {e.message}"
-    end try
+    match describe_age(-1) with
+        | Ok(text) -> return text
+        | Err(e) -> return f"Invalid {e.field}: {e.message}"
+    end match
 end func
 ```
 
-`catch e: String` catches runtime errors and thrown strings. `catch e: MyType` catches only thrown values of that type — unmatched types propagate outward.
+`?` returns the `Err` from the enclosing function and unwraps the `Ok`. Builtins
+that can fail return `Result` too: `fs_read_text`, `fs_write_text`,
+`http_fetch`, `http_post`, `json_parse`, `exec`.
+
+### Accessors That Cannot Fail
+
+```geno
+func first_or_zero(items: List[Int]) -> Int
+    example [1, 2, 3] -> 1
+    example [] -> 0
+    return items.first().unwrap_or(0)
+end func
+```
+
+`xs.get(i)`, `xs.first()` and `xs.last()` return `Option`. Indexing `xs[i]`
+panics when `i` is out of range.
+
+### Panics
+
+```geno
+func half(n: Int) -> Int
+    example 4 -> 2
+    if n % 2 != 0 then
+        panic("half expects an even number")
+    end if
+    return n / 2
+end func
+```
+
+`panic(message)` ends the program, as does every runtime error (division by
+zero, an index out of range, a failed `requires`). Geno code cannot catch a
+panic. Use `r.unwrap()` or `r.expect("why")` when an `Err` can only mean a bug.
+Geno 0.6 removed `throw`, `try` and `catch`.
 
 ### Async/Await
 

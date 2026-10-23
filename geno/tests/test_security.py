@@ -933,44 +933,6 @@ class TestRecursionDoSPrevention:
     end func
     """
 
-    def test_nested_try_catch_returns_e502_not_host_crash(self):
-        """The audit's repro: nested try/catch must surface E502, not crash."""
-        from geno.api import RunConfig, run
-        from geno.diagnostics import ErrorCode
-
-        result = run(
-            self._NESTED_TRY_CATCH,
-            config=RunConfig(max_steps=10000, timeout=30.0),
-        )
-        assert result.ok is False, (
-            f"Expected sandboxed failure but program succeeded with "
-            f"value={result.value!r}"
-        )
-        codes = [d.code for d in result.diagnostics]
-        assert ErrorCode.SANDBOX_RECURSION_LIMIT in codes, (
-            f"Expected E502 (SANDBOX_RECURSION_LIMIT) but got "
-            f"{[c.value for c in codes]}"
-        )
-
-    def test_try_catch_does_not_swallow_recursion_limit(self):
-        """At lower depths, try/catch must not let the program complete by
-        catching the recursion-limit error as if it were a normal runtime error."""
-        from geno.api import RunConfig, run
-        from geno.diagnostics import ErrorCode
-
-        result = run(
-            self._NESTED_TRY_CATCH,
-            config=RunConfig(max_steps=100000, timeout=30.0, max_recursion_depth=100),
-        )
-        assert result.ok is False, (
-            f"Recursion limit must not be catchable by user try/catch — "
-            f"program returned ok=True with value={result.value!r}"
-        )
-        codes = [d.code for d in result.diagnostics]
-        assert ErrorCode.SANDBOX_RECURSION_LIMIT in codes, (
-            f"Expected E502 but got {[c.value for c in codes]}"
-        )
-
 
 class TestSandboxEscapeAttempts:
     """Test various sandbox escape attempts are blocked."""
@@ -3254,7 +3216,7 @@ class TestCapabilityFailClosedRegression:
 
         source = """
         func main() -> String
-            return fs_read_text(path: "/secret")
+            return fs_read_text(path: "/secret").unwrap()
         end func
         """
         result = run(
@@ -3272,7 +3234,7 @@ class TestCapabilityFailClosedRegression:
 
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         result = run(

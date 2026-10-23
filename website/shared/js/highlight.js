@@ -14,7 +14,7 @@
   ).split(" ");
   var KW = new Set(KEYWORDS);
   var CONTRACT = new Set(["requires", "ensures", "example", "assert", "test"]);
-  var BLOCK_OPENERS = new Set(["func", "if", "for", "while", "match", "try", "trait", "impl", "test"]);
+  var BLOCK_OPENERS = new Set(["func", "if", "for", "while", "match", "trait", "impl", "test"]);
   var LITERAL = new Set(["true", "false"]);
 
   var BUILTINS = new Set((

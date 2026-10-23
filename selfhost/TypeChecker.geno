@@ -290,9 +290,9 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
 
     // File/network
     register_builtin(cs: cs, name: "fs_exists", ft: TFunc([TString], TBool, []), params: ["path"])
-    register_builtin(cs: cs, name: "fs_read_text", ft: TFunc([TString], TString, []), params: ["path"])
-    register_builtin(cs: cs, name: "fs_write_text", ft: TFunc([TString, TString], TUnit, []), params: ["path", "content"])
-    register_builtin(cs: cs, name: "http_fetch", ft: TFunc([TString], TString, []), params: ["url"])
+    register_builtin(cs: cs, name: "fs_read_text", ft: TFunc([TString], TResult(TString, TString), []), params: ["path"])
+    register_builtin(cs: cs, name: "fs_write_text", ft: TFunc([TString, TString], TResult(TUnit, TString), []), params: ["path", "content"])
+    register_builtin(cs: cs, name: "http_fetch", ft: TFunc([TString], TResult(TString, TString), []), params: ["url"])
 
     // Graphics builtins
     register_builtin(cs: cs, name: "clear_screen", ft: TFunc([TString], TUnit, []), params: ["color"])

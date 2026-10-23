@@ -21,12 +21,12 @@ def test_normative_contract_is_in_sync() -> None:
 
 def test_effect_drift_is_rejected() -> None:
     spec = _load_spec()
-    spec["effect_system"]["valid_effects"].remove("throw")
+    spec["effect_system"]["valid_effects"].remove("regex")
 
     errors = validate_spec(spec)
 
     assert any(
-        "Effect names mismatch" in error and "throw" in error for error in errors
+        "Effect names mismatch" in error and "regex" in error for error in errors
     )
 
 

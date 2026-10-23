@@ -716,18 +716,15 @@ console.log("ok");
         with pytest.raises(RuntimeError, match="Division by zero"):
             compile_and_run_js(source)
 
-    def test_zero_base_negative_exponent_caught_by_try_catch(self):
+    def test_zero_base_negative_exponent_panics(self):
         source = """
         func main() -> String
-            try
-                let value: Float = 0 ** -1
-                return to_string(value)
-            catch e: String
-                return "caught"
-            end try
+            let value: Float = 0 ** -1
+            return to_string(value)
         end func
         """
-        assert compile_and_run_js(source) == "caught"
+        with pytest.raises(RuntimeError, match="JS execution failed"):
+            compile_and_run_js(source)
 
     def test_operator_precedence(self):
         source = """
@@ -909,32 +906,28 @@ class TestJSCompilerControlFlow:
 class TestJSCompilerComprehensions:
     def test_filtered_comprehension_evaluates_condition_then_element_per_item(self):
         source = """
-        func keep(x: Int) -> Bool with throw
+        func keep(x: Int) -> Bool
             example 0 -> true
             if x == 2 then
-                throw "keep2"
+                panic("keep2")
             end if
             return true
         end func
 
-        func emit(x: Int) -> Int with throw
+        func emit(x: Int) -> Int
             example 0 -> 0
             if x == 1 then
-                throw "emit1"
+                panic("emit1")
             end if
             return x
         end func
 
-        func main() -> String
-            try
-                let xs: List[Int] = [emit(x) for x: Int in [1, 2] if keep(x)]
-                return "ok"
-            catch e: String
-                return e
-            end try
+        func main() -> Int
+            return length([emit(x) for x: Int in [1, 2] if keep(x)])
         end func
         """
-        assert compile_and_run_js(source) == "emit1"
+        with pytest.raises(RuntimeError, match=r"Error: emit1\b"):
+            compile_and_run_js(source)
 
 
 # =============================================================================
@@ -1352,26 +1345,6 @@ class TestJSCompilerTypes:
         """
         with pytest.raises(GenoTypeError, match="immutable variable: p"):
             compile_to_js(source)
-
-    def test_contract_failure_bypasses_string_catch(self):
-        source = """
-        @untested("contract repro")
-        func f(x: Int) -> Int
-            requires x > 0
-            return x
-        end func
-
-        func main() -> String
-            try
-                let y: Int = f(0)
-                return "not caught"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        with pytest.raises(RuntimeError, match="Precondition failed"):
-            compile_and_run_js(source)
 
     def test_with_result_preserves_fields(self):
         """Values created by `with` preserve updated and original fields."""
@@ -2772,18 +2745,14 @@ class TestJSCompilerErrors:
         with pytest.raises(RuntimeError, match="Division by zero"):
             compile_and_run_js(source)
 
-    def test_modulo_by_zero_caught_by_try_catch(self):
+    def test_modulo_by_zero_panics(self):
         source = """
-        func main() -> String
-            try
-                let x: Int = 10 % 0
-                return "no error"
-            catch e: String
-                return "caught"
-            end try
+        func main() -> Int
+            return 10 % 0
         end func
         """
-        assert compile_and_run_js(source) == "caught"
+        with pytest.raises(RuntimeError, match="Division by zero"):
+            compile_and_run_js(source)
 
     def test_head_empty_list(self):
         source = """
@@ -3033,7 +3002,7 @@ class TestJSCompilerOutput:
         func left(flag: Bool) -> Int
             example (false) -> 1
             if flag then
-                throw "left"
+                panic("left")
             end if
             return 1
         end func
@@ -3041,21 +3010,17 @@ class TestJSCompilerOutput:
         func right(flag: Bool) -> Int
             example (false) -> 1
             if flag then
-                throw "right"
+                panic("right")
             end if
             return 1
         end func
 
-        func main() -> String
-            try
-                let x: Int = left(true) % right(true)
-                return "none"
-            catch e: String
-                return e
-            end try
+        func main() -> Int
+            return left(true) % right(true)
         end func
         """
-        assert compile_and_run_js(source) == "left"
+        with pytest.raises(RuntimeError, match=r"Error: left\b"):
+            compile_and_run_js(source)
 
     def test_typed_modulo_supports_async_operands(self):
         source = """
@@ -3269,7 +3234,7 @@ cp.execFileSync = function(_program, args, options) {
 };
 _GENO_CAPS.add("http");
 const secret = "request-body-secret";
-const result = http_post("https://example.test/path", secret);
+const result = http_post("https://example.test/path", secret).value;
 cp.execFileSync = originalExecFileSync;
 if (result !== "ok") {
     throw new Error("wrong result: " + result);

@@ -66,8 +66,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     SimpleType,
     Statement,
     StringLiteral,
-    ThrowExpression,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -119,7 +117,6 @@ from .values import (
     ContractViolationError,
     Environment,
     GenoRuntimeError,
-    GenoThrowError,
     MutableMapValue,
     PropagateException,
     ReturnException,
@@ -788,6 +785,13 @@ class Interpreter:
                 2,
                 ["result", "default"],
             ),
+            ("result_unwrap", _builtins.builtin_result_unwrap, 1, ["result"]),
+            (
+                "result_expect",
+                _builtins.builtin_result_expect,
+                2,
+                ["result", "message"],
+            ),
             ("result_is_ok", _builtins.builtin_result_is_ok, 1, ["result"]),
             ("result_is_err", _builtins.builtin_result_is_err, 1, ["result"]),
             ("result_to_option", _builtins.builtin_result_to_option, 1, ["result"]),
@@ -799,6 +803,12 @@ class Interpreter:
                 _builtins.builtin_option_unwrap_or,
                 2,
                 ["option", "default"],
+            ),
+            (
+                "option_expect",
+                _builtins.builtin_option_expect,
+                2,
+                ["option", "message"],
             ),
             ("option_is_some", _builtins.builtin_option_is_some, 1, ["option"]),
             ("option_is_none", _builtins.builtin_option_is_none, 1, ["option"]),
@@ -838,6 +848,9 @@ class Interpreter:
             ("list_chunk", _builtins.builtin_list_chunk, 2, ["list", "size"]),
             ("list_take", _builtins.builtin_list_take, 2, ["list", "count"]),
             ("list_drop", _builtins.builtin_list_drop, 2, ["list", "count"]),
+            ("list_get", _builtins.builtin_list_get, 2, ["list", "index"]),
+            ("list_first", _builtins.builtin_list_first, 1, ["list"]),
+            ("list_last", _builtins.builtin_list_last, 1, ["list"]),
             ("list_find", self._builtin_list_find, 2, ["list", "predicate"]),
             (
                 "list_find_index",
@@ -901,6 +914,7 @@ class Interpreter:
             # Option operations
             ("is_some", _builtins.builtin_is_some, 1, ["option"]),
             ("is_none", _builtins.builtin_is_none, 1, ["option"]),
+            ("panic", _builtins.builtin_panic, 1, ["message"]),
             ("unwrap", _builtins.builtin_unwrap, 1, ["option"]),
             ("unwrap_or", _builtins.builtin_unwrap_or, 2, ["option", "default"]),
             # Map operations
@@ -2495,9 +2509,8 @@ class Interpreter:
         self._check_timeout(location)
         if isinstance(func, Closure):
             if self.call_depth >= self.max_recursion_depth:
-                # RecursionLimitError (a SandboxError) is intentionally not
-                # GenoRuntimeError so user-level try/catch cannot swallow
-                # the limit and continue executing (issue #650).
+                # RecursionLimitError is a SandboxError rather than a
+                # GenoRuntimeError: hosts report it as a resource limit.
                 raise RecursionLimitError(
                     f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
                     f"Check for infinite recursion or increase the limit."
@@ -2832,13 +2845,6 @@ class Interpreter:
             result.append(item)
         return result
 
-    def _eval_throw(self, expr: ThrowExpression, env: Environment) -> Any:
-        """Evaluate a throw expression."""
-        value = self.eval_expr(expr.value, env)
-        if isinstance(value, str):
-            raise GenoRuntimeError(value, expr.location)
-        raise GenoThrowError(value, expr.location)
-
     def _eval_await(self, expr: AwaitExpr, env: Environment) -> Any:
         """Evaluate an await expression — execute the async value synchronously."""
         value = self.eval_expr(expr.expr, env)
@@ -2879,8 +2885,7 @@ class Interpreter:
         if func.specs:
             self._check_requires(func, call_env)
         if self.call_depth >= self.max_recursion_depth:
-            # See _call_function — RecursionLimitError is uncatchable
-            # by user try/catch (issue #650).
+            # See _call_function for why this is a RecursionLimitError.
             raise RecursionLimitError(
                 f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
                 f"Check for infinite recursion or increase the limit."
@@ -3446,58 +3451,6 @@ class Interpreter:
             stmt.location,
         )
 
-    def _constructor_matches_type(self, constructor_name: str, type_name: str) -> bool:
-        """Check if a constructor belongs to the given type."""
-        if constructor_name == type_name:
-            return True  # Single-variant type where constructor == type name
-        type_def = self.type_defs.get(type_name)
-        if type_def is None:
-            return False
-        return any(v.name == constructor_name for v in type_def.variants)
-
-    def _exec_try(self, stmt: TryStatement, env: Environment) -> None:
-        """Execute a try/catch statement."""
-        catch_type_annot = stmt.catch_clause.type_annotation
-        catch_type_name = getattr(catch_type_annot, "name", "String")
-
-        try:
-            block_env = env.child()
-            for s in stmt.try_body:
-                self.exec_stmt(s, block_env)
-        except GenoThrowError as e:
-            # Structured error — catch expects a user-defined type
-            if catch_type_name == "String":
-                # String catch: convert thrown value to string
-                catch_env = env.child()
-                catch_env.bind(
-                    stmt.catch_clause.variable, str(e.thrown_value), mutable=False
-                )
-                for s in stmt.catch_clause.body:
-                    self.exec_stmt(s, catch_env)
-            elif isinstance(e.thrown_value, ConstructorValue):
-                # Verify the constructor belongs to the declared catch type
-                if not self._constructor_matches_type(
-                    e.thrown_value.constructor, catch_type_name
-                ):
-                    raise  # Re-throw: constructor doesn't match catch type
-                catch_env = env.child()
-                catch_env.bind(
-                    stmt.catch_clause.variable, e.thrown_value, mutable=False
-                )
-                for s in stmt.catch_clause.body:
-                    self.exec_stmt(s, catch_env)
-            else:
-                raise
-        except ContractViolationError:
-            raise
-        except GenoRuntimeError as e:
-            if catch_type_name != "String":
-                raise  # Non-string catch doesn't handle runtime errors
-            catch_env = env.child()
-            catch_env.bind(stmt.catch_clause.variable, e.message, mutable=False)
-            for s in stmt.catch_clause.body:
-                self.exec_stmt(s, catch_env)
-
     def _exec_return(self, stmt: ReturnStatement, env: Environment) -> None:
         """Execute a return statement."""
         value = self.eval_expr(stmt.value, env)
@@ -3695,7 +3648,6 @@ _EXPR_DISPATCH: dict[type, Any] = {
     WithExpr: Interpreter._eval_with_expr,
     PropagateExpr: Interpreter._eval_propagate,
     ListComprehension: Interpreter._eval_list_comprehension,
-    ThrowExpression: Interpreter._eval_throw,
     AwaitExpr: Interpreter._eval_await,
 }
 
@@ -3713,7 +3665,6 @@ _STMT_DISPATCH: dict[type, Any] = {
     ReturnStatement: Interpreter._exec_return,
     BreakStatement: Interpreter._exec_break,
     ContinueStatement: Interpreter._exec_continue,
-    TryStatement: Interpreter._exec_try,
     ExpressionStatement: Interpreter._exec_expression_stmt,
     AssertStatement: Interpreter._exec_assert,
 }

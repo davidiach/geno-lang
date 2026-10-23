@@ -28,7 +28,7 @@ from geno.values import GenoRuntimeError
 
 # fs_read_text( starts at line 2, column 17.
 NOTES_SOURCE = """func main() -> Unit
-    let notes = fs_read_text("notes.txt")
+    let notes = fs_read_text("notes.txt").unwrap()
     print(notes)
     return ()
 end func
@@ -131,7 +131,7 @@ def test_cli_unsafe_reports_call_site(notes_dir: Path) -> None:
     assert f"  in main, {notes_dir / 'notes.geno'}:1:1\n" in result.stderr
     assert f"  at {notes_dir / 'notes.geno'}:2:17\n" in result.stderr
     assert f"Runtime Error: {FS_DENIED}\n" in result.stderr
-    assert 'let notes = fs_read_text("notes.txt")' in result.stderr
+    assert 'let notes = fs_read_text("notes.txt").unwrap()' in result.stderr
 
 
 def test_cli_json_reports_e412_with_call_site(notes_dir: Path) -> None:
@@ -177,22 +177,16 @@ def test_cli_default_lane_still_rejects_cap(notes_dir: Path) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        # A program throwing the exact denial text must not earn the hint,
-        # which recommends rerunning outside process isolation.
+        # A program panicking with the exact denial text must not earn the
+        # hint, which recommends rerunning outside process isolation.
         """func main() -> Unit
-    throw "Capability denied: 'fs_read_text' requires the 'fs' capability"
+    panic("Capability denied: 'fs_read_text' requires the 'fs' capability")
 end func
 """,
-        # Catching a real denial and rethrowing its text loses the runtime's
-        # provenance tag too.
+        # The same text built at runtime carries no provenance tag either.
         """func main() -> Unit
-    try
-        let notes = fs_read_text("notes.txt")
-        print(notes)
-    catch e: String
-        throw e
-    end try
-    return ()
+    let builtin = "fs_read_text"
+    panic(f"Capability denied: '{builtin}' requires the 'fs' capability")
 end func
 """,
     ],

@@ -79,9 +79,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     Statement,
     StringLiteral,
     TestBlock,
-    ThrowExpression,
     TraitDef,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -371,9 +369,6 @@ def _block_returns(statements: list[Statement]) -> Iterator[ReturnStatement]:
         elif isinstance(stmt, MatchStatement):
             for arm in stmt.arms:
                 yield from _block_returns(arm.body)
-        elif isinstance(stmt, TryStatement):
-            yield from _block_returns(stmt.try_body)
-            yield from _block_returns(stmt.catch_clause.body)
 
 
 @dataclass(frozen=True)
@@ -2755,13 +2750,6 @@ class TypeChecker(ExhaustivenessMixin):
             self._validate_no_result_binding_in_match_arms(stmt.arms)
         elif isinstance(stmt, ReturnStatement):
             self._validate_no_result_binding_in_expr(stmt.value)
-        elif isinstance(stmt, TryStatement):
-            self._validate_no_result_binding_in_statements(stmt.try_body)
-            if stmt.catch_clause.variable == "result":
-                self._error_result_binding_collision(
-                    "catch binding", stmt.catch_clause.location
-                )
-            self._validate_no_result_binding_in_statements(stmt.catch_clause.body)
         elif isinstance(stmt, (ExpressionStatement, AssertStatement)):
             self._validate_no_result_binding_in_expr(stmt.expression)
 
@@ -2816,8 +2804,6 @@ class TypeChecker(ExhaustivenessMixin):
             self._validate_no_result_binding_in_expr(expr.iterable)
             self._validate_no_result_binding_in_expr(expr.condition)
             self._validate_no_result_binding_in_expr(expr.element_expr)
-        elif isinstance(expr, ThrowExpression):
-            self._validate_no_result_binding_in_expr(expr.value)
         elif isinstance(expr, AwaitExpr):
             self._validate_no_result_binding_in_expr(expr.expr)
         elif isinstance(expr, BinaryOp):
@@ -3029,16 +3015,6 @@ class TypeChecker(ExhaustivenessMixin):
             body_env = env.child()
             body_env.bind(stmt.variable, self._resolve_type(stmt.var_type))
             effects |= self._infer_body_effects(stmt.body, body_env)
-        elif isinstance(stmt, TryStatement):
-            body_effects = self._infer_body_effects(stmt.try_body, env.child())
-            # try/catch masks the "throw" effect from the try body
-            effects |= body_effects - {"throw"}
-            catch_env = env.child()
-            catch_env.bind(
-                stmt.catch_clause.variable,
-                self._resolve_type(stmt.catch_clause.type_annotation),
-            )
-            effects |= self._infer_body_effects(stmt.catch_clause.body, catch_env)
         elif isinstance(stmt, MatchStatement):
             effects |= self._infer_expr_effects(stmt.scrutinee, env)
             scrutinee_type = self._check_expression(stmt.scrutinee, env)
@@ -3167,10 +3143,6 @@ class TypeChecker(ExhaustivenessMixin):
                         module_callee_type = mod_exports.get(callee.field_name)
                         if isinstance(module_callee_type, FuncType):
                             effects |= module_callee_type.effects
-        elif isinstance(expr, ThrowExpression):
-            effects.add("throw")
-            effects |= self._infer_expr_effects(expr.value, env)
-
         elif isinstance(expr, BinaryOp):
             effects |= self._infer_expr_effects(expr.left, env)
             effects |= self._infer_expr_effects(expr.right, env)
@@ -3269,9 +3241,7 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(stmt, ReturnStatement):
             return True
 
-        if isinstance(stmt, ExpressionStatement) and isinstance(
-            stmt.expression, ThrowExpression
-        ):
+        if isinstance(stmt, ExpressionStatement) and stmt._diverges:
             return True
 
         if isinstance(stmt, IfStatement):
@@ -3285,12 +3255,6 @@ class TypeChecker(ExhaustivenessMixin):
             if not stmt.arms:
                 return False
             return all(self._definitely_returns(arm.body) for arm in stmt.arms)
-
-        if isinstance(stmt, TryStatement):
-            # Both try body and catch body must definitely return
-            try_returns = self._definitely_returns(stmt.try_body)
-            catch_returns = self._definitely_returns(stmt.catch_clause.body)
-            return try_returns and catch_returns
 
         # While/for loops don't guarantee return (might not execute)
         # Let/var/assign statements don't return
@@ -3465,11 +3429,11 @@ class TypeChecker(ExhaustivenessMixin):
         elif stmt_type is ContinueStatement:
             if self._loop_depth == 0:
                 self._error("'continue' outside of loop", stmt.location)
-        elif stmt_type is TryStatement:
-            self._check_try_statement(cast(TryStatement, stmt), env)
         elif stmt_type is ExpressionStatement:
             expr_stmt = cast(ExpressionStatement, stmt)
-            self._check_expression(expr_stmt.expression, env)
+            expr_stmt._diverges = isinstance(
+                self._check_expression(expr_stmt.expression, env), NeverType
+            )
         elif stmt_type is AssertStatement:
             assert_stmt = cast(AssertStatement, stmt)
             expr_type = self._check_expression(assert_stmt.expression, env)
@@ -3478,25 +3442,6 @@ class TypeChecker(ExhaustivenessMixin):
                     f"Assert expression must be Bool, got {expr_type}",
                     stmt.location,
                 )
-
-    def _check_try_statement(self, stmt: TryStatement, env: TypeEnv) -> None:
-        """Type check a try/catch statement."""
-        try_env = env.child()
-        for s in stmt.try_body:
-            self._check_statement(s, try_env)
-
-        catch = stmt.catch_clause
-        declared_type = self._resolve_type(catch.type_annotation)
-        if not isinstance(declared_type, (StringType, UserType)):
-            self._error(
-                f"Catch variable must be String or a user-defined type, got {declared_type}",
-                catch.location,
-            )
-
-        catch_env = env.child()
-        catch_env.bind(catch.variable, declared_type)
-        for s in catch.body:
-            self._check_statement(s, catch_env)
 
     def _bind_local(
         self,
@@ -4324,8 +4269,6 @@ class TypeChecker(ExhaustivenessMixin):
             return self._check_propagate_expr(cast(PropagateExpr, expr), env)
         elif expr_type is ListComprehension:
             return self._check_list_comprehension(cast(ListComprehension, expr), env)
-        elif expr_type is ThrowExpression:
-            return self._check_throw_expression(cast(ThrowExpression, expr), env)
         elif expr_type is AwaitExpr:
             return self._check_await_expr(cast(AwaitExpr, expr), env)
         else:
@@ -5622,16 +5565,6 @@ class TypeChecker(ExhaustivenessMixin):
         # Check element expression
         result_type = self._check_expression(expr.element_expr, comp_env)
         return ListType(result_type)
-
-    def _check_throw_expression(self, expr: ThrowExpression, env: TypeEnv) -> Type:
-        """Type check a throw expression."""
-        value_type = self._check_expression(expr.value, env)
-        if not isinstance(value_type, (StringType, UserType)):
-            self._error(
-                f"throw requires String or user-defined type, got {value_type}",
-                expr.value.location,
-            )
-        return NeverType()
 
     def _check_await_expr(self, expr: AwaitExpr, env: TypeEnv) -> Type:
         """Type check an await expression."""

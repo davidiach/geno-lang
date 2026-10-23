@@ -114,21 +114,6 @@ WARNING_CASES = {
         """,
         [6],
     ),
-    "var in try and catch bodies": (
-        """\
-        func safe(n: Int) -> Int
-            example 2 -> 0
-            var out: Int = 0
-            try
-                var out: Int = 10 / n
-            catch e: String
-                var out: Int = -1
-            end try
-            return out
-        end func
-        """,
-        [5, 7],
-    ),
     "var in a block lambda": (
         """\
         func seen(xs: List[Int]) -> Int

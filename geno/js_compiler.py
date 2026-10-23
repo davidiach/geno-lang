@@ -78,8 +78,6 @@ from .ast_nodes import (
     SimpleType,
     Statement,
     StringLiteral,
-    ThrowExpression,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -200,7 +198,7 @@ _CORE_NAMES = (
             "_safe_index",
             "_PropagateReturn",
             "_propagate",
-            "_GenoThrow",
+            "_genoPanic",
             "_GenoContractViolation",
         }
     )
@@ -526,7 +524,7 @@ _JS_LOCAL_RESERVED_NAMES = (
             "set_intersection",
             "_propagate",
             "_PropagateReturn",
-            "_GenoThrow",
+            "_genoPanic",
         }
     )
     | _JS_EMITTED_LOCAL_HELPER_NAMES
@@ -1751,63 +1749,10 @@ class JSCompiler(BaseCompiler):
             self._writeln("break;")
         elif isinstance(stmt, ContinueStatement):
             self._writeln("continue;")
-        elif isinstance(stmt, TryStatement):
-            self._compile_try_statement(stmt)
         elif isinstance(stmt, ExpressionStatement):
             self._writeln(f"{self._compile_expr(stmt.expression)};")
         else:
             raise JSCompileError(f"Unsupported statement type: {type(stmt).__name__}")
-
-    def _compile_try_statement(self, stmt: TryStatement) -> None:
-        """Compile a try/catch statement to JavaScript try/catch."""
-        catch_type_annot = stmt.catch_clause.type_annotation
-        catch_type_name = getattr(catch_type_annot, "name", "String")
-        is_string_catch = catch_type_name == "String"
-
-        self._writeln("try {")
-        self._indent()
-        with self._block_scope(statements=stmt.try_body):
-            for s in stmt.try_body:
-                self._compile_statement(s)
-        self._dedent()
-        var_name = self._mangle_name(stmt.catch_clause.variable)
-        self._writeln("} catch (__geno_err__) {")
-        self._indent()
-        if is_string_catch:
-            self._writeln("if (__geno_err__ instanceof _GenoThrow) {")
-            self._indent()
-            self._writeln(f"let {var_name} = String(__geno_err__.value);")
-            with self._block_scope(
-                [stmt.catch_clause.variable], stmt.catch_clause.body
-            ):
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-            self._dedent()
-            self._writeln(
-                "} else if ((__geno_err__ instanceof Error) "
-                "&& __geno_err__.constructor === Error) {"
-            )
-            self._indent()
-            self._writeln(f"let {var_name} = __geno_err__.message;")
-            with self._block_scope(
-                [stmt.catch_clause.variable], stmt.catch_clause.body
-            ):
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-            self._dedent()
-            self._writeln("} else { throw __geno_err__; }")
-        else:
-            self._writeln(
-                "if (!(__geno_err__ instanceof _GenoThrow)) throw __geno_err__;"
-            )
-            self._writeln(f"let {var_name} = __geno_err__.value;")
-            with self._block_scope(
-                [stmt.catch_clause.variable], stmt.catch_clause.body
-            ):
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-        self._dedent()
-        self._writeln("}")
 
     # Types that are immutable in JS and never need deep copying
     _IMMUTABLE_TYPES = frozenset(
@@ -3000,10 +2945,6 @@ class JSCompiler(BaseCompiler):
                 )
             return f"_checkCollectionSize(({iterable}).map(({var}) => {elem}))"
 
-        if isinstance(expr, ThrowExpression):
-            value = self._compile_expr(expr.value)
-            return f"(() => {{ throw new _GenoThrow({value}); }})()"
-
         if isinstance(expr, AwaitExpr):
             inner = self._compile_expr(expr.expr)
             return f"(await {inner})"
@@ -3578,10 +3519,8 @@ class JSCompiler(BaseCompiler):
             result_parts.append((cond, body_expr))
 
         # Fallback must raise at runtime rather than silently returning null.
-        # Mirrors the Python backend via _geno_throw — see issue #657.
-        result = (
-            '(() => { throw new _GenoThrow("Non-exhaustive match expression"); })()'
-        )
+        # Mirrors the Python backend via _geno_panic — see issue #657.
+        result = '_genoPanic("Non-exhaustive match expression")'
         for cond, body in reversed(result_parts):
             result = f"({cond} ? {body} : {result})"
 

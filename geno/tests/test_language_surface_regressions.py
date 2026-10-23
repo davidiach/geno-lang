@@ -248,7 +248,7 @@ class TestTuplePatterns:
         assert "non-tuple type" in str(excinfo.value)
 
     def test_single_element_tuple_pattern_is_rejected_with_guidance(self):
-        with pytest.raises(ParseErrors) as excinfo:
+        with pytest.raises((ParseError, ParseErrors)) as excinfo:
             parse(
                 "func pick(p: (Int, String)) -> String\n"
                 '    example (1, "a") -> "a"\n'
@@ -257,7 +257,7 @@ class TestTuplePatterns:
                 "    end match\n"
                 "end func\n"
             )
-        assert "at least two elements" in str(excinfo.value.errors[0])
+        assert "at least two elements" in str(excinfo.value)
 
     def test_list_pattern_does_not_match_a_tuple_in_the_interpreter(self):
         # Tuples and lists share a representation on the JS backend, so the

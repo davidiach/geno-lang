@@ -61,15 +61,6 @@ class ContractViolationError(GenoRuntimeError):
         self.call_depth = call_depth
 
 
-class GenoThrowError(Exception):
-    """Exception raised by 'throw' expressions carrying a typed value."""
-
-    def __init__(self, value: Any, location: SourceLocation | None = None) -> None:
-        self.thrown_value = value
-        self.location = location
-        super().__init__(f"Uncaught throw: {value}")
-
-
 # Backward-compatible alias — existing code can still import RuntimeError
 # from this module.  New code should use GenoRuntimeError.
 RuntimeError = GenoRuntimeError

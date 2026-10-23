@@ -82,7 +82,9 @@ SELFHOST_REQUIRED_KEYWORDS = {
 # Keywords that canonical has but selfhost intentionally does not support yet
 SELFHOST_KEYWORD_GAP_GROUPS = {
     "loop_control": {"break", "continue"},
-    "exception_control": {"try", "catch", "throw"},
+    # Reserved so that 0.5 code gets a migration error (proposal 0009);
+    # they form no construct, so the selfhost has nothing to implement.
+    "removed_exception_keywords": {"try", "catch", "throw"},
     "abstraction": {"trait", "impl"},
     "async_control": {"async", "await"},
     "tests_and_exports": {"test", "assert", "export"},
@@ -123,6 +125,9 @@ def get_selfhost_builtins() -> set[str]:
 SELFHOST_BUILTIN_GAP_GROUPS = {
     "pure_collection_next": {
         "enumerate",
+        "list_first",
+        "list_get",
+        "list_last",
         "flat_map",
         "list_all",
         "list_any",
@@ -180,6 +185,10 @@ SELFHOST_BUILTIN_GAP_GROUPS = {
         "round",
     },
     "pure_option_result_next": {
+        "option_expect",
+        "panic",
+        "result_expect",
+        "result_unwrap",
         "option_and_then",
         "option_flatten",
         "option_map",

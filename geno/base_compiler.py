@@ -49,7 +49,6 @@ from .ast_nodes import (
     Statement,
     TraitDef,
     TraitMethodSig,
-    TryStatement,
     TupleDestructureStatement,
     TuplePattern,
     TypeAlias,
@@ -462,9 +461,6 @@ class BaseCompiler(ABC):
                     check_name(name, "local binding")
             elif isinstance(stmt, ForStatement):
                 check_name(stmt.variable, "for-loop binding")
-            elif isinstance(stmt, TryStatement):
-                check_name(stmt.catch_clause.variable, "catch binding")
-                visit_statements(stmt.catch_clause.body)
 
             if is_dataclass(stmt) and not isinstance(stmt, type):
                 for field_info in fields(stmt):

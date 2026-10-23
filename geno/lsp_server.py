@@ -479,7 +479,6 @@ def _infer_missing_end_text(source: str) -> tuple[str, str] | None:
         ("match", r"^\s*match\b.*\bwith\b"),
         ("while", r"^\s*while\b.*\bdo\b"),
         ("for", r"^\s*for\b.*\bdo\b"),
-        ("try", r"^\s*try\b"),
         ("trait", r"^\s*trait\b"),
         ("impl", r"^\s*impl\b"),
         ("test", r"^\s*test\b"),

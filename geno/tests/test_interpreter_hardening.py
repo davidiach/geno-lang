@@ -802,58 +802,6 @@ class TestFieldAccessErrors:
 # ---------------------------------------------------------------------------
 
 
-class TestTryCatch:
-    """Try/catch statement execution paths."""
-
-    def test_try_catch_string_error(self):
-        """throw string caught by catch e: String."""
-        src = """
-        func main() -> String
-            try
-                throw "oops"
-            catch e: String
-                return e
-            end try
-            return "unreachable"
-        end func
-        """
-        assert run_program(src) == "oops"
-
-    def test_try_catch_typed_error(self):
-        """throw constructor caught by typed catch."""
-        src = """
-        type MyError = NotFound(msg: String) | Invalid(msg: String)
-
-        func main() -> String
-            try
-                throw NotFound("missing")
-            catch e: MyError
-                match e with
-                | NotFound(m) -> return m
-                | Invalid(m) -> return m
-                end match
-            end try
-            return "unreachable"
-        end func
-        """
-        assert run_program(src) == "missing"
-
-    def test_try_catch_runtime_error(self):
-        """Runtime errors (division by zero) caught by String catch."""
-        src = """
-        func main() -> String
-            try
-                let x: Int = 1 / 0
-                return "ok"
-            catch e: String
-                return "caught"
-            end try
-            return "unreachable"
-        end func
-        """
-        assert run_program(src) == "caught"
-
-
 # ---------------------------------------------------------------------------
 # Requires / ensures  (lines 1786-1822)
 # ---------------------------------------------------------------------------
@@ -922,27 +870,6 @@ class TestRequiresEnsures:
         end func
         """
         with pytest.raises(GenoRuntimeError, match=r"Postcondition failed"):
-            run_program(src)
-
-    def test_contract_failure_bypasses_string_catch(self):
-        """Contract failures are not catchable as ordinary runtime errors."""
-        src = """
-        @untested("contract repro")
-        func f(x: Int) -> Int
-            requires x > 0
-            return x
-        end func
-
-        func main() -> String
-            try
-                let y: Int = f(0)
-                return "not caught"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        with pytest.raises(GenoRuntimeError, match=r"Precondition failed"):
             run_program(src)
 
 

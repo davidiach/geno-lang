@@ -28,6 +28,7 @@ from .types import (
     ListType,
     MapType,
     MutableMapType,
+    NeverType,
     OptionType,
     ResultType,
     SetType,
@@ -97,7 +98,6 @@ VALID_EFFECTS: frozenset[str] = frozenset(
         "regex",
         "stdin",
         "mutation",
-        "throw",
     }
 )
 
@@ -206,6 +206,7 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "is_some": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "is_none": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "unwrap": FuncType((OptionType(TypeVar("T")),), TypeVar("T")),
+    "panic": FuncType((StringType(),), NeverType()),
     "unwrap_or": FuncType((OptionType(TypeVar("T")), TypeVar("T")), TypeVar("T")),
     "map_insert": FuncType(
         (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K"), TypeVar("V")),
@@ -347,6 +348,10 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "result_unwrap_or": FuncType(
         (ResultType(TypeVar("T"), TypeVar("E")), TypeVar("T")), TypeVar("T")
     ),
+    "result_unwrap": FuncType((ResultType(TypeVar("T"), TypeVar("E")),), TypeVar("T")),
+    "result_expect": FuncType(
+        (ResultType(TypeVar("T"), TypeVar("E")), StringType()), TypeVar("T")
+    ),
     "result_is_ok": FuncType((ResultType(TypeVar("T"), TypeVar("E")),), BoolType()),
     "result_is_err": FuncType((ResultType(TypeVar("T"), TypeVar("E")),), BoolType()),
     "result_to_option": FuncType(
@@ -366,6 +371,7 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "option_unwrap_or": FuncType(
         (OptionType(TypeVar("T")), TypeVar("T")), TypeVar("T")
     ),
+    "option_expect": FuncType((OptionType(TypeVar("T")), StringType()), TypeVar("T")),
     "option_is_some": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "option_is_none": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "option_flatten": FuncType(
@@ -402,6 +408,9 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     ),
     "list_take": FuncType((ListType(TypeVar("T")), IntType()), ListType(TypeVar("T"))),
     "list_drop": FuncType((ListType(TypeVar("T")), IntType()), ListType(TypeVar("T"))),
+    "list_get": FuncType((ListType(TypeVar("T")), IntType()), OptionType(TypeVar("T"))),
+    "list_first": FuncType((ListType(TypeVar("T")),), OptionType(TypeVar("T"))),
+    "list_last": FuncType((ListType(TypeVar("T")),), OptionType(TypeVar("T"))),
     "list_find": FuncType(
         (ListType(TypeVar("T")), FuncType((TypeVar("T"),), BoolType())),
         OptionType(TypeVar("T")),
@@ -437,8 +446,10 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "sleep_ms": FuncType((IntType(),), UnitType()),
     "random_int": FuncType((IntType(), IntType()), IntType()),
     "random_float": FuncType((), FloatType()),
-    "fs_read_text": FuncType((StringType(),), StringType()),
-    "fs_write_text": FuncType((StringType(), StringType()), UnitType()),
+    "fs_read_text": FuncType((StringType(),), ResultType(StringType(), StringType())),
+    "fs_write_text": FuncType(
+        (StringType(), StringType()), ResultType(UnitType(), StringType())
+    ),
     "fs_list_dir": FuncType(
         (StringType(),), ResultType(ListType(StringType()), StringType())
     ),
@@ -452,8 +463,10 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "fs_canonicalize": FuncType(
         (StringType(),), ResultType(StringType(), StringType())
     ),
-    "http_fetch": FuncType((StringType(),), StringType()),
-    "http_post": FuncType((StringType(), StringType()), StringType()),
+    "http_fetch": FuncType((StringType(),), ResultType(StringType(), StringType())),
+    "http_post": FuncType(
+        (StringType(), StringType()), ResultType(StringType(), StringType())
+    ),
     "http_request": FuncType(
         (
             StringType(),

@@ -1,0 +1,4 @@
+// Geno 0.6 removed throw (proposal 0009): rejected with E205.
+func main() -> Unit
+    throw "boom"
+end func

@@ -23,9 +23,9 @@ must either be implemented in `selfhost/` or added to a named gap group there;
 otherwise the parity check fails.
 
 Keyword gaps are grouped by implementation area so features like
-exception control (`try`/`catch`/`throw`) and test/export syntax
-(`test`/`assert`/`export`) remain explicit staged work rather than untracked
-drift.
+test/export syntax (`test`/`assert`/`export`) remain explicit staged work
+rather than untracked drift. `try`/`catch`/`throw` are listed only because
+they stay reserved after Geno 0.6 removed them (proposal 0009).
 
 Builtin gaps are ordered with pure host-independent groups first
 (`pure_collection_next`, `pure_string_next`, `pure_math_next`,

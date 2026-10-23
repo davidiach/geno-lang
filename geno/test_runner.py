@@ -46,11 +46,10 @@ def _geno_facing_test_errors() -> tuple[type[BaseException], ...]:
     from .sandbox import SandboxError
     from .target_profile import ManifestTargetError
     from .types import GenoTypeError
-    from .values import GenoRuntimeError, GenoThrowError
+    from .values import GenoRuntimeError
 
     return (
         GenoRuntimeError,
-        GenoThrowError,
         SandboxError,
         # Type errors and manifest/target errors are ordinary user-facing
         # failures on the single-file `geno test` path (the project-suite path
@@ -365,7 +364,7 @@ def run_project_test_suite(
         validate_default_run_lowering,
     )
     from .typechecker import TypeChecker, TypeError
-    from .values import GenoRuntimeError, GenoThrowError
+    from .values import GenoRuntimeError
 
     sandbox_config = sandbox_config or default_test_sandbox_config()
 
@@ -379,7 +378,6 @@ def run_project_test_suite(
 
     runtime_load_errors = (
         GenoRuntimeError,
-        GenoThrowError,
         SandboxError,
         ZeroDivisionError,
         RecursionError,

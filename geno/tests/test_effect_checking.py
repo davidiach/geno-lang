@@ -65,39 +65,6 @@ end func counter
         assert isinstance(ft, FuncType)
         assert ft.effects == frozenset({"mutation"})
 
-    def test_throw_inferred(self):
-        checker = _typecheck("""
-func fail_fast(x: Int) -> Int with throw
-    example 0 -> 0
-    if x == 0 then
-        throw "error"
-    end if
-    return x
-end func fail_fast
-""")
-        ft = checker.global_env.lookup("fail_fast")
-        assert isinstance(ft, FuncType)
-        assert ft.effects == frozenset({"throw"})
-
-    def test_try_catch_masks_throw(self):
-        checker = _typecheck("""
-func safe_op(x: Int) -> Int
-    example 0 -> 0
-    try
-        if x == 0 then
-            throw "error"
-        end if
-    catch e: String
-        return 0
-    end try
-    return x
-end func safe_op
-""")
-        ft = checker.global_env.lookup("safe_op")
-        assert isinstance(ft, FuncType)
-        # throw is masked by try/catch
-        assert "throw" not in ft.effects
-
     def test_multiple_effects_inferred(self):
         checker = _typecheck("""
 func do_stuff(x: Int) -> Unit with io, mutation
@@ -200,7 +167,7 @@ end func log_value
         checker = _typecheck("""
 @untested("requires reads")
 func guarded(path: String) -> Int
-    requires fs_read_text(path) == "ok"
+    requires fs_read_text(path).unwrap() == "ok"
     return 1
 end func guarded
 """)
@@ -212,7 +179,7 @@ end func guarded
         checker = _typecheck("""
 @untested("ensures reads")
 func checked(path: String) -> Int
-    ensures fs_read_text(path) == "ok"
+    ensures fs_read_text(path).unwrap() == "ok"
     return 1
 end func checked
 """)
@@ -286,7 +253,7 @@ end func counter
         errors = _typecheck_errors("""
 func read_and_print(path: String) -> Unit with fs
     example "test.txt" -> ()
-    let text: String = fs_read_text(path)
+    let text: String = fs_read_text(path).unwrap()
     print(text)
     return ()
 end func read_and_print
@@ -299,7 +266,7 @@ end func read_and_print
         errors = _typecheck_errors("""
 @untested("requires reads")
 func guarded(path: String) -> Int with io
-    requires fs_read_text(path) == "ok"
+    requires fs_read_text(path).unwrap() == "ok"
     return 1
 end func guarded
 """)

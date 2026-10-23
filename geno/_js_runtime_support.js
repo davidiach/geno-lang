@@ -1389,8 +1389,9 @@ function int_to_float(x) { return x; }
 class _PropagateReturn {
     constructor(value) { this.value = value; }
 }
-class _GenoThrow {
-    constructor(value) { this.value = value; }
+// End the program with `message`: Geno code cannot recover from a panic.
+function _genoPanic(message) {
+    throw new Error(message);
 }
 class _GenoContractViolation extends Error {
     constructor(message) {
@@ -1412,6 +1413,10 @@ function is_none(opt) { return _valuesEqual(opt, None_) || (isConstructor(opt) &
 function unwrap(opt) {
     if (isConstructor(opt) && opt._tag === 'Some') return opt.value;
     throw new Error("unwrap called on None");
+}
+
+function panic(message) {
+    throw new Error(message);
 }
 
 function unwrap_or(opt, def) {
@@ -2136,22 +2141,31 @@ function _processEnv() {
 function fs_read_text(path) {
     _requireCap("fs", "fs_read_text");
     if (typeof require === "undefined") {
-        throw new Error("fs_read_text is not available in browser context");
+        return { _tag: "Err", error: "fs_read_text is not available in browser context" };
     }
     const fs = require("fs");
-    const result = fs.readFileSync(path, "utf-8").replace(/\r\n?/g, "\n");
+    let result;
+    try {
+        result = fs.readFileSync(path, "utf-8").replace(/\r\n?/g, "\n");
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
     _checkStringResultSize("fs_read_text", _stringLength(result));
-    return result;
+    return Ok(result);
 }
 
 function fs_write_text(path, content) {
     _requireCap("fs", "fs_write_text");
     if (typeof require === "undefined") {
-        throw new Error("fs_write_text is not available in browser context");
+        return { _tag: "Err", error: "fs_write_text is not available in browser context" };
     }
     const fs = require("fs");
-    fs.writeFileSync(path, content, "utf-8");
-    return null;
+    try {
+        fs.writeFileSync(path, content, "utf-8");
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
+    return Ok(null);
 }
 
 function fs_list_dir(path) {
@@ -2768,24 +2782,32 @@ function _syncFetch(method, url, headers, body, builtinName) {
     return parsed;
 }
 
+// One request whose response body is the result: Err for scheme, transport,
+// redirect-policy and network-policy failures, but not for the output limit.
+function _httpBody(method, url, headers, body, builtinName) {
+    let r;
+    try {
+        _validateHttpScheme(url, builtinName);
+        r = _syncFetch(method, url, headers, body, builtinName);
+    } catch (e) {
+        if (e && e._genoCollectionLimit) throw e;
+        return { _tag: "Err", error: e.message };
+    }
+    if (!r.ok) return { _tag: "Err", error: r.error };
+    _checkStringResultSize(builtinName, _stringLength(r.body));
+    return Ok(r.body);
+}
+
 function http_fetch(url) {
     _requireCap("http", "http_fetch");
-    _validateHttpScheme(url, "http_fetch");
-    const r = _syncFetch("GET", url, null, null, "http_fetch");
-    if (!r.ok) throw new Error(r.error);
-    _checkStringResultSize("http_fetch", _stringLength(r.body));
-    return r.body;
+    return _httpBody("GET", url, null, null, "http_fetch");
 }
 
 function http_post(url, body) {
     _requireCap("http", "http_post");
-    _validateHttpScheme(url, "http_post");
-    const r = _syncFetch(
+    return _httpBody(
         "POST", url, [["Content-Type", "application/json"]], body, "http_post"
     );
-    if (!r.ok) throw new Error(r.error);
-    _checkStringResultSize("http_post", _stringLength(r.body));
-    return r.body;
 }
 
 function http_request(method, url, headers, body) {
@@ -4330,6 +4352,16 @@ function result_unwrap_or(result, defaultVal) {
     return defaultVal;
 }
 
+function result_unwrap(result) {
+    if (result._tag === 'Ok') return result.value;
+    throw new Error("unwrap called on Err: " + _stringifyValue(result.error));
+}
+
+function result_expect(result, message) {
+    if (result._tag === 'Ok') return result.value;
+    throw new Error(message + ": " + _stringifyValue(result.error));
+}
+
 function result_is_ok(result) {
     return result._tag === 'Ok';
 }
@@ -4360,6 +4392,11 @@ function option_and_then(option, f) {
 function option_unwrap_or(option, defaultVal) {
     if (option._tag === 'Some') return option.value;
     return defaultVal;
+}
+
+function option_expect(option, message) {
+    if (option._tag === 'Some') return option.value;
+    throw new Error(message);
 }
 
 function option_is_some(option) {
@@ -4563,6 +4600,16 @@ function list_chunk(xs, n) {
 }
 function list_take(xs, n) { return xs.slice(0, _GENO_MATH.max(0, n)); }
 function list_drop(xs, n) { return xs.slice(_GENO_MATH.max(0, n)); }
+function list_get(xs, index) {
+    if (index < 0) index += xs.length;
+    return (index >= 0 && index < xs.length) ? Some(xs[index]) : None_;
+}
+function list_first(xs) {
+    return xs.length > 0 ? Some(xs[0]) : None_;
+}
+function list_last(xs) {
+    return xs.length > 0 ? Some(xs[xs.length - 1]) : None_;
+}
 function list_find(xs, pred) {
     for (const x of xs) if (pred(x)) return Some(x);
     return None_;

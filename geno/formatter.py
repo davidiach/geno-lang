@@ -128,7 +128,7 @@ _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\|>|->|\S")
 _OPEN_BRACKETS = {"(": ")", "[": "]", "{": "}"}
 _CLOSE_BRACKETS = {")", "]", "}"}
 # Keywords that always open a block closed by ``end <kw>``.
-_ALWAYS_OPENS = {"while", "match", "try", "trait", "impl", "test"}
+_ALWAYS_OPENS = {"while", "match", "trait", "impl", "test"}
 
 
 @dataclass
@@ -209,7 +209,7 @@ def _format_lines(source: str) -> str:
             line_depth = _closing_depth(stack, _end_kind(tokens, 0))
         elif first_token in _CLOSE_BRACKETS and stack:
             line_depth = _closing_depth(stack, first_token)
-        elif first_token in {"else", "catch"}:
+        elif first_token == "else":  # noqa: S105
             line_depth = max(0, depth - 1)
         elif first_token == "|>":  # noqa: S105
             line_depth = depth + 1

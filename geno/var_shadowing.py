@@ -38,7 +38,6 @@ from .ast_nodes import (
     RestPattern,
     Statement,
     TestBlock,
-    TryStatement,
     TupleDestructureStatement,
     TypeAnnotation,
     VariablePattern,
@@ -172,12 +171,6 @@ class _Finder:
             self.expression(stmt.scrutinee, scope)
             for arm in stmt.arms:
                 self.arm(arm, scope)
-        elif isinstance(stmt, TryStatement):
-            self.block(stmt.try_body, scope.child())
-            catch = stmt.catch_clause
-            catch_scope = scope.child()
-            self.bind_immutable(catch.variable, catch_scope)
-            self.block(catch.body, catch_scope)
         else:
             self.children(stmt, scope)
 

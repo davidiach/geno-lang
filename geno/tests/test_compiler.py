@@ -1062,7 +1062,7 @@ class TestCompilerBuiltins:
         func make_list(flag: Bool) -> List[Int]
             example (false) -> [1]
             if flag then
-                throw "list"
+                panic("list")
             end if
             return [1]
         end func
@@ -1070,21 +1070,17 @@ class TestCompilerBuiltins:
         func make_item(flag: Bool) -> Int
             example (false) -> 1
             if flag then
-                throw "item"
+                panic("item")
             end if
             return 1
         end func
 
-        func main() -> String
-            try
-                let xs: List[Int] = append(make_list(true), make_item(true))
-                return "none"
-            catch e: String
-                return e
-            end try
+        func main() -> Int
+            return length(append(make_list(true), make_item(true)))
         end func
         """
-        assert compile_and_run(source) == "list"
+        with pytest.raises(RuntimeError, match=r"^list$"):
+            compile_and_run(source)
 
     def test_typed_append_allows_falsey_item(self):
         """Typed append fast path must preserve falsey items like 0."""
@@ -1139,7 +1135,7 @@ class TestCompilerBuiltins:
         func make_text(flag: Bool) -> String
             example (false) -> "ok"
             if flag then
-                throw "text"
+                panic("text")
             end if
             return "ok"
         end func
@@ -1147,21 +1143,17 @@ class TestCompilerBuiltins:
         func make_index(flag: Bool) -> Int
             example (false) -> 0
             if flag then
-                throw "index"
+                panic("index")
             end if
             return 0
         end func
 
         func main() -> String
-            try
-                let c: String = string_char_at(text: make_text(true), index: make_index(true))
-                return "none"
-            catch e: String
-                return e
-            end try
+            return string_char_at(text: make_text(true), index: make_index(true))
         end func
         """
-        assert compile_and_run(source) == "text"
+        with pytest.raises(RuntimeError, match=r"^text$"):
+            compile_and_run(source)
 
     def test_typed_substring_emits_inline_fast_path(self):
         """Typed substring should inline raw slicing with clamped bounds."""
@@ -1202,7 +1194,7 @@ class TestCompilerBuiltins:
         func make_text(flag: Bool) -> String
             example (false) -> "hello"
             if flag then
-                throw "text"
+                panic("text")
             end if
             return "hello"
         end func
@@ -1210,21 +1202,17 @@ class TestCompilerBuiltins:
         func make_prefix(flag: Bool) -> String
             example (false) -> "h"
             if flag then
-                throw "prefix"
+                panic("prefix")
             end if
             return "h"
         end func
 
-        func main() -> String
-            try
-                let result: Bool = starts_with(text: make_text(true), prefix: make_prefix(true))
-                return "none"
-            catch e: String
-                return e
-            end try
+        func main() -> Bool
+            return starts_with(text: make_text(true), prefix: make_prefix(true))
         end func
         """
-        assert compile_and_run(source) == "text"
+        with pytest.raises(RuntimeError, match=r"^text$"):
+            compile_and_run(source)
 
     def test_typed_starts_with_allows_empty_prefix(self):
         """Typed starts_with fast path must preserve empty-prefix truthiness."""
@@ -1980,16 +1968,6 @@ class TestCompilerReservedNameProtection:
             end func
             """,
             """
-            func main() -> String
-                try
-                    throw "boom"
-                catch _safe_add: String
-                    return _safe_add
-                end try
-                return "ok"
-            end func
-            """,
-            """
             func main() -> Int
                 let (_safe_add, other): (Int, Int) = (1, 2)
                 return other
@@ -2129,24 +2107,6 @@ class TestCompilerIndexBoundsChecking:
         """
         python_code = compile_to_python(source)
         assert "_safe_index(" in python_code
-
-    def test_catch_string_handles_native_index_error(self):
-        """catch e: String should catch raw IndexError from fast-path indexing."""
-        source = """
-        func main() -> String
-            try
-                let xs: List[Int] = [1]
-                let value: Int = xs[5]
-                return "nope"
-            catch e: String
-                return e
-            end try
-        end func
-        """
-        message = compile_and_run(source)
-        assert isinstance(message, str)
-        assert message != "nope"
-        assert "range" in message or "Index" in message
 
 
 class TestCompilerCollectionSizeLimits:
@@ -3692,20 +3652,6 @@ class TestInterpreterCompilerParity:
         with pytest.raises(RuntimeError, match="Division by zero"):
             compile_and_run(source)
 
-    def test_modulo_by_zero_caught_by_try_catch(self):
-        """try/catch must catch RuntimeError from guarded typed %."""
-        source = """
-        func main() -> String
-            try
-                let x: Int = 10 % 0
-                return "no error"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        assert compile_and_run(source) == "caught"
-
     def test_typed_modulo_simple_operands_use_numeric_helper(self):
         """Typed % on identifiers inlines the non-negative fast case and
         falls back to the truncation helper for negatives and zero."""
@@ -3738,7 +3684,7 @@ class TestInterpreterCompilerParity:
         func left(flag: Bool) -> Int
             example (false) -> 1
             if flag then
-                throw "left"
+                panic("left")
             end if
             return 1
         end func
@@ -3752,16 +3698,12 @@ class TestInterpreterCompilerParity:
             return 2
         end func
 
-        func main() -> String
-            try
-                let x: Int = left(true) % right(true)
-                return "none"
-            catch e: String
-                return e
-            end try
+        func main() -> Int
+            return left(true) % right(true)
         end func
         """
-        assert compile_and_run(source) == "left"
+        with pytest.raises(RuntimeError, match=r"^left$"):
+            compile_and_run(source)
 
     def test_untyped_modulo_uses_safe_mod(self):
         """Untyped modulo falls back to _safe_mod wrapper."""

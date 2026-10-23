@@ -39,7 +39,6 @@ from .ast_nodes import (
     ReturnStatement,
     Statement,
     StringLiteral,
-    ThrowExpression,
     TupleExpr,
     TypeAnnotation,
     TypedHole,
@@ -47,8 +46,9 @@ from .ast_nodes import (
     UnaryOp,
     WithExpr,
 )
+from .diagnostics import ErrorCode
 from .lexer import Lexer, LexerError
-from .parser_base import ParseError, ParserBase
+from .parser_base import REMOVED_THROW, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType, token_type_to_str
 
 
@@ -525,11 +525,8 @@ class ExpressionParserMixin(ParserBase):
             self._advance()
             return BooleanLiteral(location=location, value=False)
 
-        # throw expression
         if current_type is TokenType.THROW:
-            self._advance()
-            value = self._parse_expression()
-            return ThrowExpression(location=location, value=value)
+            raise self._error(REMOVED_THROW, ErrorCode.PARSE_REMOVED_SYNTAX)
 
         # await expression
         if current_type is TokenType.AWAIT:

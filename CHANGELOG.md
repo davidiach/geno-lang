@@ -52,6 +52,13 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   `if c then a else b end if` as a value, `| Red | Orange -> ...` arms,
   `pair.0`, and `{"a": 1}` / `{}`. The language tour documented `{}` for an
   empty map in 0.5, but it did not parse.
+- `panic(message)` ends the program with `message` (E414 in the interpreter)
+  and has type `Never`, so it fits in any branch and ends a path for
+  return-path analysis ([proposal 0009](docs/proposals/0009-result-only-errors.md)).
+- Total accessors `xs.get(i)`, `xs.first()` and `xs.last()` (`list_get`,
+  `list_first`, `list_last`) return `Option`. `r.unwrap()`, `r.expect(message)`
+  and `opt.expect(message)` (`result_unwrap`, `result_expect`, `option_expect`)
+  turn a failure into a panic when it can only mean a bug.
 - Arithmetic on an operand that already failed to type-check no longer adds a
   second "Cannot apply '+' to Any and Int" error.
 - The standard library is generic throughout: `List`, `Option` and `Result`
@@ -65,8 +72,37 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   `Severity.WARNING`, and published by the language server. It covers the
   project's own modules, not the standard library or installed dependencies.
 
+### Changed (breaking)
+
+- One error model ([proposal 0009](docs/proposals/0009-result-only-errors.md)):
+  `throw`, `try`/`catch` and the `throw` effect are removed. Each is rejected
+  with the new E205 and a message naming its replacement. A runtime error,
+  failed contract or resource limit can no longer be caught by the program.
+- `fs_read_text`, `fs_write_text`, `http_fetch` and `http_post` return
+  `Result[T, String]` instead of raising on I/O, path-policy and network
+  failures, like `fs_list_dir` and `http_request` already did. Embedding
+  `host_callbacks` for them keep returning the plain value and raising on
+  failure; the API wraps both.
+
+### Migration to 0.6
+
+- An uncaught `throw "message"` becomes `panic("message")`; the diagnostic text
+  is unchanged.
+- A thrown and caught user error becomes `return Err(MyError(...))` from a
+  function returning `Result[T, MyError]`, handled with `match` or `?`.
+- A `try`/`catch` around a runtime error becomes a check (`xs.get(i)`,
+  `if d != 0 then`) or is removed and left to panic.
+- Delete `throw` from effect lists.
+- `let text = fs_read_text(path)` becomes `fs_read_text(path)?` in a function
+  returning `Result`, a `match`, or `fs_read_text(path).unwrap()` to keep 0.5's
+  failure behavior. The same applies to `fs_write_text`, `http_fetch` and
+  `http_post`.
+
 ### Fixed
 
+- After a parse error, recovery no longer stops at the `func` of `end func`,
+  which reported a spurious "Expected function name" and skipped the next
+  definition.
 - Imports are not transitive. 0.5 accepted a call to a function from module `A`
   in a program that imported only a module `B` which imports `A`; the program
   ran in the interpreter and failed with a name error in compiled Python and

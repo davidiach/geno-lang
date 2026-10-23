@@ -277,16 +277,6 @@ class ListComprehension(Expression):
 
 
 @dataclass
-class ThrowExpression(Expression):
-    """throw expr — throws a typed error value"""
-
-    value: Expression
-
-    def accept(self, visitor: "ASTVisitor") -> Any:
-        return visitor.visit_throw_expression(self)
-
-
-@dataclass
 class AwaitExpr(Expression):
     """await expr — await an async value"""
 
@@ -749,31 +739,13 @@ class ContinueStatement(Statement):
 
 
 @dataclass
-class CatchClause:
-    """Catch clause: catch e: String"""
-
-    variable: str
-    type_annotation: TypeAnnotation
-    body: list[Statement]
-    location: SourceLocation
-
-
-@dataclass
-class TryStatement(Statement):
-    """Try/catch statement: try ... catch e: String ... end try"""
-
-    try_body: list[Statement]
-    catch_clause: CatchClause
-
-    def accept(self, visitor: "ASTVisitor") -> Any:
-        return visitor.visit_try_statement(self)
-
-
-@dataclass
 class ExpressionStatement(Statement):
     """Expression as statement: f(x)"""
 
     expression: Expression
+    # Set by the type checker when the expression has type Never, as in
+    # `panic("...")`: control does not continue past the statement.
+    _diverges: bool = field(default=False, init=False, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_expression_statement(self)
@@ -903,7 +875,6 @@ _NON_CONSTANT_FORMS: dict[str, str] = {
     "FieldAccess": "a field access",
     "Pipeline": "a pipeline",
     "AwaitExpr": "an await expression",
-    "ThrowExpression": "a throw expression",
     "PropagateExpr": "error propagation",
     "WithExpr": "a functional update",
     "TypedHole": "a typed hole",
@@ -1137,9 +1108,6 @@ class ASTVisitor(ABC):
     def visit_list_comprehension(self, node: ListComprehension) -> None:
         pass
 
-    def visit_throw_expression(self, node: ThrowExpression) -> None:
-        pass
-
     def visit_await_expr(self, node: AwaitExpr) -> None:
         pass
 
@@ -1245,9 +1213,6 @@ class ASTVisitor(ABC):
         pass
 
     def visit_continue_statement(self, node: "ContinueStatement") -> None:
-        pass
-
-    def visit_try_statement(self, node: "TryStatement") -> None:
         pass
 
     def visit_expression_statement(self, node: ExpressionStatement) -> None:

@@ -110,7 +110,7 @@ Geno is immutable by default and includes:
 
 - Static typing with local inference, generics, traits, and `impl` blocks
 - Algebraic data types, exhaustive pattern matching, guards, and rest patterns
-- `Result` / `Option`, `try` / `catch`, `throw`, and `?` propagation
+- One error model: `Result` / `Option` with `?` propagation, and `panic` for bugs
 - Lists, arrays, vectors, maps, mutable maps, and sets
 - Lambdas, pipelines with `|>`, async functions, and `await`
 - F-strings plus CSV, TOML, and JSON helpers

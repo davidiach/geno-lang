@@ -43,56 +43,6 @@ def _primary_parse_error(source: str) -> ParseError:
 # ===========================================================================
 
 
-class TestTryCatchParseErrors:
-    """Try-catch statement parsing error conditions."""
-
-    def test_try_missing_catch(self):
-        source = """
-func main() -> Int
-    try
-        return 1
-    end try
-    return 0
-end func
-"""
-        _expect_parse_error(source)
-
-    def test_try_missing_end_try(self):
-        source = """
-func main() -> Int
-    try
-        return 1
-    catch e: String
-        return 0
-end func
-"""
-        _expect_parse_error(source)
-
-    def test_try_catch_missing_variable(self):
-        source = """
-func main() -> Int
-    try
-        return 1
-    catch : String
-        return 0
-    end try
-end func
-"""
-        _expect_parse_error(source)
-
-    def test_try_catch_missing_type(self):
-        source = """
-func main() -> Int
-    try
-        return 1
-    catch e:
-        return 0
-    end try
-end func
-"""
-        _expect_parse_error(source)
-
-
 class TestFStringParseErrors:
     """F-string parsing error conditions."""
 
@@ -273,18 +223,6 @@ func describe(c: Color) -> String
     return "unknown"
 end func
 """)
-
-
-class TestTypecheckerThrowErrors:
-    """Throw expression type error conditions."""
-
-    def test_throw_wrong_type(self):
-        source = """
-func main() -> Result[Int, String]
-    throw 42
-end func
-"""
-        _expect_type_error(source)
 
 
 class TestTypecheckerMiscErrors:

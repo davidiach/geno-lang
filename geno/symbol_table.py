@@ -44,7 +44,6 @@ from .ast_nodes import (
     Statement,
     TestBlock,
     TraitDef,
-    TryStatement,
     TupleDestructureStatement,
     TuplePattern,
     TypeAlias,
@@ -590,16 +589,6 @@ class SymbolTableBuilder:
             self._resolve_expr(stmt.scrutinee, scope)
             for arm in stmt.arms:
                 self._resolve_match_arm(arm, scope)
-
-        elif isinstance(stmt, TryStatement):
-            self._resolve_statements(stmt.try_body, scope.child())
-            catch = stmt.catch_clause
-            catch_scope = scope.child()
-            self._resolve_type_annotation(catch.type_annotation, scope)
-            sym = SymbolDef(catch.variable, catch.location, "variable")
-            catch_scope.bind(catch.variable, sym)
-            self.table.definitions.append(sym)
-            self._resolve_statements(catch.body, catch_scope)
 
     def _resolve_match_arm(self, arm: MatchArm, scope: Scope) -> None:
         arm_scope = scope.child()

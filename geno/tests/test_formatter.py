@@ -124,25 +124,6 @@ class TestBasicIndentation:
         assert lines[4] == "            return x"
         assert lines[5] == "        end while"
 
-    def test_try_catch(self):
-        source = (
-            "func f(x: Int) -> Int\n"
-            "example 1 -> 1\n"
-            "try\n"
-            "return x\n"
-            "catch e: String\n"
-            "return 0\n"
-            "end try\n"
-            "end func\n"
-        )
-        result = format_source(source)
-        lines = result.strip().split("\n")
-        assert lines[2] == "    try"
-        assert lines[3] == "        return x"
-        assert lines[4] == "    catch e: String"
-        assert lines[5] == "        return 0"
-        assert lines[6] == "    end try"
-
 
 class TestCommentPreservation:
     def test_line_comments_preserved(self):

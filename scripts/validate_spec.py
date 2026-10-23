@@ -158,6 +158,9 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "slice",
             "set_at",
             "is_sorted",
+            "list_get",
+            "list_first",
+            "list_last",
         )
         | _require_stdlib_builtin_names(
             "List",
@@ -240,7 +243,11 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "is_none",
             "unwrap",
             "unwrap_or",
+            "option_expect",
+            "result_unwrap",
+            "result_expect",
             "result_unwrap_or",
+            "panic",
             "result_is_ok",
             "result_is_err",
             "result_to_option",

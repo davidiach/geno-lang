@@ -205,7 +205,7 @@ end func                                // not end, not }
 ```
 
 Block delimiters: `end func`, `end if`, `end for`, `end while`, `end match`,
-`end try`, `end trait`, `end impl`.
+`end trait`, `end impl`.
 
 The `if` keyword requires `then` after the condition. The `for` and `while`
 keywords require `do` after the condition.

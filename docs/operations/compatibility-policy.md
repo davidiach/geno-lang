@@ -80,6 +80,17 @@ program was not portable. From 0.6, `geno check` rejects the call and suggests
 `docs/spec/v0.6.md` section 6.10 and recorded in `CHANGELOG.md`. This entry
 will gain the proposal and conformance references of the 0.6 release.
 
+### 0.6 (in development): one error model
+
+[Proposal 0009](../proposals/0009-result-only-errors.md) removes `throw`,
+`try`/`catch` and the `throw` effect, and changes `fs_read_text`,
+`fs_write_text`, `http_fetch` and `http_post` to return `Result`. Programs that
+used them fail to check with E205 or a type error naming the `Result` type;
+none changes meaning silently. `CHANGELOG.md` carries the migration steps,
+`conformance/v0.5` keeps the 0.5 behavior, and `conformance/v0.6` adds the
+`error-model` and `diagnostic-removed-*` cases. Embedding hosts that supply
+`host_callbacks` for the four builtins need no change.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

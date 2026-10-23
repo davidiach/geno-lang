@@ -513,6 +513,15 @@ def builtin_is_none(opt: Any) -> bool:
     return opt is None
 
 
+def builtin_panic(message: Any) -> Any:
+    """End the program with *message*; Geno code cannot recover from a panic."""
+    from .diagnostics import ErrorCode
+
+    if not isinstance(message, str):
+        raise RuntimeError(f"panic expects String, got {type(message).__name__}")
+    raise RuntimeError(message, error_code=ErrorCode.RUNTIME_PANIC)
+
+
 def builtin_unwrap(opt: Any) -> Any:
     if isinstance(opt, ConstructorValue):
         if opt.constructor == "Some":
@@ -2912,6 +2921,40 @@ def builtin_list_drop(xs: list[Any], n: int) -> list[Any]:
     return xs[max(0, n) :]
 
 
+def builtin_list_get(xs: list[Any], index: Any) -> ConstructorValue:
+    """``Some(xs[index])`` when ``xs[index]`` is in range, otherwise None.
+
+    A negative index counts from the end, as it does for ``xs[index]``.
+    """
+    _require_list("list_get", xs)
+    from .values import ConstructorValue
+
+    if isinstance(index, int) and not isinstance(index, bool):
+        if -len(xs) <= index < len(xs):
+            return ConstructorValue("Some", {"value": xs[index]})
+    return ConstructorValue("None", {})
+
+
+def builtin_list_first(xs: list[Any]) -> ConstructorValue:
+    """The first element, or None for an empty list."""
+    _require_list("list_first", xs)
+    from .values import ConstructorValue
+
+    if xs:
+        return ConstructorValue("Some", {"value": xs[0]})
+    return ConstructorValue("None", {})
+
+
+def builtin_list_last(xs: list[Any]) -> ConstructorValue:
+    """The last element, or None for an empty list."""
+    _require_list("list_last", xs)
+    from .values import ConstructorValue
+
+    if xs:
+        return ConstructorValue("Some", {"value": xs[-1]})
+    return ConstructorValue("None", {})
+
+
 def builtin_list_find(xs: list[Any], pred: Callable[..., Any]) -> ConstructorValue:
     """Find the first element matching a predicate, or None."""
     _require_list("list_find", xs)
@@ -3116,6 +3159,42 @@ def builtin_result_unwrap_or(result: Any, default: Any) -> Any:
     raise RuntimeError(
         f"result_unwrap_or: expected Result, got {type(result).__name__}"
     )
+
+
+def builtin_result_unwrap(result: Any) -> Any:
+    """The Ok value; an Err panics with its error."""
+    return _result_value_or_panic(result, "result_unwrap", "unwrap called on Err")
+
+
+def builtin_result_expect(result: Any, message: Any) -> Any:
+    """The Ok value; an Err panics with *message* and its error."""
+    return _result_value_or_panic(result, "result_expect", message)
+
+
+def _result_value_or_panic(result: Any, name: str, prefix: str) -> Any:
+    from .diagnostics import ErrorCode
+    from .values import ConstructorValue
+
+    if isinstance(result, ConstructorValue):
+        if result.constructor == "Ok":
+            return result.fields["value"]
+        if result.constructor == "Err":
+            error = stringify_value(result.fields["error"])
+            raise RuntimeError(f"{prefix}: {error}", error_code=ErrorCode.RUNTIME_PANIC)
+    raise RuntimeError(f"{name}: expected Result, got {type(result).__name__}")
+
+
+def builtin_option_expect(option: Any, message: Any) -> Any:
+    """The Some value; None panics with *message*."""
+    from .diagnostics import ErrorCode
+    from .values import ConstructorValue
+
+    if isinstance(option, ConstructorValue):
+        if option.constructor == "Some":
+            return option.fields["value"]
+        if option.constructor == "None":
+            raise RuntimeError(message, error_code=ErrorCode.RUNTIME_PANIC)
+    raise RuntimeError(f"option_expect: expected Option, got {type(option).__name__}")
 
 
 def builtin_result_is_ok(result: Any) -> bool:

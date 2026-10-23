@@ -66,8 +66,8 @@
     "http": {
       "capability": "http",
       "schemes": ["http", "https"],
-      "received_status": "Every received status is a response: http_fetch/http_post return the body and http_request returns Ok(HttpResponse)",
-      "failures": "Scheme, transport, redirect-policy, and network-policy failures throw from http_fetch/http_post and return Err from http_request",
+      "received_status": "Every received status is a response: http_fetch/http_post return Ok(body) and http_request returns Ok(HttpResponse)",
+      "failures": "Scheme, transport, redirect-policy, and network-policy failures return Err from http_fetch, http_post and http_request",
       "response_headers": "ordered duplicate-preserving List[(String, String)]",
       "redirects": "at most 10; each target is revalidated; caller headers are stripped across origins",
       "network_policy": "non-public addresses denied unless a trusted host sets GENO_HTTP_ALLOW_PRIVATE=1",
@@ -80,9 +80,9 @@
     "syntax": "with effect1, effect2",
     "valid_effects": [
       "clock", "env", "fs", "http", "io", "mutation", "process",
-      "random", "regex", "stdin", "throw"
+      "random", "regex", "stdin"
     ],
-    "inference": "Effects are inferred from effectful builtins, mutation, throw, and calls to effectful functions.",
+    "inference": "Effects are inferred from effectful builtins, mutation, and calls to effectful functions. A panic is not an effect.",
     "declaration": "A declared effect set is an upper bound; inferred effects not present in it are rejected.",
     "capability_relationship": "Effects are static declarations; runtime capabilities independently authorize effectful operations."
   },
@@ -92,10 +92,10 @@
     "fallbacks": ["E100", "E200", "E300", "E499"],
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
-      "E204", "E300", "E301", "E302", "E303", "E304", "E305", "E306",
+      "E204", "E205", "E300", "E301", "E302", "E303", "E304", "E305", "E306",
       "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E400", "E401",
       "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409",
-      "E410", "E411", "E412", "E413", "E499", "E500", "E501", "E502",
+      "E410", "E411", "E412", "E413", "E414", "E499", "E500", "E501", "E502",
       "E503", "E504", "E505", "W300"
     ]
   },
@@ -145,7 +145,7 @@
     "match": "match expr with\\n  | Pattern -> result\\n  | Pattern when guard -> result\\n  | _ -> default\\nend match",
     "for_loop": "for x: Type in iterable do\\n  body\\nend for",
     "while_loop": "while condition do\\n  body\\nend while",
-    "try_catch": "try\\n  body\\ncatch err: Type\\n  handler\\nend try",
+    "panic": "panic(\"message\")",
     "import": "import ModuleName [as Alias]",
     "list_comprehension": "[expr for var: Type in iterable if condition]",
     "pipe": "x |> f |> g(_, extra) |> h",
@@ -182,6 +182,9 @@
     "list": [
       {"name": "length", "signature": "(list: List[T]) -> Int"},
       {"name": "head", "signature": "(list: List[T]) -> T"},
+      {"name": "list_get", "signature": "(list: List[T], index: Int) -> Option[T]"},
+      {"name": "list_first", "signature": "(list: List[T]) -> Option[T]"},
+      {"name": "list_last", "signature": "(list: List[T]) -> Option[T]"},
       {"name": "tail", "signature": "(list: List[T]) -> List[T]"},
       {"name": "append", "signature": "(list: List[T], element: T) -> List[T]"},
       {"name": "concat", "signature": "(list1: List[T], list2: List[T]) -> List[T]"},
@@ -266,7 +269,11 @@
       {"name": "is_none", "signature": "(option: Option[T]) -> Bool"},
       {"name": "unwrap", "signature": "(option: Option[T]) -> T"},
       {"name": "unwrap_or", "signature": "(option: Option[T], default: T) -> T"},
+      {"name": "option_expect", "signature": "(option: Option[T], message: String) -> T"},
+      {"name": "result_unwrap", "signature": "(result: Result[T, E]) -> T"},
+      {"name": "result_expect", "signature": "(result: Result[T, E], message: String) -> T"},
       {"name": "result_unwrap_or", "signature": "(result: Result[T, E], default: T) -> T"},
+      {"name": "panic", "signature": "(message: String) -> Never"},
       {"name": "result_is_ok", "signature": "(result: Result[T, E]) -> Bool"},
       {"name": "result_is_err", "signature": "(result: Result[T, E]) -> Bool"},
       {"name": "result_to_option", "signature": "(result: Result[T, E]) -> Option[T]"}
@@ -400,7 +407,7 @@
   },
 
   "async_await": {
-    "description": "Async functions return Async[T] and are defined with 'async func'. Use 'await' to resolve Async[T] values. An Async[T] value runs at most once: awaiting it again, even while an earlier await is in progress, gives the same result, or throws the same error. 'await' is allowed inside 'async func' and inside 'main()'. Async functions are exempt from example clause requirements.",
+    "description": "Async functions return Async[T] and are defined with 'async func'. Use 'await' to resolve Async[T] values. An Async[T] value runs at most once: awaiting it again, even while an earlier await is in progress, gives the same result; a panic ends the program. 'await' is allowed inside 'async func' and inside 'main()'. Async functions are exempt from example clause requirements.",
     "syntax": {
       "definition": "async func name(params) -> ReturnType",
       "usage": "let result: T = await async_expr"
@@ -408,13 +415,10 @@
   },
 
   "error_handling": {
-    "try_catch": {
-      "description": "try/catch blocks catch thrown values by type. 'catch e: String' catches runtime errors and 'throw \"string\"'. 'catch e: MyType' catches only 'throw MyType(...)' values.",
-      "syntax": "try\\n  body\\ncatch e: Type\\n  handler\\nend try"
-    },
-    "throw": {
-      "description": "Throws a value (string or user-defined type) that can be caught by a matching catch clause.",
-      "syntax": "throw expr"
+    "model": "One error model: a failure the caller should handle is returned as Result[T, E] (or Option[T]); a bug ends the program with a panic. throw, try and catch were removed in Geno 0.6 and are rejected with E205.",
+    "panic": {
+      "description": "panic(message) ends the program with message and has type Never. Every runtime error (index out of range, division by zero, unwrap on None, a failed contract, an exceeded resource limit) is also a panic. Geno code cannot observe or recover from a panic.",
+      "syntax": "panic(\"message\")"
     },
     "propagation": {
       "description": "The '?' operator propagates None from Option[T] or Err from Result[T, E]. If the value is None or Err, the enclosing function immediately returns None or Err. Otherwise, the inner value is unwrapped.",

@@ -541,23 +541,13 @@ class _PropagateReturn(Exception):
         self.value = value
 
 
-class _GenoThrow(Exception):
-    """Internal: raised by throw expressions to carry a typed error value."""
-
-    def __init__(self, value: Any) -> None:
-        self.value = value
-        super().__init__(str(value))
-
-
 class _GenoContractViolation(RuntimeError):
     """Internal: uncatchable requires/ensures failure."""
 
 
-def _geno_throw(value: Any) -> None:
-    """Runtime support for throw expressions."""
-    if isinstance(value, str):
-        raise RuntimeError(value)
-    raise _GenoThrow(value)
+def _geno_panic(message: str) -> None:
+    """End the program with *message*: Geno code cannot recover from a panic."""
+    raise RuntimeError(message)
 
 
 def _propagate(val: Any) -> Any:
@@ -1009,6 +999,11 @@ def unwrap(opt: Any) -> Any:
     if isinstance(opt, _None) or opt is None:
         raise RuntimeError("unwrap called on None")
     raise RuntimeError(f"unwrap expects Option, got {type(opt).__name__}")
+
+
+def panic(message: str) -> None:
+    """End the program with *message*; Geno code cannot recover from a panic."""
+    raise RuntimeError(message)
 
 
 def unwrap_or(opt: Any, default: Any) -> Any:
@@ -1760,8 +1755,8 @@ class _GenoAsync:
             try:
                 self._result = yield from self._awaitable.__await__()
                 finished = True
-            except (_GenoThrow, RuntimeError, IndexError) as exc:
-                # What a Geno `catch` can see; anything else ends the run.
+            except (RuntimeError, IndexError) as exc:
+                # A panic: an awaiter that is already waiting sees it too.
                 self._error = exc
                 finished = True
                 raise
@@ -3447,6 +3442,18 @@ def result_unwrap_or(result, default):
     return default
 
 
+def result_unwrap(result: Any) -> Any:
+    if isinstance(result, Ok):
+        return result.value
+    raise RuntimeError(f"unwrap called on Err: {_geno_format(result.error)}")
+
+
+def result_expect(result: Any, message: str) -> Any:
+    if isinstance(result, Ok):
+        return result.value
+    raise RuntimeError(f"{message}: {_geno_format(result.error)}")
+
+
 def result_is_ok(result):
     return isinstance(result, Ok)
 
@@ -3482,6 +3489,12 @@ def option_unwrap_or(option, default):
     if isinstance(option, Some):
         return option.value
     return default
+
+
+def option_expect(option: Any, message: str) -> Any:
+    if isinstance(option, Some):
+        return option.value
+    raise RuntimeError(message)
 
 
 def option_is_some(option):
@@ -3959,6 +3972,20 @@ def list_drop(xs, n):
     return xs[max(0, n) :]
 
 
+def list_get(xs: list[Any], index: int) -> Any:
+    if -len(xs) <= index < len(xs):
+        return Some(xs[index])
+    return None_
+
+
+def list_first(xs: list[Any]) -> Any:
+    return Some(xs[0]) if xs else None_
+
+
+def list_last(xs: list[Any]) -> Any:
+    return Some(xs[-1]) if xs else None_
+
+
 def list_find(xs, pred):
     for x in xs:
         if pred(x):
@@ -4086,8 +4113,8 @@ def _require_cap(cap_name: str, builtin_name: str) -> None:
             message += f"; pass '--cap {cap_name}' to grant it"
         error: Any = RuntimeError(message)
         # Provenance for the process-sandbox worker: only this helper sets it,
-        # so a program cannot forge a denial by throwing the same text.  The
-        # type stays RuntimeError so compiled `catch e: String` still works.
+        # so a program cannot forge a denial by panicking with the same text.
+        # The type stays RuntimeError, as for every other runtime failure.
         error._geno_capability_denied = cap_name
         raise error
 
@@ -4563,24 +4590,34 @@ def _run_limited_process(argv, *, input_text=None):
 # =============================================================================
 
 
-def fs_read_text(path: str) -> str:
-    """Read a text file and return its contents."""
+def fs_read_text(path: str) -> Any:
+    """Read a text file, returning Result[String, String]."""
     _require_cap("fs", "fs_read_text")
-    path = _resolve_fs_path(path, "fs_read_text")
-    with open(path, encoding="utf-8") as f:
-        result = _read_limited_text_stream(f, "fs_read_text")
-    return result
+    try:
+        path = _resolve_fs_path(path, "fs_read_text")
+        with open(path, encoding="utf-8") as f:
+            result = _read_limited_text_stream(
+                f, "fs_read_text", limit_error_type=_GenoOutputLimitError
+            )
+    except _GenoOutputLimitError:
+        raise
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    return Ok(result)
 
 
-def fs_write_text(path: str, content: str):
-    """Write text to a file."""
+def fs_write_text(path: str, content: str) -> Any:
+    """Write text to a file, returning Result[Unit, String]."""
     _require_cap("fs", "fs_write_text")
     if not _fs_writes_allowed():
         raise RuntimeError("fs_write_text: filesystem writes are not allowed")
-    path = _resolve_fs_path(path, "fs_write_text")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return None
+    try:
+        path = _resolve_fs_path(path, "fs_write_text")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    return Ok(None)
 
 
 def fs_list_dir(path: str):
@@ -4804,48 +4841,46 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
     ).open(request, timeout=timeout)
 
 
-def http_fetch(url: str) -> str:
-    """Fetch a URL and return the response body as a string."""
+def _http_body(method: str, url: str, body: Any, fn_name: str) -> Any:
+    """Send one request, returning Result[String, String] with the response body.
+
+    Every received status is a response. Scheme, transport, redirect-policy
+    and network-policy failures are ``Err``; exceeding the output limit is not.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    try:
+        _validate_http_scheme(url, fn_name)
+        req = Request(url, data=body, method=method)  # noqa: S310
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            response_handle = _open_http_url(req, timeout=30, fn_name=fn_name)
+        except HTTPError as http_error:
+            response_handle = http_error
+        with response_handle as resp:
+            result = _read_limited_utf8_stream(
+                resp, fn_name, limit_error_type=_GenoOutputLimitError
+            )
+    except _GenoOutputLimitError:
+        raise
+    except (OSError, ValueError, TypeError, RuntimeError) as e:
+        return Err(str(e))
+    _check_string_result_size(fn_name, len(result))
+    return Ok(result)
+
+
+def http_fetch(url: str) -> Any:
+    """GET a URL, returning Result[String, String] with the response body."""
     _require_cap("http", "http_fetch")
-    _validate_http_scheme(url, "http_fetch")
-    from urllib.error import HTTPError
-    from urllib.request import Request
-
-    try:
-        with _open_http_url(
-            Request(url),  # noqa: S310
-            timeout=30,
-            fn_name="http_fetch",
-        ) as resp:
-            result = _read_limited_utf8_stream(resp, "http_fetch")
-    except HTTPError as resp:
-        with resp:
-            result = _read_limited_utf8_stream(resp, "http_fetch")
-    except (OSError, ValueError, RuntimeError) as e:
-        raise RuntimeError(f"http_fetch: {e}")
-    _check_string_result_size("http_fetch", len(result))
-    return result
+    return _http_body("GET", url, None, "http_fetch")
 
 
-def http_post(url: str, body: str) -> str:
-    """POST to a URL and return the response body as a string."""
+def http_post(url: str, body: str) -> Any:
+    """POST JSON to a URL, returning Result[String, String] with the body."""
     _require_cap("http", "http_post")
-    _validate_http_scheme(url, "http_post")
-    from urllib.error import HTTPError
-    from urllib.request import Request
-
-    try:
-        req = Request(url, data=body.encode("utf-8"), method="POST")  # noqa: S310
-        req.add_header("Content-Type", "application/json")
-        with _open_http_url(req, timeout=30, fn_name="http_post") as resp:
-            result = _read_limited_utf8_stream(resp, "http_post")
-    except HTTPError as resp:
-        with resp:
-            result = _read_limited_utf8_stream(resp, "http_post")
-    except (OSError, ValueError, RuntimeError) as e:
-        raise RuntimeError(f"http_post: {e}")
-    _check_string_result_size("http_post", len(result))
-    return result
+    return _http_body("POST", url, body.encode("utf-8"), "http_post")
 
 
 def http_request(method: str, url: str, headers, body):

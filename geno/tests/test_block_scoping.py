@@ -466,20 +466,6 @@ REVIEW_SCOPE_CASES = [
         id="iteration_binding_preserves_outer",
     ),
     pytest.param(
-        '    let e: String = "outer"\n'
-        "    try\n"
-        '        throw "inner"\n'
-        "    catch e: String\n"
-        "        let y: String = e\n"
-        "    end try\n"
-        '    if e == "outer" then\n'
-        "        return 5\n"
-        "    end if\n"
-        "    return 0",
-        5,
-        id="catch_binding_preserves_outer",
-    ),
-    pytest.param(
         "    let x: Int = 5\n"
         "    let f = fn() do\n"
         "        if true then\n"
@@ -524,19 +510,6 @@ REVIEW_SCOPE_CASES = [
         "    end match",
         2,
         id="rebind_guarded_pattern_variable_keeps_closure_live",
-    ),
-    pytest.param(
-        "    try\n"
-        '        throw "old"\n'
-        "    catch e: String\n"
-        '        let e: String = "new"\n'
-        '        if e == "new" then\n'
-        "            return 1\n"
-        "        end if\n"
-        "    end try\n"
-        "    return 0",
-        1,
-        id="rebind_catch_variable",
     ),
     pytest.param(
         "    let x: List[Int] = [5]\n"

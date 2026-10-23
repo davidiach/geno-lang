@@ -108,7 +108,7 @@
           }
         },
         {
-          "match": "\\b(end)\\s+(func|fn|if|while|for|match|try|trait|impl|test)\\b",
+          "match": "\\b(end)\\s+(func|fn|if|while|for|match|trait|impl|test)\\b",
           "captures": {
             "1": { "name": "keyword.control.end.geno" },
             "2": { "name": "keyword.control.geno" }
@@ -165,7 +165,7 @@
           "match": "\\b(if|else|while|for|in|match|with|return|break|continue)\\b"
         },
         {
-          "name": "keyword.control.trycatch.geno",
+          "name": "invalid.deprecated.removed-keyword.geno",
           "match": "\\b(try|catch|throw)\\b"
         },
         {
