@@ -218,8 +218,13 @@ CLI's hint ignores it (covered by `test_capability_denial_diagnostics.py`).
   the interpreter host and both runtimes.
 - `geno/tests/test_host_policies.py`: policy denials as `Err`, host callback
   wrapping.
+- `geno/tests/test_result_main.py`: `main() -> Result` classification (through
+  aliases, with and without type checking, `async main`) and its status,
+  stdout and stderr on every `geno run` lane, `--json`, the embedding API,
+  compiled Python and compiled Node.
 - `conformance/v0.6`: the `error-model` run case and the
-  `diagnostic-removed-throw`, `-try-catch` and `-throw-effect` cases (E205).
+  `diagnostic-removed-throw`, `-try-catch` and `-throw-effect` cases (E205),
+  and `result-main-ok` / `result-main-err` across every executable lane.
 - Evaluation-order tests that used `throw`/`catch` to see which operand ran
   first now use `panic` and the failure message.
 

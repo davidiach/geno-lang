@@ -795,16 +795,6 @@ class JSCompiler(BaseCompiler):
         its result, which is the behaviour a browser artifact is supposed to
         keep (docs/spec/v0.5.md 4.1.1).
         """
-        if kind is EntrypointResultKind.INT and node_host:
-            # The result is the status, so it is never displayed.
-            # `process.exitCode` rather than `process.exit` so stdout still
-            # flushes. JavaScript's `%` truncates toward zero where Python's
-            # floors, so a bare `% 256` would leave -1 as -1; the doubled form
-            # matches `geno/exit_status.py`, which is the one definition of this
-            # normalization. A standalone artifact cannot import geno, so the
-            # expression is inlined here as it is in the Python backend.
-            self._writeln("process.exitCode = ((_main_result % 256) + 256) % 256;")
-            return
         resolved_return_type = (
             main_def.__dict__.get("_resolved_return_type")
             if main_def is not None
@@ -819,13 +809,62 @@ class JSCompiler(BaseCompiler):
             if main_def is not None
             else None
         )
+        if not kind.is_result:
+            self._emit_main_value(
+                "_main_result", main_result_type, kind=kind, node_host=node_host
+            )
+            return
+        # Proposal 0009: an `Err` is reported on the error stream with status 1,
+        # and an `Ok` is then handled as a `main` returning its value would be.
+        ok_type: Type | None = None
+        err_type: Type | None = None
+        if isinstance(main_result_type, ResultType):
+            ok_type, err_type = main_result_type.ok_type, main_result_type.err_type
+        self._writeln('if (_main_result._tag === "Err") {')
+        self._indent()
+        self._writeln("const _main_error = _main_result.error;")
+        rendered_error = self._compile_formatted_value(
+            "_main_error", err_type, mode="display", top_level=True
+        )
+        self._writeln(f'console.error("Error: " + {rendered_error});')
+        if node_host:
+            self._writeln("process.exitCode = 1;")
+        self._dedent()
+        self._writeln("} else {")
+        self._indent()
+        self._writeln("const _main_ok = _main_result.value;")
+        self._emit_main_value(
+            "_main_ok", ok_type, kind=kind.ok_kind, node_host=node_host
+        )
+        self._dedent()
+        self._writeln("}")
+
+    def _emit_main_value(
+        self,
+        name: str,
+        value_type: Type | None,
+        *,
+        kind: EntrypointResultKind,
+        node_host: bool,
+    ) -> None:
+        """Emit the status or display line for a completed main's value."""
+        if kind is EntrypointResultKind.INT and node_host:
+            # The result is the status, so it is never displayed.
+            # `process.exitCode` rather than `process.exit` so stdout still
+            # flushes. JavaScript's `%` truncates toward zero where Python's
+            # floors, so a bare `% 256` would leave -1 as -1; the doubled form
+            # matches `geno/exit_status.py`, which is the one definition of this
+            # normalization. A standalone artifact cannot import geno, so the
+            # expression is inlined here as it is in the Python backend.
+            self._writeln(f"process.exitCode = (({name} % 256) + 256) % 256;")
+            return
         rendered_main = self._compile_formatted_value(
-            "_main_result",
-            main_result_type,
+            name,
+            value_type,
             mode="display",
             top_level=True,
         )
-        self._writeln("if (_main_result !== null && _main_result !== undefined) {")
+        self._writeln(f"if ({name} !== null && {name} !== undefined) {{")
         self._indent()
         self._writeln(f"console.log({rendered_main});")
         self._dedent()

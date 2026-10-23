@@ -476,8 +476,17 @@ def _run_interpreter(
     from geno.exit_status import exit_status_for_int_result
 
     exit_status = 0
-    if result.entrypoint_kind is EntrypointResultKind.INT:
-        exit_status = exit_status_for_int_result(cast(int, result.value_raw))
+    kind = result.entrypoint_kind
+    value = result.value_raw
+    if kind is not None and kind.is_result:
+        # Proposal 0009: an `Err` from `main` exits 1, and an `Ok` value is
+        # then reported as its own kind would be.
+        if getattr(value, "constructor", None) == "Err":
+            return TargetOutcome(cast(str, result.output), "", 1)
+        value = value.fields["value"]
+        kind = kind.ok_kind
+    if kind is EntrypointResultKind.INT:
+        exit_status = exit_status_for_int_result(cast(int, value))
     # An embedding call has no stderr channel; diagnostics came back as data
     # above, and a failing one already raised.
     return TargetOutcome(cast(str, result.output), "", exit_status)

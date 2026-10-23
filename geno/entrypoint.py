@@ -18,7 +18,7 @@ from .ast_nodes import (
     TypeAnnotation,
     TypeDef,
 )
-from .types import IntType, Type, UnitType
+from .types import IntType, ResultType, Type, UnitType
 
 # Type names the language owns.  An alias can never redefine one, so a name in
 # this set terminates alias resolution.
@@ -201,6 +201,24 @@ class EntrypointResultKind(Enum):
     UNIT = "unit"
     INT = "int"
     OTHER = "other"
+    # `main() -> Result[T, E]` (proposal 0009): an `Err` is reported on stderr
+    # with status 1, and an `Ok(v)` is then treated as a `main` returning `v`
+    # would be, by the kind `ok_kind` names.
+    RESULT_UNIT = "result_unit"
+    RESULT_INT = "result_int"
+    RESULT_OTHER = "result_other"
+
+    @property
+    def is_result(self) -> bool:
+        """Whether the entrypoint returns a `Result` the host must unwrap."""
+        return self.value.startswith("result_")
+
+    @property
+    def ok_kind(self) -> EntrypointResultKind:
+        """The kind of an `Ok` value; a plain kind is its own."""
+        if not self.is_result:
+            return self
+        return EntrypointResultKind(self.value.removeprefix("result_"))
 
 
 @dataclass(frozen=True)
@@ -361,18 +379,86 @@ def classify_entrypoint_result(
 
     resolved_return_type = main_def.__dict__.get("_resolved_return_type")
     if isinstance(resolved_return_type, Type):
-        if isinstance(resolved_return_type, IntType):
-            return EntrypointResultKind.INT
-        if isinstance(resolved_return_type, UnitType):
-            return EntrypointResultKind.UNIT
-        return EntrypointResultKind.OTHER
+        if isinstance(resolved_return_type, ResultType):
+            return _as_result_kind(_kind_of_type(resolved_return_type.ok_type))
+        return _kind_of_type(resolved_return_type)
 
-    type_name = _scoped_annotation_type_name(
-        main_def.return_type,
-        _visible_scoped_type_aliases(program, modules),
+    aliases = _visible_scoped_type_aliases(program, modules)
+    ok_annotation = _scoped_result_ok_annotation(main_def.return_type, aliases)
+    if ok_annotation is not None:
+        return _as_result_kind(
+            _kind_of_type_name(_scoped_annotation_type_name(*ok_annotation))
+        )
+    return _kind_of_type_name(
+        _scoped_annotation_type_name(main_def.return_type, aliases)
     )
+
+
+def _kind_of_type(type_: Type) -> EntrypointResultKind:
+    if isinstance(type_, IntType):
+        return EntrypointResultKind.INT
+    if isinstance(type_, UnitType):
+        return EntrypointResultKind.UNIT
+    return EntrypointResultKind.OTHER
+
+
+def _kind_of_type_name(type_name: str | None) -> EntrypointResultKind:
     if type_name == "Int":
         return EntrypointResultKind.INT
     if type_name == "Unit":
         return EntrypointResultKind.UNIT
     return EntrypointResultKind.OTHER
+
+
+def _as_result_kind(ok_kind: EntrypointResultKind) -> EntrypointResultKind:
+    return EntrypointResultKind(f"result_{ok_kind.value}")
+
+
+def _scoped_result_ok_annotation(
+    annotation: TypeAnnotation | None,
+    aliases: Mapping[str, _ScopedTypeAlias],
+    bindings: Mapping[str, _BoundAnnotation] | None = None,
+    seen_aliases: frozenset[int] = frozenset(),
+) -> (
+    tuple[
+        TypeAnnotation, Mapping[str, _ScopedTypeAlias], Mapping[str, _BoundAnnotation]
+    ]
+    | None
+):
+    """Return the `Ok` annotation, with its scope, when *annotation* is a `Result`.
+
+    Resolves through aliases and generic arguments exactly as
+    ``_scoped_annotation_type_name`` does, so ``type Outcome = Result[Int,
+    String]`` makes ``main() -> Outcome`` a `Result` entrypoint.
+    """
+    if not isinstance(annotation, SimpleType):
+        return None
+    if not annotation.type_params and bindings is not None:
+        bound = bindings.get(annotation.name)
+        if bound is not None:
+            return _scoped_result_ok_annotation(
+                bound.annotation, bound.scope, bound.bindings, seen_aliases
+            )
+    if annotation.name == "Result":
+        if len(annotation.type_params) != 2:
+            return None
+        return annotation.type_params[0], aliases, bindings or {}
+    if annotation.name in _BUILTIN_TYPE_NAMES:
+        return None
+    scoped_alias = aliases.get(annotation.name)
+    if scoped_alias is None or id(scoped_alias.definition) in seen_aliases:
+        return None
+    alias_bindings = {
+        type_param: _BoundAnnotation(argument, aliases, bindings or {})
+        for type_param, argument in zip(
+            scoped_alias.definition.type_params,
+            annotation.type_params,
+            strict=False,
+        )
+    }
+    return _scoped_result_ok_annotation(
+        scoped_alias.definition.target_type,
+        scoped_alias.scope,
+        alias_bindings,
+        seen_aliases | {id(scoped_alias.definition)},
+    )

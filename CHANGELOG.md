@@ -55,6 +55,11 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
 - `panic(message)` ends the program with `message` (E414 in the interpreter)
   and has type `Never`, so it fits in any branch and ends a path for
   return-path analysis ([proposal 0009](docs/proposals/0009-result-only-errors.md)).
+- `main() -> Result[T, E]`: an `Err` is written to stderr as `Error: <error>`
+  with exit status 1, and an `Ok(v)` behaves as a `main` returning `v`, so `?`
+  works at the top level of a program. Embedding APIs return the raw `Result`;
+  `geno run --json` reports it raw and exits 1 on `Err`
+  ([proposal 0009](docs/proposals/0009-result-only-errors.md)).
 - Total accessors `xs.get(i)`, `xs.first()` and `xs.last()` (`list_get`,
   `list_first`, `list_last`) return `Option`. `r.unwrap()`, `r.expect(message)`
   and `opt.expect(message)` (`result_unwrap`, `result_expect`, `option_expect`)

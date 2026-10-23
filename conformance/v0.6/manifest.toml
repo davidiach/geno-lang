@@ -7,7 +7,7 @@ description = "Geno 0.6 source and diagnostic compatibility corpus (draft until 
 # generic functions (proposal 0004), type parameter bounds (proposal 0005),
 # method-call syntax (proposal 0006), types inferred from context
 # (proposal 0007), expression forms (proposal 0008), the Result-only error model
-# (proposal 0009) and non-transitive imports.
+# and `main() -> Result` (proposal 0009), and non-transitive imports.
 #
 # A run case's `expected_exit_status` defaults to 0 when omitted, which is what
 # every displayed result kind exits with. It is the status a host actually
@@ -363,3 +363,34 @@ path = "programs/diagnostic_removed_throw_effect.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E205"]
+
+# `main() -> Result[T, E]` (proposal 0009). The embedding lanes return the raw
+# `Err` without a stderr channel, so the `Err` case lists only the lanes that
+# own a process.
+[[cases]]
+id = "result-main-ok"
+path = "programs/result_main_ok.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 2
+expected_stderr = ""
+expected_json_value = '{"_constructor": "Ok", "fields": {"value": 258}}'
+
+[[cases]]
+id = "result-main-err"
+path = "programs/result_main_err.geno"
+kind = "run"
+targets = ["cli-process", "cli-direct", "python", "js", "js-esm"]
+capabilities = ["print"]
+expected_stdout = "starting\n"
+expected_exit_status = 1
+expected_stderr = "Error: not a port: http\n"

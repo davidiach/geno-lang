@@ -12,7 +12,9 @@ from typing import Any, cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-_STD_FUNC_RE = re.compile(r"^func\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\(", re.MULTILINE)
+_STD_FUNC_RE = re.compile(
+    r"^func\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\(", re.MULTILINE
+)
 
 _SPEC_BUILTIN_SOURCE_OVERRIDES: dict[tuple[str, str], str] = {
     ("list", "zip"): "list_zip",

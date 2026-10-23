@@ -21,7 +21,12 @@ Key syntax rules:
 - Functions end with `end func`, loops with `end for` / `end while`
 - Every function needs at least one `example` clause
 - Functions with 3+ parameters require named arguments at call sites
-- Use `Option[T]` instead of null, `Result[T, E]` for errors
+- Use `Option[T]` instead of null, `Result[T, E]` for errors. There is no
+  `throw`, `try` or `catch`: return `Err(...)`, propagate with `?` (also from
+  `main() -> Result[Unit, String]`), and call `panic("...")` only for bugs.
+  `fs_read_text`, `fs_write_text`, `http_fetch` and `http_post` return
+  `Result[_, String]`. Use `xs.get(i)` / `xs.first()` for an `Option` instead of
+  an index that may be out of range
 - Generic functions declare type parameters in brackets after the name:
   `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
   write `first_or[Int](...)` or `<T>`. To use `<`, arithmetic, or a `T` as a map

@@ -1,0 +1,16 @@
+// Geno 0.6 (proposal 0009): `?` carries an Err to the process boundary, which
+// reports it on stderr and exits 1 after the program's own output.
+func parse_port(text: String) -> Result[Int, String]
+    example "80" -> Ok(80)
+    match parse_int(text) with
+        | Some(n) -> return Ok(n)
+        | None -> return Err(f"not a port: {text}")
+    end match
+end func
+
+func main() -> Result[Unit, String]
+    print("starting")
+    let port = parse_port("http")?
+    print(port)
+    return Ok(())
+end func

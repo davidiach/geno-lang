@@ -52,6 +52,7 @@
     "entrypoint_result": {
       "unit_status": 0,
       "int_status": "returned value normalized modulo 256",
+      "result_status": "main() -> Result[T, E]: Err(e) writes 'Error: <display of e>' to stderr and exits 1; Ok(v) is handled as a main returning v: T",
       "preserve_output_before_exit": true,
       "normal_nonzero_has_traceback": false,
       "uncaught_runtime_error": "nonzero with diagnostic or standalone-host traceback",

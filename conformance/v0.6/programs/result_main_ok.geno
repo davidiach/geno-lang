@@ -1,0 +1,14 @@
+// Geno 0.6 (proposal 0009): an Ok from `main() -> Result[Int, E]` is handled
+// as an Int `main` would be, so 258 exits 2 and prints nothing.
+func parse_port(text: String) -> Result[Int, String]
+    example "80" -> Ok(80)
+    match parse_int(text) with
+        | Some(n) -> return Ok(n)
+        | None -> return Err(f"not a port: {text}")
+    end match
+end func
+
+func main() -> Result[Int, String]
+    let port = parse_port("258")?
+    return Ok(port)
+end func

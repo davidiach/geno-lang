@@ -3419,6 +3419,18 @@ def _compiled_main_guard(
     definition, through ``_compiled_main_guard_opening``.
     """
     opening = _compiled_main_guard_opening(is_async=is_async, main_name=main_name)
+    if kind.is_result:
+        # Proposal 0009: an `Err` is reported on stderr with status 1, after
+        # the program's own output, and an `Ok` is then handled by its kind.
+        opening += (
+            "    if isinstance(result, Err):\n"
+            "        import sys\n"
+            "        sys.stdout.flush()\n"
+            '        print("Error: " + _geno_format(result.error), file=sys.stderr)\n'
+            "        raise SystemExit(1)\n"
+            "    result = result.value\n"
+        )
+        kind = kind.ok_kind
     if kind is EntrypointResultKind.INT:
         # docs/spec/v0.5.md 4.1.1: an `Int` result is the process's status, not
         # its output, so it is never displayed. `geno/exit_status.py` holds the

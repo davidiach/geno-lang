@@ -849,7 +849,7 @@ def run(
 
     except RecursionError as e:
         # Host-language recursion limit can still be reached even with the
-        # interpreter's own depth check (e.g. effects + try/catch chains use
+        # interpreter's own depth check (e.g. effects and match chains use
         # extra Python frames). Convert to a Geno-level E502 rather than
         # letting the host RecursionError leak past the sandbox (issue #650).
         _finalize_timing(timing, "run_ms", t_run, t0)

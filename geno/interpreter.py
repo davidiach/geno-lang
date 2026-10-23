@@ -1450,7 +1450,7 @@ class Interpreter:
             RuntimeError: For runtime errors
         """
         # Ensure Python's recursion limit can accommodate the Geno depth.
-        # A bare Geno call uses ~4-5 Python frames, but try/catch and match
+        # A bare Geno call uses ~4-5 Python frames, but match and contract
         # paths chain ~8 (issue #650). 12 gives headroom on every path so
         # the Geno-level check fires before Python's RecursionError.
         needed = self.max_recursion_depth * 12 + 100

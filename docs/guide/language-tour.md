@@ -437,6 +437,17 @@ end func
 that can fail return `Result` too: `fs_read_text`, `fs_write_text`,
 `http_fetch`, `http_post`, `json_parse`, `exec`.
 
+`main` may return a `Result`, so `?` works at the top level. An `Err` is
+printed to stderr as `Error: ...` and the program exits with status 1:
+
+```geno
+func main() -> Result[Unit, String] with fs, io
+    let text = fs_read_text("notes.txt")?
+    print(text)
+    return Ok(())
+end func
+```
+
 ### Accessors That Cannot Fail
 
 ```geno
