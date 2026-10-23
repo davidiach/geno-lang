@@ -187,6 +187,20 @@ _RESERVED_TYPE_NAMES = (
 # Entrypoints a host calls without type arguments, so they cannot be generic.
 _NON_GENERIC_ENTRYPOINTS = frozenset({"main", "init", "update", "render"})
 
+# Builtins named `<prefix>_<method>` are methods of the receiver type the
+# prefix names: `opt.map(f)` calls `option_map`, `v.push(x)` calls `vec_push`.
+_METHOD_PREFIXES: dict[type, str] = {
+    ListType: "list",
+    OptionType: "option",
+    ResultType: "result",
+    MapType: "map",
+    MutableMapType: "mutable_map",
+    VecType: "vec",
+    ArrayType: "array",
+    SetType: "set",
+    StringType: "string",
+}
+
 
 # =============================================================================
 # Project import summaries
@@ -4577,6 +4591,10 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _check_function_call(self, expr: FunctionCall, env: TypeEnv) -> Type:
         """Type check a function call."""
+        if isinstance(expr.function, FieldAccess):
+            method = self._resolve_method_call(expr, env)
+            if method is not None:
+                return method
         func_expr = expr.function
         func_expr_type = type(func_expr)
         identifier_func = (
@@ -4737,7 +4755,16 @@ class TypeChecker(ExhaustivenessMixin):
         required_param_count = max(len(arguments), min_args)
         if required_param_count >= 3:
             positional_count = sum(1 for arg in arguments if arg.name is None)
-            if positional_count > 0:
+            if positional_count > 0 and expr._method_call is not None:
+                after_receiver = param_names[1:]
+                rendered = ", ".join(f"{param}: ..." for param in after_receiver)
+                self._error(
+                    f"Method '{expr._method_call}' takes {len(after_receiver)} "
+                    "arguments after the receiver; name them: "
+                    f".{expr._method_call}({rendered})",
+                    expr.location,
+                )
+            elif positional_count > 0:
                 callee_display = call_param_info.callee_display
                 self._error(
                     f"Function '{callee_display or 'function'}' has "
@@ -4818,19 +4845,25 @@ class TypeChecker(ExhaustivenessMixin):
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
                     arg_type = self._freshen_type_vars(arg_type, f"__arg{i}_")
+                # A method call's receiver is not an argument the caller wrote.
+                label = (
+                    f"Argument {i + 1}"
+                    if expr._method_call is None
+                    else ("Receiver" if i == 0 else f"Argument {i}")
+                )
                 if use_subs:
                     if not self._types_compatible_with_subs(
                         expected_type, arg_type, subs
                     ):
                         resolved = self._apply_substitutions(expected_type, subs)
                         self._error(
-                            f"Argument {i + 1} type mismatch: expected {resolved}, got {arg_type}",
+                            f"{label} type mismatch: expected {resolved}, got {arg_type}",
                             arg.value.location,
                         )
                 else:
                     if not self._types_compatible(expected_type, arg_type):
                         self._error(
-                            f"Argument {i + 1} type mismatch: expected {expected_type}, got {arg_type}",
+                            f"{label} type mismatch: expected {expected_type}, got {arg_type}",
                             arg.value.location,
                         )
                 self._record_expected_runtime_type(
@@ -4868,6 +4901,155 @@ class TypeChecker(ExhaustivenessMixin):
             result_type = func_type.return_type
         self._validate_keyed_collection_type(result_type, expr.location)
         return result_type
+
+    # -----------------------------------------------------------------
+    # Method-call syntax (proposal 0006): `receiver.name(args)`
+    # -----------------------------------------------------------------
+
+    def _resolve_method_call(self, expr: FunctionCall, env: TypeEnv) -> Type | None:
+        """Rewrite `receiver.name(args)` into an ordinary call, if it is one.
+
+        Returns ``None`` when the callee is a module member or a field, which
+        the ordinary call path handles; otherwise the call's type, after the
+        call has been rewritten in place to ``chosen(receiver, args)`` so every
+        later pass and backend sees a plain call.
+        """
+        callee = expr.function
+        assert isinstance(callee, FieldAccess)
+        target = callee.target
+        if isinstance(target, (Identifier, TypeIdentifier)) and isinstance(
+            env.lookup(target.name), ModuleType
+        ):
+            return None
+        errors_before = len(self.errors)
+        receiver_type = self._check_expression(target, env)
+        if len(self.errors) > errors_before:
+            return _ANY_TYPE
+        if isinstance(receiver_type, (AnyType, ModuleType)):
+            return None
+        if isinstance(receiver_type, UserType):
+            field_types, _missing = self._resolved_variant_field_types(
+                receiver_type, callee.field_name
+            )
+            if field_types:
+                return None
+
+        method_name = callee.field_name
+        chosen = self._method_target(method_name, receiver_type, env)
+        if chosen is None:
+            if not callee._method_error_reported:
+                candidates = self._method_names_for(receiver_type, env)
+                hint = _suggest_name(method_name, candidates)
+                self._error(
+                    f"Type {_display_type(receiver_type)} has no method "
+                    f"'{method_name}'{'.' if hint else ''}{hint}",
+                    callee.location,
+                    ErrorCode.TYPE_UNKNOWN_FIELD,
+                )
+                callee._method_error_reported = True
+            for arg in expr.arguments:
+                self._check_expression(arg.value, env)
+            return _ANY_TYPE
+
+        receiver_param = self._first_param_name(chosen)
+        named = any(arg.name is not None for arg in expr.arguments)
+        expr._method_call = method_name
+        expr.function = Identifier(name=chosen, location=callee.location)
+        expr.arguments = [
+            CallArg(name=receiver_param if named else None, value=target),
+            *expr.arguments,
+        ]
+        return self._check_function_call(expr, env)
+
+    def _method_target(
+        self, method_name: str, receiver_type: Type, env: TypeEnv
+    ) -> str | None:
+        """Choose the function a method call on *receiver_type* calls.
+
+        In order: a trait method implemented for the receiver, a function the
+        program defines or imports whose first parameter accepts it, the
+        receiver type's own builtin (`option_map` for an Option), and any
+        other builtin whose first parameter accepts it.
+        """
+        if method_name in self.trait_methods and self._receiver_implements(
+            method_name, receiver_type
+        ):
+            return method_name
+
+        if method_name == "length" and isinstance(
+            receiver_type, (ListType, StringType, ArrayType)
+        ):
+            # `length` is checked specially: it takes a list, string or array.
+            if self._identifier_resolves_to_builtin("length", env):
+                return "length"
+
+        if (
+            method_name in self._user_defined_names
+            and method_name not in self._ambiguous_imported_names
+            and self._first_param_accepts(env.lookup(method_name), receiver_type)
+        ):
+            return method_name
+
+        prefix = _METHOD_PREFIXES.get(type(receiver_type))
+        if prefix is not None:
+            prefixed = f"{prefix}_{method_name}"
+            if self._identifier_resolves_to_builtin(
+                prefixed, env
+            ) and self._first_param_accepts(env.lookup(prefixed), receiver_type):
+                return prefixed
+
+        if self._identifier_resolves_to_builtin(
+            method_name, env
+        ) and self._first_param_accepts(env.lookup(method_name), receiver_type):
+            return method_name
+        return None
+
+    def _receiver_implements(self, method_name: str, receiver_type: Type) -> bool:
+        for trait_name, _trait_def in self.trait_methods.get(method_name, []):
+            if isinstance(receiver_type, TypeParam):
+                if receiver_type.has_bound(trait_name):
+                    return True
+                continue
+            if isinstance(receiver_type, UserType):
+                type_name = self._constructor_to_type.get(
+                    receiver_type.name, receiver_type.name
+                )
+                if (trait_name, type_name) in self.impl_registry:
+                    return True
+        return False
+
+    def _first_param_accepts(self, func_type: Type | None, receiver_type: Type) -> bool:
+        if not isinstance(func_type, FuncType) or not func_type.param_types:
+            return False
+        first = self._freshen_type_vars(func_type.param_types[0], "__method_")
+        actual = receiver_type
+        if self._has_type_vars(actual):
+            actual = self._freshen_type_vars(actual, "__receiver_")
+        return self._types_compatible_with_subs(first, actual, {})
+
+    def _first_param_name(self, function_name: str) -> str | None:
+        names = self.func_param_names.get(function_name)
+        if names is None:
+            builtin = self.builtin_types.get(function_name)
+            names = builtin[1] if builtin is not None else None
+        return names[0] if names else None
+
+    def _method_names_for(self, receiver_type: Type, env: TypeEnv) -> list[str]:
+        """Method names a call on *receiver_type* could use, for suggestions."""
+        names: set[str] = set()
+        prefix = _METHOD_PREFIXES.get(type(receiver_type))
+        for name in self.builtin_types:
+            if prefix is not None and name.startswith(prefix + "_"):
+                names.add(name[len(prefix) + 1 :])
+            elif self._first_param_accepts(env.lookup(name), receiver_type):
+                names.add(name)
+        for name in self._user_defined_names:
+            if self._first_param_accepts(env.lookup(name), receiver_type):
+                names.add(name)
+        for method_name in self.trait_methods:
+            if self._receiver_implements(method_name, receiver_type):
+                names.add(method_name)
+        return sorted(names)
 
     def _validate_special_builtin_named_args(
         self,
@@ -5003,6 +5185,8 @@ class TypeChecker(ExhaustivenessMixin):
         Handles qualified module access (Foo.symbol) when target is a module.
         """
         target_type = self._check_expression(expr.target, env)
+        if expr._method_error_reported:
+            return _ANY_TYPE
 
         # Qualified module access: Foo.symbol
         if isinstance(target_type, ModuleType):

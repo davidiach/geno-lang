@@ -26,6 +26,9 @@ Key syntax rules:
   `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
   write `first_or[Int](...)` or `<T>`. To use `<`, arithmetic, or a `T` as a map
   key, add a bound: `[T: Ord]`, `[T: Num]`, `[K: Hash]`, or a trait name
+- Method calls work on any value: `xs.map(f).filter(g).length()`,
+  `s.trim().to_upper()`, `opt.unwrap_or(0)`. Name the arguments after the
+  receiver when the function has 3+ parameters: `s.replace(old: "a", new: "b")`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 - Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,

@@ -110,6 +110,30 @@ Taking the expected value from a real run and keeping all its digits is still
 the simplest habit. When the domain allows it, prefer `Int` arithmetic instead,
 which compares exactly: cents rather than fractional currency, for instance.
 
+### Method Calls
+
+Any function can be called on its first argument with a dot, which reads left
+to right and chains:
+
+```geno
+func shout(text: String) -> String
+    example "hi" -> "HI!"
+    return text.to_upper() + "!"
+end func
+
+func summary(scores: List[Int]) -> Int
+    example [50, 70, 90] -> 320
+    return scores
+        .filter(fn(s: Int) -> s >= 60)
+        .map(fn(s: Int) -> s * 2)
+        .fold(initial: 0, reducer: fn(acc: Int, s: Int) -> acc + s)
+end func
+```
+
+The receiver's type picks the function, so `Some(1).map(f)` and `[1].map(f)`
+call the `Option` and `List` versions. Builtins work the same way:
+`" a ".trim()`, `opt.unwrap_or(0)`, `v.push(x)`, `m.get(key)`, `xs.length()`.
+
 ### Named Parameters
 
 Functions with 3 or more parameters require named arguments at the call site:

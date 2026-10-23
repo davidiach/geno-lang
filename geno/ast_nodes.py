@@ -299,6 +299,11 @@ class FunctionCall(Expression):
     _resolved_builtin_name: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Set when the typechecker rewrote `receiver.name(args)` into this call:
+    # the method name as written, for diagnostics.
+    _method_call: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_function_call(self)
@@ -321,6 +326,11 @@ class FieldAccess(Expression):
 
     target: Expression
     field_name: str
+    # Set once "Type X has no method 'name'" is reported for `x.name(...)`, so
+    # a later pass over the same call does not report it again as a field.
+    _method_error_reported: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_field_access(self)

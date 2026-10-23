@@ -4,8 +4,8 @@ description = "Geno 0.6 source and diagnostic compatibility corpus (draft until 
 
 # The 0.6 corpus carries every 0.5 case forward unchanged, then adds the
 # contract changes of the 0.6 draft specification (`docs/spec/v0.6.md`):
-# generic functions (proposal 0004), type parameter bounds (proposal 0005)
-# and non-transitive imports.
+# generic functions (proposal 0004), type parameter bounds (proposal 0005),
+# method-call syntax (proposal 0006) and non-transitive imports.
 #
 # A run case's `expected_exit_status` defaults to 0 when omitted, which is what
 # every displayed result kind exits with. It is the status a host actually
@@ -301,3 +301,11 @@ path = "programs/diagnostic_generic_unsatisfied_bound.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E323"]
+
+[[cases]]
+id = "method-calls"
+path = "programs/method_calls.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "[30, 20]\n3\nHI!\na-b-c\n5\n7\n(1, 2)\nheLLo\n"

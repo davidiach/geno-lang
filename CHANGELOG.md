@@ -32,6 +32,14 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   name permits calling that trait's methods. `Num` implies `Ord`, which implies
   `Hash`. Errors about a missing bound name the bound to add. New diagnostics:
   E322 for an unknown bound and E323 for a type argument that misses one.
+- Method-call syntax
+  ([proposal 0006](docs/proposals/0006-method-call-syntax.md)):
+  `xs.map(f).filter(g).length()`, `s.trim().to_upper()`, `opt.unwrap_or(0)`,
+  `v.push(x)`. The receiver's type chooses among trait methods, the program's
+  own functions, and builtins, including the prefixed ones (`opt.map` calls
+  `option_map`). Fields of function type keep precedence. Unknown methods are
+  reported with a suggestion instead of "Unknown field" followed by "Cannot
+  call non-function type: Any".
 - The standard library is generic throughout: `List`, `Option` and `Result`
   work at any element type, `Map` at any hashable key type and `Math.abs`,
   `min`, `max` and `clamp` at `Int` or `Float`, instead of `Int` or `String`
