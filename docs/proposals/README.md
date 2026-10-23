@@ -26,9 +26,7 @@ not need proposals.
    use `0000` in the pull request.
 3. Open the proposal pull request separately from the implementation whenever
    practical.
-4. Gather review. Breaking language, security-boundary, and governance changes
-   remain open for at least 14 calendar days; other substantial proposals remain
-   open for at least 7 days.
+4. Gather review. Substantial proposals remain open for at least 7 days.
 5. The project lead records one of: Accepted, Rejected, Withdrawn, or Superseded.
 6. After acceptance, assign the permanent number, merge the design record, and
    implement it through ordinary reviewed pull requests.
@@ -46,8 +44,10 @@ unresolved questions. Language changes must say which specification and frozen
 conformance cases change. Claims based on benchmarks must identify the corpus,
 models or machines, raw artifacts, and statistical method.
 
-Acceptance follows `GOVERNANCE.md`. The implementation author cannot provide
-the independent technical review required for a substantial proposal.
+Acceptance follows `GOVERNANCE.md`. The proposal's author cannot provide the
+independent technical review it requires. While Geno has one active
+maintainer, the project lead may accept without independent review; the
+proposal's Review field then says so and names the review it did receive.
 
 ## Amendments
 
