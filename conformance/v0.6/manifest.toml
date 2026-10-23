@@ -320,7 +320,7 @@ path = "programs/contextual_inference.geno"
 kind = "run"
 targets = ["interpreter", "python", "js"]
 capabilities = ["print"]
-expected_stdout = "[30, 20]\n6\n42\n6\n[9, 4]\ntwo1\n"
+expected_stdout = "[30, 20]\n6\n5\n42\n6\n[9, 4]\ntwo1\n"
 
 [[cases]]
 id = "diagnostic-lambda-without-context"
@@ -328,6 +328,13 @@ path = "programs/diagnostic_lambda_without_context.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E321"]
+
+[[cases]]
+id = "diagnostic-bare-end"
+path = "programs/diagnostic_bare_end.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E201"]
 
 [[cases]]
 id = "expression-ergonomics"

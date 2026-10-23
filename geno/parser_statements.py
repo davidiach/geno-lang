@@ -214,6 +214,7 @@ class StatementParserMixin(ParserBase):
         else_body: list[Statement] = []
         if self._check(TokenType.ELSE):
             else_token = self._advance()
+            self._reject_trailing_colon("else")
             # A chain may be written as ``else if`` or wrapped with ``if`` at
             # the same indentation.  A more-indented ``if`` remains an
             # ordinary nested statement with its own ``end if``.
@@ -227,8 +228,7 @@ class StatementParserMixin(ParserBase):
                 else_body = self._parse_statement_list()
 
         if consume_end:
-            self._expect(TokenType.END)
-            self._expect(TokenType.IF)
+            self._expect_end(TokenType.IF)
 
             label = None
             if self._check(TokenType.STRING):
@@ -251,8 +251,7 @@ class StatementParserMixin(ParserBase):
         condition = self._parse_expression()
         self._expect(TokenType.DO)
         body = self._parse_statement_list()
-        self._expect(TokenType.END)
-        self._expect(TokenType.WHILE)
+        self._expect_end(TokenType.WHILE)
 
         label = None
         if self._check(TokenType.STRING):
@@ -275,8 +274,7 @@ class StatementParserMixin(ParserBase):
         iterable = self._parse_expression()
         self._expect(TokenType.DO)
         body = self._parse_statement_list()
-        self._expect(TokenType.END)
-        self._expect(TokenType.FOR)
+        self._expect_end(TokenType.FOR)
 
         label = None
         if self._check(TokenType.STRING):
@@ -317,8 +315,7 @@ class StatementParserMixin(ParserBase):
                 "Match must have at least one arm (each arm starts with '|')"
             )
 
-        self._expect(TokenType.END)
-        self._expect(TokenType.MATCH)
+        self._expect_end(TokenType.MATCH)
 
         label = None
         if self._check(TokenType.STRING):

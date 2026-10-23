@@ -349,6 +349,23 @@ class CheckResult:
     timing: Timing = field(default_factory=Timing)
 
 
+@dataclass
+class FixResult:
+    """
+    Result of geno.fix().
+
+    Attributes:
+        source: The source with every applied fix.
+        applied: How many fixes were applied.
+        check: The check of ``source``; ``check.ok`` says whether the fixes
+            resolved every error.
+    """
+
+    source: str
+    applied: int
+    check: CheckResult
+
+
 @dataclass(frozen=True)
 class ConstraintResult:
     """Result of geno.constrain_prefix()."""
@@ -1246,6 +1263,40 @@ def _redeclared_var_warnings(
             continue
         found.extend(find_redeclared_vars(module))
     return found
+
+
+def fix(
+    source: str,
+    filename: str = "<api>",
+    modules: dict[str, str] | None = None,
+    target: str | None = None,
+    *,
+    max_rounds: int = 10,
+) -> FixResult:
+    """
+    Apply the fixes that ``check`` reports until none is left.
+
+    Each round applies the first fix of every error, skipping one that
+    overlaps a fix already taken, and checks again: a fixed parse error can
+    reveal a type error with a fix of its own. Stops after ``max_rounds``
+    rounds or when a round changes nothing.
+    """
+    from .diagnostics import apply_fixes
+
+    applied = 0
+    result = check(source, filename, modules, target)
+    for _round in range(max_rounds):
+        fixes = [
+            diagnostic.fixes[0]
+            for diagnostic in result.diagnostics
+            if diagnostic.fixes and diagnostic.severity is Severity.ERROR
+        ]
+        fixed, count = apply_fixes(source, fixes)
+        if count == 0 or fixed == source:
+            break
+        source, applied = fixed, applied + count
+        result = check(source, filename, modules, target)
+    return FixResult(source=source, applied=applied, check=result)
 
 
 def check_path(

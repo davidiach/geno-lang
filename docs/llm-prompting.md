@@ -18,7 +18,14 @@ Key syntax rules:
 - Boolean literals are lowercase: `true`, `false`
 - String concatenation uses `+` (same as arithmetic addition)
 - Integer division truncates: `7 / 2 = 3`
-- Functions end with `end func`, loops with `end for` / `end while`
+- Blocks: `if c then ... else if c then ... else ... end if`,
+  `for x in xs do ... end for`, `while c do ... end while`,
+  `match v with | Some(x) -> ... | None -> ... end match`. `then` and `do` are
+  required, and every block closes with `end` and its keyword (`end func`)
+- Logical operators are words: `and`, `or`, `not`. There is no `&&`, `||`, `!`
+  or `null`: an absent value is `None`
+- Return values with `return`; a function's last expression is not returned
+  implicitly
 - Every function needs at least one `example` clause
 - Functions with 3+ parameters require named arguments at call sites
 - Use `Option[T]` instead of null, `Result[T, E]` for errors. There is no
@@ -495,11 +502,21 @@ Fix this Geno code. Common issues to check:
 ### Repair loop with fixes
 
 Diagnostics carry a fix when the correction is unambiguous: a misspelled name
-("Did you mean 'length'?"), positional arguments to a function with three or
-more parameters, a missing `then`/`do`, and `let mut`, `True`, `++` or `elif`.
-In an agent loop, run `geno check --fix file.geno` before asking the model to
-repair anything: it applies those fixes and reports only what remains. Through
-the embedding API, each `geno.check()` diagnostic lists them in `fixes`.
+("Did you mean 'length'?"), another language's name for a builtin (`len`,
+`str`, `upper`, `strip`), positional arguments to a function with three or more
+parameters, a missing `then`/`do` (or a Python `:` in its place), a bare `end`,
+a missing `return`, and `let mut`, `True`, `++`, `elif`, `else:`, `&&`, `||`,
+`!`, `=>`, `#`, `null` or `lambda x:`. In an agent loop, run
+`geno check --fix file.geno` before asking the model to repair anything: it
+applies those fixes and reports only what remains. Through the embedding API,
+each `geno.check()` diagnostic lists them in `fixes`, and `geno.fix(source)`
+applies them and returns the fixed source with its check.
+
+Seeded into the benchmark's reference solutions, these mistakes are each
+reported on the line they are on, and the fixes repair every mutant of every
+mistake that has a fix, without changing what any program computes; see
+`docs/benchmark/seeded-mistakes.md`. The experiment runner records the same
+repair as its "autofix" metric beside pass@1.
 
 ## Machine-Readable Specification
 

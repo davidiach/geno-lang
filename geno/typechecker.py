@@ -432,10 +432,14 @@ _STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
 def _closest_name(
     name: str, candidates: Iterable[str], max_dist: int = 2
 ) -> str | None:
-    """The candidate nearest ``name`` by edit distance, if one is close enough."""
+    """The candidate nearest ``name`` by edit distance, if one is close enough.
+
+    Swapping two adjacent letters counts as one edit, so ``lenght`` is
+    nearest ``length`` rather than ``height``.
+    """
     best, best_dist = None, max_dist + 1
     for c in candidates:
-        d = _levenshtein(name, c)
+        d = _transposition_distance(name, c)
         if d < best_dist:
             best, best_dist = c, d
     if best is not None and best_dist <= max_dist:
@@ -449,17 +453,87 @@ def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> st
     return f" Did you mean '{best}'?" if best is not None else ""
 
 
+def _transposition_distance(a: str, b: str) -> int:
+    """Edit distance that counts swapping two adjacent letters as one edit."""
+    rows = [list(range(len(b) + 1))] + [
+        [i] + [0] * len(b) for i in range(1, len(a) + 1)
+    ]
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = a[i - 1] != b[j - 1]
+            rows[i][j] = min(
+                rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost
+            )
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                rows[i][j] = min(rows[i][j], rows[i - 2][j - 2] + 1)
+    return rows[-1][-1]
+
+
+# What other languages call a function or method that Geno spells
+# differently, with the same arguments: the fix for using the foreign name.
+_FOREIGN_NAMES = {
+    "len": "length",
+    "size": "length",
+    "str": "to_string",
+    "to_str": "to_string",
+    "toString": "to_string",
+    "upper": "to_upper",
+    "toUpperCase": "to_upper",
+    "uppercase": "to_upper",
+    "lower": "to_lower",
+    "toLowerCase": "to_lower",
+    "lowercase": "to_lower",
+    "strip": "trim",
+    "startswith": "starts_with",
+    "startsWith": "starts_with",
+    "endswith": "ends_with",
+    "endsWith": "ends_with",
+    "sorted": "sort",
+    "reversed": "reverse",
+    "println": "print",
+    "indexOf": "index_of",
+    "includes": "contains",
+}
+
+# Spellings of an absent value in other languages; Geno's is `None`.
+_NULL_NAMES = frozenset({"null", "nil", "undefined", "NULL", "Nil"})
+
+
 def _rename_fixes(
     name: str, candidates: Iterable[str], location: SourceLocation | None
 ) -> tuple[str, tuple[Fix, ...]]:
-    """The ' Did you mean ...?' hint for ``name`` and the fix that applies it."""
-    best = _closest_name(name, candidates)
+    """The ' Did you mean ...?' hint for ``name`` and the fix that applies it.
+
+    The hint names the nearest candidate. The fix is only attached when the
+    correction is unambiguous: another language's name for the candidate,
+    or a single candidate within one edit (two for names of six letters or
+    more), counting a swap of adjacent letters as one edit.
+    """
+    names = set(candidates)
+    foreign = _FOREIGN_NAMES.get(name)
+    if foreign is not None and foreign in names:
+        best: str | None = foreign
+        confident = True
+    else:
+        best = _closest_name(name, names)
+        confident = best is not None and _unambiguous_correction(name, best, names)
     if best is None:
         return "", ()
     hint = f" Did you mean '{best}'?"
-    if location is None:
+    if location is None or not confident:
         return hint, ()
     return hint, (replace_fix(location, name, best),)
+
+
+def _unambiguous_correction(name: str, best: str, candidates: set[str]) -> bool:
+    distance = _transposition_distance(name, best)
+    if distance > (1 if len(name) < 6 else 2):
+        return False
+    return not any(
+        other != best and _transposition_distance(name, other) <= distance
+        for other in candidates
+        if abs(len(other) - len(name)) <= distance
+    )
 
 
 # Removed builtins whose replacement takes the same arguments.
@@ -744,6 +818,9 @@ class TypeChecker(ExhaustivenessMixin):
         # binds, as (location of its binding construct, name, type). When set,
         # check_project_graph also keeps each module's checker here.
         self.binding_types: list[tuple[SourceLocation, str, Type]] | None = None
+        # The type of the expression statement checked last: a function body
+        # that ends with one may be missing its `return`.
+        self._last_expression_type: Type | None = None
         self.module_checkers: dict[str, TypeChecker] = {}
         self._user_defined_names: set[str] = set()
         # Module-level constants: name -> type, rebuilt per check_program.
@@ -2741,10 +2818,7 @@ class TypeChecker(ExhaustivenessMixin):
         # Check return-path coverage for non-Unit functions
         if not isinstance(self.current_return_type, UnitType):
             if not self._definitely_returns(defn.body):
-                self._error(
-                    f"Function '{defn.name}' may not return a value on all paths",
-                    defn.location,
-                )
+                self._report_missing_return(defn)
 
         if validate_effects:
             inferred = self._infer_function_effects(
@@ -3528,9 +3602,9 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error("'continue' outside of loop", stmt.location)
         elif stmt_type is ExpressionStatement:
             expr_stmt = cast(ExpressionStatement, stmt)
-            expr_stmt._diverges = isinstance(
-                self._check_expression(expr_stmt.expression, env), NeverType
-            )
+            expression_type = self._check_expression(expr_stmt.expression, env)
+            expr_stmt._diverges = isinstance(expression_type, NeverType)
+            self._last_expression_type = expression_type
         elif stmt_type is AssertStatement:
             assert_stmt = cast(AssertStatement, stmt)
             expr_type = self._check_expression(assert_stmt.expression, env)
@@ -3539,6 +3613,34 @@ class TypeChecker(ExhaustivenessMixin):
                     f"Assert expression must be Bool, got {expr_type}",
                     stmt.location,
                 )
+
+    def _report_missing_return(self, defn: FunctionDef) -> None:
+        """A function body that can end without returning its value.
+
+        A body that ends with an expression of the return type is the
+        implicit return of Rust, Ruby and Scala: the fix writes `return`.
+        """
+        last = defn.body[-1] if defn.body else None
+        if (
+            isinstance(last, ExpressionStatement)
+            and self._last_expression_type is not None
+            and not isinstance(self._last_expression_type, AnyType)
+            and self.current_return_type is not None
+            and self._types_strictly_compatible(
+                self.current_return_type, self._last_expression_type
+            )
+        ):
+            self._error(
+                f"Function '{defn.name}' ends with a value it does not return: "
+                "Geno returns with 'return'",
+                last.location,
+                fixes=(insert_fix("Add 'return'", [(last.location, "return ")]),),
+            )
+            return
+        self._error(
+            f"Function '{defn.name}' may not return a value on all paths",
+            defn.location,
+        )
 
     def _record_binding(self, name: str, type_: Type, location: SourceLocation) -> None:
         """Note a local binding for tools that asked for ``binding_types``."""
@@ -4411,18 +4513,20 @@ class TypeChecker(ExhaustivenessMixin):
                 return AnyType()
             removed = _removed_builtin_hint(expr.name)
             fixes: tuple[Fix, ...] = ()
-            if removed:
-                hint = f".{removed}"
+            if expr.name in _NULL_NAMES:
+                message = (
+                    f"Geno has no '{expr.name}': an absent value is None, "
+                    "of type Option[T]"
+                )
+                fixes = (replace_fix(expr.location, expr.name, "None"),)
+            elif removed:
+                message = f"Undefined variable: {expr.name}.{removed}"
             else:
                 hint, fixes = _rename_fixes(
                     expr.name, self._env_names(env), expr.location
                 )
-            self._error(
-                f"Undefined variable: {expr.name}{'.' if hint and not removed else ''}{hint}",
-                expr.location,
-                ErrorCode.TYPE_UNDEFINED_VAR,
-                fixes,
-            )
+                message = f"Undefined variable: {expr.name}{'.' if hint else ''}{hint}"
+            self._error(message, expr.location, ErrorCode.TYPE_UNDEFINED_VAR, fixes)
             return AnyType()
         self._record_captured_binding(expr.name, env)
         if self._identifier_resolves_to_builtin(expr.name, env):
@@ -5892,11 +5996,22 @@ class TypeChecker(ExhaustivenessMixin):
                         stage.location,
                     )
 
-            for i, arg_expr in enumerate(stage.arguments):
+            # As in a call, a lambda whose parameters need context waits
+            # until the piped value and the other arguments have bound what
+            # they can: `xs |> fold(_, 0, fn(acc, x) -> acc + x)`.
+            for i in sorted(
+                range(len(stage.arguments)),
+                key=lambda index: self._needs_context(stage.arguments[index]),
+            ):
+                arg_expr = stage.arguments[i]
                 if i in placeholder_positions:
                     continue
 
                 param_index = i if placeholder_positions else i + 1
+                self._prime_lambda(
+                    arg_expr,
+                    self._apply_substitutions(func_type.param_types[param_index], subs),
+                )
                 arg_type = self._check_expression(arg_expr, env)
                 if self._has_type_vars(arg_type):
                     arg_type = self._freshen_type_vars(

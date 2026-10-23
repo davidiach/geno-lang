@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
-from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix
+from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 if TYPE_CHECKING:
@@ -249,21 +249,72 @@ class ParserBase:
         if message is None:
             message = f"Expected {token_type_to_str(token_type)}, got {token_type_to_str(self._current().type)}"
         fixes: tuple[Fix, ...] = ()
+        location = self._current().location
         keyword = _CLAUSE_KEYWORDS.get(token_type)
-        if (
+        if keyword is not None and self._ends_line_with_colon():
+            # Python's `if c:` / `for x in xs:`.
+            fixes = (
+                replace_fix(location, ":", f" {keyword}", f"Change ':' to '{keyword}'"),
+            )
+        elif (
             keyword is not None
             and self.pos > 0
             and self._current().location.line > self.tokens[self.pos - 1].location.line
         ):
-            # `if c` / `while c` / `for x in xs` missing its `then` or `do`.
+            # `if c` / `while c` / `for x in xs` missing its `then` or `do`:
+            # reported where it belongs, at the end of the line.
             end = self._line_end(self.tokens[self.pos - 1].location.line)
             if end is not None:
                 fixes = (insert_fix(f"Add '{keyword}'", [(end, f" {keyword}")]),)
+                location = end
         raise ParseError(
             message,
-            self._current().location,
+            location,
             ErrorCode.PARSE_EXPECTED_TOKEN,
             fixes,
+        )
+
+    def _ends_line_with_colon(self) -> bool:
+        """The current token is a ``:`` that ends its line, as in Python."""
+        current = self._current()
+        following = self._peek(1)
+        return current.type is TokenType.COLON and (
+            following.type is TokenType.EOF
+            or following.location.line > current.location.line
+        )
+
+    def _reject_trailing_colon(self, keyword: str) -> None:
+        """``else:`` is Python; Geno's ``else`` ends the line on its own."""
+        if self._ends_line_with_colon():
+            raise ParseError(
+                f"Geno writes '{keyword}' with no ':'",
+                self._current().location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+                (replace_fix(self._current().location, ":", "", "Remove ':'"),),
+            )
+
+    def _expect_end(self, keyword: TokenType) -> None:
+        """Consume ``end <keyword>``, which closes a block.
+
+        A bare ``end`` (Ruby, Lua) is an error with a fix that names the
+        block, rather than a confusing one about the next line's first token.
+        """
+        end = self._expect(TokenType.END)
+        current = self._current()
+        if current.location.line == end.location.line and current.type is not (
+            TokenType.EOF
+        ):
+            self._expect(keyword)
+            return
+        word = token_type_to_str(keyword).strip("'")
+        after_end = SourceLocation(
+            end.location.line, end.location.column + 3, end.location.filename
+        )
+        raise ParseError(
+            f"Expected '{word}' after 'end': this block closes with 'end {word}'",
+            end.location,
+            ErrorCode.PARSE_EXPECTED_TOKEN,
+            (insert_fix(f"Write 'end {word}'", [(after_end, f" {word}")]),),
         )
 
     def _reject_let_mut(self, let_token: Token) -> None:

@@ -100,6 +100,14 @@ replacement, and `geno migrate` rewrites them. The import and free-call rules
 of the same proposal change no accepted program. `conformance/v0.6` adds the
 `coherent-stdlib` and `diagnostic-removed-builtin` cases.
 
+### 0.6 (in development): `end` and its keyword share a line
+
+A block closer written across two lines, `end` and then `if` on the next
+line, was accepted as `end if`. Because the same text is also a bare `end`
+followed by a new `if` statement, it is now rejected with E201, reported at
+the `end`, with a fix that writes `end if`. `geno fmt` never produced the
+two-line form. `conformance/v0.6` adds the `diagnostic-bare-end` case.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

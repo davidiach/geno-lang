@@ -125,6 +125,8 @@ def render_report(payload: dict[str, Any], *, source_path: str) -> str:
                 )
             )
 
+    lines.extend(_repair_section(metrics))
+
     lines.extend(
         [
             "",
@@ -138,6 +140,56 @@ def render_report(payload: dict[str, Any], *, source_path: str) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _repair_section(metrics: dict[str, Any]) -> list[str]:
+    """pass@1 beside the repair conditions the run recorded, if any.
+
+    Autofix applies the fixes Geno's diagnostics carry (no model call);
+    repair asks the model again with the diagnostics. Neither changes the
+    pass@1 columns above.
+    """
+    autofix = metrics.get("autofix") or {}
+    repair = metrics.get("repair") or {}
+    if not autofix and not repair:
+        return []
+    lines = [
+        "",
+        "## Repair Conditions",
+        "",
+        "Autofix applies the fixes Geno's diagnostics carry, with no model call.",
+        "Repair re-prompts the model with the diagnostics of its failed attempt.",
+        "",
+        "| Model | Language | pass@1 | After autofix | Autofix converted | After repair | Repair converted |",
+        "|-------|----------|-------:|--------------:|------------------:|-------------:|-----------------:|",
+    ]
+    for model in sorted(set(autofix) | set(repair)):
+        for language in ("geno", "python"):
+            fixed = autofix.get(model) if language == "geno" else None
+            repaired = (repair.get(model) or {}).get(language)
+            if fixed is None and repaired is None:
+                continue
+            pass_at_1 = (fixed or repaired or {}).get("pass_at_1")
+            lines.append(
+                "| {model} | {language} | {pass_1} | {after_fix} | {fix_n} | {after_repair} | {repair_n} |".format(
+                    model=model,
+                    language=language,
+                    pass_1=_pct(pass_at_1),
+                    after_fix=_pct((fixed or {}).get("pass_after_autofix")),
+                    fix_n=(
+                        f"{fixed['autofix_converted']}/{fixed['autofix_attempted']}"
+                        if fixed
+                        else "n/a"
+                    ),
+                    after_repair=_pct((repaired or {}).get("pass_after_repair")),
+                    repair_n=(
+                        f"{repaired['repair_converted']}/{repaired['repair_attempted']}"
+                        if repaired
+                        else "n/a"
+                    ),
+                )
+            )
+    return lines
 
 
 def parse_args() -> argparse.Namespace:

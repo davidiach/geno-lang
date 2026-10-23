@@ -1823,6 +1823,7 @@ class Interpreter:
                             f"expected {self._format_value(expected)}, "
                             f"got {self._format_value(actual)}",
                             example.location,
+                            ErrorCode.RUNTIME_EXAMPLE_FAILED,
                         )
                 except ReturnException:
                     raise RuntimeError(

@@ -58,7 +58,7 @@ export OPENAI_API_KEY="<OPENAI_API_KEY>"         # for OpenAI models
 
 **Cost warning:** A full experiment run makes
 `num_problems * num_models * num_languages * trials_per_condition` API
-calls. With 77 problems, 2 languages, and 5 trials that is 770 calls
+calls. With 78 problems, 2 languages, and 5 trials that is 780 calls
 per model. Estimate costs before running.
 
 ## Repository Layout
@@ -73,7 +73,7 @@ experiment/
   README.md            # This file
 
 benchmark/
-  problems/            # 77 YAML problem definitions (PROB-001 .. PROB-077)
+  problems/            # 78 YAML problem definitions (PROB-001 .. PROB-078)
   schema.py            # Problem dataclass, YAML loader, validator
   runner.py            # BenchmarkRunner: evaluates generated code
   loader.py            # load_all_problems(), filter helpers, verification
@@ -102,7 +102,7 @@ Confirm canonical solutions pass before running any LLM experiment:
 python3 scripts/validate_benchmark.py
 ```
 
-This loads all 77 problems, validates their structure, and executes the
+This loads all 78 problems, validates their structure, and executes the
 canonical Geno and Python solutions against every test case.
 
 ### Step 2 -- Dry run (no API calls)
@@ -181,6 +181,24 @@ def openai_generate(model: str, prompt: str, language: str) -> str:
 
 runner.set_generator(openai_generate)
 ```
+
+## Prompts and Repair Conditions
+
+The Geno prompt (`GENOTYPE_SPEC` in `prompts.py`) is the rule list from
+"System Prompt Essentials" in `docs/llm-prompting.md`, which a test keeps
+identical, followed by a reference program that type-checks and passes its
+examples. Two repair conditions are reported beside pass@1:
+
+- **Autofix** (default on, `--no-autofix` to skip): a Geno solution that fails
+  to parse or type-check is passed through `geno.fix`, which applies the fixes
+  Geno's diagnostics carry, and evaluated again, with no model call. Results
+  go to `metrics["autofix"]` and `autofix_results`.
+- **Repair** (`--max-repair-rounds N`): the model is re-prompted with the
+  diagnostics of its failed attempt; Geno errors are listed with code, line,
+  column and fix title.
+
+`scripts/seeded_mistakes.py` measures the autofix path without a model: see
+`docs/benchmark/seeded-mistakes.md`.
 
 ## How Model/Version/Date Are Captured
 
@@ -273,7 +291,7 @@ result = stats.mcnemar_test(
 print(result.p_value, result.effect_size, result.interpretation)
 
 # Wilson confidence interval for a proportion
-ci = stats.wilson_confidence_interval(successes=60, total=77)
+ci = stats.wilson_confidence_interval(successes=60, total=78)
 print(f"95% CI: {ci[0]:.1%} - {ci[1]:.1%}")
 ```
 
@@ -341,6 +359,6 @@ requires no API keys:
 python3 -m experiment.runner
 ```
 
-This runs all 77 problems using the canonical solutions (not LLM-generated)
+This runs all 78 problems using the canonical solutions (not LLM-generated)
 and verifies the evaluation pipeline produces correct metrics. Use this to
 confirm the infrastructure works before spending API credits.

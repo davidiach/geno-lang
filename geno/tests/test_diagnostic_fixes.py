@@ -56,6 +56,35 @@ def _program(body: str) -> str:
             "was removed in Geno 0.6",
             "Change 'contains_substring' to 'string_contains'",
         ),
+        ("print(x > 1 && x < 3)", "Geno writes 'and', not '&&'", "Change '&&'"),
+        ("print(x > 1 || x < 3)", "Geno writes 'or', not '||'", "Change '||'"),
+        ("print(!(x > 1))", "Geno writes 'not', not '!'", "Change '!' to 'not'"),
+        ("# a note", "Geno writes '//', not '#'", "Change '#' to '//'"),
+        (
+            "let n = match Some(x) with\n        | Some(v) => v\n"
+            "        | None -> 0\n    end match",
+            "Geno writes '->', not '=>'",
+            "Change '=>' to '->'",
+        ),
+        ("let y: Option[Int] = null", "Geno has no 'null'", "Change 'null' to 'None'"),
+        ("if x > 1:\n        print(1)\n    end if", "Expected 'then'", "Change ':'"),
+        ("for z in [1]:\n        print(z)\n    end for", "Expected 'do'", "Change ':'"),
+        (
+            "if x > 1 then\n        print(1)\n    else:\n        print(2)\n    end if",
+            "'else' with no ':'",
+            "Remove ':'",
+        ),
+        ("if x > 1 then\n        print(1)\n    end", "after 'end'", "Write 'end if'"),
+        (
+            "print([1].map(lambda v: v + 1))",
+            "not 'lambda x: body'",
+            "Write 'fn(v) ->'",
+        ),
+        ("print(len([1]))", "Did you mean 'length'?", "Change 'len' to 'length'"),
+        ("print([1].size())", "Did you mean 'length'?", "Change 'size' to 'length'"),
+        ("print(str(x))", "Did you mean 'to_string'?", "Change 'str'"),
+        ('print("a".upper())', "Did you mean 'to_upper'?", "Change 'upper'"),
+        ("print(xx + 1)", "Did you mean 'x'?", "Change 'xx' to 'x'"),
     ],
 )
 def test_a_diagnostic_carries_a_fix_that_resolves_it(body, message, title) -> None:
@@ -153,3 +182,102 @@ def test_geno_check_fix_applies_every_fix(tmp_path: Path) -> None:
         "    total = total + Pt(1).x\n"
         "end func\n"
     )
+
+
+def test_a_missing_keyword_is_reported_where_it_belongs() -> None:
+    """At the end of the `if` line, not at the first token of the next."""
+    diagnostic = geno.check(
+        _program("if x > 1\n        print(1)\n    end if")
+    ).diagnostics[0]
+    assert (diagnostic.location.line, diagnostic.location.column) == (4, 13)
+
+
+def test_a_bare_end_is_reported_at_the_end() -> None:
+    source = _program("if x > 1 then\n        print(1)\n    end")
+    diagnostic = geno.check(source).diagnostics[0]
+    assert diagnostic.message == (
+        "Expected 'if' after 'end': this block closes with 'end if'"
+    )
+    assert (diagnostic.location.line, diagnostic.location.column) == (6, 5)
+
+
+def test_end_and_its_keyword_share_a_line() -> None:
+    """A bare `end` before a line that starts with `if` is not `end if`."""
+    source = _program(
+        "if x > 1 then\n        print(1)\n    end\n    if x > 2 then\n"
+        "        print(2)\n    end if"
+    )
+    diagnostic = geno.check(source).diagnostics[0]
+    assert "after 'end'" in diagnostic.message
+    assert geno.check(apply_fix(source, diagnostic.fixes[0])).ok
+
+
+def test_a_missing_return_type_is_reported_on_the_signature() -> None:
+    source = "func double(n: Int)\n    example 2 -> 4\n    return n * 2\nend func\n"
+    diagnostic = geno.check(source).diagnostics[0]
+    assert "Function 'double' needs a return type" in diagnostic.message
+    assert (diagnostic.location.line, diagnostic.location.column) == (1, 20)
+    assert diagnostic.fixes == ()
+
+
+def test_an_implicit_return_gets_a_return() -> None:
+    source = "func double(n: Int) -> Int\n    example 2 -> 4\n    n * 2\nend func\n"
+    diagnostic = geno.check(source).diagnostics[0]
+    assert "ends with a value it does not return" in diagnostic.message
+    assert diagnostic.location.line == 3
+    fixed = apply_fix(source, diagnostic.fixes[0])
+    assert "    return n * 2\n" in fixed
+    assert geno.check(fixed).ok
+
+
+def test_a_final_expression_of_the_wrong_type_gets_no_return_fix() -> None:
+    source = 'func f(n: Int) -> Int\n    example 2 -> 4\n    print("x")\nend func\n'
+    diagnostic = geno.check(source).diagnostics[0]
+    assert "may not return a value on all paths" in diagnostic.message
+    assert diagnostic.fixes == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "hint"),
+    [
+        # Two parameters one edit away: the hint names one, no fix guesses.
+        ("print(ab)", "Did you mean"),
+        # Two edits away from a four-letter name: too far to apply blindly.
+        ("print(nulx)", ""),
+    ],
+)
+def test_an_ambiguous_correction_carries_no_fix(body: str, hint: str) -> None:
+    source = (
+        "func f(aa: Int, bb: Int) -> Int\n    example 1, 2 -> 1\n    return aa\n"
+        f"end func\n\nfunc main() -> Unit\n    let aa = 1\n    let bb = 2\n    {body}\n"
+        "end func\n"
+    )
+    diagnostic = geno.check(source).diagnostics[0]
+    assert hint in diagnostic.message
+    assert diagnostic.fixes == ()
+
+
+def test_a_transposition_is_one_edit() -> None:
+    """`lenght` is nearer `length` than `height`, though both are two
+    substitutions away."""
+    source = (
+        "func height(n: Int) -> Int\n    example 1 -> 1\n    return n\nend func\n\n"
+        "func main() -> Unit\n    print(lenght([1]))\nend func\n"
+    )
+    diagnostic = geno.check(source).diagnostics[0]
+    assert "Did you mean 'length'?" in diagnostic.message
+    assert diagnostic.fixes[0].title == "Change 'lenght' to 'length'"
+
+
+def test_geno_fix_applies_fixes_until_none_is_left() -> None:
+    source = _program("let mut y = True && x > 1\n    print(y)")
+    result = geno.fix(source)
+    assert result.check.ok, [d.message for d in result.check.diagnostics]
+    assert result.applied == 3
+    assert "    var y = true and x > 1\n" in result.source
+
+
+def test_geno_fix_leaves_a_program_without_fixes_alone() -> None:
+    source = _program("print(undefined_thing_here)")
+    result = geno.fix(source)
+    assert (result.source, result.applied, result.check.ok) == (source, 0, False)

@@ -46,7 +46,7 @@ from .ast_nodes import (
     UnaryOp,
     WithExpr,
 )
-from .diagnostics import ErrorCode, replace_fix
+from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
 from .lexer import Lexer, LexerError
 from .parser_base import REMOVED_THROW, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType, token_type_to_str
@@ -472,6 +472,50 @@ class ExpressionParserMixin(ParserBase):
             )
         return expr
 
+    def _reject_python_lambda(self) -> None:
+        """``lambda x, y: body`` is Python; Geno writes ``fn(x, y) -> body``.
+
+        Only with a parameter: ``lambda:`` alone could be a map key named
+        ``lambda``, but a name followed by a name is never Geno.
+        """
+        start = self._current().location
+        names: list[str] = []
+        offset = 1
+        while True:
+            token = self._peek(offset)
+            if token.location.line != start.line:
+                return
+            if token.type is TokenType.COLON:
+                if not names:
+                    return
+                break
+            if token.type is not TokenType.IDENTIFIER:
+                return
+            names.append(token.value)
+            offset += 1
+            if self._peek(offset).type is TokenType.COMMA:
+                offset += 1
+        colon = self._peek(offset).location
+        raise ParseError(
+            "Geno writes a lambda as 'fn(x) -> body', not 'lambda x: body'",
+            start,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            (
+                Fix(
+                    f"Write 'fn({', '.join(names)}) ->'",
+                    (
+                        TextEdit(
+                            start.line,
+                            start.column,
+                            colon.line,
+                            colon.column + 1,
+                            f"fn({', '.join(names)}) ->",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
     def _parse_primary(self) -> Expression:
         """Parse primary expression (literals, identifiers, grouping)."""
         current = self._current()
@@ -479,6 +523,8 @@ class ExpressionParserMixin(ParserBase):
         location = current.location
 
         if current_type is TokenType.IDENTIFIER:
+            if current.value == "lambda":
+                self._reject_python_lambda()
             return Identifier(location=location, name=self._advance().value)
 
         if current_type is TokenType.TYPE_IDENTIFIER:
@@ -602,8 +648,7 @@ class ExpressionParserMixin(ParserBase):
                 self._advance()
                 # Block lambda: fn(params) do ... end fn
                 block_body = self._parse_statement_list()
-                self._expect(TokenType.END)
-                self._expect(TokenType.FN)
+                self._expect_end(TokenType.FN)
                 return LambdaExpr(
                     location=location,
                     params=params,
@@ -716,8 +761,7 @@ class ExpressionParserMixin(ParserBase):
         which every later pass and backend already handles.
         """
         expr = self._parse_if_expression_chain()
-        self._expect(TokenType.END)
-        self._expect(TokenType.IF)
+        self._expect_end(TokenType.IF)
         return expr
 
     def _parse_if_expression_chain(self) -> MatchExpr:
@@ -779,7 +823,6 @@ class ExpressionParserMixin(ParserBase):
                 "Match must have at least one arm (each arm starts with '|')"
             )
 
-        self._expect(TokenType.END)
-        self._expect(TokenType.MATCH)
+        self._expect_end(TokenType.MATCH)
 
         return MatchExpr(location=location, scrutinee=scrutinee, arms=arms)

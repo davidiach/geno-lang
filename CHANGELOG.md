@@ -95,6 +95,31 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   them, `geno check --fix` applies them, and the language server offers them
   as quick fixes over the exact text they replace. An unknown method or field
   is now reported at its name instead of at the receiver.
+- More fixes for habits from other languages: `&&`, `||`, `!`, `=>`, `#`,
+  `null`, `else:`, `if c:` and `lambda x: body` are each reported with the
+  Geno form and fixed to it; `len`, `str`, `upper`, `strip`, `startswith` and
+  similar names are renamed to Geno's builtin; a bare `end` gets its keyword;
+  a function whose body ends with a value of its return type gets the missing
+  `return`. A missing `then`/`do` is reported at the end of the line it
+  belongs on, and a missing return type on the signature. A "Did you mean"
+  fix is now attached only when the candidate is unique and one edit away (two
+  for names of six letters or more), and a swap of adjacent letters counts as
+  one edit, so `lenght` suggests `length` rather than `height`.
+- `geno.fix(source)` applies the fixes `geno.check()` reports until none is
+  left and returns the fixed source, the number applied and its check
+  (`FixResult`).
+- Seeded-mistake results (`docs/benchmark/seeded-mistakes.md`,
+  `scripts/seeded_mistakes.py`): 26 mistakes models carry over from other
+  languages, seeded into the 78 benchmark reference solutions. All 834
+  mutants are rejected and reported on the mistake's line, and `geno.fix`
+  repairs every mutant of the 24 mistakes that have a fix with no change in
+  what the program computes. No model or API key is needed to reproduce it.
+- The LLM benchmark speaks 0.6: the Geno prompt carries the rules from
+  `docs/llm-prompting.md` (a test keeps them identical) and a reference
+  program checked to pass its examples; repair prompts list Geno errors with
+  code, line, column and fix; and every run records pass@1 after `geno.fix`
+  ("autofix", no model call) beside pure pass@1. `scripts/publish_benchmark_results.py`
+  publishes the repair conditions.
 - The language server knows the checked program: hover shows the type of
   every local, parameter, inferred lambda and loop variable, pattern binding
   and tuple field, and for a method call the function it resolves to;
@@ -139,6 +164,10 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
 - Removed builtins: `square`, `is_positive`, `is_sorted`, `is_permutation`,
   `is_numeric_string`, `repeat_string`, `contains_substring` and
   `sort_strings`. Calling one reports E302 with its replacement.
+- A block closer's `end` and its keyword must be on the same line. `end` with
+  `if` on the next line was read as `end if`, so a bare `end` (Ruby, Lua)
+  silently swallowed the next `if`, `for` or `while` statement's keyword. It
+  is E201 at the `end`, with a fix that adds the keyword.
 
 ### Migration to 0.6
 
@@ -163,6 +192,12 @@ and lists the rest.
 
 ### Fixed
 
+- A lambda in a pipeline stage takes its parameter types from the piped
+  value, as it does in a call: `xs |> filter(_, fn(x) -> x > 1)` and
+  `xs |> fold(_, 0, fn(acc, x) -> acc + x)` type-check instead of asking for
+  annotations.
+- A failing `example` clause is reported with its own code, E409, instead of
+  E499.
 - `geno doc` renders tuple types as Geno writes them, `(A, B)`, instead of
   `Tuple[A, B]`.
 - Building or walking a linked structure is linear again: the interpreter no

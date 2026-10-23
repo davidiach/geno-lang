@@ -157,7 +157,10 @@ Geno tracks a reproducible [runtime benchmark snapshot](benchmarks/RESULTS.md),
 whose committed run meets the suite target of `<=2x` for at least 80% of
 measured problems. The [LLM correctness benchmark](docs/benchmark/llm-correctness-results.md)
 documents its methodology, but public frontier-model results are deferred and
-no Geno-vs-Python correctness advantage is currently claimed.
+no Geno-vs-Python correctness advantage is currently claimed. The
+[seeded-mistake results](docs/benchmark/seeded-mistakes.md), which need no
+model, show how Geno's diagnostics locate and fix the mistakes models carry
+over from other languages.
 
 ## Develop Geno
 

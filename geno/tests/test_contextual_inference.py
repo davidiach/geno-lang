@@ -85,6 +85,10 @@ def test_function_parameters_still_require_types() -> None:
         "let inc: (Int) -> Int = fn(x) -> x + 1",
         "var dec: (Int) -> Int = fn(x) -> x - 1",
         "print(sort_by([3, 1], fn(x) -> 0 - x))",
+        # Pipeline stages: the piped value fixes the lambda's types.
+        "print([1, 2] |> filter(_, fn(x) -> x > 1))",
+        "print([1, 2] |> map(fn(x) -> x * 2) |> map(_, fn(y) -> to_string(y)))",
+        "print([1, 2] |> fold(_, 0, fn(acc, x) -> acc + x))",
     ],
 )
 def test_lambda_parameters_take_their_type_from_context(statement: str) -> None:
