@@ -245,6 +245,24 @@ class ListLiteral(Expression):
 
 
 @dataclass
+class MapEntry:
+    """One `key: value` entry of a map literal."""
+
+    key: Expression
+    value: Expression
+
+
+@dataclass
+class MapLiteral(Expression):
+    """Map literal: {"a": 1, "b": 2}, or {} for an empty map."""
+
+    entries: list[MapEntry]
+
+    def accept(self, visitor: "ASTVisitor") -> Any:
+        return visitor.visit_map_literal(self)
+
+
+@dataclass
 class ListComprehension(Expression):
     """List comprehension: [expr for var: Type in iterable if cond]"""
 
@@ -414,6 +432,8 @@ class MatchExpr(Expression):
 
     scrutinee: Expression
     arms: list["MatchArm"]
+    # Written as `if c then a else b end if`: a match on the Bool `c`.
+    from_if: bool = field(default=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_match_expr(self)
@@ -1084,6 +1104,9 @@ class ASTVisitor(ABC):
         pass
 
     def visit_inferred_type(self, node: InferredType) -> None:
+        pass
+
+    def visit_map_literal(self, node: "MapLiteral") -> None:
         pass
 
     # Expressions

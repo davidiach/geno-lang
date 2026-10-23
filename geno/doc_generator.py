@@ -129,6 +129,7 @@ def _render_expr(expr) -> str:
         Identifier,
         IntegerLiteral,
         ListLiteral,
+        MapLiteral,
         StringLiteral,
         TupleExpr,
         UnaryOp,
@@ -150,6 +151,11 @@ def _render_expr(expr) -> str:
     if isinstance(expr, TupleExpr):
         elems = ", ".join(_render_expr(e) for e in expr.elements)
         return f"({elems})"
+    if isinstance(expr, MapLiteral):
+        entries = ", ".join(
+            f"{_render_expr(e.key)}: {_render_expr(e.value)}" for e in expr.entries
+        )
+        return "{" + entries + "}"
     if isinstance(expr, ConstructorCall):
         if expr.arguments:
             names = expr.argument_names or [None] * len(expr.arguments)

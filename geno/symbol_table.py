@@ -31,6 +31,7 @@ from .ast_nodes import (
     LambdaExpr,
     LetStatement,
     ListPattern,
+    MapLiteral,
     MatchArm,
     MatchExpr,
     MatchStatement,
@@ -718,6 +719,11 @@ class SymbolTableBuilder:
                 )
             for ctor_arg in expr.arguments:
                 self._resolve_expr(ctor_arg, scope)
+
+        elif isinstance(expr, MapLiteral):
+            for entry in expr.entries:
+                self._resolve_expr(entry.key, scope)
+                self._resolve_expr(entry.value, scope)
 
         else:
             # For other expression types, recurse into sub-expressions

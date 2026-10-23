@@ -27,6 +27,9 @@ from .ast_nodes import (
     LambdaExpr,
     ListComprehension,
     ListLiteral,
+    LiteralPattern,
+    MapEntry,
+    MapLiteral,
     MatchArm,
     MatchExpr,
     Pipeline,
@@ -329,6 +332,21 @@ class ExpressionParserMixin(ParserBase):
                 expr = IndexAccess(location=expr.location, target=expr, index=index)
             elif current_type is TokenType.DOT:
                 self._advance()
+                if self._check(TokenType.INTEGER):
+                    # Tuple field: pair.0 is the index access pair[0].
+                    index_token = self._advance()
+                    expr = IndexAccess(
+                        location=expr.location,
+                        target=expr,
+                        index=IntegerLiteral(
+                            location=index_token.location, value=index_token.value
+                        ),
+                    )
+                    continue
+                if self._check(TokenType.FLOAT):
+                    raise self._error(
+                        "Write a nested tuple field with parentheses, as in (t.0).1"
+                    )
                 # Field access
                 field = self._expect(TokenType.IDENTIFIER).value
                 expr = FieldAccess(
@@ -520,6 +538,9 @@ class ExpressionParserMixin(ParserBase):
             return AwaitExpr(location=location, expr=expr)
 
         # List literal or list comprehension
+        if current_type is TokenType.LBRACE:
+            return self._parse_map_literal()
+
         if current_type is TokenType.LBRACKET:
             self._advance()
             if self._current_type is TokenType.RBRACKET:
@@ -613,6 +634,9 @@ class ExpressionParserMixin(ParserBase):
             )
 
         # Match expression (inline): match expr with ... end match
+        if current_type is TokenType.IF:
+            return self._parse_if_expression()
+
         if current_type is TokenType.MATCH:
             return self._parse_match_expression()
 
@@ -648,6 +672,65 @@ class ExpressionParserMixin(ParserBase):
             f"got {token_type_to_str(self._current().type)}"
         )
 
+    def _parse_map_literal(self) -> MapLiteral:
+        """Parse `{key: value, ...}`; `{}` is the empty map."""
+        location = self._current().location
+        self._expect(TokenType.LBRACE)
+        entries: list[MapEntry] = []
+        while not self._check(TokenType.RBRACE):
+            key = self._parse_expression()
+            self._expect(
+                TokenType.COLON, "Expected ':' between a map key and its value"
+            )
+            value = self._parse_expression()
+            entries.append(MapEntry(key=key, value=value))
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RBRACE, "Expected ',' or '}' in a map literal")
+        return MapLiteral(location=location, entries=entries)
+
+    def _parse_if_expression(self) -> MatchExpr:
+        """Parse `if c then a else if d then b else e end if` as a value.
+
+        It is the match `match c with | true -> a | false -> ... end match`,
+        which every later pass and backend already handles.
+        """
+        expr = self._parse_if_expression_chain()
+        self._expect(TokenType.END)
+        self._expect(TokenType.IF)
+        return expr
+
+    def _parse_if_expression_chain(self) -> MatchExpr:
+        location = self._current().location
+        self._expect(TokenType.IF)
+        condition = self._parse_expression()
+        self._expect(TokenType.THEN)
+        then_value = self._parse_expression()
+        if not self._match(TokenType.ELSE):
+            raise self._error(
+                "An if expression needs an else branch, because it must produce "
+                "a value: if condition then a else b end if"
+            )
+        if self._check(TokenType.IF):
+            else_value: Expression = self._parse_if_expression_chain()
+        else:
+            else_value = self._parse_expression()
+        arms = [
+            MatchArm(
+                pattern=LiteralPattern(location=then_value.location, value=True),
+                body=[ReturnStatement(location=then_value.location, value=then_value)],
+                location=then_value.location,
+            ),
+            MatchArm(
+                pattern=LiteralPattern(location=else_value.location, value=False),
+                body=[ReturnStatement(location=else_value.location, value=else_value)],
+                location=else_value.location,
+            ),
+        ]
+        expr = MatchExpr(location=location, scrutinee=condition, arms=arms)
+        expr.from_if = True
+        return expr
+
     def _parse_match_expression(self) -> MatchExpr:
         """Parse inline match expression."""
         location = self._current().location
@@ -658,7 +741,7 @@ class ExpressionParserMixin(ParserBase):
         arms: list[MatchArm] = []
         while self._match(TokenType.BAR):
             arm_location = self._current().location
-            pattern = self._parse_pattern()
+            patterns = self._parse_arm_patterns()
             guard = None
             if self._check(TokenType.IDENTIFIER) and self._current().value == "when":
                 self._advance()  # consume 'when'
@@ -669,9 +752,7 @@ class ExpressionParserMixin(ParserBase):
             body: list[Statement] = [
                 ReturnStatement(location=body_expr.location, value=body_expr)
             ]
-            arms.append(
-                MatchArm(pattern=pattern, body=body, location=arm_location, guard=guard)
-            )
+            arms.extend(self._or_pattern_arms(patterns, guard, body, arm_location))
 
         if not arms:
             raise self._error(

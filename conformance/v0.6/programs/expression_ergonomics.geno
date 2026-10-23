@@ -1,0 +1,23 @@
+type Color = Red | Orange | Green | Blue
+
+func warmth(c: Color) -> String
+    example Red -> "warm"
+    match c with
+        | Red | Orange -> return "warm"
+        | Green | Blue -> return "cool"
+    end match
+end func
+
+func main() -> Unit
+    let n = 7
+    print(if n % 2 == 0 then "even" else "odd" end if)
+    print(warmth(Orange))
+    print(warmth(Blue))
+    let triple = (1, "two", 3.5)
+    print(triple.1)
+    let nested = ((1, 2), 3)
+    print((nested.0).1)
+    print({"ada": 36, "alan": 41})
+    let prices: Map[String, Float] = {"tea": 2}
+    print(prices)
+end func

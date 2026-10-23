@@ -47,6 +47,11 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   destructuring (`let (a, b) = pair`) may omit their types. A lambda in a call
   is checked after the call's other arguments, so `apply(fn(x) -> x * 2, 21)`
   works. Function signatures still require annotations.
+- If expressions, or-patterns, tuple fields and map literals
+  ([proposal 0008](docs/proposals/0008-expression-ergonomics.md)):
+  `if c then a else b end if` as a value, `| Red | Orange -> ...` arms,
+  `pair.0`, and `{"a": 1}` / `{}`. The language tour documented `{}` for an
+  empty map in 0.5, but it did not parse.
 - Arithmetic on an operand that already failed to type-check no longer adds a
   second "Cannot apply '+' to Any and Int" error.
 - The standard library is generic throughout: `List`, `Option` and `Result`

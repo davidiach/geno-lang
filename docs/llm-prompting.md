@@ -30,6 +30,10 @@ Key syntax rules:
   destructuring may omit types when context fixes them: `xs.map(fn(x) -> x * 2)`,
   `for x in xs do`, `[x * 2 for x in xs]`, `let (a, b) = pair`. Function
   parameters and return types are always annotated
+- `if` is an expression when used as a value, with a required `else`:
+  `let label = if x > 0 then "pos" else "neg" end if`. Match arms can share a
+  body: `| Red | Orange -> ...`. Tuple fields: `pair.0`. Map literals:
+  `{"a": 1, "b": 2}`, and `{}` for an empty map
 - Method calls work on any value: `xs.map(f).filter(g).length()`,
   `s.trim().to_upper()`, `opt.unwrap_or(0)`. Name the arguments after the
   receiver when the function has 3+ parameters: `s.replace(old: "a", new: "b")`

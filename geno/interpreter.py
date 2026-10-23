@@ -52,6 +52,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
@@ -2060,6 +2061,23 @@ class Interpreter:
             for value, element in zip(list_result, expr.elements)
         ]
 
+    def _eval_map_literal(self, expr: MapLiteral, env: Environment) -> dict:
+        result: dict[Any, Any] = {}
+        for entry in expr.entries:
+            key = _promote_int_to_expected_float(
+                self.eval_expr(entry.key, env),
+                getattr(entry.key, "_expected_runtime_type", None),
+                entry.key,
+            )
+            value = _promote_list_element(
+                self.eval_expr(entry.value, env),
+                getattr(entry.value, "_expected_runtime_type", None),
+            )
+            if key not in result:
+                self._check_collection_size("Map", len(result) + 1, expr.location)
+            result[key] = value
+        return result
+
     def _eval_typed_hole(self, expr: TypedHole, env: Environment) -> Any:
         raise RuntimeError(f"Encountered unfilled hole: ?{expr.name}", expr.location)
 
@@ -2717,6 +2735,9 @@ class Interpreter:
         elif isinstance(target, dict):
             if index not in target:
                 raise RuntimeError(f"Key not found: {index}", expr.location)
+            return target[index]
+        elif isinstance(target, tuple) and isinstance(index, int):
+            # The checker allows only a literal index within the tuple's arity.
             return target[index]
         else:
             raise RuntimeError(
@@ -3659,6 +3680,7 @@ _EXPR_DISPATCH: dict[type, Any] = {
     Identifier: Interpreter._eval_identifier,
     TypeIdentifier: Interpreter._eval_type_identifier,
     ListLiteral: Interpreter._eval_list_literal,
+    MapLiteral: Interpreter._eval_map_literal,
     BinaryOp: Interpreter._eval_binary_op,
     UnaryOp: Interpreter._eval_unary_op,
     FunctionCall: Interpreter._eval_function_call,

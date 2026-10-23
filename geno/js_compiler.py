@@ -64,6 +64,7 @@ from .ast_nodes import (
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
@@ -2917,6 +2918,13 @@ class JSCompiler(BaseCompiler):
         if isinstance(expr, ListLiteral):
             elements = ", ".join(self._compile_expr(e) for e in expr.elements)
             return f"_checkCollectionSize([{elements}])"
+
+        if isinstance(expr, MapLiteral):
+            pairs = ", ".join(
+                f"[{self._compile_expr(entry.key)}, {self._compile_expr(entry.value)}]"
+                for entry in expr.entries
+            )
+            return f"_mapLiteral([{pairs}])"
 
         if isinstance(expr, BinaryOp):
             return self._compile_binary_op(expr)

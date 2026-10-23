@@ -62,6 +62,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchArm,
     MatchExpr,
     MatchStatement,
@@ -310,6 +311,18 @@ def _ordering_bound_hint(left: Type, right: Type) -> str:
     if not params:
         return ""
     return f". Declare an ordering bound to compare: [{params[0].name}: Ord]"
+
+
+def _literal_key(expr: Expression) -> object | None:
+    """A literal map key as a comparable value, or None for computed keys."""
+    if isinstance(expr, (StringLiteral, IntegerLiteral, BooleanLiteral)):
+        return (type(expr).__name__, expr.value)
+    return None
+
+
+def _render_literal_key(key: object) -> str:
+    _kind, value = cast(tuple[str, object], key)
+    return f'"{value}"' if isinstance(value, str) else str(value).lower()
 
 
 def _bound_hint(bound: str, type_: Type) -> str:
@@ -1418,6 +1431,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._check_test_block(defn)
 
         self._check_generic_value_refs()
+        self._dedupe_errors()
 
         if self.errors:
             if len(self.errors) == 1:
@@ -2790,6 +2804,10 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(expr, ListLiteral):
             for element in expr.elements:
                 self._validate_no_result_binding_in_expr(element)
+        elif isinstance(expr, MapLiteral):
+            for entry in expr.entries:
+                self._validate_no_result_binding_in_expr(entry.key)
+                self._validate_no_result_binding_in_expr(entry.value)
         elif isinstance(expr, ListComprehension):
             if expr.variable == "result":
                 self._error_result_binding_collision(
@@ -3206,6 +3224,11 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(expr, ListLiteral):
             for elem in expr.elements:
                 effects |= self._infer_expr_effects(elem, env)
+
+        elif isinstance(expr, MapLiteral):
+            for entry in expr.entries:
+                effects |= self._infer_expr_effects(entry.key, env)
+                effects |= self._infer_expr_effects(entry.value, env)
 
         elif isinstance(expr, ListComprehension):
             effects |= self._infer_expr_effects(expr.iterable, env)
@@ -3959,7 +3982,8 @@ class TypeChecker(ExhaustivenessMixin):
         if getattr(expr, "_generic_target", None) is not None:
             self._record_generic_value_instance(expr, expected)
         if not isinstance(
-            expr, (IntegerLiteral, ListLiteral, TupleExpr, ListComprehension)
+            expr,
+            (IntegerLiteral, ListLiteral, MapLiteral, TupleExpr, ListComprehension),
         ):
             # Where an existing Int value lands in a Float slot, record how
             # deep the backends must widen it (#137).  Literals widen their
@@ -3971,6 +3995,12 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(expr, ListLiteral) and isinstance(expected, ListType):
             for element in expr.elements:
                 self._record_expected_runtime_type(element, expected.element_type)
+            return
+
+        if isinstance(expr, MapLiteral) and isinstance(expected, MapType):
+            for entry in expr.entries:
+                self._record_expected_runtime_type(entry.key, expected.key_type)
+                self._record_expected_runtime_type(entry.value, expected.value_type)
             return
 
         if isinstance(expr, TupleExpr) and isinstance(expected, TupleType):
@@ -4177,6 +4207,26 @@ class TypeChecker(ExhaustivenessMixin):
             return
         expr._generic_instance = instance
 
+    def _dedupe_errors(self) -> None:
+        """Report an error once even when checked code was duplicated.
+
+        An or-pattern arm's body is checked once per alternative, so a
+        mistake inside it would otherwise be reported once per alternative.
+        """
+        seen: set[tuple[str, int, int, str]] = set()
+        unique: list[TypeError] = []
+        for error in self.errors:
+            key = (
+                str(error.location.filename),
+                error.location.line,
+                error.location.column,
+                error.message,
+            )
+            if key not in seen:
+                seen.add(key)
+                unique.append(error)
+        self.errors = unique
+
     def _check_generic_value_refs(self) -> None:
         """Require every generic function used as a value to be instantiated."""
         refs = list({id(expr): expr for expr in self._generic_value_refs}.values())
@@ -4243,6 +4293,8 @@ class TypeChecker(ExhaustivenessMixin):
             return self._check_type_identifier(cast(TypeIdentifier, expr), env)
         elif expr_type is ListLiteral:
             return self._check_list_literal(cast(ListLiteral, expr), env)
+        elif expr_type is MapLiteral:
+            return self._check_map_literal(cast(MapLiteral, expr), env)
         elif expr_type is BinaryOp:
             return self._check_binary_op(cast(BinaryOp, expr), env)
         elif expr_type is UnaryOp:
@@ -4438,6 +4490,52 @@ class TypeChecker(ExhaustivenessMixin):
             self._record_expected_runtime_type(element, elem_type)
 
         return ListType(elem_type)
+
+    def _check_map_literal(self, expr: MapLiteral, env: TypeEnv) -> Type:
+        """Type check `{key: value, ...}`: one key type, one value type."""
+        if not expr.entries:
+            return MapType(self._fresh_type_var("key"), self._fresh_type_var("value"))
+        key_types = [self._check_expression(e.key, env) for e in expr.entries]
+        value_types = [self._check_expression(e.value, env) for e in expr.entries]
+        if any(isinstance(t, NeverType) for t in key_types + value_types):
+            return NeverType()
+
+        def widest(types: list[Type]) -> Type:
+            # As for list elements: widen Int to Float in any order.
+            chosen = types[0]
+            for candidate in types[1:]:
+                if not self._types_compatible(
+                    chosen, candidate
+                ) and self._types_compatible(candidate, chosen):
+                    chosen = candidate
+            return chosen
+
+        key_type = widest(key_types)
+        value_type = widest(value_types)
+        seen_keys: set[object] = set()
+        for entry, k_type, v_type in zip(expr.entries, key_types, value_types):
+            if not self._types_compatible(key_type, k_type):
+                self._error(
+                    f"Map key type mismatch: expected {key_type}, got {k_type}",
+                    entry.key.location,
+                )
+            if not self._types_compatible(value_type, v_type):
+                self._error(
+                    f"Map value type mismatch: expected {value_type}, got {v_type}",
+                    entry.value.location,
+                )
+            literal = _literal_key(entry.key)
+            if literal is not None:
+                if literal in seen_keys:
+                    self._error(
+                        f"Duplicate key {_render_literal_key(literal)} in map literal",
+                        entry.key.location,
+                    )
+                seen_keys.add(literal)
+            self._record_expected_runtime_type(entry.key, key_type)
+            self._record_expected_runtime_type(entry.value, value_type)
+        self._validate_hashable_key_type("Map", "key", key_type, expr.location)
+        return MapType(key_type, value_type)
 
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""
@@ -5221,6 +5319,25 @@ class TypeChecker(ExhaustivenessMixin):
                     expr.location,
                 )
             return target_type.value_type
+        elif isinstance(target_type, TupleType):
+            # Each element has its own type, so the index must be a literal.
+            arity = len(target_type.element_types)
+            if not isinstance(expr.index, IntegerLiteral):
+                self._error(
+                    f"A tuple index must be a number written in the source, as in "
+                    f"pair.0 or pair[1]; this tuple has {arity} elements",
+                    expr.location,
+                )
+                return _ANY_TYPE
+            position = expr.index.value
+            if not 0 <= position < arity:
+                self._error(
+                    f"Tuple index {position} is out of range for "
+                    f"{_display_type(target_type)}, which has {arity} elements",
+                    expr.location,
+                )
+                return _ANY_TYPE
+            return target_type.element_types[position]
         else:
             self._error(f"Cannot index into {target_type}", expr.location)
             return AnyType()
@@ -5943,6 +6060,12 @@ class TypeChecker(ExhaustivenessMixin):
     def _check_match_expr(self, expr: MatchExpr, env: TypeEnv) -> Type:
         """Type check a match expression."""
         scrutinee_type = self._check_expression(expr.scrutinee, env)
+        if expr.from_if and not isinstance(scrutinee_type, (BoolType, AnyType)):
+            self._error(
+                f"If condition must be Bool, got {_display_type(scrutinee_type)}",
+                expr.scrutinee.location,
+            )
+            scrutinee_type = _BOOL_TYPE
 
         result_type: Type | None = None
         for arm in expr.arms:
@@ -5975,8 +6098,9 @@ class TypeChecker(ExhaustivenessMixin):
             else:
                 merged_type = self._merge_match_expr_result_types(result_type, arm_type)
                 if merged_type is None:
+                    what = "If branch" if expr.from_if else "Match arm"
                     self._error(
-                        "Match arm type mismatch: expected "
+                        f"{what} type mismatch: expected "
                         f"{_display_type(result_type)}, got {_display_type(arm_type)}",
                         arm.location,
                     )

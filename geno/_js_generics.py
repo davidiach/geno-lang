@@ -180,7 +180,7 @@ def _generic_references(node: Any) -> Iterator[GenericInstance]:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, list):
+        if isinstance(current, (list, tuple)):
             stack.extend(current)
             continue
         if isinstance(current, (Identifier, FieldAccess)):

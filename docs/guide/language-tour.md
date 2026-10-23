@@ -290,6 +290,33 @@ A tuple pattern must have the same number of elements as the tuple type. Since
 every tuple has that fixed arity, an arm like `| (x, y) ->` already covers every
 value and needs no default arm.
 
+### If Expressions and Or-Patterns
+
+`if` produces a value when it is used as one. The `else` branch is required:
+
+```geno
+func parity(n: Int) -> String
+    example 4 -> "even"
+    example 7 -> "odd"
+    return if n % 2 == 0 then "even" else "odd" end if
+end func
+```
+
+A match arm can list alternatives that share a body:
+
+```geno
+type Color = Red | Orange | Green | Blue
+
+func warmth(c: Color) -> String
+    example Red -> "warm"
+    example Blue -> "cool"
+    match c with
+        | Red | Orange -> return "warm"
+        | Green | Blue -> return "cool"
+    end match
+end func
+```
+
 ## Option and Result
 
 ```geno
@@ -504,9 +531,10 @@ let evens: List[Int] = [x for x: Int in nums if x % 2 == 0]  // [2, 4]
 ### Maps (Immutable)
 
 ```geno
-let m: Map[String, Int] = {}
-let m2: Map[String, Int] = map_insert(m, "a", 1)
-let val: Option[Int] = map_get(m2, "a")  // Some(1)
+let ages = {"ada": 36, "alan": 41}
+let empty: Map[String, Int] = {}
+let more = ages.insert("grace", 85)
+let maybe: Option[Int] = more.get("grace")  // Some(85)
 ```
 
 ### Mutable Collections
@@ -546,6 +574,17 @@ let output: String = json_stringify(value: JsonObject([("key", JsonString("value
 ```
 
 **Note:** `json_parse` returns `Result[JsonValue, String]`, not the original Geno type. A `json_parse` → `json_stringify` round-trip preserves the JSON structure faithfully, but the result is always a `JsonValue` tree — not your original Geno types. Use pattern matching to extract values from the `JsonValue` variants.
+
+## Tuples
+
+A tuple's elements are read by position:
+
+```geno
+func swap(pair: (Int, String)) -> (String, Int)
+    example (1, "a") -> ("a", 1)
+    return (pair.1, pair.0)
+end func
+```
 
 ## Type Aliases
 

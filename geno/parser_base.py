@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .ast_nodes import (
         Expression,
         FunctionDef,
+        MatchArm,
         Parameter,
         Pattern,
         Statement,
@@ -271,6 +272,18 @@ class ParserBase:
         raise NotImplementedError
 
     def _parse_pattern(self) -> Pattern:
+        raise NotImplementedError
+
+    def _parse_arm_patterns(self) -> list[Pattern]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _or_pattern_arms(
+        patterns: list[Pattern],
+        guard: Expression | None,
+        body: list[Statement],
+        location: SourceLocation,
+    ) -> list[MatchArm]:
         raise NotImplementedError
 
     def _parse_parameter_list(

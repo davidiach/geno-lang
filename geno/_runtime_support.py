@@ -3875,6 +3875,19 @@ def map_from_list(pairs):
     return result
 
 
+def _map_literal(pairs: list[tuple[Any, Any]]) -> dict[Any, Any]:
+    """Build the Map a `{key: value, ...}` literal denotes.
+
+    A separate name from `map_from_list`, which a program may redefine.
+    """
+    result: dict[Any, Any] = {}
+    for key, value in pairs:
+        if key not in result:
+            _check_collection_kind("Map", len(result) + 1)
+        result[key] = value
+    return result
+
+
 def map_merge(m1, m2):
     expected = len(m1)
     for key in m2:

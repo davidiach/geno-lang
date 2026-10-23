@@ -71,6 +71,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
@@ -2120,6 +2121,9 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return f"{type_identifier.name}()"
             return str(type_identifier.name)
 
+        if expr_type is MapLiteral:
+            return self._compile_map_literal(cast(MapLiteral, expr))
+
         if expr_type is ListLiteral:
             list_expr = cast(ListLiteral, expr)
             elements = ", ".join(
@@ -2286,6 +2290,9 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return f"{expr.name}()"
             return str(expr.name)
 
+        if isinstance(expr, MapLiteral):
+            return self._compile_map_literal(expr)
+
         if isinstance(expr, ListLiteral):
             elements = ", ".join(
                 self._promote_list_element(
@@ -2363,6 +2370,14 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"(await {inner})"
 
         raise CompileError(f"Unsupported expression node: {type(expr).__name__}")
+
+    def _compile_map_literal(self, expr: MapLiteral) -> str:
+        pairs = ", ".join(
+            f"({self._promote_list_element(self._compile_expr(entry.key), getattr(entry.key, '_expected_runtime_type', None))}, "
+            f"{self._promote_list_element(self._compile_expr(entry.value), getattr(entry.value, '_expected_runtime_type', None))})"
+            for entry in expr.entries
+        )
+        return f"_map_literal([{pairs}])"
 
     @staticmethod
     def _is_float_type(expr: Expression) -> bool:

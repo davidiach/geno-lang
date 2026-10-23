@@ -314,7 +314,7 @@ class StatementParserMixin(ParserBase):
         arms: list[MatchArm] = []
         while self._match(TokenType.BAR):
             arm_location = self._current().location
-            pattern = self._parse_pattern()
+            patterns = self._parse_arm_patterns()
             guard = None
             if self._check(TokenType.IDENTIFIER) and self._current().value == "when":
                 self._advance()  # consume 'when'
@@ -323,9 +323,7 @@ class StatementParserMixin(ParserBase):
             body = self._parse_statement_list()
             if not body:
                 raise self._error("Match arm body must contain at least one statement")
-            arms.append(
-                MatchArm(pattern=pattern, body=body, location=arm_location, guard=guard)
-            )
+            arms.extend(self._or_pattern_arms(patterns, guard, body, arm_location))
 
         if not arms:
             raise self._error(

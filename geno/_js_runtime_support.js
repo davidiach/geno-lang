@@ -4484,6 +4484,18 @@ function map_from_list(pairs) {
     }
     return m;
 }
+function _mapLiteral(pairs) {
+    // A `{key: value, ...}` literal; separate from map_from_list, which a
+    // program may redefine.
+    const m = new _GENO_MAP();
+    for (const pair of pairs) {
+        if (_mapFindKey(m, pair[0]) === _MAP_MISSING) {
+            _checkCollectionKind("Map", m.size + 1);
+        }
+        _mapSet(m, pair[0], pair[1]);
+    }
+    return m;
+}
 function map_merge(m1, m2) {
     let expected = m1.size;
     for (const key of m2.keys()) {
