@@ -2283,6 +2283,23 @@ class TestJSCompilerReservedNames:
         assert "class_kw" in js_code
         assert compile_and_run_js(source) == "42"
 
+    def test_strict_mode_restricted_names_are_mangled(self):
+        source = """
+        func eval(arguments: Int) -> Int
+            example 1 -> 2
+            return arguments + 1
+        end func
+
+        func main() -> Int
+            let arguments = eval(1)
+            var eval_result = arguments
+            return eval_result
+        end func
+        """
+        js_code = compile_to_js(source)
+        assert "function eval_kw(arguments_kw)" in js_code
+        assert compile_and_run_js(source) == "2"
+
     @pytest.mark.parametrize(
         "name", ["_requireCap", "_validateRegexPattern", "_GENO_CREATE_REQUIRE"]
     )
@@ -3843,7 +3860,9 @@ def test_js_compiler_allows_declared_builtin_without_typecheck():
     assert "function main" in compile_to_js(source, typecheck=False)
 
 
-@pytest.mark.parametrize("field_name", ["default", "_withGenoFormatter"])
+@pytest.mark.parametrize(
+    "field_name", ["default", "eval", "arguments", "_withGenoFormatter"]
+)
 def test_js_compiler_rejects_unsafe_record_field(field_name):
     source = (
         f"type Wrapper = Wrapper({field_name}: Int)\n"

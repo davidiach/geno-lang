@@ -260,6 +260,19 @@ and lists the rest.
   for them in the interpreter and in generated Python. Before, both methods
   were answered with 501 Unsupported method, so CORS preflight handlers never
   ran. Unregistered paths still return 404.
+- `json_stringify`, `json_stringify_pretty` and `json_to_string` check the
+  collection size limit before building their output. Before, the whole string
+  was built first, so a value that repeats one subtree or string many times,
+  or a very large `indent`, could use far more memory than the limit and run
+  past the timeout. In the interpreter, a value that repeats a subtree is now
+  converted once instead of once per repeat.
+- `json_stringify_pretty` treats an `indent` above 10 as 10 in the interpreter
+  and in generated Python, as generated JavaScript already did.
+- Generated JavaScript renames variables, parameters and functions named
+  `eval` or `arguments`, which strict-mode JavaScript forbids. Before, such a
+  program compiled but Node.js rejected it with a SyntaxError. A constructor
+  field with either name is now a JavaScript compile error, as `class` already
+  was.
 - Reference apps:
   - geno-form stacks its fields and highlights the active tab.
   - tetris.geno draws all seven pieces correctly and fits the default canvas.
