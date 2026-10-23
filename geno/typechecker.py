@@ -3362,6 +3362,17 @@ class TypeChecker(ExhaustivenessMixin):
                 catch.location,
             )
 
+        if isinstance(declared_type, UserType):
+            type_info = self.type_defs.get(declared_type.name)
+            if type_info is not None:
+                catch.resolved_variants = tuple(type_info.variants.keys())
+            elif declared_type.name in self._constructor_to_type:
+                catch.resolved_variants = (declared_type.name,)
+            else:
+                catch.resolved_variants = ()
+        else:
+            catch.resolved_variants = None
+
         catch_env = env.child()
         catch_env.bind(catch.variable, declared_type)
         for s in catch.body:

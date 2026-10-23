@@ -1723,6 +1723,16 @@ class JSCompiler(BaseCompiler):
             self._writeln(
                 "if (!(__geno_err__ instanceof _GenoThrow)) throw __geno_err__;"
             )
+            variants = self._catch_variant_names(stmt)
+            if variants:
+                tag_checks = " || ".join(
+                    f'__geno_err__.value._tag === "{v}"' for v in variants
+                )
+                self._writeln(
+                    f"if (!(__geno_err__.value && ({tag_checks}))) throw __geno_err__;"
+                )
+            elif variants is not None:
+                self._writeln("throw __geno_err__;")
             self._writeln(f"let {var_name} = __geno_err__.value;")
             with self._block_scope(
                 [stmt.catch_clause.variable], stmt.catch_clause.body

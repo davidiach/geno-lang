@@ -707,6 +707,24 @@ class BaseCompiler(ABC):
     # Shared constructor field resolution
     # =========================================================================
 
+    def _catch_variant_names(self, stmt: TryStatement) -> tuple[str, ...] | None:
+        """Return matched constructors, or None when unchecked code is unresolved."""
+        if stmt.catch_clause.resolved_variants is not None:
+            return stmt.catch_clause.resolved_variants
+        catch_type_annot = stmt.catch_clause.type_annotation
+        catch_type_name = getattr(catch_type_annot, "name", None)
+        if not catch_type_name or catch_type_name == "String":
+            return None
+        type_def = self.type_defs.get(catch_type_name)
+        if type_def is not None:
+            return tuple(v.name for v in type_def.variants)
+        if catch_type_name in self._constructor_to_variant:
+            return (catch_type_name,)
+        # Without typechecking, aliases may not resolve in the definition index.
+        # Preserve the unchecked API's legacy catch behavior in that case; an
+        # explicitly resolved empty set above still means that nothing matches.
+        return None
+
     def _get_constructor_field_name(self, constructor: str, index: int) -> str:
         """Get the field name for a constructor at a given index.
 
