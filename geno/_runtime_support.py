@@ -3005,6 +3005,129 @@ def _json_value_to_python(value):
     )
 
 
+# JSON.stringify ignores indentation past 10 spaces. Clamp to match, which also
+# keeps the indent from multiplying the size of the output.
+_JSON_MAX_INDENT = 10
+# Size bound for anything the bounds do not model (including types json.dumps
+# rejects); it forces the exact streaming path, which raises json's own error.
+_JSON_SIZE_UNKNOWN = 1 << 62
+
+
+def _json_size_bounds(
+    obj: Any, pretty: bool, ensure_ascii: bool
+) -> tuple[int, int, int, int]:
+    """Bound the length of ``obj``'s JSON encoding without building it.
+
+    Returns ``(min_chars, max_chars, lines, indent_units)``. At nesting depth
+    ``d`` with indent width ``w`` the encoding is at least
+    ``min_chars + w * (indent_units + d * lines)`` characters and at most the
+    same with ``max_chars``. Only scalar text is inexact (string escapes and
+    number digits). Mirrors ``geno.builtins._json_size_bounds`` without its
+    shared-subtree cache: the sandbox has no id(), and the converted value here
+    is already a tree.
+    """
+    # An escape is at most 6 characters; with ensure_ascii an astral character
+    # becomes a 12-character surrogate pair.
+    escape_width = 12 if ensure_ascii else 6
+    if isinstance(obj, (list, dict)):
+        return _json_container_bounds(obj, pretty, escape_width)
+    # A scalar encodes the same at the top level as inside a compact list.
+    min_chars, max_chars, _, _ = _json_container_bounds([obj], False, escape_width)
+    return min_chars - 2, max_chars - 2, 0, 0
+
+
+def _json_container_bounds(
+    obj: Any, pretty: bool, escape_width: int
+) -> tuple[int, int, int, int]:
+    """``_json_size_bounds`` for a list or dict."""
+    count = len(obj)
+    if count == 0:
+        return 2, 2, 0, 0
+    # Brackets and commas, plus a newline before each item and the close.
+    min_chars = max_chars = 2 + (count - 1) + (count + 1 if pretty else 0)
+    lines = count + 1 if pretty else 0
+    indent_units = count if pretty else 0
+    children = obj
+    if isinstance(obj, dict):
+        children = obj.values()
+        separator = 2 if pretty else 1
+        for key in obj:
+            if type(key) is str:
+                min_chars += len(key) + 2 + separator
+                max_chars += len(key) * escape_width + 2 + separator
+            else:
+                max_chars += _JSON_SIZE_UNKNOWN
+    # Scalars are measured inline: a call per item would dominate the cost.
+    for child in children:
+        kind = type(child)
+        if kind is str:
+            min_chars += len(child) + 2
+            max_chars += len(child) * escape_width + 2
+        elif kind is int:
+            # Sign plus at most bit_length * log10(2) + 1 digits.
+            min_chars += 1
+            max_chars += child.bit_length() * 10 // 33 + 2
+        elif kind is float:
+            # repr is "0.0" to "-2.2250738585072014e-308".
+            min_chars += 3
+            max_chars += 24
+        elif kind is bool or child is None:
+            min_chars += 4
+            max_chars += 5
+        elif kind is list or kind is dict:
+            child_min, child_max, child_lines, child_units = _json_container_bounds(
+                child, pretty, escape_width
+            )
+            min_chars += child_min
+            max_chars += child_max
+            # Children sit one level deeper than this container.
+            lines += child_lines
+            indent_units += child_units + child_lines
+        else:
+            max_chars += _JSON_SIZE_UNKNOWN
+    return min_chars, max_chars, lines, indent_units
+
+
+def _json_dumps_under_limit(
+    func_name: str, obj: Any, *, indent: int | None = None, ensure_ascii: bool = True
+) -> str:
+    """``json.dumps`` that fails before building output over the size cap.
+
+    A subtree shared by reference is written once per occurrence, so a small
+    value can encode to an arbitrarily large string. Bound the size first and
+    stream the encoding only when the bounds cannot decide.
+    """
+    import json as _json
+
+    separators = (",", ":") if indent is None else (",", ": ")
+    min_chars, max_chars, _, indent_units = _json_size_bounds(
+        obj, indent is not None, ensure_ascii
+    )
+    indentation = (indent or 0) * indent_units
+    if max_chars + indentation <= _MAX_COLLECTION_SIZE:
+        return _json.dumps(
+            obj,
+            indent=indent,
+            separators=separators,
+            ensure_ascii=ensure_ascii,
+            allow_nan=False,
+        )
+    _check_string_result_size(func_name, min_chars + indentation)
+    encoder = _json.JSONEncoder(
+        indent=indent,
+        separators=separators,
+        ensure_ascii=ensure_ascii,
+        allow_nan=False,
+    )
+    size = 0
+    chunks = []
+    for chunk in encoder.iterencode(obj):
+        size += len(chunk)
+        _check_string_result_size(func_name, size)
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
 def _reject_json_constant(name: str) -> None:
     raise ValueError(f"Invalid JSON constant: {name}")
 
@@ -3024,36 +3147,29 @@ def json_parse(text: str):
 
 def json_stringify(value) -> str:
     """Convert a JsonValue to a JSON string."""
-    import json as _json
-
     _check_collection_size(value)
     obj = _json_value_to_python(value)
-    result = _json.dumps(obj, separators=(",", ":"), allow_nan=False)
-    _check_string_result_size("json_stringify", len(result))
-    return result
+    return _json_dumps_under_limit("json_stringify", obj)
 
 
 def json_stringify_pretty(value, indent) -> str:
     """Pretty-print a JsonValue. ``indent <= 0`` returns compact form.
 
+    Indents above 10 print as 10, matching JavaScript's JSON.stringify.
     Object key ordering matches JsonObject insertion order (no sorting).
     """
-    import json as _json
-
     if not isinstance(indent, int) or isinstance(indent, bool):
         raise RuntimeError(
             f"json_stringify_pretty: indent must be Int, got {type(indent).__name__}"
         )
     _check_collection_size(value)
     obj = _json_value_to_python(value)
-    if indent <= 0:
-        result = _json.dumps(
-            obj, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-        )
-    else:
-        result = _json.dumps(obj, indent=indent, ensure_ascii=False, allow_nan=False)
-    _check_string_result_size("json_stringify_pretty", len(result))
-    return result
+    return _json_dumps_under_limit(
+        "json_stringify_pretty",
+        obj,
+        indent=min(indent, _JSON_MAX_INDENT) if indent > 0 else None,
+        ensure_ascii=False,
+    )
 
 
 def _geno_value_to_python(value):
@@ -3112,13 +3228,9 @@ def _geno_value_to_python(value):
 
 def json_to_string(value) -> str:
     """Convert any Geno value to a JSON string."""
-    import json as _json
-
     _check_collection_size(value)
     obj = _geno_value_to_python(value)
-    result = _json.dumps(obj, separators=(",", ":"), allow_nan=False)
-    _check_string_result_size("json_to_string", len(result))
-    return result
+    return _json_dumps_under_limit("json_to_string", obj)
 
 
 # =============================================================================

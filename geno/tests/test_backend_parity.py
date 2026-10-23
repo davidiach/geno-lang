@@ -3799,6 +3799,25 @@ class TestBackendParity:
         )
 
     @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+    def test_pretty_json_indent_above_ten_prints_as_ten_across_backends(self):
+        source = """
+        func main() -> Unit
+            let value: JsonValue = JsonObject([("a", JsonArray([JsonInt(1)]))])
+            print(json_stringify_pretty(value: value, indent: 12))
+            return ()
+        end func
+        """
+        ten = " " * 10
+        _assert_expected_backend_outputs(
+            label="pretty JSON indent clamp",
+            context=source,
+            expected=("{\n" + ten + '"a": [\n' + ten * 2 + "1\n" + ten + "]\n}\n"),
+            interp_out=_interpreter_output(source),
+            py_out=_compiled_python_output(source),
+            js_out=_compiled_js_output(source),
+        )
+
+    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
     def test_csv_parse_with_headers_returns_string_maps_across_backends(self):
         source = """
         func main() -> Unit

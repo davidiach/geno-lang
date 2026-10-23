@@ -389,6 +389,9 @@ _JS_RESERVED = frozenset(
         "yield",
         "await",
         "async",
+        # Not keywords, but strict-mode code cannot bind them.
+        "eval",
+        "arguments",
     }
 )
 
