@@ -604,6 +604,111 @@ def test_json_stringify_pre_check_honors_configured_limit():
         _builtins.builtin_json_to_string(["abc"])
 
 
+def _fail_json_encoding(monkeypatch):
+    import json
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("encoded a value whose JSON exceeds the limit")
+
+    monkeypatch.setattr(json, "dumps", fail)
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", fail)
+
+
+def _shared_json_tree(depth: int):
+    from geno.values import ConstructorValue
+
+    # 2**depth leaves in the JSON text, but only depth + 1 nodes in memory.
+    value = ConstructorValue("JsonInt", {"value": 1})
+    for _ in range(depth):
+        value = ConstructorValue("JsonArray", {"items": [value, value]})
+    return value
+
+
+_JSON_SERIALIZERS = [
+    pytest.param(_builtins.builtin_json_stringify, id="json_stringify"),
+    pytest.param(
+        lambda value: _builtins.builtin_json_stringify_pretty(value, 2),
+        id="json_stringify_pretty",
+    ),
+    pytest.param(
+        lambda value: _builtins.builtin_json_to_string([value]),
+        id="json_to_string",
+    ),
+]
+
+
+@pytest.mark.parametrize("serialize", _JSON_SERIALIZERS)
+def test_json_serializers_reject_shared_subtrees_before_encoding(
+    monkeypatch, serialize
+):
+    _fail_json_encoding(monkeypatch)
+    with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
+        serialize(_shared_json_tree(60))
+
+
+@pytest.mark.parametrize("serialize", _JSON_SERIALIZERS)
+def test_json_serializers_reject_repeated_strings_before_encoding(
+    monkeypatch, serialize
+):
+    from geno.values import ConstructorValue
+
+    _builtins.set_max_collection_size(1000)
+    text = ConstructorValue("JsonString", {"value": "a" * 100})
+    # Every collection fits the limit; the twenty copies of the string do not.
+    value = ConstructorValue("JsonArray", {"items": [text] * 20})
+    _fail_json_encoding(monkeypatch)
+    with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
+        serialize(value)
+
+
+def test_json_stringify_streams_to_the_exact_limit():
+    from geno.values import ConstructorValue
+
+    # Escapes make the size uncertain: this encodes to ["é"], 10 chars.
+    value = ConstructorValue(
+        "JsonArray", {"items": [ConstructorValue("JsonString", {"value": "é"})]}
+    )
+    _builtins.set_max_collection_size(10)
+    assert _builtins.builtin_json_stringify(value) == '["\\u00e9"]'
+    _builtins.set_max_collection_size(9)
+    with pytest.raises(GenoRuntimeError, match=r"\(10 > 9\)"):
+        _builtins.builtin_json_stringify(value)
+
+
+@pytest.mark.parametrize(
+    "serialize",
+    [
+        pytest.param(lambda rs, value: rs.json_stringify(value), id="json_stringify"),
+        pytest.param(
+            lambda rs, value: rs.json_stringify_pretty(value, 2),
+            id="json_stringify_pretty",
+        ),
+        pytest.param(lambda rs, value: rs.json_to_string([value]), id="json_to_string"),
+    ],
+)
+def test_compiled_json_serializers_reject_repeated_strings_before_encoding(
+    monkeypatch, serialize
+):
+    from geno import _runtime_support as rs
+
+    monkeypatch.setattr(rs, "_MAX_COLLECTION_SIZE", 1000)
+    value = rs.JsonArray([rs.JsonString("a" * 100)] * 20)
+    _fail_json_encoding(monkeypatch)
+    with pytest.raises(RuntimeError, match="String size exceeds limit"):
+        serialize(rs, value)
+
+
+def test_compiled_json_stringify_streams_to_the_exact_limit(monkeypatch):
+    from geno import _runtime_support as rs
+
+    value = rs.JsonArray([rs.JsonString("é")])
+    monkeypatch.setattr(rs, "_MAX_COLLECTION_SIZE", 10)
+    assert rs.json_stringify(value) == '["\\u00e9"]'
+    monkeypatch.setattr(rs, "_MAX_COLLECTION_SIZE", 9)
+    with pytest.raises(RuntimeError, match=r"\(10 > 9\)"):
+        rs.json_stringify(value)
+
+
 def test_csv_parse_pre_check_honors_configured_limit():
     _builtins.set_max_collection_size(2)
     with pytest.raises(GenoRuntimeError, match="List size exceeds limit"):
