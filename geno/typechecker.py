@@ -1384,7 +1384,7 @@ class TypeChecker(ExhaustivenessMixin):
 
             for defn in program.definitions:
                 if isinstance(defn, FunctionDef):
-                    self._check_function_def(defn)
+                    self._check_function_def(defn, update_signature=False)
             for defn in program.definitions:
                 if isinstance(defn, ImplDef):
                     for method in defn.methods:
@@ -2717,7 +2717,15 @@ class TypeChecker(ExhaustivenessMixin):
                 for method in defn.methods:
                     impl_methods.append((defn, method))
 
+        # Exact thrown-type summaries can oscillate through recursive calls as
+        # <unknown> is replaced by concrete types. Allow enough passes for an
+        # acyclic call chain, then widen by union: finite effect/type sets can
+        # only grow, so recursive inference must terminate conservatively.
+        exact_passes = 2 * (len(functions) + len(impl_methods) + 1)
+        iteration = 0
         while True:
+            widen = iteration >= exact_passes
+            iteration += 1
             changed = False
 
             for defn in functions:
@@ -2729,6 +2737,8 @@ class TypeChecker(ExhaustivenessMixin):
                 final_effects = (
                     frozenset(defn.effects) if defn.effects else inferred_res.effects
                 )
+                if widen and not defn.effects:
+                    final_effects |= existing_type.effects
                 if existing_type.effects != final_effects:
                     self.global_env.bind(
                         defn.name,
@@ -2749,6 +2759,10 @@ class TypeChecker(ExhaustivenessMixin):
                         else frozenset()
                     )
                 )
+                if widen:
+                    current_throws |= self._function_thrown_types.get(
+                        defn.name, frozenset()
+                    )
                 if self._function_thrown_types.get(defn.name) != current_throws:
                     self._function_thrown_types[defn.name] = current_throws
                     changed = True
@@ -2761,6 +2775,8 @@ class TypeChecker(ExhaustivenessMixin):
                     continue
                 existing_type = method_types[method.name]
                 final_effects = self._stable_effects_for_function(method)
+                if widen and not method.effects:
+                    final_effects |= existing_type.effects
                 if existing_type.effects != final_effects:
                     method_types[method.name] = FuncType(
                         existing_type.param_types,

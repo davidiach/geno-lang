@@ -25,6 +25,43 @@ def _typecheck_errors(source: str) -> list:
         return [str(e)]
 
 
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("order", ["abc", "acb", "bac", "bca", "cab", "cba"])
+def test_recursive_throw_inference_converges(order):
+    """Recursive summaries must settle even when unknown throws circulate."""
+    definitions = {
+        "a": """
+@untested("recursive effect regression")
+func first(n: Int) -> Int
+    return second(n)
+end func
+""",
+        "b": """
+@untested("recursive effect regression")
+func second(n: Int) -> Int
+    return third(n)
+end func
+""",
+        "c": """
+@untested("recursive effect regression")
+func third(n: Int) -> Int with throw
+    if n <= 0 then
+        throw Bad("done")
+    end if
+    return first(n - 1)
+end func
+""",
+    }
+    checker = _typecheck(
+        "type Problem = Bad(message: String)\n"
+        + "\n".join(definitions[key] for key in order)
+    )
+    for name in ("first", "second", "third"):
+        signature = checker.global_env.lookup(name)
+        assert isinstance(signature, FuncType)
+        assert "throw" in signature.effects
+
+
 # ---------------------------------------------------------------------------
 # Effect inference from builtin calls
 # ---------------------------------------------------------------------------
