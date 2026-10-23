@@ -3150,7 +3150,10 @@ class TypeChecker(ExhaustivenessMixin):
         self, callee: Expression, env: TypeEnv
     ) -> frozenset[str]:
         """Lookup inferred thrown types for a callee."""
-        if isinstance(callee, Identifier):
+        if (
+            isinstance(callee, Identifier)
+            and env.binding_scope(callee.name) is self.global_env
+        ):
             known = self._function_thrown_types.get(callee.name)
             if known:
                 return known

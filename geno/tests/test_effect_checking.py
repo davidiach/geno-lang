@@ -1,5 +1,7 @@
 """Tests for the effect typing system — Phase 3: inference and checking."""
 
+import pytest
+
 from geno.parser import parse
 from geno.typechecker import TypeChecker
 from geno.types import FuncType
@@ -506,6 +508,67 @@ end func use_touch
 class TestTryCatchThrowRetention:
     """A catch masks the body's throw effect only when the handler is known to
     take over every value the body can throw (#197)."""
+
+    @pytest.mark.parametrize("binding", ["local", "parameter"])
+    @pytest.mark.parametrize("call", ["risky(1)", "1 |> risky"])
+    def test_shadowed_callee_retains_unknown_throws(self, binding: str, call: str):
+        params = "risky: (Int) -> Int with throw" if binding == "parameter" else ""
+        local = (
+            'let risky: (Int) -> Int with throw = fn(x: Int) -> throw "escaped"'
+            if binding == "local"
+            else ""
+        )
+        source = f"""
+type ExpectedError = Expected(message: String)
+
+@untested("throwing helper")
+func risky(x: Int) -> Int with throw
+    throw Expected("known")
+end func
+
+@untested("shadowing regression")
+func wrapper({params}) -> Int
+    {local}
+    try
+        return {call}
+    catch err: ExpectedError
+        return 0
+    end try
+end func
+"""
+        checker = _typecheck(source)
+        inferred = checker.global_env.lookup("wrapper")
+        assert isinstance(inferred, FuncType)
+        assert "throw" in inferred.effects
+        annotated = source.replace(
+            f"func wrapper({params}) -> Int", f"func wrapper({params}) -> Int with io"
+        )
+        errors = _typecheck_errors(annotated)
+        assert any(
+            "undeclared effects" in error and "throw" in error for error in errors
+        )
+
+    @pytest.mark.parametrize("call", ["risky(1)", "1 |> risky"])
+    def test_global_callee_known_throws_are_masked(self, call: str):
+        checker = _typecheck(f"""
+type ExpectedError = Expected(message: String)
+
+@untested("throwing helper")
+func risky(x: Int) -> Int with throw
+    throw Expected("known")
+end func
+
+func main() -> Int with io
+    try
+        return {call}
+    catch err: ExpectedError
+        return 0
+    end try
+end func
+""")
+        inferred = checker.global_env.lookup("main")
+        assert isinstance(inferred, FuncType)
+        assert "throw" not in inferred.effects
 
     def test_unmatched_catch_retains_throw_effect(self):
         """The issue's reproduction: a typed catch that cannot match the thrown
