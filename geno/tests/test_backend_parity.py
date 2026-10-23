@@ -4768,6 +4768,37 @@ class TestTypedCatchParity:
         """
         self._check_all(source, "2\n", "builtin ADT typed catch (#193)")
 
+    @pytest.mark.parametrize("typecheck", [True, False])
+    def test_alias_catch_with_optional_typechecking(self, typecheck: bool):
+        source = """
+        type BaseError = Base(msg: String)
+        type AliasError = BaseError
+
+        func main() -> Unit
+            try
+                try
+                    throw Base("alias test")
+                catch err: AliasError
+                    print(1)
+                end try
+            catch err: String
+                print(2)
+            end try
+            return ()
+        end func
+        """
+        py_result = run_python_code(
+            compile_to_python(source, typecheck=typecheck),
+            python_executable=sys.executable,
+            args=["--cap", "print"],
+        )
+        js_result = run_node_code(
+            compile_to_js(source, typecheck=typecheck), args=["--cap", "print"]
+        )
+        for result in (py_result, js_result):
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == "1\n"
+
     def test_multi_module_project_typed_catch(self):
         modules = {
             "Unrelated": """

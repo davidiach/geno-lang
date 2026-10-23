@@ -1731,7 +1731,7 @@ class JSCompiler(BaseCompiler):
                 self._writeln(
                     f"if (!(__geno_err__.value && ({tag_checks}))) throw __geno_err__;"
                 )
-            else:
+            elif variants is not None:
                 self._writeln("throw __geno_err__;")
             self._writeln(f"let {var_name} = __geno_err__.value;")
             with self._block_scope(

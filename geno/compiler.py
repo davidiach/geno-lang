@@ -1623,7 +1623,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                         self._writeln(
                             f"if type(__geno_err__.value).__name__ not in {variants!r}: raise"
                         )
-                else:
+                elif variants is not None:
                     self._writeln("raise")
                 self._writeln(f"{var_name} = __geno_err__.value")
             if stmt.catch_clause.body:
