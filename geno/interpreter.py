@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from functools import partial
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
@@ -91,6 +91,7 @@ from .builtin_registry import (
 from .capabilities import capability_denied_message
 from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
+from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
 from .float_promotion import float_shape
 from .harness import example_call_args, example_numbers_match
 from .sandbox import (
@@ -131,6 +132,8 @@ from .values import (
 # =============================================================================
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # sys.setrecursionlimit is process-global. geno.run() is a documented embedding
 # API that may be invoked from multiple threads; a per-run raise/restore races
@@ -432,7 +435,7 @@ class Interpreter:
     # Maximum recursion depth to prevent stack overflow
     # Set conservatively because each Geno call uses multiple Python stack frames
     # Python's default limit is ~1000, and each Geno call uses ~4-5 Python frames
-    MAX_RECURSION_DEPTH = 500
+    MAX_RECURSION_DEPTH = DEFAULT_MAX_RECURSION_DEPTH
 
     def __init__(
         self,
@@ -486,6 +489,7 @@ class Interpreter:
         self.output_buffer: list[str] = []
         self._output_length = 0
         self._deadline: float | None = None
+        self._interrupted = False
 
         # Reverse index: constructor name -> parent type name (O(1) lookup)
         self._constructor_to_type: dict[str, str] = {}
@@ -1445,113 +1449,135 @@ class Interpreter:
             SandboxTimeout: If execution exceeds timeout
             RuntimeError: For runtime errors
         """
-        # Ensure Python's recursion limit can accommodate the Geno depth.
-        # A bare Geno call uses ~4-5 Python frames, but match and contract
-        # paths chain ~8 (issue #650). 12 gives headroom on every path so
-        # the Geno-level check fires before Python's RecursionError.
+        return self.run_with_recursion_room(
+            lambda: self._run_program(program, modules, execute_main)
+        )
+
+    def run_with_recursion_room(self, body: Callable[[], _T]) -> _T:
+        """Run ``body`` with the Python stack this interpreter's depth needs.
+
+        A bare Geno call uses ~4-5 Python frames, but match and contract
+        paths chain ~8 (issue #650). 12 gives headroom on every path so the
+        Geno-level check fires before Python's RecursionError. A deep limit
+        runs on a thread with a matching C stack (execution_limits.py).
+        """
         needed = self.max_recursion_depth * 12 + 100
-        with _raised_recursion_limit(needed):
-            # Constant initializers execute too, including during imports.
-            # Charge initialization, examples and main to one deadline.
-            with self._execution_deadline(self.sandbox_config.timeout):
-                # Resolve imports first
-                entrypoint_main = next(
-                    (
-                        defn
-                        for defn in program.definitions
-                        if isinstance(defn, FunctionDef) and defn.name == "main"
-                    ),
-                    None,
-                )
 
-                if modules is not None:
-                    self._module_parent_env = self._prelude_environment()
-                    resolved: set[str] = set()
-                    module_imports: dict[
-                        str, tuple[dict[str, Closure], dict[str, FunctionDef]]
-                    ] = {}
-                    for defn in program.definitions:
-                        if isinstance(defn, ImportStatement):
-                            self._resolve_module_import(
-                                defn, modules, resolved, module_imports
-                            )
+        def with_limit(limit: int) -> _T:
+            with _raised_recursion_limit(limit):
+                return body()
 
-                self._bind_module_constants(program, self.global_env)
+        return call_with_recursion_room(needed, with_limit, interrupt=self.interrupt)
 
-                # First pass: collect type and function definitions
+    def interrupt(self) -> None:
+        """Stop a run on another thread at its next step check."""
+        self._interrupted = True
+
+    def _run_program(
+        self,
+        program: Program,
+        modules: dict[str, "Program"] | None,
+        execute_main: bool,
+    ) -> Any:
+        # Constant initializers execute too, including during imports.
+        # Charge initialization, examples and main to one deadline.
+        with self._execution_deadline(self.sandbox_config.timeout):
+            # Resolve imports first
+            entrypoint_main = next(
+                (
+                    defn
+                    for defn in program.definitions
+                    if isinstance(defn, FunctionDef) and defn.name == "main"
+                ),
+                None,
+            )
+
+            if modules is not None:
+                self._module_parent_env = self._prelude_environment()
+                resolved: set[str] = set()
+                module_imports: dict[
+                    str, tuple[dict[str, Closure], dict[str, FunctionDef]]
+                ] = {}
                 for defn in program.definitions:
-                    if isinstance(defn, TypeDef):
-                        # Remove stale constructor entries if type is being redefined
-                        old_def = self.type_defs.get(defn.name)
-                        if old_def is not None:
-                            for v in old_def.variants:
-                                self._constructor_to_type.pop(v.name, None)
-                        self.type_defs[defn.name] = defn
-                        for variant in defn.variants:
-                            self._constructor_to_type[variant.name] = defn.name
-                    elif isinstance(defn, FunctionDef):
-                        self.functions[defn.name] = defn
-                        closure = Closure(
-                            params=defn.params,
-                            body=defn.body,
-                            env=self.global_env,
-                            name=defn.name,
-                            specs=defn.specs,
-                            is_async=defn.is_async,
+                    if isinstance(defn, ImportStatement):
+                        self._resolve_module_import(
+                            defn, modules, resolved, module_imports
                         )
-                        self.global_env.bind(defn.name, closure)
-                        self._function_closures[defn.name] = closure
 
-                # Second pass: process trait impls
-                for defn in program.definitions:
-                    if isinstance(defn, ImplDef):
-                        method_closures: dict[str, Closure] = {}
-                        for method in defn.methods:
-                            method_closures[method.name] = Closure(
-                                params=method.params,
-                                body=method.body,
-                                env=self.global_env,
-                                name=method.name,
-                                specs=method.specs,
-                            )
-                        self.trait_impls[(defn.trait_name, defn.target_type)] = (
-                            method_closures
-                        )
-                        # Register each trait method name for dispatch
-                        for method in defn.methods:
-                            self.trait_method_names.add(method.name)
-                            self.trait_method_param_names[
-                                (defn.trait_name, method.name)
-                            ] = [param.name for param in method.params]
+            self._bind_module_constants(program, self.global_env)
 
-                # Verify examples if enabled. Steps spent verifying examples
-                # count against the same max_steps budget as `main` so the
-                # advertised bound is a single honest global cap — otherwise
-                # adversarial example clauses could do up to max_steps work
-                # in verification *and* another max_steps in `main`.
-                if self.check_examples:
-                    try:
-                        self._verify_examples()
-                    finally:
-                        # Example output is never program output, even when
-                        # verification fails and callers report what was
-                        # printed so far (#130).
-                        self.output_buffer.clear()
-                        self._output_length = 0
-
-                # Look for a main function
-                if execute_main and entrypoint_main is not None:
-                    main_func = self.global_env.lookup("main")
-                    result = self._call_function(
-                        main_func, [], location=entrypoint_main.location
+            # First pass: collect type and function definitions
+            for defn in program.definitions:
+                if isinstance(defn, TypeDef):
+                    # Remove stale constructor entries if type is being redefined
+                    old_def = self.type_defs.get(defn.name)
+                    if old_def is not None:
+                        for v in old_def.variants:
+                            self._constructor_to_type.pop(v.name, None)
+                    self.type_defs[defn.name] = defn
+                    for variant in defn.variants:
+                        self._constructor_to_type[variant.name] = defn.name
+                elif isinstance(defn, FunctionDef):
+                    self.functions[defn.name] = defn
+                    closure = Closure(
+                        params=defn.params,
+                        body=defn.body,
+                        env=self.global_env,
+                        name=defn.name,
+                        specs=defn.specs,
+                        is_async=defn.is_async,
                     )
-                    if entrypoint_main.is_async:
-                        return self._execute_async_value(
-                            result, entrypoint_main.location
-                        )
-                    return result
+                    self.global_env.bind(defn.name, closure)
+                    self._function_closures[defn.name] = closure
 
-                return None
+            # Second pass: process trait impls
+            for defn in program.definitions:
+                if isinstance(defn, ImplDef):
+                    method_closures: dict[str, Closure] = {}
+                    for method in defn.methods:
+                        method_closures[method.name] = Closure(
+                            params=method.params,
+                            body=method.body,
+                            env=self.global_env,
+                            name=method.name,
+                            specs=method.specs,
+                        )
+                    self.trait_impls[(defn.trait_name, defn.target_type)] = (
+                        method_closures
+                    )
+                    # Register each trait method name for dispatch
+                    for method in defn.methods:
+                        self.trait_method_names.add(method.name)
+                        self.trait_method_param_names[
+                            (defn.trait_name, method.name)
+                        ] = [param.name for param in method.params]
+
+            # Verify examples if enabled. Steps spent verifying examples
+            # count against the same max_steps budget as `main` so the
+            # advertised bound is a single honest global cap — otherwise
+            # adversarial example clauses could do up to max_steps work
+            # in verification *and* another max_steps in `main`.
+            if self.check_examples:
+                try:
+                    self._verify_examples()
+                finally:
+                    # Example output is never program output, even when
+                    # verification fails and callers report what was
+                    # printed so far (#130).
+                    self.output_buffer.clear()
+                    self._output_length = 0
+
+            # Look for a main function
+            if execute_main and entrypoint_main is not None:
+                main_func = self.global_env.lookup("main")
+                result = self._call_function(
+                    main_func, [], location=entrypoint_main.location
+                )
+                if entrypoint_main.is_async:
+                    return self._execute_async_value(result, entrypoint_main.location)
+                return result
+
+            return None
 
     def _resolve_module_import(
         self,
@@ -1988,6 +2014,8 @@ class Interpreter:
         deadline reports as a timeout, matching the pre-fast-path order.
         """
         self._check_timeout(location)
+        if self._interrupted:
+            raise KeyboardInterrupt
         if self.max_steps is not None and self.steps > self.max_steps:
             loc_str = f" at {location}" if location else ""
             raise StepLimitExceeded(
@@ -2408,6 +2436,15 @@ class Interpreter:
         else:
             return
 
+        # A constructor value changes only through a field assignment, which
+        # clears its mark, so once everything it reaches is known to fit these
+        # limits it needs no walking again. That holds only while no mutable
+        # container is reachable; those grow in place.
+        # Without this, building or passing a linked structure re-walks it
+        # at every call and costs quadratic time.
+        limits = (size_limit, max_bits)
+        constructors: list[ConstructorValue] = []
+        saw_mutable = False
         visited: set[int] = set()
         stack: list[Any] = list(roots)
         while stack:
@@ -2421,6 +2458,15 @@ class Interpreter:
             value_id = id(value)
             if value_id in visited:
                 continue
+
+            if isinstance(value, ConstructorValue):
+                visited.add(value_id)
+                if value._limits_checked != limits:
+                    constructors.append(value)
+                    stack.extend(value.fields.values())
+                continue
+            if isinstance(value, (MutableMapValue, SetValue, VecValue, ArrayValue)):
+                saw_mutable = True
 
             if isinstance(value, MutableMapValue):
                 visited.add(value_id)
@@ -2450,10 +2496,6 @@ class Interpreter:
                 visited.add(value_id)
                 size = len(value)
                 kind = "Tuple"
-            elif isinstance(value, ConstructorValue):
-                visited.add(value_id)
-                stack.extend(value.fields.values())
-                continue
             elif isinstance(value, str):
                 visited.add(value_id)
                 size = len(value)
@@ -2475,6 +2517,10 @@ class Interpreter:
             elif isinstance(value, dict):
                 stack.extend(value.keys())
                 stack.extend(value.values())
+
+        if not saw_mutable:
+            for constructor in constructors:
+                object.__setattr__(constructor, "_limits_checked", limits)
 
     def _check_collection_size(
         self, kind: str, size: int, location: SourceLocation | None
@@ -3336,6 +3382,7 @@ class Interpreter:
                 new_fields = dict(parent.fields)
                 new_fields[expr.field_name] = child
                 object.__setattr__(parent, "_fields", MappingProxyType(new_fields))
+                object.__setattr__(parent, "_limits_checked", None)
                 return child
             return self._field_of(parent, expr)
         if isinstance(expr, IndexAccess):
@@ -3362,6 +3409,8 @@ class Interpreter:
                 new_fields = dict(target.fields)
                 new_fields[stmt.field_name] = value
                 object.__setattr__(target, "_fields", MappingProxyType(new_fields))
+                # The new field has not been walked with the rest of the value.
+                object.__setattr__(target, "_limits_checked", None)
             else:
                 raise RuntimeError(
                     f"No field '{stmt.field_name}' on {target.constructor}",

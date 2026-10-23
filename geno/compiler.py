@@ -103,7 +103,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
-from .base_compiler import BaseCompiler
+from .base_compiler import BaseCompiler, top_level_runtime_shadows
 from .builtin_registry import (
     all_builtin_names,
     python_backend_builtin_helper_names,
@@ -114,7 +114,9 @@ from .entrypoint import (
     classify_entrypoint_result,
     is_async_execution_form,
 )
+from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH
 from .float_promotion import float_shape
+from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
 from .stdlib_scope import binds_unqualified
@@ -216,7 +218,9 @@ _PYTHON_EMITTED_HOST_INTRINSIC_NAMES = frozenset(
     }
 )
 _PYTHON_HOST_INTRINSIC_NAMES = frozenset(dir(_python_builtins))
-_PYTHON_FIXED_GLOBAL_NAMES = frozenset({"__name__", "asyncio", "_geno_entry_main"})
+_PYTHON_FIXED_GLOBAL_NAMES = frozenset(
+    {"__name__", "asyncio", "_geno_entry_main", "_geno_run_deep"}
+)
 
 
 # Shadowing these could disable safety mechanisms (get_field, _safe_div) or
@@ -289,6 +293,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_GenoContractViolation",
             "_GENO_MISSING",
             "_geno_panic",
+            "_geno_named_constructor",
         }
     )
     | _PYTHON_EMITTED_LOCAL_HELPER_NAMES
@@ -315,6 +320,26 @@ _PYTHON_PROJECT_RESERVED_NAMES = (
 _PYTHON_KEYWORDS: frozenset[str] = frozenset(keyword.kwlist) | frozenset(
     getattr(keyword, "softkwlist", [])
 )
+
+
+def compiled_python_name(program: Program, name: str) -> str:
+    """The name a single-file program's top-level `name` has in compiled Python."""
+    if name in top_level_runtime_shadows(program):
+        return f"{name}{HOST_NAME_SUFFIX}"
+    return Compiler._target_name(name)
+
+
+@lru_cache(maxsize=1)
+def _python_host_names() -> frozenset[str]:
+    """Host and runtime names a Geno identifier is renamed away from (0011).
+
+    Underscored runtime internals such as ``_GENO_CAPS`` stay rejected instead.
+    """
+    names = (RESERVED_PRELUDE_NAMES | _PYTHON_PROJECT_RESERVED_NAMES) - (
+        geno_runtime_names() | _PYTHON_KEYWORDS
+    )
+    return frozenset(name for name in names if not name.startswith("_"))
+
 
 # ---------------------------------------------------------------------------
 # Integer-limit contract of the compiled Python backend
@@ -773,13 +798,16 @@ class Compiler(BaseCompiler, ASTVisitor):
     _BUILTIN_NAME_MAP: dict[str, str] = python_backend_builtin_name_map()
 
     @staticmethod
-    def _mangle_name(name: str) -> str:
+    def _target_name(name: str) -> str:
         """Mangle a Geno identifier so it is a valid, non-keyword Python name."""
         mapped = Compiler._BUILTIN_NAME_MAP.get(name)
         if mapped is not None:
             return mapped
         if name in _PYTHON_KEYWORDS:
             return f"{name}_kw"
+        if name in _python_host_names():
+            # `len`, `list`, `T`: a host or runtime name (see host_names.py).
+            return f"{name}{HOST_NAME_SUFFIX}"
         return name
 
     @staticmethod
@@ -815,6 +843,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._shadow_runtime_names(program)
         self._active_module_bindings = {}
         self._reserve_user_temp_names(program)
 
@@ -826,11 +855,14 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         self._validate_runtime_name_collisions(
             program,
-            RESERVED_PRELUDE_NAMES,
-            _PYTHON_LOCAL_RESERVED_NAMES,
+            RESERVED_PRELUDE_NAMES - _python_host_names(),
+            _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names(),
             CompileError,
-            direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
+            direct_reference_reserved_names=(
+                _PYTHON_DIRECT_REFERENCE_RESERVED_NAMES - _python_host_names()
+            ),
         )
+        self._validate_renamed_identifiers(program, CompileError)
 
         self._compile_module_constants(program)
 
@@ -846,7 +878,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._compile_impl_def(defn)
             elif isinstance(defn, ImportStatement):
                 if defn.alias:
-                    self.output.write(f"{defn.alias} = {defn.module_name}\n")
+                    alias = self._mangle_name(defn.alias)
+                    self.output.write(f"{alias} = {defn.module_name}\n")
             # TestBlock definitions are skipped in compiled output
 
         # Emit trait dispatch wrapper functions
@@ -900,11 +933,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             self._validate_runtime_name_collisions(
                 program,
-                _PYTHON_PROJECT_RESERVED_NAMES,
-                _PYTHON_LOCAL_RESERVED_NAMES,
+                _PYTHON_PROJECT_RESERVED_NAMES - _python_host_names(),
+                _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names(),
                 CompileError,
                 top_level_dispatchers_share_scope=False,
-                direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
+                direct_reference_reserved_names=(
+                    _PYTHON_DIRECT_REFERENCE_RESERVED_NAMES - _python_host_names()
+                ),
             )
         for mod_name in dep_graph.sorted_modules:
             try:
@@ -991,6 +1026,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 CompileError,
                 imported_names=imported_runtime_names.keys(),
             )
+            self._validate_renamed_identifiers(program, CompileError)
 
             self.output.write(f"\n\n# === Module: {mod_name} ===\n")
             factory_name = f"_geno_module_{self._mangle_name(mod_name)}"
@@ -1111,10 +1147,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Emit a Union type alias so the type name resolves in annotations
         variant_names = [v.name for v in defn.variants]
+        emitted = [self._mangle_name(name) for name in variant_names]
         if len(variant_names) == 1:
-            self._writeln(f"{defn.name} = {variant_names[0]}")
+            self._writeln(f"{self._mangle_name(defn.name)} = {emitted[0]}")
         elif defn.name not in variant_names:
-            self._writeln(f"{defn.name} = Union[{', '.join(variant_names)}]")
+            self._writeln(
+                f"{self._mangle_name(defn.name)} = Union[{', '.join(emitted)}]"
+            )
         # A variant that shares the type's name (``type Shape = Shape(n: Int)
         # | Other``) already binds that name to its constructor class; a
         # Union alias would shadow the constructor and make it uncallable
@@ -1144,7 +1183,8 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # repr=False so Constructor.__repr__ (matching interpreter format) is used
         self._writeln("@dataclass(frozen=True, repr=False)")
-        self._writeln(f"class {variant.name}(Constructor):")
+        class_name = self._mangle_name(variant.name)
+        self._writeln(f"class {class_name}(Constructor):")
         self._indent()
 
         # Emit __slots__ for memory efficiency
@@ -1161,6 +1201,10 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("pass")
 
         self._dedent()
+        if class_name != variant.name:
+            # Renamed away from a host name (host_names.py); values still
+            # print and match by their Geno name.
+            self._writeln(f"_geno_named_constructor({class_name}, {variant.name!r})")
         self._writeln()
 
     def _compile_type_annotation(self, type_annot: TypeAnnotation) -> str:
@@ -1900,7 +1944,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             if pattern.constructor == "None":
                 cond = f"isinstance({scrutinee}, _None)"
             else:
-                cond = f"isinstance({scrutinee}, {pattern.constructor})"
+                cond = (
+                    f"isinstance({scrutinee}, {self._mangle_name(pattern.constructor)})"
+                )
 
             # Handle subpatterns
             for i, subpat in enumerate(pattern.subpatterns):
@@ -2049,9 +2095,10 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return "None_"
             # Check if this is a nullary constructor (type variant with no fields)
             variant = self._constructor_to_variant.get(type_identifier.name)
+            name = self._mangle_name(type_identifier.name)
             if variant is not None and not variant.fields:
-                return f"{type_identifier.name}()"
-            return str(type_identifier.name)
+                return f"{name}()"
+            return name
 
         if expr_type is MapLiteral:
             return self._compile_map_literal(cast(MapLiteral, expr))
@@ -2213,9 +2260,10 @@ class Compiler(BaseCompiler, ASTVisitor):
             if expr.name == "None":
                 return "None_"
             variant = self._constructor_to_variant.get(expr.name)
+            name = self._mangle_name(expr.name)
             if variant is not None and not variant.fields:
-                return f"{expr.name}()"
-            return str(expr.name)
+                return f"{name}()"
+            return name
 
         if isinstance(expr, MapLiteral):
             return self._compile_map_literal(expr)
@@ -3055,7 +3103,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             names, values, call = reordered
             return f"(lambda {', '.join(names)}: {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
-        return f"{expr.constructor}({args})"
+        return f"{self._mangle_name(expr.constructor)}({args})"
 
     def _compile_fstring_expr(self, expr: FStringExpr) -> str:
         """Compile an f-string expression to a Python f-string."""
@@ -3407,8 +3455,39 @@ def _compiled_main_guard_opening(*, is_async: bool, main_name: str = "main") -> 
     lines = ["\n\nif __name__ == '__main__':\n"]
     if is_async:
         lines.append("    import asyncio\n")
-    lines.append(f"    result = {call}\n")
+    lines.append(_STANDALONE_DEEP_RUNNER)
+    lines.append(f"    result = _geno_run_deep(lambda: {call})\n")
     return "".join(lines)
+
+
+# A standalone program allows the default Geno call depth (proposal 0011): a
+# compiled call is one Python frame, as in the process sandbox. Before Python
+# 3.12 each frame can also spend C stack, so `main` then runs on a thread
+# whose stack holds that many (execution_limits.call_with_recursion_room;
+# a standalone artifact must not import geno).
+_STANDALONE_RECURSION_FRAMES = DEFAULT_MAX_RECURSION_DEPTH * 6 + 100
+_STANDALONE_DEEP_RUNNER = f"""\
+    def _geno_run_deep(body):
+        import sys
+        sys.setrecursionlimit({_STANDALONE_RECURSION_FRAMES})
+        if sys.version_info >= (3, 12):
+            return body()
+        import threading
+        outcome = []
+        def run():
+            try:
+                outcome.append((True, body()))
+            except BaseException as exc:
+                outcome.append((False, exc))
+        threading.stack_size({_STANDALONE_RECURSION_FRAMES * 2048})
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join()
+        succeeded, value = outcome[0]
+        if not succeeded:
+            raise value
+        return value
+"""
 
 
 def _compiled_main_guard(

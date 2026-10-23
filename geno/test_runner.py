@@ -11,7 +11,7 @@ import fnmatch
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from .ast_nodes import FunctionDef, TestBlock
 from .diagnostics import format_labeled_error
@@ -28,6 +28,9 @@ from .harness import (
 )
 from .project_resolution import describe_project_resolution_error
 from .sandbox import SandboxConfig
+
+if TYPE_CHECKING:
+    from .interpreter import Interpreter
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,37 @@ def _resolve_harness_callable(interp, harness: FunctionHarness):  # type: ignore
             return None
         return impl_closures.get(harness.base_name)
     return interp.global_env.lookup(harness.name)
+
+
+def _run_examples_and_tests(
+    interp: Interpreter,
+    harnesses: list[FunctionHarness],
+    test_blocks: list[TestBlock],
+    result: HarnessResult,
+) -> None:
+    """Run examples and test blocks with the stack the call depth needs."""
+
+    def run() -> None:
+        _run_examples(interp, harnesses, result)
+        for test_block in test_blocks:
+            result.total += 1
+            try:
+                test_env = interp.global_env.child()
+                with interp._execution_deadline(interp.sandbox_config.timeout):
+                    for stmt in test_block.body:
+                        interp.exec_stmt(stmt, test_env)
+                result.passed += 1
+            except Exception as e:
+                result.failed += 1
+                result.violations.append(
+                    SpecViolation(
+                        kind="test",
+                        function=test_block.name,
+                        message=_test_error_detail(e),
+                    )
+                )
+
+    interp.run_with_recursion_room(run)
 
 
 def _run_examples(
@@ -484,25 +518,7 @@ def run_project_test_suite(
         result = HarnessResult()
         mod_start = time.monotonic()
 
-        _run_examples(interp, harnesses, result)
-
-        for test_block in test_blocks:
-            result.total += 1
-            try:
-                test_env = interp.global_env.child()
-                with interp._execution_deadline(interp.sandbox_config.timeout):
-                    for stmt in test_block.body:
-                        interp.exec_stmt(stmt, test_env)
-                result.passed += 1
-            except Exception as e:
-                result.failed += 1
-                result.violations.append(
-                    SpecViolation(
-                        kind="test",
-                        function=test_block.name,
-                        message=_test_error_detail(e),
-                    )
-                )
+        _run_examples_and_tests(interp, harnesses, test_blocks, result)
 
         result.untested = untested_funcs
         suite_steps = interp.steps
@@ -621,28 +637,9 @@ def _test_file(
         # Match project-mode tests: register definitions without running main().
         interp.run(program, modules=parsed_modules, execute_main=False)
 
-        # Run examples per function using the interpreter
+        # Run examples per function, then test blocks, using the interpreter
         result = HarnessResult()
-        _run_examples(interp, harnesses, result)
-
-        # Run test blocks
-        for test_block in test_blocks:
-            result.total += 1
-            try:
-                test_env = interp.global_env.child()
-                with interp._execution_deadline(interp.sandbox_config.timeout):
-                    for stmt in test_block.body:
-                        interp.exec_stmt(stmt, test_env)
-                result.passed += 1
-            except Exception as e:
-                result.failed += 1
-                result.violations.append(
-                    SpecViolation(
-                        kind="test",
-                        function=test_block.name,
-                        message=_test_error_detail(e),
-                    )
-                )
+        _run_examples_and_tests(interp, harnesses, test_blocks, result)
 
         # Report @untested functions
         result.untested = untested_funcs

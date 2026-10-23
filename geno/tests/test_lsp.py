@@ -4201,9 +4201,9 @@ class TestDocumentSyncDiagnostics:
         self, tmp_path, monkeypatch, kind, runnable
     ):
         source = (
-            "func widen(len: Int) -> Int\n"
+            "func widen(_safe_add: Int) -> Int\n"
             "  example 2 -> 4\n"
-            "  return len * 2\n"
+            "  return _safe_add * 2\n"
             "end func\n"
         )
         if runnable:
@@ -4221,7 +4221,7 @@ class TestDocumentSyncDiagnostics:
         uri = "untitled:Main.geno" if kind == "virtual" else main_file.as_uri()
         if kind != "virtual":
             # Check the unsaved buffer, even when the disk source is valid.
-            main_file.write_text(source.replace("len", "count"))
+            main_file.write_text(source.replace("_safe_add", "count"))
         server = create_server(diag_debounce_sec=0)
         server.lsp._workspace = Workspace(
             None, sync_kind=types.TextDocumentSyncKind.Full

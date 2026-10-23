@@ -27,7 +27,10 @@ from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
 from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES, KNOWN_CAPABILITIES
-from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
+from ..execution_limits import (
+    DEFAULT_MAX_RECURSION_DEPTH,
+    DEFAULT_PROCESS_MAX_MEMORY_BYTES,
+)
 
 # A leaf module by design: the parent side of the process-isolated lane needs
 # the modulo, and `geno.entrypoint` would drag `ast_nodes` and `types` into a
@@ -568,7 +571,7 @@ def run_file(
     unsafe: bool = False,
     timeout: float = 30.0,
     max_steps: int | None = None,
-    max_recursion_depth: int = 500,
+    max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH,
     max_output_length: int = 100_000,
     max_collection_size: int = 10_000_000,
     max_integer_bits: int = 33_219,

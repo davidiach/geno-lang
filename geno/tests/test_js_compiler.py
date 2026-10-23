@@ -1435,7 +1435,7 @@ class TestJSCompilerBuiltins:
         """
         js_code = compile_to_js(source)
         assert (
-            "return length(_checkCollectionSize([_checkCollectionSize(1), "
+            "return length_g(_checkCollectionSize([_checkCollectionSize(1), "
             "_checkCollectionSize(2), _checkCollectionSize(3)]));" in js_code
         )
         assert compile_and_run_js(source) == "42"
@@ -1503,7 +1503,7 @@ class TestJSCompilerBuiltins:
         """
         js_code = compile_to_js(source)
         assert (
-            "return append(_checkCollectionSize([_checkCollectionSize(1), "
+            "return append_g(_checkCollectionSize([_checkCollectionSize(1), "
             "_checkCollectionSize(2)]), _checkCollectionSize(3));" in js_code
         )
         assert compile_and_run_js(source) == "[3]"
@@ -3867,13 +3867,20 @@ def test_js_compiler_allows_non_constructor_helper_record_field():
     assert "function Wrapper(array_new)" in compile_to_js(source)
 
 
+def test_js_compiler_rejects_emitted_host_intrinsic_binding():
+    source = "func _geno_canvas() -> Int\n    return 1\nend func\n"
+    source += "func main() -> Int\n    return 1\nend func\n"
+
+    with pytest.raises(JSCompileError, match="reserved runtime name"):
+        compile_to_js(source, typecheck=False)
+
+
 @pytest.mark.parametrize(
     "name",
     [
         "Array",
         "Error",
         "String",
-        "_geno_canvas",
         "document",
         "fetch",
         "parseFloat",
@@ -3882,16 +3889,23 @@ def test_js_compiler_allows_non_constructor_helper_record_field():
         "undefined",
     ],
 )
-def test_js_compiler_rejects_emitted_host_intrinsic_binding(name):
+def test_js_compiler_renames_host_intrinsic_binding(name):
     binding = (
         f"type Host = {name}(value: Int)\n"
         if name[0].isupper()
-        else f"func {name}() -> Int\n    return 1\nend func\n"
+        else f"func {name}() -> Int\n    example () -> 1\n    return 1\nend func\n"
     )
-    source = binding + "func main() -> Int\n    return 1\nend func\n"
+    use = f"{name}(41).value" if name[0].isupper() else f"{name}()"
+    source = binding + (
+        "func main() -> Int\n"
+        f"    let total = {use} + length([1, 2])\n"
+        "    return total + length(to_string(total)) - 2\n"
+        "end func\n"
+    )
 
-    with pytest.raises(JSCompileError, match="reserved runtime name"):
-        compile_to_js(source, typecheck=False)
+    assert f"{name}_g" in compile_to_js(source, typecheck=False)
+    expected = "43" if name[0].isupper() else "2"
+    assert compile_and_run_js(source) == expected
 
 
 def test_js_single_program_rejects_function_trait_dispatcher_collision():
@@ -3940,16 +3954,15 @@ def test_js_single_app_rejects_lifecycle_trait_dispatcher_collision():
         compile_to_js(source, typecheck=False)
 
 
-def test_js_standalone_rejects_runtime_host_parse_float_shadow():
+def test_js_standalone_keeps_runtime_host_parse_float():
     source = """
 func parseFloat(value: String) -> Float
     example "2.5" -> 1.0
     return 1.0
 end func
 func main() -> Float
-    return 1.0
+    return parseFloat("2.5") + parse_float("0.25").unwrap_or(0.0)
 end func
 """
 
-    with pytest.raises(JSCompileError, match="reserved runtime name"):
-        compile_to_js(source)
+    assert compile_and_run_js(source) == "1.25"

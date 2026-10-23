@@ -38,6 +38,7 @@ from .cli._util import (
 )
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
@@ -173,8 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-recursion-depth",
         type=_positive_int_arg,
-        default=500,
-        help="Maximum Geno call depth (default: 500)",
+        default=DEFAULT_MAX_RECURSION_DEPTH,
+        help=f"Maximum Geno call depth (default: {DEFAULT_MAX_RECURSION_DEPTH})",
     )
     run_parser.add_argument(
         "--max-output-length",

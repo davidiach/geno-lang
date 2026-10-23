@@ -90,8 +90,8 @@ print(result.unclosed_blocks)  # ("func",)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `timeout` | `float \| None` | `5.0` | Cooperative execution deadline. `None` = no limit. |
-| `max_steps` | `int \| None` | `1_000_000` | Maximum interpreter steps. Explicit `None` disables the cooperative step limit. |
-| `max_recursion_depth` | `int` | `500` | Maximum call stack depth. |
+| `max_steps` | `int \| None` | `20_000_000` | Maximum interpreter steps. Explicit `None` disables the cooperative step limit. |
+| `max_recursion_depth` | `int` | `10_000` | Maximum Geno call depth. A deep limit runs the program on a thread with a large enough stack before Python 3.12. |
 | `max_output_length` | `int` | `100_000` | Maximum characters of print output. |
 | `max_collection_size` | `int` | `10_000_000` | Maximum size for strings and collections. |
 | `max_integer_bits` | `int` | `33_219` | Maximum bit length for integer arithmetic results. |

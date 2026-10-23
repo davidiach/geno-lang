@@ -12,6 +12,7 @@ import re as _re
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import lru_cache
 from io import StringIO
 from typing import TYPE_CHECKING, Optional, Tuple, Union, cast
 
@@ -105,12 +106,13 @@ if TYPE_CHECKING:
 from .ast_nodes import (
     FunctionType as ASTFunctionType,
 )
-from .base_compiler import BaseCompiler
+from .base_compiler import BaseCompiler, top_level_runtime_shadows
 from .builtin_registry import (
     all_builtin_names,
     js_backend_builtin_helper_names,
     js_backend_builtin_name_map,
 )
+from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .js_runtime_prelude import JS_RUNTIME_PRELUDE
 from .manifest import validate_module_name
 from .stdlib_scope import binds_unqualified
@@ -555,6 +557,25 @@ JS_DIRECT_REFERENCE_RESERVED_NAMES = (
 )
 
 
+@lru_cache(maxsize=1)
+def _js_host_names() -> frozenset[str]:
+    """Runtime names a Geno identifier is renamed away from (0011).
+
+    Underscored runtime internals such as ``_GENO_CAPS`` stay rejected instead.
+    """
+    names = (JS_RESERVED_PRELUDE_NAMES | _JS_LOCAL_RESERVED_NAMES) - (
+        geno_runtime_names() | _JS_RESERVED
+    )
+    return frozenset(name for name in names if not name.startswith("_"))
+
+
+@lru_cache(maxsize=1)
+def _js_renamed_names() -> frozenset[str]:
+    """Every name `_mangle_name` renames: keywords get `_kw`, the rest `_g`."""
+    renamed = _JS_RESERVED - geno_runtime_names()
+    return _js_host_names() | {name for name in renamed if not name.startswith("_")}
+
+
 class JSCompileError(Exception):
     """Raised when JS compilation detects an unsafe or invalid program."""
 
@@ -642,18 +663,28 @@ class JSCompiler(BaseCompiler):
 
     _BUILTIN_NAME_MAP: dict[str, str] = js_backend_builtin_name_map()
 
+    def _mangle_name(self, name: str) -> str:
+        if "$" in name:
+            base, _, suffix = name.partition("$")
+            return f"{self._mangle_name(base)}${suffix}"
+        return super()._mangle_name(name)
+
     @staticmethod
-    def _mangle_name(name: str) -> str:
+    def _target_name(name: str) -> str:
         if "$" in name:
             # A generic function's specialized copy: `show$g1`. Geno names
             # never contain `$`, so only the base part needs mangling.
             base, _, suffix = name.partition("$")
-            return f"{JSCompiler._mangle_name(base)}${suffix}"
+            return f"{JSCompiler._target_name(base)}${suffix}"
         mapped = JSCompiler._BUILTIN_NAME_MAP.get(name)
         if mapped is not None:
             return mapped
         if name in _JS_RESERVED:
             return f"{name}_kw"
+        if name in _js_host_names():
+            # `fetch`, `Error`, `get_field`: a host or runtime name (see
+            # host_names.py).
+            return f"{name}{HOST_NAME_SUFFIX}"
         return name
 
     @contextmanager
@@ -936,6 +967,7 @@ class JSCompiler(BaseCompiler):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._shadow_runtime_names(program)
         self._active_module_bindings = {}
         self._reserve_user_temp_names(program)
         self._out_line = 0
@@ -952,11 +984,14 @@ class JSCompiler(BaseCompiler):
         # Validate no user names shadow prelude names
         self._validate_runtime_name_collisions(
             program,
-            JS_RESERVED_PRELUDE_NAMES,
-            _JS_LOCAL_RESERVED_NAMES,
+            JS_RESERVED_PRELUDE_NAMES - _js_renamed_names(),
+            _JS_LOCAL_RESERVED_NAMES - _js_renamed_names(),
             JSCompileError,
-            direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
+            direct_reference_reserved_names=(
+                JS_DIRECT_REFERENCE_RESERVED_NAMES - _js_renamed_names()
+            ),
         )
+        self._validate_renamed_identifiers(program, JSCompileError)
 
         self._compile_module_constants(program)
 
@@ -975,7 +1010,8 @@ class JSCompiler(BaseCompiler):
                 # which concatenates modules in dependency order, so no codegen
                 # is needed here for the single-program path.
                 if defn.alias:
-                    self._write(f"const {defn.alias} = {defn.module_name};\n")
+                    alias = self._mangle_name(defn.alias)
+                    self._write(f"const {alias} = {defn.module_name};\n")
             # TestBlock definitions are skipped in compiled output
 
         # Emit trait dispatch wrapper functions
@@ -1106,11 +1142,13 @@ class JSCompiler(BaseCompiler):
             self._reserve_user_temp_names(program)
             self._validate_runtime_name_collisions(
                 program,
-                JS_RESERVED_PRELUDE_NAMES,
-                _JS_LOCAL_RESERVED_NAMES,
+                JS_RESERVED_PRELUDE_NAMES - _js_renamed_names(),
+                _JS_LOCAL_RESERVED_NAMES - _js_renamed_names(),
                 JSCompileError,
                 top_level_dispatchers_share_scope=False,
-                direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
+                direct_reference_reserved_names=(
+                    JS_DIRECT_REFERENCE_RESERVED_NAMES - _js_renamed_names()
+                ),
             )
         for mod_name in dep_graph.sorted_modules:
             try:
@@ -1205,6 +1243,7 @@ class JSCompiler(BaseCompiler):
                 JSCompileError,
                 imported_names=imported_runtime_names.keys(),
             )
+            self._validate_renamed_identifiers(program, JSCompileError)
 
             self._write(f"\n\n// === Module: {mod_name} ===\n")
             self._writeln(f"const {module_bindings[mod_name]} = (() => {{")
@@ -1503,9 +1542,10 @@ class JSCompiler(BaseCompiler):
                 context="variant field",
                 variant_name=variant.name,
             )
+        function_name = self._mangle_name(variant.name)
         if variant.fields:
             params = ", ".join(name for name, _ in variant.fields)
-            self._writeln(f"function {variant.name}({params}) {{")
+            self._writeln(f"function {function_name}({params}) {{")
             self._indent()
             self._writeln(
                 f"return _withGenoFormatter("
@@ -1515,7 +1555,7 @@ class JSCompiler(BaseCompiler):
             self._writeln("}")
         else:
             self._writeln(
-                f"function {variant.name}() {{ "
+                f"function {function_name}() {{ "
                 f"return _withGenoFormatter("
                 f"{{ _tag: '{variant.name}' }}, {formatter_name}); "
                 "}"
@@ -2899,9 +2939,10 @@ class JSCompiler(BaseCompiler):
             if expr.name == "None":
                 return "None_"
             variant = self._constructor_to_variant.get(expr.name)
+            name = self._mangle_name(expr.name)
             if variant is not None and not variant.fields:
-                return f"{expr.name}()"
-            return cast(str, expr.name)
+                return f"{name}()"
+            return name
 
         if isinstance(expr, ListLiteral):
             elements = ", ".join(self._compile_expr(e) for e in expr.elements)
@@ -3484,7 +3525,7 @@ class JSCompiler(BaseCompiler):
             names, values, call = reordered
             return f"(({', '.join(names)}) => {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
-        return f"{expr.constructor}({args})"
+        return f"{self._mangle_name(expr.constructor)}({args})"
 
     def _compile_fstring_expr(self, expr: FStringExpr) -> str:
         """Compile an f-string expression to a JavaScript template literal."""
@@ -3655,11 +3696,19 @@ def compile_to_js(
     return js_code
 
 
+def _top_level_js_name(name: str, shadows: frozenset[str]) -> str:
+    """The name a single-file program's top-level definition compiles to."""
+    if name in shadows:
+        return f"{name}{HOST_NAME_SUFFIX}"
+    return JSCompiler._target_name(name)
+
+
 def generate_dts(program: Program) -> str:
     """Generate TypeScript declaration file (.d.ts) from a Geno program."""
     from .ast_nodes import FunctionDef, TypeDef
 
     lines: list[str] = []
+    shadows = top_level_runtime_shadows(program)
 
     for defn in program.definitions:
         if isinstance(defn, TypeDef):
@@ -3677,16 +3726,18 @@ def generate_dts(program: Program) -> str:
                     lines.append(f"  readonly _tag: '{variant.name}';")
                     lines.append("}")
                 # Constructor function
+                constructor = JSCompiler._target_name(variant.name)
                 if variant.fields:
                     params = ", ".join(
                         f"{fn}: {_geno_type_to_ts(ft)}" for fn, ft in variant.fields
                     )
                     lines.append(
-                        f"export declare function {variant.name}({params}): {variant.name};"
+                        f"export declare function {constructor}({params}): "
+                        f"{variant.name};"
                     )
                 else:
                     lines.append(
-                        f"export declare function {variant.name}(): {variant.name};"
+                        f"export declare function {constructor}(): {variant.name};"
                     )
                 lines.append("")
 
@@ -3701,7 +3752,7 @@ def generate_dts(program: Program) -> str:
                 f"{p.name}: {_geno_type_to_ts(p.param_type)}" for p in defn.params
             )
             ret = _geno_type_to_ts(defn.return_type)
-            mangled = JSCompiler._mangle_name(defn.name)
+            mangled = _top_level_js_name(defn.name, shadows)
             generics = f"<{', '.join(defn.type_params)}>" if defn.type_params else ""
             lines.append(
                 f"export declare function {mangled}{generics}({params}): {ret};"
@@ -3786,12 +3837,13 @@ def _to_esm(js_code: str, program: Program, *, include_node_preamble: bool) -> s
 
     # Collect exported names
     exports: list[str] = []
+    shadows = top_level_runtime_shadows(program)
     for defn in program.definitions:
         if isinstance(defn, FunctionDef):
-            exports.append(JSCompiler._mangle_name(defn.name))
+            exports.append(_top_level_js_name(defn.name, shadows))
         elif isinstance(defn, TypeDef):
             for variant in defn.variants:
-                exports.append(variant.name)
+                exports.append(JSCompiler._target_name(variant.name))
 
     if exports:
         export_line = "export { " + ", ".join(exports) + " };\n"

@@ -1,0 +1,32 @@
+// Host and runtime names are ordinary Geno names (proposal 0011).
+type Fault = Error(msg: String) | Exception(code: Int) | Object
+
+func len(xs: List[Int]) -> Int
+    example [1, 2] -> 2
+    return length(xs)
+end func
+
+func max(a: Int, b: Int) -> Int
+    example (1, 2) -> 0
+    return 0
+end func
+
+func describe(fault: Fault) -> String
+    example Object -> "object"
+    match fault with
+        | Error(msg) -> return "error " + msg
+        | Exception(code) -> return f"exception {code}"
+        | Object -> return "object"
+    end match
+end func
+
+func main() -> Unit
+    let list = [1, 2, 3]
+    let str = "s"
+    let console = 4
+    print(len(list) + console)
+    print(str)
+    print(max(1, 2))
+    print([Error("x"), Exception(2), Object].map(describe))
+    print(Error("y"))
+end func

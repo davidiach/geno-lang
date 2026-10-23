@@ -74,6 +74,18 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   the rewrite preserves behavior (`throw "x"` to `panic("x")`, `.unwrap()` on
   the I/O builtins that now return `Result`, removed builtins to their
   replacements) and lists what needs a person, such as `try`/`catch`.
+- Host names are Geno names
+  ([proposal 0011](docs/proposals/0011-host-names-and-runtime-limits.md)): a
+  program may name a function `len`, a local `list`, a parameter `console` or
+  a constructor `Error`, and a top-level `func max` or `let min` shadows the
+  builtin on every backend. The compilers emit such names with a `_g` suffix;
+  values still print and match by their Geno names. Underscore-prefixed
+  runtime internals stay reserved.
+- Default limits that run ordinary programs: call depth 10,000 (was 500) and
+  20,000,000 interpreter steps (was 1,000,000) on every local lane, including
+  standalone compiled Python scripts and `geno test` examples. Before Python
+  3.12 a deep run gets a thread with a large enough stack instead of crashing.
+  The hosted server keeps call depth 500 (`GENO_MAX_RECURSION_DEPTH`).
 - Arithmetic on an operand that already failed to type-check no longer adds a
   second "Cannot apply '+' to Any and Int" error.
 - The standard library is generic throughout: `List`, `Option` and `Result`
@@ -128,6 +140,13 @@ and lists the rest.
 
 ### Fixed
 
+- Building or walking a linked structure is linear again: the interpreter no
+  longer re-walks a whole value at every call to enforce collection limits,
+  and compiled Python no longer scans lists to track identity. A 9,000-node
+  list took over 30 seconds to build in the interpreter.
+- A JavaScript program's `func max` no longer replaces the runtime's own
+  `max_`, and 28 builtin names that one backend accepted as user functions
+  and the other rejected now compile on both.
 - `import List` no longer makes `length("abc")` a type error, and `import
   Option` no longer breaks `map` on a list: an unqualified standard-library
   import leaves always-available builtins their meaning.

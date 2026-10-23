@@ -48,9 +48,9 @@ Key syntax rules:
   `xs.sort()` needs no comparator. `s.index_of(t)` returns `Option[Int]`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
-- Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,
-  `format`, `type`, `list`, `str`, ...) — these are reserved runtime names and
-  are rejected when the program is compiled
+- Any ordinary name works, including host names such as `len`, `id`, `list`,
+  `str`, `max` or a constructor `Error`; the compilers rename them. Only
+  names beginning with `_` that the runtime uses are reserved
 ```
 
 ## Common LLM Mistakes

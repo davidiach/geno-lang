@@ -64,6 +64,11 @@
     },
     "runtime_preludes": "hand-maintained target-specific implementations guarded by cross-backend parity tests",
     "embedding_timeout": "cooperative; untrusted code requires process isolation",
+    "default_limits": {
+      "max_recursion_depth": 10000,
+      "interpreter_max_steps": 20000000,
+      "hosted_max_recursion_depth": "GENO_MAX_RECURSION_DEPTH (default 500)"
+    },
     "http": {
       "capability": "http",
       "schemes": ["http", "https"],
@@ -170,7 +175,8 @@
     "functions": "snake_case",
     "types": "PascalCase",
     "constructors": "PascalCase",
-    "modules": "PascalCase"
+    "modules": "PascalCase",
+    "host_names": "an identifier means the same on every backend: host and runtime names such as len, list, console or Error are emitted with the suffix _g (target keywords with _kw); a top-level function or constant may shadow a builtin; underscore-prefixed runtime internals stay reserved; spelling both a name and its emitted form is an error"
   },
 
   "comments": {

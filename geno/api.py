@@ -35,7 +35,10 @@ from .capabilities import normalize_capability_values
 from .dependency_graph import DependencyGraphError
 from .diagnostics import Diagnostic, ErrorCode, Severity
 from .entrypoint import EntrypointResultKind, classify_entrypoint_result
-from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
+from .execution_limits import (
+    DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_MAX_RECURSION_DEPTH,
+)
 from .lexer import LexerError
 from .parser_base import ParseError, ParseErrors
 from .project_graph import ProjectGraphError
@@ -158,7 +161,7 @@ class RunConfig:
 
     timeout: float | None = 5.0
     max_steps: int | None = DEFAULT_INTERPRETER_MAX_STEPS
-    max_recursion_depth: int = 500
+    max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH
     max_output_length: int = 100_000
     max_collection_size: int = 10_000_000
     max_integer_bits: int = 33_219

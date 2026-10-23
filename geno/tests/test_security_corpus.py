@@ -64,8 +64,9 @@ def _config_for_file(filepath):
         return RunConfig(capabilities={"print"}, max_steps=1_000_000, timeout=30.0)
     elif "bomb" in basename or "exceeded" in basename:
         # Resource exhaustion tests: set explicit step limit so the step
-        # counter fires before the wall-clock timeout.
-        return RunConfig(max_steps=10000, timeout=30.0)
+        # counter fires before the wall-clock timeout, and the hosted
+        # server's call depth so recursion bombs meet the depth guard first.
+        return RunConfig(max_steps=10000, max_recursion_depth=500, timeout=30.0)
     else:
         return RunConfig()
 

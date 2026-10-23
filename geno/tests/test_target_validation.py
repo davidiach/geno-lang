@@ -312,11 +312,10 @@ def test_single_module_check_matches_standalone_compiler(tmp_path):
     check_result = _run_cli("check", str(source_path))
     compile_result = _run_cli("compile", str(source_path), "-o", str(output))
 
-    assert check_result.returncode != 0
-    assert compile_result.returncode != 0
-    assert "Warning" in check_result.stderr
-    assert "Warning" in compile_result.stderr
-    assert not output.exists()
+    # Proposal 0011: `Warning` compiles to `Warning_g`; check and compile agree.
+    assert check_result.returncode == 0, check_result.stderr
+    assert compile_result.returncode == 0, compile_result.stderr
+    assert "class Warning_g(Constructor):" in output.read_text(encoding="utf-8")
 
 
 def test_module_api_check_uses_project_lowering_rules():

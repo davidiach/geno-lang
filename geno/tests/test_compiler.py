@@ -27,6 +27,7 @@ from geno.compiler import (
 )
 from geno.parser import parse
 from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+from geno.tests._script_runner import run_python_code
 from geno.typechecker import TypeError as GenoTypeError
 
 
@@ -1832,16 +1833,17 @@ class TestCompilerPatternMatchFieldSafety:
 class TestCompilerReservedNameProtection:
     """Test that user code cannot shadow security-critical prelude names."""
 
-    def test_function_named_get_field_rejected(self):
-        """A function named get_field would shadow the field access safety check."""
+    def test_function_named_get_field_is_renamed(self):
+        """A function named get_field must not replace the field access check."""
         source = """
         func get_field(x: Int) -> Int
             example 5 -> 5
             return x
         end func
         """
-        with pytest.raises(CompileError, match="reserved runtime name"):
-            compile_to_python(source)
+        code = compile_to_python(source)
+        assert "def get_field_g(x: 'int') -> 'int':" in code
+        assert code.count("def get_field(") == 1  # the runtime's own
 
     @pytest.mark.parametrize("name", ["_require_cap", "_validate_regex_pattern"])
     def test_all_runtime_prelude_functions_are_reserved(self, name):
@@ -1854,15 +1856,16 @@ class TestCompilerReservedNameProtection:
         with pytest.raises(CompileError, match="reserved runtime name"):
             compile_to_python(source)
 
-    def test_runtime_name_rejected_as_import_alias(self):
+    def test_runtime_name_as_import_alias_is_renamed(self):
         source = """
         import Utils as Constructor
         func main() -> Int
             return 1
         end func
         """
-        with pytest.raises(CompileError, match="reserved runtime name"):
-            compile_to_python(source)
+        code = compile_to_python(source)
+        assert "\nConstructor_g = Utils\n" in code
+        assert "\nConstructor = " not in code
 
     def test_runtime_name_rejected_as_trait_dispatcher(self):
         source = """
@@ -1915,13 +1918,14 @@ class TestCompilerReservedNameProtection:
         with pytest.raises(CompileError, match="reserved runtime name"):
             compile_to_python(source)
 
-    def test_type_named_constructor_rejected(self):
-        """A type named Constructor would shadow the base class."""
+    def test_type_named_constructor_is_renamed(self):
+        """A type named Constructor must not replace the runtime base class."""
         source = """
         type Constructor = Foo(x: Int)
         """
-        with pytest.raises(CompileError, match="reserved runtime name"):
-            compile_to_python(source)
+        code = compile_to_python(source)
+        assert "\nConstructor_g = Foo\n" in code
+        assert "\nConstructor = " not in code
 
     def test_variant_named_some_rejected(self):
         """A variant named Some would shadow the Option constructor."""
@@ -1944,12 +1948,6 @@ class TestCompilerReservedNameProtection:
             func main() -> Int
                 let _check_collection_size: Int = 1
                 return _check_collection_size
-            end func
-            """,
-            """
-            func main() -> Int
-                var get_field: Int = 1
-                return get_field
             end func
             """,
             """
@@ -2008,7 +2006,14 @@ class TestCompilerReservedNameProtection:
         with pytest.raises(CompileError, match="reserved runtime name"):
             compile_to_python(source)
 
-    @pytest.mark.parametrize("name", sorted(compiler_module._PYTHON_FIXED_GLOBAL_NAMES))
+    @pytest.mark.parametrize(
+        "name",
+        sorted(
+            name
+            for name in compiler_module._PYTHON_FIXED_GLOBAL_NAMES
+            if name.startswith("_")
+        ),
+    )
     def test_fixed_generated_globals_are_reserved(self, name: str):
         source = f"""
         func {name}() -> Int
@@ -3268,59 +3273,27 @@ class TestPythonKeywordMangling:
 
 
 class TestMangledHelperNameShadowing:
-    """User-defined functions must not shadow mangled builtin helpers."""
+    """User functions spelled like mangled builtin helpers are renamed."""
 
-    def test_print_underscore_rejected(self):
-        """func print_(...) must be rejected — it shadows the runtime helper."""
-        from geno.compiler import CompileError
+    @pytest.mark.parametrize("name", ["print_", "map_", "filter_", "exec_"])
+    def test_helper_spelling_is_renamed(self, name: str):
+        source = f"""
+        func {name}(x: Int) -> Int
+            example 1 -> 2
+            return x + 1
+        end func
 
-        source = """
-        func print_(x: Int) -> Int
-            example 1 -> 1
-            return x
+        func main() -> Unit
+            print({name}(1))
+            print(map([1], fn(x) -> x * 10))
         end func
         """
-        with pytest.raises(CompileError, match="print_"):
-            compile_to_python(source)
-
-    def test_map_underscore_rejected(self):
-        """func map_(...) must be rejected — it shadows the runtime helper."""
-        from geno.compiler import CompileError
-
-        source = """
-        func map_(x: Int) -> Int
-            example 1 -> 1
-            return x
-        end func
-        """
-        with pytest.raises(CompileError, match="map_"):
-            compile_to_python(source)
-
-    def test_filter_underscore_rejected(self):
-        """func filter_(...) must be rejected — it shadows the runtime helper."""
-        from geno.compiler import CompileError
-
-        source = """
-        func filter_(x: Int) -> Int
-            example 1 -> 1
-            return x
-        end func
-        """
-        with pytest.raises(CompileError, match="filter_"):
-            compile_to_python(source)
-
-    def test_exec_underscore_rejected(self):
-        """func exec_(...) must be rejected — it shadows the runtime helper."""
-        from geno.compiler import CompileError
-
-        source = """
-        func exec_(x: Int) -> Int
-            example 1 -> 1
-            return x
-        end func
-        """
-        with pytest.raises(CompileError, match="exec_"):
-            compile_to_python(source)
+        code = compile_to_python(source)
+        assert f"def {name}_g(x: 'int') -> 'int':" in code
+        result = run_python_code(
+            code, python_executable=sys.executable, args=["--cap", "print"]
+        )
+        assert result.stdout == "2\n[10]\n"
 
 
 class TestPipelineGapFixes:
@@ -3793,19 +3766,35 @@ def test_python_compiler_rejects_unsafe_record_field(field_name):
         compile_to_python(source, typecheck=False)
 
 
+def test_python_compiler_rejects_emitted_host_intrinsic_binding():
+    source = "func __name__() -> Int\n    return 1\nend func\n"
+    source += "func main() -> Int\n    return 1\nend func\n"
+
+    with pytest.raises(CompileError, match="reserved runtime name"):
+        compile_to_python(source, typecheck=False)
+
+
 @pytest.mark.parametrize(
-    "name", ["IndexError", "RuntimeError", "__name__", "bool", "len", "list", "set"]
+    "name", ["IndexError", "RuntimeError", "bool", "len", "list", "set"]
 )
-def test_python_compiler_rejects_emitted_host_intrinsic_binding(name):
+def test_python_compiler_renames_host_intrinsic_binding(name):
     binding = (
         f"type Host = {name}(value: Int)\n"
         if name[0].isupper()
         else f"func {name}() -> Int\n    return 1\nend func\n"
     )
-    source = binding + "func main() -> Int\n    return 1\nend func\n"
+    use = f"{name}(41).value" if name[0].isupper() else f"{name}()"
+    source = binding + (
+        "func main() -> Int\n"
+        f"    let total = {use} + length([1, 2])\n"
+        "    return [0, total][1]\n"
+        "end func\n"
+    )
 
-    with pytest.raises(CompileError, match="reserved runtime name"):
-        compile_to_python(source, typecheck=False)
+    code = compile_to_python(source, typecheck=False)
+    assert f"{name}_g" in code
+    result = run_python_code(code, python_executable=sys.executable)
+    assert result.returncode == (43 if name[0].isupper() else 3)
 
 
 def test_python_single_program_rejects_function_trait_dispatcher_collision():
@@ -3828,16 +3817,17 @@ def test_python_single_program_rejects_function_trait_dispatcher_collision():
         compile_to_python(source, typecheck=False)
 
 
-def test_python_standalone_rejects_runtime_prelude_builtin_shadow():
+def test_python_standalone_keeps_runtime_prelude_builtin_shadowed_name():
     source = """
 func set() -> Int
     example () -> 1
     return 1
 end func
 func main() -> Int
-    return set_size(set_from_list([1, 2]))
+    return set_size(set_from_list([1, 2])) * 10 + set()
 end func
 """
 
-    with pytest.raises(CompileError, match="reserved runtime name"):
-        compile_to_python(source)
+    code = compile_to_python(source)
+    result = run_python_code(code, python_executable=sys.executable)
+    assert result.returncode == 21

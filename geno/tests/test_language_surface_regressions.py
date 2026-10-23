@@ -276,9 +276,9 @@ class TestTuplePatterns:
 
 
 _RESERVED_NAME_SOURCE = """\
-func widen(len: Int) -> Int
+func widen(_safe_add: Int) -> Int
     example 2 -> 4
-    return len * 2
+    return _safe_add * 2
 end func
 
 func main() -> Int
@@ -318,6 +318,15 @@ class TestReservedRuntimeNameAgreement:
         assert check.returncode != 0
         assert run.returncode != 0
         assert not suite.success
+
+    def test_check_test_and_run_accept_a_host_name(self, tmp_path):
+        # Proposal 0011: `len` is renamed in compiled output, not rejected.
+        path = _write(tmp_path, _RESERVED_NAME_SOURCE.replace("_safe_add", "len"))
+        check = _run_geno("check", str(path))
+        run = _run_geno("run", str(path))
+        assert check.returncode == 0, check.stdout + check.stderr
+        assert run.returncode == 4, run.stdout + run.stderr
+        assert run_test_suite([path]).success
 
     def test_library_module_without_main_is_not_rejected(self, tmp_path):
         # Standalone lowering reserves more names than project lowering, and a

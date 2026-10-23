@@ -136,6 +136,30 @@ class _GenoMissing:
 _GENO_MISSING = _GenoMissing()
 
 
+# The default ``object.__hash__`` is derived from identity. It keys the tables
+# below and is never shown to a program, so it discloses nothing; ``id`` stays
+# out of the sandbox.
+_geno_object_any: Any = _GENO_OBJECT
+_object_identity_hash: Callable[[Any], int] = _geno_object_any.__hash__
+
+
+def _identity_find(
+    table: dict[int, list[tuple[Any, Any]]], value: Any
+) -> tuple[Any, Any] | None:
+    """Return the ``(value, data)`` entry stored for this very object."""
+    for entry in table.get(_object_identity_hash(value), ()):
+        if entry[0] is value:
+            return entry
+    return None
+
+
+def _identity_store(
+    table: dict[int, list[tuple[Any, Any]]], value: Any, data: Any = None
+) -> None:
+    key = _object_identity_hash(value)
+    table[key] = [*table.get(key, ()), (value, data)]
+
+
 def _geno_seen_contains(seen: tuple[Any, ...], value: Any) -> bool:
     """Identity membership test over the containers enclosing ``value``.
 
@@ -358,40 +382,42 @@ class Constructor:
         return f"{type(self).__name__}({field_strs})"
 
 
-def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any:
+def _geno_deepcopy(
+    value: Any, memo: dict[int, list[tuple[Any, Any]]] | None = None
+) -> Any:
     """Copy Geno value containers while preserving explicit reference types."""
     if memo is None:
-        memo = []
+        memo = {}
 
     if isinstance(value, (_GenoArray, _GenoVec, _GenoMutableMap, _GenoSet)):
         return value
 
-    for original, copied in memo:
-        if original is value:
-            return copied
+    found = _identity_find(memo, value)
+    if found is not None:
+        return found[1]
 
     if isinstance(value, list):
         copied_list: list[Any] = []
-        memo += [(value, copied_list)]
+        _identity_store(memo, value, copied_list)
         copied_list.extend(_geno_deepcopy(item, memo) for item in value)
         return copied_list
 
     if isinstance(value, dict):
         copied_dict: dict[Any, Any] = {}
-        memo += [(value, copied_dict)]
+        _identity_store(memo, value, copied_dict)
         for key, nested_value in value.items():
             copied_dict[_geno_deepcopy(key, memo)] = _geno_deepcopy(nested_value, memo)
         return copied_dict
 
     if isinstance(value, tuple):
         copied_tuple = tuple(_geno_deepcopy(item, memo) for item in value)
-        memo += [(value, copied_tuple)]
+        _identity_store(memo, value, copied_tuple)
         return copied_tuple
 
     if isinstance(value, Constructor):
         geno_object: Any = _GENO_OBJECT
         copied_constructor = geno_object.__new__(type(value))
-        memo += [(value, copied_constructor)]
+        _identity_store(memo, value, copied_constructor)
         for field in _dataclasses_fields(value):
             _object_setattr(
                 copied_constructor,
@@ -543,6 +569,17 @@ class _PropagateReturn(Exception):
 
 class _GenoContractViolation(RuntimeError):
     """Internal: uncatchable requires/ensures failure."""
+
+
+def _geno_named_constructor(cls: Any, name: str) -> Any:
+    """Give a constructor class renamed away from a host name its Geno name.
+
+    The compiler renames a constructor such as ``T`` to ``T_g`` (see
+    geno/host_names.py); values still print and match as ``T``.
+    """
+    cls.__name__ = name
+    cls.__qualname__ = name
+    return cls
 
 
 def _geno_panic(message: str) -> None:
@@ -1314,7 +1351,7 @@ def _check_collection_size(result):
     constructor cannot hide an over-limit inner value.
     """
     stack: list[Any] = [result]
-    visited: list[Any] = []
+    visited: dict[int, list[tuple[Any, Any]]] = {}
     while stack:
         value = stack.pop()
         if isinstance(value, bool):
@@ -1330,53 +1367,53 @@ def _check_collection_size(result):
             _check_collection_kind("String", len(value))
             continue
 
-        if any(seen is value for seen in visited):
+        if _identity_find(visited, value) is not None:
             continue
 
         if isinstance(value, list):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("List", len(value))
             stack.extend(value)
             continue
         if isinstance(value, tuple):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Tuple", len(value))
             stack.extend(value)
             continue
         if isinstance(value, dict):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Map", len(value))
             stack.extend(value.keys())
             stack.extend(value.values())
             continue
 
         if isinstance(value, _GenoArray):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Array", len(value))
             stack.extend(value._elements)
             continue
 
         if isinstance(value, _GenoVec):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Vec", len(value))
             stack.extend(value._elements)
             continue
 
         if isinstance(value, _GenoSet):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Set", len(value))
             stack.extend(value._data)
             continue
 
         if isinstance(value, _GenoMutableMap):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("MutableMap", len(value._data))
             stack.extend(value._data.keys())
             stack.extend(value._data.values())
             continue
 
         if isinstance(value, Constructor):
-            visited.append(value)
+            _identity_store(visited, value)
             stack.extend(
                 _object_getattribute(value, field.name)
                 for field in _dataclasses_fields(value)

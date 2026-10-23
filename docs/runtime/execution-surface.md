@@ -54,7 +54,7 @@ Additional constraints:
 - `RunConfig(timeout=...)` is enforced through the interpreter deadline path
   cooperatively; a builtin or host callback that holds control cannot be
   preempted by the in-process interpreter
-- step budgets default to `RunConfig(max_steps=1_000_000)` and apply only to the
+- step budgets default to `RunConfig(max_steps=20_000_000)` and apply only to the
   interpreter / thread-sandbox path; the `ProcessSandbox` path bounds
   compiled Python via wall-clock, memory, collection-size,
   integer-bit, and recursion limits instead. Explicit `max_steps=None`
@@ -62,7 +62,10 @@ Additional constraints:
 - `RunConfig(max_output_length=...)`,
   `RunConfig(max_collection_size=...)`,
   `RunConfig(max_integer_bits=...)`, and
-  `RunConfig(max_recursion_depth=...)` apply to interpreter execution
+  `RunConfig(max_recursion_depth=...)` apply to interpreter execution;
+  call depth defaults to 10,000 (`geno run --max-recursion-depth` sets it
+  for every lane), while the hosted server keeps `GENO_MAX_RECURSION_DEPTH`
+  (default 500)
 - OS-backed process limits (`max_memory_bytes`, `max_cpu_time`,
   `max_file_size_bytes`, and `max_processes`) are not available through
   `RunConfig` because `geno.run()` is an in-process embedding API

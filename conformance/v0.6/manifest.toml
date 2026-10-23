@@ -8,7 +8,8 @@ description = "Geno 0.6 source and diagnostic compatibility corpus (draft until 
 # method-call syntax (proposal 0006), types inferred from context
 # (proposal 0007), expression forms (proposal 0008), the Result-only error model
 # and `main() -> Result` (proposal 0009), the coherent standard library
-# (proposal 0010), and non-transitive imports.
+# (proposal 0010), host-name hygiene and default runtime limits (proposal
+# 0011), and non-transitive imports.
 #
 # A run case's `expected_exit_status` defaults to 0 when omitted, which is what
 # every displayed result kind exits with. It is the status a host actually
@@ -410,3 +411,19 @@ path = "programs/diagnostic_removed_builtin.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E302"]
+
+[[cases]]
+id = "host-names"
+path = "programs/host_names.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "7\ns\n0\n[\"error x\", \"exception 2\", \"object\"]\nError(msg: \"y\")\n"
+
+[[cases]]
+id = "deep-recursion"
+path = "programs/deep_recursion.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "5000\n12502500\n17711\n"

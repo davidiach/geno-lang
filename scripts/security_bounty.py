@@ -241,8 +241,10 @@ def _run_corpus(verbose: bool) -> tuple[int, int]:
             lines = f.readlines()
         source = "".join(line for line in lines if not line.lstrip().startswith("#"))
 
-        # Determine config (simplified version of test harness logic)
-        config = RunConfig(max_steps=10000, timeout=30.0)
+        # Determine config (simplified version of test harness logic). The
+        # hosted server's call depth makes recursion bombs meet the depth
+        # guard before the step limit, as in test_security_corpus.py.
+        config = RunConfig(max_steps=10000, max_recursion_depth=500, timeout=30.0)
         if "capability_denied" in name:
             config = RunConfig(capabilities=set())
         elif "host_callback_missing" in name:

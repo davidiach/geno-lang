@@ -136,15 +136,20 @@ class ConstructorValue:
     ``@dataclass(frozen=True)`` used on the compiler side.
     """
 
-    __slots__ = ("_fields", "constructor")
+    __slots__ = ("_fields", "_limits_checked", "constructor")
     constructor: str
     _fields: MappingProxyType[str, Any]
+    # The (collection size, integer bits) limits this value and everything
+    # it reaches are known to satisfy; see Interpreter._check_collection_limits.
+    # A field assignment, which replaces ``_fields`` in place, clears it.
+    _limits_checked: tuple[int, int] | None
 
     def __init__(self, constructor: str, fields: dict[str, Any]):
         object.__setattr__(self, "constructor", constructor)
         from types import MappingProxyType
 
         object.__setattr__(self, "_fields", MappingProxyType(dict(fields)))
+        object.__setattr__(self, "_limits_checked", None)
 
     @property
     def fields(self) -> MappingProxyType[str, Any]:

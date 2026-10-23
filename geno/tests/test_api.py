@@ -1143,7 +1143,7 @@ class TestRunConfig:
         cfg = RunConfig()
         assert cfg.timeout == 5.0
         assert cfg.max_steps == DEFAULT_INTERPRETER_MAX_STEPS
-        assert cfg.max_recursion_depth == 500
+        assert cfg.max_recursion_depth == 10_000
         assert cfg.max_output_length == 100_000
         assert cfg.max_collection_size == 10_000_000
         assert cfg.max_integer_bits == 33_219
