@@ -238,7 +238,7 @@ def _calls(tokens: list[Token]) -> list[tuple[int, bool]]:
 
 def _positional(source: str, tokens: list[Token]) -> tuple[str, int] | None:
     """Drop the argument names of the first call that needs them."""
-    for index, is_method in _calls(tokens):
+    for index, _is_method in _calls(tokens):
         labels: list[Token] = []
         depth, position = 0, index + 1
         at_argument_start = True
@@ -262,7 +262,7 @@ def _positional(source: str, tokens: list[Token]) -> tuple[str, int] | None:
                 TokenType.COMMA,
             )
             position += 1
-        if len(labels) < (2 if is_method else 3):
+        if len(labels) < 3:
             continue
         mutated = source
         for label in reversed(labels):

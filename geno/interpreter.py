@@ -420,6 +420,23 @@ def _explain_rejection_example(
 # =============================================================================
 
 
+def _membership_builtin(expr: BinaryOp, container: Any) -> str:
+    """The builtin that tests ``x in container``.
+
+    The checker records it; an unchecked program falls back to the
+    container's runtime type.
+    """
+    if expr._resolved_builtin_name is not None:
+        return expr._resolved_builtin_name
+    if isinstance(container, str):
+        return "string_contains"
+    if isinstance(container, dict):
+        return "map_contains_key"
+    if isinstance(container, list):
+        return "contains"
+    return "set_contains"
+
+
 class Interpreter:
     """
     Interpreter for Geno programs.
@@ -1142,16 +1159,18 @@ class Interpreter:
         cap = _builtins._InterpreterCap(self.sandbox_config.max_collection_size)
 
         shared_param_names = interpreter_builtin_param_name_lists()
+        # Kept apart from the global environment, which a program's own
+        # functions may shadow: `x in c` always calls the builtin.
+        self._builtin_functions: dict[str, BuiltinFunction] = {}
         for name, func, arity, param_names in builtins:
             if name in _COLLECTION_LIMITED_BUILTINS:
                 func = partial(func, max_collection_size=cap)
             if name == "to_string":
                 self._builtin_stringify_value = func
             resolved_param_names = shared_param_names.get(name, param_names)
-            self.global_env.bind(
-                name,
-                BuiltinFunction(name, func, arity, resolved_param_names.copy()),
-            )
+            builtin = BuiltinFunction(name, func, arity, resolved_param_names.copy())
+            self._builtin_functions[name] = builtin
+            self.global_env.bind(name, builtin)
 
     # =========================================================================
     # Host Callback Stubs
@@ -2159,8 +2178,27 @@ class Interpreter:
                 return True
             return bool(self.eval_expr(expr.right, env))
 
+        if expr._resolved_builtin_name == "concat":
+            # List + List: the operands are concat's arguments, widened like
+            # any Int list passed where a Float list is expected.
+            return self._call_function(
+                self._builtin_functions["concat"],
+                [
+                    self._eval_argument(expr.left, env),
+                    self._eval_argument(expr.right, env),
+                ],
+                expr.location,
+            )
+
         left = self.eval_expr(expr.left, env)
         right = self.eval_expr(expr.right, env)
+
+        if operator == "in":
+            return self._call_function(
+                self._builtin_functions[_membership_builtin(expr, right)],
+                [right, left],
+                expr.location,
+            )
 
         op_func = _BINOP_FUNCS.get(operator)
         if op_func is None:

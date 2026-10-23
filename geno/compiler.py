@@ -2603,6 +2603,23 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         """Compile a binary operation."""
+        if expr._resolved_builtin_name == "concat":
+            # List + List: concat's arguments, widened like any Int list
+            # passed where a Float list is expected.
+            concat = self._BUILTIN_NAME_MAP.get("concat", "concat")
+            left = self._compile_call_argument(expr.left)
+            right = self._compile_call_argument(expr.right)
+            return f"{concat}({left}, {right})"
+        if expr.operator == "in":
+            member = expr._resolved_builtin_name
+            runtime = (
+                self._BUILTIN_NAME_MAP.get(member, member)
+                if member is not None
+                else "None"
+            )
+            left = self._compile_expr(expr.left)
+            right = self._compile_expr(expr.right)
+            return f"_geno_in({left}, {right}, {runtime})"
         # Numeric operands still use guarded helpers for +, *, and - because
         # Geno permits Int values where Float is expected, so runtime values may
         # be Python ints even when the static operand type is Float.

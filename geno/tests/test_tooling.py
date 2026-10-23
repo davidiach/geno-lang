@@ -2728,8 +2728,8 @@ class TestPromptSpecExcerpt:
     def test_spec_documents_named_argument_rule(self):
         from experiment.prompts import GENOTYPE_SPEC
 
-        assert "3+ parameters require named arguments" in GENOTYPE_SPEC
-        assert 's.replace(old: "a", new: "b")' in GENOTYPE_SPEC
+        assert "A call that writes 3+ arguments names them" in GENOTYPE_SPEC
+        assert "clamp(value: x, min: 0, max: 9)" in GENOTYPE_SPEC
 
     def test_spec_documents_string_and_fold_builtins(self):
         from experiment.prompts import GENOTYPE_SPEC

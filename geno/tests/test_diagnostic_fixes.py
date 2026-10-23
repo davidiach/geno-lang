@@ -43,7 +43,6 @@ def _program(body: str) -> str:
             "use named arguments",
             "Name the arguments",
         ),
-        ('print("abc".substring(0, 2))', "name them", "Name the arguments"),
         ("let n = lenght([1])", "Did you mean 'length'?", "Change 'lenght'"),
         ("let n = [1].lenght()", "Did you mean 'length'?", "Change 'lenght'"),
         ('let t: Strin = "a"', "Did you mean 'String'?", "Change 'Strin'"),
@@ -281,3 +280,34 @@ def test_geno_fix_leaves_a_program_without_fixes_alone() -> None:
     source = _program("print(undefined_thing_here)")
     result = geno.fix(source)
     assert (result.source, result.applied, result.check.ok) == (source, 0, False)
+
+
+def test_a_method_call_writing_three_arguments_names_them() -> None:
+    source = (
+        "func span(xs: List[Int], start: Int, stop: Int, step: Int) -> List[Int]\n"
+        "    example [1, 2], 0, 2, 1 -> [1, 2]\n"
+        "    return xs.slice(start, stop)\n"
+        "end func\n\n"
+        "func main() -> Unit\n"
+        "    print([1, 2, 3].span(0, 2, 1))\n"
+        "end func\n"
+    )
+    diagnostic = geno.check(source).diagnostics[0]
+    assert "name them" in diagnostic.message
+    fixed = apply_fix(source, diagnostic.fixes[0])
+    assert "[1, 2, 3].span(start: 0, stop: 2, step: 1)" in fixed
+    assert geno.check(fixed).ok
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'print("abc".substring(0, 2))',
+        'print("abc".replace("a", "b"))',
+        "print([1, 2].fold(0, fn(acc, x) -> acc + x))",
+        'print({"a": 1}.insert("b", 2))',
+    ],
+)
+def test_two_arguments_after_a_receiver_stay_positional(call: str) -> None:
+    result = geno.check(_program(call))
+    assert result.ok, [d.message for d in result.diagnostics]

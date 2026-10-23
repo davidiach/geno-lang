@@ -194,6 +194,29 @@ class ExpressionParserMixin(ParserBase):
         while True:
             current_type = self._current_type
             precedence = precedence_map.get(current_type)
+            if (
+                precedence is None
+                and current_type is TokenType.NOT
+                and min_precedence <= precedence_map[TokenType.IN]
+                and self._peek(1).type is TokenType.IN
+            ):
+                # `x not in c` is `not (x in c)`.
+                location = left.location
+                self._advance()
+                self._advance()
+                right = self._parse_nested_infix_expr(precedence_map[TokenType.IN] + 1)
+                if self._current_type in comparison_tokens:
+                    raise self._error(
+                        "Comparison chaining is not supported; "
+                        "write 'a < b and b < c' instead"
+                    )
+                return UnaryOp(
+                    location=location,
+                    operator="not",
+                    operand=BinaryOp(
+                        location=location, operator="in", left=left, right=right
+                    ),
+                )
             if precedence is None or precedence < min_precedence:
                 return left
 

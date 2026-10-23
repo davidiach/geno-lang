@@ -3038,6 +3038,14 @@ class JSCompiler(BaseCompiler):
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         left = self._compile_expr(expr.left)
         right = self._compile_expr(expr.right)
+        if expr.operator == "in":
+            member = expr._resolved_builtin_name
+            runtime = (
+                self._BUILTIN_NAME_MAP.get(member, member)
+                if member is not None
+                else "undefined"
+            )
+            return f"_geno_in({left}, {right}, {runtime})"
         both_int = self._is_int_expr(expr.left) and self._is_int_expr(expr.right)
         both_numeric = self._is_numeric_expr(expr.left) and self._is_numeric_expr(
             expr.right

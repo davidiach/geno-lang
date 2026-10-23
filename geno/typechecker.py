@@ -202,6 +202,8 @@ _LENGTH_METHODS: dict[type, str] = {
 }
 
 _METHOD_PREFIXES: dict[type, str] = {
+    IntType: "int",
+    FloatType: "float",
     ListType: "list",
     OptionType: "option",
     ResultType: "result",
@@ -435,8 +437,10 @@ def _closest_name(
     """The candidate nearest ``name`` by edit distance, if one is close enough.
 
     Swapping two adjacent letters counts as one edit, so ``lenght`` is
-    nearest ``length`` rather than ``height``.
+    nearest ``length`` rather than ``height``. A short name allows fewer
+    edits: two of the three letters of `sum` are not a near miss of `m`.
     """
+    max_dist = min(max_dist, max(1, len(name) // 2))
     best, best_dist = None, max_dist + 1
     for c in candidates:
         d = _transposition_distance(name, c)
@@ -453,14 +457,18 @@ def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> st
     return f" Did you mean '{best}'?" if best is not None else ""
 
 
-def _transposition_distance(a: str, b: str) -> int:
-    """Edit distance that counts swapping two adjacent letters as one edit."""
+def _transposition_distance(a: str, b: str, substitution: int = 1) -> int:
+    """Edit distance that counts swapping two adjacent letters as one edit.
+
+    With ``substitution=2`` a changed letter costs a deletion and an
+    insertion, which separates typos from different words.
+    """
     rows = [list(range(len(b) + 1))] + [
         [i] + [0] * len(b) for i in range(1, len(a) + 1)
     ]
     for i in range(1, len(a) + 1):
         for j in range(1, len(b) + 1):
-            cost = a[i - 1] != b[j - 1]
+            cost = substitution if a[i - 1] != b[j - 1] else 0
             rows[i][j] = min(
                 rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost
             )
@@ -469,34 +477,76 @@ def _transposition_distance(a: str, b: str) -> int:
     return rows[-1][-1]
 
 
-# What other languages call a function or method that Geno spells
-# differently, with the same arguments: the fix for using the foreign name.
-_FOREIGN_NAMES = {
-    "len": "length",
-    "size": "length",
-    "str": "to_string",
-    "to_str": "to_string",
-    "toString": "to_string",
-    "upper": "to_upper",
-    "toUpperCase": "to_upper",
-    "uppercase": "to_upper",
-    "lower": "to_lower",
-    "toLowerCase": "to_lower",
-    "lowercase": "to_lower",
-    "strip": "trim",
-    "startswith": "starts_with",
-    "startsWith": "starts_with",
-    "endswith": "ends_with",
-    "endsWith": "ends_with",
-    "sorted": "sort",
-    "reversed": "reverse",
-    "println": "print",
-    "indexOf": "index_of",
-    "includes": "contains",
+# Other languages' names for an operation Geno spells differently, with the
+# same arguments: the fix for using the foreign name. Where the Geno name
+# depends on the receiver, the first one the receiver has is used.
+_FOREIGN_NAMES: dict[str, tuple[str, ...]] = {
+    "len": ("length",),
+    "size": ("length",),
+    "str": ("to_string",),
+    "to_str": ("to_string",),
+    "toString": ("to_string",),
+    "upper": ("to_upper",),
+    "toUpperCase": ("to_upper",),
+    "uppercase": ("to_upper",),
+    "lower": ("to_lower",),
+    "toLowerCase": ("to_lower",),
+    "lowercase": ("to_lower",),
+    "strip": ("trim",),
+    "lstrip": ("trim_start",),
+    "rstrip": ("trim_end",),
+    "trimStart": ("trim_start",),
+    "trimEnd": ("trim_end",),
+    "startswith": ("starts_with",),
+    "startsWith": ("starts_with",),
+    "endswith": ("ends_with",),
+    "endsWith": ("ends_with",),
+    "isdigit": ("is_digit",),
+    "isalpha": ("is_alpha",),
+    "isalnum": ("is_alphanumeric",),
+    "isspace": ("is_whitespace",),
+    "isupper": ("is_upper",),
+    "islower": ("is_lower",),
+    "splitlines": ("lines",),
+    "split_whitespace": ("words",),
+    "chars": ("to_chars",),
+    "ord": ("char_code",),
+    "chr": ("from_char_code",),
+    "sorted": ("sort",),
+    "reversed": ("reverse",),
+    "rev": ("reverse",),
+    "skip": ("drop",),
+    "position": ("find_index",),
+    "findIndex": ("find_index",),
+    "find": ("index_of",),
+    "indexOf": ("index_of",),
+    "includes": ("contains",),
+    "isEmpty": ("is_empty",),
+    "distinct": ("unique",),
+    "dedup": ("unique",),
+    "items": ("entries",),
+    "has": ("contains_key", "contains"),
+    "contains": ("contains_key",),
+    "containsKey": ("contains_key",),
+    "set": ("insert",),
+    "put": ("insert",),
+    "flat_map": ("and_then",),
+    "get_or": ("unwrap_or",),
+    "to_float": ("int_to_float",),
+    "float": ("int_to_float",),
+    "to_int": ("float_to_int", "parse_int"),
+    "int": ("float_to_int", "parse_int"),
+    "println": ("print",),
 }
 
 # Spellings of an absent value in other languages; Geno's is `None`.
 _NULL_NAMES = frozenset({"null", "nil", "undefined", "NULL", "Nil"})
+
+# Hints for a name with no one-for-one Geno replacement.
+_FOREIGN_HINTS = {
+    "pow": "Geno writes powers with '**': a ** b",
+    "math_pow": "Geno writes powers with '**': a ** b",
+}
 
 
 def _rename_fixes(
@@ -506,17 +556,20 @@ def _rename_fixes(
 
     The hint names the nearest candidate. The fix is only attached when the
     correction is unambiguous: another language's name for the candidate,
-    or a single candidate within one edit (two for names of six letters or
-    more), counting a swap of adjacent letters as one edit.
+    or a likely typo of a single candidate (see ``_likely_typo``).
     """
-    names = set(candidates)
-    foreign = _FOREIGN_NAMES.get(name)
-    if foreign is not None and foreign in names:
+    if name in _FOREIGN_HINTS:
+        return f" {_FOREIGN_HINTS[name]}.", ()
+    names = set(candidates) - {name}
+    foreign = next(
+        (target for target in _FOREIGN_NAMES.get(name, ()) if target in names), None
+    )
+    if foreign is not None:
         best: str | None = foreign
         confident = True
     else:
         best = _closest_name(name, names)
-        confident = best is not None and _unambiguous_correction(name, best, names)
+        confident = best is not None and _likely_typo(name, best, names)
     if best is None:
         return "", ()
     hint = f" Did you mean '{best}'?"
@@ -525,9 +578,19 @@ def _rename_fixes(
     return hint, (replace_fix(location, name, best),)
 
 
-def _unambiguous_correction(name: str, best: str, candidates: set[str]) -> bool:
+def _likely_typo(name: str, best: str, candidates: set[str]) -> bool:
+    """Whether ``best`` is the one candidate ``name`` is a slip of the keys for.
+
+    One edit, or two for names of six letters or more, counting a swap of
+    adjacent letters as one; at most one changed letter, and none in a name of
+    four letters or fewer (`set` is not a typo of `get`, nor `is_upper` of
+    `to_upper`); and no other candidate as close.
+    """
     distance = _transposition_distance(name, best)
     if distance > (1 if len(name) < 6 else 2):
+        return False
+    changed = _transposition_distance(name, best, substitution=2) - distance
+    if changed > (0 if len(name) <= 4 else 1):
         return False
     return not any(
         other != best and _transposition_distance(name, other) <= distance
@@ -4713,10 +4776,78 @@ class TypeChecker(ExhaustivenessMixin):
         self._validate_hashable_key_type("Map", "key", key_type, expr.location)
         return MapType(key_type, value_type)
 
+    def _check_membership(
+        self, expr: BinaryOp, element_type: Type, container_type: Type
+    ) -> Type:
+        """``x in c``: an element of a list or set, a substring, or a map key.
+
+        Records the builtin that tests it, which every backend calls.
+        """
+        if isinstance(container_type, AnyType) or isinstance(element_type, AnyType):
+            return _BOOL_TYPE
+        member: tuple[str, Type] | None = None
+        if isinstance(container_type, ListType):
+            member = ("contains", container_type.element_type)
+        elif isinstance(container_type, SetType):
+            member = ("set_contains", container_type.element_type)
+        elif isinstance(container_type, StringType):
+            member = ("string_contains", _STRING_TYPE)
+        elif isinstance(container_type, MapType):
+            member = ("map_contains_key", container_type.key_type)
+        elif isinstance(container_type, MutableMapType):
+            member = ("mutable_map_contains", container_type.key_type)
+        if member is None:
+            self._error(
+                f"Cannot test membership in {_display_type(container_type)}: "
+                "'in' tests an element of a List or Set, a substring of a "
+                "String, or a key of a Map",
+                expr.location,
+            )
+            return _BOOL_TYPE
+        builtin, member_type = member
+        if not self._types_compatible(member_type, element_type):
+            self._error(
+                f"'in' on {_display_type(container_type)} needs "
+                f"{_display_type(member_type)}, got {_display_type(element_type)}",
+                expr.location,
+            )
+        expr._resolved_builtin_name = builtin
+        return _BOOL_TYPE
+
+    def _concatenated_list_type(
+        self, expr: BinaryOp, left: ListType, right: ListType
+    ) -> Type:
+        """``xs + ys`` concatenates two lists of one element type.
+
+        `[] + xs` takes the other list's type, and a `List[Int]` joins a
+        `List[Float]` as Floats, as it would be passed to one.
+        """
+        result: Type
+        if self._has_type_vars(left.element_type):
+            result = right
+        elif self._types_compatible(left, right):
+            result = left
+        elif self._types_compatible(right, left):
+            result = right
+        else:
+            self._error(
+                f"Cannot concatenate {_display_type(left)} and "
+                f"{_display_type(right)}: both lists need the same element type",
+                expr.location,
+            )
+            return left
+        self._record_expected_runtime_type(expr.left, result)
+        self._record_expected_runtime_type(expr.right, result)
+        expr._resolved_builtin_name = "concat"
+        return result
+
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""
         left_type = self._check_expression(expr.left, env)
         right_type = self._check_expression(expr.right, env)
+
+        if expr.operator == "in":
+            return self._check_membership(expr, left_type, right_type)
 
         # An operand that already failed to check was reported where it failed.
         if expr.operator in _NUMERIC_OPERATORS and (
@@ -4762,6 +4893,12 @@ class TypeChecker(ExhaustivenessMixin):
                 and isinstance(right_type, StringType)
             ):
                 return _STRING_TYPE
+            if (
+                expr.operator == "+"
+                and isinstance(left_type, ListType)
+                and isinstance(right_type, ListType)
+            ):
+                return self._concatenated_list_type(expr, left_type, right_type)
             if isinstance(left_type, IntType) and isinstance(right_type, IntType):
                 return _INT_TYPE
             elif (
@@ -4777,6 +4914,12 @@ class TypeChecker(ExhaustivenessMixin):
                 return num_result
             else:
                 hint = _numeric_bound_hint(left_type, right_type)
+                if (
+                    expr.operator == "*"
+                    and isinstance(left_type, StringType)
+                    and isinstance(right_type, IntType)
+                ):
+                    hint = ". To repeat a string, write s.repeat(n)"
                 self._error(
                     f"Cannot apply '{expr.operator}' to {left_type} and {right_type}: "
                     f"both operands must be numeric (Int or Float)"
@@ -4970,8 +5113,13 @@ class TypeChecker(ExhaustivenessMixin):
             impl_func_type, trait_param_names, ordered_trait_args = trait_call
             assert identifier_func is not None
             method_name = identifier_func.name
-            positional_count = sum(1 for arg in arguments if arg.name is None)
-            if len(impl_func_type.param_types) >= 3 and positional_count > 0:
+            # As for any call, the receiver of a method call is not counted.
+            receiver = 1 if expr._method_call is not None else 0
+            positional_count = sum(
+                1 for arg in arguments[receiver:] if arg.name is None
+            )
+            written = max(len(arguments), len(impl_func_type.param_types)) - receiver
+            if written >= 3 and positional_count > 0:
                 self._error(
                     f"Function '{method_name}' has {len(impl_func_type.param_types)} parameters; use named arguments for clarity (e.g., param_name: value)",
                     expr.location,
@@ -5089,10 +5237,15 @@ class TypeChecker(ExhaustivenessMixin):
         # Get parameter names if available (for named argument support)
         param_names = list(call_param_info.param_names)
 
-        # For LLM-friendliness: require named arguments for functions with 3+ required parameters
-        required_param_count = max(len(arguments), min_args)
+        # For LLM-friendliness: a call that writes, or must write, three or more
+        # arguments names them. A method call's receiver is written before the
+        # dot, so it is not one of them: `xs.fold(0, f)` stays positional.
+        receiver = 1 if expr._method_call is not None else 0
+        required_param_count = max(len(arguments), min_args) - receiver
         if required_param_count >= 3:
-            positional_count = sum(1 for arg in arguments if arg.name is None)
+            positional_count = sum(
+                1 for arg in arguments[receiver:] if arg.name is None
+            )
             if positional_count > 0 and expr._method_call is not None:
                 after_receiver = param_names[1:]
                 rendered = ", ".join(f"{param}: ..." for param in after_receiver)
@@ -5305,6 +5458,12 @@ class TypeChecker(ExhaustivenessMixin):
                 hint, fixes = _rename_fixes(
                     method_name, candidates, callee.name_location
                 )
+                if method_name == "join" and isinstance(receiver_type, StringType):
+                    # Python's `", ".join(parts)`.
+                    hint = (
+                        " Geno joins from the list: write parts.join(separator), "
+                        'as in words.join(", ")'
+                    )
                 self._error(
                     f"Type {_display_type(receiver_type)} has no method "
                     f"'{method_name}'{'.' if hint else ''}{hint}",

@@ -27,7 +27,9 @@ Key syntax rules:
 - Return values with `return`; a function's last expression is not returned
   implicitly
 - Every function needs at least one `example` clause
-- Functions with 3+ parameters require named arguments at call sites
+- A call that writes 3+ arguments names them: `clamp(value: x, min: 0, max: 9)`.
+  A method call's receiver is not counted, so `xs.fold(0, f)` and
+  `s.replace("a", "b")` stay positional
 - Use `Option[T]` instead of null, `Result[T, E]` for errors. There is no
   `throw`, `try` or `catch`: return `Err(...)`, propagate with `?` (also from
   `main() -> Result[Unit, String]`), and call `panic("...")` only for bugs.
@@ -47,11 +49,12 @@ Key syntax rules:
   body: `| Red | Orange -> ...`. Tuple fields: `pair.0`. Map literals:
   `{"a": 1, "b": 2}`, and `{}` for an empty map
 - Method calls work on any value: `xs.map(f).filter(g).length()`,
-  `s.trim().to_upper()`, `opt.unwrap_or(0)`. Name the arguments after the
-  receiver when the function has 3+ parameters: `s.replace(old: "a", new: "b")`.
-  The free form works too: `map(opt, f)` is `opt.map(f)`
+  `s.trim().to_upper()`, `opt.unwrap_or(0)`, `n.to_float()`. The free form works
+  too: `map(opt, f)` is `opt.map(f)`
+- Membership: `x in xs`, `c in "aeiou"`, `key in m`, `x not in xs`. Lists
+  concatenate with `+`: `xs + [4]`
 - Every collection has `length()`. Maps: `m.get(k)` (Option), `m.contains_key(k)`,
-  `m.insert(key: k, value: v)`, `m.remove(k)`, `m.keys()`, `m.values()`.
+  `m.insert(k, v)`, `m.remove(k)`, `m.keys()`, `m.values()`.
   `xs.sort()` needs no comparator. `s.index_of(t)` returns `Option[Int]`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
@@ -112,7 +115,7 @@ Correct:
 func substring(text: String, start: Int, stop: Int) -> String
 ```
 
-### 5. Forgetting named arguments for 3+ parameters
+### 5. Forgetting named arguments for 3+ arguments
 
 Wrong:
 ```
@@ -122,6 +125,7 @@ substring("hello world", 0, 5)
 Correct:
 ```
 substring(text: "hello world", start: 0, stop: 5)
+"hello world".substring(0, 5)    // two arguments after the receiver
 ```
 
 ### 6. Forgetting `example` clauses

@@ -111,11 +111,11 @@
       {"level": 1, "operators": ["or"], "kind": "logical"},
       {"level": 2, "operators": ["and"], "kind": "logical"},
       {"level": 3, "operators": ["not"], "kind": "unary_prefix"},
-      {"level": 4, "operators": ["==", "!=", "<", ">", "<=", ">="], "kind": "comparison"},
+      {"level": 4, "operators": ["==", "!=", "<", ">", "<=", ">=", "in", "not in"], "kind": "comparison", "notes": "x in c tests an element of a List or Set, a substring of a String, or a key of a Map; x not in c is not (x in c)"},
       {"level": 5, "operators": ["^"], "kind": "bitwise"},
       {"level": 6, "operators": ["&"], "kind": "bitwise"},
       {"level": 7, "operators": ["<<", ">>"], "kind": "bitwise"},
-      {"level": 8, "operators": ["+", "-"], "kind": "arithmetic"},
+      {"level": 8, "operators": ["+", "-"], "kind": "arithmetic", "notes": "+ also concatenates two Strings or two Lists of one element type"},
       {"level": 9, "operators": ["*", "/", "%"], "kind": "arithmetic"},
       {"level": 10, "operators": ["**"], "kind": "arithmetic", "associativity": "right"},
       {"level": 11, "operators": ["-", "~"], "kind": "unary_prefix"}
@@ -128,7 +128,7 @@
       "template": "func name(param: Type, ...) -> ReturnType [with effect, ...]\\n  [requires condition]\\n  [ensures condition]\\n  [example (args) -> result]\\n  body\\nend func",
       "notes": [
         "Every function must have at least one example clause (except main, async, app helpers)",
-        "Named arguments are required when a function has 3+ required parameters or a call supplies 3+ arguments; range is positional-only",
+        "Named arguments are required when a function has 3+ required parameters or a call supplies 3+ arguments; a method call's receiver is not counted (xs.fold(0, f) is positional); range is positional-only",
         "Zero-arg examples use: example () -> value (or example -> value)"
       ]
     },

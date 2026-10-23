@@ -211,12 +211,20 @@ def test_unknown_method_inside_a_lambda_is_reported_once() -> None:
 
 
 def test_named_argument_rule_counts_arguments_after_the_receiver() -> None:
+    """Two arguments after the receiver stay positional (proposal 0012)."""
+    TypeChecker().check_program(
+        parse('func main() -> Unit\n    print("hi".replace("h", "H"))\nend func\n')
+    )
     errors = _errors(
-        'func main() -> Unit\n    print("hi".replace("h", "H"))\nend func\n'
+        "func span(xs: List[Int], start: Int, stop: Int, step: Int) -> List[Int]\n"
+        "    example [1], 0, 1, 1 -> [1]\n"
+        "    return xs\n"
+        "end func\n\n"
+        "func main() -> Unit\n    print([1].span(0, 1, 1))\nend func\n"
     )
     assert errors[0].message == (
-        "Method 'replace' takes 2 arguments after the receiver; "
-        "name them: .replace(old: ..., new: ...)"
+        "Method 'span' takes 3 arguments after the receiver; "
+        "name them: .span(start: ..., stop: ..., step: ...)"
     )
 
 

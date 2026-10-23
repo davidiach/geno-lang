@@ -107,6 +107,7 @@ class ParserBase:
         TokenType.GT: 1,
         TokenType.LTE: 1,
         TokenType.GTE: 1,
+        TokenType.IN: 1,
         TokenType.CARET: 2,
         TokenType.AMPERSAND: 3,
         TokenType.LSHIFT: 4,
@@ -125,6 +126,7 @@ class ParserBase:
         TokenType.GT: ">",
         TokenType.LTE: "<=",
         TokenType.GTE: ">=",
+        TokenType.IN: "in",
         TokenType.CARET: "^",
         TokenType.AMPERSAND: "&",
         TokenType.LSHIFT: "<<",
@@ -144,6 +146,7 @@ class ParserBase:
             TokenType.GT,
             TokenType.LTE,
             TokenType.GTE,
+            TokenType.IN,
         }
     )
     _RIGHT_ASSOCIATIVE_TOKENS = frozenset({TokenType.DOUBLESTAR})

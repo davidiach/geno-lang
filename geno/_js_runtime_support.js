@@ -917,6 +917,8 @@ function _safe_add(a, b) {
             + _toSafeJsBigInt(b, "Addition operand");
         return _fromSafeJsBigInt(result, "Addition result");
     }
+    // List + List concatenates; JavaScript's own + would join them as text.
+    if (Array.isArray(a) && Array.isArray(b)) return concat(a, b);
     const result = a + b;
     if (typeof result === 'string' || Array.isArray(result)) _checkCollectionSize(result);
     return result;
@@ -1152,6 +1154,19 @@ function contains(lst, item) {
         if (_valuesEqual(x, item)) return true;
     }
     return false;
+}
+
+// `element in container`, the operands evaluated in source order. `member` is
+// the builtin the checker chose; unchecked code dispatches on the container.
+function _geno_in(element, container, member) {
+    if (member === undefined) {
+        if (typeof container === 'string') member = string_contains;
+        else if (Array.isArray(container)) member = contains;
+        else if (container instanceof GenoSet) member = set_contains;
+        else if (container instanceof GenoMutableMap) member = mutable_map_contains;
+        else member = map_contains_key;
+    }
+    return member(container, element);
 }
 
 function reverse(lst) {

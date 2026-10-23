@@ -686,6 +686,26 @@ def contains(lst: list[Any], item: Any) -> bool:
     return item in lst
 
 
+def _geno_in(element: Any, container: Any, member: Any = None) -> bool:
+    """``element in container``, the operands evaluated in source order.
+
+    ``member`` is the builtin the checker chose; unchecked code dispatches
+    on the container.
+    """
+    if member is None:
+        if isinstance(container, str):
+            member = string_contains
+        elif isinstance(container, list):
+            member = contains
+        elif isinstance(container, _GenoSet):
+            member = set_contains
+        elif isinstance(container, _GenoMutableMap):
+            member = mutable_map_contains
+        else:
+            member = map_contains_key
+    return bool(member(container, element))
+
+
 def take_while(lst: list, pred: Callable) -> list:
     result = []
     for x in lst:

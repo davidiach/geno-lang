@@ -95,6 +95,25 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   them, `geno check --fix` applies them, and the language server offers them
   as quick fixes over the exact text they replace. An unknown method or field
   is now reported at its name instead of at the receiver.
+- Membership and list concatenation
+  ([proposal 0012](docs/proposals/0012-what-models-reach-for.md)):
+  `x in xs`, `c in "aeiou"`, `key in m`, `x in set` and `x not in xs` are
+  comparison operators, and `xs + ys` concatenates two lists of one element
+  type (a `List[Int]` joining a `List[Float]` as Floats). Both run through the
+  builtins they spell (`contains`, `string_contains`, `map_contains_key`,
+  `set_contains`, `concat`) with identical output on every backend.
+- A method call names its arguments only when it writes three or more: the
+  receiver before the dot no longer counts, so `xs.fold(0, f)`,
+  `s.replace("a", "b")`, `xs.slice(1, 3)` and `m.insert(k, v)` are accepted.
+- `n.to_float()` and `f.to_int()`: `Int` and `Float` methods reach the
+  `int_` and `float_` builtins.
+- Another language's name for an operation is fixed to Geno's for the
+  receiver: `s.chars()`, `ord(c)`, `chr(n)`, `xs.skip(n)`, `m.items()`,
+  `m.has(k)`, `m.put(k, v)`, `opt.flat_map(f)`, `"3".to_int()` and others.
+  `pow(a, b)`, `s * n` and `", ".join(parts)` get a hint naming the Geno
+  form. An edit-distance fix is no longer attached when the names are
+  different words (`set`/`get`, `is_upper`/`to_upper`), and a short name gets
+  no far-fetched "Did you mean".
 - More fixes for habits from other languages: `&&`, `||`, `!`, `=>`, `#`,
   `null`, `else:`, `if c:` and `lambda x: body` are each reported with the
   Geno form and fixed to it; `len`, `str`, `upper`, `strip`, `startswith` and
