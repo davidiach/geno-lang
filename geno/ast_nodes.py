@@ -53,10 +53,10 @@ class Expression(ASTNode):
         default=FLOAT_PROMOTION_UNKNOWN, init=False, repr=False, compare=False
     )
     # Generic functions (proposal 0004). On a name that refers to a generic
-    # function: ``_generic_target`` is (defining module, name, type
-    # parameters), ``_generic_instance`` the ``GenericInstance`` its context
-    # chose, and ``_generic_callee`` marks the name as the callee of a call.
-    _generic_target: tuple[str | None, str, tuple[str, ...]] | None = field(
+    # function: ``_generic_target`` is its ``GenericSignature``,
+    # ``_generic_instance`` the ``GenericInstance`` its context chose, and
+    # ``_generic_callee`` marks the name as the callee of a call.
+    _generic_target: Any | None = field(
         default=None, init=False, repr=False, compare=False
     )
     _generic_instance: Any | None = field(
@@ -816,6 +816,8 @@ class FunctionDef(Definition):
     exported: bool = False  # True when declared with `export func`
     effects: list[str] = field(default_factory=list)  # Effect annotations: with fs, io
     type_params: list[str] = field(default_factory=list)  # func name[T, U](...)
+    # Declared bounds per type parameter: func name[T: Ord + Hash](...)
+    type_param_bounds: dict[str, list[str]] = field(default_factory=dict)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_function_def(self)

@@ -103,6 +103,7 @@ from .float_promotion import float_shape, promotion_shape
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
 from .types import (
+    BUILTIN_BOUNDS,
     AnyType,
     ArrayType,
     AsyncType,
@@ -110,6 +111,7 @@ from .types import (
     FloatType,
     FuncType,
     GenericInstance,
+    GenericSignature,
     IntType,
     ListType,
     MapType,
@@ -132,6 +134,7 @@ from .types import (
     UserType,
     VecType,
     any_child,
+    close_bounds,
     map_type,
     type_children,
 )
@@ -184,28 +187,6 @@ _RESERVED_TYPE_NAMES = (
 # Entrypoints a host calls without type arguments, so they cannot be generic.
 _NON_GENERIC_ENTRYPOINTS = frozenset({"main", "init", "update", "render"})
 
-# Standard-library wrappers whose honest signature needs a type parameter
-# bound (Map keys must be hashable, Math needs numbers) borrow the generic
-# signature of the builtin they forward to. List, Option and Result are
-# ordinary generic functions and need no entry here.
-_STDLIB_FORWARDER_BUILTINS: dict[str, dict[str, str]] = {
-    "Map": {
-        "from_list": "map_from_list",
-        "merge": "map_merge",
-        "filter_map": "map_filter_map",
-        "map_values": "map_map_values",
-        "entries": "map_entries",
-        "from_entries": "map_from_entries",
-        "get": "map_get",
-        "insert": "map_insert",
-    },
-    "Math": {
-        "abs": "math_abs",
-        "min": "math_min",
-        "max": "math_max",
-        "clamp": "math_clamp",
-    },
-}
 
 # =============================================================================
 # Project import summaries
@@ -288,6 +269,44 @@ def _display_type(type_: Type) -> str:
     return _FRESH_TYPE_VAR_NAME.sub("_", str(type_))
 
 
+def _is_numeric(type_: Type) -> bool:
+    """Int, Float, or a type parameter bounded by `Num`."""
+    if isinstance(type_, (IntType, FloatType)):
+        return True
+    return isinstance(type_, TypeParam) and type_.has_bound("Num")
+
+
+def _unbounded_params(*types: Type) -> list[TypeParam]:
+    return [t for t in types if isinstance(t, TypeParam)]
+
+
+def _numeric_bound_hint(left: Type, right: Type) -> str:
+    params = [p for p in _unbounded_params(left, right) if not p.has_bound("Num")]
+    if not params:
+        return ""
+    return f". Declare a numeric bound to use arithmetic: [{params[0].name}: Num]"
+
+
+def _ordering_bound_hint(left: Type, right: Type) -> str:
+    params = [p for p in _unbounded_params(left, right) if not p.has_bound("Ord")]
+    if not params:
+        return ""
+    return f". Declare an ordering bound to compare: [{params[0].name}: Ord]"
+
+
+def _bound_hint(bound: str, type_: Type) -> str:
+    """Explain which types meet *bound*, for an unsatisfied-bound error."""
+    if isinstance(type_, TypeParam):
+        return f"; declare it on the caller's own parameter: [{type_.name}: {bound}]"
+    if bound == "Num":
+        return "; only Int and Float are numbers"
+    if bound == "Ord":
+        return "; only Int, Float and String are ordered"
+    if bound == "Hash":
+        return "; lists, arrays, vectors, sets, maps and functions cannot be hashed"
+    return f"; add `impl {bound} for {type_}`" if isinstance(type_, UserType) else ""
+
+
 @dataclass(frozen=True)
 class _ModuleImportSummary:
     """Compact import-facing view of a checked module."""
@@ -301,8 +320,9 @@ class _ModuleImportSummary:
     module_symbols: dict[str, Type]
     module_param_names: dict[str, list[str]]
     module_default_counts: dict[str, int]
-    # Type parameter names of the exported generic functions.
-    function_type_params: dict[str, tuple[str, ...]] = dataclasses.field(
+    # The exported generic functions, recorded with no defining module; the
+    # importer fills that in when it applies the summary.
+    generic_functions: dict[str, GenericSignature] = dataclasses.field(
         default_factory=dict
     )
 
@@ -623,9 +643,10 @@ class TypeChecker(ExhaustivenessMixin):
         self._resolved_type_cache: dict[
             tuple[int, tuple[str, ...], tuple[str, ...]], Type
         ] = {}
-        # Type parameters of the generic function whose body is being checked.
-        # Inside that body each one resolves to a rigid TypeParam.
-        self._rigid_type_params: tuple[str, ...] = ()
+        # Type parameters of the generic function whose body is being checked,
+        # with their bounds closed under implication. Inside that body each
+        # one resolves to a rigid TypeParam.
+        self._rigid_type_params: dict[str, frozenset[str]] = {}
         self._declared_user_types: list[dict[str, tuple[str, ...]]] = []
         self._trait_self_type_depth = 0
         self._target_profile = target_profile
@@ -641,13 +662,9 @@ class TypeChecker(ExhaustivenessMixin):
         # Module param names for qualified calls: alias/name → {func: [param_names]}
         self._module_param_names: dict[str, dict[str, list[str]]] = {}
         self._module_default_counts: dict[str, dict[str, int]] = {}
-        # Generic functions visible unqualified: name -> (defining module or
-        # None for this module, type parameter names).
-        self._generic_functions: dict[str, tuple[str | None, tuple[str, ...]]] = {}
-        # Generic functions reachable as Module.name: namespace -> same shape.
-        self._module_generic_functions: dict[
-            str, dict[str, tuple[str, tuple[str, ...]]]
-        ] = {}
+        # Generic functions visible unqualified, and reachable as Module.name.
+        self._generic_functions: dict[str, GenericSignature] = {}
+        self._module_generic_functions: dict[str, dict[str, GenericSignature]] = {}
         # Generic functions referenced as values, checked once the program is,
         # so each has its type arguments determined by its context.
         self._generic_value_refs: list[Expression] = []
@@ -1125,8 +1142,8 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(type_, (AnyType, NeverType, TypeVar)):
             return True
         if isinstance(type_, TypeParam):
-            # A caller may instantiate it with a list, which cannot be hashed.
-            return False
+            # Without a bound a caller may instantiate it with a list.
+            return type_.has_bound("Hash")
         if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
             return True
         if isinstance(type_, TupleType):
@@ -1169,10 +1186,11 @@ class TypeChecker(ExhaustivenessMixin):
             )
             if rigid:
                 names = ", ".join(f"'{name}'" for name in rigid)
+                bounds = ", ".join(f"{name}: Hash" for name in rigid)
                 self._error(
                     f"{collection_name} {role} type must be hashable, got "
-                    f"{key_type}; a value of type parameter {names} may be a "
-                    f"list, which cannot be hashed",
+                    f"{key_type}; type parameter {names} may be a list, which "
+                    f"cannot be hashed. Declare the bound: [{bounds}]",
                     location,
                 )
                 return
@@ -1668,8 +1686,7 @@ class TypeChecker(ExhaustivenessMixin):
             # Collect function signatures from module
             module_param_names: dict[str, list[str]] = {}
             module_default_counts: dict[str, int] = {}
-            module_generic_functions: dict[str, tuple[str, tuple[str, ...]]] = {}
-            stdlib_module_name = self._stdlib_module_name_for_program(mod_program)
+            module_generic_functions: dict[str, GenericSignature] = {}
             for defn in mod_program.definitions:
                 if isinstance(defn, FunctionDef):
                     if has_exports and not defn.exported:
@@ -1677,29 +1694,22 @@ class TypeChecker(ExhaustivenessMixin):
                     func_type, param_names, num_defaults = (
                         self._function_signature_from_def(defn)
                     )
-                    func_type = (
-                        self._stdlib_forwarder_type(stdlib_module_name, defn.name)
-                        or func_type
-                    )
+                    generic = self._generic_signature(defn, name)
                     if direct and not is_aliased:
                         self._register_function_signature(
                             defn.name,
                             func_type,
                             param_names,
                             num_defaults,
-                            type_params=defn.type_params,
-                            origin_module=name,
+                            generic=generic,
                         )
                     # Track for qualified access
                     module_symbols[defn.name] = func_type
                     module_param_names[defn.name] = param_names
                     if num_defaults > 0:
                         module_default_counts[defn.name] = num_defaults
-                    if defn.type_params:
-                        module_generic_functions[defn.name] = (
-                            name,
-                            tuple(defn.type_params),
-                        )
+                    if generic is not None:
+                        module_generic_functions[defn.name] = generic
             import_summaries[name] = self._build_module_import_summary(mod_program)
         finally:
             # Restore temporary-alias state even if signature resolution raised,
@@ -1811,44 +1821,9 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions
         )
 
-    @staticmethod
-    def _stdlib_module_name_for_program(program: Program) -> str | None:
-        """Return the std module name for a program loaded from geno/std."""
-        for defn in program.definitions:
-            filename = getattr(defn.location, "filename", None)
-            if not filename:
-                continue
-            path = Path(filename)
-            if (
-                path.suffix == ".geno"
-                and path.parent.name == "std"
-                and path.parent.parent.name == "geno"
-            ):
-                return path.stem
-        return None
-
-    def _stdlib_forwarder_type(
-        self,
-        stdlib_module_name: str | None,
-        function_name: str,
-    ) -> FuncType | None:
-        """Return the generic builtin signature for known std thin wrappers."""
-        if stdlib_module_name is None:
-            return None
-        builtin_name = _STDLIB_FORWARDER_BUILTINS.get(stdlib_module_name, {}).get(
-            function_name
-        )
-        if builtin_name is None:
-            return None
-        builtin = self.builtin_types.get(builtin_name)
-        if builtin is None:
-            return None
-        return builtin[0]
-
     def _build_module_import_summary(self, program: Program) -> _ModuleImportSummary:
         """Precompute the import-facing shape of a checked module."""
         has_exports = self._program_has_explicit_exports(program)
-        stdlib_module_name = self._stdlib_module_name_for_program(program)
         imports: list[ImportStatement] = []
         type_aliases: dict[str, tuple[list[str], TypeAnnotation]] = {}
         type_defs: dict[str, TypeDefInfo] = {}
@@ -1858,7 +1833,7 @@ class TypeChecker(ExhaustivenessMixin):
         module_symbols: dict[str, Type] = {}
         module_param_names: dict[str, list[str]] = {}
         module_default_counts: dict[str, int] = {}
-        function_type_params: dict[str, tuple[str, ...]] = {}
+        generic_functions: dict[str, GenericSignature] = {}
         module_type_defs = [
             defn for defn in program.definitions if isinstance(defn, TypeDef)
         ]
@@ -1909,10 +1884,6 @@ class TypeChecker(ExhaustivenessMixin):
                     func_type, param_names, num_defaults = (
                         self._function_signature_from_def(defn)
                     )
-                    func_type = (
-                        self._stdlib_forwarder_type(stdlib_module_name, defn.name)
-                        or func_type
-                    )
                     functions[defn.name] = func_type
                     func_param_names[defn.name] = param_names
                     if num_defaults > 0:
@@ -1920,8 +1891,9 @@ class TypeChecker(ExhaustivenessMixin):
                         module_default_counts[defn.name] = num_defaults
                     module_symbols[defn.name] = func_type
                     module_param_names[defn.name] = param_names
-                    if defn.type_params:
-                        function_type_params[defn.name] = tuple(defn.type_params)
+                    generic = self._generic_signature(defn, None)
+                    if generic is not None:
+                        generic_functions[defn.name] = generic
         self._refresh_type_def_variance(type_defs)
 
         return _ModuleImportSummary(
@@ -1934,7 +1906,7 @@ class TypeChecker(ExhaustivenessMixin):
             module_symbols=module_symbols,
             module_param_names=module_param_names,
             module_default_counts=module_default_counts,
-            function_type_params=function_type_params,
+            generic_functions=generic_functions,
         )
 
     def _apply_module_import_summary(
@@ -1962,21 +1934,25 @@ class TypeChecker(ExhaustivenessMixin):
                 for constructor_name in type_info.variants:
                     self._constructor_to_type[constructor_name] = type_name
             for func_name, func_type in summary.functions.items() if direct else ():
+                generic = summary.generic_functions.get(func_name)
                 self._register_function_signature(
                     func_name,
                     func_type,
                     summary.func_param_names[func_name],
                     summary.func_default_counts.get(func_name, 0),
-                    type_params=summary.function_type_params.get(func_name, ()),
-                    origin_module=module_name,
+                    generic=(
+                        None
+                        if generic is None
+                        else dataclasses.replace(generic, module=module_name)
+                    ),
                 )
 
         if not direct:
             return
         ns_name = alias or module_name
         self._module_generic_functions[ns_name] = {
-            func_name: (module_name, type_params)
-            for func_name, type_params in summary.function_type_params.items()
+            func_name: dataclasses.replace(generic, module=module_name)
+            for func_name, generic in summary.generic_functions.items()
         }
         self._module_exports[ns_name] = dict(summary.module_symbols)
         self._module_param_names[ns_name] = {
@@ -2222,8 +2198,7 @@ class TypeChecker(ExhaustivenessMixin):
         param_names: list[str],
         num_defaults: int,
         *,
-        type_params: Sequence[str] = (),
-        origin_module: str | None = None,
+        generic: GenericSignature | None = None,
     ) -> None:
         """Register a function signature into the global environment."""
         self.global_env.bind(name, func_type)
@@ -2231,10 +2206,27 @@ class TypeChecker(ExhaustivenessMixin):
         self.func_param_names[name] = list(param_names)
         if num_defaults > 0:
             self.func_default_counts[name] = num_defaults
-        if type_params:
-            self._generic_functions[name] = (origin_module, tuple(type_params))
+        if generic is not None:
+            self._generic_functions[name] = generic
         else:
             self._generic_functions.pop(name, None)
+
+    @staticmethod
+    def _generic_signature(
+        defn: FunctionDef, module: str | None
+    ) -> GenericSignature | None:
+        """Describe *defn* for its callers, or ``None`` if it is not generic."""
+        if not defn.type_params:
+            return None
+        return GenericSignature(
+            module=module,
+            name=defn.name,
+            type_params=tuple(defn.type_params),
+            bounds=tuple(
+                tuple(defn.type_param_bounds.get(param, ()))
+                for param in defn.type_params
+            ),
+        )
 
     def _collect_function_sig(self, defn: FunctionDef) -> None:
         """Collect a function signature into the environment."""
@@ -2244,7 +2236,7 @@ class TypeChecker(ExhaustivenessMixin):
             func_type,
             param_names,
             num_defaults,
-            type_params=defn.type_params,
+            generic=self._generic_signature(defn, None),
         )
 
     def _collect_trait_def(self, defn: TraitDef) -> None:
@@ -2432,7 +2424,10 @@ class TypeChecker(ExhaustivenessMixin):
     def _generic_body_scope(self, defn: FunctionDef) -> Iterator[None]:
         """Resolve *defn*'s type parameters as rigid types while checking it."""
         previous = self._rigid_type_params
-        self._rigid_type_params = tuple(defn.type_params)
+        self._rigid_type_params = {
+            param: close_bounds(defn.type_param_bounds.get(param, ()))
+            for param in defn.type_params
+        }
         try:
             yield
         finally:
@@ -2474,6 +2469,18 @@ class TypeChecker(ExhaustivenessMixin):
         for param in defn.params:
             used |= self._type_annotation_names(param.param_type)
         used |= self._type_annotation_names(defn.return_type)
+        for param_name, bounds in defn.type_param_bounds.items():
+            for bound in bounds:
+                if bound in BUILTIN_BOUNDS or bound in self.trait_defs:
+                    continue
+                hint = _suggest_name(bound, [*BUILTIN_BOUNDS, *self.trait_defs])
+                self._error(
+                    f"Unknown bound '{bound}' on type parameter {param_name} of "
+                    f"'{defn.name}': a bound is Num, Ord, Hash or the name of a "
+                    f"trait{'.' if hint else ''}{hint}",
+                    defn.location,
+                    ErrorCode.TYPE_UNKNOWN_BOUND,
+                )
         seen: set[str] = set()
         for name in defn.type_params:
             if name in seen:
@@ -3044,6 +3051,18 @@ class TypeChecker(ExhaustivenessMixin):
             if not ordered_args or ordered_args[0] is None:
                 continue
             receiver_type = self._check_expression(ordered_args[0].value, env)
+            if isinstance(receiver_type, TypeParam):
+                # `[T: Shape]` promises an impl at every instantiation; the
+                # call dispatches on the value at run time, as for any ADT.
+                if not receiver_type.has_bound(trait_name):
+                    continue
+                bounded = self._bounded_trait_method_type(
+                    trait_name, callee.name, receiver_type
+                )
+                if bounded is None:
+                    continue
+                self._record_captured_binding(callee.name, env)
+                return bounded, param_names, ordered_args
             if not isinstance(receiver_type, UserType):
                 continue
             resolved_type_name = self._constructor_to_type.get(
@@ -3055,6 +3074,34 @@ class TypeChecker(ExhaustivenessMixin):
             self._record_captured_binding(callee.name, env)
             return method_types[callee.name], param_names, ordered_args
         return None
+
+    def _bounded_trait_method_type(
+        self, trait_name: str, method_name: str, receiver: TypeParam
+    ) -> FuncType | None:
+        """A trait method's type when called through a type parameter bound.
+
+        Trait signatures declare no effects, so the call carries the effects
+        of every implementation this program can see.
+        """
+        trait_def = self.trait_defs.get(trait_name)
+        if trait_def is None:
+            return None
+        method_sig = next((m for m in trait_def.methods if m.name == method_name), None)
+        if method_sig is None:
+            return None
+        with self._allow_trait_self_type():
+            param_types = tuple(
+                self._substitute_trait_self(self._resolve_type(p.param_type), receiver)
+                for p in method_sig.params
+            )
+            return_type = self._substitute_trait_self(
+                self._resolve_type(method_sig.return_type), receiver
+            )
+        effects: frozenset[str] = frozenset()
+        for (impl_trait, _type_name), methods in self.impl_registry.items():
+            if impl_trait == trait_name and method_name in methods:
+                effects |= methods[method_name].effects
+        return FuncType(param_types, return_type, effects)
 
     def _infer_expr_effects(self, expr: Expression, env: TypeEnv) -> set[str]:
         """Infer effects from an expression."""
@@ -3337,6 +3384,13 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(
                     f"Example output type mismatch: expected {shown(return_type)}, got {output_type}",
                     ex.output_expr.location,
+                )
+            generic = self._generic_signature(defn, None)
+            if generic is not None and example_subs is not None:
+                self._check_instance_bounds(
+                    generic,
+                    self._generic_instance(generic, example_subs).type_args,
+                    ex.location,
                 )
 
     def _check_statement(self, stmt: Statement, env: TypeEnv) -> None:
@@ -3982,17 +4036,16 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _generic_target(
         self, expr: Expression, env: TypeEnv
-    ) -> tuple[str | None, str, tuple[str, ...]] | None:
+    ) -> GenericSignature | None:
         """Return the generic function *expr* names, if it names one.
 
-        The result is ``(defining module, function name, type parameters)``.
         A local binding that shadows the function makes this ``None``.
         """
         if isinstance(expr, Identifier):
             target = self._generic_functions.get(expr.name)
             if target is None or env.binding_scope(expr.name) is not self.global_env:
                 return None
-            return (target[0], expr.name, target[1])
+            return target
         if isinstance(expr, FieldAccess) and isinstance(
             expr.target, (Identifier, TypeIdentifier)
         ):
@@ -4001,30 +4054,64 @@ class TypeChecker(ExhaustivenessMixin):
                 return None
             if env.binding_scope(namespace) is not self.global_env:
                 return None
-            entry = self._module_generic_functions.get(namespace, {}).get(
+            return self._module_generic_functions.get(namespace, {}).get(
                 expr.field_name
             )
-            if entry is None:
-                return None
-            return (entry[0], expr.field_name, entry[1])
         return None
 
     @staticmethod
     def _generic_instance(
-        target: tuple[str | None, str, tuple[str, ...]],
+        target: GenericSignature,
         subs: Mapping[str, Type],
         prefix: str = "",
     ) -> GenericInstance:
-        module, name, type_params = target
         return GenericInstance(
-            module=module,
-            name=name,
-            type_params=type_params,
+            module=target.module,
+            name=target.name,
+            type_params=target.type_params,
             type_args=tuple(
                 TypeChecker._apply_substitutions(TypeVar(prefix + param), dict(subs))
-                for param in type_params
+                for param in target.type_params
             ),
         )
+
+    def _satisfies_bound(self, type_: Type, bound: str) -> bool:
+        """Return whether *type_* meets a type parameter bound."""
+        if isinstance(type_, (AnyType, NeverType, TypeVar)):
+            return True
+        if isinstance(type_, TypeParam):
+            return type_.has_bound(bound)
+        if bound == "Num":
+            return isinstance(type_, (IntType, FloatType))
+        if bound == "Ord":
+            return isinstance(type_, (IntType, FloatType, StringType))
+        if bound == "Hash":
+            return self._is_hashable_type(type_)
+        if isinstance(type_, UserType):
+            type_name = self._constructor_to_type.get(type_.name, type_.name)
+            return (bound, type_name) in self.impl_registry
+        return False
+
+    def _check_instance_bounds(
+        self,
+        target: GenericSignature,
+        type_args: Sequence[Type],
+        location: SourceLocation,
+    ) -> None:
+        """Report each type argument that misses a bound of its parameter."""
+        for index, (param, arg) in enumerate(zip(target.type_params, type_args)):
+            for bound in target.bounds_of(index):
+                if bound not in BUILTIN_BOUNDS and bound not in self.trait_defs:
+                    continue  # reported as E322 where the function is defined
+                if self._satisfies_bound(arg, bound):
+                    continue
+                self._error(
+                    f"Type {_display_type(arg)} does not satisfy the bound "
+                    f"'{bound}' on type parameter {param} of '{target.name}'"
+                    f"{_bound_hint(bound, arg)}",
+                    location,
+                    ErrorCode.TYPE_UNSATISFIED_BOUND,
+                )
 
     def _record_generic_value_instance(self, expr: Expression, expected: Type) -> None:
         """Instantiate a generic function used as a value from its context."""
@@ -4068,17 +4155,21 @@ class TypeChecker(ExhaustivenessMixin):
             if instance is not None and not any(
                 self._has_type_vars(arg) for arg in instance.type_args
             ):
+                if expr._generic_target is not None:
+                    self._check_instance_bounds(
+                        expr._generic_target, instance.type_args, expr.location
+                    )
                 continue
             target = expr._generic_target
             if target is None:
                 continue
-            params = ", ".join(target[2])
+            params = ", ".join(target.type_params)
+            plural = "s" if len(target.type_params) > 1 else ""
             self._error(
-                f"Cannot infer the type argument{'s' if len(target[2]) > 1 else ''} "
-                f"{params} of generic function '{target[1]}' used as a value; "
-                "state the function type it is used at, for example in an "
-                "annotated binding such as "
-                f"`let f: (Int) -> Int = {target[1]}`",
+                f"Cannot infer the type argument{plural} {params} of generic "
+                f"function '{target.name}' used as a value; state the function "
+                "type it is used at, for example in an annotated binding such as "
+                f"`let f: (Int) -> Int = {target.name}`",
                 expr.location,
                 ErrorCode.TYPE_GENERIC_INFERENCE,
             )
@@ -4360,11 +4451,17 @@ class TypeChecker(ExhaustivenessMixin):
                 and isinstance(right_type, (IntType, FloatType))
             ):
                 return _FLOAT_TYPE
+            elif (
+                num_result := self._num_param_arithmetic(left_type, right_type)
+            ) is not None:
+                return num_result
             else:
+                hint = _numeric_bound_hint(left_type, right_type)
                 self._error(
                     f"Cannot apply '{expr.operator}' to {left_type} and {right_type}: "
                     f"both operands must be numeric (Int or Float)"
-                    f"{' or both String for concatenation' if expr.operator == '+' else ''}",
+                    f"{' or both String for concatenation' if expr.operator == '+' else ''}"
+                    f"{hint}",
                     expr.location,
                 )
                 return _ANY_TYPE
@@ -4383,9 +4480,11 @@ class TypeChecker(ExhaustivenessMixin):
         # Ordering operators
         if expr.operator in ("<", ">", "<=", ">="):
             if not self._types_orderable(left_type, right_type):
+                hint = _ordering_bound_hint(left_type, right_type)
                 self._error(
                     f"Cannot apply '{expr.operator}' to {left_type} and {right_type}: "
-                    "operands must both be numeric (Int or Float) or both String",
+                    f"operands must both be numeric (Int or Float) or both String"
+                    f"{hint}",
                     expr.location,
                 )
             return _BOOL_TYPE
@@ -4411,11 +4510,38 @@ class TypeChecker(ExhaustivenessMixin):
         """Return whether the pair supports Geno ordering operators."""
         if isinstance(left_type, AnyType) or isinstance(right_type, AnyType):
             return True
-        if isinstance(left_type, (IntType, FloatType)) and isinstance(
-            right_type, (IntType, FloatType)
-        ):
+        if _is_numeric(left_type) and _is_numeric(right_type):
+            # A `Num` type parameter is an Int or a Float, so it compares
+            # with any number.
             return True
+        if isinstance(left_type, TypeParam) and left_type == right_type:
+            return left_type.has_bound("Ord")
         return isinstance(left_type, StringType) and isinstance(right_type, StringType)
+
+    @staticmethod
+    def _num_param_arithmetic(left_type: Type, right_type: Type) -> Type | None:
+        """Result type of arithmetic involving a `Num` type parameter.
+
+        ``T op T``, ``T op Int`` and ``Int op T`` are ``T``: for either
+        instantiation, Int or Float, the operation yields that same type. With
+        a Float operand the result is Float whatever ``T`` is.
+        """
+        param = next(
+            (
+                t
+                for t in (left_type, right_type)
+                if isinstance(t, TypeParam) and t.has_bound("Num")
+            ),
+            None,
+        )
+        if param is None:
+            return None
+        other = right_type if param is left_type else left_type
+        if other == param or isinstance(other, IntType):
+            return param
+        if isinstance(other, FloatType):
+            return _FLOAT_TYPE
+        return None
 
     def _check_unary_op(self, expr: UnaryOp, env: TypeEnv) -> Type:
         """Type check a unary operation."""
@@ -4426,6 +4552,8 @@ class TypeChecker(ExhaustivenessMixin):
                 return _INT_TYPE
             elif isinstance(operand_type, FloatType):
                 return _FLOAT_TYPE
+            elif isinstance(operand_type, TypeParam) and operand_type.has_bound("Num"):
+                return operand_type
             else:
                 self._error(
                     f"Cannot negate type {operand_type}: "
@@ -4713,7 +4841,11 @@ class TypeChecker(ExhaustivenessMixin):
         generic_target = getattr(func_expr, "_generic_target", None)
         if generic_target is not None:
             func_expr._generic_callee = True
-            func_expr._generic_instance = self._generic_instance(generic_target, subs)
+            instance = self._generic_instance(generic_target, subs)
+            func_expr._generic_instance = instance
+            self._check_instance_bounds(
+                generic_target, instance.type_args, expr.location
+            )
         # A generic function passed as an argument is instantiated by this
         # call's final substitution: its type may only be settled by a later
         # argument, as in `apply(show, 2.0)`.
@@ -5810,7 +5942,7 @@ class TypeChecker(ExhaustivenessMixin):
         cache_key = (
             id(type_annot),
             tuple(type_params) if type_params is not None else (),
-            self._rigid_type_params,
+            tuple(self._rigid_type_params),
         )
         cached = self._resolved_type_cache.get(cache_key)
         if cached is not None:
@@ -5838,7 +5970,7 @@ class TypeChecker(ExhaustivenessMixin):
                         f"Type parameter '{name}' does not take type arguments",
                         type_annot.location,
                     )
-                resolved = TypeParam(name)
+                resolved = TypeParam(name, self._rigid_type_params[name])
                 self._resolved_type_cache[cache_key] = resolved
                 return resolved
 
@@ -6275,7 +6407,7 @@ class TypeChecker(ExhaustivenessMixin):
     @staticmethod
     def _typevar_accepts(type_var: TypeVar, actual: Type) -> bool:
         if type_var.name in _NUMERIC_TYPEVAR_NAMES:
-            return isinstance(actual, (IntType, FloatType, TypeVar))
+            return _is_numeric(actual) or isinstance(actual, TypeVar)
         return True
 
     def _types_compatible_with_subs(

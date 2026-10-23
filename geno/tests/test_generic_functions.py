@@ -246,7 +246,7 @@ def test_type_parameter_cannot_be_a_hash_key_without_a_bound() -> None:
         "    return set_to_list(s)\n"
         "end func\n"
     )
-    assert "a value of type parameter 'T' may be a list" in message
+    assert "Declare the bound: [T: Hash]" in message
 
 
 def test_body_may_compare_print_and_store_type_parameter_values() -> None:

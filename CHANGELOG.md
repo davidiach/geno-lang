@@ -25,9 +25,17 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   generic function for each way its type arguments contain `Float`, so a `Float`
   passed through a type parameter prints as `2.0` on every backend. TypeScript
   declarations declare the type parameters.
-- The standard library's `List`, `Option` and `Result` modules are generic:
-  `List.zip`, `List.find`, `Option.map`, `Result.map_err` and the rest work at
-  any element type instead of `Int` only.
+- Bounds on type parameters
+  ([proposal 0005](docs/proposals/0005-type-parameter-bounds.md)):
+  `func largest[T: Ord](xs: List[T], fallback: T) -> T`. `Num` permits
+  arithmetic, `Ord` ordering and `Hash` use as a map key or set element; a trait
+  name permits calling that trait's methods. `Num` implies `Ord`, which implies
+  `Hash`. Errors about a missing bound name the bound to add. New diagnostics:
+  E322 for an unknown bound and E323 for a type argument that misses one.
+- The standard library is generic throughout: `List`, `Option` and `Result`
+  work at any element type, `Map` at any hashable key type and `Math.abs`,
+  `min`, `max` and `clamp` at `Int` or `Float`, instead of `Int` or `String`
+  only. The checker no longer substitutes builtin signatures for them.
 - `geno check` warns when a `let` or `var` redeclares a mutable variable from
   the same or an enclosing block (W300), as in `var y = f(y)` inside a loop
   where `y = f(y)` was meant. The program still passes. The warning is

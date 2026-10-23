@@ -188,6 +188,28 @@ A generic function can also be passed as a value when the surrounding code
 fixes its types, as in `map([1.5, 2.5], show)` or
 `let render: (Int) -> String = show`.
 
+To compare, add up, or hash values of a type parameter, give it a bound:
+
+```geno
+func largest[T: Ord](xs: List[T], fallback: T) -> T
+    example [3, 9, 2], 0 -> 9
+    example ["b", "a"], "" -> "b"
+    var best = fallback
+    for x: T in xs do
+        if x > best then
+            best = x
+        end if
+    end for
+    return best
+end func
+```
+
+`Ord` allows `<` and friends and is met by `Int`, `Float` and `String`. `Num`
+allows arithmetic and is met by `Int` and `Float`. `Hash` allows use as a
+`Map` key or `Set` element. A trait name works as a bound too: `[T: Shape]`
+lets the function call `Shape`'s methods on a `T`. Calling `largest([true],
+false)` is rejected, because `Bool` is not ordered.
+
 ## Type Definitions (ADTs)
 
 ```geno

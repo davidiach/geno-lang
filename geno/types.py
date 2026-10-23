@@ -5,7 +5,7 @@ Geno Type System
 Type representations used by the type checker.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -186,6 +186,24 @@ class TypeVar(Type):
         return self.name
 
 
+# Built-in bounds a type parameter can declare, and what each one implies:
+# a `Num` is `Int` or `Float`, so it is ordered; every ordered type (`Int`,
+# `Float`, `String`) is hashable.
+BUILTIN_BOUNDS: dict[str, frozenset[str]] = {
+    "Num": frozenset({"Num", "Ord", "Hash"}),
+    "Ord": frozenset({"Ord", "Hash"}),
+    "Hash": frozenset({"Hash"}),
+}
+
+
+def close_bounds(bounds: "Iterable[str]") -> frozenset[str]:
+    """Add the built-in bounds that *bounds* imply."""
+    closed: set[str] = set()
+    for bound in bounds:
+        closed |= BUILTIN_BOUNDS.get(bound, frozenset({bound}))
+    return frozenset(closed)
+
+
 @dataclass(frozen=True)
 class TypeParam(Type):
     """A generic function's type parameter, seen from inside that function.
@@ -193,13 +211,35 @@ class TypeParam(Type):
     Callers see ``func f[T](x: T) -> T`` as ``(T) -> T`` over a ``TypeVar``
     they instantiate per call. The body sees ``T`` as this rigid type
     instead: an opaque type equal only to itself, so the body cannot assume
-    anything about the values it receives.
+    anything about the values it receives beyond its *bounds* (built-in
+    bounds closed under implication, plus trait names).
     """
 
     name: str
+    bounds: frozenset[str] = frozenset()
 
     def __str__(self) -> str:
         return self.name
+
+    def has_bound(self, bound: str) -> bool:
+        return bound in self.bounds
+
+
+@dataclass(frozen=True)
+class GenericSignature:
+    """A generic function as its callers see it, for checking each use.
+
+    ``module`` is the defining module, or ``None`` for the module being
+    checked; ``bounds`` lists each type parameter's declared bounds.
+    """
+
+    module: str | None
+    name: str
+    type_params: tuple[str, ...]
+    bounds: tuple[tuple[str, ...], ...] = ()
+
+    def bounds_of(self, index: int) -> tuple[str, ...]:
+        return self.bounds[index] if index < len(self.bounds) else ()
 
 
 @dataclass(frozen=True)

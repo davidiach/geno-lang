@@ -24,7 +24,8 @@ Key syntax rules:
 - Use `Option[T]` instead of null, `Result[T, E]` for errors
 - Generic functions declare type parameters in brackets after the name:
   `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
-  write `first_or[Int](...)` or `<T>`
+  write `first_or[Int](...)` or `<T>`. To use `<`, arithmetic, or a `T` as a map
+  key, add a bound: `[T: Ord]`, `[T: Num]`, `[K: Hash]`, or a trait name
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 - Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,

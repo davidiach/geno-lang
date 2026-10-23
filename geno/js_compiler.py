@@ -22,9 +22,7 @@ from ._backend_fastpath import (
     STRING_CHAR_AT_FAST_PATH_BUILTIN,
     SUBSTRING_FAST_PATH_BUILTINS,
     has_len_fast_path,
-    is_int_type,
     is_list_type,
-    is_numeric_type,
     is_simple_fast_path_expr,
     is_string_type,
 )
@@ -1700,6 +1698,26 @@ class JSCompiler(BaseCompiler):
             return type_
         return substitute_type_params(type_, self._type_subst)
 
+    def _expr_static_type(self, expr: Expression) -> Type | None:
+        return self._static_type(getattr(expr, "_resolved_type", None))
+
+    def _is_int_expr(self, expr: Expression) -> bool:
+        """Whether *expr* is statically an Int in the code being emitted.
+
+        A `Num` type parameter left after substitution is an Int: every
+        instantiation that makes it a Float compiles its own copy.
+        """
+        type_ = self._expr_static_type(expr)
+        if isinstance(type_, TypeParam):
+            return type_.has_bound("Num")
+        return isinstance(type_, IntType)
+
+    def _is_numeric_expr(self, expr: Expression) -> bool:
+        type_ = self._expr_static_type(expr)
+        if isinstance(type_, TypeParam):
+            return type_.has_bound("Num")
+        return isinstance(type_, (IntType, FloatType))
+
     # =========================================================================
     # Statements
     # =========================================================================
@@ -2987,8 +3005,10 @@ class JSCompiler(BaseCompiler):
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         left = self._compile_expr(expr.left)
         right = self._compile_expr(expr.right)
-        both_int = is_int_type(expr.left) and is_int_type(expr.right)
-        both_numeric = is_numeric_type(expr.left) and is_numeric_type(expr.right)
+        both_int = self._is_int_expr(expr.left) and self._is_int_expr(expr.right)
+        both_numeric = self._is_numeric_expr(expr.left) and self._is_numeric_expr(
+            expr.right
+        )
 
         if expr.operator == "/":
             if both_int:
@@ -3007,7 +3027,7 @@ class JSCompiler(BaseCompiler):
         if expr.operator == "%":
             if both_int:
                 return f"_safe_mod({left}, {right})"
-            if is_numeric_type(expr.left) and is_numeric_type(expr.right):
+            if self._is_numeric_expr(expr.left) and self._is_numeric_expr(expr.right):
                 if is_simple_fast_path_expr(expr.left) and is_simple_fast_path_expr(
                     expr.right
                 ):
@@ -3043,7 +3063,11 @@ class JSCompiler(BaseCompiler):
             return f"_safe_bitand({left}, {right})"
         if expr.operator == "^":
             return f"_safe_bitxor({left}, {right})"
-        if expr.operator == "-" and is_int_type(expr.left) and is_int_type(expr.right):
+        if (
+            expr.operator == "-"
+            and self._is_int_expr(expr.left)
+            and self._is_int_expr(expr.right)
+        ):
             return f"_safe_sub({left}, {right})"
         if expr.operator in ("<", ">", "<=", ">="):
             cmp = f"_compareOrderedValues({left}, {right})"
@@ -3067,13 +3091,13 @@ class JSCompiler(BaseCompiler):
     def _compile_unary_op(self, expr: UnaryOp) -> str:
         operand = self._compile_expr(expr.operand)
         if expr.operator == "-":
-            if is_int_type(expr.operand):
+            if self._is_int_expr(expr.operand):
                 return f"_safe_neg({operand})"
             return f"(-{operand})"
         if expr.operator == "not":
             return f"(!{operand})"
         if expr.operator == "~":
-            if is_int_type(expr.operand):
+            if self._is_int_expr(expr.operand):
                 return f"_safe_bitnot({operand})"
             return f"(~{operand})"
         return operand
@@ -3142,8 +3166,8 @@ class JSCompiler(BaseCompiler):
             right_expr = call_args[1].value
             left = self._compile_expr(left_expr)
             right = self._compile_expr(right_expr)
-            if is_numeric_type(left_expr) and is_numeric_type(right_expr):
-                if is_int_type(left_expr) and is_int_type(right_expr):
+            if self._is_numeric_expr(left_expr) and self._is_numeric_expr(right_expr):
+                if self._is_int_expr(left_expr) and self._is_int_expr(right_expr):
                     return f"_safe_div({left}, {right})"
                 return f"_float_div({left}, {right})"
 
@@ -3305,7 +3329,7 @@ class JSCompiler(BaseCompiler):
         if builtin_name == STRING_CHAR_AT_FAST_PATH_BUILTIN and len(call_args) == 2:
             text_expr = call_args[0].value
             index_expr = call_args[1].value
-            if is_string_type(text_expr) and is_int_type(index_expr):
+            if is_string_type(text_expr) and self._is_int_expr(index_expr):
                 text = self._compile_expr(text_expr)
                 index = self._compile_expr(index_expr)
                 return f"_stringCharAt({text}, {index})"
@@ -3316,8 +3340,8 @@ class JSCompiler(BaseCompiler):
             stop_expr = call_args[2].value
             if (
                 is_string_type(text_expr)
-                and is_int_type(start_expr)
-                and is_int_type(stop_expr)
+                and self._is_int_expr(start_expr)
+                and self._is_int_expr(stop_expr)
             ):
                 text = self._compile_expr(text_expr)
                 start = self._compile_expr(start_expr)

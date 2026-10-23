@@ -66,6 +66,8 @@ class ErrorCode(Enum):
     # Generic errors (32x)
     TYPE_GENERIC_PARAMS = "E320"  # Invalid type parameter list on a function
     TYPE_GENERIC_INFERENCE = "E321"  # Generic function value's types not inferred
+    TYPE_UNKNOWN_BOUND = "E322"  # Type parameter bound names no bound or trait
+    TYPE_UNSATISFIED_BOUND = "E323"  # Type argument misses a parameter's bound
 
     # Warnings (W3xx): reported with Severity.WARNING once a program passes
     # the type checker; the program is still accepted.

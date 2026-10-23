@@ -372,12 +372,20 @@ class Parser(
         name_token = self._expect(TokenType.IDENTIFIER, "Expected function name")
         name = name_token.value
 
-        # Optional type parameters: func name[T, U](...)
+        # Optional type parameters: func name[T, U: Ord + Hash](...)
         type_params: list[str] = []
+        type_param_bounds: dict[str, list[str]] = {}
         if self._match(TokenType.LBRACKET):
-            type_params.append(self._expect_type_parameter_name().value)
-            while self._match(TokenType.COMMA):
-                type_params.append(self._expect_type_parameter_name().value)
+            while True:
+                param = self._expect_type_parameter_name().value
+                type_params.append(param)
+                if self._match(TokenType.COLON):
+                    bounds = [self._expect_bound_name().value]
+                    while self._match(TokenType.PLUS):
+                        bounds.append(self._expect_bound_name().value)
+                    type_param_bounds[param] = bounds
+                if not self._match(TokenType.COMMA):
+                    break
             self._expect(TokenType.RBRACKET)
 
         # Parameters
@@ -422,6 +430,7 @@ class Parser(
             is_async=is_async,
             effects=effects,
             type_params=type_params,
+            type_param_bounds=type_param_bounds,
         )
 
     def _expect_type_parameter_name(self) -> Token:
@@ -434,6 +443,13 @@ class Parser(
             )
         return self._expect(
             TokenType.TYPE_IDENTIFIER, "Expected a type parameter name such as 'T'"
+        )
+
+    def _expect_bound_name(self) -> Token:
+        """Consume a bound: a built-in bound (Num, Ord, Hash) or a trait name."""
+        return self._expect(
+            TokenType.TYPE_IDENTIFIER,
+            "Expected a bound after ':', such as 'Ord', 'Hash', 'Num' or a trait name",
         )
 
     def _parse_parameter_list(self) -> list[Parameter]:
