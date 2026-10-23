@@ -37,6 +37,8 @@ def _render_type(t: TypeAnnotation) -> str:
     if isinstance(t, SimpleType):
         if t.type_params:
             params = ", ".join(_render_type(p) for p in t.type_params)
+            if t.name == "Tuple":
+                return f"({params})"  # written `(A, B)` in Geno
             return f"{t.name}[{params}]"
         return t.name
     if isinstance(t, FunctionType):

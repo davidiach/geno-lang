@@ -190,22 +190,15 @@ for i: Int in range(0, 10) do
 end for
 ```
 
-### 11. Reserved runtime names
+### 11. Avoiding host names (no longer needed)
 
-`geno check`, `geno test`, editor diagnostics, and the default `geno run` reject
-bindings that would shadow the compiled runtime in programs whose entrypoint
-defines `main`. Targetless library checks remain permissive. The names come from the backend's host builtins, so
-`len`, `id`, `map`, `abs`, `format`, `type`, `list`, `print`, and `str` are not
-usable as function, parameter, or local names.
+Geno 0.6 accepts any ordinary name: a parameter `len`, a local `list`, a
+function `max` or a constructor `Error` all compile, because the backends
+rename them. Only names starting with `_` that the runtime uses (`_safe_add`)
+are reserved. There is no need to steer a model away from Python builtins.
 
-Wrong:
 ```
 func trim_to(s: String, len: Int) -> String
-```
-
-Correct:
-```
-func trim_to(s: String, count: Int) -> String
 ```
 
 ### 12. Destructuring tuples in `match`
@@ -498,6 +491,15 @@ Fix this Geno code. Common issues to check:
 - `end func`/`end if`/`end for`/`end while` block terminators
 - `stop` not `end` as parameter name (keyword conflict)
 ```
+
+### Repair loop with fixes
+
+Diagnostics carry a fix when the correction is unambiguous: a misspelled name
+("Did you mean 'length'?"), positional arguments to a function with three or
+more parameters, a missing `then`/`do`, and `let mut`, `True`, `++` or `elif`.
+In an agent loop, run `geno check --fix file.geno` before asking the model to
+repair anything: it applies those fixes and reports only what remains. Through
+the embedding API, each `geno.check()` diagnostic lists them in `fixes`.
 
 ## Machine-Readable Specification
 

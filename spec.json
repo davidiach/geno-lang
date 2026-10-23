@@ -95,6 +95,7 @@
 
   "diagnostics": {
     "stability": "Published error-code meanings are stable within a language series, and are never repurposed across series; a code retains its meaning for every series this specification still retains.",
+    "fixes": "A diagnostic may carry fixes, each a title and text edits with 1-based start and exclusive end positions, when the correction is unambiguous: a 'Did you mean' rename, naming the arguments of an all-positional call to a 3+ parameter function, a missing then/do, and let mut, True/False, ++ and elif rewritten to Geno; geno.check() returns them, the language server offers them as quick fixes, and geno check --fix applies them",
     "fallbacks": ["E100", "E200", "E300", "E499"],
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",

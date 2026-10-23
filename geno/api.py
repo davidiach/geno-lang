@@ -380,6 +380,7 @@ def _make_diagnostic(exc, default_code: ErrorCode) -> Diagnostic:
         message=getattr(exc, "message", str(exc)),
         severity=Severity.ERROR,
         location=getattr(exc, "location", None),
+        fixes=tuple(getattr(exc, "fixes", ())),
     )
 
 
@@ -431,6 +432,7 @@ def _prefix_diagnostics_for_target(
             message=f"[{target}] {diag.message}",
             severity=diag.severity,
             location=diag.location,
+            fixes=diag.fixes,
         )
         for diag in diagnostics
     ]
@@ -506,7 +508,7 @@ def _parse_modules(modules: dict[str, str]) -> dict[str, Program]:
     for name, source in modules.items():
         lexer = Lexer(source, _module_filename(name, source))
         tokens = lexer.tokenize()
-        parser = Parser(tokens)
+        parser = Parser(tokens, source)
         parsed[name] = parser.parse_program()
     return parsed
 
@@ -703,7 +705,7 @@ def run(
     # --- Parse ---
     t_parse = time.perf_counter()
     try:
-        parser = Parser(tokens)
+        parser = Parser(tokens, source)
         program = parser.parse_program()
     except ParseErrors as e:
         _finalize_timing(timing, "parse_ms", t_parse, t0)
@@ -1134,7 +1136,7 @@ def check(
     # --- Parse ---
     t_parse = time.perf_counter()
     try:
-        parser = Parser(tokens)
+        parser = Parser(tokens, source)
         program = parser.parse_program()
     except ParseErrors as e:
         _finalize_timing(timing, "parse_ms", t_parse, t0)

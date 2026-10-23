@@ -86,6 +86,23 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   standalone compiled Python scripts and `geno test` examples. Before Python
   3.12 a deep run gets a thread with a large enough stack instead of crashing.
   The hosted server keeps call depth 500 (`GENO_MAX_RECURSION_DEPTH`).
+- Diagnostics carry fixes when the correction is unambiguous: a rename for
+  every "Did you mean" suggestion (names, methods, fields, types,
+  constructors), argument names for an all-positional call to a function with
+  three or more parameters, a missing `then`/`do`, and `let mut`, `True`/`False`,
+  `++` and `elif` rewritten to Geno, each with a message that names the Geno
+  form. `geno.check()` returns them (`Diagnostic.fixes`), `geno check` prints
+  them, `geno check --fix` applies them, and the language server offers them
+  as quick fixes over the exact text they replace. An unknown method or field
+  is now reported at its name instead of at the receiver.
+- The language server knows the checked program: hover shows the type of
+  every local, parameter, inferred lambda and loop variable, pattern binding
+  and tuple field, and for a method call the function it resolves to;
+  completion after `.` lists the receiver's methods and fields (also while the
+  line being typed does not parse); go-to-definition reaches a local's binding
+  and a trait method's implementation; signature help works inside method
+  calls. The formatter, language server, test runner and docs generator are
+  Stable.
 - `geno fmt` is Stable and canonical: it also normalizes spacing between
   tokens (one space around binary operators and `->`, after `,` and `:`, none
   inside brackets or before a call's `(`), indents a match arm's body under
@@ -146,6 +163,8 @@ and lists the rest.
 
 ### Fixed
 
+- `geno doc` renders tuple types as Geno writes them, `(A, B)`, instead of
+  `Tuple[A, B]`.
 - Building or walking a linked structure is linear again: the interpreter no
   longer re-walks a whole value at every call to enforce collection limits,
   and compiled Python no longer scans lists to track identity. A 9,000-node

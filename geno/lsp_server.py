@@ -47,6 +47,7 @@ except ImportError:
 
 import geno
 from geno.formatter import FormatError, format_source
+from geno.lsp_analysis import Analysis, analyze, hover_label
 from geno.lsp_cache import (
     BoundedDict as _BoundedDict,
 )
@@ -76,6 +77,9 @@ from geno.lsp_completions import (
 )
 from geno.lsp_diagnostics import (
     error_diagnostic as _error_diagnostic,
+)
+from geno.lsp_diagnostics import (
+    fix_code_actions as _fix_code_actions,
 )
 from geno.lsp_diagnostics import (
     to_lsp_diagnostic as _to_lsp_diagnostic,
@@ -144,6 +148,7 @@ def _diagnostics_by_uri_from_exception(
             line=err_line,
             character=err_col,
             code=code if isinstance(code, str) else None,
+            fixes=tuple(getattr(error, "fixes", ())),
         )
         grouped.setdefault(err_uri, []).append(diag)
     return grouped
@@ -999,6 +1004,11 @@ class GenoLanguageServer:
         self._project_views: dict[str, _ProjectView] = {}
         self._project_view_cache: _BoundedDict = _BoundedDict(_PROJECT_VIEW_CACHE_MAX)
         self._symbol_table_cache: _BoundedDict = _BoundedDict(_SYMBOL_TABLE_CACHE_MAX)
+        # Checked documents (lsp_analysis): URI -> (source, analysis or None),
+        # and the last analysis of each URI that parsed, for completion while
+        # the line being typed does not.
+        self._analyses: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
+        self._parsed_analyses: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
         self._debounce_timers: dict[str, threading.Timer] = {}
         self._register_handlers()
 
@@ -1958,6 +1968,59 @@ class GenoLanguageServer:
             )
         ]
 
+    def _analysis(self, uri: str, source: str) -> Analysis | None:
+        """The checked document, or None when it does not parse."""
+        cached = self._analyses.get(uri)
+        if cached is not None and cached[0] == source:
+            return cast("Analysis | None", cached[1])
+        analysis = analyze(source, _uri_to_path_or_none(uri))
+        self._analyses[uri] = (source, analysis)
+        if analysis is not None:
+            self._parsed_analyses[uri] = analysis
+        return analysis
+
+    def _recent_analysis(self, uri: str, source: str) -> Analysis | None:
+        """The checked document, or its last version that parsed."""
+        return self._analysis(uri, source) or self._parsed_analyses.get(uri)
+
+    def _analysis_hover(
+        self, uri: str, source: str, line: int, char: int
+    ) -> types.Hover | None:
+        """Hover for a local, parameter, field or method call, with its type."""
+        analysis = self._analysis(uri, source)
+        if analysis is None:
+            return None
+        fact = analysis.fact_at(line, char)
+        if fact is None or not analysis.is_local(fact):
+            return None
+        declaration = ""
+        if fact.kind == "method":
+            calls = (
+                f", calls `{fact.target}`"
+                if fact.target is not None and fact.target != fact.name
+                else ""
+            )
+            kind = f"method{calls}"
+        elif fact.kind == "field":
+            kind = "field"
+        else:
+            binding = fact if fact.kind != "use" else analysis.binding_of(fact)
+            kind = (
+                "parameter"
+                if binding is not None and binding.kind == "parameter"
+                else "variable"
+            )
+            if binding is not None and binding.kind == "local":
+                lines = source.splitlines()
+                declared = lines[binding.line - 1].strip()
+                declaration = f"\n\n```\n{declared}\n```"
+        return types.Hover(
+            contents=types.MarkupContent(
+                kind=types.MarkupKind.Markdown,
+                value=_format_hover_block(hover_label(fact), kind) + declaration,
+            ),
+        )
+
     def hover(self, params: types.HoverParams) -> types.Hover | None:
         uri = params.text_document.uri
         doc = self.server.workspace.get_text_document(uri)
@@ -1974,6 +2037,10 @@ class GenoLanguageServer:
         word = _word_at(lines[line], char)
         if not word:
             return None
+
+        typed = self._analysis_hover(uri, doc.source, line, char)
+        if typed is not None:
+            return typed
 
         result = self._semantic_locations(uri, doc.source, line, char, word=word)
         if result:
@@ -2014,6 +2081,72 @@ class GenoLanguageServer:
             )
         return None
 
+    def _method_definition(
+        self, uri: str, source: str, line: int, char: int
+    ) -> types.Location | None:
+        """Where a local's binding, or a method call's function, is defined.
+
+        A trait method goes to the receiver type's implementation; a builtin
+        has no definition to go to.
+        """
+        analysis = self._analysis(uri, source)
+        fact = analysis.fact_at(line, char) if analysis is not None else None
+        if analysis is not None and fact is not None and fact.kind == "use":
+            binding = analysis.binding_of(fact)
+            if binding is None:
+                return None
+            return types.Location(
+                uri=uri,
+                range=types.Range(
+                    start=types.Position(
+                        line=binding.line - 1, character=binding.column - 1
+                    ),
+                    end=types.Position(
+                        line=binding.line - 1,
+                        character=binding.column - 1 + len(binding.name),
+                    ),
+                ),
+            )
+        if fact is None or fact.kind != "method" or fact.target is None:
+            return None
+        lines = source.splitlines()
+        start, stop = 0, len(lines)
+        receiver = fact.receiver
+        receiver_name = getattr(receiver, "name", None)
+        if receiver_name is not None:
+            for index, text in enumerate(lines):
+                if re.match(
+                    rf"\s*impl\s+\w+\s+for\s+{re.escape(receiver_name)}\b", text
+                ):
+                    start = index
+                    stop = next(
+                        (
+                            end
+                            for end in range(index, len(lines))
+                            if re.match(r"\s*end\s+impl\b", lines[end])
+                        ),
+                        len(lines),
+                    )
+                    if any(
+                        re.match(rf"\s*func\s+{re.escape(fact.target)}\b", lines[i])
+                        for i in range(start, stop)
+                    ):
+                        break
+            else:
+                start, stop = 0, len(lines)
+        for index in range(start, stop):
+            match = re.match(
+                rf"(\s*(?:export\s+)?func\s+){re.escape(fact.target)}\b", lines[index]
+            )
+            if match:
+                return types.Location(
+                    uri=uri,
+                    range=_symbol_range_from_source(
+                        source, fact.target, index + 1, len(match.group(1)) + 1
+                    ),
+                )
+        return None
+
     def definition(self, params: types.DefinitionParams) -> types.Location | None:
         uri = params.text_document.uri
         doc = self.server.workspace.get_text_document(uri)
@@ -2029,6 +2162,10 @@ class GenoLanguageServer:
         word = _word_at(lines[line], char)
         if not word:
             return None
+
+        method_location = self._method_definition(uri, doc.source, line, char)
+        if method_location is not None:
+            return method_location
 
         result = self._semantic_locations(uri, doc.source, line, char, word=word)
         if result:
@@ -2288,6 +2425,39 @@ class GenoLanguageServer:
                         )
                     )
                 return items
+
+        # Methods and fields of the receiver's checked type. While the member
+        # is being typed the document may not parse; check it without that.
+        analysis = self._analysis(uri, source)
+        if analysis is None:
+            repaired = "\n".join(
+                [
+                    *lines[:line],
+                    line_text[:dot_pos] + line_text[char:],
+                    *lines[line + 1 :],
+                ]
+            )
+            analysis = analyze(repaired, _uri_to_path_or_none(uri))
+        if analysis is None:
+            analysis = self._parsed_analyses.get(uri)
+        receiver = analysis.type_of(target_name, line) if analysis else None
+        if analysis is not None and receiver is not None:
+            member_items = [
+                types.CompletionItem(
+                    label=member,
+                    kind=(
+                        types.CompletionItemKind.Field
+                        if function is None
+                        else types.CompletionItemKind.Method
+                    ),
+                    detail=signature
+                    if function is None or function == member
+                    else f"{signature}  ({function})",
+                )
+                for member, signature, function in analysis.methods_for(receiver)
+            ]
+            if member_items:
+                return member_items
 
         # Record field dot-access: try to resolve the type of the identifier
         type_name = self._resolve_identifier_type_name(
@@ -2592,6 +2762,12 @@ class GenoLanguageServer:
         if func_name is None:
             return None
 
+        method_help = self._method_signature_help(
+            uri, doc.source, line, text, func_name, func_name_col, active_param
+        )
+        if method_help is not None:
+            return method_help
+
         semantic_resolved = False
         sig = None
         if func_name_col is not None:
@@ -2622,6 +2798,45 @@ class GenoLanguageServer:
             ],
             active_signature=0,
             active_parameter=min(active_param, max(len(param_infos) - 1, 0)),
+        )
+
+    def _method_signature_help(
+        self,
+        uri: str,
+        source: str,
+        line: int,
+        text: str,
+        method: str,
+        method_col: int | None,
+        active_param: int,
+    ) -> types.SignatureHelp | None:
+        """Signature help inside ``receiver.method(...)``, receiver left out."""
+        if not method_col or text[method_col - 1] != ".":
+            return None
+        receiver_match = re.search(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*$", text[: method_col - 1]
+        )
+        if receiver_match is None:
+            return None
+        analysis = self._recent_analysis(uri, source)
+        receiver = analysis.type_of(receiver_match.group(1), line) if analysis else None
+        signature = (
+            analysis.method_call_signature(receiver, method)
+            if analysis is not None and receiver is not None
+            else None
+        )
+        if signature is None:
+            return None
+        label, params = signature
+        return types.SignatureHelp(
+            signatures=[
+                types.SignatureInformation(
+                    label=label,
+                    parameters=[types.ParameterInformation(label=p) for p in params],
+                )
+            ],
+            active_signature=0,
+            active_parameter=min(active_param, max(len(params) - 1, 0)),
         )
 
     def _symbol_table_cache_key(
@@ -2908,6 +3123,9 @@ class GenoLanguageServer:
 
         for diag in diagnostics:
             msg = diag.message
+
+            # Fixes the diagnostic carries (geno.diagnostics.Fix).
+            actions.extend(_fix_code_actions(uri, diag))
 
             # Code action: add missing 'end' block
             end_match = re.search(r"[Ee]xpected '(end \w+(?:\s+\w+)?)'", msg)

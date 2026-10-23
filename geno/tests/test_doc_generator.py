@@ -172,3 +172,18 @@ end func label
         assert 'href="#trait-Named"' in html
         assert "Trait docs" in html
         assert "func</span> name" in html
+
+
+def test_signatures_render_tuple_types_as_written():
+    from geno.doc_generator import _render_type
+    from geno.parser import parse
+
+    program = parse(
+        "func swap[A, B](pair: (A, B)) -> (B, A)\n"
+        '    example (1, "x") -> ("x", 1)\n'
+        "    return (pair.1, pair.0)\n"
+        "end func\n"
+    )
+    swap = program.definitions[0]
+    assert _render_type(swap.params[0].param_type) == "(A, B)"
+    assert _render_type(swap.return_type) == "(B, A)"

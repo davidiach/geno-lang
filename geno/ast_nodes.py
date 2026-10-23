@@ -353,6 +353,10 @@ class FieldAccess(Expression):
 
     target: Expression
     field_name: str
+    # Where the field name itself is written; ``location`` is the target's.
+    name_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
     # Set once "Type X has no method 'name'" is reported for `x.name(...)`, so
     # a later pass over the same call does not report it again as a field.
     _method_error_reported: bool = field(

@@ -19,10 +19,15 @@ class GenoTypeError(Exception):
     The old name ``TypeError`` is kept as an alias for backward compatibility.
     """
 
-    def __init__(self, message: str, location: SourceLocation, error_code=None):
+    def __init__(
+        self, message: str, location: SourceLocation, error_code=None, fixes=()
+    ):
         self.message = message
         self.location = location
         self.error_code = error_code
+        # Edits that resolve the error, when the correction is unambiguous
+        # (geno.diagnostics.Fix).
+        self.fixes = tuple(fixes)
         super().__init__(f"{location}: Type Error: {message}")
 
 

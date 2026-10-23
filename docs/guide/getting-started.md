@@ -66,6 +66,11 @@ geno check hello.geno
 #   2 definitions
 ```
 
+When an error has an unambiguous correction, such as a misspelled name, the
+message says so (`fix: Change 'lenght' to 'length'`). `geno check --fix
+hello.geno` applies every such fix and then checks again; editors offer them
+as quick fixes.
+
 ## Formatting
 
 `geno fmt` puts every file under a path in the one canonical layout:

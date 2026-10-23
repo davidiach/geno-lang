@@ -174,7 +174,8 @@ class Parser(
     def _parse_module_constant(self) -> ModuleConstant:
         """Parse a module-level constant: let NAME[: Type] = <literal>"""
         location = self._current().location
-        self._expect(TokenType.LET)
+        let_token = self._expect(TokenType.LET)
+        self._reject_let_mut(let_token)
         if self._check(TokenType.LPAREN):
             raise self._error(
                 "Tuple destructuring is not supported for module constants; "
@@ -588,5 +589,5 @@ def parse(source: str, filename: str = "<stdin>") -> Program:
 
     lexer = Lexer(source, filename)
     tokens = lexer.tokenize()
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     return parser.parse_program()

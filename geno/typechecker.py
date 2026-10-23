@@ -97,7 +97,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .constructor_args import constructor_argument_order
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, Fix, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
@@ -429,16 +429,67 @@ def _levenshtein(a: str, b: str) -> int:
 _STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
 
 
-def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> str:
-    """Return ' Did you mean: X?' suffix if a close match exists, else ''."""
+def _closest_name(
+    name: str, candidates: Iterable[str], max_dist: int = 2
+) -> str | None:
+    """The candidate nearest ``name`` by edit distance, if one is close enough."""
     best, best_dist = None, max_dist + 1
     for c in candidates:
         d = _levenshtein(name, c)
         if d < best_dist:
             best, best_dist = c, d
     if best is not None and best_dist <= max_dist:
-        return f" Did you mean '{best}'?"
-    return ""
+        return best
+    return None
+
+
+def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> str:
+    """Return ' Did you mean: X?' suffix if a close match exists, else ''."""
+    best = _closest_name(name, candidates, max_dist)
+    return f" Did you mean '{best}'?" if best is not None else ""
+
+
+def _rename_fixes(
+    name: str, candidates: Iterable[str], location: SourceLocation | None
+) -> tuple[str, tuple[Fix, ...]]:
+    """The ' Did you mean ...?' hint for ``name`` and the fix that applies it."""
+    best = _closest_name(name, candidates)
+    if best is None:
+        return "", ()
+    hint = f" Did you mean '{best}'?"
+    if location is None:
+        return hint, ()
+    return hint, (replace_fix(location, name, best),)
+
+
+# Removed builtins whose replacement takes the same arguments.
+_REMOVED_BUILTIN_RENAMES = {
+    "contains_substring": "string_contains",
+    "repeat_string": "string_repeat",
+    "sort_strings": "sort",
+}
+
+
+def _name_arguments_fix(
+    arguments: Sequence[CallArg], param_names: Sequence[str]
+) -> tuple[Fix, ...]:
+    """Insert ``name: `` before each argument of an all-positional call."""
+    if (
+        not arguments
+        or len(arguments) > len(param_names)
+        or not all(param_names)
+        or any(arg.name is not None or arg.value.location is None for arg in arguments)
+    ):
+        return ()
+    return (
+        insert_fix(
+            "Name the arguments",
+            [
+                (arg.value.location, f"{name}: ")
+                for arg, name in zip(arguments, param_names)
+            ],
+        ),
+    )
 
 
 def _named_argument_example(func_name: str | None, param_names: Sequence[str]) -> str:
@@ -689,6 +740,11 @@ class TypeChecker(ExhaustivenessMixin):
         self._lambda_propagation_types: list[Type] | None = None
         self._lambda_capture_env: TypeEnv | None = None
         self.errors: list[TypeError] = []
+        # Opt-in for tools (the language server): every local the checker
+        # binds, as (location of its binding construct, name, type). When set,
+        # check_project_graph also keeps each module's checker here.
+        self.binding_types: list[tuple[SourceLocation, str, Type]] | None = None
+        self.module_checkers: dict[str, TypeChecker] = {}
         self._user_defined_names: set[str] = set()
         # Module-level constants: name -> type, rebuilt per check_program.
         self._module_constants: dict[str, Type] = {}
@@ -920,9 +976,10 @@ class TypeChecker(ExhaustivenessMixin):
         message: str,
         location: SourceLocation,
         error_code: ErrorCode | None = ErrorCode.TYPE_MISMATCH,
+        fixes: Sequence[Fix] = (),
     ) -> TypeError:
         """Create and record a type error."""
-        error = TypeError(message, location, error_code)
+        error = TypeError(message, location, error_code, fixes)
         self.errors.append(error)
         return error
 
@@ -1478,6 +1535,9 @@ class TypeChecker(ExhaustivenessMixin):
             # Each module gets a fresh TypeChecker; import resolution
             # via _resolve_import applies export visibility filtering.
             mod_checker = TypeChecker(target_profile=self._target_profile)
+            if self.binding_types is not None:
+                mod_checker.binding_types = []
+                self.module_checkers[mod_name] = mod_checker
             modules = module_summaries or None
             mod_checker.check_program(
                 program,
@@ -2644,6 +2704,7 @@ class TypeChecker(ExhaustivenessMixin):
         for param in defn.params:
             param_type = self._resolve_type(param.param_type)
             local_env.bind(param.name, param_type)
+            self._record_binding(param.name, param_type, param.location)
 
         # Type-check default value expressions
         for param in defn.params:
@@ -3479,6 +3540,11 @@ class TypeChecker(ExhaustivenessMixin):
                     stmt.location,
                 )
 
+    def _record_binding(self, name: str, type_: Type, location: SourceLocation) -> None:
+        """Note a local binding for tools that asked for ``binding_types``."""
+        if self.binding_types is not None:
+            self.binding_types.append((location, name, type_))
+
     def _bind_local(
         self,
         name: str,
@@ -3519,6 +3585,7 @@ class TypeChecker(ExhaustivenessMixin):
                 location,
             )
         env.bind(name, type_, mutable=mutable)
+        self._record_binding(name, type_, location)
 
     def _check_let_statement(self, stmt: LetStatement, env: TypeEnv) -> None:
         """Type check a let statement."""
@@ -3686,11 +3753,14 @@ class TypeChecker(ExhaustivenessMixin):
         """Type check an assignment statement."""
         var_type = env.lookup(stmt.target)
         if var_type is None:
-            hint = _suggest_name(stmt.target, self._env_names(env))
+            hint, fixes = _rename_fixes(
+                stmt.target, self._env_names(env), stmt.location
+            )
             self._error(
-                f"Undefined variable: {stmt.target}{hint}",
+                f"Undefined variable: {stmt.target}{'.' if hint else ''}{hint}",
                 stmt.location,
                 ErrorCode.TYPE_UNDEFINED_VAR,
+                fixes,
             )
             return
 
@@ -3908,6 +3978,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         body_env = env.child()
         body_env.bind(stmt.variable, declared_type)
+        self._record_binding(stmt.variable, declared_type, stmt.location)
 
         self._loop_depth += 1
         for s in stmt.body:
@@ -4339,15 +4410,18 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(self._target_rejected[expr.name], expr.location)
                 return AnyType()
             removed = _removed_builtin_hint(expr.name)
-            hint = (
-                f".{removed}"
-                if removed
-                else _suggest_name(expr.name, self._env_names(env))
-            )
+            fixes: tuple[Fix, ...] = ()
+            if removed:
+                hint = f".{removed}"
+            else:
+                hint, fixes = _rename_fixes(
+                    expr.name, self._env_names(env), expr.location
+                )
             self._error(
-                f"Undefined variable: {expr.name}{hint}",
+                f"Undefined variable: {expr.name}{'.' if hint and not removed else ''}{hint}",
                 expr.location,
                 ErrorCode.TYPE_UNDEFINED_VAR,
+                fixes,
             )
             return AnyType()
         self._record_captured_binding(expr.name, env)
@@ -4423,8 +4497,22 @@ class TypeChecker(ExhaustivenessMixin):
         if expr.name in self._module_exports:
             return ModuleType(expr.name)
 
-        hint = _suggest_name(expr.name, self._all_constructors())
-        self._error(f"Unknown constructor: {expr.name}{hint}", expr.location)
+        if expr.name in ("True", "False"):
+            lowercase = expr.name.lower()
+            self._error(
+                f"Booleans are lowercase in Geno: write '{lowercase}'",
+                expr.location,
+                ErrorCode.TYPE_UNDEFINED_VAR,
+                (replace_fix(expr.location, expr.name, lowercase),),
+            )
+            return BoolType()
+        hint, fixes = _rename_fixes(expr.name, self._all_constructors(), expr.location)
+        self._error(
+            f"Unknown constructor: {expr.name}{'.' if hint else ''}{hint}",
+            expr.location,
+            ErrorCode.TYPE_MISMATCH,
+            fixes,
+        )
         return _ANY_TYPE
 
     def _check_list_literal(self, expr: ListLiteral, env: TypeEnv) -> Type:
@@ -4819,25 +4907,34 @@ class TypeChecker(ExhaustivenessMixin):
             and env.lookup(identifier_func.name) is None
             and identifier_func.name not in self._target_rejected
         ):
+            name = identifier_func.name
+            fixes: tuple[Fix, ...] = ()
             hint = (
-                _removed_builtin_hint(identifier_func.name)
-                or _suggest_import(identifier_func.name, self._imported_module_names)
+                _removed_builtin_hint(name)
+                or _suggest_import(name, self._imported_module_names)
                 or _suggest_project_import(
-                    identifier_func.name,
+                    name,
                     expr.location,
                     self._imported_module_names,
                     self._project_module_index,
                 )
-                or _suggest_name(identifier_func.name, self._env_names(env))
             )
+            renamed = _REMOVED_BUILTIN_RENAMES.get(name)
+            if renamed is not None and identifier_func.location is not None:
+                fixes = (replace_fix(identifier_func.location, name, renamed),)
+            elif not hint:
+                hint, fixes = _rename_fixes(
+                    name, self._env_names(env), identifier_func.location
+                )
             # Every hint form is a sentence of its own, so the name needs a
             # stop before it: without one the two run together as
             # "Undefined function: char_at Did you forget to 'import String'?".
             # Only when a hint follows — a bare message keeps house style.
             self._error(
-                f"Undefined function: {identifier_func.name}{'.' if hint else ''}{hint}",
+                f"Undefined function: {name}{'.' if hint else ''}{hint}",
                 expr.location,
                 ErrorCode.TYPE_UNDEFINED_FUNC,
+                fixes,
             )
             return _ANY_TYPE
 
@@ -4900,6 +4997,8 @@ class TypeChecker(ExhaustivenessMixin):
                     "arguments after the receiver; name them: "
                     f".{expr._method_call}({rendered})",
                     expr.location,
+                    ErrorCode.TYPE_MISMATCH,
+                    _name_arguments_fix(arguments[1:], after_receiver),
                 )
             elif positional_count > 0:
                 callee_display = call_param_info.callee_display
@@ -4909,6 +5008,8 @@ class TypeChecker(ExhaustivenessMixin):
                     f"use named arguments for clarity"
                     f"{_named_argument_example(callee_display, param_names)}",
                     expr.location,
+                    ErrorCode.TYPE_MISMATCH,
+                    _name_arguments_fix(arguments, param_names),
                 )
 
         # Handle named arguments by reordering to match parameter order
@@ -5096,12 +5197,16 @@ class TypeChecker(ExhaustivenessMixin):
         if chosen is None:
             if not callee._method_error_reported:
                 candidates = self._method_names_for(receiver_type, env)
-                hint = _suggest_name(method_name, candidates)
+                name_location = callee.name_location or callee.location
+                hint, fixes = _rename_fixes(
+                    method_name, candidates, callee.name_location
+                )
                 self._error(
                     f"Type {_display_type(receiver_type)} has no method "
                     f"'{method_name}'{'.' if hint else ''}{hint}",
-                    callee.location,
+                    name_location,
                     ErrorCode.TYPE_UNKNOWN_FIELD,
+                    fixes,
                 )
                 callee._method_error_reported = True
             for arg in expr.arguments:
@@ -5456,10 +5561,19 @@ class TypeChecker(ExhaustivenessMixin):
                 if field_type is not None:
                     return field_type
 
+        known_fields: set[str] = set()
+        if isinstance(target_type, UserType):
+            info = self.type_defs.get(target_type.name)
+            if info is not None:
+                for variant_fields in info.variants.values():
+                    known_fields.update(name for name, _type in variant_fields)
+        hint, fixes = _rename_fixes(expr.field_name, known_fields, expr.name_location)
         self._error(
-            f"Unknown field '{expr.field_name}' on type {target_type}",
-            expr.location,
+            f"Unknown field '{expr.field_name}' on type {target_type}"
+            f"{'.' if hint else ''}{hint}",
+            expr.name_location or expr.location,
             ErrorCode.TYPE_UNKNOWN_FIELD,
+            fixes,
         )
         return AnyType()
 
@@ -5661,6 +5775,7 @@ class TypeChecker(ExhaustivenessMixin):
                 expr.iterable.location,
             )
         comp_env.bind(expr.variable, var_type)
+        self._record_binding(expr.variable, var_type, expr.location)
 
         # Check condition if present
         if expr.condition is not None:
@@ -5905,6 +6020,7 @@ class TypeChecker(ExhaustivenessMixin):
             param_types.append(param_type)
             lambda_env.bind(param.name, param_type)
             effect_env.bind(param.name, param_type)
+            self._record_binding(param.name, param_type, param.location)
 
         if expr.block_body is not None:
             self._lambda_return_types = []
@@ -6085,8 +6201,15 @@ class TypeChecker(ExhaustivenessMixin):
                 return UserType(type_name, inferred_params)
             return UserType(type_name)
 
-        hint = _suggest_name(expr.constructor, self._all_constructors())
-        self._error(f"Unknown constructor: {expr.constructor}{hint}", expr.location)
+        hint, fixes = _rename_fixes(
+            expr.constructor, self._all_constructors(), expr.location
+        )
+        self._error(
+            f"Unknown constructor: {expr.constructor}{'.' if hint else ''}{hint}",
+            expr.location,
+            ErrorCode.TYPE_MISMATCH,
+            fixes,
+        )
         return AnyType()
 
     def _check_tuple_expr(self, expr: TupleExpr, env: TypeEnv) -> Type:
@@ -6610,11 +6733,12 @@ class TypeChecker(ExhaustivenessMixin):
             )
             for declared in self._declared_user_types:
                 known_types.update(declared)
-            hint = _suggest_name(name, known_types)
+            hint, fixes = _rename_fixes(name, known_types, type_annot.location)
             raise TypeError(
-                f"Unknown type: '{name}'{hint}",
+                f"Unknown type: '{name}'{'.' if hint else ''}{hint}",
                 type_annot.location,
                 ErrorCode.TYPE_UNDEFINED_TYPE,
+                fixes,
             )
 
         elif isinstance(type_annot, FunctionType):

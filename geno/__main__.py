@@ -55,6 +55,7 @@ _LAZY_REEXPORTS = {
     "build_app": "geno.cli.build",
     "bundle_project": "geno.cli.build",
     "check_file": "geno.cli.check",
+    "fix_file": "geno.cli.check",
     "compile_file": "geno.cli.compile",
     "constrain_cli": "geno.cli.constrain",
     "_resolve_doc_modules": "geno.cli.docs",
@@ -280,6 +281,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         choices=["python-cli", "node-cli", "browser", "python-hosted"],
         help="Target platform for availability and backend validation",
+    )
+    check_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Apply the unambiguous fixes the diagnostics carry, then check",
     )
 
     # Constraints command
@@ -669,8 +675,12 @@ def dispatch_args(
             source_map=args.source_map,
         )
     elif args.command == "check":
-        check_file = _command("check_file")
-        check_file(args.file, target=getattr(args, "target", None))
+        if getattr(args, "fix", False):
+            fix_file = _command("fix_file")
+            fix_file(args.file, target=getattr(args, "target", None))
+        else:
+            check_file = _command("check_file")
+            check_file(args.file, target=getattr(args, "target", None))
     elif args.command == "constrain":
         constrain_cli = _command("constrain_cli")
         constrain_cli(

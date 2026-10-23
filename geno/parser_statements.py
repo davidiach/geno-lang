@@ -31,7 +31,7 @@ from .ast_nodes import (
     VarStatement,
     WhileStatement,
 )
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, replace_fix
 from .parser_base import REMOVED_TRY, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType
 
@@ -50,6 +50,24 @@ class StatementParserMixin(ParserBase):
 
     def _parse_statement(self) -> Statement:
         """Parse a single statement."""
+        current = self._current()
+        if (
+            current.type is TokenType.IDENTIFIER
+            and current.value == "elif"
+            and self._peek(1).type
+            not in (
+                TokenType.ASSIGN,
+                TokenType.LPAREN,
+                TokenType.DOT,
+                TokenType.LBRACKET,
+            )
+        ):
+            raise ParseError(
+                "Geno writes 'else if', not 'elif'",
+                current.location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+                (replace_fix(current.location, "elif", "else if"),),
+            )
         if self._check(TokenType.LET):
             return self._parse_let_statement()
         elif self._check(TokenType.VAR):
@@ -97,9 +115,10 @@ class StatementParserMixin(ParserBase):
     def _parse_let_statement(self) -> Statement:
         """Parse: let x: Type = value  or  let x = value  or  let (x, y): (Int, Int) = value"""
         location = self._current().location
-        self._expect(TokenType.LET)
+        let_token = self._expect(TokenType.LET)
         if self._check(TokenType.LPAREN):
             return self._parse_tuple_destructure(location, mutable=False)
+        self._reject_let_mut(let_token)
         name = self._expect(TokenType.IDENTIFIER).value
         type_annotation = None
         if self._match(TokenType.COLON):

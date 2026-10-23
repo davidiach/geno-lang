@@ -186,15 +186,14 @@ class TestVirtualDocuments:
         )
 
         identifier = types.TextDocumentIdentifier(uri=uri)
-        assert (
-            hover(
-                types.HoverParams(
-                    text_document=identifier,
-                    position=types.Position(line=1, character=8),
-                )
+        typed = hover(
+            types.HoverParams(
+                text_document=identifier,
+                position=types.Position(line=1, character=8),
             )
-            is None
         )
+        assert typed is not None
+        assert "value: Int" in typed.contents.value
         assert (
             definition(
                 types.DefinitionParams(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 if TYPE_CHECKING:
@@ -28,10 +28,15 @@ if TYPE_CHECKING:
 class ParseError(Exception):
     """Exception raised for parsing errors."""
 
-    def __init__(self, message: str, location: SourceLocation, error_code=None):
+    def __init__(
+        self, message: str, location: SourceLocation, error_code=None, fixes=()
+    ):
         self.message = message
         self.location = location
         self.error_code = error_code
+        # Edits that resolve the error, when the correction is unambiguous
+        # (geno.diagnostics.Fix).
+        self.fixes = tuple(fixes)
         self.partial_program: object | None = (
             None  # Set by parse_program for LSP recovery
         )
@@ -69,6 +74,10 @@ REMOVED_TRY = (
 REMOVED_THROW_EFFECT = (
     "The 'throw' effect was removed in Geno 0.6; delete it from the effect list"
 )
+
+
+# The keyword that must follow an `if` condition or a loop header.
+_CLAUSE_KEYWORDS = {TokenType.THEN: "then", TokenType.DO: "do"}
 
 
 class ParserBase:
@@ -147,13 +156,16 @@ class ParserBase:
         TokenType.AND: "and",
     }
 
-    def __init__(self, tokens: list[Token]):
+    def __init__(self, tokens: list[Token], source: str | None = None):
         """
         Initialize the parser.
 
         Args:
             tokens: List of tokens from the lexer (must end with EOF)
+            source: The text the tokens came from, when known; some errors
+                then carry a fix placed relative to it
         """
+        self._source_lines = source.split("\n") if source is not None else None
         self.tokens = tokens
         self._tokens_len = len(tokens)
         self.pos = 0
@@ -236,10 +248,73 @@ class ParserBase:
             return self._advance()
         if message is None:
             message = f"Expected {token_type_to_str(token_type)}, got {token_type_to_str(self._current().type)}"
+        fixes: tuple[Fix, ...] = ()
+        keyword = _CLAUSE_KEYWORDS.get(token_type)
+        if (
+            keyword is not None
+            and self.pos > 0
+            and self._current().location.line > self.tokens[self.pos - 1].location.line
+        ):
+            # `if c` / `while c` / `for x in xs` missing its `then` or `do`.
+            end = self._line_end(self.tokens[self.pos - 1].location.line)
+            if end is not None:
+                fixes = (insert_fix(f"Add '{keyword}'", [(end, f" {keyword}")]),)
         raise ParseError(
             message,
             self._current().location,
             ErrorCode.PARSE_EXPECTED_TOKEN,
+            fixes,
+        )
+
+    def _reject_let_mut(self, let_token: Token) -> None:
+        """`let mut x = ...` is Rust; Geno declares a mutable binding with `var`."""
+        current = self._current()
+        if not (
+            current.type is TokenType.IDENTIFIER
+            and current.value == "mut"
+            and self._peek(1).type is TokenType.IDENTIFIER
+        ):
+            return
+        start, mut = let_token.location, current.location
+        raise ParseError(
+            "Geno has no 'let mut'; declare a mutable variable with 'var'",
+            start,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            (
+                Fix(
+                    "Use 'var'",
+                    (
+                        TextEdit(
+                            start.line, start.column, mut.line, mut.column + 3, "var"
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def _line_end(self, line: int) -> SourceLocation | None:
+        """Where the code on ``line`` ends, before any trailing comment."""
+        if self._source_lines is None or not 0 < line <= len(self._source_lines):
+            return None
+        text = self._source_lines[line - 1]
+        in_string = False
+        end = len(text)
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                if char == "\\":
+                    index += 1
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif text.startswith("//", index):
+                end = index
+                break
+            index += 1
+        return SourceLocation(
+            line, len(text[:end].rstrip()) + 1, self._eof_token.location.filename
         )
 
     def _error(

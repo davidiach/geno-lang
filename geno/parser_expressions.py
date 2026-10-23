@@ -46,7 +46,7 @@ from .ast_nodes import (
     UnaryOp,
     WithExpr,
 )
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, replace_fix
 from .lexer import Lexer, LexerError
 from .parser_base import REMOVED_THROW, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType, token_type_to_str
@@ -126,8 +126,13 @@ class ExpressionParserMixin(ParserBase):
         func = self._parse_primary()
         while self._current_type is TokenType.DOT:
             self._advance()
-            field = self._expect(TokenType.IDENTIFIER).value
-            func = FieldAccess(location=func.location, target=func, field_name=field)
+            name = self._expect(TokenType.IDENTIFIER)
+            func = FieldAccess(
+                location=func.location,
+                target=func,
+                field_name=name.value,
+                name_location=name.location,
+            )
         return func
 
     def _parse_pipeline_arg(self) -> Expression:
@@ -348,9 +353,12 @@ class ExpressionParserMixin(ParserBase):
                         "Write a nested tuple field with parentheses, as in (t.0).1"
                     )
                 # Field access
-                field = self._expect(TokenType.IDENTIFIER).value
+                name = self._expect(TokenType.IDENTIFIER)
                 expr = FieldAccess(
-                    location=expr.location, target=expr, field_name=field
+                    location=expr.location,
+                    target=expr,
+                    field_name=name.value,
+                    name_location=name.location,
                 )
             elif current_type is TokenType.QUESTION:
                 self._advance()
@@ -664,6 +672,21 @@ class ExpressionParserMixin(ParserBase):
                 self._expect(TokenType.RPAREN)
                 return first
 
+        current = self._current()
+        previous = self.tokens[self.pos - 1] if self.pos > 0 else None
+        if (
+            current.type is TokenType.PLUS
+            and previous is not None
+            and previous.type is TokenType.PLUS
+            and previous.location.line == current.location.line
+            and previous.location.column + 1 == current.location.column
+        ):
+            raise ParseError(
+                "Geno concatenates with '+'; '++' is not an operator",
+                previous.location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+                (replace_fix(previous.location, "++", "+"),),
+            )
         raise self._error(
             f"Expected expression (e.g., a value, variable, or function call), "
             f"got {token_type_to_str(self._current().type)}"
