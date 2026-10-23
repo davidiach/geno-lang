@@ -454,6 +454,15 @@ class Interpreter:
         self.global_env = Environment()
         self.type_defs: dict[str, TypeDef] = {}
         self.functions: dict[str, FunctionDef] = {}
+        # The closure each entry in ``functions`` names, for example checks:
+        # an imported function is not bound in the entry program's scope
+        # unless that program imported it directly.
+        self._function_closures: dict[str, Closure] = {}
+        # Builtins as last seen, including host overrides and capability
+        # stubs. Imported modules see these and their own definitions only,
+        # never the entry program's functions or imports (see run()).
+        self._prelude_bindings: dict[str, BuiltinFunction] = {}
+        self._module_parent_env: Environment | None = None
         self.check_examples = check_examples
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.max_recursion_depth = (
@@ -1445,6 +1454,7 @@ class Interpreter:
                 )
 
                 if modules is not None:
+                    self._module_parent_env = self._prelude_environment()
                     resolved: set[str] = set()
                     module_imports: dict[
                         str, tuple[dict[str, Closure], dict[str, FunctionDef]]
@@ -1479,6 +1489,7 @@ class Interpreter:
                             is_async=defn.is_async,
                         )
                         self.global_env.bind(defn.name, closure)
+                        self._function_closures[defn.name] = closure
 
                 # Second pass: process trait impls
                 for defn in program.definitions:
@@ -1558,7 +1569,12 @@ class Interpreter:
         # Functions retain this module's imports even after another module
         # binds the same alias. Lexical environments also carry the namespace
         # through returned lambdas, callbacks, defaults and nested calls.
-        module_env = self.global_env.child()
+        # A module sees builtins, its own definitions and its own imports:
+        # nothing the entry program or another importer defines or imports
+        # can shadow a builtin the module calls.
+        if self._module_parent_env is None:
+            self._module_parent_env = self._prelude_environment()
+        module_env = self._module_parent_env.child()
 
         # Recursively resolve imports within the module
         for defn in mod_program.definitions:
@@ -1653,8 +1669,15 @@ class Interpreter:
         if import_stmt.alias is None:
             for func_name, closure in module_ns.items():
                 self.functions[func_name] = module_functions[func_name]
-                self.global_env.bind(func_name, closure)
+                self._function_closures[func_name] = closure
                 import_env.bind(func_name, closure)
+
+    def _prelude_environment(self) -> Environment:
+        """An environment of builtins only, the parent of every module's scope."""
+        for name, value in self.global_env.bindings.items():
+            if isinstance(value, BuiltinFunction):
+                self._prelude_bindings[name] = value
+        return Environment(bindings=dict(self._prelude_bindings))
 
     @contextmanager
     def _execution_deadline(self, timeout: float | None) -> Generator[None, None, None]:
@@ -1719,7 +1742,9 @@ class Interpreter:
                 try:
                     # Examples resolve names in the defining module, just like
                     # the function body and its default arguments.
-                    func = self.global_env.lookup(name)
+                    func = self._function_closures.get(name)
+                    if func is None:
+                        func = self.global_env.lookup(name)
                     example_env = (
                         func.env if isinstance(func, Closure) else self.global_env
                     )
@@ -3182,6 +3207,7 @@ class Interpreter:
                 # Example verification looks functions up by name, so a stale
                 # entry would make it call the constant.
                 self.functions.pop(defn.name, None)
+                self._function_closures.pop(defn.name, None)
 
     def _exec_var(self, stmt: VarStatement, env: Environment) -> None:
         """Execute a var statement."""
