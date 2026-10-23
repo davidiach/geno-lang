@@ -1124,8 +1124,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Emit a Union type alias so the type name resolves in annotations
         variant_names = [v.name for v in defn.variants]
-        if len(variant_names) == 1:
-            self._writeln(f"{defn.name} = {variant_names[0]}")
+        if defn.name in self._constructor_to_variant and defn.name not in variant_names:
+            # A variant from another type shares this type's name. Avoid emitting
+            # an assignment that would shadow the constructor class (#193).
+            pass
+        elif len(variant_names) == 1:
+            if defn.name != variant_names[0]:
+                self._writeln(f"{defn.name} = {variant_names[0]}")
         elif defn.name not in variant_names:
             self._writeln(f"{defn.name} = Union[{', '.join(variant_names)}]")
         # A variant that shares the type's name (``type Shape = Shape(n: Int)
@@ -1136,10 +1141,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _collect_same_name_union_variants(self, program: Program) -> None:
         for defn in program.definitions:
-            if not isinstance(defn, TypeDef) or len(defn.variants) < 2:
+            if not isinstance(defn, TypeDef):
                 continue
             variant_names = [v.name for v in defn.variants]
-            if defn.name in variant_names:
+            if (len(defn.variants) >= 2 and defn.name in variant_names) or (
+                defn.name in self._constructor_to_variant
+                and defn.name not in variant_names
+            ):
                 self._same_name_union_variants[defn.name] = variant_names
 
     def _compile_variant(
@@ -1232,6 +1240,8 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             same_name_variants = self._same_name_union_variants.get(type_annot.name)
             if same_name_variants is not None:
+                if len(same_name_variants) == 1:
+                    return same_name_variants[0]
                 return f"Union[{', '.join(same_name_variants)}]"
 
             if type_annot.type_params:
@@ -1603,6 +1613,18 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._dedent()
                 self._writeln("else: raise")
             else:
+                variants = self._catch_variant_names(stmt)
+                if variants:
+                    if len(variants) == 1:
+                        self._writeln(
+                            f"if type(__geno_err__.value).__name__ != {variants[0]!r}: raise"
+                        )
+                    else:
+                        self._writeln(
+                            f"if type(__geno_err__.value).__name__ not in {variants!r}: raise"
+                        )
+                elif variants is not None:
+                    self._writeln("raise")
                 self._writeln(f"{var_name} = __geno_err__.value")
             if stmt.catch_clause.body:
                 for s in stmt.catch_clause.body:

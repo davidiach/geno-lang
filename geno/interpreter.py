@@ -3429,7 +3429,13 @@ class Interpreter:
                     self.exec_stmt(s, catch_env)
             elif isinstance(e.thrown_value, ConstructorValue):
                 # Verify the constructor belongs to the declared catch type
-                if not self._constructor_matches_type(
+                if stmt.catch_clause.resolved_variants is not None:
+                    if (
+                        e.thrown_value.constructor
+                        not in stmt.catch_clause.resolved_variants
+                    ):
+                        raise
+                elif not self._constructor_matches_type(
                     e.thrown_value.constructor, catch_type_name
                 ):
                     raise  # Re-throw: constructor doesn't match catch type
