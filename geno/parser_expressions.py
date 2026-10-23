@@ -22,6 +22,7 @@ from .ast_nodes import (
     FunctionCall,
     Identifier,
     IndexAccess,
+    InferredType,
     IntegerLiteral,
     LambdaExpr,
     ListComprehension,
@@ -37,6 +38,7 @@ from .ast_nodes import (
     StringLiteral,
     ThrowExpression,
     TupleExpr,
+    TypeAnnotation,
     TypedHole,
     TypeIdentifier,
     UnaryOp,
@@ -529,11 +531,15 @@ class ExpressionParserMixin(ParserBase):
             # Check for list comprehension: [expr for var: Type in iterable]
             if self._current_type is TokenType.FOR:
                 self._advance()  # consume 'for'
-                variable = self._expect(
+                variable_token = self._expect(
                     TokenType.IDENTIFIER, "Expected variable name"
-                ).value
-                self._expect(TokenType.COLON)
-                var_type = self._parse_type()
+                )
+                variable = variable_token.value
+                var_type: TypeAnnotation = InferredType(
+                    location=variable_token.location
+                )
+                if self._match(TokenType.COLON):
+                    var_type = self._parse_type()
                 self._expect(TokenType.IN)
                 iterable = self._parse_expression()
                 condition = None
@@ -562,7 +568,7 @@ class ExpressionParserMixin(ParserBase):
         if current_type is TokenType.FN:
             self._advance()
             self._expect(TokenType.LPAREN)
-            params = self._parse_parameter_list()
+            params = self._parse_parameter_list(allow_inferred_types=True)
             self._expect(TokenType.RPAREN)
             return_type = None
 

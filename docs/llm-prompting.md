@@ -26,6 +26,10 @@ Key syntax rules:
   `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
   write `first_or[Int](...)` or `<T>`. To use `<`, arithmetic, or a `T` as a map
   key, add a bound: `[T: Ord]`, `[T: Num]`, `[K: Hash]`, or a trait name
+- Lambda parameters, `for` variables, comprehension variables and tuple
+  destructuring may omit types when context fixes them: `xs.map(fn(x) -> x * 2)`,
+  `for x in xs do`, `[x * 2 for x in xs]`, `let (a, b) = pair`. Function
+  parameters and return types are always annotated
 - Method calls work on any value: `xs.map(f).filter(g).length()`,
   `s.trim().to_upper()`, `opt.unwrap_or(0)`. Name the arguments after the
   receiver when the function has 3+ parameters: `s.replace(old: "a", new: "b")`

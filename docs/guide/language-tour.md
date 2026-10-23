@@ -465,6 +465,32 @@ It raises if the index is out of range. Algorithms that write to the same
 collection repeatedly -- in-place sorts and the like -- are usually clearer with
 `Vec[T]` and `vec_set`, covered under Mutable Collections below.
 
+### Leaving Out Types
+
+Function parameters and return types are always written out, because they are
+the function's contract. Inside a function, Geno fills in the types the
+surrounding code already fixes:
+
+```geno
+func summarize(scores: List[Int]) -> (Int, List[Int])
+    example [1, 2, 3] -> (6, [4, 9])
+    let total = scores.fold(initial: 0, reducer: fn(acc, s) -> acc + s)
+    let big = [s * s for s in scores if s > 1]
+    for s in scores do
+        if s < 0 then
+            return (0, [])
+        end if
+    end for
+    let result = (total, big)
+    let (sum, squares) = result
+    return (sum, squares)
+end func
+```
+
+Here `acc` and `s` are `Int` because `fold` was given a list of `Int` and
+`initial: 0`. A lambda with nothing to learn its parameter types from, such as
+`let f = fn(x) -> x + 1`, needs them written: `fn(x: Int) -> x + 1`.
+
 ### List Comprehensions
 
 A concise syntax for transforming and filtering lists:

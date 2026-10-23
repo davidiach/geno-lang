@@ -20,6 +20,7 @@ from .ast_nodes import (
     IfStatement,
     IndexAccess,
     IndexAssignStatement,
+    InferredType,
     LetStatement,
     MatchArm,
     MatchStatement,
@@ -28,6 +29,7 @@ from .ast_nodes import (
     TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TypeAnnotation,
     VarStatement,
     WhileStatement,
 )
@@ -138,8 +140,9 @@ class StatementParserMixin(ParserBase):
                 self._expect(TokenType.IDENTIFIER, "Expected variable name").value
             )
         self._expect(TokenType.RPAREN)
-        self._expect(TokenType.COLON)
-        type_annotation = self._parse_type()
+        type_annotation: TypeAnnotation = InferredType(location=location)
+        if self._match(TokenType.COLON):
+            type_annotation = self._parse_type()
         self._expect(TokenType.ASSIGN)
         value = self._parse_expression()
         return TupleDestructureStatement(
@@ -247,9 +250,11 @@ class StatementParserMixin(ParserBase):
         """Parse: for x: Type in items do ... end for [label]"""
         location = self._current().location
         self._expect(TokenType.FOR)
-        variable = self._expect(TokenType.IDENTIFIER).value
-        self._expect(TokenType.COLON)
-        var_type = self._parse_type()
+        variable_token = self._expect(TokenType.IDENTIFIER)
+        variable = variable_token.value
+        var_type: TypeAnnotation = InferredType(location=variable_token.location)
+        if self._match(TokenType.COLON):
+            var_type = self._parse_type()
         self._expect(TokenType.IN)
         iterable = self._parse_expression()
         self._expect(TokenType.DO)

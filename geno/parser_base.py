@@ -273,7 +273,9 @@ class ParserBase:
     def _parse_pattern(self) -> Pattern:
         raise NotImplementedError
 
-    def _parse_parameter_list(self) -> list[Parameter]:
+    def _parse_parameter_list(
+        self, *, allow_inferred_types: bool = False
+    ) -> list[Parameter]:
         raise NotImplementedError
 
     def _parse_effect_list(self) -> list[str]:

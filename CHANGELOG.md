@@ -40,6 +40,15 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   `option_map`). Fields of function type keep precedence. Unknown methods are
   reported with a suggestion instead of "Unknown field" followed by "Cannot
   call non-function type: Any".
+- Types inferred from context
+  ([proposal 0007](docs/proposals/0007-contextual-type-inference.md)): lambda
+  parameters (`xs.map(fn(x) -> x * 2)`, `fn(acc, x) -> acc + x`), `for` and
+  comprehension variables (`for x in xs do`, `[x * 2 for x in xs]`) and tuple
+  destructuring (`let (a, b) = pair`) may omit their types. A lambda in a call
+  is checked after the call's other arguments, so `apply(fn(x) -> x * 2, 21)`
+  works. Function signatures still require annotations.
+- Arithmetic on an operand that already failed to type-check no longer adds a
+  second "Cannot apply '+' to Any and Int" error.
 - The standard library is generic throughout: `List`, `Option` and `Result`
   work at any element type, `Map` at any hashable key type and `Math.abs`,
   `min`, `max` and `clamp` at `Int` or `Float`, instead of `Int` or `String`

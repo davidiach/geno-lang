@@ -140,6 +140,25 @@ class FunctionType(TypeAnnotation):
         return base
 
 
+@dataclass
+class InferredType(TypeAnnotation):
+    """A type the source leaves out for inference to fill in.
+
+    Stands where a lambda parameter, `for` variable, comprehension variable or
+    destructuring `let` omits its annotation: `fn(x) -> x * 2`,
+    `for x in xs do`, `let (a, b) = pair`.
+    """
+
+    # The type the checker inferred, once it has.
+    _inferred: Any | None = field(default=None, init=False, repr=False, compare=False)
+
+    def accept(self, visitor: "ASTVisitor") -> Any:
+        return visitor.visit_inferred_type(self)
+
+    def __str__(self) -> str:
+        return "_"
+
+
 # =============================================================================
 # Expressions
 # =============================================================================
@@ -376,6 +395,11 @@ class LambdaExpr(Expression):
     return_type: TypeAnnotation | None
     body: Expression | None = None
     block_body: list["Statement"] | None = None
+    # The parameter types the call or binding receiving this lambda expects,
+    # for parameters written without a type: fn(x) -> x * 2.
+    _expected_param_types: tuple[Any, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_lambda(self)
@@ -1057,6 +1081,9 @@ class ASTVisitor(ABC):
         pass
 
     def visit_function_type(self, node: FunctionType) -> None:
+        pass
+
+    def visit_inferred_type(self, node: InferredType) -> None:
         pass
 
     # Expressions

@@ -54,6 +54,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ImportStatement,
     IndexAccess,
     IndexAssignStatement,
+    InferredType,
     IntegerLiteral,
     LambdaExpr,
     LetStatement,
@@ -65,6 +66,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     MatchExpr,
     MatchStatement,
     ModuleConstant,
+    Parameter,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -184,6 +186,8 @@ _RESERVED_TYPE_NAMES = (
     | _BUILTIN_ADT_NAMES
     | {"Tuple"}
 )
+_NUMERIC_OPERATORS = frozenset({"+", "-", "*", "/", "%", "**", "&", "^", "<<", ">>"})
+
 # Entrypoints a host calls without type arguments, so they cannot be generic.
 _NON_GENERIC_ENTRYPOINTS = frozenset({"main", "init", "update", "render"})
 
@@ -3515,6 +3519,8 @@ class TypeChecker(ExhaustivenessMixin):
     def _check_let_statement(self, stmt: LetStatement, env: TypeEnv) -> None:
         """Type check a let statement."""
         errors_before = len(self.errors)
+        if stmt.type_annotation is not None:
+            self._prime_lambda(stmt.value, self._resolve_type(stmt.type_annotation))
         actual_type = self._check_expression(stmt.value, env)
 
         if stmt.type_annotation is not None:
@@ -3598,6 +3604,8 @@ class TypeChecker(ExhaustivenessMixin):
     def _check_var_statement(self, stmt: VarStatement, env: TypeEnv) -> None:
         """Type check a var statement."""
         errors_before = len(self.errors)
+        if stmt.type_annotation is not None:
+            self._prime_lambda(stmt.value, self._resolve_type(stmt.type_annotation))
         actual_type = self._check_expression(stmt.value, env)
 
         if stmt.type_annotation is not None:
@@ -3627,8 +3635,22 @@ class TypeChecker(ExhaustivenessMixin):
         self, stmt: TupleDestructureStatement, env: TypeEnv
     ) -> None:
         """Type check a tuple destructuring statement."""
-        declared_type = self._resolve_type(stmt.type_annotation)
-        actual_type = self._check_expression(stmt.value, env)
+        if isinstance(stmt.type_annotation, InferredType):
+            actual_type = self._check_expression(stmt.value, env)
+            if self._has_type_vars(actual_type) or self._contains_any(actual_type):
+                if not isinstance(actual_type, AnyType):
+                    self._error(
+                        "Cannot infer the element types of this tuple "
+                        f"destructuring from {_display_type(actual_type)}; add a "
+                        "type annotation, as in `let (a, b): (Int, String) = ...`",
+                        stmt.location,
+                    )
+                return
+            stmt.type_annotation._inferred = actual_type
+            declared_type = actual_type
+        else:
+            declared_type = self._resolve_type(stmt.type_annotation)
+            actual_type = self._check_expression(stmt.value, env)
         self._record_expected_runtime_type(stmt.value, declared_type)
 
         if not self._types_strictly_compatible(declared_type, actual_type):
@@ -3867,6 +3889,8 @@ class TypeChecker(ExhaustivenessMixin):
         else:
             elem_type = iterable_type.element_type
 
+        if isinstance(stmt.var_type, InferredType):
+            stmt.var_type._inferred = elem_type
         declared_type = self._resolve_type(stmt.var_type)
         if not self._types_strictly_compatible(declared_type, elem_type):
             self._error(
@@ -3913,6 +3937,8 @@ class TypeChecker(ExhaustivenessMixin):
             self._error("Return outside of function", stmt.location)
             return
 
+        if self._lambda_return_types is None:
+            self._prime_lambda(stmt.value, self.current_return_type)
         value_type = self._check_expression(stmt.value, env)
         if self._lambda_return_types is not None:
             # Collecting return types for block lambda inference
@@ -4418,6 +4444,12 @@ class TypeChecker(ExhaustivenessMixin):
         left_type = self._check_expression(expr.left, env)
         right_type = self._check_expression(expr.right, env)
 
+        # An operand that already failed to check was reported where it failed.
+        if expr.operator in _NUMERIC_OPERATORS and (
+            isinstance(left_type, AnyType) or isinstance(right_type, AnyType)
+        ):
+            return _ANY_TYPE
+
         # Bitwise operators (Int only)
         if expr.operator in ("&", "^", "<<", ">>"):
             if not isinstance(left_type, IntType):
@@ -4808,11 +4840,19 @@ class TypeChecker(ExhaustivenessMixin):
                         expr.location,
                         ErrorCode.TYPE_WRONG_ARITY,
                     )
-            for i, (maybe_arg, expected_type) in enumerate(
-                zip(ordered_args, func_type.param_types)
-            ):
+            named = list(zip(ordered_args, func_type.param_types))
+
+            def waits_for_context(index: int) -> bool:
+                named_arg = named[index][0]
+                return named_arg is not None and self._needs_context(named_arg.value)
+
+            for i in sorted(range(len(named)), key=waits_for_context):
+                maybe_arg, expected_type = named[i]
                 if maybe_arg is not None:
                     ca = maybe_arg
+                    self._prime_lambda(
+                        ca.value, self._apply_substitutions(expected_type, subs)
+                    )
                     arg_type = self._check_expression(ca.value, env)
                     has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                     if self._has_type_vars(arg_type):
@@ -4837,10 +4877,18 @@ class TypeChecker(ExhaustivenessMixin):
                         self._apply_substitutions(expected_type, subs),
                     )
         else:
-            # Check argument types positionally
-            for i, (arg, expected_type) in enumerate(
-                zip(arguments, func_type.param_types)
+            # Check argument types positionally. A lambda whose parameters
+            # need context waits until the other arguments have bound what
+            # they can, as in `apply(fn(x) -> x + 1, 2)`.
+            positional = list(zip(arguments, func_type.param_types))
+            for i in sorted(
+                range(len(positional)),
+                key=lambda index: self._needs_context(positional[index][0].value),
             ):
+                arg, expected_type = positional[i]
+                self._prime_lambda(
+                    arg.value, self._apply_substitutions(expected_type, subs)
+                )
                 arg_type = self._check_expression(arg.value, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
@@ -5435,6 +5483,8 @@ class TypeChecker(ExhaustivenessMixin):
 
         # Bind loop variable in a child env
         comp_env = env.child()
+        if isinstance(expr.var_type, InferredType):
+            expr.var_type._inferred = elem_type
         var_type = self._resolve_type(expr.var_type)
         if not self._types_strictly_compatible(var_type, elem_type):
             self._error(
@@ -5682,13 +5732,16 @@ class TypeChecker(ExhaustivenessMixin):
         effect_env = env.child()
         param_types: list[Type] = []
 
-        for param in expr.params:
+        expected_params = expr._expected_param_types
+        for index, param in enumerate(expr.params):
             if param.name in lambda_env.bindings:
                 self._error(
                     f"Duplicate parameter name '{param.name}'",
                     param.location,
                     ErrorCode.TYPE_DUPLICATE_DEFINITION,
                 )
+            if isinstance(param.param_type, InferredType):
+                self._infer_lambda_param(param, expected_params, index)
             param_type = self._resolve_type(param.param_type)
             param_types.append(param_type)
             lambda_env.bind(param.name, param_type)
@@ -5731,6 +5784,50 @@ class TypeChecker(ExhaustivenessMixin):
         lambda_effects = frozenset(self._infer_expr_effects(expr.body, effect_env))
         return FuncType(tuple(param_types), body_type, lambda_effects)
 
+    def _infer_lambda_param(
+        self,
+        param: Parameter,
+        expected_params: tuple[Type, ...] | None,
+        index: int,
+    ) -> None:
+        """Give an unannotated lambda parameter the type its context expects."""
+        annotation = param.param_type
+        assert isinstance(annotation, InferredType)
+        expected = (
+            expected_params[index]
+            if expected_params is not None and index < len(expected_params)
+            else None
+        )
+        if expected is None or self._has_type_vars(expected):
+            if annotation._inferred is None:
+                self._error(
+                    f"Cannot infer the type of lambda parameter '{param.name}' "
+                    "from where the lambda is used; annotate it, as in "
+                    f"`fn({param.name}: Int) -> ...`",
+                    param.location,
+                    ErrorCode.TYPE_GENERIC_INFERENCE,
+                )
+                annotation._inferred = _ANY_TYPE
+            return
+        annotation._inferred = expected
+
+    @staticmethod
+    def _prime_lambda(value: Expression, expected: Type) -> None:
+        """Tell an unannotated lambda what function type its context expects."""
+        if (
+            isinstance(value, LambdaExpr)
+            and isinstance(expected, FuncType)
+            and len(expected.param_types) == len(value.params)
+        ):
+            value._expected_param_types = expected.param_types
+
+    @staticmethod
+    def _needs_context(value: Expression) -> bool:
+        """A lambda with an unannotated parameter waits for its context."""
+        return isinstance(value, LambdaExpr) and any(
+            isinstance(param.param_type, InferredType) for param in value.params
+        )
+
     def _check_constructor_call(self, expr: ConstructorCall, env: TypeEnv) -> Type:
         """Type check a constructor call."""
         type_name = self._constructor_to_type.get(expr.constructor)
@@ -5767,6 +5864,9 @@ class TypeChecker(ExhaustivenessMixin):
             for i, (arg, (_field_name, field_type)) in enumerate(
                 zip(arguments, fields)
             ):
+                self._prime_lambda(
+                    arg, self._apply_substitutions(field_type, type_param_bindings)
+                )
                 arg_type = self._check_expression(arg, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
@@ -6123,6 +6223,10 @@ class TypeChecker(ExhaustivenessMixin):
         self, type_annot: TypeAnnotation, type_params: list[str] | None = None
     ) -> Type:
         """Resolve a type annotation to an internal type."""
+        if isinstance(type_annot, InferredType):
+            # Filled in by the check that inferred it; unknown until then.
+            inferred = type_annot._inferred
+            return inferred if isinstance(inferred, Type) else _ANY_TYPE
         cache_key = (
             id(type_annot),
             tuple(type_params) if type_params is not None else (),

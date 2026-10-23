@@ -17,6 +17,7 @@ from .ast_nodes import (
     FunctionDef,
     ImplDef,
     ImportStatement,
+    InferredType,
     ModuleConstant,
     Parameter,
     Program,
@@ -27,6 +28,7 @@ from .ast_nodes import (
     TraitDef,
     TraitMethodSig,
     TupleExpr,
+    TypeAnnotation,
     constant_initializer_error,
 )
 from .diagnostics import ErrorCode
@@ -452,16 +454,22 @@ class Parser(
             "Expected a bound after ':', such as 'Ord', 'Hash', 'Num' or a trait name",
         )
 
-    def _parse_parameter_list(self) -> list[Parameter]:
-        """Parse function parameters."""
+    def _parse_parameter_list(
+        self, *, allow_inferred_types: bool = False
+    ) -> list[Parameter]:
+        """Parse function parameters.
+
+        A lambda's parameters may leave out their types (``fn(x) -> x * 2``),
+        which the checker infers from context; a function's may not.
+        """
         params: list[Parameter] = []
 
         if self._check(TokenType.RPAREN):
             return params
 
-        params.append(self._parse_parameter())
+        params.append(self._parse_parameter(allow_inferred_types))
         while self._match(TokenType.COMMA):
-            params.append(self._parse_parameter())
+            params.append(self._parse_parameter(allow_inferred_types))
 
         # Validate: required params must come before optional params
         seen_default = False
@@ -478,12 +486,16 @@ class Parser(
 
         return params
 
-    def _parse_parameter(self) -> Parameter:
+    def _parse_parameter(self, allow_inferred_type: bool = False) -> Parameter:
         """Parse a single parameter: name: Type or name: Type = default"""
         location = self._current().location
         name_token = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
-        self._expect(TokenType.COLON)
-        param_type = self._parse_type()
+        param_type: TypeAnnotation
+        if allow_inferred_type and not self._check(TokenType.COLON):
+            param_type = InferredType(location=location)
+        else:
+            self._expect(TokenType.COLON)
+            param_type = self._parse_type()
         default_value = None
         if self._match(TokenType.ASSIGN):
             default_value = self._parse_expression()
