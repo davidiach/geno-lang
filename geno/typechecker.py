@@ -2885,17 +2885,21 @@ class TypeChecker(ExhaustivenessMixin):
                 if catch_raw_name == "String":
                     try_res = body_res.without_throw()
                 else:
-                    resolved_catch = self._constructor_to_type.get(
-                        catch_raw_name, catch_raw_name
+                    catch_variants = frozenset(
+                        stmt.catch_clause.resolved_variants or ()
                     )
                     unmasked_throws: set[str] = set()
                     for t in body_res.throws:
-                        if t == "<unknown>":
+                        # Share the catch's resolved constructor set with all
+                        # runtimes. A thrown ADT is covered only when every
+                        # possible constructor matches; unknown types escape.
+                        type_info = self.type_defs.get(t)
+                        if (
+                            type_info is None
+                            or not type_info.variants
+                            or not type_info.variants.keys() <= catch_variants
+                        ):
                             unmasked_throws.add(t)
-                        else:
-                            resolved_t = self._constructor_to_type.get(t, t)
-                            if resolved_t != resolved_catch:
-                                unmasked_throws.add(t)
                     if not body_res.throws or unmasked_throws:
                         try_res = InferredEffects(
                             body_res.effects,
@@ -3131,7 +3135,7 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(value_expr, Identifier):
             binding = env.lookup(value_expr.name)
             if isinstance(binding, UserType):
-                return self._constructor_to_type.get(binding.name, binding.name)
+                return binding.name
             if isinstance(binding, StringType):
                 return "String"
         if isinstance(value_expr, FunctionCall) and isinstance(
@@ -3141,7 +3145,7 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(binding, FuncType):
                 ret = binding.return_type
                 if isinstance(ret, UserType):
-                    return self._constructor_to_type.get(ret.name, ret.name)
+                    return ret.name
                 if isinstance(ret, StringType):
                     return "String"
         return "<unknown>"

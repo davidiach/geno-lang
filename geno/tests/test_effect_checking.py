@@ -636,6 +636,105 @@ end func main
         assert isinstance(ft, FuncType)
         assert "throw" not in ft.effects
 
+    @pytest.mark.parametrize(
+        ("definitions", "value", "catch_type", "escapes"),
+        [
+            (
+                "type BaseError = Base(message: String)\ntype AliasError = BaseError",
+                'Base("caught")',
+                "AliasError",
+                False,
+            ),
+            (
+                "type BaseError = Base(message: String)\ntype AliasError = BaseError"
+                "\ntype OtherError = Other(message: String)",
+                'Other("escaped")',
+                "AliasError",
+                True,
+            ),
+            ("", 'JsonString("caught")', "JsonValue", False),
+            (
+                "type WrappedError[T] = Wrapped(value: T)",
+                "Wrapped(1)",
+                "WrappedError[Int]",
+                False,
+            ),
+            ("type Message = String", '"escaped"', "Message", True),
+            (
+                "type Outer = Inner(value: Int)\ntype Inner = Leaf(value: Int)",
+                "Inner(1)",
+                "Inner",
+                True,
+            ),
+        ],
+    )
+    def test_masking_uses_resolved_catch_variants(
+        self, definitions: str, value: str, catch_type: str, escapes: bool
+    ):
+        source = f"""
+{definitions}
+
+func main() -> Int
+    try
+        throw {value}
+    catch err: {catch_type}
+        return 0
+    end try
+end func
+"""
+        checker = _typecheck(source)
+        inferred = checker.global_env.lookup("main")
+        assert isinstance(inferred, FuncType)
+        assert ("throw" in inferred.effects) is escapes
+
+        annotated = source.replace("main() -> Int", "main() -> Int with io")
+        errors = _typecheck_errors(annotated)
+        if escapes:
+            assert any(
+                "undeclared effects" in error and "throw" in error for error in errors
+            )
+        else:
+            assert errors == []
+
+    @pytest.mark.parametrize("value", ["error", "make_error()"])
+    @pytest.mark.parametrize(
+        ("catch_type", "escapes"), [("Outer", True), ("Inner", False)]
+    )
+    def test_resolved_thrown_type_is_not_a_constructor_name(
+        self, value: str, catch_type: str, escapes: bool
+    ):
+        source = f"""
+type Outer = Inner(value: Int)
+type Inner = Leaf(value: Int)
+
+@untested("type identity regression")
+func make_error() -> Inner
+    return Leaf(1)
+end func
+
+func main() -> Int
+    let error: Inner = Leaf(1)
+    try
+        throw {value}
+    catch err: {catch_type}
+        return 0
+    end try
+end func
+"""
+        checker = _typecheck(source)
+        inferred = checker.global_env.lookup("main")
+        assert isinstance(inferred, FuncType)
+        assert ("throw" in inferred.effects) is escapes
+        errors = _typecheck_errors(
+            source.replace("main() -> Int", "main() -> Int with io")
+        )
+        if escapes:
+            assert any(
+                "undeclared effects" in error and "throw" in error for error in errors
+            )
+        else:
+            assert errors == []
+
     def test_call_to_throwing_function_retains_throw(self):
         """A call whose callee declares throw may throw any value, so the
         handler cannot be proven to cover it (conservative retention)."""
