@@ -1,0 +1,7 @@
+async func fetch_code() -> Int
+    return 6
+end func
+
+func main() -> Int
+    return await fetch_code()
+end func

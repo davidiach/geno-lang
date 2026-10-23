@@ -1,0 +1,8 @@
+func below_zero() -> Int
+    example () -> -1
+    return 0 - 1
+end func
+
+func main() -> Int
+    return below_zero()
+end func

@@ -1,0 +1,8 @@
+func chosen_status() -> Int
+    example () -> 3
+    return 3
+end func
+
+func main() -> Int
+    return chosen_status()
+end func

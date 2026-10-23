@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The 0.6 development line implements the
+[Geno 0.6 upgrade roadmap](docs/proposals/0003-geno-0.6-language-upgrade.md).
+Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
+
 ### Added
 
+- Generic functions ([proposal 0004](docs/proposals/0004-generic-functions.md)):
+  `func first_or[T](xs: List[T], fallback: T) -> T`. Calls, example clauses and
+  uses as a value each infer the type arguments. Inside the function a type
+  parameter is opaque: values can be passed on, stored, compared with `==`,
+  printed and converted with `to_string`, but arithmetic, ordering and use as a
+  `Map` key or `Set` element are rejected. New diagnostics: E320 for an invalid
+  type parameter list (duplicate, shadowing a type, unused, or on `main` or an
+  impl method) and E321 for a generic function used as a value whose type
+  arguments nothing determines. The JavaScript backend compiles a copy of a
+  generic function for each way its type arguments contain `Float`, so a `Float`
+  passed through a type parameter prints as `2.0` on every backend. TypeScript
+  declarations declare the type parameters.
+- The standard library's `List`, `Option` and `Result` modules are generic:
+  `List.zip`, `List.find`, `Option.map`, `Result.map_err` and the rest work at
+  any element type instead of `Int` only.
 - `geno check` warns when a `let` or `var` redeclares a mutable variable from
   the same or an enclosing block (W300), as in `var y = f(y)` inside a loop
   where `y = f(y)` was meant. The program still passes. The warning is
@@ -18,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Imports are not transitive. 0.5 accepted a call to a function from module `A`
+  in a program that imported only a module `B` which imports `A`; the program
+  ran in the interpreter and failed with a name error in compiled Python and
+  JavaScript. `geno check` now rejects the call and suggests `import A`.
+- An imported module no longer sees the entry program's functions or imports in
+  the interpreter. A module that called the builtin `length` ran another
+  module's `length` instead whenever the entry program imported one, while
+  compiled Python and JavaScript called the builtin.
+- An exported function whose signature contains a tuple, such as
+  `export func pair(x: Int) -> (Int, Int)`, is no longer rejected as exposing a
+  non-exported type `Tuple`.
 - `http_listen` dispatches `OPTIONS` and `PATCH` requests to routes registered
   for them in the interpreter and in generated Python. Before, both methods
   were answered with 501 Unsupported method, so CORS preflight handlers never

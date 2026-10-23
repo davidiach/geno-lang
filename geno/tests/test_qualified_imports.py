@@ -324,8 +324,12 @@ class TestQualifiedAccess:
         checker = TypeChecker()
         checker.check_project_graph(dg)
 
-    def test_transitive_imports_still_resolve(self, tmp_path):
-        """Import summaries preserve recursive import visibility across modules."""
+    def test_transitive_imports_are_rejected(self, tmp_path):
+        """A module's own imports are not visible to the module importing it.
+
+        0.5 accepted this program, which then failed with a name error in
+        compiled Python and JavaScript (docs/spec/v0.6.md section 6.10).
+        """
         from geno.dependency_graph import DependencyGraph
         from geno.project_graph import ProjectGraph
 
@@ -353,10 +357,45 @@ class TestQualifiedAccess:
         pg = ProjectGraph.discover(tmp_path)
         dg = DependencyGraph.resolve(pg)
         checker = TypeChecker()
-        checker.check_project_graph(dg)
+        with pytest.raises(GenoTypeError) as info:
+            checker.check_project_graph(dg)
+        assert "Undefined function: leaf_value. Did you forget to 'import Leaf'?" in (
+            str(info.value)
+        )
 
-    def test_transitive_aliased_imports_still_resolve(self, tmp_path):
-        """Nested import aliases stay visible when project-checking summaries."""
+    def test_transitive_imports_resolve_once_imported_directly(self, tmp_path):
+        """Importing the module itself is the fix the diagnostic suggests."""
+        from geno.dependency_graph import DependencyGraph
+        from geno.project_graph import ProjectGraph
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Mid", "Leaf"]\n'
+        )
+        (tmp_path / "Leaf.geno").write_text(
+            "func leaf_value() -> Int\n  example () -> 7\n  return 7\nend func\n"
+        )
+        (tmp_path / "Mid.geno").write_text(
+            "import Leaf\n"
+            "func mid_value() -> Int\n"
+            "  example () -> 7\n"
+            "  return leaf_value()\n"
+            "end func\n"
+        )
+        (tmp_path / "Main.geno").write_text(
+            "import Mid\n"
+            "import Leaf\n"
+            '@untested("test")\n'
+            "func main() -> Int\n"
+            "  return mid_value() + leaf_value()\n"
+            "end func\n"
+        )
+
+        pg = ProjectGraph.discover(tmp_path)
+        dg = DependencyGraph.resolve(pg)
+        TypeChecker().check_project_graph(dg)
+
+    def test_transitive_aliases_are_rejected(self, tmp_path):
+        """An alias another module declares is not a name in this module."""
         from geno.dependency_graph import DependencyGraph
         from geno.project_graph import ProjectGraph
 
@@ -384,7 +423,8 @@ class TestQualifiedAccess:
         pg = ProjectGraph.discover(tmp_path)
         dg = DependencyGraph.resolve(pg)
         checker = TypeChecker()
-        checker.check_project_graph(dg)
+        with pytest.raises(GenoTypeError):
+            checker.check_project_graph(dg)
 
     def test_transitive_aliased_imports_do_not_become_unqualified(self, tmp_path):
         """Nested aliased imports should not leak unqualified names."""

@@ -1,0 +1,24 @@
+let banner: String = "geno"
+let numerals = ["I", "V", "X"]
+let offset = -3
+
+func labelled(value: Int) -> String
+    example 1 -> "geno:1"
+    return banner + ":" + to_string(value)
+end func
+
+func middle_numeral() -> String
+    example () -> "V"
+    return numerals[1]
+end func
+
+func shifted(value: Int) -> Int
+    example 10 -> 7
+    return value + offset
+end func
+
+func main() -> Unit
+    print(labelled(1))
+    print(middle_numeral())
+    print(shifted(10))
+end func

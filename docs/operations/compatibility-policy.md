@@ -70,6 +70,16 @@ result and never terminate their caller, and importing a generated Python or
 Node ESM artifact stays inert. Browser-targeted JavaScript keeps displaying an
 `Int` result, because it has no process to give a status to.
 
+### 0.6 (in development): imports are not transitive
+
+0.5 accepted a call to a function exported by module `A` from a program that
+imported only a module `B` which imports `A`. The interpreter ran it, but
+compiled Python and JavaScript failed with a name error, so the accepted
+program was not portable. From 0.6, `geno check` rejects the call and suggests
+`import A`; the migration is to add that import. The rule is stated in
+`docs/spec/v0.6.md` section 6.10 and recorded in `CHANGELOG.md`. This entry
+will gain the proposal and conformance references of the 0.6 release.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

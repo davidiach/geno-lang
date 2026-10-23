@@ -399,6 +399,14 @@ def allowed_next(state: ConstraintState) -> AllowedNext:
             expected_end_stack=expected_end_stack,
         )
 
+    # Inside a generic function's type parameter list: func name[T, U]
+    if state.expecting_func_name and state.bracket_depth > 0:
+        return AllowedNext(
+            allow_type_identifier=True,
+            allow_punct=[",", "]"],
+            expected_end_stack=expected_end_stack,
+        )
+
     # If expecting function name after 'func' keyword
     if state.expecting_func_name:
         return AllowedNext(

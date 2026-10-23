@@ -154,6 +154,40 @@ func factorial(n: Int) -> Int
 end func
 ```
 
+### Generic Functions
+
+A function can work at any type by declaring type parameters in brackets after
+its name. Callers never write the types; each call works them out from its
+arguments:
+
+```geno
+func first_or[T](xs: List[T], fallback: T) -> T
+    example [1, 2], 0 -> 1
+    example [], "none" -> "none"
+    match xs with
+        | [] -> return fallback
+        | [x, ...] -> return x
+    end match
+end func
+
+func swap[A, B](pair: (A, B)) -> (B, A)
+    example (1, "x") -> ("x", 1)
+    let (a, b): (A, B) = pair
+    return (b, a)
+end func
+```
+
+Each example is checked on its own, so one function's examples can use
+different types. Inside the function, `T` stands for whatever type the caller
+chose, so the body can only do what works for every type: pass the value on,
+store it in a list, tuple or record, compare it with `==`, and print it or
+convert it with `to_string`. Arithmetic and `<` on a `T` are rejected, because
+`T` might be a `String` or a list.
+
+A generic function can also be passed as a value when the surrounding code
+fixes its types, as in `map([1.5, 2.5], show)` or
+`let render: (Int) -> String = show`.
+
 ## Type Definitions (ADTs)
 
 ```geno
@@ -486,7 +520,9 @@ end func
 
 ## Modules
 
-Split code across files:
+Split code across files. An import makes the imported module's exports
+visible, but not what that module imports in turn: to call a function from
+`Utils`, import `Utils` itself.
 
 ```geno
 // Utils.geno

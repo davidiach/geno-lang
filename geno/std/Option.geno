@@ -1,40 +1,41 @@
-func map(option: Option[Int], f: (Int) -> Int) -> Option[Int]
+func map[T, U](option: Option[T], f: (T) -> U) -> Option[U]
     example Some(5), fn(x: Int) -> x * 2 -> Some(10)
-    example None, fn(x: Int) -> x * 2 -> None
+    example Some(5), fn(x: Int) -> to_string(x) -> Some("5")
     return option_map(option, f)
 end func
 
-func and_then(option: Option[Int], f: (Int) -> Option[Int]) -> Option[Int]
+func and_then[T, U](option: Option[T], f: (T) -> Option[U]) -> Option[U]
     example Some(5), fn(x: Int) -> Some(x * 2) -> Some(10)
-    example None, fn(x: Int) -> Some(x * 2) -> None
+    example Some("x"), fn(s: String) -> parse_int(s) -> None
     return option_and_then(option, f)
 end func
 
-func unwrap_or(option: Option[Int], default: Int) -> Int
+func unwrap_or[T](option: Option[T], default: T) -> T
     example Some(5), 0 -> 5
-    example None, 0 -> 0
+    example Some("a"), "b" -> "a"
     return option_unwrap_or(option, default)
 end func
 
-func is_some(option: Option[Int]) -> Bool
+func is_some[T](option: Option[T]) -> Bool
     example Some(1) -> true
-    example None -> false
+    example Some("a") -> true
     return option_is_some(option)
 end func
 
-func is_none(option: Option[Int]) -> Bool
-    example None -> true
+func is_none[T](option: Option[T]) -> Bool
     example Some(1) -> false
+    example Some("a") -> false
     return option_is_none(option)
 end func
 
-func flatten(option: Option[Option[Int]]) -> Option[Int]
+func flatten[T](option: Option[Option[T]]) -> Option[T]
     example Some(Some(5)) -> Some(5)
-    example Some(None) -> None
+    example Some(Some("a")) -> Some("a")
     return option_flatten(option)
 end func
 
-func to_result(option: Option[Int], err: String) -> Result[Int, String]
+func to_result[T, E](option: Option[T], err: E) -> Result[T, E]
     example Some(42), "missing" -> Ok(42)
+    example Some("a"), 0 -> Ok("a")
     return option_to_result(option, err)
 end func

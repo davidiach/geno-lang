@@ -38,7 +38,7 @@ from .parser_expressions import ExpressionParserMixin
 from .parser_patterns import PatternParserMixin
 from .parser_statements import StatementParserMixin
 from .parser_types import TypeParserMixin
-from .tokens import TokenType, token_type_to_str
+from .tokens import Token, TokenType, token_type_to_str
 
 
 class Parser(
@@ -372,6 +372,14 @@ class Parser(
         name_token = self._expect(TokenType.IDENTIFIER, "Expected function name")
         name = name_token.value
 
+        # Optional type parameters: func name[T, U](...)
+        type_params: list[str] = []
+        if self._match(TokenType.LBRACKET):
+            type_params.append(self._expect_type_parameter_name().value)
+            while self._match(TokenType.COMMA):
+                type_params.append(self._expect_type_parameter_name().value)
+            self._expect(TokenType.RBRACKET)
+
         # Parameters
         self._expect(TokenType.LPAREN)
         params = self._parse_parameter_list()
@@ -413,6 +421,19 @@ class Parser(
             closing_name=closing_name,
             is_async=is_async,
             effects=effects,
+            type_params=type_params,
+        )
+
+    def _expect_type_parameter_name(self) -> Token:
+        """Consume a type parameter name, which is PascalCase like any type."""
+        if self._check(TokenType.IDENTIFIER):
+            name = self._current().value
+            raise self._error(
+                f"Type parameter '{name}' must start with an uppercase letter, "
+                f"like '{name[:1].upper()}{name[1:]}'"
+            )
+        return self._expect(
+            TokenType.TYPE_IDENTIFIER, "Expected a type parameter name such as 'T'"
         )
 
     def _parse_parameter_list(self) -> list[Parameter]:

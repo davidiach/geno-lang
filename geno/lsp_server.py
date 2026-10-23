@@ -3137,9 +3137,11 @@ def _get_func_signature(
 
 def _extract_user_func_sig(name: str, source: str) -> tuple | None:
     """Extract function signature from Geno source via regex."""
-    # Match: [export] [@annotation(...)] [async] func name(params) -> RetType [with effects]
+    # Match: [export] [@annotation(...)] [async] func name[TypeParams](params)
+    #        -> RetType [with effects]
     pattern = (
         rf"^\s*(?:export\s+)?(?:@\w+\([^)]*\)\s+)?(?:async\s+)?func\s+{re.escape(name)}"
+        r"(\[[^\]]*\])?"
         r"\s*\(([^)]*)\)"
         r"\s*(?:->\s*(\S+))?"
         r"[ \t]*(?:with[ \t]+([A-Za-z_]\w*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*))?"
@@ -3148,9 +3150,10 @@ def _extract_user_func_sig(name: str, source: str) -> tuple | None:
     if not m:
         return None
 
-    params_str = m.group(1).strip()
-    ret_type = m.group(2) or "Unit"
-    effects_str = m.group(3)
+    type_params = m.group(1) or ""
+    params_str = m.group(2).strip()
+    ret_type = m.group(3) or "Unit"
+    effects_str = m.group(4)
 
     suffix = f" -> {ret_type}"
     if effects_str:
@@ -3158,7 +3161,7 @@ def _extract_user_func_sig(name: str, source: str) -> tuple | None:
         suffix += f" with {effects}"
 
     if not params_str:
-        label = f"{name}(){suffix}"
+        label = f"{name}{type_params}(){suffix}"
         return label, []
 
     param_infos = []
@@ -3167,7 +3170,7 @@ def _extract_user_func_sig(name: str, source: str) -> tuple | None:
         if param:
             param_infos.append(_parameter_information(param))
 
-    label = f"{name}({params_str}){suffix}"
+    label = f"{name}{type_params}({params_str}){suffix}"
     return label, param_infos
 
 

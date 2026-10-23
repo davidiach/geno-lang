@@ -1,0 +1,8 @@
+func show[T](value: T) -> String
+    example 1 -> "1"
+    return to_string(value)
+end func
+
+func main() -> Unit
+    print(map([], show))
+end func

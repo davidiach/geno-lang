@@ -63,6 +63,10 @@ class ErrorCode(Enum):
     EFFECT_UNKNOWN = "E311"  # Unrecognized effect name in annotation
     EFFECT_MISMATCH = "E312"  # Callback has incompatible effects
 
+    # Generic errors (32x)
+    TYPE_GENERIC_PARAMS = "E320"  # Invalid type parameter list on a function
+    TYPE_GENERIC_INFERENCE = "E321"  # Generic function value's types not inferred
+
     # Warnings (W3xx): reported with Severity.WARNING once a program passes
     # the type checker; the program is still accepted.
     WARN_REDECLARED_VAR = "W300"  # let/var redeclares a mutable var in scope

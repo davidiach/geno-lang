@@ -190,10 +190,12 @@ class FuncDoc:
         "params",
         "requires",
         "return_type",
+        "type_params",
     )
 
     def __init__(self, fdef: FunctionDef, doc: str | None = None):
         self.name = fdef.name
+        self.type_params = list(fdef.type_params)
         self.params = fdef.params
         self.return_type = fdef.return_type
         self.effects = fdef.effects
@@ -380,7 +382,12 @@ def _render_signature_html(func: FuncDoc) -> str:
     effects = ""
     if func.effects:
         effects = f" {kw}with{end} {_esc(', '.join(sorted(func.effects)))}"
-    return f"{prefix} {_esc(func.name)}({params_str}) -> {ret}{effects}"
+    type_params = (
+        f"[{', '.join(f'{tn}{_esc(name)}{end}' for name in func.type_params)}]"
+        if func.type_params
+        else ""
+    )
+    return f"{prefix} {_esc(func.name)}{type_params}({params_str}) -> {ret}{effects}"
 
 
 def _render_func_html(func: FuncDoc) -> str:

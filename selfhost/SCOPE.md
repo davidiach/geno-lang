@@ -41,6 +41,8 @@ selfhost parser does not yet implement:
 - Bare zero-argument examples (`example -> value`); use `example () -> value`.
 - Tuple patterns in match arms, including nested tuple patterns. Tuple `let`
   destructuring is also outside the current selfhost parser subset.
+- Generic functions (`func first_or[T](xs: List[T], fallback: T) -> T`), from
+  the 0.6 draft specification.
 
 These are parser/interpreter gaps, so the keyword and builtin parity checks do
 not detect them. Canonical frontend and backend tests cover the new forms.

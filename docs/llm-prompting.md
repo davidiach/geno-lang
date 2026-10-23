@@ -22,6 +22,9 @@ Key syntax rules:
 - Every function needs at least one `example` clause
 - Functions with 3+ parameters require named arguments at call sites
 - Use `Option[T]` instead of null, `Result[T, E]` for errors
+- Generic functions declare type parameters in brackets after the name:
+  `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
+  write `first_or[Int](...)` or `<T>`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 - Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,

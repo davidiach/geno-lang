@@ -187,6 +187,39 @@ class TypeVar(Type):
 
 
 @dataclass(frozen=True)
+class TypeParam(Type):
+    """A generic function's type parameter, seen from inside that function.
+
+    Callers see ``func f[T](x: T) -> T`` as ``(T) -> T`` over a ``TypeVar``
+    they instantiate per call. The body sees ``T`` as this rigid type
+    instead: an opaque type equal only to itself, so the body cannot assume
+    anything about the values it receives.
+    """
+
+    name: str
+
+    def __str__(self) -> str:
+        return self.name
+
+
+@dataclass(frozen=True)
+class GenericInstance:
+    """Which generic function a call or reference uses, and at which types.
+
+    The type checker attaches one to every call of a user-defined generic
+    function and every reference to one used as a value. ``module`` names the
+    module that defines the function, or is ``None`` for the module being
+    checked. ``type_args`` follow the function's type parameter order; an
+    argument no context determined is left as a ``TypeVar``.
+    """
+
+    module: str | None
+    name: str
+    type_params: tuple[str, ...]
+    type_args: tuple["Type", ...]
+
+
+@dataclass(frozen=True)
 class UserType(Type):
     """User-defined type."""
 

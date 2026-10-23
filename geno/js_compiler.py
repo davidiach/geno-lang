@@ -29,6 +29,11 @@ from ._backend_fastpath import (
     is_string_type,
 )
 from ._definition_index import collect_definitions
+from ._js_generics import (
+    SpecializationPlan,
+    plan_specializations,
+    substitute_type_params,
+)
 from .ast_nodes import (
     AssignStatement,
     AwaitExpr,
@@ -128,6 +133,7 @@ from .types import (
     StringType,
     TupleType,
     Type,
+    TypeParam,
     TypeVar,
     UnitType,
     UserType,
@@ -628,11 +634,23 @@ class JSCompiler(BaseCompiler):
         # (`let x = 1` then `let x = 2`) used to emit, making the program a
         # SyntaxError that would not run at all.
         self._js_block_scopes: list[_JSBlockScope] = []
+        # Float-dependent copies of generic functions (see _js_generics), the
+        # module being compiled, and while compiling a copy, the types that
+        # replace its type parameters and the name it is emitted under.
+        self._spec_plan = SpecializationPlan()
+        self._current_module: str | None = None
+        self._type_subst: dict[str, Type] = {}
+        self._function_name_override: str | None = None
 
     _BUILTIN_NAME_MAP: dict[str, str] = js_backend_builtin_name_map()
 
     @staticmethod
     def _mangle_name(name: str) -> str:
+        if "$" in name:
+            # A generic function's specialized copy: `show$g1`. Geno names
+            # never contain `$`, so only the base part needs mangling.
+            base, _, suffix = name.partition("$")
+            return f"{JSCompiler._mangle_name(base)}${suffix}"
         mapped = JSCompiler._BUILTIN_NAME_MAP.get(name)
         if mapped is not None:
             return mapped
@@ -891,6 +909,8 @@ class JSCompiler(BaseCompiler):
 
         # First pass: collect type, function, trait, and impl definitions
         collect_definitions(program, into=self._definition_index)
+        self._spec_plan = plan_specializations([(None, program)])
+        self._current_module = None
 
         # Validate no user names shadow prelude names
         self._validate_runtime_name_collisions(
@@ -909,6 +929,7 @@ class JSCompiler(BaseCompiler):
                 self._compile_type_def(defn)
             elif isinstance(defn, FunctionDef):
                 self._compile_function_def(defn)
+                self._compile_specializations(defn)
             elif isinstance(defn, ImplDef):
                 self._compile_impl_def(defn)
             elif isinstance(defn, ImportStatement):
@@ -1078,6 +1099,10 @@ class JSCompiler(BaseCompiler):
 
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
         self._emit_function_assignments = False
+        self._spec_plan = plan_specializations(
+            (mod_name, dep_graph.parsed[mod_name])
+            for mod_name in dep_graph.sorted_modules
+        )
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
         for mod_name in dep_graph.sorted_modules:
@@ -1085,7 +1110,11 @@ class JSCompiler(BaseCompiler):
             self._register_module_param_names(mod_name, program)
             public_exports, impl_exports = self._module_runtime_exports(program)
             module_impl_exports[mod_name] = impl_exports
-            module_runtime_exports[mod_name] = public_exports + impl_exports
+            module_runtime_exports[mod_name] = (
+                public_exports
+                + self._spec_plan.export_names(mod_name, public_exports)
+                + impl_exports
+            )
 
         # Compile each module in topological order
         for mod_name in dep_graph.sorted_modules:
@@ -1154,14 +1183,17 @@ class JSCompiler(BaseCompiler):
             self._compile_module_constants(program)
 
             # Compile definitions
+            self._current_module = mod_name
             for defn in program.definitions:
                 if isinstance(defn, TypeDef):
                     self._compile_type_def(defn)
                 elif isinstance(defn, FunctionDef):
                     self._compile_function_def(defn)
+                    self._compile_specializations(defn)
                 elif isinstance(defn, ImplDef):
                     self._compile_impl_def(defn)
                 # TestBlock is skipped
+            self._current_module = None
 
             attrs = ", ".join(f"{n}: {self._mangle_name(n)}" for n in runtime_exports)
             self._writeln(f"return {{{attrs}}};" if attrs else "return {};")
@@ -1554,7 +1586,7 @@ class JSCompiler(BaseCompiler):
                 part += f" = {self._compile_expr(p.default_value)}"
             param_parts.append(part)
         params = ", ".join(param_parts)
-        func_name = self._mangle_name(defn.name)
+        func_name = self._mangle_name(self._function_name_override or defn.name)
         async_prefix = "async " if is_async_execution_form(defn) else ""
         if self._emit_function_assignments:
             self._writeln(
@@ -1641,6 +1673,32 @@ class JSCompiler(BaseCompiler):
 
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
+
+    def _compile_specializations(self, defn: FunctionDef) -> None:
+        """Emit each planned Float-dependent copy of a generic function."""
+        if not defn.type_params:
+            return
+        for spec in self._spec_plan.specializations(self._current_module, defn.name):
+            previous = (self._type_subst, self._function_name_override)
+            self._type_subst = spec.subst
+            self._function_name_override = spec.export_name
+            try:
+                self._compile_function_def(defn)
+            finally:
+                self._type_subst, self._function_name_override = previous
+
+    def _specialized_name(self, expr: Expression) -> str | None:
+        """Name of the generic function copy *expr* refers to, if not the base."""
+        instance = getattr(expr, "_generic_instance", None)
+        if instance is None:
+            return None
+        return self._spec_plan.lookup(instance, self._type_subst, self._current_module)
+
+    def _static_type(self, type_: Type | None) -> Type | None:
+        """A static type with the current copy's type arguments substituted."""
+        if type_ is None or not self._type_subst:
+            return type_
+        return substitute_type_params(type_, self._type_subst)
 
     # =========================================================================
     # Statements
@@ -1983,7 +2041,10 @@ class JSCompiler(BaseCompiler):
         active_user_types: frozenset[UserType] = frozenset(),
         seen_ref: str | None = None,
     ) -> str:
-        if resolved_type is None or isinstance(resolved_type, (AnyType, TypeVar)):
+        resolved_type = self._static_type(resolved_type)
+        if resolved_type is None or isinstance(
+            resolved_type, (AnyType, TypeVar, TypeParam)
+        ):
             return self._compile_runtime_formatted_value(
                 value_ref, mode=mode, top_level=top_level, seen_ref=seen_ref
             )
@@ -2205,7 +2266,10 @@ class JSCompiler(BaseCompiler):
     def _compile_json_object_key_value(
         self, value_ref: str, resolved_type: Type | None
     ) -> str | None:
-        if resolved_type is None or isinstance(resolved_type, (AnyType, TypeVar)):
+        resolved_type = self._static_type(resolved_type)
+        if resolved_type is None or isinstance(
+            resolved_type, (AnyType, TypeVar, TypeParam)
+        ):
             return None
 
         if isinstance(resolved_type, AsyncType):
@@ -2331,7 +2395,10 @@ class JSCompiler(BaseCompiler):
         resolved_type: Type | None,
         active_user_types: frozenset[str] = frozenset(),
     ) -> str | None:
-        if resolved_type is None or isinstance(resolved_type, (AnyType, TypeVar)):
+        resolved_type = self._static_type(resolved_type)
+        if resolved_type is None or isinstance(
+            resolved_type, (AnyType, TypeVar, TypeParam)
+        ):
             return None
 
         if isinstance(resolved_type, AsyncType):
@@ -2814,6 +2881,9 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     "First-class divide requires a concrete Int or Float function type"
                 )
+            specialized = self._specialized_name(expr)
+            if specialized is not None:
+                return self._compiled_identifier_name(specialized)
             return self._compiled_identifier_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
@@ -2846,7 +2916,8 @@ class JSCompiler(BaseCompiler):
 
         if isinstance(expr, FieldAccess):
             target = self._compile_expr(expr.target)
-            return f"get_field({target}, {expr.field_name!r})"
+            field_name = self._specialized_name(expr) or expr.field_name
+            return f"get_field({target}, {field_name!r})"
 
         if isinstance(expr, Pipeline):
             return self._compile_pipeline(expr)
@@ -3617,7 +3688,10 @@ def generate_dts(program: Program) -> str:
             )
             ret = _geno_type_to_ts(defn.return_type)
             mangled = JSCompiler._mangle_name(defn.name)
-            lines.append(f"export declare function {mangled}({params}): {ret};")
+            generics = f"<{', '.join(defn.type_params)}>" if defn.type_params else ""
+            lines.append(
+                f"export declare function {mangled}{generics}({params}): {ret};"
+            )
             lines.append("")
 
     return "\n".join(lines) + "\n" if lines else ""
