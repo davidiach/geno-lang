@@ -567,9 +567,17 @@ let evens: List[Int] = [x for x: Int in nums if x % 2 == 0]  // [2, 4]
 ```geno
 let ages = {"ada": 36, "alan": 41}
 let empty: Map[String, Int] = {}
-let more = ages.insert("grace", 85)
+let more = ages.insert(key: "grace", value: 85)
 let maybe: Option[Int] = more.get("grace")  // Some(85)
+let known = more.contains_key("ada")        // true
+let fewer = more.remove("alan")             // a new map without "alan"
+let names = more.keys()                     // ["ada", "alan", "grace"]
+let size = more.length()                    // 3
 ```
+
+Every collection has `length()`. `xs.sort()` sorts in natural order and
+`xs.sort(fn(a, b) -> b - a)` with a comparator; `"hello".index_of("l")` is
+`Some(2)`.
 
 ### Mutable Collections
 

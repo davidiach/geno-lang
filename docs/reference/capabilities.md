@@ -174,12 +174,12 @@ These builtins are pure computation and require no capability grant:
 `list_filter`, `list_all`, `list_any`, `list_chunk`, `list_drop`,
 `list_enumerate`, `list_find`, `list_find_index`, `list_flatten`,
 `list_fold_right`, `list_group_by`, `list_intersperse`, `list_take`,
-`list_zip`
+`list_zip`, `list_get`, `list_first`, `list_last`
 
 **String operations:**
 `split`, `join`, `trim`, `to_lower`, `to_upper`, `split_once`, `starts_with`,
-`ends_with`, `replace`, `to_chars`, `sort_strings`, `contains_substring`,
-`repeat_string`, `substring`, `format`, `string_split`, `string_join`,
+`ends_with`, `replace`, `to_chars`, `substring`, `format`, `string_split`,
+`string_join`,
 `string_replace`, `string_to_upper`, `string_to_lower`, `string_starts_with`,
 `string_ends_with`, `string_contains`, `string_split_once`, `string_char_at`,
 `string_index_of`, `string_last_index_of`, `string_pad_left`,
@@ -188,7 +188,7 @@ These builtins are pure computation and require no capability grant:
 
 **Math operations:**
 `add`, `subtract`, `multiply`, `divide`, `sqrt`, `floor`, `ceil`, `round`,
-`max`, `clamp`, `abs`, `square`, `bit_or`, `math_abs`, `math_ceil`,
+`max`, `clamp`, `abs`, `bit_or`, `math_abs`, `math_ceil`,
 `math_clamp`, `math_cos`, `math_e`, `math_floor`, `math_log`, `math_max`,
 `math_min`, `math_pi`, `math_round`, `math_sin`, `math_sqrt`
 
@@ -197,15 +197,20 @@ These builtins are pure computation and require no capability grant:
 
 **Option operations:**
 `is_some`, `is_none`, `unwrap`, `unwrap_or`, `option_and_then`,
-`option_flatten`, `option_is_none`, `option_is_some`, `option_map`,
-`option_to_result`, `option_unwrap_or`
+`option_expect`, `option_flatten`, `option_is_none`, `option_is_some`,
+`option_map`, `option_to_result`, `option_unwrap_or`
 
 **Result operations:**
-`result_and_then`, `result_is_err`, `result_is_ok`, `result_map`,
-`result_map_err`, `result_to_option`, `result_unwrap_or`
+`result_and_then`, `result_expect`, `result_is_err`, `result_is_ok`,
+`result_map`, `result_map_err`, `result_to_option`, `result_unwrap`,
+`result_unwrap_or`
+
+**Errors:**
+`panic`
 
 **Map operations:**
-`map_insert`, `map_get`, `map_entries`, `map_filter_map`, `map_from_entries`,
+`map_insert`, `map_get`, `map_size`, `map_contains_key`, `map_remove`,
+`map_keys`, `map_values`, `map_entries`, `map_filter_map`, `map_from_entries`,
 `map_from_list`, `map_map_values`, `map_merge`
 
 **Path operations** (pure string manipulation):

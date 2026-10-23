@@ -9,7 +9,7 @@ func has_section(text: String, section: String) -> Bool
     example ("[server]\nport = 8080", "server") -> true
     example ("[server]\nport = 8080", "database") -> false
 
-    return contains_substring(text, "[" + section + "]")
+    return string_contains(text, "[" + section + "]")
 end func
 
 // Check that TOML text contains a required key assignment.
@@ -17,7 +17,7 @@ func has_key(text: String, key: String) -> Bool
     example ("port = 8080\nhost = \"localhost\"", "port") -> true
     example ("port = 8080", "host") -> false
 
-    return contains_substring(text, key + " = ") or contains_substring(text, key + "=")
+    return string_contains(text, key + " = ") or string_contains(text, key + "=")
 end func
 
 // Check for a required section, returning violations.

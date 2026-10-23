@@ -113,6 +113,7 @@ from .builtin_registry import (
 )
 from .js_runtime_prelude import JS_RUNTIME_PRELUDE
 from .manifest import validate_module_name
+from .stdlib_scope import binds_unqualified
 from .types import (
     AnyType,
     ArrayType,
@@ -1184,9 +1185,12 @@ class JSCompiler(BaseCompiler):
             for defn in program.definitions:
                 if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
+                imported_program = dep_graph.parsed.get(defn.module_name)
                 for export_name in module_runtime_exports.get(defn.module_name, []):
                     if export_name in own_local_names:
                         continue
+                    if not binds_unqualified(imported_program, export_name):
+                        continue  # see geno/stdlib_scope.py
                     if export_name in imported_runtime_names:
                         ambiguous_imported_names.add(export_name)
                     else:

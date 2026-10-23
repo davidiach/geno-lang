@@ -33,12 +33,12 @@ func process_code_spans(text: String) -> String
     example "`hello`" -> "<code>hello</code>"
     example "a `b` c" -> "a <code>b</code> c"
 
-    let start: Int = string_index_of(text, "`")
+    let start: Int = string_index_of(text, "`").unwrap_or(-1)
     if start < 0 then
         return text
     end if
     let after_open: String = substring(text: text, start: start + 1, stop: length(text))
-    let end_pos: Int = string_index_of(after_open, "`")
+    let end_pos: Int = string_index_of(after_open, "`").unwrap_or(-1)
     if end_pos < 0 then
         return text
     end if
@@ -55,12 +55,12 @@ func process_bold(text: String) -> String
     example "a **b** c" -> "a <strong>b</strong> c"
     example "**a** and **b**" -> "<strong>a</strong> and <strong>b</strong>"
 
-    let start: Int = string_index_of(text, "**")
+    let start: Int = string_index_of(text, "**").unwrap_or(-1)
     if start < 0 then
         return text
     end if
     let after_open: String = substring(text: text, start: start + 2, stop: length(text))
-    let end_pos: Int = string_index_of(after_open, "**")
+    let end_pos: Int = string_index_of(after_open, "**").unwrap_or(-1)
     if end_pos < 0 then
         return text
     end if
@@ -77,12 +77,12 @@ func process_italic(text: String) -> String
     example "*hello*" -> "<em>hello</em>"
     example "a *b* c" -> "a <em>b</em> c"
 
-    let start: Int = string_index_of(text, "*")
+    let start: Int = string_index_of(text, "*").unwrap_or(-1)
     if start < 0 then
         return text
     end if
     let after_open: String = substring(text: text, start: start + 1, stop: length(text))
-    let end_pos: Int = string_index_of(after_open, "*")
+    let end_pos: Int = string_index_of(after_open, "*").unwrap_or(-1)
     if end_pos < 0 then
         return text
     end if
@@ -97,18 +97,18 @@ func process_links(text: String) -> String
     example "no links" -> "no links"
     example "[hi](url)" -> "<a href=\"url\">hi</a>"
 
-    let bracket_pos: Int = string_index_of(text, "[")
+    let bracket_pos: Int = string_index_of(text, "[").unwrap_or(-1)
     if bracket_pos < 0 then
         return text
     end if
     let after_bracket: String = substring(text: text, start: bracket_pos + 1, stop: length(text))
-    let close_pos: Int = string_index_of(after_bracket, "](")
+    let close_pos: Int = string_index_of(after_bracket, "](").unwrap_or(-1)
     if close_pos < 0 then
         return text
     end if
     let link_text: String = substring(text: after_bracket, start: 0, stop: close_pos)
     let after_paren: String = substring(text: after_bracket, start: close_pos + 2, stop: length(after_bracket))
-    let paren_close: Int = string_index_of(after_paren, ")")
+    let paren_close: Int = string_index_of(after_paren, ")").unwrap_or(-1)
     if paren_close < 0 then
         return text
     end if

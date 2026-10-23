@@ -28,7 +28,7 @@ func has_json_key(text: String, key: String) -> Bool
     example ("{\"host\": \"localhost\"}", "host") -> true
     example ("{\"port\": 8080}", "name") -> false
 
-    return contains_substring(text, "\"" + key + "\"")
+    return string_contains(text, "\"" + key + "\"")
 end func
 
 // Validate a JSON config file. Returns list of violations.

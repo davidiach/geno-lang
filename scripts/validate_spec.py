@@ -159,7 +159,6 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "reverse",
             "slice",
             "set_at",
-            "is_sorted",
             "list_get",
             "list_first",
             "list_last",
@@ -197,12 +196,9 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "starts_with",
             "ends_with",
             "substring",
-            "contains_substring",
             "char_code",
             "from_char_code",
             "to_chars",
-            "repeat_string",
-            "sort_strings",
             "string_char_at",
             "split_once",
         )
@@ -237,7 +233,6 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
         "parsing": _require_direct_builtin_names(
             "parse_int",
             "parse_float",
-            "is_numeric_string",
             "format",
         ),
         "option_result": _require_direct_builtin_names(
@@ -261,6 +256,11 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "map_merge",
             "map_entries",
             "map_from_entries",
+            "map_size",
+            "map_contains_key",
+            "map_remove",
+            "map_keys",
+            "map_values",
         ),
         "array": _require_direct_builtin_names(
             "array_new",

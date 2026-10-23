@@ -674,7 +674,7 @@ class TestSelfhostBuiltinAliases:
             import Types
 
             func has_builtin(cs: CheckerState, name: String, params: List[String]) -> Bool
-                example (make_checker_with_filename("x.geno"), "repeat_string", ["text", "count"]) -> true
+                example (make_checker_with_filename("x.geno"), "string_repeat", ["text", "count"]) -> true
                 let type_opt: Option[GType] = type_env_lookup(cs.global_env, name)
                 let params_opt: Option[List[String]] = mutable_map_get(map: cs.func_params, key: name)
                 match type_opt with
@@ -703,11 +703,16 @@ class TestSelfhostBuiltinAliases:
                 end match
             end func as_int_value
 
+            func option_int(v: Value) -> Int
+                example IntVal(1) -> -1
+                match v with
+                    | CtorVal("Some", [ValueField(_, IntVal(n))]) -> return n
+                    | _ -> return -1
+                end match
+            end func option_int
+
             func main() -> Bool
                 let cs: CheckerState = make_checker_with_filename("PureStringBuiltins.geno")
-                if not has_builtin(cs: cs, name: "repeat_string", params: ["text", "count"]) then
-                    return false
-                end if
                 if not has_builtin(cs: cs, name: "string_repeat", params: ["text", "count"]) then
                     return false
                 end if
@@ -719,7 +724,7 @@ class TestSelfhostBuiltinAliases:
                 end if
 
                 let st: InterpState = make_interp_state_with_filename("PureStringBuiltins.geno")
-                let repeated: Value = call_function(st: st, func_val: BuiltinVal("repeat_string"), call_args: [StringVal("ab"), IntVal(3)], env: st.global_env)
+                let repeated: Value = call_function(st: st, func_val: BuiltinVal("string_repeat"), call_args: [StringVal("ab"), IntVal(3)], env: st.global_env)
                 let namespaced_repeated: Value = call_function(st: st, func_val: BuiltinVal("string_repeat"), call_args: [StringVal("x"), IntVal(3)], env: st.global_env)
                 let empty_repeated: Value = call_function(st: st, func_val: BuiltinVal("string_repeat"), call_args: [StringVal(""), IntVal(1000000000)], env: st.global_env)
                 let char_at: Value = call_function(st: st, func_val: BuiltinVal("string_char_at"), call_args: [StringVal("hello"), IntVal(1)], env: st.global_env)
@@ -738,10 +743,10 @@ class TestSelfhostBuiltinAliases:
                     and as_string(char_at) == "e"
                     and as_string(missing_char) == ""
                     and as_string(negative_char) == ""
-                    and as_int_value(first_index) == 6
-                    and as_int_value(missing_index) == -1
-                    and as_int_value(last_index) == 4
-                    and as_int_value(empty_last_index) == 3
+                    and option_int(first_index) == 6
+                    and option_int(missing_index) == -1
+                    and option_int(last_index) == 4
+                    and option_int(empty_last_index) == 3
                     and as_string(padded_left) == "00hi"
                     and as_string(padded_right) == "hi.."
             end func main

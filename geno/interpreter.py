@@ -100,6 +100,7 @@ from .sandbox import (
     StepLimitExceeded,
 )
 from .sandbox import TimeoutError as SandboxTimeout
+from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
 from .types import FloatType
 
@@ -192,7 +193,6 @@ _COLLECTION_LIMITED_BUILTINS = frozenset(
         "range",
         "format",
         "to_string",
-        "repeat_string",
         "string_pad_left",
         "string_pad_right",
         "string_repeat",
@@ -219,6 +219,8 @@ _COLLECTION_LIMITED_BUILTINS = frozenset(
         "map_insert",
         "map_merge",
         "map_entries",
+        "map_keys",
+        "map_values",
         "map_from_entries",
         "set_from_list",
         "set_add",
@@ -655,7 +657,7 @@ class Interpreter:
             ("contains", _builtins.builtin_contains, 2, ["list", "element"]),
             ("take_while", self._builtin_take_while, 2, ["list", "predicate"]),
             ("all", self._builtin_all, 2, ["list", "predicate"]),
-            ("sort", self._builtin_sort, 2, ["list", "comparator"]),
+            ("sort", self._builtin_sort, -1, ["list", "comparator"]),
             ("sort_by", self._builtin_sort_by, 2, ["list", "key_fn"]),
             ("zip", _builtins.builtin_zip, 2, ["list1", "list2"]),
             ("enumerate", _builtins.builtin_enumerate, 1, ["list"]),
@@ -671,14 +673,6 @@ class Interpreter:
             ("split_once", _builtins.builtin_split_once, 2, ["text", "delimiter"]),
             ("starts_with", _builtins.builtin_starts_with, 2, ["text", "prefix"]),
             ("to_chars", _builtins.builtin_to_chars, 1, ["text"]),
-            ("sort_strings", _builtins.builtin_sort_strings, 1, ["items"]),
-            (
-                "contains_substring",
-                _builtins.builtin_contains_substring,
-                2,
-                ["text", "substring"],
-            ),
-            ("repeat_string", _builtins.builtin_repeat_string, 2, ["text", "count"]),
             ("string_trim", _builtins.builtin_string_trim, 1, ["text"]),
             ("string_trim_start", _builtins.builtin_string_trim_start, 1, ["text"]),
             ("string_trim_end", _builtins.builtin_string_trim_end, 1, ["text"]),
@@ -884,12 +878,7 @@ class Interpreter:
             ("max", _builtins.builtin_max, 2, ["a", "b"]),
             ("clamp", _builtins.builtin_clamp, 3, ["value", "min", "max"]),
             ("abs", lambda x: abs(x), 1, ["value"]),
-            ("square", lambda x: x * x, 1, ["value"]),
             # Type predicates
-            ("is_sorted", _builtins.builtin_is_sorted, 1, ["list"]),
-            ("is_positive", lambda x: x > 0, 1, ["value"]),
-            ("is_numeric_string", _builtins.builtin_is_numeric_string, 1, ["text"]),
-            ("is_permutation", _builtins.builtin_is_permutation, 2, ["list1", "list2"]),
             # Conversions
             ("parse_int", _builtins.builtin_parse_int, 1, ["text"]),
             ("parse_float", _builtins.builtin_parse_float, 1, ["text"]),
@@ -920,6 +909,11 @@ class Interpreter:
             # Map operations
             ("map_insert", _builtins.builtin_map_insert, 3, ["map", "key", "value"]),
             ("map_get", _builtins.builtin_map_get, 2, ["map", "key"]),
+            ("map_size", _builtins.builtin_map_size, 1, ["map"]),
+            ("map_contains_key", _builtins.builtin_map_contains_key, 2, ["map", "key"]),
+            ("map_remove", _builtins.builtin_map_remove, 2, ["map", "key"]),
+            ("map_keys", _builtins.builtin_map_keys, 1, ["map"]),
+            ("map_values", _builtins.builtin_map_values, 1, ["map"]),
             # IO (for REPL)
             ("print", self._builtin_print, 1, ["value"]),
             # Clock / random
@@ -1364,9 +1358,11 @@ class Interpreter:
             return self._call_function(f, [option.fields["value"]])
         return ConstructorValue("None", {})
 
-    def _builtin_sort(self, lst: Any, cmp: Any) -> list:
+    def _builtin_sort(self, lst: Any, cmp: Any = None) -> list:
         if not isinstance(lst, list):
             raise RuntimeError(f"sort expects list, got {type(lst).__name__}")
+        if cmp is None:
+            return sorted(lst, key=_builtins._geno_sort_key)
         import functools
 
         def comparator(a, b):
@@ -1683,6 +1679,8 @@ class Interpreter:
         import_env.bind(ns_name, _ModuleNamespace(ns_name, dict(module_ns)))
         if import_stmt.alias is None:
             for func_name, closure in module_ns.items():
+                if not binds_unqualified(module_functions[func_name], func_name):
+                    continue  # see geno/stdlib_scope.py
                 self.functions[func_name] = module_functions[func_name]
                 self._function_closures[func_name] = closure
                 import_env.bind(func_name, closure)

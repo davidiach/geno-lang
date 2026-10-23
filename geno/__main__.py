@@ -50,6 +50,7 @@ from .execution_limits import (
 # re-exports for existing callers (tests, scripts).
 _LAZY_REEXPORTS = {
     "format_files": "geno._cli_format",
+    "migrate_files": "geno.cli.migrate",
     "build_app": "geno.cli.build",
     "bundle_project": "geno.cli.build",
     "check_file": "geno.cli.check",
@@ -424,6 +425,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show diff without modifying files",
     )
 
+    # Migrate command
+    migrate_parser = subparsers.add_parser(
+        "migrate", help="Rewrite Geno 0.5 source for Geno 0.6"
+    )
+    migrate_parser.add_argument(
+        "path", nargs="?", default=".", help="File or directory (default: .)"
+    )
+    migrate_mode = migrate_parser.add_mutually_exclusive_group()
+    migrate_mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Report without modifying (exit 1 if anything needs migrating)",
+    )
+    migrate_mode.add_argument(
+        "--diff",
+        action="store_true",
+        help="Show the rewrites as a diff without modifying files",
+    )
+
     # Package manager commands
     subparsers.add_parser("install", help="Install dependencies from geno.toml")
 
@@ -679,6 +699,9 @@ def dispatch_args(
     elif args.command == "fmt":
         format_files = _command("format_files")
         format_files(args.path, check=args.check, diff=args.diff)
+    elif args.command == "migrate":
+        migrate_files = _command("migrate_files")
+        migrate_files(args.path, check=args.check, diff=args.diff)
     elif args.command == "dev":
         dev_server = _command("dev_server")
         dev_server(

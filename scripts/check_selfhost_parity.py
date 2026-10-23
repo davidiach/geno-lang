@@ -125,6 +125,11 @@ def get_selfhost_builtins() -> set[str]:
 SELFHOST_BUILTIN_GAP_GROUPS = {
     "pure_collection_next": {
         "enumerate",
+        "map_contains_key",
+        "map_keys",
+        "map_remove",
+        "map_size",
+        "map_values",
         "list_first",
         "list_get",
         "list_last",

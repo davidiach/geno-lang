@@ -48,9 +48,6 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "split_once": (["text", "delimiter"], None),
     "starts_with": (["text", "prefix"], None),
     "to_chars": (["text"], None),
-    "sort_strings": (["items"], None),
-    "contains_substring": (["text", "substring"], None),
-    "repeat_string": (["text", "count"], None),
     # --- Stdlib string wrappers (always available) -------------------------
     "string_trim": (["text"], None),
     "string_trim_start": (["text"], None),
@@ -162,12 +159,7 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "max": (["a", "b"], None),
     "clamp": (["value", "min", "max"], None),
     "abs": (["value"], None),
-    "square": (["value"], None),
     # --- Type predicates (always available) --------------------------------
-    "is_sorted": (["list"], None),
-    "is_positive": (["value"], None),
-    "is_numeric_string": (["text"], None),
-    "is_permutation": (["list1", "list2"], None),
     # --- Conversions (always available) ------------------------------------
     "parse_int": (["text"], None),
     "parse_float": (["text"], None),
@@ -193,6 +185,11 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     # --- Map operations (always available) ---------------------------------
     "map_insert": (["map", "key", "value"], None),
     "map_get": (["map", "key"], None),
+    "map_size": (["map"], None),
+    "map_contains_key": (["map", "key"], None),
+    "map_remove": (["map", "key"], None),
+    "map_keys": (["map"], None),
+    "map_values": (["map"], None),
     # --- IO (gated by print) -----------------------------------------------
     "print_": (["value"], "print"),
     # --- Array operations (always available) --------------------------------

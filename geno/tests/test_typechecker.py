@@ -315,7 +315,6 @@ class TestTypecheckerArithmetic:
             'clamp(value: "b", min: "a", max: "c")',
             'max("a", "b")',
             'abs("x")',
-            'square("x")',
         ],
     )
     def test_numeric_typevar_builtins_reject_non_numeric_arguments(self, expr):

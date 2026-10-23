@@ -464,7 +464,7 @@ class TestJSCompilerArithmetic:
             """,
             """
             func main() -> Int
-                return string_index_of("abc", "c")
+                return string_index_of("abc", "c").unwrap_or(-1)
             end func
             """,
             """
@@ -1386,17 +1386,6 @@ class TestJSCompilerBuiltins:
         """
         assert compile_and_run_js(source) == "3"
 
-    def test_is_permutation_uses_structural_equality(self):
-        source = """
-        func main() -> Unit
-            print(is_permutation([1, 2, 1], [2, 1, 1]))
-            print(is_permutation([Some(1), None], [None, Some(1)]))
-            print(is_permutation([Some(1), Some(1)], [Some(1), None]))
-            return ()
-        end func
-        """
-        assert compile_and_run_js(source) == "true\ntrue\nfalse"
-
     def test_list_pair_builtins_return_tuples(self):
         source = """
         func main() -> Int
@@ -1698,7 +1687,7 @@ class TestJSCompilerBuiltins:
         source = """
         func main() -> Int
             let s: String = from_char_code(128512) + "xy" + from_char_code(128512)
-            return (string_index_of(text: s, substring: "x") * 10) + string_last_index_of(text: s, substring: from_char_code(128512))
+            return (string_index_of(text: s, substring: "x").unwrap_or(-1) * 10) + string_last_index_of(text: s, substring: from_char_code(128512)).unwrap_or(-1)
         end func
         """
         assert compile_and_run_js(source) == "13"
@@ -1711,10 +1700,10 @@ class TestJSCompilerBuiltins:
         """
         assert compile_and_run_js(source) == '["a", "b", "c"]'
 
-    def test_sort_strings(self):
+    def test_sort_without_comparator(self):
         source = """
         func main() -> List[String]
-            return sort_strings(["c", "a", "b"])
+            return sort(["c", "a", "b"])
         end func
         """
         assert compile_and_run_js(source) == '["a", "b", "c"]'
@@ -1835,14 +1824,6 @@ class TestJSCompilerMath:
         """
         assert compile_and_run_js(source) == "5"
 
-    def test_square(self):
-        source = """
-        func main() -> Int
-            return square(7)
-        end func
-        """
-        assert compile_and_run_js(source) == "49"
-
 
 class TestJSCompilerConversions:
     def test_parse_int_valid(self):
@@ -1872,7 +1853,7 @@ class TestJSCompilerConversions:
     def test_parse_int_overlong_input_raises(self):
         source = """
         func main() -> String
-            match parse_int(repeat_string("1", 1001)) with
+            match parse_int(string_repeat("1", 1001)) with
                 | Some(v) -> return "some"
                 | None -> return "none"
             end match
@@ -1884,7 +1865,7 @@ class TestJSCompilerConversions:
     def test_parse_float_overlong_input_raises(self):
         source = """
         func main() -> String
-            match parse_float(repeat_string("1", 1001)) with
+            match parse_float(string_repeat("1", 1001)) with
                 | Some(v) -> return "some"
                 | None -> return "none"
             end match

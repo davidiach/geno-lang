@@ -201,7 +201,6 @@
       {"name": "drop", "signature": "(list: List[T], count: Int) -> List[T]"},
       {"name": "find", "signature": "(list: List[T], predicate: (T) -> Bool) -> Option[T]"},
       {"name": "find_index", "signature": "(list: List[T], predicate: (T) -> Bool) -> Option[Int]"},
-      {"name": "is_sorted", "signature": "(list: List[Int]) -> Bool"},
       {"name": "all", "signature": "(list: List[T], predicate: (T) -> Bool) -> Bool"},
       {"name": "any", "signature": "(list: List[T], predicate: (T) -> Bool) -> Bool"},
       {"name": "intersperse", "signature": "(list: List[T], separator: T) -> List[T]"},
@@ -225,19 +224,16 @@
       {"name": "starts_with", "signature": "(text: String, prefix: String) -> Bool"},
       {"name": "ends_with", "signature": "(text: String, suffix: String) -> Bool"},
       {"name": "substring", "signature": "(text: String, start: Int, stop: Int) -> String"},
-      {"name": "contains_substring", "signature": "(text: String, substring: String) -> Bool"},
       {"name": "char_code", "signature": "(text: String) -> Int"},
       {"name": "from_char_code", "signature": "(code: Int) -> String"},
       {"name": "to_chars", "signature": "(text: String) -> List[String]"},
-      {"name": "repeat_string", "signature": "(text: String, count: Int) -> String"},
       {"name": "trim_start", "signature": "(text: String) -> String"},
       {"name": "trim_end", "signature": "(text: String) -> String"},
       {"name": "pad_left", "signature": "(text: String, width: Int, fill_char: String) -> String"},
       {"name": "pad_right", "signature": "(text: String, width: Int, fill_char: String) -> String"},
-      {"name": "index_of", "signature": "(text: String, substring: String) -> Int"},
-      {"name": "last_index_of", "signature": "(text: String, substring: String) -> Int"},
+      {"name": "index_of", "signature": "(text: String, substring: String) -> Option[Int]"},
+      {"name": "last_index_of", "signature": "(text: String, substring: String) -> Option[Int]"},
       {"name": "string_char_at", "signature": "(text: String, index: Int) -> String"},
-      {"name": "sort_strings", "signature": "(items: List[String]) -> List[String]"},
       {"name": "split_once", "signature": "(text: String, delimiter: String) -> Option[(String, String)]"}
     ],
     "math": [
@@ -262,7 +258,6 @@
     "parsing": [
       {"name": "parse_int", "signature": "(text: String) -> Option[Int]"},
       {"name": "parse_float", "signature": "(text: String) -> Option[Float]"},
-      {"name": "is_numeric_string", "signature": "(text: String) -> Bool"},
       {"name": "format", "signature": "(template: String, values: List[String]) -> String"}
     ],
     "option_result": [
@@ -285,7 +280,12 @@
       {"name": "map_from_list", "signature": "(pairs: List[(K, V)]) -> Map[K, V]"},
       {"name": "map_merge", "signature": "(map1: Map[K, V], map2: Map[K, V]) -> Map[K, V]"},
       {"name": "map_entries", "signature": "(map: Map[K, V]) -> List[(K, V)]"},
-      {"name": "map_from_entries", "signature": "(entries: List[(K, V)]) -> Map[K, V]"}
+      {"name": "map_from_entries", "signature": "(entries: List[(K, V)]) -> Map[K, V]"},
+      {"name": "map_size", "signature": "(map: Map[K, V]) -> Int"},
+      {"name": "map_contains_key", "signature": "(map: Map[K, V], key: K) -> Bool"},
+      {"name": "map_remove", "signature": "(map: Map[K, V], key: K) -> Map[K, V]"},
+      {"name": "map_keys", "signature": "(map: Map[K, V]) -> List[K]"},
+      {"name": "map_values", "signature": "(map: Map[K, V]) -> List[V]"}
     ],
     "array": [
       {"name": "array_new", "signature": "(size: Int, default: T) -> Array[T]"},

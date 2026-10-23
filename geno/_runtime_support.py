@@ -663,7 +663,9 @@ def all_(lst: list, pred: Callable) -> bool:
     return all(pred(x) for x in lst)
 
 
-def sort(lst: list, cmp: Callable) -> list:
+def sort(lst: list, cmp: Callable | None = None) -> list:
+    if cmp is None:
+        return sorted(lst, key=_geno_sort_key)
     return sorted(lst, key=cmp_to_key(cmp))
 
 
@@ -725,14 +727,6 @@ def to_chars(s: str) -> list:
     return result
 
 
-def sort_strings(values: list) -> list:
-    if len(values) > 100_000:
-        raise RuntimeError("sort_strings: list too large (max 100,000 elements)")
-    if not all(isinstance(v, str) for v in values):
-        raise RuntimeError("sort_strings expects a list of strings")
-    return sorted(values)
-
-
 def divide(a: Any, b: Any) -> Any:
     if b == 0:
         raise RuntimeError("Division by zero")
@@ -770,39 +764,6 @@ def _widen_mixed(result: Any, a: Any, b: Any) -> Any:
 
 def max_(a: Any, b: Any) -> Any:
     return _widen_mixed(a if a >= b else b, a, b)
-
-
-def is_sorted(lst: list) -> bool:
-    return all(lst[i] <= lst[i + 1] for i in range(len(lst) - 1))
-
-
-def is_positive(x: Any) -> bool:
-    return bool(x > 0)
-
-
-def is_numeric_string(s: Any) -> bool:
-    if not isinstance(s, str):
-        return False
-    return _DECIMAL_INT_RE.fullmatch(s.strip()) is not None
-
-
-def is_permutation(lst1: list, lst2: list) -> bool:
-    if len(lst1) > 100_000 or len(lst2) > 100_000:
-        raise RuntimeError("is_permutation: list too large (max 100,000 elements)")
-    if len(lst1) != len(lst2):
-        return False
-    try:
-        return sorted(lst1) == sorted(lst2)
-    except TypeError:
-        used = [False] * len(lst2)
-        for left in lst1:
-            for index, right in enumerate(lst2):
-                if not used[index] and left == right:
-                    used[index] = True
-                    break
-            else:
-                return False
-        return True
 
 
 def parse_int(s: str) -> Any:
@@ -895,10 +856,6 @@ def to_string(x: Any) -> str:
     result = _geno_format(x)
     _check_string_result_size("to_string", len(result))
     return result
-
-
-def square(x: Any) -> Any:
-    return x * x
 
 
 def add(a: Any, b: Any) -> Any:
@@ -1020,6 +977,28 @@ def map_insert(m: dict[Any, Any], key: Any, value: Any) -> dict[Any, Any]:
     new_map = dict(m)
     new_map[key] = value
     return new_map
+
+
+def map_size(m: dict[Any, Any]) -> int:
+    return len(m)
+
+
+def map_contains_key(m: dict[Any, Any], key: Any) -> bool:
+    return key in m
+
+
+def map_remove(m: dict[Any, Any], key: Any) -> dict[Any, Any]:
+    return {k: v for k, v in m.items() if k != key}
+
+
+def map_keys(m: dict[Any, Any]) -> list[Any]:
+    _check_collection_kind("List", len(m))
+    return list(m.keys())
+
+
+def map_values(m: dict[Any, Any]) -> list[Any]:
+    _check_collection_kind("List", len(m))
+    return list(m.values())
 
 
 def map_get(m: dict[Any, Any], key: Any) -> Any:
@@ -3213,20 +3192,6 @@ def flat_map(lst, fn):
     return result
 
 
-def contains_substring(text, substring):
-    """Check if a string contains a substring."""
-    return substring in text
-
-
-def repeat_string(text, count):
-    """Repeat a string a given number of times."""
-    if count < 0:
-        raise RuntimeError("repeat_string: count must be non-negative")
-    if len(text) * count > _MAX_COLLECTION_SIZE:
-        raise RuntimeError("repeat_string: result would exceed collection size limit")
-    return text * count
-
-
 def string_trim(text):
     return text.strip()
 
@@ -3264,12 +3229,18 @@ def string_char_at(text, index):
     return text[index]
 
 
-def string_index_of(text, sub):
-    return _require_safe_js_int(text.find(sub), "string_index_of result")
+def string_index_of(text: str, sub: str) -> Any:
+    index = text.find(sub)
+    if index < 0:
+        return None_
+    return Some(_require_safe_js_int(index, "string_index_of result"))
 
 
-def string_last_index_of(text, sub):
-    return _require_safe_js_int(text.rfind(sub), "string_last_index_of result")
+def string_last_index_of(text: str, sub: str) -> Any:
+    index = text.rfind(sub)
+    if index < 0:
+        return None_
+    return Some(_require_safe_js_int(index, "string_last_index_of result"))
 
 
 def string_repeat(text, count):

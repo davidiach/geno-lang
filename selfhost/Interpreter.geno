@@ -535,11 +535,8 @@ func init_builtins(st: InterpState) -> Unit
     reg_builtin(st: st, name: "split_once", params: ["text", "delimiter"])
     reg_builtin(st: st, name: "starts_with", params: ["text", "prefix"])
     reg_builtin(st: st, name: "ends_with", params: ["text", "suffix"])
-    reg_builtin(st: st, name: "contains_substring", params: ["text", "substring"])
     reg_builtin(st: st, name: "to_chars", params: ["text"])
-    reg_builtin(st: st, name: "sort_strings", params: ["items"])
     reg_builtin(st: st, name: "substring", params: ["text", "start", "stop"])
-    reg_builtin(st: st, name: "repeat_string", params: ["text", "count"])
     // Namespaced string operations
     reg_builtin(st: st, name: "string_trim", params: ["text"])
     reg_builtin(st: st, name: "string_trim_start", params: ["text"])
@@ -570,12 +567,7 @@ func init_builtins(st: InterpState) -> Unit
     reg_builtin(st: st, name: "abs", params: ["value"])
     reg_builtin(st: st, name: "math_abs", params: ["value"])
     reg_builtin(st: st, name: "math_max", params: ["a", "b"])
-    reg_builtin(st: st, name: "square", params: ["value"])
     // Predicates
-    reg_builtin(st: st, name: "is_sorted", params: ["list"])
-    reg_builtin(st: st, name: "is_positive", params: ["value"])
-    reg_builtin(st: st, name: "is_numeric_string", params: ["text"])
-    reg_builtin(st: st, name: "is_permutation", params: ["list1", "list2"])
     // Conversions
     reg_builtin(st: st, name: "parse_int", params: ["text"])
     reg_builtin(st: st, name: "to_string", params: ["value"])
@@ -795,68 +787,6 @@ func list_reverse_acc(items: List[Value], acc: List[Value]) -> List[Value]
     end if
     return list_reverse_acc(tail(items), concat([head(items)], acc))
 end func list_reverse_acc
-
-// Check if a list of IntVals is sorted.
-func list_is_sorted(items: List[Value]) -> Bool
-    example [] -> true
-    if length(items) <= 1 then
-        return true
-    end if
-    let a: Int = as_int(head(items))
-    let rest: List[Value] = tail(items)
-    let b: Int = as_int(head(rest))
-    if a > b then
-        return false
-    end if
-    return list_is_sorted(rest)
-end func list_is_sorted
-
-// Check if one list is a permutation of another.
-func list_is_permutation(a: List[Value], b: List[Value]) -> Bool
-    example ([], []) -> true
-    if length(a) != length(b) then
-        return false
-    end if
-    return perm_check_all(a, b)
-end func list_is_permutation
-
-func perm_check_all(a: List[Value], b: List[Value]) -> Bool
-    example ([], []) -> true
-    if length(a) == 0 then
-        return true
-    end if
-    let v: Value = head(a)
-    if not list_contains(b, v) then
-        return false
-    end if
-    return perm_check_all(tail(a), b)
-end func perm_check_all
-
-// Check if a string is numeric.
-func str_is_numeric(s: String) -> Bool
-    example "123" -> true
-    if length(s) == 0 then
-        return false
-    end if
-    let chars: List[String] = to_chars(s)
-    return chars_all_digits(chars)
-end func str_is_numeric
-
-func chars_all_digits(chars: List[String]) -> Bool
-    example [] -> true
-    if length(chars) == 0 then
-        return true
-    end if
-    let c: String = head(chars)
-    let code: Int = char_code(c)
-    if code < 48 then
-        return false
-    end if
-    if code > 57 then
-        return false
-    end if
-    return chars_all_digits(tail(chars))
-end func chars_all_digits
 
 // Build an array Vec filled with n copies of a default value.
 func build_array_vec(n: Int, default_val: Value, v: Vec[Value], idx: Int) -> Vec[Value]
@@ -1086,23 +1016,16 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         return BoolVal(ends_with(text, suffix))
     end if
 
-    if name == "contains_substring" or name == "string_contains" then
+    if name == "string_contains" then
         let text: String = as_str(head(args))
         let sub: String = as_str(head(tail(args)))
-        return BoolVal(contains_substring(text, sub))
+        return BoolVal(string_contains(text, sub))
     end if
 
     if name == "to_chars" then
         let text: String = as_str(head(args))
         let chars: List[String] = to_chars(text)
         return ListVal(strs_to_val_list(chars))
-    end if
-
-    if name == "sort_strings" then
-        let items: List[Value] = as_list(head(args))
-        let strs: List[String] = val_list_to_strs(items)
-        let sorted: List[String] = sort_strings(strs)
-        return ListVal(strs_to_val_list(sorted))
     end if
 
     if name == "substring" or name == "string_substring" then
@@ -1112,7 +1035,7 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         return StringVal(substring(text: text, start: start, stop: stop))
     end if
 
-    if name == "repeat_string" or name == "string_repeat" then
+    if name == "string_repeat" then
         let text: String = as_str(head(args))
         let count: Int = as_int(head(tail(args)))
         if count < 0 then
@@ -1139,13 +1062,13 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "string_index_of" then
         let text: String = as_str(head(args))
         let sub: String = as_str(head(tail(args)))
-        return IntVal(selfhost_index_of(text: text, sub: sub))
+        return index_option(selfhost_index_of(text: text, sub: sub))
     end if
 
     if name == "string_last_index_of" then
         let text: String = as_str(head(args))
         let sub: String = as_str(head(tail(args)))
-        return IntVal(selfhost_last_index_of(text: text, sub: sub))
+        return index_option(selfhost_last_index_of(text: text, sub: sub))
     end if
 
     if name == "string_pad_left" or name == "string_pad_right" then
@@ -1224,31 +1147,6 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
             return IntVal(0 - n)
         end if
         return IntVal(n)
-    end if
-
-    if name == "square" then
-        let n: Int = as_int(head(args))
-        return IntVal(n * n)
-    end if
-
-    // ---- Type predicates ----
-    if name == "is_sorted" then
-        let items: List[Value] = as_list(head(args))
-        return BoolVal(list_is_sorted(items))
-    end if
-
-    if name == "is_positive" then
-        return BoolVal(as_int(head(args)) > 0)
-    end if
-
-    if name == "is_numeric_string" then
-        return BoolVal(str_is_numeric(as_str(head(args))))
-    end if
-
-    if name == "is_permutation" then
-        let a: List[Value] = as_list(head(args))
-        let b: List[Value] = as_list(head(tail(args)))
-        return BoolVal(list_is_permutation(a, b))
     end if
 
     // ---- Conversions ----
@@ -1682,6 +1580,15 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     return rt_error(st, "Unknown builtin: " + name)
 end func dispatch_builtin
 
+// string_index_of and string_last_index_of return Option[Int] (proposal 0010).
+func index_option(index: Int) -> Value
+    example -1 -> CtorVal("None", [])
+    if index < 0 then
+        return CtorVal("None", [])
+    end if
+    return CtorVal("Some", [ValueField("value", IntVal(index))])
+end func index_option
+
 func selfhost_max_collection_size(dummy: Int) -> Int
     example 0 -> 10000000
     return 10000000
@@ -1801,7 +1708,7 @@ end func copy_vec_elems
 
 // filter: keep items where predicate returns true.
 func builtin_filter(st: InterpState, items: List[Value], pred: Value, env: Env) -> List[Value]
-    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_some"), Env(mutable_map_new(), None, mutable_map_new())) -> []
     if interp_has_error(st) then
         return []
     end if
@@ -1848,7 +1755,7 @@ end func builtin_fold
 
 // take_while: take items while predicate is true.
 func builtin_take_while(st: InterpState, items: List[Value], pred: Value, env: Env) -> List[Value]
-    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_some"), Env(mutable_map_new(), None, mutable_map_new())) -> []
     if interp_has_error(st) then
         return []
     end if
@@ -1865,7 +1772,7 @@ end func builtin_take_while
 
 // all: check if all items satisfy predicate.
 func builtin_all(st: InterpState, items: List[Value], pred: Value, env: Env) -> Bool
-    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> true
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_some"), Env(mutable_map_new(), None, mutable_map_new())) -> true
     if interp_has_error(st) then
         return false
     end if

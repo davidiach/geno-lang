@@ -91,6 +91,15 @@ none changes meaning silently. `CHANGELOG.md` carries the migration steps,
 `error-model` and `diagnostic-removed-*` cases. Embedding hosts that supply
 `host_callbacks` for the four builtins need no change.
 
+### 0.6 (in development): a coherent standard library
+
+[Proposal 0010](../proposals/0010-coherent-standard-library.md) removes eight
+duplicate or one-line builtins and makes `string_index_of` return
+`Option[Int]`. Affected programs fail to check with a message naming the
+replacement, and `geno migrate` rewrites them. The import and free-call rules
+of the same proposal change no accepted program. `conformance/v0.6` adds the
+`coherent-stdlib` and `diagnostic-removed-builtin` cases.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

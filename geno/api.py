@@ -449,6 +449,41 @@ def _module_filename(name: str, source: str) -> str:
     return f"<module:{name}>"
 
 
+_IMPORT_RE = re.compile(r"^\s*import\s+([A-Z][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def _with_stdlib_modules(
+    program: Program, modules: dict[str, str] | None
+) -> dict[str, str] | None:
+    """Add the standard-library modules *program* imports and *modules* lacks.
+
+    ``geno run`` and ``geno check`` resolve ``import List`` from ``geno/std``;
+    the embedding API does the same, so a program means the same thing in
+    both. Modules the caller supplies win over the standard library.
+    """
+    from .ast_nodes import ImportStatement
+
+    pending = [
+        defn.module_name
+        for defn in program.definitions
+        if isinstance(defn, ImportStatement)
+    ]
+    merged = dict(modules or {})
+    added = False
+    while pending:
+        name = pending.pop()
+        if name in merged or not _MODULE_NAME_RE.fullmatch(name):
+            continue
+        path = _STDLIB_DIR / f"{name}.geno"
+        if not path.is_file():
+            continue
+        source = path.read_text(encoding="utf-8")
+        merged[name] = source
+        added = True
+        pending.extend(_IMPORT_RE.findall(source))
+    return merged if added or modules is not None else None
+
+
 def _parse_modules(modules: dict[str, str]) -> dict[str, Program]:
     """Parse module source strings into Program ASTs.
 
@@ -685,9 +720,10 @@ def run(
 
     # Parse module sources (if any)
     parsed_modules = None
-    if cfg.modules is not None:
+    module_sources = _with_stdlib_modules(program, cfg.modules)
+    if module_sources is not None:
         try:
-            parsed_modules = _parse_modules(cfg.modules)
+            parsed_modules = _parse_modules(module_sources)
         except ValueError as e:
             _finalize_timing(timing, "parse_ms", t_parse, t0)
             diagnostics.append(_make_config_diagnostic(str(e)))
@@ -1109,9 +1145,10 @@ def check(
 
     # Parse module sources (if any)
     parsed_modules = None
-    if modules is not None:
+    module_sources = _with_stdlib_modules(program, modules)
+    if module_sources is not None:
         try:
-            parsed_modules = _parse_modules(modules)
+            parsed_modules = _parse_modules(module_sources)
         except ValueError as e:
             _finalize_timing(timing, "parse_ms", t_parse, t0)
             diagnostics.append(_make_config_diagnostic(str(e)))

@@ -7,7 +7,8 @@ description = "Geno 0.6 source and diagnostic compatibility corpus (draft until 
 # generic functions (proposal 0004), type parameter bounds (proposal 0005),
 # method-call syntax (proposal 0006), types inferred from context
 # (proposal 0007), expression forms (proposal 0008), the Result-only error model
-# and `main() -> Result` (proposal 0009), and non-transitive imports.
+# and `main() -> Result` (proposal 0009), the coherent standard library
+# (proposal 0010), and non-transitive imports.
 #
 # A run case's `expected_exit_status` defaults to 0 when omitted, which is what
 # every displayed result kind exits with. It is the status a host actually
@@ -394,3 +395,18 @@ capabilities = ["print"]
 expected_stdout = "starting\n"
 expected_exit_status = 1
 expected_stderr = "Error: not a port: http\n"
+
+[[cases]]
+id = "coherent-stdlib"
+path = "programs/coherent_stdlib.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "Some(value: 20)\n2\n2\ntrue\n{\"alan\": 41}\n[\"ada\", \"alan\"]\n[36, 41]\n2\nSome(value: 2)\nNone\n[1, 2, 3]\n[\"apple\", \"pear\"]\n"
+
+[[cases]]
+id = "diagnostic-removed-builtin"
+path = "programs/diagnostic_removed_builtin.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E302"]

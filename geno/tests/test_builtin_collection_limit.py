@@ -476,12 +476,6 @@ def test_set_union_pre_check_honors_configured_limit():
         _builtins.builtin_set_union(s1, s2)
 
 
-def test_repeat_string_pre_check_honors_configured_limit():
-    _builtins.set_max_collection_size(100)
-    with pytest.raises(GenoRuntimeError, match="collection size limit"):
-        _builtins.builtin_repeat_string("ab", 200)
-
-
 def test_string_repeat_pre_check_honors_configured_limit():
     _builtins.set_max_collection_size(100)
     with pytest.raises(GenoRuntimeError, match="collection size limit"):

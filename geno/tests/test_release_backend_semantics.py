@@ -194,17 +194,6 @@ end func
     assert _outputs(source) == ("0\n1\n0\n",) * 3
 
 
-def test_structural_is_permutation_matches_across_backends() -> None:
-    source = """
-func main() -> Unit
-    print(is_permutation([Some(1), None, Some(2)], [Some(2), Some(1), None]))
-    print(is_permutation([Some(1), None], [Some(1), Some(1)]))
-end func
-"""
-
-    assert _outputs(source) == ("true\nfalse\n",) * 3
-
-
 def test_print_composites_use_canonical_double_quoted_strings() -> None:
     source = """
 type Box = Box(label: String)

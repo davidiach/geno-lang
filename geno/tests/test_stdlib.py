@@ -164,7 +164,7 @@ class TestStdStringImport:
         (tmp_path / "Main.geno").write_text(
             "import String\n"
             '@untested("test")\n'
-            "func main() -> String\n"
+            "func main() -> Option[Int]\n"
             '    return String.index_of("abc", "b")\n'
             "end func\n"
         )

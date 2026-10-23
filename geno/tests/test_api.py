@@ -156,7 +156,8 @@ class TestRunBasic:
     def test_run_short_circuits_boolean_operators(self):
         source = """
         func main() -> Bool
-            return true or is_positive(head([]))
+            let empty: List[Int] = []
+            return true or head(empty) > 0
         end func
         """
         result = run(source)

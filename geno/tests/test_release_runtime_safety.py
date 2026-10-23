@@ -11,11 +11,9 @@ import pytest
 from geno import _runtime_support as compiled_runtime
 from geno.builtins import (
     _validate_regex_pattern,
-    builtin_is_permutation,
     builtin_json_parse,
     builtin_round,
 )
-from geno.values import ConstructorValue
 from geno.values import RuntimeError as GenoRuntimeError
 
 
@@ -81,13 +79,6 @@ def test_round_does_not_cross_half_due_to_float_addition(rounder) -> None:
     assert rounder(0.49999999999999994) == 0
     assert rounder(0.5) == 1
     assert rounder(-0.5) == 0
-
-
-def test_is_permutation_handles_unorderable_values_without_quadratic_fallback() -> None:
-    left = [ConstructorValue("Some", {"value": i % 7}) for i in range(2_000)]
-    right = list(reversed(left))
-
-    assert builtin_is_permutation(left, right) is True
 
 
 def _run_cli(tmp_path, source: str, *args: str) -> subprocess.CompletedProcess[str]:

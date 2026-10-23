@@ -17,11 +17,10 @@ The following builtin families are part of the supported runtime surface and rem
 
 - List: `length`, `head`, `tail`, `append`, `concat`, `set_at`, `slice`, `filter`, `map`, `fold`, `contains`, `take_while`, `all`, `reverse`, `range`, `sort`, `sort_by`, `zip`, `enumerate`, `flat_map`
 - Set: `set_new`, `set_from_list`, `set_add`, `set_remove`, `set_contains`, `set_size`, `set_to_list`, `set_union`, `set_intersection`
-- String: `split`, `join`, `trim`, `to_lower`, `split_once`, `starts_with`, `to_chars`, `sort_strings`, `substring`, `contains_substring`, `repeat_string`, `to_upper`, `replace`, `ends_with`, `format`
-- Math and conversions: `add`, `subtract`, `multiply`, `divide`, `sqrt`, `floor`, `ceil`, `round`, `max`, `clamp`, `abs`, `square`, `parse_int`, `parse_float`, `to_string`, `float_to_int`, `int_to_float`
-- Predicates and helpers: `is_sorted`, `is_positive`, `is_numeric_string`, `is_permutation`
+- String: `split`, `join`, `trim`, `to_lower`, `split_once`, `starts_with`, `to_chars`, `substring`, `to_upper`, `replace`, `ends_with`, `format`
+- Math and conversions: `add`, `subtract`, `multiply`, `divide`, `sqrt`, `floor`, `ceil`, `round`, `max`, `clamp`, `abs`, `parse_int`, `parse_float`, `to_string`, `float_to_int`, `int_to_float`
 - Option: `is_some`, `is_none`, `unwrap`, `unwrap_or`
-- Map: `map_insert`, `map_get`, `map_from_list`, `map_entries`, `map_from_entries`, `map_merge`, `map_filter_map`, `map_map_values`
+- Map: `map_insert`, `map_get`, `map_size`, `map_contains_key`, `map_remove`, `map_keys`, `map_values`, `map_from_list`, `map_entries`, `map_from_entries`, `map_merge`, `map_filter_map`, `map_map_values`
 - Array: `array_new`, `array_from_list`, `array_get`, `array_set`, `array_length`, `array_to_list`, `array_fill`, `array_copy`
 - Vec: `vec_new`, `vec_from_list`, `vec_push`, `vec_pop`, `vec_get`, `vec_set`, `vec_length`, `vec_to_list`
 - MutableMap: `mutable_map_new`, `mutable_map_set`, `mutable_map_get`, `mutable_map_contains`, `mutable_map_delete`, `mutable_map_size`, `mutable_map_keys`

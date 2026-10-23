@@ -209,11 +209,8 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
     register_builtin(cs: cs, name: "split_once", ft: TFunc([TString, TString], TOption(TTuple([TString, TString])), []), params: ["text", "delimiter"])
     register_builtin(cs: cs, name: "starts_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "prefix"])
     register_builtin(cs: cs, name: "ends_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "suffix"])
-    register_builtin(cs: cs, name: "contains_substring", ft: TFunc([TString, TString], TBool, []), params: ["text", "substring"])
     register_builtin(cs: cs, name: "to_chars", ft: TFunc([TString], TList(TString), []), params: ["text"])
-    register_builtin(cs: cs, name: "sort_strings", ft: TFunc([TList(TString)], TList(TString), []), params: ["items"])
     register_builtin(cs: cs, name: "substring", ft: TFunc([TString, TInt, TInt], TString, []), params: ["text", "start", "stop"])
-    register_builtin(cs: cs, name: "repeat_string", ft: TFunc([TString, TInt], TString, []), params: ["text", "count"])
 
     // Namespaced string operations
     register_builtin(cs: cs, name: "string_trim", ft: TFunc([TString], TString, []), params: ["text"])
@@ -230,8 +227,8 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
     register_builtin(cs: cs, name: "string_contains", ft: TFunc([TString, TString], TBool, []), params: ["text", "substring"])
     register_builtin(cs: cs, name: "string_split_once", ft: TFunc([TString, TString], TOption(TTuple([TString, TString])), []), params: ["text", "delimiter"])
     register_builtin(cs: cs, name: "string_char_at", ft: TFunc([TString, TInt], TString, []), params: ["text", "index"])
-    register_builtin(cs: cs, name: "string_index_of", ft: TFunc([TString, TString], TInt, []), params: ["text", "substring"])
-    register_builtin(cs: cs, name: "string_last_index_of", ft: TFunc([TString, TString], TInt, []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_index_of", ft: TFunc([TString, TString], TOption(TInt), []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_last_index_of", ft: TFunc([TString, TString], TOption(TInt), []), params: ["text", "substring"])
     register_builtin(cs: cs, name: "string_pad_left", ft: TFunc([TString, TInt, TString], TString, []), params: ["text", "width", "fill_char"])
     register_builtin(cs: cs, name: "string_pad_right", ft: TFunc([TString, TInt, TString], TString, []), params: ["text", "width", "fill_char"])
     register_builtin(cs: cs, name: "string_repeat", ft: TFunc([TString, TInt], TString, []), params: ["text", "count"])
@@ -250,13 +247,8 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
     register_builtin(cs: cs, name: "abs", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
     register_builtin(cs: cs, name: "math_abs", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
     register_builtin(cs: cs, name: "math_max", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
-    register_builtin(cs: cs, name: "square", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
 
     // Type predicates
-    register_builtin(cs: cs, name: "is_sorted", ft: TFunc([TList(TInt)], TBool, []), params: ["list"])
-    register_builtin(cs: cs, name: "is_positive", ft: TFunc([TInt], TBool, []), params: ["value"])
-    register_builtin(cs: cs, name: "is_numeric_string", ft: TFunc([TString], TBool, []), params: ["text"])
-    register_builtin(cs: cs, name: "is_permutation", ft: TFunc([TList(TVar("T")), TList(TVar("T"))], TBool, []), params: ["list1", "list2"])
 
     // Conversions
     register_builtin(cs: cs, name: "parse_int", ft: TFunc([TString], TOption(TInt), []), params: ["text"])

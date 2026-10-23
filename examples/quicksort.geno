@@ -4,7 +4,7 @@
 
 func quicksort(arr: List[Int]) -> List[Int]
     requires true
-    ensures is_sorted(result)
+    ensures (result == sort(result))
     ensures length(result) == length(arr)
     example [] -> []
     example [1] -> [1]

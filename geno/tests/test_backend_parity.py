@@ -2631,10 +2631,10 @@ class TestBackendParity:
                 | Some(n) -> print(n)
                 | None -> print(-999)
             end match
-            print(is_numeric_string(" 42 "))
-            print(is_numeric_string("+42"))
-            print(is_numeric_string("1_000"))
-            print(is_numeric_string("-7"))
+            print(is_some(parse_int(" 42 ")))
+            print(is_some(parse_int("+42")))
+            print(is_some(parse_int("1_000")))
+            print(is_some(parse_int("-7")))
             return ()
         end func
         """
@@ -2676,26 +2676,6 @@ class TestBackendParity:
             label="parse_int safe range",
             context=source,
             expected="1\n1\n1\n1\n",
-            interp_out=_interpreter_output(source),
-            py_out=_compiled_python_output(source),
-            js_out=_compiled_js_output(source),
-        )
-
-    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-    def test_is_permutation_uses_equality_across_backends(self):
-        source = """
-        func main() -> Unit
-            print(is_permutation([1, 2, 1], [2, 1, 1]))
-            print(is_permutation([Some(1), None], [None, Some(1)]))
-            print(is_permutation([Some(1), Some(1)], [Some(1), None]))
-            return ()
-        end func
-        """
-
-        _assert_expected_backend_outputs(
-            label="is_permutation equality",
-            context=source,
-            expected="true\ntrue\nfalse\n",
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),
@@ -2765,7 +2745,10 @@ class TestBackendParity:
         _assert_expected_backend_outputs(
             label="unicode string code point operations",
             context=source,
-            expected="1\n4\n128512\n128512\n128512\n1\n128512\n1\n128512\n1\n3\n",
+            expected=(
+                "1\n4\n128512\n128512\n128512\n1\n128512\n1\n128512\n"
+                "Some(value: 1)\nSome(value: 3)\n"
+            ),
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),
@@ -2821,12 +2804,12 @@ class TestBackendParity:
         )
 
     @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-    def test_sort_strings_orders_astral_strings_across_backends(self):
+    def test_sort_orders_astral_strings_across_backends(self):
         source = """
         func main() -> Unit
             let smile: String = from_char_code(128512)
             let private_use: String = from_char_code(57344)
-            let sorted: List[String] = sort_strings([smile, private_use])
+            let sorted: List[String] = sort([smile, private_use])
             print(char_code(sorted[0]))
             print(char_code(sorted[1]))
             return ()
@@ -2834,7 +2817,7 @@ class TestBackendParity:
         """
 
         _assert_expected_backend_outputs(
-            label="sort_strings astral string ordering",
+            label="sort astral string ordering",
             context=source,
             expected="57344\n128512\n",
             interp_out=_interpreter_output(source),

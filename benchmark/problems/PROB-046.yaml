@@ -58,8 +58,8 @@ problem:
               return false
           end if
 
-          let sorted1: List[String] = sort_strings(chars1)
-          let sorted2: List[String] = sort_strings(chars2)
+          let sorted1: List[String] = sort(chars1)
+          let sorted2: List[String] = sort(chars2)
 
           var i: Int = 0
           while i < length(sorted1) do

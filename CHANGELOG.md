@@ -64,6 +64,16 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   `list_first`, `list_last`) return `Option`. `r.unwrap()`, `r.expect(message)`
   and `opt.expect(message)` (`result_unwrap`, `result_expect`, `option_expect`)
   turn a failure into a panic when it can only mean a bug.
+- A coherent standard library
+  ([proposal 0010](docs/proposals/0010-coherent-standard-library.md)):
+  `length()` works on every collection; `Map` gains `contains_key`, `remove`,
+  `keys`, `values` and `length`; `xs.sort()` needs no comparator; and a free
+  call resolves like the method call it spells, so `map(opt, f)` calls
+  `option_map`.
+- `geno migrate [path] [--check | --diff]` rewrites 0.5 source for 0.6 wherever
+  the rewrite preserves behavior (`throw "x"` to `panic("x")`, `.unwrap()` on
+  the I/O builtins that now return `Result`, removed builtins to their
+  replacements) and lists what needs a person, such as `try`/`catch`.
 - Arithmetic on an operand that already failed to type-check no longer adds a
   second "Cannot apply '+' to Any and Int" error.
 - The standard library is generic throughout: `List`, `Option` and `Result`
@@ -89,7 +99,16 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   `host_callbacks` for them keep returning the plain value and raising on
   failure; the API wraps both.
 
+- `string_index_of` and `string_last_index_of` (`s.index_of(t)`) return
+  `Option[Int]` instead of `-1` for "not found".
+- Removed builtins: `square`, `is_positive`, `is_sorted`, `is_permutation`,
+  `is_numeric_string`, `repeat_string`, `contains_substring` and
+  `sort_strings`. Calling one reports E302 with its replacement.
+
 ### Migration to 0.6
+
+Run `geno migrate` first; it performs every rewrite below that is mechanical
+and lists the rest.
 
 - An uncaught `throw "message"` becomes `panic("message")`; the diagnostic text
   is unchanged.
@@ -98,6 +117,10 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
 - A `try`/`catch` around a runtime error becomes a check (`xs.get(i)`,
   `if d != 0 then`) or is removed and left to panic.
 - Delete `throw` from effect lists.
+- `string_index_of(s, t)` becomes `s.index_of(t)` with a `match`, or
+  `.unwrap_or(-1)` to keep the sentinel.
+- `square(x)` becomes `x * x`, `repeat_string` becomes `s.repeat(n)`, and so on
+  per the E302 message.
 - `let text = fs_read_text(path)` becomes `fs_read_text(path)?` in a function
   returning `Result`, a `match`, or `fs_read_text(path).unwrap()` to keep 0.5's
   failure behavior. The same applies to `fs_write_text`, `http_fetch` and
@@ -105,6 +128,11 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
 
 ### Fixed
 
+- `import List` no longer makes `length("abc")` a type error, and `import
+  Option` no longer breaks `map` on a list: an unqualified standard-library
+  import leaves always-available builtins their meaning.
+- `geno.run()` and `geno.check()` resolve an imported standard-library module
+  (`import List`) as `geno run` does; they ignored it before.
 - After a parse error, recovery no longer stops at the `func` of `end func`,
   which reported a spurious "Expected function name" and skipped the next
   definition.

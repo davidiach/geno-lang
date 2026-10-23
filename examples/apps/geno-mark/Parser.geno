@@ -126,7 +126,7 @@ func is_number_item(line: String) -> Bool
     example "" -> false
 
     let trimmed: String = trim(line)
-    let dot_pos: Int = string_index_of(trimmed, ". ")
+    let dot_pos: Int = string_index_of(trimmed, ". ").unwrap_or(-1)
     if dot_pos < 1 then
         return false
     end if
@@ -140,7 +140,7 @@ func number_text(line: String) -> String
     example "10. tenth" -> "tenth"
 
     let trimmed: String = trim(line)
-    let dot_pos: Int = string_index_of(trimmed, ". ")
+    let dot_pos: Int = string_index_of(trimmed, ". ").unwrap_or(-1)
     return substring(text: trimmed, start: dot_pos + 2, stop: length(trimmed))
 end func
 

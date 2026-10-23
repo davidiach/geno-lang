@@ -41,7 +41,11 @@ Key syntax rules:
   `{"a": 1, "b": 2}`, and `{}` for an empty map
 - Method calls work on any value: `xs.map(f).filter(g).length()`,
   `s.trim().to_upper()`, `opt.unwrap_or(0)`. Name the arguments after the
-  receiver when the function has 3+ parameters: `s.replace(old: "a", new: "b")`
+  receiver when the function has 3+ parameters: `s.replace(old: "a", new: "b")`.
+  The free form works too: `map(opt, f)` is `opt.map(f)`
+- Every collection has `length()`. Maps: `m.get(k)` (Option), `m.contains_key(k)`,
+  `m.insert(key: k, value: v)`, `m.remove(k)`, `m.keys()`, `m.values()`.
+  `xs.sort()` needs no comparator. `s.index_of(t)` returns `Option[Int]`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 - Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,

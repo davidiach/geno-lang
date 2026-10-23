@@ -3450,7 +3450,6 @@ class TestBuiltinCapabilityClassification:
             ("ends_with", "string_ends_with"),
             ("starts_with", "string_starts_with"),
             ("replace", "string_replace"),
-            ("contains_substring", "string_contains"),
             ("split", "string_split"),
             ("join", "string_join"),
             ("trim", "string_trim"),

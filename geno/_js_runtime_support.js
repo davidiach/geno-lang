@@ -1205,6 +1205,7 @@ function all_(lst, pred) {
 }
 
 function sort(lst, cmp) {
+    if (cmp === undefined) cmp = _compareGenoValues;
     const indexed = lst.map((x, i) => [x, i]);
     indexed.sort((a, b) => {
         const c = cmp(a[0], b[0]);
@@ -1256,12 +1257,6 @@ function to_chars(s) {
     const result = [...s];
     _checkCollectionSize(result);
     return result;
-}
-
-function sort_strings(values) {
-    if (values.length > 100000) throw new Error("sort_strings: list too large");
-    if (!values.every(v => typeof v === 'string')) throw new Error("sort_strings expects a list of strings");
-    return [...values].sort(_comparePythonStrings);
 }
 
 function split_once(s, sep) {
@@ -1333,7 +1328,6 @@ function round_(x) { return _roundNearest(x, "round result"); }
 
 function max_(a, b) { return a >= b ? a : b; }
 function abs_(x) { return _GENO_MATH.abs(x); }
-function square(x) { return _safe_mul(x, x); }
 function add(a, b) { return _safe_add(a, b); }
 function subtract(a, b) { return _safe_sub(a, b); }
 function multiply(a, b) { return _safe_mul(a, b); }
@@ -1437,6 +1431,30 @@ function map_insert(m, key, value) {
     return result;
 }
 
+function map_size(m) {
+    return m.size;
+}
+
+function map_contains_key(m, key) {
+    return _mapFindKey(m, key) !== _MAP_MISSING;
+}
+
+function map_remove(m, key) {
+    const result = _mapClone(m);
+    _mapDelete(result, key);
+    return result;
+}
+
+function map_keys(m) {
+    _checkCollectionKind("List", m.size);
+    return Array.from(m.keys());
+}
+
+function map_values(m) {
+    _checkCollectionKind("List", m.size);
+    return Array.from(m.values());
+}
+
 function map_get(m, key) {
     const value = _mapGetValue(m, key);
     return value === _MAP_MISSING ? None_ : Some(value);
@@ -1483,36 +1501,6 @@ function random_float() {
 // =============================================================================
 // Predicates
 // =============================================================================
-
-function is_sorted(lst) {
-    for (let i = 0; i < lst.length - 1; i++) {
-        if (lst[i] > lst[i + 1]) return false;
-    }
-    return true;
-}
-
-function is_positive(x) { return x > 0; }
-
-function is_numeric_string(s) {
-    if (typeof s !== 'string') return false;
-    return _isDecimalIntString(s);
-}
-
-function is_permutation(lst1, lst2) {
-    if (lst1.length > 100000 || lst2.length > 100000) {
-        throw new Error("is_permutation: list too large (max 100,000 elements)");
-    }
-    if (lst1.length !== lst2.length) return false;
-
-    // Canonical structural sort keys turn the previous O(n^2) unmatched scan
-    // into O(n log n), while the final equality check preserves Geno semantics.
-    const left = [...lst1].sort(_compareGenoValues);
-    const right = [...lst2].sort(_compareGenoValues);
-    for (let i = 0; i < left.length; i++) {
-        if (!_valuesEqual(left[i], right[i])) return false;
-    }
-    return true;
-}
 
 // =============================================================================
 // Array Helpers
@@ -4203,18 +4191,6 @@ function flat_map(lst, fn) {
     return result;
 }
 
-function contains_substring(text, substring) {
-    return text.includes(substring);
-}
-
-function repeat_string(text, count) {
-    if (count < 0) throw new Error("repeat_string: count must be non-negative");
-    if (_stringLength(text) * count > _MAX_COLLECTION_SIZE) {
-        throw new Error("repeat_string: result would exceed collection size limit");
-    }
-    return text.repeat(count);
-}
-
 function string_trim(text) { return _trimPythonWhitespace(text, true, true); }
 function string_trim_start(text) { return _trimPythonWhitespace(text, true, false); }
 function string_trim_end(text) { return _trimPythonWhitespace(text, false, true); }
@@ -4238,10 +4214,12 @@ function string_pad_right(text, width, fill_char) {
 }
 function string_char_at(text, index) { return _stringCharAt(text, index); }
 function string_index_of(text, sub) {
-    return _requireSafeJsInt(_stringIndexOf(text, sub), "string_index_of result");
+    const index = _stringIndexOf(text, sub);
+    return index < 0 ? None_ : Some(_requireSafeJsInt(index, "string_index_of result"));
 }
 function string_last_index_of(text, sub) {
-    return _requireSafeJsInt(_stringLastIndexOf(text, sub), "string_last_index_of result");
+    const index = _stringLastIndexOf(text, sub);
+    return index < 0 ? None_ : Some(_requireSafeJsInt(index, "string_last_index_of result"));
 }
 function string_repeat(text, count) {
     if (count < 0) throw new Error("string_repeat: count must be non-negative");

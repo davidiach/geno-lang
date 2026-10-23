@@ -2552,9 +2552,6 @@ class TestCompilerCollectionSizeLimits:
         env = _compiled_runtime_env(10)
 
         with pytest.raises(RuntimeError, match="collection size limit"):
-            env["repeat_string"]("ab", 20)  # type: ignore[operator]
-
-        with pytest.raises(RuntimeError, match="collection size limit"):
             env["string_repeat"]("ab", 20)  # type: ignore[operator]
 
     def test_runtime_prelude_reads_max_integer_bits(self):
@@ -2963,7 +2960,7 @@ class TestCompilerCollectionSizeLimits:
             """,
             """
             func main() -> Int
-                return string_index_of("abc", "c")
+                return string_index_of("abc", "c").unwrap_or(-1)
             end func
             """,
             """

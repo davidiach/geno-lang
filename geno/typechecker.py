@@ -101,6 +101,7 @@ from .diagnostics import ErrorCode
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
+from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
 from .types import (
@@ -192,6 +193,14 @@ _NON_GENERIC_ENTRYPOINTS = frozenset({"main", "init", "update", "render"})
 
 # Builtins named `<prefix>_<method>` are methods of the receiver type the
 # prefix names: `opt.map(f)` calls `option_map`, `v.push(x)` calls `vec_push`.
+# `length` is the one size method on every collection (proposal 0010); these
+# collections spell their builtin `size`.
+_LENGTH_METHODS: dict[type, str] = {
+    MapType: "map_size",
+    MutableMapType: "mutable_map_size",
+    SetType: "set_size",
+}
+
 _METHOD_PREFIXES: dict[type, str] = {
     ListType: "list",
     OptionType: "option",
@@ -593,6 +602,27 @@ def _import_hint(
         return f" Did you forget to 'import {to_import[0]}'?"
     listed = ", ".join(f"'import {module}'" for module in to_import)
     return f" It is defined in {listed}; import the one you mean."
+
+
+# Builtins Geno 0.6 removed as duplicates or one-liners (proposal 0010), with
+# what to write instead.
+_REMOVED_BUILTINS: dict[str, str] = {
+    "contains_substring": "text.contains(substring)",
+    "is_numeric_string": "parse_int(text).is_some()",
+    "is_permutation": "a.sort() == b.sort()",
+    "is_positive": "n > 0",
+    "is_sorted": "xs == xs.sort()",
+    "repeat_string": "text.repeat(count)",
+    "sort_strings": "items.sort()",
+    "square": "x * x",
+}
+
+
+def _removed_builtin_hint(name: str) -> str:
+    replacement = _REMOVED_BUILTINS.get(name)
+    if replacement is None:
+        return ""
+    return f" '{name}' was removed in Geno 0.6; write {replacement}."
 
 
 def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
@@ -1722,7 +1752,11 @@ class TypeChecker(ExhaustivenessMixin):
                         self._function_signature_from_def(defn)
                     )
                     generic = self._generic_signature(defn, name)
-                    if direct and not is_aliased:
+                    if (
+                        direct
+                        and not is_aliased
+                        and binds_unqualified(mod_program, defn.name)
+                    ):
                         self._register_function_signature(
                             defn.name,
                             func_type,
@@ -1805,6 +1839,7 @@ class TypeChecker(ExhaustivenessMixin):
                     for item in entry.definitions
                     if isinstance(item, FunctionDef)
                     and (item.exported or not has_exports)
+                    and binds_unqualified(entry, item.name)
                 ]
             for name in names:
                 owners = sources.setdefault(name, [])
@@ -1911,7 +1946,8 @@ class TypeChecker(ExhaustivenessMixin):
                     func_type, param_names, num_defaults = (
                         self._function_signature_from_def(defn)
                     )
-                    functions[defn.name] = func_type
+                    if binds_unqualified(program, defn.name):
+                        functions[defn.name] = func_type
                     func_param_names[defn.name] = param_names
                     if num_defaults > 0:
                         func_default_counts[defn.name] = num_defaults
@@ -4302,7 +4338,12 @@ class TypeChecker(ExhaustivenessMixin):
             if expr.name in self._target_rejected:
                 self._error(self._target_rejected[expr.name], expr.location)
                 return AnyType()
-            hint = _suggest_name(expr.name, self._env_names(env))
+            removed = _removed_builtin_hint(expr.name)
+            hint = (
+                f".{removed}"
+                if removed
+                else _suggest_name(expr.name, self._env_names(env))
+            )
             self._error(
                 f"Undefined variable: {expr.name}{hint}",
                 expr.location,
@@ -4703,11 +4744,33 @@ class TypeChecker(ExhaustivenessMixin):
             )
             arg_type = self._check_expression(arguments[0].value, env)
             if not isinstance(arg_type, (ListType, StringType, ArrayType)):
+                target = self._overload_target(expr, arg_type, env)
+                if target is not None:
+                    return self._check_overloaded_call(expr, target, env)
                 self._error(
                     f"Argument 1 type mismatch: expected List[T], String, or Array[T], got {arg_type}",
                     arguments[0].value.location,
                 )
             return _INT_TYPE
+
+        if builtin_name == "sort" and len(arguments) == 1:
+            # The comparator is optional: `xs.sort()` uses the natural order
+            # `sort_by` orders keys by (proposal 0010).
+            self._validate_special_builtin_named_args(
+                arguments, ["list"], expr.location
+            )
+            arg_type = self._check_expression(arguments[0].value, env)
+            if isinstance(arg_type, ListType):
+                return arg_type
+            target = self._overload_target(expr, arg_type, env)
+            if target is not None:
+                return self._check_overloaded_call(expr, target, env)
+            if not isinstance(arg_type, AnyType):
+                self._error(
+                    f"Argument 1 type mismatch: expected List[T], got {arg_type}",
+                    arguments[0].value.location,
+                )
+            return ListType(_ANY_TYPE)
 
         # Type checking and effect inference resolve the same lexical receiver.
         trait_call = self._resolve_trait_call(expr, env)
@@ -4757,7 +4820,8 @@ class TypeChecker(ExhaustivenessMixin):
             and identifier_func.name not in self._target_rejected
         ):
             hint = (
-                _suggest_import(identifier_func.name, self._imported_module_names)
+                _removed_builtin_hint(identifier_func.name)
+                or _suggest_import(identifier_func.name, self._imported_module_names)
                 or _suggest_project_import(
                     identifier_func.name,
                     expr.location,
@@ -4940,21 +5004,25 @@ class TypeChecker(ExhaustivenessMixin):
                     if expr._method_call is None
                     else ("Receiver" if i == 0 else f"Argument {i}")
                 )
-                if use_subs:
-                    if not self._types_compatible_with_subs(
-                        expected_type, arg_type, subs
-                    ):
-                        resolved = self._apply_substitutions(expected_type, subs)
-                        self._error(
-                            f"{label} type mismatch: expected {resolved}, got {arg_type}",
-                            arg.value.location,
-                        )
-                else:
-                    if not self._types_compatible(expected_type, arg_type):
-                        self._error(
-                            f"{label} type mismatch: expected {expected_type}, got {arg_type}",
-                            arg.value.location,
-                        )
+                accepted = (
+                    self._types_compatible_with_subs(expected_type, arg_type, subs)
+                    if use_subs
+                    else self._types_compatible(expected_type, arg_type)
+                )
+                if not accepted and i == 0:
+                    target = self._overload_target(expr, arg_type, env)
+                    if target is not None:
+                        return self._check_overloaded_call(expr, target, env)
+                if not accepted:
+                    resolved = (
+                        self._apply_substitutions(expected_type, subs)
+                        if use_subs
+                        else expected_type
+                    )
+                    self._error(
+                        f"{label} type mismatch: expected {resolved}, got {arg_type}",
+                        arg.value.location,
+                    )
                 self._record_expected_runtime_type(
                     arg.value,
                     self._apply_substitutions(expected_type, subs),
@@ -5050,6 +5118,40 @@ class TypeChecker(ExhaustivenessMixin):
         ]
         return self._check_function_call(expr, env)
 
+    def _overload_target(
+        self, expr: FunctionCall, first_type: Type, env: TypeEnv
+    ) -> str | None:
+        """What `x.name(args)` would call, for a `name(x, args)` that rejects `x`.
+
+        Proposal 0010: a free call whose first argument the named top-level
+        function or builtin cannot take is resolved as the method call it
+        spells, so `map(opt, f)` calls `option_map` and `length(m)` calls
+        `map_size`. It is consulted only where the call would otherwise be
+        rejected, so no program that checks without it changes meaning.
+        """
+        callee = expr.function
+        if not isinstance(callee, Identifier) or expr._method_call is not None:
+            return None
+        if not expr.arguments or expr.arguments[0].name is not None:
+            return None
+        if isinstance(first_type, (AnyType, NeverType, TypeVar)):
+            return None
+        name = callee.name
+        scope: TypeEnv | None = env
+        while scope is not None and name not in scope.bindings:
+            scope = scope.parent
+        if scope is not self.global_env:
+            return None  # a local binding is not overloaded
+        chosen = self._method_target(name, first_type, env)
+        return None if chosen is None or chosen == name else chosen
+
+    def _check_overloaded_call(
+        self, expr: FunctionCall, target: str, env: TypeEnv
+    ) -> Type:
+        """Check *expr* again as a call of *target* (see ``_overload_target``)."""
+        expr.function = Identifier(name=target, location=expr.function.location)
+        return self._check_function_call(expr, env)
+
     def _method_target(
         self, method_name: str, receiver_type: Type, env: TypeEnv
     ) -> str | None:
@@ -5071,6 +5173,13 @@ class TypeChecker(ExhaustivenessMixin):
             # `length` is checked specially: it takes a list, string or array.
             if self._identifier_resolves_to_builtin("length", env):
                 return "length"
+        size_builtin = _LENGTH_METHODS.get(type(receiver_type))
+        if (
+            method_name == "length"
+            and size_builtin is not None
+            and self._identifier_resolves_to_builtin(size_builtin, env)
+        ):
+            return size_builtin
 
         if (
             method_name in self._user_defined_names

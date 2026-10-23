@@ -173,7 +173,6 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     ),
     "starts_with": FuncType((StringType(), StringType()), BoolType()),
     "to_chars": FuncType((StringType(),), ListType(StringType())),
-    "sort_strings": FuncType((ListType(StringType()),), ListType(StringType())),
     "substring": FuncType((StringType(), IntType(), IntType()), StringType()),
     "format": FuncType((StringType(), ListType(StringType())), StringType()),
     "char_code": FuncType((StringType(),), IntType()),
@@ -188,18 +187,11 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "round": FuncType((FloatType(),), IntType()),
     "max": FuncType((TypeVar("Num"), TypeVar("Num")), TypeVar("Num")),
     "abs": FuncType((TypeVar("Num"),), TypeVar("Num")),
-    "is_sorted": FuncType((ListType(IntType()),), BoolType()),
-    "is_positive": FuncType((IntType(),), BoolType()),
-    "is_numeric_string": FuncType((StringType(),), BoolType()),
     "parse_int": FuncType((StringType(),), OptionType(IntType())),
     "parse_float": FuncType((StringType(),), OptionType(FloatType())),
     "to_string": FuncType((TypeVar("T"),), StringType()),
     "float_to_int": FuncType((FloatType(),), IntType()),
     "int_to_float": FuncType((IntType(),), FloatType()),
-    "square": FuncType((TypeVar("Num"),), TypeVar("Num")),
-    "is_permutation": FuncType(
-        (ListType(TypeVar("T")), ListType(TypeVar("T"))), BoolType()
-    ),
     "reverse": FuncType((ListType(TypeVar("T")),), ListType(TypeVar("T"))),
     "bit_or": FuncType((IntType(), IntType()), IntType()),
     "range": FuncType((IntType(), IntType()), ListType(IntType())),
@@ -211,6 +203,20 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "map_insert": FuncType(
         (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K"), TypeVar("V")),
         MapType(TypeVar("K"), TypeVar("V")),
+    ),
+    "map_size": FuncType((MapType(TypeVar("K"), TypeVar("V")),), IntType()),
+    "map_contains_key": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K")), BoolType()
+    ),
+    "map_remove": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K")),
+        MapType(TypeVar("K"), TypeVar("V")),
+    ),
+    "map_keys": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")),), ListType(TypeVar("K"))
+    ),
+    "map_values": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")),), ListType(TypeVar("V"))
     ),
     "map_get": FuncType(
         (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K")),
@@ -242,16 +248,16 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
         (ListType(TypeVar("T")), FuncType((TypeVar("T"),), ListType(TypeVar("U")))),
         ListType(TypeVar("U")),
     ),
-    "contains_substring": FuncType((StringType(), StringType()), BoolType()),
-    "repeat_string": FuncType((StringType(), IntType()), StringType()),
     "string_trim": FuncType((StringType(),), StringType()),
     "string_trim_start": FuncType((StringType(),), StringType()),
     "string_trim_end": FuncType((StringType(),), StringType()),
     "string_pad_left": FuncType((StringType(), IntType(), StringType()), StringType()),
     "string_pad_right": FuncType((StringType(), IntType(), StringType()), StringType()),
     "string_char_at": FuncType((StringType(), IntType()), StringType()),
-    "string_index_of": FuncType((StringType(), StringType()), IntType()),
-    "string_last_index_of": FuncType((StringType(), StringType()), IntType()),
+    "string_index_of": FuncType((StringType(), StringType()), OptionType(IntType())),
+    "string_last_index_of": FuncType(
+        (StringType(), StringType()), OptionType(IntType())
+    ),
     "string_repeat": FuncType((StringType(), IntType()), StringType()),
     "string_substring": FuncType((StringType(), IntType(), IntType()), StringType()),
     "string_split": FuncType((StringType(), StringType()), ListType(StringType())),

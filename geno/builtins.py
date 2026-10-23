@@ -313,29 +313,6 @@ def builtin_float_to_int(x: int | float) -> int:
     return _require_safe_js_int(int(x), "float_to_int result")
 
 
-def builtin_is_sorted(lst: list[Any]) -> bool:
-    _require_list("is_sorted", lst)
-    return all(lst[i] <= lst[i + 1] for i in range(len(lst) - 1))
-
-
-def builtin_is_numeric_string(s: Any) -> bool:
-    if not isinstance(s, str):
-        return False
-    return _DECIMAL_INT_RE.fullmatch(s.strip()) is not None
-
-
-def builtin_is_permutation(lst1: list[Any], lst2: list[Any]) -> bool:
-    if not isinstance(lst1, list) or not isinstance(lst2, list):
-        raise RuntimeError("is_permutation expects lists")
-    if len(lst1) > 100_000 or len(lst2) > 100_000:
-        raise RuntimeError("is_permutation: list too large (max 100,000 elements)")
-    if len(lst1) != len(lst2):
-        return False
-    return sorted(_geno_sort_key(item) for item in lst1) == sorted(
-        _geno_sort_key(item) for item in lst2
-    )
-
-
 def builtin_parse_int(s: str) -> ConstructorValue:
     if not isinstance(s, str):
         raise RuntimeError(f"parse_int expects string, got {type(s).__name__}")
@@ -490,15 +467,6 @@ def builtin_starts_with(s: str, prefix: str) -> bool:
 def builtin_to_chars(s: str) -> list[str]:
     _require_str("to_chars", s)
     return list(s)
-
-
-def builtin_sort_strings(values: list[str]) -> list[str]:
-    _require_list("sort_strings", values)
-    if len(values) > 100_000:
-        raise RuntimeError("sort_strings: list too large (max 100,000 elements)")
-    if not all(isinstance(value, str) for value in values):
-        raise RuntimeError("sort_strings expects a list of strings")
-    return sorted(values)
 
 
 def builtin_is_some(opt: Any) -> bool:
@@ -2548,30 +2516,6 @@ def builtin_flat_map(
 # =============================================================================
 
 
-def builtin_contains_substring(text: str, sub: str) -> bool:
-    """Check if a string contains a substring."""
-    _require_str("contains_substring", text, "text")
-    _require_str("contains_substring", sub, "substring")
-    return sub in text
-
-
-def builtin_repeat_string(
-    text: str, count: int, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
-) -> str:
-    """Repeat a string a given number of times."""
-    _require_str("repeat_string", text, "text")
-    _require_int("repeat_string", count, "count")
-    if count < 0:
-        raise RuntimeError("repeat_string: count must be non-negative")
-    limit = _effective_max_collection_size(max_collection_size)
-    if len(text) * count > limit:
-        raise RuntimeError(
-            "repeat_string: result would exceed collection size limit "
-            f"({len(text) * count} > {limit})"
-        )
-    return text * count
-
-
 def builtin_string_trim(text: str) -> str:
     """Trim whitespace from both ends (stdlib wrapper)."""
     _require_str("string_trim", text, "text")
@@ -2637,18 +2581,26 @@ def builtin_string_char_at(text: str, index: int) -> str:
     return text[index]
 
 
-def builtin_string_index_of(text: str, sub: str) -> int:
-    """Find the first index of a substring, or -1 if not found."""
+def builtin_string_index_of(text: str, sub: str) -> ConstructorValue:
+    """The index of the first occurrence of a substring, or None."""
     _require_str("string_index_of", text, "text")
     _require_str("string_index_of", sub, "substring")
-    return text.find(sub)
+    return _index_option(text.find(sub))
 
 
-def builtin_string_last_index_of(text: str, sub: str) -> int:
-    """Find the last index of a substring, or -1 if not found."""
+def builtin_string_last_index_of(text: str, sub: str) -> ConstructorValue:
+    """The index of the last occurrence of a substring, or None."""
     _require_str("string_last_index_of", text, "text")
     _require_str("string_last_index_of", sub, "substring")
-    return text.rfind(sub)
+    return _index_option(text.rfind(sub))
+
+
+def _index_option(index: int) -> ConstructorValue:
+    from .values import ConstructorValue
+
+    if index < 0:
+        return ConstructorValue("None", {})
+    return ConstructorValue("Some", {"value": index})
 
 
 def builtin_string_repeat(
@@ -2845,6 +2797,51 @@ def builtin_map_entries(
     limit = _effective_max_collection_size(max_collection_size)
     _check_collection_size("List", len(m), limit)
     return [(k, v) for k, v in m.items()]
+
+
+def _require_map(name: str, m: Any) -> None:
+    if not isinstance(m, dict):
+        raise RuntimeError(f"{name}: expected map, got {type(m).__name__}")
+
+
+def builtin_map_size(m: dict[Any, Any]) -> int:
+    """The number of entries in a map."""
+    _require_map("map_size", m)
+    return len(m)
+
+
+def builtin_map_contains_key(m: dict[Any, Any], key: Any) -> bool:
+    """Whether a map has an entry for *key*."""
+    _require_map("map_contains_key", m)
+    return key in m
+
+
+def builtin_map_remove(m: dict[Any, Any], key: Any) -> dict[Any, Any]:
+    """A copy of the map without *key*'s entry; the map itself is unchanged."""
+    _require_map("map_remove", m)
+    return {k: v for k, v in m.items() if k != key}
+
+
+def builtin_map_keys(
+    m: dict[Any, Any], *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> list[Any]:
+    """The keys of a map, in insertion order."""
+    _require_map("map_keys", m)
+    _check_collection_size(
+        "List", len(m), _effective_max_collection_size(max_collection_size)
+    )
+    return list(m.keys())
+
+
+def builtin_map_values(
+    m: dict[Any, Any], *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> list[Any]:
+    """The values of a map, in key insertion order."""
+    _require_map("map_values", m)
+    _check_collection_size(
+        "List", len(m), _effective_max_collection_size(max_collection_size)
+    )
+    return list(m.values())
 
 
 def builtin_map_from_entries(
