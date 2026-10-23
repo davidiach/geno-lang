@@ -238,8 +238,8 @@ false)` is rejected, because `Bool` is not ordered.
 
 ```geno
 type Shape = Circle(radius: Float)
-           | Rectangle(width: Float, height: Float)
-           | Triangle(base: Float, height: Float)
+    | Rectangle(width: Float, height: Float)
+    | Triangle(base: Float, height: Float)
 ```
 
 A leading `|` before the first variant is also accepted, which reads better for
@@ -658,14 +658,14 @@ Run shell commands with the `process` capability:
 ```geno
 // geno run myfile.geno --unsafe --cap process
 func main() -> String
-  let result: Result[ProcessResult, String] = exec("echo hello")
-  match result with
-  | Ok(pr) ->
-    match pr with
-    | ProcessResult(code, out, err) -> return out
+    let result: Result[ProcessResult, String] = exec("echo hello")
+    match result with
+        | Ok(pr) ->
+            match pr with
+                | ProcessResult(code, out, err) -> return out
+            end match
+        | Err(msg) -> return msg
     end match
-  | Err(msg) -> return msg
-  end match
 end func
 ```
 

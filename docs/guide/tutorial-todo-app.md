@@ -65,7 +65,7 @@ func show_status(s: Status) -> String
 
     match s with
         | Pending -> return "[ ]"
-        | Done    -> return "[x]"
+        | Done -> return "[x]"
     end match
 end func show_status
 ```
@@ -77,7 +77,7 @@ Use the `show_status` helper and field access to format a single todo:
 ```geno
 func show_todo(t: Todo) -> String
     example Todo("Buy milk", Pending) -> "[ ] Buy milk"
-    example Todo("Walk dog", Done)    -> "[x] Walk dog"
+    example Todo("Walk dog", Done) -> "[x] Walk dog"
 
     return show_status(t.status) + " " + t.title
 end func show_todo
@@ -122,7 +122,7 @@ Use `filter` with a lambda that pattern-matches the status field:
 ```geno
 func filter_by_status(todos: List[Todo], s: Status) -> List[Todo]
     example [Todo("A", Pending), Todo("B", Done)], Pending -> [Todo("A", Pending)]
-    example [Todo("A", Pending), Todo("B", Done)], Done    -> [Todo("B", Done)]
+    example [Todo("A", Pending), Todo("B", Done)], Done -> [Todo("B", Done)]
 
     return filter(todos, fn(t: Todo) -> t.status == s)
 end func filter_by_status
@@ -136,7 +136,7 @@ this read left to right:
 ```geno
 func count_by_status(todos: List[Todo], s: Status) -> Int
     example [Todo("A", Pending), Todo("B", Done), Todo("C", Pending)], Pending -> 2
-    example [Todo("A", Pending), Todo("B", Done), Todo("C", Pending)], Done    -> 1
+    example [Todo("A", Pending), Todo("B", Done), Todo("C", Pending)], Done -> 1
     example [], Pending -> 0
 
     return todos
@@ -174,7 +174,7 @@ func complete_and_report(todos: List[Todo], title: String) -> String
 
     let result: Result[List[Todo], String] = safe_complete(todos, title)
     match result with
-        | Ok(_)  -> return "Completed: " + title
+        | Ok(_) -> return "Completed: " + title
         | Err(e) -> return "Error: " + e
     end match
 end func complete_and_report

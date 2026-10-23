@@ -10,12 +10,11 @@ func area(s: Shape) -> Float
 
     match s with
         | Circle(r) ->
-        return 3.141592653589793 * r * r
+            return 3.141592653589793 * r * r
         | Rectangle(w, h) ->
-        return w * h
+            return w * h
     end match
 end func area
-
 
 func describe(s: Shape) -> String
     example Circle(5.0) -> "circle"
@@ -26,7 +25,6 @@ func describe(s: Shape) -> String
         | Rectangle(_, _) -> return "rectangle"
     end match
 end func describe
-
 
 func total_area(shapes: List[Shape]) -> Float
     example [Circle(1.0), Rectangle(2.0, 3.0)] -> 9.141592653589793
@@ -39,7 +37,6 @@ func total_area(shapes: List[Shape]) -> Float
 
     return total
 end func total_area
-
 
 func main() -> Float
     let shapes: List[Shape] = [Circle(1.0), Rectangle(2.0, 3.0)]

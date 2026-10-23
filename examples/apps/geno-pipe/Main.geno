@@ -82,7 +82,7 @@ func main() -> Int
     match read_input(args) with
         | Ok(input) -> return run_pipeline(input)
         | Err(message) ->
-        print("Error: cannot read input: " + message)
-        return 1
+            print("Error: cannot read input: " + message)
+            return 1
     end match
 end func

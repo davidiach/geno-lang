@@ -75,9 +75,9 @@ func render(state: FormState) -> Unit
         let value: FieldValue = state.values[i]
         match field.kind with
             | BoolInput ->
-            y = render_bool_field(field: field, value: value, y: y)
+                y = render_bool_field(field: field, value: value, y: y)
             | _ ->
-            y = render_text_field(field: field, value: value, errors: state.errors, y: y)
+                y = render_text_field(field: field, value: value, errors: state.errors, y: y)
         end match
     end for
 

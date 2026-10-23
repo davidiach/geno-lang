@@ -53,14 +53,14 @@ func main() -> Int
     let file_type: String = detect_type(file_path)
     match fs_read_text(file_path) with
         | Err(message) ->
-        print("Error: cannot read " + file_path + ": " + message)
-        return 1
+            print("Error: cannot read " + file_path + ": " + message)
+            return 1
         | Ok(text) ->
-        let violations: List[Violation] = validate(file: file_path, text: text, file_type: file_type)
-        print(Report.format_report(violations))
-        if Report.validation_passed(violations) then
-            return 0
-        end if
-        return 1
+            let violations: List[Violation] = validate(file: file_path, text: text, file_type: file_type)
+            print(Report.format_report(violations))
+            if Report.validation_passed(violations) then
+                return 0
+            end if
+            return 1
     end match
 end func

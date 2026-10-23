@@ -108,13 +108,13 @@ func main() -> Int
 
     match read_input(args) with
         | Err(message) ->
-        print("Error: cannot read input: " + message)
-        return 1
+            print("Error: cannot read input: " + message)
+            return 1
         | Ok(input) ->
-        let result: ConvertResult = convert_with_mode(input, detect_mode(args))
-        print(result.html)
-        print("")
-        print("<!-- " + format_summary(result) + " -->")
-        return 0
+            let result: ConvertResult = convert_with_mode(input, detect_mode(args))
+            print(result.html)
+            print("")
+            print("<!-- " + format_summary(result) + " -->")
+            return 0
     end match
 end func

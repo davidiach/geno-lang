@@ -29,4 +29,4 @@ What you can rely on today, and what's still evolving.
 | Self-hosted frontend | **Experimental** | Frontend + interpreter written in Geno. `scripts/check_selfhost_parity.py` currently reports 123/228 builtin coverage (53%), and CLI smoke tests cover demo/check/run/test paths. No code-generation backend or bootstrap path yet. |
 | Constrained decoding | **Research** | Novel prefix-validation module for LLM-guided generation. Works but not yet benchmarked against real models. |
 | VS Code extension | **Experimental** | Syntax highlighting and LSP integration. Diagnostics depend on an installed Geno CLI and optional LSP dependencies. |
-| Formatter (`geno fmt`) | **Experimental** | Works on simple files. Not yet verified on the full selfhost source. |
+| Formatter (`geno fmt`) | **Stable** | Canonical indentation and spacing; idempotent, never changes what a file parses to, and every Geno program in the repository (examples, standard library, selfhost, conformance and security corpora, benchmark reference solutions) is kept formatted by `test_formatter_corpus.py`. Also serves LSP formatting. |

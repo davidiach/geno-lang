@@ -39,13 +39,13 @@ end func
 func check_required(file: String, row_label: String, row: Map[String, String], field: String) -> List[Violation]
     match map_get(row, field) with
         | Some(value) ->
-        if field_non_empty(value) then
-            return []
-        else
-            return [Violation(file, row_label + "." + field, "required", "field '" + field + "' must not be empty", "non-empty", "empty", Error)]
-        end if
+            if field_non_empty(value) then
+                return []
+            else
+                return [Violation(file, row_label + "." + field, "required", "field '" + field + "' must not be empty", "non-empty", "empty", Error)]
+            end if
         | None ->
-        return [Violation(file, row_label, "missing_column", "column '" + field + "' not found", "present", "missing", Error)]
+            return [Violation(file, row_label, "missing_column", "column '" + field + "' not found", "present", "missing", Error)]
     end match
 end func
 
@@ -54,11 +54,11 @@ end func
 func check_numeric(file: String, row_label: String, row: Map[String, String], field: String) -> List[Violation]
     match map_get(row, field) with
         | Some(value) ->
-        if field_is_positive_int(value) then
-            return []
-        else
-            return [Violation(file, row_label + "." + field, "numeric", "expected positive integer, got '" + value + "'", "positive integer", value, Error)]
-        end if
+            if field_is_positive_int(value) then
+                return []
+            else
+                return [Violation(file, row_label + "." + field, "numeric", "expected positive integer, got '" + value + "'", "positive integer", value, Error)]
+            end if
         | None -> return []
     end match
 end func
@@ -68,11 +68,11 @@ end func
 func check_allowed_values(file: String, row_label: String, row: Map[String, String], field: String, allowed: List[String]) -> List[Violation]
     match map_get(row, field) with
         | Some(value) ->
-        if field_in_list(value, allowed) then
-            return []
-        else
-            return [Violation(file, row_label + "." + field, "allowed_values", "'" + value + "' not in allowed values", "one of allowed", value, Warning)]
-        end if
+            if field_in_list(value, allowed) then
+                return []
+            else
+                return [Violation(file, row_label + "." + field, "allowed_values", "'" + value + "' not in allowed values", "one of allowed", value, Warning)]
+            end if
         | None -> return []
     end match
 end func
@@ -95,6 +95,6 @@ func validate_csv(file: String, text: String) -> List[Violation]
     match length(rows) with
         | 0 -> return [Violation(file, "<root>", "empty", "CSV file has no data rows", "at least 1 row", "0 rows", Error)]
         | _ ->
-        return fold(list: rows, initial: [], reducer: fn(acc: List[Violation], row: Map[String, String]) -> concat(acc, validate_user_row(file: file, row_label: "row", row: row)))
+            return fold(list: rows, initial: [], reducer: fn(acc: List[Violation], row: Map[String, String]) -> concat(acc, validate_user_row(file: file, row_label: "row", row: row)))
     end match
 end func

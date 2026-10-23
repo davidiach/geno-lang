@@ -4,7 +4,6 @@
 
 type Op = OpAdd | OpSub | OpMul | OpNeg
 
-
 // Apply a binary operation to two operands
 func apply_binop(op: Op, a: Int, b: Int) -> Result[Int, String]
     example (OpAdd, 3, 4) -> Ok(7)
@@ -19,7 +18,6 @@ func apply_binop(op: Op, a: Int, b: Int) -> Result[Int, String]
     end match
 end func apply_binop
 
-
 // Apply a unary operation to one operand
 func apply_unary(op: Op, a: Int) -> Result[Int, String]
     example (OpNeg, 5) -> Ok(-5)
@@ -32,7 +30,6 @@ func apply_unary(op: Op, a: Int) -> Result[Int, String]
         | OpMul -> return Err("mul is binary")
     end match
 end func apply_unary
-
 
 // Get a human-readable name for an operation
 func op_name(op: Op) -> String
@@ -47,7 +44,6 @@ func op_name(op: Op) -> String
     end match
 end func op_name
 
-
 // Check if an operation is binary (takes two operands)
 func is_binary(op: Op) -> Bool
     example OpAdd -> true
@@ -60,7 +56,6 @@ func is_binary(op: Op) -> Bool
         | OpNeg -> return false
     end match
 end func is_binary
-
 
 // Evaluate a list of values by applying a binary op across all of them (left fold)
 func eval_chain(op: Op, values: List[Int]) -> Result[Int, String]
@@ -88,7 +83,6 @@ func eval_chain(op: Op, values: List[Int]) -> Result[Int, String]
     return Ok(result)
 end func eval_chain
 
-
 // Compute factorial recursively
 func factorial(n: Int) -> Int
     requires n >= 0
@@ -102,7 +96,6 @@ func factorial(n: Int) -> Int
     end if
     return n * factorial(n - 1)
 end func factorial
-
 
 // Compute power (base^exp) using repeated multiplication
 func power(base: Int, exp: Int) -> Int
@@ -124,7 +117,6 @@ func power(base: Int, exp: Int) -> Int
     return result
 end func power
 
-
 // Format the result of a calculation as a displayable string
 func format_calc(label: String, result: Result[Int, String]) -> String
     example ("test", Ok(42)) -> "test = 42"
@@ -135,7 +127,6 @@ func format_calc(label: String, result: Result[Int, String]) -> String
         | Err(e) -> return label + " = ERROR: " + e
     end match
 end func format_calc
-
 
 func main() -> Int
     print("=== Calculator ===")

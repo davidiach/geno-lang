@@ -86,6 +86,12 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
   standalone compiled Python scripts and `geno test` examples. Before Python
   3.12 a deep run gets a thread with a large enough stack instead of crashing.
   The hosted server keeps call depth 500 (`GENO_MAX_RECURSION_DEPTH`).
+- `geno fmt` is Stable and canonical: it also normalizes spacing between
+  tokens (one space around binary operators and `->`, after `,` and `:`, none
+  inside brackets or before a call's `(`), indents a match arm's body under
+  its `| pattern ->`, indents method-chain and operator continuation lines,
+  and collapses runs of blank lines. Every Geno program in the repository is
+  kept in this form, and a test enforces it.
 - Arithmetic on an operand that already failed to type-check no longer adds a
   second "Cannot apply '+' to Any and Int" error.
 - The standard library is generic throughout: `List`, `Option` and `Result`

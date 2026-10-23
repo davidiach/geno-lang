@@ -16,7 +16,6 @@ func color_name(c: Color) -> String
     end match
 end func color_name
 
-
 func is_primary(c: Color) -> Bool
     example Red -> true
     example Blue -> true
@@ -27,7 +26,6 @@ func is_primary(c: Color) -> Bool
         | Blue -> return true
     end match
 end func is_primary
-
 
 func main() -> List[String]
     let colors: List[Color] = [Red, Green, Blue]

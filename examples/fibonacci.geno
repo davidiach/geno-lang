@@ -22,7 +22,6 @@ func fib_recursive(n: Int) -> Int
     end if
 end func fib_recursive
 
-
 // Iterative Fibonacci (more efficient)
 func fib_iterative(n: Int) -> Int
     requires n >= 0
@@ -53,7 +52,6 @@ func fib_iterative(n: Int) -> Int
     return curr
 end func fib_iterative
 
-
 // Generate first n Fibonacci numbers
 func fib_sequence(n: Int) -> List[Int]
     requires n >= 0
@@ -71,7 +69,6 @@ func fib_sequence(n: Int) -> List[Int]
 
     return result
 end func fib_sequence
-
 
 func main() -> List[Int]
     return fib_sequence(10)

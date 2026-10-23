@@ -44,12 +44,12 @@ func validate_field(field: FieldDef, value: FieldValue) -> List[FieldError]
     // Number range checks
     match value with
         | IntVal(n) ->
-        if field.min_value > 0 and n < field.min_value then
-            errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_value)))
-        end if
-        if field.max_value > 0 and n > field.max_value then
-            errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_value)))
-        end if
+            if field.min_value > 0 and n < field.min_value then
+                errors = append(errors, FieldError(field.name, field.label + " must be at least " + to_string(field.min_value)))
+            end if
+            if field.max_value > 0 and n > field.max_value then
+                errors = append(errors, FieldError(field.name, field.label + " must be at most " + to_string(field.max_value)))
+            end if
         | _ -> errors
     end match
 

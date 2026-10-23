@@ -293,12 +293,12 @@ func lex_identifier(ls: LexerState, start_line: Int, start_col: Int) -> Token
     match kw with
         | Some(tt) -> return make_token(tt: tt, value: word, line: start_line, col: start_col)
         | None ->
-        // Distinguish identifiers (snake_case) from type identifiers (PascalCase)
-        if is_upper(word[0]) then
-            return make_token(tt: TkTypeIdentifier, value: word, line: start_line, col: start_col)
-        else
-            return make_token(tt: TkIdentifier, value: word, line: start_line, col: start_col)
-        end if
+            // Distinguish identifiers (snake_case) from type identifiers (PascalCase)
+            if is_upper(word[0]) then
+                return make_token(tt: TkTypeIdentifier, value: word, line: start_line, col: start_col)
+            else
+                return make_token(tt: TkIdentifier, value: word, line: start_line, col: start_col)
+            end if
     end match
 end func lex_identifier
 
