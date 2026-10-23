@@ -199,7 +199,11 @@ def _generic_references(node: Any) -> Iterator[GenericInstance]:
 def plan_specializations(
     modules: Iterable[tuple[str | None, Program]],
 ) -> SpecializationPlan:
-    """Plan every Float-dependent copy reachable from non-generic code."""
+    """Plan every Float-dependent copy the compiled program can reach.
+
+    That is every copy named by non-generic code or by a generic function's
+    erased body, and then by the copies those need.
+    """
     plan = SpecializationPlan()
     module_list = list(modules)
     for module, program in module_list:
@@ -217,7 +221,9 @@ def plan_specializations(
 
     for module, program in module_list:
         for defn in program.definitions:
-            if isinstance(defn, FunctionDef) and not defn.type_params:
+            if isinstance(defn, FunctionDef):
+                # A generic function's erased body is compiled too, and it may
+                # call another generic function at concrete Float types.
                 visit(defn, {}, module)
             elif isinstance(defn, ImplDef):
                 visit(defn.methods, {}, module)

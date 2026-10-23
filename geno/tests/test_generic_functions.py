@@ -462,6 +462,24 @@ def test_generic_calls_inside_generic_bodies_carry_the_instantiation() -> None:
     )
 
 
+def test_an_erased_generic_body_calls_a_float_copy() -> None:
+    """`wrap(1)` uses the erased `wrap`, whose body still divides Floats."""
+    _assert_parity(
+        "func divide_by[T: Num](a: T, b: T) -> T\n"
+        "    example (6, 3) -> 2\n"
+        "    return a / b\n"
+        "end func\n\n"
+        "func wrap[T](x: T) -> Float\n"
+        "    example 1 -> 4.5\n"
+        "    return divide_by(9.0, 2.0)\n"
+        "end func\n\n"
+        "func main() -> Unit\n"
+        "    print(wrap(1))\n"
+        "end func\n",
+        "4.5\n",
+    )
+
+
 def test_polymorphic_recursion_keeps_float_formatting() -> None:
     _assert_parity(
         "func nest[T](x: T, depth: Int) -> String\n"

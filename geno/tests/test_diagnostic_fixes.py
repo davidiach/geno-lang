@@ -311,3 +311,18 @@ def test_a_method_call_writing_three_arguments_names_them() -> None:
 def test_two_arguments_after_a_receiver_stay_positional(call: str) -> None:
     result = geno.check(_program(call))
     assert result.ok, [d.message for d in result.diagnostics]
+
+
+def test_geno_fix_leaves_errors_in_modules_alone() -> None:
+    """A module's fix holds positions in the module, not in the source."""
+    main = (
+        "import Util\n\nfunc main() -> Unit\n"
+        "    print(123456789)\n    print(f(1))\nend func\n"
+    )
+    util = (
+        "export func f(n: Int) -> Int\n    example 1 -> 1\n"
+        "    return lenght([n])\nend func\n"
+    )
+    result = geno.fix(main, modules={"Util": util})
+    assert (result.source, result.applied) == (main, 0)
+    assert "lenght" in result.check.diagnostics[0].message

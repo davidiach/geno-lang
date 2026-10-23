@@ -1276,10 +1276,12 @@ def fix(
     """
     Apply the fixes that ``check`` reports until none is left.
 
-    Each round applies the first fix of every error, skipping one that
-    overlaps a fix already taken, and checks again: a fixed parse error can
-    reveal a type error with a fix of its own. Stops after ``max_rounds``
-    rounds or when a round changes nothing.
+    Each round applies the first fix of every error in ``source``, skipping
+    one that overlaps a fix already taken, and checks again: a fixed parse
+    error can reveal a type error with a fix of its own. Errors in
+    ``modules`` are reported in the result but not fixed: their edits are
+    positions in another text. Stops after ``max_rounds`` rounds or when a
+    round changes nothing.
     """
     from .diagnostics import apply_fixes
 
@@ -1289,7 +1291,10 @@ def fix(
         fixes = [
             diagnostic.fixes[0]
             for diagnostic in result.diagnostics
-            if diagnostic.fixes and diagnostic.severity is Severity.ERROR
+            if diagnostic.fixes
+            and diagnostic.severity is Severity.ERROR
+            and diagnostic.location is not None
+            and diagnostic.location.filename == filename
         ]
         fixed, count = apply_fixes(source, fixes)
         if count == 0 or fixed == source:
