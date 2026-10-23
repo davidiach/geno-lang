@@ -581,6 +581,9 @@ Follow-ups outside this proposal:
    `--env NAME` or a prefix allowlist, as the hosted server requires?
 6. **`cli_args`.** Should it move out of `env` (alternative 2)? That decision
    affects every lane and the specification, so it should be a separate one.
-7. **Independent review.** `GOVERNANCE.md` requires an independent technical
-   review for a security-boundary proposal, which stays open for at least 14
-   days. Who reviews it? See [#28](https://github.com/davidiach/geno-lang/issues/28).
+7. **Independent review.** The proposal process requires at least seven days
+   of public review. `GOVERNANCE.md` allows the project lead to accept a
+   substantial proposal while Geno has only one active maintainer, provided
+   the proposal records the absence of independent review and the review it
+   did receive. Independent technical review is still desirable for this
+   security boundary. Who reviews it? See [#28](https://github.com/davidiach/geno-lang/issues/28).
