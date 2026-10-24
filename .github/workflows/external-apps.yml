@@ -61,6 +61,7 @@ jobs:
             ${{ runner.temp }}/external-apps/receipt.json
             ${{ runner.temp }}/external-apps/commands.jsonl
             ${{ runner.temp }}/external-apps/corpus.json
+            ${{ runner.temp }}/external-apps/corpus-migrated.json
             ${{ runner.temp }}/external-apps/logs/*.log
             ${{ runner.temp }}/candidate-wheel/*.whl
           if-no-files-found: warn
