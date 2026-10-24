@@ -120,7 +120,7 @@ The [Language Tour](docs/guide/language-tour.md) explains these features with
 runnable examples. Target-specific behavior is documented in
 [Portable Runtime Semantics](docs/reference/runtime-semantics.md).
 The [Language Specification](docs/spec/v0.6.md) is the 0.6 contract, shipped
-as release candidate 0.6.0-rc.2 and normative from 0.6.0;
+as release candidate 0.6.0-rc.3 and normative from 0.6.0;
 [v0.5](docs/spec/v0.5.md) remains the normative contract for the 0.5 series
 and [v0.4](docs/spec/v0.4.md) stays frozen for 0.4. Coming from 0.5? Run
 `geno migrate`, then see the [migration notes](CHANGELOG.md#migration-to-06).

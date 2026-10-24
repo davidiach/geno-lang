@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.3] - 2026-10-24
+
+Third release candidate for the 0.6 series, retaining the frozen 0.6 language
+contract and the migration guidance below. This remains a prerelease for
+evaluation.
+
+### Fixed
+
+- Remove Windows package transaction backups and replaced checkouts containing
+  read-only Git object files. New clones keep Git objects private even with
+  local URL rewrites; cleanup preserves path containment and reports unrelated
+  failures (#190).
+- Describe JavaScript `Option[T]` values in generated TypeScript declarations
+  as the actual tagged `Some`/`None` union, including parameters and nested
+  values (#195).
+- Reject conflicting constructor names exposed by unaliased imports
+  consistently in project and embedding API checks, before interpretation or
+  compilation. Diagnostics retain the original type declaration location;
+  repeated, diamond, private and aliased imports preserve their existing scopes
+  (#209).
+
 ## [0.6.0-rc.2] - 2026-10-24
 
 Second release candidate for the 0.6 series. This remains a prerelease for

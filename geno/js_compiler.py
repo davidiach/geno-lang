@@ -3823,7 +3823,7 @@ def generate_dts(program: Program) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
-def _geno_type_to_ts(type_annot) -> str:
+def _geno_type_to_ts(type_annot, *, unit_as_null: bool = False) -> str:
     """Map a Geno type annotation to a TypeScript type string."""
     from .ast_nodes import FunctionType, SimpleType
 
@@ -3837,37 +3837,45 @@ def _geno_type_to_ts(type_annot) -> str:
             "Float": "number",
             "Bool": "boolean",
             "String": "string",
-            "Unit": "void",
+            "Unit": "null" if unit_as_null else "void",
         }
         if name in type_map and not params:
             return type_map[name]
         if name == "List":
             if params:
-                return f"Array<{_geno_type_to_ts(params[0])}>"
+                inner = _geno_type_to_ts(params[0], unit_as_null=unit_as_null)
+                return f"Array<{inner}>"
             return "Array<unknown>"
         if name == "Tuple":
             if params:
-                elems = ", ".join(_geno_type_to_ts(t) for t in params)
+                elems = ", ".join(
+                    _geno_type_to_ts(t, unit_as_null=unit_as_null) for t in params
+                )
                 return f"[{elems}]"
             return "[unknown, unknown]"
         if name == "Option":
-            if params:
-                inner = _geno_type_to_ts(params[0])
-                return f"{inner} | null"
-            return "unknown | null"
+            # Unit is stored as null in a Some payload, including collections
+            # nested in it; a standalone Unit-returning function remains void.
+            inner = (
+                _geno_type_to_ts(params[0], unit_as_null=True) if params else "unknown"
+            )
+            return (
+                f"{{ readonly _tag: 'Some'; readonly value: {inner} }}"
+                " | { readonly _tag: 'None' }"
+            )
         if name == "Result":
             return "{ _tag: 'Ok'; value: unknown } | { _tag: 'Err'; error: unknown }"
         if name == "Map":
             if len(params) >= 2:
-                k = _geno_type_to_ts(params[0])
-                v = _geno_type_to_ts(params[1])
+                k = _geno_type_to_ts(params[0], unit_as_null=unit_as_null)
+                v = _geno_type_to_ts(params[1], unit_as_null=unit_as_null)
                 return f"Map<{k}, {v}>"
             return "Map<unknown, unknown>"
         # User-defined type or type variable
         return cast(str, name)
     if isinstance(type_annot, FunctionType):
         fn_params = ", ".join(
-            f"arg{i}: {_geno_type_to_ts(t)}"
+            f"arg{i}: {_geno_type_to_ts(t, unit_as_null=unit_as_null)}"
             for i, t in enumerate(type_annot.param_types)
         )
         ret = _geno_type_to_ts(type_annot.return_type)
