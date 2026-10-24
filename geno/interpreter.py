@@ -2681,6 +2681,17 @@ class Interpreter:
                         location,
                     )
 
+                # A contravariant function alias can advertise Int arguments
+                # while the actual closure accepts Float. Use the closure's
+                # parameter types at this boundary, including callbacks and
+                # deferred async calls that have no direct call-site coercion.
+                args = [
+                    _promote_int_to_expected_float(
+                        arg,
+                        param._resolved_type or param.param_type,
+                    )
+                    for param, arg in zip(func.params, args)
+                ]
                 self._check_collection_limits(args, location)
 
                 # For async functions, return an AsyncValue instead of executing
