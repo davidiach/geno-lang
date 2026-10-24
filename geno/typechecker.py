@@ -354,6 +354,7 @@ class _ModuleImportSummary:
     imports: tuple[ImportStatement, ...]
     type_aliases: dict[str, tuple[list[str], TypeAnnotation]]
     type_defs: dict[str, TypeDefInfo]
+    type_def_locations: dict[str, SourceLocation]
     functions: dict[str, FuncType]
     func_param_names: dict[str, list[str]]
     func_default_counts: dict[str, int]
@@ -2093,6 +2094,7 @@ class TypeChecker(ExhaustivenessMixin):
         imports: list[ImportStatement] = []
         type_aliases: dict[str, tuple[list[str], TypeAnnotation]] = {}
         type_defs: dict[str, TypeDefInfo] = {}
+        type_def_locations: dict[str, SourceLocation] = {}
         functions: dict[str, FuncType] = {}
         func_param_names: dict[str, list[str]] = {}
         func_default_counts: dict[str, int] = {}
@@ -2131,6 +2133,7 @@ class TypeChecker(ExhaustivenessMixin):
                     if has_exports and not defn.exported:
                         continue
                     type_defs[defn.name] = self._build_type_def_info(defn)
+                    type_def_locations[defn.name] = defn.location
                     for variant in defn.variants:
                         fields = []
                         for field_name, field_type in variant.fields:
@@ -2167,6 +2170,7 @@ class TypeChecker(ExhaustivenessMixin):
             imports=tuple(imports),
             type_aliases=type_aliases,
             type_defs=type_defs,
+            type_def_locations=type_def_locations,
             functions=functions,
             func_param_names=func_param_names,
             func_default_counts=func_default_counts,
@@ -2192,14 +2196,9 @@ class TypeChecker(ExhaustivenessMixin):
             for alias_name, alias_info in summary.type_aliases.items():
                 self.type_aliases[alias_name] = (list(alias_info[0]), alias_info[1])
             for type_name, type_info in summary.type_defs.items():
-                # Remove stale constructor entries if type is being redefined
-                old_info = self.type_defs.get(type_name)
-                if old_info is not None:
-                    for old_ctor in old_info.variants:
-                        self._constructor_to_type.pop(old_ctor, None)
-                self.type_defs[type_name] = type_info
-                for constructor_name in type_info.variants:
-                    self._constructor_to_type[constructor_name] = type_name
+                self._register_type_def_info(
+                    type_info, summary.type_def_locations[type_name]
+                )
             for func_name, func_type in summary.functions.items() if direct else ():
                 generic = summary.generic_functions.get(func_name)
                 self._register_function_signature(
@@ -2412,24 +2411,29 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _collect_type_def(self, defn: TypeDef) -> None:
         """Collect a type definition."""
+        self._register_type_def_info(self._build_type_def_info(defn), defn.location)
+
+    def _register_type_def_info(
+        self, info: TypeDefInfo, location: SourceLocation
+    ) -> None:
+        """Register local or imported types with the same constructor checks."""
         # Remove stale constructor entries if this type name is being redefined
-        old_info = self.type_defs.get(defn.name)
+        old_info = self.type_defs.get(info.name)
         if old_info is not None:
             for old_ctor in old_info.variants:
                 self._constructor_to_type.pop(old_ctor, None)
 
-        info = self._build_type_def_info(defn)
-        self.type_defs[defn.name] = info
+        self.type_defs[info.name] = info
         for constructor_name in info.variants:
             existing_type = self._constructor_to_type.get(constructor_name)
-            if existing_type is not None and existing_type != defn.name:
+            if existing_type is not None and existing_type != info.name:
                 self._error(
                     f"Constructor '{constructor_name}' is already defined "
                     f"by type '{existing_type}'",
-                    defn.location,
+                    location,
                     ErrorCode.TYPE_DUPLICATE_DEFINITION,
                 )
-            self._constructor_to_type[constructor_name] = defn.name
+            self._constructor_to_type[constructor_name] = info.name
 
     def _function_signature_from_def(
         self, defn: FunctionDef
