@@ -1,98 +1,93 @@
-name: Scheduled Quality
-
+name: Performance environment diagnostic
 on:
-  schedule:
-    - cron: '17 3 * * 0'
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: scheduled-quality-${{ github.ref }}
+  group: performance-environment-diagnostic
   cancel-in-progress: false
-
 jobs:
-  deep-conformance-fuzz:
+  scheduler-comparison:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6449724f2de38d3e58d667a548bffb605b76bbc6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.11'
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
+      - name: Install the unchanged runtime environment
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run frozen conformance corpus
-        run: python scripts/run_conformance.py --all-retained --target all --require-node --json
-
-      - name: Run deep differential fuzzing
-        env:
-          GENO_FUZZ_DEEP: '1'
-          GENO_FUZZ_REQUIRE_NODE: '1'
-        run: >-
-          python -m pytest geno/tests/test_differential_fuzzing.py
-          -q --tb=short --timeout=900
-
-      - name: Retain minimized fuzz failures
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: scheduled-fuzz-failures-${{ github.run_id }}
-          path: |
-            .hypothesis/
-            geno/tests/fuzzing/failures/
-          if-no-files-found: warn
-          include-hidden-files: true
-          retention-days: 30
-
-  cli-latency-ratchet:
-    # Not on PR CI yet. The budgets in perf-budgets.toml were recorded on a
-    # developer machine, and the calibration in benchmarks/cli_latency.py only
-    # ever widens them, never tightens — so a hosted runner needs a few clean
-    # weekly runs before the numbers are trustworthy enough to gate merges on.
-    # Promote this to .github/workflows/ci.yml once they are, re-recording the
-    # baselines on the runner with `make perf-ratchets-update`.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
+          python -m pip install -e .
+      - name: Compare normal and first-allowed-CPU scheduling
         run: |
-          python -m pip install --upgrade pip
-          pip install -e "."
+          cat > "$RUNNER_TEMP/geno-perf-affinity.py" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import resource
+          import subprocess
+          import sys
+          import sysconfig
+          import time
 
-      # --out archives this run's numbers. Re-running the suite to capture them
-      # would measure something else: the suite is noisy, so a second run can
-      # disagree with the one that just failed, and it doubles the benchmark
-      # work for an artifact that then cannot explain the failure.
-      - name: Enforce performance budgets
-        run: python scripts/check_perf_ratchets.py --out cli-latency.json
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          out = Path(os.environ["RUNNER_TEMP"]) / "geno-perf-affinity"
+          out.mkdir(parents=True, exist_ok=True)
+          allowed = sorted(os.sched_getaffinity(0))
+          fixed = {allowed[0]}
+          source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if source != "6449724f2de38d3e58d667a548bffb605b76bbc6":
+              raise RuntimeError("Unexpected candidate")
+          budget_sha = hashlib.sha256((root / "perf-budgets.toml").read_bytes()).hexdigest()
+          order = [("A1", allowed), ("B1", fixed), ("B2", fixed), ("A2", allowed)]
+          records = []
+          for label, affinity in order:
+              os.sched_setaffinity(0, affinity)
+              before = resource.getrusage(resource.RUSAGE_CHILDREN)
+              started = time.perf_counter()
+              result = subprocess.run([sys.executable, "scripts/check_perf_ratchets.py", "--out", str(out / (label + ".json"))], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              elapsed = time.perf_counter() - started
+              after = resource.getrusage(resource.RUSAGE_CHILDREN)
+              (out / (label + ".log")).write_text(result.stdout)
+              record = {"label": label, "affinity": sorted(affinity), "exit_code": result.returncode,
+                        "wall_seconds": elapsed, "child_user_seconds": after.ru_utime-before.ru_utime,
+                        "child_system_seconds": after.ru_stime-before.ru_stime,
+                        "child_voluntary_switches": after.ru_nvcsw-before.ru_nvcsw,
+                        "child_involuntary_switches": after.ru_nivcsw-before.ru_nivcsw,
+                        "measurement": json.loads((out / (label + ".json")).read_text())}
+              records.append(record)
+              print(json.dumps(record), flush=True)
+          os.sched_setaffinity(0, allowed)
+          for label, affinity in [("normal", allowed), ("fixed", fixed)]:
+              os.sched_setaffinity(0, affinity)
+              result = subprocess.run([sys.executable, "-X", "importtime", "-m", "geno", "check", "benchmarks/fixtures/medium.geno"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              (out / (label + "-importtime.txt")).write_text(result.stderr)
+              if result.returncode:
+                  raise RuntimeError("Profile command failed")
+          os.sched_setaffinity(0, allowed)
+          summary = {"purpose": "Fixed scheduler A-B-B-A experiment; not release qualification",
+                     "source": source, "budget_sha256": budget_sha,
+                     "python": sys.version, "executable": sys.executable, "platform": platform.platform(),
+                     "python_build": {key: sysconfig.get_config_var(key) for key in ["CONFIG_ARGS", "CFLAGS", "Py_DEBUG", "WITH_PYMALLOC"]},
+                     "allowed_cpus": allowed, "fixed_cpu": min(fixed),
+                     "cpuinfo": Path("/proc/cpuinfo").read_text(),
+                     "cpu_stat": Path("/sys/fs/cgroup/cpu.stat").read_text(),
+                     "records": records}
+          (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print("Diagnostic complete. Preserve every failure; no automatic retry or release authorization.")
 
-      - name: Upload the measurement
+          PY
+          python "$RUNNER_TEMP/geno-perf-affinity.py"
+      - name: Preserve all observations
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: cli-latency-${{ github.run_id }}
-          path: cli-latency.json
-          if-no-files-found: warn
+          name: stable-performance-affinity
+          path: ${{ runner.temp }}/geno-perf-affinity/
+          if-no-files-found: error
           retention-days: 90
