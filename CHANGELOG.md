@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The 0.6 development line implements the
-[Geno 0.6 upgrade roadmap](docs/proposals/0003-geno-0.6-language-upgrade.md).
-Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
+## [0.6.0-rc.1] - 2026-10-24
+
+Release candidate for the first publication of the 0.6 series, which implements
+the [Geno 0.6 upgrade roadmap](docs/proposals/0003-geno-0.6-language-upgrade.md)
+and accepted proposals 0004-0012. It is a **prerelease**: it breaks source
+compatibility with 0.5 (see "Changed (breaking)" and "Migration to 0.6"), so it
+is published for evaluation first and taken to 0.6.0 by a promotion proposal,
+as 0.5.0-rc.1 was. Its contract is [docs/spec/v0.6.md](docs/spec/v0.6.md),
+which becomes normative at that promotion, and its frozen corpus is
+`conformance/v0.6`; `docs/spec/v0.5.md` and `conformance/v0.5` are retained
+unchanged.
 
 ### Added
 
@@ -84,7 +92,11 @@ Its draft contract is [docs/spec/v0.6.md](docs/spec/v0.6.md).
 - Default limits that run ordinary programs: call depth 10,000 (was 500) and
   20,000,000 interpreter steps (was 1,000,000) on every local lane, including
   standalone compiled Python scripts and `geno test` examples. Before Python
-  3.12 a deep run gets a thread with a large enough stack instead of crashing.
+  3.12 a deep run gets a thread with a large enough stack instead of crashing,
+  except in the default process-isolated `geno run` on platforms other than
+  Linux: its worker cannot start a thread, so it keeps the recursion limit
+  within its stack and a very deep run stops with a recursion error. Use
+  Python 3.12 or later, or `--unsafe` for trusted code, to run deeper there.
   The hosted server keeps call depth 500 (`GENO_MAX_RECURSION_DEPTH`).
 - Diagnostics carry fixes when the correction is unambiguous: a rename for
   every "Did you mean" suggestion (names, methods, fields, types,

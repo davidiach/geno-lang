@@ -1,11 +1,11 @@
 {
   "name": "Geno",
-  "version": "0.5.0",
+  "version": "0.6.0-rc.1",
   "description": "Machine-readable specification for the Geno programming language",
   "format_version": 1,
-  "language_series": "0.5",
+  "language_series": "0.6",
   "status": "normative-pre-1.0",
-  "human_spec": "docs/spec/v0.5.md",
+  "human_spec": "docs/spec/v0.6.md",
   "compatibility_policy": "docs/operations/compatibility-policy.md",
 
   "keywords": [
