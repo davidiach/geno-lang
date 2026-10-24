@@ -3,6 +3,8 @@
 - Status: Draft
 - Authors: Claude Code (AI-assisted draft for maintainer review)
 - Created: 2026-10-16
+- Updated: 2026-10-24
+- Target release: 0.7.0 or later (tentative; next feature cycle after 0.6)
 - Discussion: https://github.com/davidiach/geno-lang/issues/68
 - Supersedes: None
 
@@ -16,14 +18,19 @@ that lane. `--json` grants capabilities but provides no host access for `fs`,
 That flag gives up the hard wall-clock kill,
 the memory, CPU, file-size and process limits, and crash isolation.
 
-The lane gains capabilities in three steps:
+The proposed rollout separates five milestones:
 
-1. `regex`, `env` and `stdin`. These need no new host access from the worker:
-   the regex engine is already loaded there, and the parent supplies the
-   environment, program arguments and stdin.
-2. `fs`, scoped to the same roots as `geno run --unsafe --cap fs`.
-3. `http`, under the same scheme, address, redirect and size policy that
-   other Python surfaces enforce.
+1. Grant selection and `regex`. The regex engine is already loaded in the
+   worker, so this first step needs no new host bindings.
+2. `env` and program arguments, after environment exposure and example-checking
+   policy are decided. This step addresses [#68](https://github.com/davidiach/geno-lang/issues/68).
+3. `stdin`, after its input lifecycle and end-to-end timeout are specified.
+4. `fs`, after its facade, roots and write-limit policy are settled.
+5. `http`, after its scheme, address, redirect, size and timeout policy is
+   reviewed against the other Python surfaces.
+
+Each milestone needs its own implementation and validation; unsupported
+capabilities remain refused until their milestone lands.
 
 `process` and `serve` stay unavailable in the isolated lane. Asking for either
 fails before launch with a message that names `--unsafe`.
@@ -34,8 +41,29 @@ reference. The capability check in each builtin stays as the first gate; a
 missing binding is a second, independent one.
 
 The change is additive: no source program changes meaning, and commands that
-exit 1 today start working. It targets 0.6.0, because
-[proposal 0002](0002-0.5-stable-promotion.md) deferred [#68](https://github.com/davidiach/geno-lang/issues/68) beyond 0.5.0.
+exit 1 today start working. Implementation now targets the next feature cycle
+after 0.6, provisionally 0.7.0 or later, subject to acceptance and validation.
+This is not a delivery commitment or an addition to the current 0.6 release
+candidate. [Proposal 0002](0002-0.5-stable-promotion.md) originally deferred
+[#68](https://github.com/davidiach/geno-lang/issues/68) beyond 0.5.0.
+
+### Draft refresh (2026-10-24)
+
+The problem remains on `main` at `4e70283` (0.6.0-rc.3):
+[`run_file` still rejects every explicit `--cap` in process mode](https://github.com/davidiach/geno-lang/blob/4e70283e04f1521cc1164a270e2b8a9d63ba30e7/geno/cli/run.py#L619).
+The proposal remains Draft. Its elapsed public-review period and passing
+documentation checks do not constitute acceptance.
+
+Before acceptance, record decisions on environment exposure, capability grants
+during example checking, and stdin acquisition and timeout behavior. Resolve
+the filesystem and HTTP policy questions before implementing those milestones.
+The filesystem-only argument-forwarding review finding is already addressed:
+trusted worker setup receives program arguments independently of the
+program-visible `env` grant.
+
+After those acceptance decisions and the required review record, accept and
+merge the design record separately from implementation. Merging this document
+does not enable capabilities or close #68.
 
 ## Motivation
 
@@ -72,8 +100,10 @@ Hint: the default 'geno run' lane grants only clock, print, random and does not 
 It says the same for `regex`. The regex engine already runs inside the worker,
 so a regex program loses process isolation to gain nothing.
 
-The repository's own guidance follows the hint. Outside the tests, 35
-occurrences in 18 files tell readers to run `--unsafe --cap`. The files are app
+The repository's own guidance follows the hint. At draft creation on
+2026-10-16, 35 occurrences in 18 files outside the tests told readers to run
+`--unsafe --cap`. This historical count has not been rerun for the refresh.
+The files were app
 READMEs, guides, the reference docs, the website and blog posts, the changelog,
 and the CLI's own messages.
 
@@ -137,9 +167,10 @@ The rules a user sees:
 - **With `--cap`, the grant is exactly the list.** This matches `--unsafe`,
   `--json`, `geno serve` and standalone compiled output. `--cap env` alone
   denies `print`, and the denial hint names the full flag to use.
-- **Capabilities available in the isolated lane:** `print`, `clock`, `random`,
-  `regex`, `env`, `stdin`, `fs` and `http`, with the last three added in later
-  phases.
+- **Capabilities proposed for the isolated lane:** `print`, `clock`, `random`,
+  `regex`, `env`, `stdin`, `fs` and `http`. The defaults are available today;
+  the others follow the five milestones above. A capability remains refused
+  until its implementation lands, and the CLI must name that limitation.
 - **`process` and `serve` are refused before the program starts:**
 
   ```text
@@ -157,20 +188,23 @@ The rules a user sees:
     geno run --cap clock,env,print,random main.geno -- hello
   ```
 
-  The hint mentions `--unsafe` only for `process` and `serve`.
+  During rollout, this hint applies only to capabilities already implemented
+  in the isolated lane. Unsupported capabilities retain explicit alternative-mode
+  advice. After all five milestones, only `process` and `serve` need that advice.
 - **`fs` has the same scope as `--unsafe --cap fs`:** the working directory,
   the source file's directory, the project root, and any path-like arguments
   after `--`.
 - **The lane stays batch-oriented.** Output still appears when the program
-  ends, as it does today. When `stdin` is granted, stdin is read to end of
-  file before the program starts.
+  ends, as it does today. The current stdin candidate reads to end of file
+  before the program starts, but read-ahead versus lazy input is unresolved.
+  Either design must bound input acquisition as well as worker execution.
 
 ## Reference Design
 
 ### Parsing and validation in the parent
 
-- `run_file` accepts `capabilities` in process mode and drops the blanket
-  rejection.
+- `run_file` accepts `capabilities` in process mode and replaces the blanket
+  rejection with validation against the capabilities implemented so far.
   - `geno/__main__.py` already validates names with
     `normalize_capability_values`.
   - A grant containing `process` or `serve` exits 1 with the message above,
@@ -180,7 +214,8 @@ The rules a user sees:
   - 64 MiB when it is (see [Filesystem](#filesystem-fs)).
 
   An explicit value always wins, including `0`, which makes every write fail.
-- `--cap` help text drops "Requires --unsafe or --json".
+- `--cap` help text lists the capabilities currently supported in process mode
+  and identifies those that still require another execution mode.
 
 ### Trust channel
 
@@ -260,6 +295,12 @@ client modules whole and binds them only under `http`.
 
 ### Environment and arguments (`env`)
 
+The full-environment snapshot below is a candidate, not an accepted exposure
+policy. Before acceptance, decide whether to retain the direct interpreter's
+full environment access or introduce an explicit allowlist, and document the
+default, secret exposure and parity implications. Keeping `cli_args` in `env`
+must not silently become approval to expose every environment variable.
+
 - The parent snapshots its environment before it sets `GENO_CLI_ARGS`. It
   sends the snapshot only when `env` is granted.
 - `env_get` and `env_get_or` read the snapshot. `cli_args` returns the program
@@ -273,6 +314,17 @@ client modules whole and binds them only under `http`.
 
 ### Standard input (`stdin`)
 
+Read-ahead is the current candidate, not an accepted input contract. Reading
+stdin in the parent before worker launch is outside the worker's current
+wall-clock timeout: a pipe that never reaches EOF could block indefinitely
+even with a size bound. Before acceptance, choose read-ahead or lazy input and
+specify a cancellable, bounded-time design on Linux, macOS and Windows.
+Until that design is implemented and tested, isolated `stdin` stays refused.
+
+- The `--timeout` budget must include input acquisition. A read-ahead design
+  starts the deadline before the first read and passes only the remaining
+  budget to worker startup and execution. Timeout and interruption must cancel
+  the read and clean up resources; a character limit alone is insufficient.
 - When `stdin` is granted, the parent reads its stdin to end of file before
   launching the worker. It sends the text as a separate frame after the
   request. Without the grant, the parent never touches stdin.
@@ -336,17 +388,26 @@ proposal, for example with an explicit `--timeout none` and streamed output.
 
 ### Example checking
 
-Before `main`, the worker checks examples in the interpreter with the default
-grant set and no host callbacks. This proposal keeps that behaviour. An
-example that calls a granted host builtin fails here but passes under
-`--unsafe`, which runs examples with the grant. See the unresolved questions.
+Before `main`, the worker currently checks examples in the interpreter with
+the default grant set and no host callbacks. Retaining that behavior is a
+candidate, not an accepted decision: an example that calls a granted host
+builtin would fail here but pass under `--unsafe`, which runs examples with
+the grant.
+
+Before acceptance, decide whether examples retain defaults or receive the
+explicit run grant, including the policy for host side effects before `main`.
+Document and test the choice even for `regex`, which has no new host binding
+but is absent from the default example grant. A choice to share grants must
+also share the capability's environment, filesystem and HTTP restrictions.
 
 ### Diagnostics
 
-- The process-mode `--cap` rejection is removed for supported capabilities and
-  replaced by the narrower `process`/`serve` message.
+- The process-mode `--cap` rejection is removed only for capabilities whose
+  milestone has landed. Other requests fail before launch with a diagnostic
+  naming the unsupported capability; `process` and `serve` stay refused.
 - `_default_lane_capability_hint` suggests `geno run --cap ...` for supported
-  capabilities and keeps `--unsafe` advice for the other two.
+  capabilities. Capabilities not yet implemented, plus `process` and `serve`,
+  retain explicit alternative-mode advice.
   - It still takes the capability only from the worker's structured denial tag
     (`ProcessSandbox.last_capability_denied`).
   - The protection [#187](https://github.com/davidiach/geno-lang/pull/187) added against forged messages stays.
@@ -360,20 +421,20 @@ Node, browser and hosted surfaces keep their current behaviour. `--target`
 still affects checking only; the isolated lane always executes compiled
 Python.
 
-After this change the isolated lane matches `--unsafe --cap` on everything
-the runtime policy decides:
-- the `fs` roots, read-only mode and absolute-path rule;
-- the `http` policy;
-- the environment the program sees;
-- the program arguments.
+For implemented capabilities, the intended parity with `--unsafe --cap` covers
+the filesystem roots, read-only mode and absolute-path rule, the HTTP policy,
+and program arguments. Environment visibility and example execution depend on
+the acceptance decisions above; identical behavior is not promised where the
+selected policies differ.
 
-Differences that remain, all documented:
+Proposed differences, including the unresolved policies:
 
 | Topic | Isolated lane | `--unsafe` |
 |---|---|---|
 | Output | shown when the program ends | streamed |
-| `stdin` | read to EOF before start | read on call |
-| Examples | default grant, no host access | run with the grant |
+| `stdin` | input model unresolved; acquisition must be time- and size-bounded | read on call |
+| Examples | grant and host-access policy unresolved | run with the grant |
+| Environment | full snapshot versus allowlist unresolved | full caller environment with `env` |
 | Hard limits | wall clock (kill), memory, CPU, file size, processes | none; cooperative timeout and step limit |
 | `process`, `serve` | refused | available |
 
@@ -400,9 +461,11 @@ Differences that remain, all documented:
   geno run --cap env,print main.geno -- hello
   ```
 
-- **Release:** 0.6.0, recorded in the changelog under Added. Proposal 0002
-  froze 0.5.0 against new CLI behaviour, and this change makes no breaking
-  change that would need the pre-1.0 minor-release exception.
+- **Release:** implementation is deferred to the next feature cycle after
+  0.6, provisionally 0.7.0 or later. Main is already at 0.6.0-rc.3; this proposal
+  does not expand that candidate. Acceptance establishes a design direction,
+  not a shipping promise. Each implemented milestone gets its own changelog
+  entry under Added in the applicable release.
 
 ## Security And Resource Limits
 
@@ -432,22 +495,26 @@ are:
 - tests check that gated builtins return Geno values, never host objects.
 
 **Comparison with the status quo.** Users grant these capabilities today with
-`--unsafe`, so those runs have none of the hard limits. For every run that uses
-`fs`, `env`, `stdin`, `http` or `regex`, this proposal is a strict improvement
-in isolation.
+`--unsafe`, so those runs have none of the hard limits. The proposal aims to
+retain hard limits while enabling those runs. That improvement depends on
+validated host bindings and policies, including a timeout covering stdin
+acquisition before worker launch; the prototype does not establish all of
+these properties.
 
-**Environment exposure.** Granting `env` exposes every environment variable,
-secrets included, exactly as `--unsafe --cap env` does. Combined with `http`,
-that enables exfiltration. The capability docs must say so. The hosted server
-already requires an allowlist for `env`; a CLI allowlist is an unresolved
-question.
+**Environment exposure.** The candidate full-environment snapshot exposes
+every variable, secrets included, exactly as `--unsafe --cap env` does.
+Combined with `http`, that enables exfiltration. The hosted server already
+requires an allowlist for `env`. Decide full exposure versus a CLI allowlist
+before acceptance, and document the chosen default and how it applies to
+examples as well as `main`.
 
 **Denial of service.** Every limit stays in force: wall clock, memory, CPU,
 output, collection size, integer size and recursion. On top of that:
 - `fs` allows writes up to the per-file limit, but the number of files is
   bounded only by the timeout;
 - `http` uses the network until the timeout;
-- the `stdin` read-ahead is bounded.
+- stdin acquisition must be bounded in both size and time, including before
+  the worker starts.
 
 **Fail-closed properties.** These are kept:
 - no `--cap` behaves as today;
@@ -471,9 +538,14 @@ output, collection size, integer size and recursion. On top of that:
   A prototype confirmed the last two with the existing mechanisms.
 - **Per capability**, in the isolated lane:
   - `regex`;
-  - `env`: `cli_args`, `env_get` returning the caller's value, and the
-    caller's `HOME` rather than the sandbox's;
-  - `stdin`: UTF-8, invalid UTF-8 and over-limit input;
+  - `env`: `cli_args`, permitted caller values under the chosen environment
+    scope, omitted or denied variables, and separation of the caller's values
+    from the worker's setup environment;
+  - `stdin`: UTF-8, invalid UTF-8 and over-limit input; a pipe that never
+    reaches EOF; slow input; timeout during acquisition; interruption cleanup;
+    and enforcement of the remaining execution budget after input acquisition;
+  - examples: explicit grants that remove defaults, `regex` examples, and
+    granted and denied host operations before `main`, under the chosen policy;
   - `fs`: read, write, list, metadata and canonicalize; `..` and symlink
     escapes; absolute paths inside and outside the roots; a path argument
     after `--` authorizing its directory under an `fs`-only grant, while
@@ -481,8 +553,10 @@ output, collection size, integer size and recursion. On top of that:
     message;
   - `http`: a local test server with `GENO_HTTP_ALLOW_PRIVATE`, scheme and
     private-address rejection, redirects and size limits.
-- **Parity:** the same programs under `--cap` and `--unsafe --cap` produce
-  the same output and the same errors.
+- **Parity:** with equivalent accepted policies, inputs and grants, the same
+  programs under `--cap` and `--unsafe --cap` produce the same output and errors
+  within the isolated lane's limits. Add explicit expectations for documented
+  differences in environment scope, example execution and stdin behavior.
 - **Diagnostics:** the [#187](https://github.com/davidiach/geno-lang/pull/187) tests in
   `geno/tests/test_capability_denial_diagnostics.py` are updated for the new
   hint and still prove a forged message gets no hint.
@@ -516,21 +590,38 @@ and that gap is the existing cost of the worker.
 
 ## Rollout And Observability
 
-Three implementation pull requests, each independently revertible. Reverting
-one restores the fail-closed rejection for its capabilities.
+Keep this proposal and its PR Draft while the acceptance decisions remain
+open. Record the decisions and actual review received, then accept, assign a
+permanent proposal number, and merge the design record separately from code.
+Acceptance or merging the document does not close #68.
 
-1. **Plumbing, `regex`, `env` and `stdin`:**
-   - the config channel, `_GENO_HOST` and the helpers;
-   - the `process`/`serve` refusal and the new hint;
-   - docs and website text for these capabilities.
+Implementation is planned for 0.7.0 or later through five small milestones,
+each in a separate reviewed PR and independently revertible:
 
-   This step fixes the case [#68](https://github.com/davidiach/geno-lang/issues/68) reports.
-2. **`fs`:** the facade, the root policy, the file-size default and the write
-   error message.
-3. **`http`:** the preload and the policy forwarding.
+1. **Grant selection and `regex`:** validate the configured grant, preserve
+   defaults when `--cap` is absent, implement the selected example policy, and
+   update hints and docs only for supported capabilities. No new host binding.
+2. **`env` and arguments:** add the private host-binding channel and helpers,
+   implement the accepted environment scope, and test program-argument access
+   and example policy. This is the milestone intended to address
+   [#68](https://github.com/davidiach/geno-lang/issues/68); close it only after
+   implementation and validation.
+3. **`stdin`:** implement the accepted input lifecycle with size and end-to-end
+   time bounds, cancellation cleanup, and supported-platform tests.
+4. **`fs`:** settle and implement the facade, root and write-limit policies,
+   preserving the reviewed filesystem-only argument-forwarding behavior.
+5. **`http`:** review and implement preload, address and redirect policy,
+   response bounds and timeout behavior.
 
-No feature flag is needed, because the behaviour only applies when `--cap` is
-passed. Each PR adds a changelog entry under Unreleased.
+Every stage continues to reject capabilities it has not implemented.
+`process` and `serve` remain refused throughout. Reverting a stage restores
+fail-closed rejection for its capabilities; shared plumbing must retain any
+interfaces later stages still depend on.
+
+No feature flag is proposed because the behavior applies only when `--cap`
+is passed. Each implementation PR adds its own changelog entry and scoped
+tests, then runs the applicable security, parity and release gates. No
+implementation or capability behavior changes are included in this draft PR.
 
 Follow-ups outside this proposal:
 - an issue for host callbacks in `--json` mode;
@@ -572,13 +663,18 @@ Follow-ups outside this proposal:
    extra code worth it, compared with raw `os` behind both gates?
 2. **Write limits.** Is 64 MiB per file the right default? Should there also
    be a total-bytes-written budget?
-3. **Examples.** Should example checking in this lane receive the run's grant,
-   with host access before `main`, to match `--unsafe`?
-4. **Standard input.** Should `stdin` be read ahead, as proposed, or passed as
-   an inherited handle so programs read it lazily? The handle approach is more
-   complex on Windows.
-5. **Environment scope.** Should the CLI offer a way to narrow `env`, such as
-   `--env NAME` or a prefix allowlist, as the hosted server requires?
+3. **Examples (acceptance blocker).** Should example checking receive the run's
+   grant, including permitted host access before `main`, or retain defaults?
+   Decide the side-effect policy and test both granted and denied examples.
+4. **Standard input (acceptance blocker).** Choose read-ahead or lazy input and
+   specify how the same timeout bounds acquisition, startup and execution.
+   How are a never-ending pipe, interruption and resource cleanup handled on
+   each supported platform? The worker timeout alone cannot bound a prior
+   parent-side read.
+5. **Environment scope (acceptance blocker).** Decide whether `env` exposes the
+   full caller environment or an explicit allowlist, including defaults,
+   secret exposure, example behavior and parity with other modes. A separate
+   argument capability remains an alternative, not a decision in this draft.
 6. **`cli_args`.** Should it move out of `env` (alternative 2)? That decision
    affects every lane and the specification, so it should be a separate one.
 7. **Independent review.** The proposal process requires at least seven days
