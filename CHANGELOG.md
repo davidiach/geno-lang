@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.4] - 2026-10-24
+
+Fourth release candidate for the frozen 0.6 language contract. Stable promotion
+remains held until fresh qualification and an explicit promotion-baseline update.
+
+### Fixed
+
+- Avoid reparsing the compiler-owned Python runtime prelude during compiler
+  startup. A generated binding inventory is used only when the exact source hash
+  matches; modified sources retain the original parser and reserved-name checks.
+  Backend validation, dependency versions, and performance budgets are unchanged.
+
 ## [0.6.0-rc.3] - 2026-10-24
 
 Third release candidate for the 0.6 series, retaining the frozen 0.6 language
