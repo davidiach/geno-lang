@@ -5,12 +5,34 @@ benchmark.
 
 ## Current Status
 
-No live frontier-model result is committed, and public frontier-model
-publication is currently deferred. The repo keeps the reproducible run
-configuration and publication methodology ready for a future run in:
+No live frontier-model result is committed yet: a run needs provider API keys
+for at least three frontier models. The harness is ready for Geno 0.6:
+
+- the Geno prompt carries the documented 0.6 rules (kept identical to
+  `docs/llm-prompting.md` by a test) and a reference program that type-checks
+  and passes its examples;
+- repair prompts list Geno errors as `geno check` reports them: stable code,
+  line and column, and the fix each carries;
+- every run records pass@1 after `geno.fix` (the "autofix" metric) beside
+  pure pass@1, with no extra model call.
+
+The reproducible run configuration and methodology are in:
 
 - `experiment/config.frontier.yaml`
 - `docs/benchmark/llm-correctness-methodology.md`
+
+## Key-Free Result: Seeded Mistakes
+
+`docs/benchmark/seeded-mistakes.md` is a result anyone can reproduce without a
+model: 27 mistakes that models carry over from other languages (`let mut`,
+`True`, `&&`, `elif`, `len(xs)`, an implicit return, ...) or make by slip are
+seeded into each of the 78 reference solutions, and the 840 mutants are
+checked and repaired with `geno.fix`. Every mutant is rejected and reported on
+the line of its mistake; the fixes repair all 684 mutants of the 25 mistakes
+that have a fix, and none of the 156 mutants of the two that do not (a missing
+return type, missing `example` clauses). No repaired program fails a test. It
+measures the repair path only, not how often models make each mistake;
+regenerate it with `python3 scripts/seeded_mistakes.py --write`.
 
 Local `results/experiment_*` directories in development checkouts may contain
 smoke or canonical-generator artifacts. They are not published benchmark

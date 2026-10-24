@@ -28,6 +28,7 @@ from .types import (
     ListType,
     MapType,
     MutableMapType,
+    NeverType,
     OptionType,
     ResultType,
     SetType,
@@ -97,7 +98,6 @@ VALID_EFFECTS: frozenset[str] = frozenset(
         "regex",
         "stdin",
         "mutation",
-        "throw",
     }
 )
 
@@ -108,6 +108,8 @@ PYTHON_BACKEND_BUILTIN_NAME_OVERRIDES: dict[str, str] = {
     "abs": "abs_",
     "print": "print_",
     "max": "max_",
+    "min": "min_",
+    "sum": "sum_",
     "slice": "slice_",
     "floor": "floor_",
     "ceil": "ceil_",
@@ -124,6 +126,7 @@ JS_BACKEND_BUILTIN_NAME_OVERRIDES: dict[str, str] = {
     "abs": "abs_",
     "print": "print_",
     "max": "max_",
+    "min": "min_",
     "slice": "slice_",
     "round": "round_",
     "range": "range_",
@@ -173,7 +176,6 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     ),
     "starts_with": FuncType((StringType(), StringType()), BoolType()),
     "to_chars": FuncType((StringType(),), ListType(StringType())),
-    "sort_strings": FuncType((ListType(StringType()),), ListType(StringType())),
     "substring": FuncType((StringType(), IntType(), IntType()), StringType()),
     "format": FuncType((StringType(), ListType(StringType())), StringType()),
     "char_code": FuncType((StringType(),), IntType()),
@@ -187,29 +189,65 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "ceil": FuncType((FloatType(),), IntType()),
     "round": FuncType((FloatType(),), IntType()),
     "max": FuncType((TypeVar("Num"), TypeVar("Num")), TypeVar("Num")),
+    "min": FuncType((TypeVar("Num"), TypeVar("Num")), TypeVar("Num")),
+    "sum": FuncType((ListType(IntType()),), IntType()),
+    "float_sum": FuncType((ListType(FloatType()),), FloatType()),
+    "list_min": FuncType((ListType(TypeVar("T")),), OptionType(TypeVar("T"))),
+    "list_max": FuncType((ListType(TypeVar("T")),), OptionType(TypeVar("T"))),
+    "is_empty": FuncType((ListType(TypeVar("T")),), BoolType()),
+    "list_index_of": FuncType(
+        (ListType(TypeVar("T")), TypeVar("T")), OptionType(IntType())
+    ),
+    "count": FuncType(
+        (ListType(TypeVar("T")), FuncType((TypeVar("T"),), BoolType())), IntType()
+    ),
+    "unique": FuncType((ListType(TypeVar("T")),), ListType(TypeVar("T"))),
+    "string_is_empty": FuncType((StringType(),), BoolType()),
+    "string_reverse": FuncType((StringType(),), StringType()),
+    "string_lines": FuncType((StringType(),), ListType(StringType())),
+    "string_words": FuncType((StringType(),), ListType(StringType())),
+    "string_is_digit": FuncType((StringType(),), BoolType()),
+    "string_is_alpha": FuncType((StringType(),), BoolType()),
+    "string_is_alphanumeric": FuncType((StringType(),), BoolType()),
+    "string_is_whitespace": FuncType((StringType(),), BoolType()),
+    "string_is_upper": FuncType((StringType(),), BoolType()),
+    "string_is_lower": FuncType((StringType(),), BoolType()),
     "abs": FuncType((TypeVar("Num"),), TypeVar("Num")),
-    "is_sorted": FuncType((ListType(IntType()),), BoolType()),
-    "is_positive": FuncType((IntType(),), BoolType()),
-    "is_numeric_string": FuncType((StringType(),), BoolType()),
     "parse_int": FuncType((StringType(),), OptionType(IntType())),
     "parse_float": FuncType((StringType(),), OptionType(FloatType())),
     "to_string": FuncType((TypeVar("T"),), StringType()),
     "float_to_int": FuncType((FloatType(),), IntType()),
     "int_to_float": FuncType((IntType(),), FloatType()),
-    "square": FuncType((TypeVar("Num"),), TypeVar("Num")),
-    "is_permutation": FuncType(
-        (ListType(TypeVar("T")), ListType(TypeVar("T"))), BoolType()
-    ),
     "reverse": FuncType((ListType(TypeVar("T")),), ListType(TypeVar("T"))),
     "bit_or": FuncType((IntType(), IntType()), IntType()),
     "range": FuncType((IntType(), IntType()), ListType(IntType())),
     "is_some": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "is_none": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "unwrap": FuncType((OptionType(TypeVar("T")),), TypeVar("T")),
+    "panic": FuncType((StringType(),), NeverType()),
     "unwrap_or": FuncType((OptionType(TypeVar("T")), TypeVar("T")), TypeVar("T")),
     "map_insert": FuncType(
         (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K"), TypeVar("V")),
         MapType(TypeVar("K"), TypeVar("V")),
+    ),
+    "map_size": FuncType((MapType(TypeVar("K"), TypeVar("V")),), IntType()),
+    "map_contains_key": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K")), BoolType()
+    ),
+    "map_get_or": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K"), TypeVar("V")),
+        TypeVar("V"),
+    ),
+    "map_is_empty": FuncType((MapType(TypeVar("K"), TypeVar("V")),), BoolType()),
+    "map_remove": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K")),
+        MapType(TypeVar("K"), TypeVar("V")),
+    ),
+    "map_keys": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")),), ListType(TypeVar("K"))
+    ),
+    "map_values": FuncType(
+        (MapType(TypeVar("K"), TypeVar("V")),), ListType(TypeVar("V"))
     ),
     "map_get": FuncType(
         (MapType(TypeVar("K"), TypeVar("V")), TypeVar("K")),
@@ -241,16 +279,16 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
         (ListType(TypeVar("T")), FuncType((TypeVar("T"),), ListType(TypeVar("U")))),
         ListType(TypeVar("U")),
     ),
-    "contains_substring": FuncType((StringType(), StringType()), BoolType()),
-    "repeat_string": FuncType((StringType(), IntType()), StringType()),
     "string_trim": FuncType((StringType(),), StringType()),
     "string_trim_start": FuncType((StringType(),), StringType()),
     "string_trim_end": FuncType((StringType(),), StringType()),
     "string_pad_left": FuncType((StringType(), IntType(), StringType()), StringType()),
     "string_pad_right": FuncType((StringType(), IntType(), StringType()), StringType()),
     "string_char_at": FuncType((StringType(), IntType()), StringType()),
-    "string_index_of": FuncType((StringType(), StringType()), IntType()),
-    "string_last_index_of": FuncType((StringType(), StringType()), IntType()),
+    "string_index_of": FuncType((StringType(), StringType()), OptionType(IntType())),
+    "string_last_index_of": FuncType(
+        (StringType(), StringType()), OptionType(IntType())
+    ),
     "string_repeat": FuncType((StringType(), IntType()), StringType()),
     "string_substring": FuncType((StringType(), IntType(), IntType()), StringType()),
     "string_split": FuncType((StringType(), StringType()), ListType(StringType())),
@@ -347,6 +385,10 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "result_unwrap_or": FuncType(
         (ResultType(TypeVar("T"), TypeVar("E")), TypeVar("T")), TypeVar("T")
     ),
+    "result_unwrap": FuncType((ResultType(TypeVar("T"), TypeVar("E")),), TypeVar("T")),
+    "result_expect": FuncType(
+        (ResultType(TypeVar("T"), TypeVar("E")), StringType()), TypeVar("T")
+    ),
     "result_is_ok": FuncType((ResultType(TypeVar("T"), TypeVar("E")),), BoolType()),
     "result_is_err": FuncType((ResultType(TypeVar("T"), TypeVar("E")),), BoolType()),
     "result_to_option": FuncType(
@@ -366,6 +408,7 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "option_unwrap_or": FuncType(
         (OptionType(TypeVar("T")), TypeVar("T")), TypeVar("T")
     ),
+    "option_expect": FuncType((OptionType(TypeVar("T")), StringType()), TypeVar("T")),
     "option_is_some": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "option_is_none": FuncType((OptionType(TypeVar("T")),), BoolType()),
     "option_flatten": FuncType(
@@ -402,6 +445,9 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     ),
     "list_take": FuncType((ListType(TypeVar("T")), IntType()), ListType(TypeVar("T"))),
     "list_drop": FuncType((ListType(TypeVar("T")), IntType()), ListType(TypeVar("T"))),
+    "list_get": FuncType((ListType(TypeVar("T")), IntType()), OptionType(TypeVar("T"))),
+    "list_first": FuncType((ListType(TypeVar("T")),), OptionType(TypeVar("T"))),
+    "list_last": FuncType((ListType(TypeVar("T")),), OptionType(TypeVar("T"))),
     "list_find": FuncType(
         (ListType(TypeVar("T")), FuncType((TypeVar("T"),), BoolType())),
         OptionType(TypeVar("T")),
@@ -437,8 +483,10 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "sleep_ms": FuncType((IntType(),), UnitType()),
     "random_int": FuncType((IntType(), IntType()), IntType()),
     "random_float": FuncType((), FloatType()),
-    "fs_read_text": FuncType((StringType(),), StringType()),
-    "fs_write_text": FuncType((StringType(), StringType()), UnitType()),
+    "fs_read_text": FuncType((StringType(),), ResultType(StringType(), StringType())),
+    "fs_write_text": FuncType(
+        (StringType(), StringType()), ResultType(UnitType(), StringType())
+    ),
     "fs_list_dir": FuncType(
         (StringType(),), ResultType(ListType(StringType()), StringType())
     ),
@@ -452,8 +500,10 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "fs_canonicalize": FuncType(
         (StringType(),), ResultType(StringType(), StringType())
     ),
-    "http_fetch": FuncType((StringType(),), StringType()),
-    "http_post": FuncType((StringType(), StringType()), StringType()),
+    "http_fetch": FuncType((StringType(),), ResultType(StringType(), StringType())),
+    "http_post": FuncType(
+        (StringType(), StringType()), ResultType(StringType(), StringType())
+    ),
     "http_request": FuncType(
         (
             StringType(),
@@ -573,6 +623,9 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "mutable_map_size": FuncType(
         (MutableMapType(TypeVar("K"), TypeVar("V")),), IntType()
     ),
+    "mutable_map_is_empty": FuncType(
+        (MutableMapType(TypeVar("K"), TypeVar("V")),), BoolType()
+    ),
     "mutable_map_keys": FuncType(
         (MutableMapType(TypeVar("K"), TypeVar("V")),), ListType(TypeVar("K"))
     ),
@@ -590,6 +643,7 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "set_remove": FuncType((SetType(TypeVar("T")), TypeVar("T")), UnitType()),
     "set_contains": FuncType((SetType(TypeVar("T")), TypeVar("T")), BoolType()),
     "set_size": FuncType((SetType(TypeVar("T")),), IntType()),
+    "set_is_empty": FuncType((SetType(TypeVar("T")),), BoolType()),
     "set_to_list": FuncType((SetType(TypeVar("T")),), ListType(TypeVar("T"))),
     "set_union": FuncType(
         (SetType(TypeVar("T")), SetType(TypeVar("T"))), SetType(TypeVar("T"))

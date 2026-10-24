@@ -1,47 +1,47 @@
-func from_list(pairs: List[(String, String)]) -> Map[String, String]
-    example [] -> map_from_list([])
-    example [("a", "1")] -> map_from_list([("a", "1")])
+func from_list[K: Hash, V](pairs: List[(K, V)]) -> Map[K, V]
+    example [("a", 1)] -> map_from_list([("a", 1)])
+    example [(1, "x")] -> map_from_list([(1, "x")])
     return map_from_list(pairs)
 end func
 
-func merge(m1: Map[String, String], m2: Map[String, String]) -> Map[String, String]
-    example map_from_list([]), map_from_list([]) -> map_from_list([])
-    example map_from_list([("a", "1")]), map_from_list([("b", "2")]) -> map_from_list([("a", "1"), ("b", "2")])
+func merge[K: Hash, V](m1: Map[K, V], m2: Map[K, V]) -> Map[K, V]
+    example map_from_list([("a", 1)]), map_from_list([("b", 2)]) -> map_from_list([("a", 1), ("b", 2)])
+    example map_from_list([(1, "x")]), map_from_list([(1, "y")]) -> map_from_list([(1, "y")])
     return map_merge(m1, m2)
 end func
 
-func filter_map(m: Map[String, Int], predicate: (String, Int) -> Bool) -> Map[String, Int]
+func filter_map[K: Hash, V](m: Map[K, V], predicate: (K, V) -> Bool) -> Map[K, V]
     example map_from_list([("a", 1), ("b", 2)]), fn(k: String, v: Int) -> v > 1 -> map_from_list([("b", 2)])
-    example map_from_list([]), fn(k: String, v: Int) -> true -> map_from_list([])
+    example map_from_list([(1, "x")]), fn(k: Int, v: String) -> k > 5 -> map_from_list([])
     return map_filter_map(m, predicate)
 end func
 
-func map_values(m: Map[String, Int], transform: (Int) -> Int) -> Map[String, Int]
+func map_values[K: Hash, V, W](m: Map[K, V], transform: (V) -> W) -> Map[K, W]
     example map_from_list([("a", 1), ("b", 2)]), fn(x: Int) -> x * 10 -> map_from_list([("a", 10), ("b", 20)])
-    example map_from_list([]), fn(x: Int) -> x + 1 -> map_from_list([])
+    example map_from_list([("a", 1)]), fn(x: Int) -> to_string(x) -> map_from_list([("a", "1")])
     return map_map_values(m, transform)
 end func
 
-func entries(m: Map[String, String]) -> List[(String, String)]
-    example map_from_list([]) -> []
+func entries[K: Hash, V](m: Map[K, V]) -> List[(K, V)]
     example map_from_list([("a", "1")]) -> [("a", "1")]
+    example map_from_list([(1, 2.5)]) -> [(1, 2.5)]
     return map_entries(m)
 end func
 
-func from_entries(pairs: List[(String, String)]) -> Map[String, String]
-    example [] -> map_from_list([])
+func from_entries[K: Hash, V](pairs: List[(K, V)]) -> Map[K, V]
     example [("a", "1")] -> map_from_list([("a", "1")])
+    example [(1, true)] -> map_from_list([(1, true)])
     return map_from_entries(pairs)
 end func
 
-func get(m: Map[String, Int], key: String) -> Option[Int]
+func get[K: Hash, V](m: Map[K, V], key: K) -> Option[V]
     example map_from_list([("a", 1)]), "a" -> Some(1)
-    example map_from_list([("a", 1)]), "missing" -> None
+    example map_from_list([(1, "x")]), 2 -> None
     return map_get(m, key)
 end func
 
-func insert(m: Map[String, Int], key: String, value: Int) -> Map[String, Int]
+func insert[K: Hash, V](m: Map[K, V], key: K, value: V) -> Map[K, V]
     example map_from_list([]), "a", 1 -> map_from_list([("a", 1)])
-    example map_from_list([("a", 1)]), "b", 2 -> map_from_list([("a", 1), ("b", 2)])
+    example map_from_list([(1, "x")]), 2, "y" -> map_from_list([(1, "x"), (2, "y")])
     return map_insert(map: m, key: key, value: value)
 end func

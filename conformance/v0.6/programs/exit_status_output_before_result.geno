@@ -1,0 +1,9 @@
+func stage() -> String
+    example () -> "work done"
+    return "work done"
+end func
+
+func main() -> Int
+    print(stage())
+    return 3
+end func

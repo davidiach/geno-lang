@@ -12,7 +12,9 @@ from typing import Any, cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-_STD_FUNC_RE = re.compile(r"^func\s+([A-Za-z_][A-Za-z0-9_]*)\(", re.MULTILINE)
+_STD_FUNC_RE = re.compile(
+    r"^func\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\(", re.MULTILINE
+)
 
 _SPEC_BUILTIN_SOURCE_OVERRIDES: dict[tuple[str, str], str] = {
     ("list", "zip"): "list_zip",
@@ -157,7 +159,17 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "reverse",
             "slice",
             "set_at",
-            "is_sorted",
+            "list_get",
+            "list_first",
+            "list_last",
+            "sum",
+            "float_sum",
+            "list_min",
+            "list_max",
+            "is_empty",
+            "list_index_of",
+            "count",
+            "unique",
         )
         | _require_stdlib_builtin_names(
             "List",
@@ -192,14 +204,21 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "starts_with",
             "ends_with",
             "substring",
-            "contains_substring",
             "char_code",
             "from_char_code",
             "to_chars",
-            "repeat_string",
-            "sort_strings",
             "string_char_at",
             "split_once",
+            "string_is_empty",
+            "string_reverse",
+            "string_lines",
+            "string_words",
+            "string_is_digit",
+            "string_is_alpha",
+            "string_is_alphanumeric",
+            "string_is_whitespace",
+            "string_is_upper",
+            "string_is_lower",
         )
         | _require_stdlib_builtin_names(
             "String",
@@ -232,7 +251,6 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
         "parsing": _require_direct_builtin_names(
             "parse_int",
             "parse_float",
-            "is_numeric_string",
             "format",
         ),
         "option_result": _require_direct_builtin_names(
@@ -240,7 +258,11 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "is_none",
             "unwrap",
             "unwrap_or",
+            "option_expect",
+            "result_unwrap",
+            "result_expect",
             "result_unwrap_or",
+            "panic",
             "result_is_ok",
             "result_is_err",
             "result_to_option",
@@ -252,6 +274,13 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "map_merge",
             "map_entries",
             "map_from_entries",
+            "map_size",
+            "map_contains_key",
+            "map_remove",
+            "map_keys",
+            "map_values",
+            "map_get_or",
+            "map_is_empty",
         ),
         "array": _require_direct_builtin_names(
             "array_new",
@@ -270,6 +299,7 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "mutable_map_contains",
             "mutable_map_delete",
             "mutable_map_size",
+            "mutable_map_is_empty",
             "mutable_map_keys",
             "vec_new",
             "vec_push",
@@ -285,6 +315,7 @@ def get_source_builtin_categories() -> dict[str, set[str]]:
             "set_remove",
             "set_contains",
             "set_size",
+            "set_is_empty",
             "set_to_list",
             "set_union",
             "set_intersection",

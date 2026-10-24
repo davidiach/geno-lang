@@ -1,0 +1,4 @@
+func main() -> Unit
+    let increment = fn(x) -> x + 1
+    print(increment(1))
+end func

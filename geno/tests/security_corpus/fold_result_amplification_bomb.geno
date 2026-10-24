@@ -1,0 +1,30 @@
+# EXPECT: E503
+# Fold callback amplification: fold() with a callback that calls
+# Result-returning helpers and recovers from their Err values, testing
+# that error handling inside higher-order callbacks is step-counted.
+func risky(x: Int) -> Result[Int, String]
+    example 1 -> Ok(1)
+    example 3 -> Err("skip-3")
+    if x % 3 == 0 then
+        return Err(f"skip-{to_string(x)}")
+    end if
+    return Ok(x)
+end func
+
+func step(acc: Int, x: Int) -> Int
+    example 0, 1 -> 1
+    match risky(x) with
+        | Ok(v) -> return acc + v
+        | Err(e) -> return acc + length(e)
+    end match
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var round: Int = 0
+    while round < 100000 do
+        total = total + fold(list: range(0, 100), initial: 0, reducer: step)
+        round = round + 1
+    end while
+    return total
+end func

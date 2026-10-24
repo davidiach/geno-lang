@@ -550,7 +550,6 @@ class TestReplBlockCompletion:
         "source",
         [
             'test "works"\nassert true\n',
-            "func f() -> Int\ntry\nreturn 1\ncatch e: String\nreturn 0\nend try\n",
             "func f() -> Int\nlet x = match 1 with\n| _ -> 1\nend match\n",
             "/* unclosed block comment\n",
         ],

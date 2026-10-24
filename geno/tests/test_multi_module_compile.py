@@ -424,7 +424,7 @@ def test_python_module_name_does_not_shadow_host_builtin(tmp_path):
     assert entrypoint_observation(result, int_main=True) == "2"
 
 
-def test_python_export_cannot_capture_emitted_host_builtin(tmp_path):
+def test_python_export_does_not_capture_emitted_host_builtin(tmp_path):
     (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
     (tmp_path / "Main.geno").write_text(
         "func len(value: Int) -> Int\n"
@@ -438,8 +438,11 @@ def test_python_export_cannot_capture_emitted_host_builtin(tmp_path):
 
     graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
     TypeChecker().check_project_graph(graph)
-    with pytest.raises(CompileError, match="reserved runtime name"):
-        Compiler().compile_project(graph)
+    # Proposal 0011: the export is renamed to `len_g`, so `length` keeps
+    # the host's `len`.
+    code = Compiler().compile_project(graph)
+    assert "def len_g(" in code
+    assert run_python_code(code, python_executable=sys.executable).returncode == 2
 
 
 def test_python_project_min_max_exports_do_not_capture_substring_intrinsics(tmp_path):
@@ -514,7 +517,7 @@ def test_js_lowercase_standalone_entry_module_executes(tmp_path):
     assert entrypoint_observation(result, int_main=True) == "2"
 
 
-def test_js_export_cannot_capture_emitted_host_global(tmp_path):
+def test_js_export_does_not_capture_emitted_host_global(tmp_path):
     (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
     (tmp_path / "Main.geno").write_text(
         "func console(value: Int) -> Int\n"
@@ -528,8 +531,10 @@ def test_js_export_cannot_capture_emitted_host_global(tmp_path):
 
     graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
     TypeChecker().check_project_graph(graph)
-    with pytest.raises(JSCompileError, match="reserved runtime name"):
-        JSCompiler().compile_project(graph)
+    # Proposal 0011: the export is renamed to `console_g`.
+    code = JSCompiler().compile_project(graph)
+    assert "function console_g(" in code
+    assert run_node_code(code).returncode == 2
 
 
 @pytest.mark.parametrize(

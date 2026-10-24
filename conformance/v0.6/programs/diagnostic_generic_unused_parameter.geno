@@ -1,0 +1,4 @@
+func size[T](n: Int) -> Int
+    example 1 -> 1
+    return n
+end func

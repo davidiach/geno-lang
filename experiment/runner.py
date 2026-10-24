@@ -53,6 +53,10 @@ class ExperimentConfig:
     # Benchmark v2 repair condition: number of diagnostics-guided repair
     # attempts after a failed evaluation. 0 keeps pure pass@1 behavior.
     max_repair_rounds: int = 0
+    # Apply the fixes Geno's diagnostics carry (`geno check --fix`) to a Geno
+    # solution that fails to parse or type-check, and report the result as
+    # its own metric. No model call is made and pass@1 is unaffected.
+    autofix: bool = True
 
     def to_dict(self) -> dict:
         """Serialize config without embedding full problem specs."""
@@ -69,6 +73,7 @@ class ExperimentConfig:
             "repo_revision": self.repo_revision,
             "model_metadata": self.model_metadata,
             "max_repair_rounds": self.max_repair_rounds,
+            "autofix": self.autofix,
         }
         if self.problems is not None:
             data["problem_ids"] = [problem.id for problem in self.problems]
@@ -106,6 +111,8 @@ class ExperimentRun:
     # Index-aligned repair attempts; initial pass@1 results above stay pure.
     repair_generation_results: list[GenerationResult] = field(default_factory=list)
     repair_evaluation_results: list[EvaluationResult] = field(default_factory=list)
+    # One entry per initial Geno attempt that the fixes changed.
+    autofix_results: list[dict] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -129,7 +136,26 @@ class ExperimentRun:
             data["repair_evaluation_results"] = [
                 result.to_dict() for result in self.repair_evaluation_results
             ]
+        if self.autofix_results:
+            data["autofix_results"] = self.autofix_results
         return data
+
+
+def _geno_check_report(code: str) -> str:
+    """``geno check``'s errors for ``code``, one per line with any fix."""
+    import geno
+
+    lines = []
+    for diagnostic in geno.check(code).diagnostics:
+        location = diagnostic.location
+        where = (
+            f"line {location.line}, column {location.column}: "
+            if location is not None
+            else ""
+        )
+        lines.append(f"- [{diagnostic.code.value}] {where}{diagnostic.message}")
+        lines.extend(f"  fix: {fix.title}" for fix in diagnostic.fixes[:1])
+    return "\n".join(lines)
 
 
 class ExperimentRunner:
@@ -277,6 +303,8 @@ class ExperimentRunner:
                         )
                         self.run_data.generation_results.append(gen_result)
                         self.run_data.evaluation_results.append(eval_result)
+                        if self.config.autofix:
+                            self._autofix(problem, gen_result, eval_result)
 
                         if (
                             self.config.max_repair_rounds > 0
@@ -303,6 +331,7 @@ class ExperimentRunner:
         self.run_data.end_time = datetime.now().isoformat()
         self._compute_metrics()
         self._compute_repair_metrics()
+        self._compute_autofix_metrics()
         return self.run_data.to_dict()
 
     def _generate_into(
@@ -321,16 +350,82 @@ class ExperimentRunner:
         except Exception as e:
             gen_result.error = str(e)
 
+    def _autofix(
+        self,
+        problem: Problem,
+        gen_result: GenerationResult,
+        eval_result: EvaluationResult,
+    ) -> None:
+        """Record whether Geno's fixes turn a rejected solution into a pass."""
+        if gen_result.language != "geno" or gen_result.error:
+            return
+        if eval_result.parsed and eval_result.type_checked:
+            return
+        import geno
+
+        fixed = geno.fix(gen_result.extracted_code)
+        if fixed.applied == 0:
+            return
+        fixed_eval = self.benchmark_runner.evaluate_geno(problem, fixed.source)
+        self.run_data.autofix_results.append(
+            {
+                "model": gen_result.model,
+                "problem_id": gen_result.problem_id,
+                "language": gen_result.language,
+                "trial": gen_result.trial,
+                "fixes_applied": fixed.applied,
+                "fixed_code": fixed.source,
+                "all_passed": fixed_eval.all_passed,
+                "error_category": fixed_eval.error_category.value,
+            }
+        )
+
+    def _compute_autofix_metrics(self) -> None:
+        """pass@1 after applying Geno's fixes, per model, Geno attempts only."""
+        if not self.config.autofix or "geno" not in self.config.languages:
+            return
+        converted: dict[str, int] = {}
+        attempted: dict[str, int] = {}
+        for entry in self.run_data.autofix_results:
+            model = entry["model"]
+            attempted[model] = attempted.get(model, 0) + 1
+            converted[model] = converted.get(model, 0) + int(entry["all_passed"])
+        summary: dict[str, dict] = {}
+        for model in self.config.models:
+            outcomes = [
+                e.all_passed
+                for g, e in zip(
+                    self.run_data.generation_results, self.run_data.evaluation_results
+                )
+                if g.model == model and g.language == "geno"
+            ]
+            if not outcomes:
+                continue
+            passed = sum(outcomes)
+            summary[model] = {
+                "conditions": len(outcomes),
+                "pass_at_1": passed / len(outcomes),
+                "autofix_attempted": attempted.get(model, 0),
+                "autofix_converted": converted.get(model, 0),
+                "pass_after_autofix": (passed + converted.get(model, 0))
+                / len(outcomes),
+            }
+        self.run_data.metrics["autofix"] = summary
+
     def _repair_diagnostics(self, eval_result: EvaluationResult) -> str:
         """Summarize a failed evaluation the way a developer would see it.
 
         Includes parse/type errors and visible-example failures only; hidden
-        test inputs and outputs are never revealed to the model.
+        test inputs and outputs are never revealed to the model. A Geno error
+        is listed as `geno check` reports it: stable code, line and column,
+        and the fix it carries.
         """
-        if not eval_result.parsed:
-            return f"The code failed to parse:\n{eval_result.error_message}"
-        if not eval_result.type_checked:
-            return f"The code failed type checking:\n{eval_result.error_message}"
+        if not eval_result.parsed or not eval_result.type_checked:
+            failed = "to parse" if not eval_result.parsed else "type checking"
+            report = eval_result.error_message
+            if eval_result.language == "geno":
+                report = _geno_check_report(eval_result.solution_code) or report
+            return f"The code failed {failed}:\n{report}"
 
         visible = eval_result.test_results[: eval_result.visible_total]
         failed_visible = [t for t in visible if not t.passed]

@@ -27,7 +27,10 @@ from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
 from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES, KNOWN_CAPABILITIES
-from ..execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
+from ..execution_limits import (
+    DEFAULT_MAX_RECURSION_DEPTH,
+    DEFAULT_PROCESS_MAX_MEMORY_BYTES,
+)
 
 # A leaf module by design: the parent side of the process-isolated lane needs
 # the modulo, and `geno.entrypoint` would drag `ast_nodes` and `types` into a
@@ -169,6 +172,13 @@ def _main_result_exit_status(value: Any, kind: Any) -> int | None:
     """
     from ..entrypoint import EntrypointResultKind
 
+    if kind.is_result:
+        # `--json` reports an `Err` from `main` in its envelope; the status is
+        # all that is left to say about it here.
+        if _main_err_value(value) is not _NO_MAIN_ERR:
+            return 1
+        value = _main_ok_value(value)
+        kind = kind.ok_kind
     if kind is not EntrypointResultKind.INT:
         return None
     # A checked `Int` is a Python int, and `bool` is excluded because
@@ -176,6 +186,27 @@ def _main_result_exit_status(value: Any, kind: Any) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool):
         return None
     return exit_status_for_int_result(value)
+
+
+_NO_MAIN_ERR = object()
+
+
+def _main_err_value(value: Any) -> Any:
+    """The error of an interpreter `Err` returned by `main`, or ``_NO_MAIN_ERR``."""
+    from ..values import ConstructorValue
+
+    if isinstance(value, ConstructorValue) and value.constructor == "Err":
+        return value.fields["error"]
+    return _NO_MAIN_ERR
+
+
+def _main_ok_value(value: Any) -> Any:
+    """The value of an interpreter `Ok` returned by `main`."""
+    from ..values import ConstructorValue
+
+    if isinstance(value, ConstructorValue) and value.constructor == "Ok":
+        return value.fields["value"]
+    return value
 
 
 def _process_run_result_envelope(kind: Any) -> str:
@@ -193,6 +224,19 @@ def _process_run_result_envelope(kind: Any) -> str:
     """
     from ..entrypoint import EntrypointResultKind
 
+    if kind.is_result:
+        # An `Err` from `main` crosses as its display text and status 1; an
+        # `Ok` is unwrapped and then reported as its own kind would be.
+        ok_envelope = _process_run_result_envelope(kind.ok_kind)
+        return (
+            "\nif _geno_entry_fn is not None and isinstance(__result__, Err):\n"
+            "    __result__ = {'status': 1, 'display': None, "
+            "'error': _geno_format(__result__.error)}\n"
+            "else:\n"
+            "    if _geno_entry_fn is not None:\n"
+            "        __result__ = __result__.value\n"
+            + "".join(f"    {line}\n" for line in ok_envelope.strip().splitlines())
+        )
     if kind is EntrypointResultKind.INT:
         # An `Int` result is the status and is never displayed, so it needs no
         # formatting -- but it does need reducing before it crosses. The channel
@@ -223,23 +267,31 @@ def _process_run_result_envelope(kind: Any) -> str:
     return "\n__result__ = {'status': None, 'display': None}\n"
 
 
-def _read_process_run_envelope(result: Any) -> tuple[int | None, str | None]:
+def _read_process_run_envelope(
+    result: Any,
+) -> tuple[int | None, str | None, str | None]:
     """Read the worker envelope written by :func:`_process_run_result_envelope`.
 
-    Anything else is treated as having neither a status nor a display line: the
-    worker cannot reach that state, and inventing a status from a shape this
-    lane did not emit would be the one failure mode worth avoiding here.
+    Returns the status, the display line and the text of an `Err` returned by
+    `main`. Anything else is treated as having none of them: the worker cannot
+    reach that state, and inventing a status from a shape this lane did not
+    emit would be the one failure mode worth avoiding here.
     """
     if not isinstance(result, dict):
-        return None, None
+        return None, None, None
     status_value = result.get("status")
     display = result.get("display")
+    error = result.get("error")
     status = (
         exit_status_for_int_result(status_value)
         if isinstance(status_value, int) and not isinstance(status_value, bool)
         else None
     )
-    return status, display if isinstance(display, str) else None
+    return (
+        status,
+        display if isinstance(display, str) else None,
+        error if isinstance(error, str) else None,
+    )
 
 
 def _explicit_fs_roots_for_run(
@@ -415,7 +467,7 @@ def _default_lane_capability_hint(
     The default lane rejects ``--cap``, so the runtime's denial alone is not
     actionable there. ``capability`` must come from the worker's structured
     denial tag (``ProcessSandbox.last_capability_denied``), never from the
-    error text: a program can throw any message, and this hint recommends
+    error text: a program can panic with any message, and this hint recommends
     leaving process isolation.
     """
     if capability is None or capability not in KNOWN_CAPABILITIES:
@@ -519,7 +571,7 @@ def run_file(
     unsafe: bool = False,
     timeout: float = 30.0,
     max_steps: int | None = None,
-    max_recursion_depth: int = 500,
+    max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH,
     max_output_length: int = 100_000,
     max_collection_size: int = 10_000_000,
     max_integer_bits: int = 33_219,
@@ -728,7 +780,10 @@ def run_file(
             # nonzero exit never costs the program its output.
             if run_output:
                 print(run_output, end="")
-            status, display = _read_process_run_envelope(result)
+            status, display, main_error = _read_process_run_envelope(result)
+            if main_error is not None:
+                sys.stdout.flush()
+                print(f"Error: {main_error}", file=sys.stderr)
             if display is not None:
                 print(f"=> {display}")
             return status
@@ -854,12 +909,19 @@ def run_file(
                 raise
             finally:
                 _restore_cli_args_env()
-            status = _main_result_exit_status(
-                result, classify_entrypoint_result(program, parsed_modules)
-            )
+            kind = classify_entrypoint_result(program, parsed_modules)
+            status = _main_result_exit_status(result, kind)
             run_output = interpreter.get_output()
             if run_output:
                 print(run_output, end="")
+            if kind.is_result:
+                main_error = _main_err_value(result)
+                if main_error is not _NO_MAIN_ERR:
+                    sys.stdout.flush()
+                    error_text = interpreter.format_display_value(main_error)
+                    print(f"Error: {error_text}", file=sys.stderr)
+                    return status
+                result = _main_ok_value(result)
             # An `Int` result is the status, so displaying it too would print
             # the number the process is about to exit with.
             if status is None and not _is_unit_main_result(result):

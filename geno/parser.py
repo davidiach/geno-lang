@@ -17,6 +17,7 @@ from .ast_nodes import (
     FunctionDef,
     ImplDef,
     ImportStatement,
+    InferredType,
     ModuleConstant,
     Parameter,
     Program,
@@ -27,6 +28,7 @@ from .ast_nodes import (
     TraitDef,
     TraitMethodSig,
     TupleExpr,
+    TypeAnnotation,
     constant_initializer_error,
 )
 from .diagnostics import ErrorCode
@@ -38,7 +40,7 @@ from .parser_expressions import ExpressionParserMixin
 from .parser_patterns import PatternParserMixin
 from .parser_statements import StatementParserMixin
 from .parser_types import TypeParserMixin
-from .tokens import TokenType, token_type_to_str
+from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 
 class Parser(
@@ -172,7 +174,8 @@ class Parser(
     def _parse_module_constant(self) -> ModuleConstant:
         """Parse a module-level constant: let NAME[: Type] = <literal>"""
         location = self._current().location
-        self._expect(TokenType.LET)
+        let_token = self._expect(TokenType.LET)
+        self._reject_let_mut(let_token)
         if self._check(TokenType.LPAREN):
             raise self._error(
                 "Tuple destructuring is not supported for module constants; "
@@ -315,8 +318,7 @@ class Parser(
             )
 
         # Closing: end trait
-        self._expect(TokenType.END)
-        self._expect(TokenType.TRAIT)
+        self._expect_end(TokenType.TRAIT)
 
         return TraitDef(
             location=location,
@@ -354,8 +356,7 @@ class Parser(
             methods.append(self._parse_function_def())
 
         # Closing: end impl
-        self._expect(TokenType.END)
-        self._expect(TokenType.IMPL)
+        self._expect_end(TokenType.IMPL)
 
         return ImplDef(
             location=location,
@@ -372,12 +373,42 @@ class Parser(
         name_token = self._expect(TokenType.IDENTIFIER, "Expected function name")
         name = name_token.value
 
+        # Optional type parameters: func name[T, U: Ord + Hash](...)
+        type_params: list[str] = []
+        type_param_bounds: dict[str, list[str]] = {}
+        if self._match(TokenType.LBRACKET):
+            while True:
+                param = self._expect_type_parameter_name().value
+                type_params.append(param)
+                if self._match(TokenType.COLON):
+                    bounds = [self._expect_bound_name().value]
+                    while self._match(TokenType.PLUS):
+                        bounds.append(self._expect_bound_name().value)
+                    type_param_bounds[param] = bounds
+                if not self._match(TokenType.COMMA):
+                    break
+            self._expect(TokenType.RBRACKET)
+
         # Parameters
         self._expect(TokenType.LPAREN)
         params = self._parse_parameter_list()
-        self._expect(TokenType.RPAREN)
+        close = self._expect(TokenType.RPAREN)
 
         # Return type
+        if (
+            not self._check(TokenType.ARROW)
+            and self._current().location.line > close.location.line
+        ):
+            raise ParseError(
+                f"Function '{name}' needs a return type: write '-> Type' after "
+                "its parameters, or '-> Unit' when it returns nothing",
+                SourceLocation(
+                    close.location.line,
+                    close.location.column + 1,
+                    close.location.filename,
+                ),
+                ErrorCode.PARSE_EXPECTED_TOKEN,
+            )
         self._expect(TokenType.ARROW)
         return_type = self._parse_type()
 
@@ -393,8 +424,7 @@ class Parser(
         body = self._parse_statement_list()
 
         # Closing: end func [name]
-        self._expect(TokenType.END)
-        self._expect(TokenType.FUNC)
+        self._expect_end(TokenType.FUNC)
         closing_name = None
         if self._check(TokenType.IDENTIFIER):
             closing_name = self._advance().value
@@ -413,18 +443,45 @@ class Parser(
             closing_name=closing_name,
             is_async=is_async,
             effects=effects,
+            type_params=type_params,
+            type_param_bounds=type_param_bounds,
         )
 
-    def _parse_parameter_list(self) -> list[Parameter]:
-        """Parse function parameters."""
+    def _expect_type_parameter_name(self) -> Token:
+        """Consume a type parameter name, which is PascalCase like any type."""
+        if self._check(TokenType.IDENTIFIER):
+            name = self._current().value
+            raise self._error(
+                f"Type parameter '{name}' must start with an uppercase letter, "
+                f"like '{name[:1].upper()}{name[1:]}'"
+            )
+        return self._expect(
+            TokenType.TYPE_IDENTIFIER, "Expected a type parameter name such as 'T'"
+        )
+
+    def _expect_bound_name(self) -> Token:
+        """Consume a bound: a built-in bound (Num, Ord, Hash) or a trait name."""
+        return self._expect(
+            TokenType.TYPE_IDENTIFIER,
+            "Expected a bound after ':', such as 'Ord', 'Hash', 'Num' or a trait name",
+        )
+
+    def _parse_parameter_list(
+        self, *, allow_inferred_types: bool = False
+    ) -> list[Parameter]:
+        """Parse function parameters.
+
+        A lambda's parameters may leave out their types (``fn(x) -> x * 2``),
+        which the checker infers from context; a function's may not.
+        """
         params: list[Parameter] = []
 
         if self._check(TokenType.RPAREN):
             return params
 
-        params.append(self._parse_parameter())
+        params.append(self._parse_parameter(allow_inferred_types))
         while self._match(TokenType.COMMA):
-            params.append(self._parse_parameter())
+            params.append(self._parse_parameter(allow_inferred_types))
 
         # Validate: required params must come before optional params
         seen_default = False
@@ -441,12 +498,16 @@ class Parser(
 
         return params
 
-    def _parse_parameter(self) -> Parameter:
+    def _parse_parameter(self, allow_inferred_type: bool = False) -> Parameter:
         """Parse a single parameter: name: Type or name: Type = default"""
         location = self._current().location
         name_token = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
-        self._expect(TokenType.COLON)
-        param_type = self._parse_type()
+        param_type: TypeAnnotation
+        if allow_inferred_type and not self._check(TokenType.COLON):
+            param_type = InferredType(location=location)
+        else:
+            self._expect(TokenType.COLON)
+            param_type = self._parse_type()
         default_value = None
         if self._match(TokenType.ASSIGN):
             default_value = self._parse_expression()
@@ -539,5 +600,5 @@ def parse(source: str, filename: str = "<stdin>") -> Program:
 
     lexer = Lexer(source, filename)
     tokens = lexer.tokenize()
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     return parser.parse_program()

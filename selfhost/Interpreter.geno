@@ -212,18 +212,18 @@ func value_to_str(val: Value) -> String
         | FloatVal(s) -> return s
         | StringVal(s) -> return s
         | BoolVal(b) ->
-        if b then
-            return "true"
-        end if
-        return "false"
+            if b then
+                return "true"
+            end if
+            return "false"
         | UnitVal -> return "()"
         | ListVal(items) -> return "[" + format_val_list(items) + "]"
         | TupleVal(elems) -> return "(" + format_val_list(elems) + ")"
         | CtorVal(cn, cf) ->
-        if length(cf) == 0 then
-            return cn
-        end if
-        return cn + "(" + format_field_list(cf) + ")"
+            if length(cf) == 0 then
+                return cn
+            end if
+            return cn + "(" + format_field_list(cf) + ")"
         | ClosureVal(cd) -> return "<function " + cd.cl_name + ">"
         | BuiltinVal(bn) -> return "<builtin " + bn + ">"
         | ArrayRef(ae) -> return "Array([" + format_vec_vals(ae, 0) + "])"
@@ -289,64 +289,64 @@ func values_equal(a: Value, b: Value) -> Bool
     example (IntVal(1), IntVal(1)) -> true
     match a with
         | IntVal(av) ->
-        match b with
-            | IntVal(bv) -> return av == bv
-            | _ -> return false
-        end match
+            match b with
+                | IntVal(bv) -> return av == bv
+                | _ -> return false
+            end match
         | FloatVal(af) ->
-        match b with
-            | FloatVal(bf) -> return af == bf
-            | _ -> return false
-        end match
+            match b with
+                | FloatVal(bf) -> return af == bf
+                | _ -> return false
+            end match
         | StringVal(as_) ->
-        match b with
-            | StringVal(bs) -> return as_ == bs
-            | _ -> return false
-        end match
+            match b with
+                | StringVal(bs) -> return as_ == bs
+                | _ -> return false
+            end match
         | BoolVal(ab) ->
-        match b with
-            | BoolVal(bb) -> return ab == bb
-            | _ -> return false
-        end match
+            match b with
+                | BoolVal(bb) -> return ab == bb
+                | _ -> return false
+            end match
         | UnitVal ->
-        match b with
-            | UnitVal -> return true
-            | _ -> return false
-        end match
+            match b with
+                | UnitVal -> return true
+                | _ -> return false
+            end match
         | ListVal(ai) ->
-        match b with
-            | ListVal(bi) -> return list_vals_equal(ai, bi)
-            | _ -> return false
-        end match
+            match b with
+                | ListVal(bi) -> return list_vals_equal(ai, bi)
+                | _ -> return false
+            end match
         | TupleVal(ae) ->
-        match b with
-            | TupleVal(be_) -> return list_vals_equal(ae, be_)
-            | _ -> return false
-        end match
+            match b with
+                | TupleVal(be_) -> return list_vals_equal(ae, be_)
+                | _ -> return false
+            end match
         | CtorVal(acn, acf) ->
-        match b with
-            | CtorVal(bcn, bcf) ->
-            if acn != bcn then
-                return false
-            end if
-            return list_vals_equal(ctor_field_vals(acf), ctor_field_vals(bcf))
-            | _ -> return false
-        end match
+            match b with
+                | CtorVal(bcn, bcf) ->
+                    if acn != bcn then
+                        return false
+                    end if
+                    return list_vals_equal(ctor_field_vals(acf), ctor_field_vals(bcf))
+                | _ -> return false
+            end match
         | ArrayRef(av) ->
-        match b with
-            | ArrayRef(bv) -> return vec_vals_equal(a: av, b: bv, idx: 0)
-            | _ -> return false
-        end match
+            match b with
+                | ArrayRef(bv) -> return vec_vals_equal(a: av, b: bv, idx: 0)
+                | _ -> return false
+            end match
         | VecRef(av) ->
-        match b with
-            | VecRef(bv) -> return vec_vals_equal(a: av, b: bv, idx: 0)
-            | _ -> return false
-        end match
+            match b with
+                | VecRef(bv) -> return vec_vals_equal(a: av, b: bv, idx: 0)
+                | _ -> return false
+            end match
         | MMapRef(am) ->
-        match b with
-            | MMapRef(bm) -> return mmap_vals_equal(am, bm)
-            | _ -> return false
-        end match
+            match b with
+                | MMapRef(bm) -> return mmap_vals_equal(am, bm)
+                | _ -> return false
+            end match
         | _ -> return false
     end match
 end func values_equal
@@ -535,11 +535,8 @@ func init_builtins(st: InterpState) -> Unit
     reg_builtin(st: st, name: "split_once", params: ["text", "delimiter"])
     reg_builtin(st: st, name: "starts_with", params: ["text", "prefix"])
     reg_builtin(st: st, name: "ends_with", params: ["text", "suffix"])
-    reg_builtin(st: st, name: "contains_substring", params: ["text", "substring"])
     reg_builtin(st: st, name: "to_chars", params: ["text"])
-    reg_builtin(st: st, name: "sort_strings", params: ["items"])
     reg_builtin(st: st, name: "substring", params: ["text", "start", "stop"])
-    reg_builtin(st: st, name: "repeat_string", params: ["text", "count"])
     // Namespaced string operations
     reg_builtin(st: st, name: "string_trim", params: ["text"])
     reg_builtin(st: st, name: "string_trim_start", params: ["text"])
@@ -570,12 +567,7 @@ func init_builtins(st: InterpState) -> Unit
     reg_builtin(st: st, name: "abs", params: ["value"])
     reg_builtin(st: st, name: "math_abs", params: ["value"])
     reg_builtin(st: st, name: "math_max", params: ["a", "b"])
-    reg_builtin(st: st, name: "square", params: ["value"])
     // Predicates
-    reg_builtin(st: st, name: "is_sorted", params: ["list"])
-    reg_builtin(st: st, name: "is_positive", params: ["value"])
-    reg_builtin(st: st, name: "is_numeric_string", params: ["text"])
-    reg_builtin(st: st, name: "is_permutation", params: ["list1", "list2"])
     // Conversions
     reg_builtin(st: st, name: "parse_int", params: ["text"])
     reg_builtin(st: st, name: "to_string", params: ["value"])
@@ -698,10 +690,10 @@ func both_int_values(left: Value, right: Value) -> Bool
     example (IntVal(1), IntVal(2)) -> true
     match left with
         | IntVal(a) ->
-        match right with
-            | IntVal(b) -> return true
-            | _ -> return false
-        end match
+            match right with
+                | IntVal(b) -> return true
+                | _ -> return false
+            end match
         | _ -> return false
     end match
 end func both_int_values
@@ -796,68 +788,6 @@ func list_reverse_acc(items: List[Value], acc: List[Value]) -> List[Value]
     return list_reverse_acc(tail(items), concat([head(items)], acc))
 end func list_reverse_acc
 
-// Check if a list of IntVals is sorted.
-func list_is_sorted(items: List[Value]) -> Bool
-    example [] -> true
-    if length(items) <= 1 then
-        return true
-    end if
-    let a: Int = as_int(head(items))
-    let rest: List[Value] = tail(items)
-    let b: Int = as_int(head(rest))
-    if a > b then
-        return false
-    end if
-    return list_is_sorted(rest)
-end func list_is_sorted
-
-// Check if one list is a permutation of another.
-func list_is_permutation(a: List[Value], b: List[Value]) -> Bool
-    example ([], []) -> true
-    if length(a) != length(b) then
-        return false
-    end if
-    return perm_check_all(a, b)
-end func list_is_permutation
-
-func perm_check_all(a: List[Value], b: List[Value]) -> Bool
-    example ([], []) -> true
-    if length(a) == 0 then
-        return true
-    end if
-    let v: Value = head(a)
-    if not list_contains(b, v) then
-        return false
-    end if
-    return perm_check_all(tail(a), b)
-end func perm_check_all
-
-// Check if a string is numeric.
-func str_is_numeric(s: String) -> Bool
-    example "123" -> true
-    if length(s) == 0 then
-        return false
-    end if
-    let chars: List[String] = to_chars(s)
-    return chars_all_digits(chars)
-end func str_is_numeric
-
-func chars_all_digits(chars: List[String]) -> Bool
-    example [] -> true
-    if length(chars) == 0 then
-        return true
-    end if
-    let c: String = head(chars)
-    let code: Int = char_code(c)
-    if code < 48 then
-        return false
-    end if
-    if code > 57 then
-        return false
-    end if
-    return chars_all_digits(tail(chars))
-end func chars_all_digits
-
 // Build an array Vec filled with n copies of a default value.
 func build_array_vec(n: Int, default_val: Value, v: Vec[Value], idx: Int) -> Vec[Value]
     example (0, UnitVal, vec_new(), 0) -> vec_new()
@@ -905,10 +835,10 @@ func imap_remove_key(pairs: List[Value], key: Value) -> List[Value]
     let pair: Value = head(pairs)
     match pair with
         | TupleVal(elems) ->
-        if values_equal(head(elems), key) then
-            return imap_remove_key(pairs: tail(pairs), key: key)
-        end if
-        return concat([pair], imap_remove_key(pairs: tail(pairs), key: key))
+            if values_equal(head(elems), key) then
+                return imap_remove_key(pairs: tail(pairs), key: key)
+            end if
+            return concat([pair], imap_remove_key(pairs: tail(pairs), key: key))
         | _ -> return concat([pair], imap_remove_key(pairs: tail(pairs), key: key))
     end match
 end func imap_remove_key
@@ -923,10 +853,10 @@ func imap_lookup(pairs: List[Value], key: Value) -> Value
     let pair: Value = head(pairs)
     match pair with
         | TupleVal(elems) ->
-        if values_equal(head(elems), key) then
-            return CtorVal("Some", [ValueField("value", head(tail(elems)))])
-        end if
-        return imap_lookup(pairs: tail(pairs), key: key)
+            if values_equal(head(elems), key) then
+                return CtorVal("Some", [ValueField("value", head(tail(elems)))])
+            end if
+            return imap_lookup(pairs: tail(pairs), key: key)
         | _ -> return imap_lookup(pairs: tail(pairs), key: key)
     end match
 end func imap_lookup
@@ -1086,23 +1016,16 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         return BoolVal(ends_with(text, suffix))
     end if
 
-    if name == "contains_substring" or name == "string_contains" then
+    if name == "string_contains" then
         let text: String = as_str(head(args))
         let sub: String = as_str(head(tail(args)))
-        return BoolVal(contains_substring(text, sub))
+        return BoolVal(string_contains(text, sub))
     end if
 
     if name == "to_chars" then
         let text: String = as_str(head(args))
         let chars: List[String] = to_chars(text)
         return ListVal(strs_to_val_list(chars))
-    end if
-
-    if name == "sort_strings" then
-        let items: List[Value] = as_list(head(args))
-        let strs: List[String] = val_list_to_strs(items)
-        let sorted: List[String] = sort_strings(strs)
-        return ListVal(strs_to_val_list(sorted))
     end if
 
     if name == "substring" or name == "string_substring" then
@@ -1112,7 +1035,7 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         return StringVal(substring(text: text, start: start, stop: stop))
     end if
 
-    if name == "repeat_string" or name == "string_repeat" then
+    if name == "string_repeat" then
         let text: String = as_str(head(args))
         let count: Int = as_int(head(tail(args)))
         if count < 0 then
@@ -1139,13 +1062,13 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "string_index_of" then
         let text: String = as_str(head(args))
         let sub: String = as_str(head(tail(args)))
-        return IntVal(selfhost_index_of(text: text, sub: sub))
+        return index_option(selfhost_index_of(text: text, sub: sub))
     end if
 
     if name == "string_last_index_of" then
         let text: String = as_str(head(args))
         let sub: String = as_str(head(tail(args)))
-        return IntVal(selfhost_last_index_of(text: text, sub: sub))
+        return index_option(selfhost_last_index_of(text: text, sub: sub))
     end if
 
     if name == "string_pad_left" or name == "string_pad_right" then
@@ -1226,31 +1149,6 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         return IntVal(n)
     end if
 
-    if name == "square" then
-        let n: Int = as_int(head(args))
-        return IntVal(n * n)
-    end if
-
-    // ---- Type predicates ----
-    if name == "is_sorted" then
-        let items: List[Value] = as_list(head(args))
-        return BoolVal(list_is_sorted(items))
-    end if
-
-    if name == "is_positive" then
-        return BoolVal(as_int(head(args)) > 0)
-    end if
-
-    if name == "is_numeric_string" then
-        return BoolVal(str_is_numeric(as_str(head(args))))
-    end if
-
-    if name == "is_permutation" then
-        let a: List[Value] = as_list(head(args))
-        let b: List[Value] = as_list(head(tail(args)))
-        return BoolVal(list_is_permutation(a, b))
-    end if
-
     // ---- Conversions ----
     if name == "parse_int" then
         let text: String = as_str(head(args))
@@ -1270,21 +1168,21 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         // Float stored as string — truncate towards zero like Python's int()
         match head(args) with
             | FloatVal(s) ->
-            // Split on "." and parse the integer part
-            let parts: List[String] = split(text: s, delimiter: ".")
-            let int_part: String = head(parts)
-            // Handle "-0" or just "-" edge case
-            if int_part == "-" then
+                // Split on "." and parse the integer part
+                let parts: List[String] = split(text: s, delimiter: ".")
+                let int_part: String = head(parts)
+                // Handle "-0" or just "-" edge case
+                if int_part == "-" then
+                    return IntVal(0)
+                end if
+                if int_part == "-0" then
+                    return IntVal(0)
+                end if
+                let result: Option[Int] = parse_int(int_part)
+                if is_some(result) then
+                    return IntVal(unwrap(result))
+                end if
                 return IntVal(0)
-            end if
-            if int_part == "-0" then
-                return IntVal(0)
-            end if
-            let result: Option[Int] = parse_int(int_part)
-            if is_some(result) then
-                return IntVal(unwrap(result))
-            end if
-            return IntVal(0)
             | IntVal(n) -> return IntVal(n)
             | _ -> return IntVal(0)
         end match
@@ -1309,10 +1207,10 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "is_some" or name == "option_is_some" then
         match head(args) with
             | CtorVal(cn, cf) ->
-            if cn == "Some" then
-                return BoolVal(true)
-            end if
-            return BoolVal(false)
+                if cn == "Some" then
+                    return BoolVal(true)
+                end if
+                return BoolVal(false)
             | _ -> return BoolVal(false)
         end match
     end if
@@ -1320,10 +1218,10 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "is_none" or name == "option_is_none" then
         match head(args) with
             | CtorVal(cn, cf) ->
-            if cn == "None" then
-                return BoolVal(true)
-            end if
-            return BoolVal(false)
+                if cn == "None" then
+                    return BoolVal(true)
+                end if
+                return BoolVal(false)
             | UnitVal -> return BoolVal(true)
             | _ -> return BoolVal(false)
         end match
@@ -1332,13 +1230,13 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "unwrap" then
         match head(args) with
             | CtorVal(cn, cf) ->
-            if cn == "Some" then
-                let fv: Option[Value] = ctor_get_field(cf, "value")
-                if is_some(fv) then
-                    return unwrap(fv)
+                if cn == "Some" then
+                    let fv: Option[Value] = ctor_get_field(cf, "value")
+                    if is_some(fv) then
+                        return unwrap(fv)
+                    end if
                 end if
-            end if
-            return rt_error(st, "unwrap: called on None")
+                return rt_error(st, "unwrap: called on None")
             | _ -> return rt_error(st, "unwrap: called on non-Option")
         end match
     end if
@@ -1348,13 +1246,13 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
         let default_v: Value = head(tail(args))
         match opt with
             | CtorVal(cn, cf) ->
-            if cn == "Some" then
-                let fv: Option[Value] = ctor_get_field(cf, "value")
-                if is_some(fv) then
-                    return unwrap(fv)
+                if cn == "Some" then
+                    let fv: Option[Value] = ctor_get_field(cf, "value")
+                    if is_some(fv) then
+                        return unwrap(fv)
+                    end if
                 end if
-            end if
-            return default_v
+                return default_v
             | _ -> return default_v
         end match
     end if
@@ -1418,14 +1316,14 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "array_get" then
         match head(args) with
             | ArrayRef(v) ->
-            let idx: Int = as_int(head(tail(args)))
-            if idx < 0 then
-                return rt_error(st, "array_get: index out of bounds")
-            end if
-            if idx >= vec_length(v) then
-                return rt_error(st, "array_get: index out of bounds")
-            end if
-            return vec_get(v, idx)
+                let idx: Int = as_int(head(tail(args)))
+                if idx < 0 then
+                    return rt_error(st, "array_get: index out of bounds")
+                end if
+                if idx >= vec_length(v) then
+                    return rt_error(st, "array_get: index out of bounds")
+                end if
+                return vec_get(v, idx)
             | _ -> return rt_error(st, "array_get: expected array")
         end match
     end if
@@ -1433,10 +1331,10 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "array_set" then
         match head(args) with
             | ArrayRef(v) ->
-            let idx: Int = as_int(head(tail(args)))
-            let val: Value = head(tail(tail(args)))
-            vec_set(vec: v, index: idx, value: val)
-            return UnitVal
+                let idx: Int = as_int(head(tail(args)))
+                let val: Value = head(tail(tail(args)))
+                vec_set(vec: v, index: idx, value: val)
+                return UnitVal
             | _ -> return rt_error(st, "array_set: expected array")
         end match
     end if
@@ -1458,9 +1356,9 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "array_fill" then
         match head(args) with
             | ArrayRef(v) ->
-            let val: Value = head(tail(args))
-            array_fill_vec(v: v, val: val, idx: 0)
-            return UnitVal
+                let val: Value = head(tail(args))
+                array_fill_vec(v: v, val: val, idx: 0)
+                return UnitVal
             | _ -> return rt_error(st, "array_fill: expected array")
         end match
     end if
@@ -1468,9 +1366,9 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "array_copy" then
         match head(args) with
             | ArrayRef(v) ->
-            let new_v: Vec[Value] = vec_new()
-            copy_vec_elems(src: v, dst: new_v, idx: 0)
-            return ArrayRef(new_v)
+                let new_v: Vec[Value] = vec_new()
+                copy_vec_elems(src: v, dst: new_v, idx: 0)
+                return ArrayRef(new_v)
             | _ -> return rt_error(st, "array_copy: expected array")
         end match
     end if
@@ -1483,10 +1381,10 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "mutable_map_set" then
         match head(args) with
             | MMapRef(m) ->
-            let key: String = as_str(head(tail(args)))
-            let val: Value = head(tail(tail(args)))
-            mutable_map_set(map: m, key: key, value: val)
-            return UnitVal
+                let key: String = as_str(head(tail(args)))
+                let val: Value = head(tail(tail(args)))
+                mutable_map_set(map: m, key: key, value: val)
+                return UnitVal
             | _ -> return rt_error(st, "mutable_map_set: expected mutable map")
         end match
     end if
@@ -1494,13 +1392,13 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "mutable_map_get" then
         match head(args) with
             | MMapRef(m) ->
-            let key: String = as_str(head(tail(args)))
-            let found: Option[Value] = mutable_map_get(map: m, key: key)
-            if is_some(found) then
-                let fv: Value = unwrap(found)
-                return CtorVal("Some", [ValueField("value", fv)])
-            end if
-            return CtorVal("None", [])
+                let key: String = as_str(head(tail(args)))
+                let found: Option[Value] = mutable_map_get(map: m, key: key)
+                if is_some(found) then
+                    let fv: Value = unwrap(found)
+                    return CtorVal("Some", [ValueField("value", fv)])
+                end if
+                return CtorVal("None", [])
             | _ -> return rt_error(st, "mutable_map_get: expected mutable map")
         end match
     end if
@@ -1508,8 +1406,8 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "mutable_map_contains" then
         match head(args) with
             | MMapRef(m) ->
-            let key: String = as_str(head(tail(args)))
-            return BoolVal(mutable_map_contains(map: m, key: key))
+                let key: String = as_str(head(tail(args)))
+                return BoolVal(mutable_map_contains(map: m, key: key))
             | _ -> return rt_error(st, "mutable_map_contains: expected mutable map")
         end match
     end if
@@ -1517,9 +1415,9 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "mutable_map_delete" then
         match head(args) with
             | MMapRef(m) ->
-            let key: String = as_str(head(tail(args)))
-            mutable_map_delete(map: m, key: key)
-            return UnitVal
+                let key: String = as_str(head(tail(args)))
+                mutable_map_delete(map: m, key: key)
+                return UnitVal
             | _ -> return rt_error(st, "mutable_map_delete: expected mutable map")
         end match
     end if
@@ -1534,8 +1432,8 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "mutable_map_keys" then
         match head(args) with
             | MMapRef(m) ->
-            let keys: List[String] = mutable_map_keys(m)
-            return ListVal(mmap_keys_to_vals(keys))
+                let keys: List[String] = mutable_map_keys(m)
+                return ListVal(mmap_keys_to_vals(keys))
             | _ -> return rt_error(st, "mutable_map_keys: expected mutable map")
         end match
     end if
@@ -1548,9 +1446,9 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "vec_push" then
         match head(args) with
             | VecRef(v) ->
-            let item: Value = head(tail(args))
-            vec_push(v, item)
-            return UnitVal
+                let item: Value = head(tail(args))
+                vec_push(v, item)
+                return UnitVal
             | _ -> return rt_error(st, "vec_push: expected vec")
         end match
     end if
@@ -1558,14 +1456,14 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "vec_get" then
         match head(args) with
             | VecRef(v) ->
-            let idx: Int = as_int(head(tail(args)))
-            if idx < 0 then
-                return rt_error(st, "vec_get: index out of bounds")
-            end if
-            if idx >= vec_length(v) then
-                return rt_error(st, "vec_get: index out of bounds")
-            end if
-            return vec_get(v, idx)
+                let idx: Int = as_int(head(tail(args)))
+                if idx < 0 then
+                    return rt_error(st, "vec_get: index out of bounds")
+                end if
+                if idx >= vec_length(v) then
+                    return rt_error(st, "vec_get: index out of bounds")
+                end if
+                return vec_get(v, idx)
             | _ -> return rt_error(st, "vec_get: expected vec")
         end match
     end if
@@ -1573,10 +1471,10 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "vec_set" then
         match head(args) with
             | VecRef(v) ->
-            let idx: Int = as_int(head(tail(args)))
-            let val: Value = head(tail(tail(args)))
-            vec_set(vec: v, index: idx, value: val)
-            return UnitVal
+                let idx: Int = as_int(head(tail(args)))
+                let val: Value = head(tail(tail(args)))
+                vec_set(vec: v, index: idx, value: val)
+                return UnitVal
             | _ -> return rt_error(st, "vec_set: expected vec")
         end match
     end if
@@ -1591,15 +1489,15 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     if name == "vec_pop" then
         match head(args) with
             | VecRef(v) ->
-            if vec_length(v) == 0 then
+                if vec_length(v) == 0 then
+                    return CtorVal("None", [])
+                end if
+                let popped: Option[Value] = vec_pop(v)
+                if is_some(popped) then
+                    let pv: Value = unwrap(popped)
+                    return CtorVal("Some", [ValueField("value", pv)])
+                end if
                 return CtorVal("None", [])
-            end if
-            let popped: Option[Value] = vec_pop(v)
-            if is_some(popped) then
-                let pv: Value = unwrap(popped)
-                return CtorVal("Some", [ValueField("value", pv)])
-            end if
-            return CtorVal("None", [])
             | _ -> return rt_error(st, "vec_pop: expected vec")
         end match
     end if
@@ -1662,14 +1560,18 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
     end if
     if name == "fs_read_text" then
         let path: String = as_str(head(args))
-        let content: String = fs_read_text(path)
-        return StringVal(content)
+        match fs_read_text(path) with
+            | Ok(content) -> return CtorVal("Ok", [ValueField("value", StringVal(content))])
+            | Err(message) -> return CtorVal("Err", [ValueField("error", StringVal(message))])
+        end match
     end if
     if name == "fs_write_text" then
         let fpath: String = as_str(head(args))
         let fcontent: String = as_str(head(tail(args)))
-        fs_write_text(path: fpath, content: fcontent)
-        return UnitVal
+        match fs_write_text(path: fpath, content: fcontent) with
+            | Ok(_) -> return CtorVal("Ok", [ValueField("value", UnitVal)])
+            | Err(message) -> return CtorVal("Err", [ValueField("error", StringVal(message))])
+        end match
     end if
     if name == "http_fetch" then
         return rt_error(st, "http_fetch: host callback not available")
@@ -1677,6 +1579,15 @@ func dispatch_builtin(st: InterpState, name: String, args: List[Value], env: Env
 
     return rt_error(st, "Unknown builtin: " + name)
 end func dispatch_builtin
+
+// string_index_of and string_last_index_of return Option[Int] (proposal 0010).
+func index_option(index: Int) -> Value
+    example -1 -> CtorVal("None", [])
+    if index < 0 then
+        return CtorVal("None", [])
+    end if
+    return CtorVal("Some", [ValueField("value", IntVal(index))])
+end func index_option
 
 func selfhost_max_collection_size(dummy: Int) -> Int
     example 0 -> 10000000
@@ -1797,7 +1708,7 @@ end func copy_vec_elems
 
 // filter: keep items where predicate returns true.
 func builtin_filter(st: InterpState, items: List[Value], pred: Value, env: Env) -> List[Value]
-    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_some"), Env(mutable_map_new(), None, mutable_map_new())) -> []
     if interp_has_error(st) then
         return []
     end if
@@ -1844,7 +1755,7 @@ end func builtin_fold
 
 // take_while: take items while predicate is true.
 func builtin_take_while(st: InterpState, items: List[Value], pred: Value, env: Env) -> List[Value]
-    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> []
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_some"), Env(mutable_map_new(), None, mutable_map_new())) -> []
     if interp_has_error(st) then
         return []
     end if
@@ -1861,7 +1772,7 @@ end func builtin_take_while
 
 // all: check if all items satisfy predicate.
 func builtin_all(st: InterpState, items: List[Value], pred: Value, env: Env) -> Bool
-    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_positive"), Env(mutable_map_new(), None, mutable_map_new())) -> true
+    example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], BuiltinVal("is_some"), Env(mutable_map_new(), None, mutable_map_new())) -> true
     if interp_has_error(st) then
         return false
     end if
@@ -1984,15 +1895,15 @@ func eval_binop(st: InterpState, op: String, left: Expr, right: Expr, env: Env) 
     if op == "+" then
         match lv with
             | StringVal(ls) ->
-            match rv with
-                | StringVal(rs) -> return StringVal(ls + rs)
-                | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
-            end match
+                match rv with
+                    | StringVal(rs) -> return StringVal(ls + rs)
+                    | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
+                end match
             | ListVal(li) ->
-            match rv with
-                | ListVal(ri) -> return ListVal(concat(li, ri))
-                | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
-            end match
+                match rv with
+                    | ListVal(ri) -> return ListVal(concat(li, ri))
+                    | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
+                end match
             | _ -> return binop_numeric(st: st, op: op, lv: lv, rv: rv)
         end match
     end if
@@ -2097,11 +2008,11 @@ func eval_unary(st: InterpState, op: String, operand: Expr, env: Env) -> Value
         match v with
             | IntVal(n) -> return IntVal(0 - n)
             | FloatVal(s) ->
-            let parsed: Option[Float] = parse_float(s)
-            if is_some(parsed) then
-                return FloatVal(to_string(0.0 - unwrap(parsed)))
-            end if
-            return rt_error(st, "Unary '-' received invalid numeric value")
+                let parsed: Option[Float] = parse_float(s)
+                if is_some(parsed) then
+                    return FloatVal(to_string(0.0 - unwrap(parsed)))
+                end if
+                return rt_error(st, "Unary '-' received invalid numeric value")
             | _ -> return rt_error(st, "Unary '-' expects numeric operand")
         end match
     end if
@@ -2123,22 +2034,22 @@ func eval_call(st: InterpState, func_expr: Expr, call_args: List[CallArg], env: 
         // Reorder named arguments to match parameter order
         match func_val with
             | ClosureVal(cd) ->
-            let param_names: List[String] = get_param_names(cd.cl_params)
-            let reordered: List[Value] = reorder_named_args(st: st, call_args: call_args, param_names: param_names, env: env)
-            return call_function(st: st, func_val: func_val, call_args: reordered, env: env)
-            | BuiltinVal(bn) ->
-            // Reorder named args using builtin parameter names
-            let bp_opt: Option[List[String]] = mutable_map_get(map: st.builtin_params, key: bn)
-            if is_some(bp_opt) then
-                let bp_names: List[String] = unwrap(bp_opt)
-                let reordered: List[Value] = reorder_named_args(st: st, call_args: call_args, param_names: bp_names, env: env)
+                let param_names: List[String] = get_param_names(cd.cl_params)
+                let reordered: List[Value] = reorder_named_args(st: st, call_args: call_args, param_names: param_names, env: env)
                 return call_function(st: st, func_val: func_val, call_args: reordered, env: env)
-            end if
-            let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
-            return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
+            | BuiltinVal(bn) ->
+                // Reorder named args using builtin parameter names
+                let bp_opt: Option[List[String]] = mutable_map_get(map: st.builtin_params, key: bn)
+                if is_some(bp_opt) then
+                    let bp_names: List[String] = unwrap(bp_opt)
+                    let reordered: List[Value] = reorder_named_args(st: st, call_args: call_args, param_names: bp_names, env: env)
+                    return call_function(st: st, func_val: func_val, call_args: reordered, env: env)
+                end if
+                let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
+                return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
             | _ ->
-            let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
-            return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
+                let evaled: List[Value] = eval_call_args_positional(st: st, call_args: call_args, env: env)
+                return call_function(st: st, func_val: func_val, call_args: evaled, env: env)
         end match
     end if
 
@@ -2238,30 +2149,30 @@ func eval_index(st: InterpState, target: Expr, idx: Expr, env: Env) -> Value
 
     match target_val with
         | ListVal(items) ->
-        if i < 0 then
-            return rt_error(st, "Index out of bounds: " + to_string(i))
-        end if
-        if i >= length(items) then
-            return rt_error(st, "Index out of bounds: " + to_string(i))
-        end if
-        return list_get_at(items, i)
+            if i < 0 then
+                return rt_error(st, "Index out of bounds: " + to_string(i))
+            end if
+            if i >= length(items) then
+                return rt_error(st, "Index out of bounds: " + to_string(i))
+            end if
+            return list_get_at(items, i)
         | StringVal(s) ->
-        if i < 0 then
-            return rt_error(st, "Index out of bounds: " + to_string(i))
-        end if
-        if i >= length(s) then
-            return rt_error(st, "Index out of bounds: " + to_string(i))
-        end if
-        let chars: List[String] = to_chars(s)
-        return StringVal(list_str_get_at(chars, i))
+            if i < 0 then
+                return rt_error(st, "Index out of bounds: " + to_string(i))
+            end if
+            if i >= length(s) then
+                return rt_error(st, "Index out of bounds: " + to_string(i))
+            end if
+            let chars: List[String] = to_chars(s)
+            return StringVal(list_str_get_at(chars, i))
         | ArrayRef(v) ->
-        if i < 0 then
-            return rt_error(st, "Index out of bounds: " + to_string(i))
-        end if
-        if i >= vec_length(v) then
-            return rt_error(st, "Index out of bounds: " + to_string(i))
-        end if
-        return vec_get(v, i)
+            if i < 0 then
+                return rt_error(st, "Index out of bounds: " + to_string(i))
+            end if
+            if i >= vec_length(v) then
+                return rt_error(st, "Index out of bounds: " + to_string(i))
+            end if
+            return vec_get(v, i)
         | _ -> return rt_error(st, "Cannot index into non-indexable value")
     end match
 end func eval_index
@@ -2296,11 +2207,11 @@ func eval_field_access(st: InterpState, target: Expr, field_name: String, env: E
     let target_val: Value = eval_expr(st: st, expr: target, env: env)
     match target_val with
         | CtorVal(cn, cf) ->
-        let fv: Option[Value] = ctor_get_field(cf, field_name)
-        if is_some(fv) then
-            return unwrap(fv)
-        end if
-        return rt_error(st, "No field '" + field_name + "' on " + cn)
+            let fv: Option[Value] = ctor_get_field(cf, field_name)
+            if is_some(fv) then
+                return unwrap(fv)
+            end if
+            return rt_error(st, "No field '" + field_name + "' on " + cn)
         | _ -> return rt_error(st, "Cannot access field on non-constructor value")
     end match
 end func eval_field_access
@@ -2355,10 +2266,10 @@ func eval_pipe_args(st: InterpState, exprs: List[Expr], env: Env, current: Value
     let e: Expr = head(exprs)
     match e with
         | PlaceholderE ->
-        return concat([current], eval_pipe_args(st: st, exprs: tail(exprs), env: env, current: current))
+            return concat([current], eval_pipe_args(st: st, exprs: tail(exprs), env: env, current: current))
         | _ ->
-        let v: Value = eval_expr(st: st, expr: e, env: env)
-        return concat([v], eval_pipe_args(st: st, exprs: tail(exprs), env: env, current: current))
+            let v: Value = eval_expr(st: st, expr: e, env: env)
+            return concat([v], eval_pipe_args(st: st, exprs: tail(exprs), env: env, current: current))
     end match
 end func eval_pipe_args
 
@@ -2475,9 +2386,9 @@ func eval_with(st: InterpState, target: Expr, updates: List[FieldUpdate], env: E
     let target_val: Value = eval_expr(st: st, expr: target, env: env)
     match target_val with
         | CtorVal(cn, cf) ->
-        let update_fields_list: List[ValueField] = eval_field_updates(st: st, updates: updates, env: env)
-        let new_fields: List[ValueField] = update_fields(cf, update_fields_list)
-        return CtorVal(cn, new_fields)
+            let update_fields_list: List[ValueField] = eval_field_updates(st: st, updates: updates, env: env)
+            let new_fields: List[ValueField] = update_fields(cf, update_fields_list)
+            return CtorVal(cn, new_fields)
         | _ -> return rt_error(st, "'with' requires a constructor value")
     end match
 end func eval_with
@@ -2506,15 +2417,15 @@ func match_pattern(st: InterpState, pat: Pattern, val: Value) -> Option[List[Val
         | WildcardPat -> return Some([])
         | VarPat(name) -> return Some([ValueField(name, val)])
         | LitPat(lit_expr) ->
-        let lit_val: Value = eval_lit_pattern(lit_expr)
-        if values_equal(lit_val, val) then
-            return Some([])
-        end if
-        return None
+            let lit_val: Value = eval_lit_pattern(lit_expr)
+            if values_equal(lit_val, val) then
+                return Some([])
+            end if
+            return None
         | CtorPat(ctor_name, sub_pats) ->
-        return match_ctor_pattern(st: st, ctor_name: ctor_name, sub_pats: sub_pats, val: val)
+            return match_ctor_pattern(st: st, ctor_name: ctor_name, sub_pats: sub_pats, val: val)
         | ListPat(elem_pats) ->
-        return match_list_pattern(st: st, elem_pats: elem_pats, val: val)
+            return match_list_pattern(st: st, elem_pats: elem_pats, val: val)
     end match
 end func match_pattern
 
@@ -2535,14 +2446,14 @@ func match_ctor_pattern(st: InterpState, ctor_name: String, sub_pats: List[Patte
     example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), "None", [], CtorVal("None", [])) -> Some([])
     match val with
         | CtorVal(cn, cf) ->
-        if cn != ctor_name then
-            return None
-        end if
-        let field_vals: List[Value] = ctor_field_vals(cf)
-        if length(sub_pats) != length(field_vals) then
-            return None
-        end if
-        return match_sub_patterns(st: st, pats: sub_pats, vals: field_vals)
+            if cn != ctor_name then
+                return None
+            end if
+            let field_vals: List[Value] = ctor_field_vals(cf)
+            if length(sub_pats) != length(field_vals) then
+                return None
+            end if
+            return match_sub_patterns(st: st, pats: sub_pats, vals: field_vals)
         | _ -> return None
     end match
 end func match_ctor_pattern
@@ -2571,10 +2482,10 @@ func match_list_pattern(st: InterpState, elem_pats: List[Pattern], val: Value) -
     example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), [], ListVal([])) -> Some([])
     match val with
         | ListVal(items) ->
-        if length(elem_pats) != length(items) then
-            return None
-        end if
-        return match_sub_patterns(st: st, pats: elem_pats, vals: items)
+            if length(elem_pats) != length(items) then
+                return None
+            end if
+            return match_sub_patterns(st: st, pats: elem_pats, vals: items)
         | _ -> return None
     end match
 end func match_list_pattern
@@ -2596,8 +2507,8 @@ func exec_stmt(st: InterpState, stmt: Stmt, env: Env) -> ExecResult
         | MatchStmt(scrutinee, arms) -> return exec_match_stmt(st: st, scrutinee: scrutinee, arms: arms, env: env)
         | ReturnStmt(value_expr) -> return exec_return(st: st, value_expr: value_expr, env: env)
         | ExprStmt(expr) ->
-        let dummy: Value = eval_expr(st: st, expr: expr, env: env)
-        return ExecNormal
+            let dummy: Value = eval_expr(st: st, expr: expr, env: env)
+            return ExecNormal
     end match
 end func exec_stmt
 
@@ -2705,13 +2616,13 @@ func exec_for(st: InterpState, var_name: String, iterable: Expr, body: List[Stmt
     let iter_val: Value = eval_expr(st: st, expr: iterable, env: env)
     match iter_val with
         | ListVal(items) ->
-        return exec_for_items(st: st, var_name: var_name, items: items, body: body, env: env)
+            return exec_for_items(st: st, var_name: var_name, items: items, body: body, env: env)
         | ArrayRef(v) ->
-        let items: List[Value] = vec_to_val_list(v, 0)
-        return exec_for_items(st: st, var_name: var_name, items: items, body: body, env: env)
+            let items: List[Value] = vec_to_val_list(v, 0)
+            return exec_for_items(st: st, var_name: var_name, items: items, body: body, env: env)
         | _ ->
-        let dummy: Value = rt_error(st, "Cannot iterate over non-iterable value")
-        return ExecNormal
+            let dummy: Value = rt_error(st, "Cannot iterate over non-iterable value")
+            return ExecNormal
     end match
 end func exec_for
 
@@ -2777,9 +2688,9 @@ func call_function(st: InterpState, func_val: Value, call_args: List[Value], env
     end if
     match func_val with
         | ClosureVal(cd) ->
-        return call_closure(st: st, cd: cd, call_args: call_args, env: env)
+            return call_closure(st: st, cd: cd, call_args: call_args, env: env)
         | BuiltinVal(bn) ->
-        return dispatch_builtin(st: st, name: bn, args: call_args, env: env)
+            return dispatch_builtin(st: st, name: bn, args: call_args, env: env)
         | _ -> return rt_error(st, "Cannot call non-function value")
     end match
 end func call_function
@@ -2817,14 +2728,14 @@ func call_closure(st: InterpState, cd: ClosureData, call_args: List[Value], env:
 
     match result with
         | ExecReturn(rv) ->
-        // Check postconditions
-        check_postconditions(st: st, specs: cd.cl_specs, env: call_env, result_val: rv)
-        interp_pop_span(st)
-        return rv
+            // Check postconditions
+            check_postconditions(st: st, specs: cd.cl_specs, env: call_env, result_val: rv)
+            interp_pop_span(st)
+            return rv
         | ExecNormal ->
-        check_postconditions(st: st, specs: cd.cl_specs, env: call_env, result_val: UnitVal)
-        interp_pop_span(st)
-        return UnitVal
+            check_postconditions(st: st, specs: cd.cl_specs, env: call_env, result_val: UnitVal)
+            interp_pop_span(st)
+            return UnitVal
     end match
 end func call_closure
 
@@ -2918,9 +2829,9 @@ func verify_examples_for_funcs(st: InterpState, names: List[String]) -> Unit
         let d: Def = unwrap(def_opt)
         match d with
             | FuncDef(fn_name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
-            interp_push_span(st, span)
-            verify_func_examples(st: st, fn_name: fn_name, specs: specs)
-            interp_pop_span(st)
+                interp_push_span(st, span)
+                verify_func_examples(st: st, fn_name: fn_name, specs: specs)
+                interp_pop_span(st)
             | _ -> let dummy: Int = 0
         end match
     end if
@@ -2978,8 +2889,8 @@ func register_type_def(st: InterpState, td: Def) -> Unit
     example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), ImportDef("x", dummy_span(0))) -> ()
     match td with
         | TypeDefNode(name, type_params, variants, span) ->
-        register_variants(st, variants)
-        return ()
+            register_variants(st, variants)
+            return ()
         | _ -> return ()
     end match
 end func register_type_def
@@ -3011,10 +2922,10 @@ func register_func_def(st: InterpState, fd: Def) -> Unit
     example (InterpState(Env(mutable_map_new(), None, mutable_map_new()), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), 100, mutable_map_new(), vec_new(), vec_new(), vec_new()), ImportDef("x", dummy_span(0))) -> ()
     match fd with
         | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
-        mutable_map_set(map: st.func_defs, key: name, value: fd)
-        let cd: ClosureData = ClosureData(params, body, st.global_env, name, specs, span)
-        env_bind(env: st.global_env, name: name, val: ClosureVal(cd))
-        return ()
+            mutable_map_set(map: st.func_defs, key: name, value: fd)
+            let cd: ClosureData = ClosureData(params, body, st.global_env, name, specs, span)
+            env_bind(env: st.global_env, name: name, val: ClosureVal(cd))
+            return ()
         | _ -> return ()
     end match
 end func register_func_def
@@ -3028,15 +2939,15 @@ func collect_defs(st: InterpState, defs: List[Def]) -> Unit
     let d: Def = head(defs)
     match d with
         | TypeDefNode(name, type_params, variants, span) ->
-        register_type_def(st, d)
+            register_type_def(st, d)
         | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
-        register_func_def(st, d)
+            register_func_def(st, d)
         | ImportDef(module_name, span) ->
-        // Imports handled separately
-        let dummy: Int = 0
+            // Imports handled separately
+            let dummy: Int = 0
         | TypeAliasNode(name, params, target, span) ->
-        // Transparent aliases have no runtime constructors.
-        let dummy: Int = 0
+            // Transparent aliases have no runtime constructors.
+            let dummy: Int = 0
     end match
     return collect_defs(st, tail(defs))
 end func collect_defs
@@ -3054,9 +2965,9 @@ func interp_resolve_imports(st: InterpState, defs: List[Def], modules: MutableMa
     let d: Def = head(defs)
     match d with
         | ImportDef(module_name, span) ->
-        interp_push_span(st, span)
-        resolve_single_import(st: st, module_name: module_name, modules: modules, resolved: resolved)
-        interp_pop_span(st)
+            interp_push_span(st, span)
+            resolve_single_import(st: st, module_name: module_name, modules: modules, resolved: resolved)
+            interp_pop_span(st)
         | _ -> let dummy: Int = 0
     end match
     return interp_resolve_imports(st: st, defs: tail(defs), modules: modules, resolved: resolved)
@@ -3098,10 +3009,10 @@ func defs_define_main(defs: List[Def]) -> Bool
     end if
     match head(defs) with
         | FuncDef(name, _params, _ret_type, _specs, _body, _closing, _anns, _effs, _span) ->
-        if name == "main" then
-            return true
-        end if
-        return defs_define_main(tail(defs))
+            if name == "main" then
+                return true
+            end if
+            return defs_define_main(tail(defs))
         | _ -> return defs_define_main(tail(defs))
     end match
 end func defs_define_main

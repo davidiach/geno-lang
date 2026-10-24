@@ -1,0 +1,43 @@
+func safe_head(values: List[Int]) -> Option[Int]
+    example [10, 20] -> Some(10)
+    example [] -> None
+    if length(values) == 0 then
+        return None
+    end if
+    return Some(head(values))
+end func
+
+func option_value(value: Option[Int]) -> Int
+    example Some(7) -> 7
+    example None -> -1
+    match value with
+        | Some(inner) -> return inner
+        | None -> return -1
+    end match
+end func
+
+func safe_div(left: Int, right: Int) -> Result[Int, Int]
+    example (10, 2) -> Ok(5)
+    example (7, 0) -> Err(0)
+    if right == 0 then
+        return Err(0)
+    end if
+    return Ok(left / right)
+end func
+
+func result_value(value: Result[Int, Int]) -> Int
+    example Ok(5) -> 5
+    example Err(0) -> -1
+    match value with
+        | Ok(inner) -> return inner
+        | Err(error) -> return error - 1
+    end match
+end func
+
+func main() -> Unit
+    print(option_value(safe_head([10, 20])))
+    print(option_value(safe_head([])))
+    print(result_value(safe_div(10, 2)))
+    print(result_value(safe_div(7, 0)))
+    return ()
+end func

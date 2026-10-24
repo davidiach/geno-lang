@@ -43,7 +43,7 @@ class TestHttpPostInterpreter:
     def test_http_post_with_callback(self):
         source = """
         func main() -> String
-            return http_post(url: "https://api.example.com/data", body: "{}")
+            return http_post(url: "https://api.example.com/data", body: "{}").unwrap()
         end func
         """
 
@@ -61,7 +61,7 @@ class TestHttpPostInterpreter:
     def test_http_post_denied_without_capability(self):
         source = """
         func main() -> String
-            return http_post(url: "https://example.com", body: "data")
+            return http_post(url: "https://example.com", body: "data").unwrap()
         end func
         """
         config = RunConfig(capabilities=set())
@@ -265,7 +265,7 @@ class TestHttpSchemeValidation:
         monkeypatch.setattr(runtime_support, "_GENO_CAPS", {"http"})
         monkeypatch.setenv("GENO_HTTP_ALLOW_PRIVATE", "1")
         with _redirect_server("/target") as url:
-            assert runtime_support.http_fetch(url) == "redirect-ok"
+            assert runtime_support.http_fetch(url).value == "redirect-ok"
 
     def test_runtime_http_fetch_supports_308_without_stdlib_handler(self, monkeypatch):
         import urllib.request
@@ -278,7 +278,7 @@ class TestHttpSchemeValidation:
         monkeypatch.setattr(runtime_support, "_GENO_CAPS", {"http"})
         monkeypatch.setenv("GENO_HTTP_ALLOW_PRIVATE", "1")
         with _redirect_server("/target", status=308) as url:
-            assert runtime_support.http_fetch(url) == "redirect-ok"
+            assert runtime_support.http_fetch(url).value == "redirect-ok"
 
     def test_runtime_http_fetch_rejects_non_http_redirect(self, monkeypatch):
         import geno._runtime_support as runtime_support
@@ -286,8 +286,8 @@ class TestHttpSchemeValidation:
         monkeypatch.setattr(runtime_support, "_GENO_CAPS", {"http"})
         monkeypatch.setenv("GENO_HTTP_ALLOW_PRIVATE", "1")
         with _redirect_server("ftp://127.0.0.1/secret.txt") as url:
-            with pytest.raises(RuntimeError, match="scheme 'ftp' is not allowed"):
-                runtime_support.http_fetch(url)
+            result = runtime_support.http_fetch(url)
+        assert "scheme 'ftp' is not allowed" in result.error
 
     def test_http_request_non_http_redirect_returns_err(self, monkeypatch):
         import geno._runtime_support as runtime_support
@@ -333,8 +333,9 @@ class TestHttpSchemeValidation:
         http_fetch = interpreter.global_env.bindings["http_fetch"].func
 
         with _redirect_server("ftp://127.0.0.1/secret.txt") as url:
-            with pytest.raises(RuntimeError, match="scheme 'ftp' is not allowed"):
-                http_fetch(url)
+            result = http_fetch(url)
+        assert result.constructor == "Err"
+        assert "scheme 'ftp' is not allowed" in result.fields["error"]
 
     def test_unsafe_http_fetch_supports_308_without_stdlib_handler(self, monkeypatch):
         import urllib.request
@@ -350,7 +351,7 @@ class TestHttpSchemeValidation:
         http_fetch = interpreter.global_env.bindings["http_fetch"].func
 
         with _redirect_server("/target", status=308) as url:
-            assert http_fetch(url) == "redirect-ok"
+            assert http_fetch(url).fields["value"] == "redirect-ok"
 
     def test_unsafe_http_request_bad_headers_returns_err(self):
         from geno._serve import install_http_callbacks as _install_http_callbacks

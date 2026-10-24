@@ -464,7 +464,7 @@ class TestJSCompilerArithmetic:
             """,
             """
             func main() -> Int
-                return string_index_of("abc", "c")
+                return string_index_of("abc", "c").unwrap_or(-1)
             end func
             """,
             """
@@ -716,18 +716,15 @@ console.log("ok");
         with pytest.raises(RuntimeError, match="Division by zero"):
             compile_and_run_js(source)
 
-    def test_zero_base_negative_exponent_caught_by_try_catch(self):
+    def test_zero_base_negative_exponent_panics(self):
         source = """
         func main() -> String
-            try
-                let value: Float = 0 ** -1
-                return to_string(value)
-            catch e: String
-                return "caught"
-            end try
+            let value: Float = 0 ** -1
+            return to_string(value)
         end func
         """
-        assert compile_and_run_js(source) == "caught"
+        with pytest.raises(RuntimeError, match="JS execution failed"):
+            compile_and_run_js(source)
 
     def test_operator_precedence(self):
         source = """
@@ -909,32 +906,28 @@ class TestJSCompilerControlFlow:
 class TestJSCompilerComprehensions:
     def test_filtered_comprehension_evaluates_condition_then_element_per_item(self):
         source = """
-        func keep(x: Int) -> Bool with throw
+        func keep(x: Int) -> Bool
             example 0 -> true
             if x == 2 then
-                throw "keep2"
+                panic("keep2")
             end if
             return true
         end func
 
-        func emit(x: Int) -> Int with throw
+        func emit(x: Int) -> Int
             example 0 -> 0
             if x == 1 then
-                throw "emit1"
+                panic("emit1")
             end if
             return x
         end func
 
-        func main() -> String
-            try
-                let xs: List[Int] = [emit(x) for x: Int in [1, 2] if keep(x)]
-                return "ok"
-            catch e: String
-                return e
-            end try
+        func main() -> Int
+            return length([emit(x) for x: Int in [1, 2] if keep(x)])
         end func
         """
-        assert compile_and_run_js(source) == "emit1"
+        with pytest.raises(RuntimeError, match=r"Error: emit1\b"):
+            compile_and_run_js(source)
 
 
 # =============================================================================
@@ -1353,26 +1346,6 @@ class TestJSCompilerTypes:
         with pytest.raises(GenoTypeError, match="immutable variable: p"):
             compile_to_js(source)
 
-    def test_contract_failure_bypasses_string_catch(self):
-        source = """
-        @untested("contract repro")
-        func f(x: Int) -> Int
-            requires x > 0
-            return x
-        end func
-
-        func main() -> String
-            try
-                let y: Int = f(0)
-                return "not caught"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        with pytest.raises(RuntimeError, match="Precondition failed"):
-            compile_and_run_js(source)
-
     def test_with_result_preserves_fields(self):
         """Values created by `with` preserve updated and original fields."""
         source = """
@@ -1412,17 +1385,6 @@ class TestJSCompilerBuiltins:
         end func
         """
         assert compile_and_run_js(source) == "3"
-
-    def test_is_permutation_uses_structural_equality(self):
-        source = """
-        func main() -> Unit
-            print(is_permutation([1, 2, 1], [2, 1, 1]))
-            print(is_permutation([Some(1), None], [None, Some(1)]))
-            print(is_permutation([Some(1), Some(1)], [Some(1), None]))
-            return ()
-        end func
-        """
-        assert compile_and_run_js(source) == "true\ntrue\nfalse"
 
     def test_list_pair_builtins_return_tuples(self):
         source = """
@@ -1473,7 +1435,7 @@ class TestJSCompilerBuiltins:
         """
         js_code = compile_to_js(source)
         assert (
-            "return length(_checkCollectionSize([_checkCollectionSize(1), "
+            "return length_g(_checkCollectionSize([_checkCollectionSize(1), "
             "_checkCollectionSize(2), _checkCollectionSize(3)]));" in js_code
         )
         assert compile_and_run_js(source) == "42"
@@ -1541,7 +1503,7 @@ class TestJSCompilerBuiltins:
         """
         js_code = compile_to_js(source)
         assert (
-            "return append(_checkCollectionSize([_checkCollectionSize(1), "
+            "return append_g(_checkCollectionSize([_checkCollectionSize(1), "
             "_checkCollectionSize(2)]), _checkCollectionSize(3));" in js_code
         )
         assert compile_and_run_js(source) == "[3]"
@@ -1725,7 +1687,7 @@ class TestJSCompilerBuiltins:
         source = """
         func main() -> Int
             let s: String = from_char_code(128512) + "xy" + from_char_code(128512)
-            return (string_index_of(text: s, substring: "x") * 10) + string_last_index_of(text: s, substring: from_char_code(128512))
+            return (string_index_of(text: s, substring: "x").unwrap_or(-1) * 10) + string_last_index_of(text: s, substring: from_char_code(128512)).unwrap_or(-1)
         end func
         """
         assert compile_and_run_js(source) == "13"
@@ -1738,10 +1700,10 @@ class TestJSCompilerBuiltins:
         """
         assert compile_and_run_js(source) == '["a", "b", "c"]'
 
-    def test_sort_strings(self):
+    def test_sort_without_comparator(self):
         source = """
         func main() -> List[String]
-            return sort_strings(["c", "a", "b"])
+            return sort(["c", "a", "b"])
         end func
         """
         assert compile_and_run_js(source) == '["a", "b", "c"]'
@@ -1862,14 +1824,6 @@ class TestJSCompilerMath:
         """
         assert compile_and_run_js(source) == "5"
 
-    def test_square(self):
-        source = """
-        func main() -> Int
-            return square(7)
-        end func
-        """
-        assert compile_and_run_js(source) == "49"
-
 
 class TestJSCompilerConversions:
     def test_parse_int_valid(self):
@@ -1899,7 +1853,7 @@ class TestJSCompilerConversions:
     def test_parse_int_overlong_input_raises(self):
         source = """
         func main() -> String
-            match parse_int(repeat_string("1", 1001)) with
+            match parse_int(string_repeat("1", 1001)) with
                 | Some(v) -> return "some"
                 | None -> return "none"
             end match
@@ -1911,7 +1865,7 @@ class TestJSCompilerConversions:
     def test_parse_float_overlong_input_raises(self):
         source = """
         func main() -> String
-            match parse_float(repeat_string("1", 1001)) with
+            match parse_float(string_repeat("1", 1001)) with
                 | Some(v) -> return "some"
                 | None -> return "none"
             end match
@@ -2328,6 +2282,23 @@ class TestJSCompilerReservedNames:
         js_code = compile_to_js(source)
         assert "class_kw" in js_code
         assert compile_and_run_js(source) == "42"
+
+    def test_strict_mode_restricted_names_are_mangled(self):
+        source = """
+        func eval(arguments: Int) -> Int
+            example 1 -> 2
+            return arguments + 1
+        end func
+
+        func main() -> Int
+            let arguments = eval(1)
+            var eval_result = arguments
+            return eval_result
+        end func
+        """
+        js_code = compile_to_js(source)
+        assert "function eval_kw(arguments_kw)" in js_code
+        assert compile_and_run_js(source) == "2"
 
     @pytest.mark.parametrize(
         "name", ["_requireCap", "_validateRegexPattern", "_GENO_CREATE_REQUIRE"]
@@ -2772,18 +2743,14 @@ class TestJSCompilerErrors:
         with pytest.raises(RuntimeError, match="Division by zero"):
             compile_and_run_js(source)
 
-    def test_modulo_by_zero_caught_by_try_catch(self):
+    def test_modulo_by_zero_panics(self):
         source = """
-        func main() -> String
-            try
-                let x: Int = 10 % 0
-                return "no error"
-            catch e: String
-                return "caught"
-            end try
+        func main() -> Int
+            return 10 % 0
         end func
         """
-        assert compile_and_run_js(source) == "caught"
+        with pytest.raises(RuntimeError, match="Division by zero"):
+            compile_and_run_js(source)
 
     def test_head_empty_list(self):
         source = """
@@ -3033,7 +3000,7 @@ class TestJSCompilerOutput:
         func left(flag: Bool) -> Int
             example (false) -> 1
             if flag then
-                throw "left"
+                panic("left")
             end if
             return 1
         end func
@@ -3041,21 +3008,17 @@ class TestJSCompilerOutput:
         func right(flag: Bool) -> Int
             example (false) -> 1
             if flag then
-                throw "right"
+                panic("right")
             end if
             return 1
         end func
 
-        func main() -> String
-            try
-                let x: Int = left(true) % right(true)
-                return "none"
-            catch e: String
-                return e
-            end try
+        func main() -> Int
+            return left(true) % right(true)
         end func
         """
-        assert compile_and_run_js(source) == "left"
+        with pytest.raises(RuntimeError, match=r"Error: left\b"):
+            compile_and_run_js(source)
 
     def test_typed_modulo_supports_async_operands(self):
         source = """
@@ -3269,7 +3232,7 @@ cp.execFileSync = function(_program, args, options) {
 };
 _GENO_CAPS.add("http");
 const secret = "request-body-secret";
-const result = http_post("https://example.test/path", secret);
+const result = http_post("https://example.test/path", secret).value;
 cp.execFileSync = originalExecFileSync;
 if (result !== "ok") {
     throw new Error("wrong result: " + result);
@@ -3897,7 +3860,9 @@ def test_js_compiler_allows_declared_builtin_without_typecheck():
     assert "function main" in compile_to_js(source, typecheck=False)
 
 
-@pytest.mark.parametrize("field_name", ["default", "_withGenoFormatter"])
+@pytest.mark.parametrize(
+    "field_name", ["default", "eval", "arguments", "_withGenoFormatter"]
+)
 def test_js_compiler_rejects_unsafe_record_field(field_name):
     source = (
         f"type Wrapper = Wrapper({field_name}: Int)\n"
@@ -3921,13 +3886,20 @@ def test_js_compiler_allows_non_constructor_helper_record_field():
     assert "function Wrapper(array_new)" in compile_to_js(source)
 
 
+def test_js_compiler_rejects_emitted_host_intrinsic_binding():
+    source = "func _geno_canvas() -> Int\n    return 1\nend func\n"
+    source += "func main() -> Int\n    return 1\nend func\n"
+
+    with pytest.raises(JSCompileError, match="reserved runtime name"):
+        compile_to_js(source, typecheck=False)
+
+
 @pytest.mark.parametrize(
     "name",
     [
         "Array",
         "Error",
         "String",
-        "_geno_canvas",
         "document",
         "fetch",
         "parseFloat",
@@ -3936,16 +3908,23 @@ def test_js_compiler_allows_non_constructor_helper_record_field():
         "undefined",
     ],
 )
-def test_js_compiler_rejects_emitted_host_intrinsic_binding(name):
+def test_js_compiler_renames_host_intrinsic_binding(name):
     binding = (
         f"type Host = {name}(value: Int)\n"
         if name[0].isupper()
-        else f"func {name}() -> Int\n    return 1\nend func\n"
+        else f"func {name}() -> Int\n    example () -> 1\n    return 1\nend func\n"
     )
-    source = binding + "func main() -> Int\n    return 1\nend func\n"
+    use = f"{name}(41).value" if name[0].isupper() else f"{name}()"
+    source = binding + (
+        "func main() -> Int\n"
+        f"    let total = {use} + length([1, 2])\n"
+        "    return total + length(to_string(total)) - 2\n"
+        "end func\n"
+    )
 
-    with pytest.raises(JSCompileError, match="reserved runtime name"):
-        compile_to_js(source, typecheck=False)
+    assert f"{name}_g" in compile_to_js(source, typecheck=False)
+    expected = "43" if name[0].isupper() else "2"
+    assert compile_and_run_js(source) == expected
 
 
 def test_js_single_program_rejects_function_trait_dispatcher_collision():
@@ -3994,16 +3973,15 @@ def test_js_single_app_rejects_lifecycle_trait_dispatcher_collision():
         compile_to_js(source, typecheck=False)
 
 
-def test_js_standalone_rejects_runtime_host_parse_float_shadow():
+def test_js_standalone_keeps_runtime_host_parse_float():
     source = """
 func parseFloat(value: String) -> Float
     example "2.5" -> 1.0
     return 1.0
 end func
 func main() -> Float
-    return 1.0
+    return parseFloat("2.5") + parse_float("0.25").unwrap_or(0.0)
 end func
 """
 
-    with pytest.raises(JSCompileError, match="reserved runtime name"):
-        compile_to_js(source)
+    assert compile_and_run_js(source) == "1.25"

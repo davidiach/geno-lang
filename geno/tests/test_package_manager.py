@@ -1210,6 +1210,7 @@ tag = "v0.3.0"
         assert clone_cmd[:-1] == [
             "git",
             "clone",
+            "--no-hardlinks",
             "--branch",
             "v0.3.0",
             "--single-branch",
@@ -1818,6 +1819,7 @@ branch = "main"
         assert clone_cmd[:-1] == [
             "git",
             "clone",
+            "--no-hardlinks",
             "--branch",
             "main",
             "--single-branch",
@@ -1889,6 +1891,7 @@ branch = "main"
         assert clone_cmd[:-1] == [
             "git",
             "clone",
+            "--no-hardlinks",
             "--branch",
             "main",
             "--single-branch",
@@ -3118,6 +3121,7 @@ tag = "v0.3.0"
         assert clone_cmd[:-1] == [
             "git",
             "clone",
+            "--no-hardlinks",
             "--branch",
             "v0.3.0",
             "--single-branch",

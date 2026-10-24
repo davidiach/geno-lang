@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, fields, is_dataclass
+from itertools import pairwise
 
 from .lexer import Lexer, LexerError
 from .tokens import SourceLocation, TokenType
@@ -28,11 +29,16 @@ def format_source(source: str) -> str:
             formatter misjudged instead of writing a broken file (#131).
     """
     formatted = _format_source_text(source)
-    if formatted != source and not _same_program(source, formatted):
-        raise FormatError(
-            "formatting would change the meaning of this file; it was left unchanged"
-        )
-    return formatted
+    if formatted == source or _same_program(source, formatted):
+        return formatted
+    # Spacing is normalized from the lexer's tokens; should that ever misread
+    # a line, indentation alone is still worth applying.
+    indented = _format_source_text(source, normalize_spacing=False)
+    if indented == source or _same_program(source, indented):
+        return indented
+    raise FormatError(
+        "formatting would change the meaning of this file; it was left unchanged"
+    )
 
 
 def _same_program(source: str, formatted: str) -> bool:
@@ -84,10 +90,10 @@ def _ast_key(node: object) -> object:
     return node
 
 
-def _format_source_text(source: str) -> str:
+def _format_source_text(source: str, *, normalize_spacing: bool = True) -> str:
     """Format ``source`` without the parse-preservation guard."""
     if '"""' not in source:
-        return _format_lines(source)
+        return _format_lines(source, normalize_spacing=normalize_spacing)
     try:
         tokens = Lexer(source).tokenize()
     except LexerError:
@@ -118,7 +124,7 @@ def _format_source_text(source: str) -> str:
         literals.append((placeholder, source[start:end]))
         cursor = end
     parts.append(source[cursor:])
-    formatted = _format_lines("".join(parts))
+    formatted = _format_lines("".join(parts), normalize_spacing=normalize_spacing)
     for placeholder, literal in literals:
         formatted = formatted.replace(placeholder, literal)
     return formatted
@@ -128,7 +134,13 @@ _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\|>|->|\S")
 _OPEN_BRACKETS = {"(": ")", "[": "]", "{": "}"}
 _CLOSE_BRACKETS = {")", "]", "}"}
 # Keywords that always open a block closed by ``end <kw>``.
-_ALWAYS_OPENS = {"while", "match", "try", "trait", "impl", "test"}
+_ALWAYS_OPENS = {"while", "match", "trait", "impl", "test"}
+# A line ending in one of these continues on the next line, which is
+# indented one step further.
+_CONTINUES_LINE = {"=", "+", "-", "*", "/", "%", "<", ">", "&", "^", "|>", "->"}
+_CONTINUES_LINE_WORDS = {"and", "or", "not"}
+# A frame for the body of a match arm written below its ``| pattern ->``.
+_ARM = "arm"
 
 
 @dataclass
@@ -140,7 +152,7 @@ class _Frame:
     is_lambda_params: bool = False
 
 
-def _format_lines(source: str) -> str:
+def _format_lines(source: str, *, normalize_spacing: bool = True) -> str:
     """Apply indentation with multiline literal contents protected by the caller.
 
     Indentation follows the code's tokens: a stack holds every open block
@@ -157,6 +169,7 @@ def _format_lines(source: str) -> str:
     in_block_comment = False
     block_comment_depth = 0
     in_type_def = False
+    continues = False
 
     for index, line in enumerate(lines):
         stripped = line.strip()
@@ -181,15 +194,29 @@ def _format_lines(source: str) -> str:
             continue
 
         # Blank lines (preserve in_type_def across blank lines so | variants
-        # after a blank line are still indented correctly)
+        # after a blank line are still indented correctly). A run of blank
+        # lines, or one at the start of the file, keeps at most one.
         if not stripped:
-            result.append("")
+            if result and result[-1]:
+                result.append("")
             continue
 
         tokens = _TOKEN_RE.findall(codes[index])
         first_token = tokens[0] if tokens else ""
         if first_token == "export" and len(tokens) > 1:  # noqa: S105
             first_token = tokens[1]
+        if first_token == "|" and stack and stack[-1].kind == _ARM:  # noqa: S105
+            # The next arm ends the body of the one above.
+            stack.pop()
+            depth = stack[-1].inner if stack else 0
+        elif (
+            not tokens
+            and stack
+            and stack[-1].kind == _ARM
+            and _next_significant_token(lines, index + 1) == "|"
+        ):
+            # A comment introducing the next arm sits level with it.
+            depth = stack[-1].inner - 1
 
         # End a multi-line type def when we hit a non-| line
         comment_continues_type_def = (
@@ -209,21 +236,50 @@ def _format_lines(source: str) -> str:
             line_depth = _closing_depth(stack, _end_kind(tokens, 0))
         elif first_token in _CLOSE_BRACKETS and stack:
             line_depth = _closing_depth(stack, first_token)
-        elif first_token in {"else", "catch"}:
+        elif first_token == "else":  # noqa: S105
             line_depth = max(0, depth - 1)
-        elif first_token == "|>":  # noqa: S105
+        elif first_token == "|>" or (  # noqa: S105
+            first_token == "." and not stripped.startswith("...")  # noqa: S105
+        ):
+            # Pipelines and method chains continue the line above.
             line_depth = depth + 1
         elif comment_continues_type_def or (first_token == "|" and in_type_def):  # noqa: S105
             # Type variant continuation lines indent under the type keyword
             line_depth = depth + 1
+        elif continues and tokens and first_token != "|":  # noqa: S105
+            line_depth = depth + 1
 
+        if normalize_spacing and tokens:
+            stripped = _normalize_spacing(stripped)
         result.append(_indent(line_depth) + stripped)
 
         if first_token == "type" and "=" in tokens:  # noqa: S105
             # Type definitions use leading ``|`` variant lines, not ``end``.
             in_type_def = True
+        frames_before = len(stack)
         _apply_line_tokens(
             stack, tokens, line_depth + 1, skip_first_if=index in else_if_lines
+        )
+        if not tokens:
+            continue
+        # A bracket this line left open already indents what follows.
+        opened_frame = len(stack) > frames_before
+        opens_arm = (
+            first_token == "|"  # noqa: S105
+            and tokens[-1] == "->"
+            and bool(stack)
+            and stack[-1].kind == "match"
+        )
+        if opens_arm:
+            stack.append(_Frame(_ARM, line_depth + 1))
+        # The code is matched with string contents blanked, so a line that
+        # ends in a string (``example "a" -> "b"``) must not look like ``->``.
+        code_tail = line.strip()[: len(codes[index])].rstrip()[-1:]
+        continues = (
+            not opens_arm
+            and not opened_frame
+            and code_tail != '"'
+            and (tokens[-1] in _CONTINUES_LINE or tokens[-1] in _CONTINUES_LINE_WORDS)
         )
 
     # Ensure file ends with a single newline
@@ -235,6 +291,134 @@ def _format_lines(source: str) -> str:
     while text.endswith("\n\n"):
         text = text[:-1]
     return text
+
+
+_T = TokenType
+# Tokens after which ``(`` or ``[`` is a call, an index or type arguments.
+_OPERAND_ENDS = {
+    _T.IDENTIFIER,
+    _T.TYPE_IDENTIFIER,
+    _T.INTEGER,
+    _T.FLOAT,
+    _T.STRING,
+    _T.FSTRING,
+    _T.TRUE,
+    _T.FALSE,
+    _T.UNDERSCORE,
+    _T.RPAREN,
+    _T.RBRACKET,
+    _T.RBRACE,
+}
+_NO_SPACE_BEFORE = {
+    _T.RPAREN,
+    _T.RBRACKET,
+    _T.RBRACE,
+    _T.COMMA,
+    _T.COLON,
+    _T.SEMICOLON,
+    _T.DOT,
+}
+_NO_SPACE_AFTER = {_T.LPAREN, _T.LBRACKET, _T.LBRACE, _T.DOT, _T.AT, _T.TILDE}
+_SIGNS = {_T.PLUS, _T.MINUS}
+_ELLIPSIS = "..."
+
+
+@dataclass
+class _Piece:
+    """One token of a line: its type and its exact source text."""
+
+    kind: TokenType | str
+    text: str
+    start: int
+    prefix: bool = False  # a sign, ``?`` hole or ``...`` written before its operand
+
+
+def _normalize_spacing(stripped: str) -> str:
+    """Put canonical spaces between the tokens of one stripped source line.
+
+    One space around binary operators and ``->``, after ``,`` and ``:``, none
+    inside brackets, before a call's ``(`` or after a sign. Token text,
+    strings and comments are copied exactly; a line the lexer cannot read on
+    its own is left as it is.
+    """
+    if stripped.startswith("#") or "/*" in stripped:
+        return stripped
+    code_end = len(_strip_strings_and_line_comments(stripped))
+    code = stripped[:code_end].rstrip()
+    comment = stripped[code_end:]
+    try:
+        tokens = [
+            token
+            for token in Lexer(code).tokenize()
+            if token.type not in (_T.EOF, _T.NEWLINE, _T.COMMENT)
+        ]
+    except LexerError:
+        return stripped
+    if not tokens or any(token.location.line != 1 for token in tokens):
+        return stripped
+
+    starts = [token.location.column - 1 for token in tokens] + [len(code)]
+    for position, token in enumerate(tokens):
+        # An f-string's location is its opening quote, after the ``f``.
+        if (
+            token.type is _T.FSTRING
+            and code[starts[position] - 1 : starts[position]] == "f"
+        ):
+            starts[position] -= 1
+    pieces: list[_Piece] = []
+    for position, token in enumerate(tokens):
+        start = starts[position]
+        text = code[start : starts[position + 1]].rstrip()
+        previous = pieces[-1] if pieces else None
+        if (
+            token.type is _T.DOT
+            and previous is not None
+            and previous.kind in (_T.DOT, _ELLIPSIS)
+            and start == previous.start + len(previous.text)
+            and len(previous.text) < 3
+        ):
+            previous.text += text
+            if previous.text == _ELLIPSIS:
+                previous.kind = _ELLIPSIS
+                previous.prefix = True
+            continue
+        operand_before = previous is not None and (
+            previous.kind in _OPERAND_ENDS
+            or (previous.kind is _T.QUESTION and not previous.prefix)
+        )
+        prefix = (token.type in _SIGNS or token.type is _T.QUESTION) and (
+            not operand_before
+        )
+        pieces.append(_Piece(token.type, text, start, prefix))
+
+    parts = [pieces[0].text]
+    for previous, piece in pairwise(pieces):
+        parts.append(_space_between(previous, piece))
+        parts.append(piece.text)
+    line = "".join(parts)
+    if comment:
+        gap = stripped[len(code) : code_end] or " "
+        line += gap + comment
+    return line
+
+
+def _space_between(previous: _Piece, piece: _Piece) -> str:
+    kind = piece.kind
+    if kind in _NO_SPACE_BEFORE and kind is not _ELLIPSIS:
+        return ""
+    if previous.kind in _NO_SPACE_AFTER or previous.prefix:
+        return ""
+    if kind is _T.QUESTION and not piece.prefix:
+        return ""  # ``f(x)?`` propagates
+    if kind in (_T.LPAREN, _T.LBRACKET) and (
+        previous.kind in _OPERAND_ENDS
+        or previous.kind is _T.FN
+        or (previous.kind is _T.QUESTION and not previous.prefix)
+    ):
+        return ""  # a call, an index or type arguments
+    if kind is _T.ASSIGN and previous.kind not in _OPERAND_ENDS:
+        return ""  # keep a mistyped ``+=`` in one piece
+    return " "
 
 
 def _line_codes(lines: list[str]) -> list[str]:
@@ -336,7 +520,7 @@ def _pop_block(stack: list[_Frame], kind: str) -> None:
         if stack[position].kind == kind:
             del stack[position:]
             return
-        if stack[position].kind not in _CLOSE_BRACKETS:
+        if stack[position].kind not in _CLOSE_BRACKETS and stack[position].kind != _ARM:
             break
     if stack:
         stack.pop()

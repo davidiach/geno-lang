@@ -61,15 +61,6 @@ class ContractViolationError(GenoRuntimeError):
         self.call_depth = call_depth
 
 
-class GenoThrowError(Exception):
-    """Exception raised by 'throw' expressions carrying a typed value."""
-
-    def __init__(self, value: Any, location: SourceLocation | None = None) -> None:
-        self.thrown_value = value
-        self.location = location
-        super().__init__(f"Uncaught throw: {value}")
-
-
 # Backward-compatible alias — existing code can still import RuntimeError
 # from this module.  New code should use GenoRuntimeError.
 RuntimeError = GenoRuntimeError
@@ -145,15 +136,20 @@ class ConstructorValue:
     ``@dataclass(frozen=True)`` used on the compiler side.
     """
 
-    __slots__ = ("_fields", "constructor")
+    __slots__ = ("_fields", "_limits_checked", "constructor")
     constructor: str
     _fields: MappingProxyType[str, Any]
+    # The (collection size, integer bits) limits this value and everything
+    # it reaches are known to satisfy; see Interpreter._check_collection_limits.
+    # A field assignment, which replaces ``_fields`` in place, clears it.
+    _limits_checked: tuple[int, int] | None
 
     def __init__(self, constructor: str, fields: dict[str, Any]):
         object.__setattr__(self, "constructor", constructor)
         from types import MappingProxyType
 
         object.__setattr__(self, "_fields", MappingProxyType(dict(fields)))
+        object.__setattr__(self, "_limits_checked", None)
 
     @property
     def fields(self) -> MappingProxyType[str, Any]:

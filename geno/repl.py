@@ -102,7 +102,6 @@ class REPL:
         "match",
         "trait",
         "impl",
-        "try",
         "test",
     }
 
@@ -188,9 +187,6 @@ class REPL:
             "with",
             "async",
             "await",
-            "try",
-            "catch",
-            "throw",
             "break",
             "continue",
         ):

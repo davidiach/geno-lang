@@ -1,0 +1,4 @@
+func largest[T: Ordered](xs: List[T], fallback: T) -> T
+    example [3], 0 -> 0
+    return fallback
+end func

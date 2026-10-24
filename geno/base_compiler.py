@@ -49,7 +49,6 @@ from .ast_nodes import (
     Statement,
     TraitDef,
     TraitMethodSig,
-    TryStatement,
     TupleDestructureStatement,
     TuplePattern,
     TypeAlias,
@@ -62,6 +61,7 @@ from .ast_nodes import (
     WithExpr,
 )
 from .builtin_registry import all_builtin_names, builtin_param_name_lists
+from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .tokens import SourceLocation
 
 # Built-in type variants that must be registered for dynamic field lookup.
@@ -111,6 +111,16 @@ _BUILTIN_VARIANTS: list[TypeVariant] = [
 ]
 
 
+def top_level_runtime_shadows(program: Program) -> frozenset[str]:
+    """Geno runtime names a program defines as top-level functions or constants."""
+    return frozenset(
+        defn.name
+        for defn in program.definitions
+        if isinstance(defn, (FunctionDef, ModuleConstant))
+        and defn.name in geno_runtime_names()
+    )
+
+
 class BaseCompiler(ABC):
     """Abstract base class shared by the Python and JS compiler backends.
 
@@ -139,6 +149,7 @@ class BaseCompiler(ABC):
         self._module_param_names: dict[str, dict[str, list[str]]] = {}
         self._constructor_to_variant: dict[str, TypeVariant] = {}
         self._reserved_temp_names: set[str] = set()
+        self._shadowed_runtime_names: frozenset[str] = frozenset()
         self._module_constant_names: set[str] = set()
         self._definition_index = DefinitionIndex(
             type_defs=self.type_defs,
@@ -201,8 +212,18 @@ class BaseCompiler(ABC):
         self._module_param_names.clear()
         self._constructor_to_variant.clear()
         self._reserved_temp_names.clear()
+        self._shadowed_runtime_names = frozenset()
         for variant in _BUILTIN_VARIANTS:
             self._constructor_to_variant[variant.name] = variant
+
+    def _shadow_runtime_names(self, program: Program) -> None:
+        """Rename a program's top-level definitions of Geno runtime names.
+
+        A single-file program shares the runtime's global scope, so its own
+        ``max`` must not replace the runtime's (proposal 0011). Project
+        modules compile into their own scopes and need no renaming.
+        """
+        self._shadowed_runtime_names = top_level_runtime_shadows(program)
 
     def _reserve_temp_name(self, name: str) -> None:
         """Reserve a user-visible target identifier from generated temps."""
@@ -257,8 +278,12 @@ class BaseCompiler(ABC):
     ) -> None:
         """Reject every user binding that can overwrite emitted runtime state."""
 
+        shadowed = self._shadowed_runtime_names
+
         def reject(name: str | None, kind: str) -> None:
-            if name is not None and name in global_reserved_names:
+            if name is None or name in shadowed:
+                return  # renamed away from the runtime's binding
+            if name in global_reserved_names:
                 raise error_type(
                     f"'{name}' is a reserved runtime name and cannot be used "
                     f"as a {kind} name"
@@ -290,7 +315,7 @@ class BaseCompiler(ABC):
                 # with a prelude name is a redeclaration error rather than the
                 # silent shadowing a function declaration gets. The mangled
                 # name is what collides, but the source name is what to report.
-                if (
+                if defn.name not in shadowed and (
                     defn.name in global_reserved_names
                     or self._mangle_name(defn.name) in global_reserved_names
                 ):
@@ -370,6 +395,59 @@ class BaseCompiler(ABC):
             local_reserved_names,
             error_type,
         )
+
+    def _validate_renamed_identifiers(
+        self, program: Program, error_type: type[Exception]
+    ) -> None:
+        """Reject two source names that compile to one target name.
+
+        A name renamed away from a host name (``len`` becomes ``len_g``, see
+        host_names.py) must not meet a name the program spells that way.
+        """
+        names: set[str] = set()
+
+        named = (
+            Identifier,
+            TypeIdentifier,
+            FunctionDef,
+            Parameter,
+            TypeDef,
+            TypeVariant,
+            LetStatement,
+            VarStatement,
+            VariablePattern,
+            RestPattern,
+            ModuleConstant,
+        )
+
+        def collect(value: object) -> None:
+            if isinstance(value, named):
+                if value.name:
+                    names.add(value.name)
+            elif isinstance(value, (ForStatement, ListComprehension)):
+                names.add(value.variable)
+            elif isinstance(value, TupleDestructureStatement):
+                names.update(value.names)
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    collect(item)
+            elif is_dataclass(value) and not isinstance(value, type):
+                for field_info in fields(value):
+                    if field_info.name.startswith("_"):
+                        continue
+                    collect(getattr(value, field_info.name))
+
+        collect(program.definitions)
+        sources: dict[str, str] = {}
+        for name in sorted(names):
+            emitted = self._mangle_name(name)
+            other = sources.setdefault(emitted, name)
+            if other != name:
+                renamed, spelled = (other, name) if other != emitted else (name, other)
+                raise error_type(
+                    f"'{renamed}' and '{spelled}' would both compile to "
+                    f"'{emitted}'; rename one of them"
+                )
 
     def _validate_reserved_local_names(
         self,
@@ -462,9 +540,6 @@ class BaseCompiler(ABC):
                     check_name(name, "local binding")
             elif isinstance(stmt, ForStatement):
                 check_name(stmt.variable, "for-loop binding")
-            elif isinstance(stmt, TryStatement):
-                check_name(stmt.catch_clause.variable, "catch binding")
-                visit_statements(stmt.catch_clause.body)
 
             if is_dataclass(stmt) and not isinstance(stmt, type):
                 for field_info in fields(stmt):
@@ -635,7 +710,7 @@ class BaseCompiler(ABC):
         names = [self._fresh_temp() for _ in expr.arguments]
         values = [self._compile_expr(arg) for arg in expr.arguments]
         placed = ", ".join(names[index] for index in order)
-        return names, values, f"{expr.constructor}({placed})"
+        return names, values, f"{self._mangle_name(expr.constructor)}({placed})"
 
     @staticmethod
     def _call_args_match_param_names(call_args: list, param_names: list[str]) -> bool:
@@ -696,8 +771,14 @@ class BaseCompiler(ABC):
 
     @staticmethod
     @abstractmethod
-    def _mangle_name(name: str) -> str:
-        """Mangle a Geno identifier to a valid target-language name."""
+    def _target_name(name: str) -> str:
+        """Map a Geno identifier to a valid, unreserved target-language name."""
+
+    def _mangle_name(self, name: str) -> str:
+        """Return the target-language name a Geno identifier compiles to."""
+        if name in self._shadowed_runtime_names:
+            return f"{name}{HOST_NAME_SUFFIX}"
+        return self._target_name(name)
 
     @abstractmethod
     def _emit_source_location(self, location) -> None:

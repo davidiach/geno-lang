@@ -7,8 +7,232 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.3] - 2026-10-24
+
+Third release candidate for the 0.6 series, retaining the frozen 0.6 language
+contract and the migration guidance below. This remains a prerelease for
+evaluation.
+
+### Fixed
+
+- Remove Windows package transaction backups and replaced checkouts containing
+  read-only Git object files. New clones keep Git objects private even with
+  local URL rewrites; cleanup preserves path containment and reports unrelated
+  failures (#190).
+- Describe JavaScript `Option[T]` values in generated TypeScript declarations
+  as the actual tagged `Some`/`None` union, including parameters and nested
+  values (#195).
+- Reject conflicting constructor names exposed by unaliased imports
+  consistently in project and embedding API checks, before interpretation or
+  compilation. Diagnostics retain the original type declaration location;
+  repeated, diamond, private and aliased imports preserve their existing scopes
+  (#209).
+
+## [0.6.0-rc.2] - 2026-10-24
+
+Second release candidate for the 0.6 series. This remains a prerelease for
+evaluation under the same frozen 0.6 language contract and migration guidance
+as 0.6.0-rc.1.
+
+### Fixed
+
+- Preserve floating-point argument semantics when an interpreter function is
+  called through a contravariantly typed alias, matching both compiled
+  backends (#191).
+- Preserve lexical capture when nested block lambdas are compiled to Python
+  and JavaScript (#188).
+- Preserve valid object fields when JavaScript formats pretty JSON (#194).
+- Use the expected callback return type when checking block-lambda returns,
+  including branches that return `None` before `Some` (#189).
+
+### Known limitations
+
+- Generated TypeScript declarations describe `Option[T]` as `T | null`, while
+  the JavaScript runtime returns tagged `Some` and `None` values. TypeScript
+  consumers must handle the runtime representation explicitly until #195 is
+  fixed.
+- Projects importing same-named constructors from different modules can pass
+  checking and interpretation but fail in generated Python or JavaScript.
+  Keep constructor names distinct across imported modules until #209 is fixed.
+- On Windows, package-update cleanup can leave transaction backups containing
+  read-only Git object files. The installed dependency contents are unaffected
+  (#190).
+
+## [0.6.0-rc.1] - 2026-10-24
+
+Release candidate for the first publication of the 0.6 series, which implements
+the [Geno 0.6 upgrade roadmap](docs/proposals/0003-geno-0.6-language-upgrade.md)
+and accepted proposals 0004-0012. It is a **prerelease**: it breaks source
+compatibility with 0.5 (see "Changed (breaking)" and "Migration to 0.6"), so it
+is published for evaluation first and taken to 0.6.0 by a promotion proposal,
+as 0.5.0-rc.1 was. Its contract is [docs/spec/v0.6.md](docs/spec/v0.6.md),
+which becomes normative at that promotion, and its frozen corpus is
+`conformance/v0.6`; `docs/spec/v0.5.md` and `conformance/v0.5` are retained
+unchanged.
+
 ### Added
 
+- Generic functions ([proposal 0004](docs/proposals/0004-generic-functions.md)):
+  `func first_or[T](xs: List[T], fallback: T) -> T`. Calls, example clauses and
+  uses as a value each infer the type arguments. Inside the function a type
+  parameter is opaque: values can be passed on, stored, compared with `==`,
+  printed and converted with `to_string`, but arithmetic, ordering and use as a
+  `Map` key or `Set` element are rejected. New diagnostics: E320 for an invalid
+  type parameter list (duplicate, shadowing a type, unused, or on `main` or an
+  impl method) and E321 for a generic function used as a value whose type
+  arguments nothing determines. The JavaScript backend compiles a copy of a
+  generic function for each way its type arguments contain `Float`, so a `Float`
+  passed through a type parameter prints as `2.0` on every backend. TypeScript
+  declarations declare the type parameters.
+- Bounds on type parameters
+  ([proposal 0005](docs/proposals/0005-type-parameter-bounds.md)):
+  `func largest[T: Ord](xs: List[T], fallback: T) -> T`. `Num` permits
+  arithmetic, `Ord` ordering and `Hash` use as a map key or set element; a trait
+  name permits calling that trait's methods. `Num` implies `Ord`, which implies
+  `Hash`. Errors about a missing bound name the bound to add. New diagnostics:
+  E322 for an unknown bound and E323 for a type argument that misses one.
+- Method-call syntax
+  ([proposal 0006](docs/proposals/0006-method-call-syntax.md)):
+  `xs.map(f).filter(g).length()`, `s.trim().to_upper()`, `opt.unwrap_or(0)`,
+  `v.push(x)`. The receiver's type chooses among trait methods, the program's
+  own functions, and builtins, including the prefixed ones (`opt.map` calls
+  `option_map`). Fields of function type keep precedence. Unknown methods are
+  reported with a suggestion instead of "Unknown field" followed by "Cannot
+  call non-function type: Any".
+- Types inferred from context
+  ([proposal 0007](docs/proposals/0007-contextual-type-inference.md)): lambda
+  parameters (`xs.map(fn(x) -> x * 2)`, `fn(acc, x) -> acc + x`), `for` and
+  comprehension variables (`for x in xs do`, `[x * 2 for x in xs]`) and tuple
+  destructuring (`let (a, b) = pair`) may omit their types. A lambda in a call
+  is checked after the call's other arguments, so `apply(fn(x) -> x * 2, 21)`
+  works. Function signatures still require annotations.
+- If expressions, or-patterns, tuple fields and map literals
+  ([proposal 0008](docs/proposals/0008-expression-ergonomics.md)):
+  `if c then a else b end if` as a value, `| Red | Orange -> ...` arms,
+  `pair.0`, and `{"a": 1}` / `{}`. The language tour documented `{}` for an
+  empty map in 0.5, but it did not parse.
+- `panic(message)` ends the program with `message` (E414 in the interpreter)
+  and has type `Never`, so it fits in any branch and ends a path for
+  return-path analysis ([proposal 0009](docs/proposals/0009-result-only-errors.md)).
+- `main() -> Result[T, E]`: an `Err` is written to stderr as `Error: <error>`
+  with exit status 1, and an `Ok(v)` behaves as a `main` returning `v`, so `?`
+  works at the top level of a program. Embedding APIs return the raw `Result`;
+  `geno run --json` reports it raw and exits 1 on `Err`
+  ([proposal 0009](docs/proposals/0009-result-only-errors.md)).
+- Total accessors `xs.get(i)`, `xs.first()` and `xs.last()` (`list_get`,
+  `list_first`, `list_last`) return `Option`. `r.unwrap()`, `r.expect(message)`
+  and `opt.expect(message)` (`result_unwrap`, `result_expect`, `option_expect`)
+  turn a failure into a panic when it can only mean a bug.
+- A coherent standard library
+  ([proposal 0010](docs/proposals/0010-coherent-standard-library.md)):
+  `length()` works on every collection; `Map` gains `contains_key`, `remove`,
+  `keys`, `values` and `length`; `xs.sort()` needs no comparator; and a free
+  call resolves like the method call it spells, so `map(opt, f)` calls
+  `option_map`.
+- `geno migrate [path] [--check | --diff]` rewrites 0.5 source for 0.6 wherever
+  the rewrite preserves behavior (`throw "x"` to `panic("x")`, `.unwrap()` on
+  the I/O builtins that now return `Result`, removed builtins to their
+  replacements) and lists what needs a person, such as `try`/`catch`.
+- Host names are Geno names
+  ([proposal 0011](docs/proposals/0011-host-names-and-runtime-limits.md)): a
+  program may name a function `len`, a local `list`, a parameter `console` or
+  a constructor `Error`, and a top-level `func max` or `let min` shadows the
+  builtin on every backend. The compilers emit such names with a `_g` suffix;
+  values still print and match by their Geno names. Underscore-prefixed
+  runtime internals stay reserved.
+- Default limits that run ordinary programs: call depth 10,000 (was 500) and
+  20,000,000 interpreter steps (was 1,000,000) on every local lane, including
+  standalone compiled Python scripts and `geno test` examples. Before Python
+  3.12 a deep run gets a thread with a large enough stack instead of crashing,
+  except in the default process-isolated `geno run` on platforms other than
+  Linux: its worker cannot start a thread, so it keeps the recursion limit
+  within its stack and a very deep run stops with a recursion error. Use
+  Python 3.12 or later, or `--unsafe` for trusted code, to run deeper there.
+  The hosted server keeps call depth 500 (`GENO_MAX_RECURSION_DEPTH`).
+- Diagnostics carry fixes when the correction is unambiguous: a rename for
+  every "Did you mean" suggestion (names, methods, fields, types,
+  constructors), argument names for an all-positional call to a function with
+  three or more parameters, a missing `then`/`do`, and `let mut`, `True`/`False`,
+  `++` and `elif` rewritten to Geno, each with a message that names the Geno
+  form. `geno.check()` returns them (`Diagnostic.fixes`), `geno check` prints
+  them, `geno check --fix` applies them, and the language server offers them
+  as quick fixes over the exact text they replace. An unknown method or field
+  is now reported at its name instead of at the receiver.
+- Membership and list concatenation
+  ([proposal 0012](docs/proposals/0012-what-models-reach-for.md)):
+  `x in xs`, `c in "aeiou"`, `key in m`, `x in set` and `x not in xs` are
+  comparison operators, and `xs + ys` concatenates two lists of one element
+  type (a `List[Int]` joining a `List[Float]` as Floats). Both run through the
+  builtins they spell (`contains`, `string_contains`, `map_contains_key`,
+  `set_contains`, `concat`) with identical output on every backend.
+- Everyday operations models reach for
+  ([proposal 0012](docs/proposals/0012-what-models-reach-for.md)):
+  `min(a, b)`; `xs.sum()` (Int, or Float for a `List[Float]`, `0.0` when
+  empty), `xs.min()` and `xs.max()` (Option, also `min(xs)`, `max(xs)`),
+  `xs.is_empty()` (also on strings, maps and sets), `xs.index_of(x)`,
+  `xs.count(pred)`, `xs.unique()`; `s.reverse()`, `s.lines()`, `s.words()`
+  and the ASCII tests `is_digit`, `is_alpha`, `is_alphanumeric`,
+  `is_whitespace`, `is_upper`, `is_lower`; `range(n)`; and
+  `m.get(key, default)`. A free call rejected by its argument count
+  (`max(xs)`) resolves as the method call it spells, like one rejected by
+  its argument type. `conformance/v0.6` adds `familiar-idioms`.
+- A method call names its arguments only when it writes three or more: the
+  receiver before the dot no longer counts, so `xs.fold(0, f)`,
+  `s.replace("a", "b")`, `xs.slice(1, 3)` and `m.insert(k, v)` are accepted.
+- `n.to_float()` and `f.to_int()`: `Int` and `Float` methods reach the
+  `int_` and `float_` builtins.
+- Another language's name for an operation is fixed to Geno's for the
+  receiver: `s.chars()`, `ord(c)`, `chr(n)`, `xs.skip(n)`, `m.items()`,
+  `m.has(k)`, `m.put(k, v)`, `opt.flat_map(f)`, `"3".to_int()` and others.
+  `pow(a, b)`, `s * n` and `", ".join(parts)` get a hint naming the Geno
+  form. An edit-distance fix is no longer attached when the names are
+  different words (`set`/`get`, `is_upper`/`to_upper`), and a short name gets
+  no far-fetched "Did you mean".
+- More fixes for habits from other languages: `&&`, `||`, `!`, `=>`, `#`,
+  `null`, `else:`, `if c:` and `lambda x: body` are each reported with the
+  Geno form and fixed to it; `len`, `str`, `upper`, `strip`, `startswith` and
+  similar names are renamed to Geno's builtin; a bare `end` gets its keyword;
+  a function whose body ends with a value of its return type gets the missing
+  `return`. A missing `then`/`do` is reported at the end of the line it
+  belongs on, and a missing return type on the signature. A "Did you mean"
+  fix is now attached only when the candidate is unique and one edit away (two
+  for names of six letters or more), and a swap of adjacent letters counts as
+  one edit, so `lenght` suggests `length` rather than `height`.
+- `geno.fix(source)` applies the fixes `geno.check()` reports until none is
+  left and returns the fixed source, the number applied and its check
+  (`FixResult`).
+- Seeded-mistake results (`docs/benchmark/seeded-mistakes.md`,
+  `scripts/seeded_mistakes.py`): 27 mistakes models carry over from other
+  languages, seeded into the 78 benchmark reference solutions. All 840
+  mutants are rejected and reported on the mistake's line, and `geno.fix`
+  repairs every mutant of the 25 mistakes that have a fix with no change in
+  what the program computes. No model or API key is needed to reproduce it.
+- The LLM benchmark speaks 0.6: the Geno prompt carries the rules from
+  `docs/llm-prompting.md` (a test keeps them identical) and a reference
+  program checked to pass its examples; repair prompts list Geno errors with
+  code, line, column and fix; and every run records pass@1 after `geno.fix`
+  ("autofix", no model call) beside pure pass@1. `scripts/publish_benchmark_results.py`
+  publishes the repair conditions.
+- The language server knows the checked program: hover shows the type of
+  every local, parameter, inferred lambda and loop variable, pattern binding
+  and tuple field, and for a method call the function it resolves to;
+  completion after `.` lists the receiver's methods and fields (also while the
+  line being typed does not parse); go-to-definition reaches a local's binding
+  and a trait method's implementation; signature help works inside method
+  calls. The formatter, language server, test runner and docs generator are
+  Stable.
+- `geno fmt` is Stable and canonical: it also normalizes spacing between
+  tokens (one space around binary operators and `->`, after `,` and `:`, none
+  inside brackets or before a call's `(`), indents a match arm's body under
+  its `| pattern ->`, indents method-chain and operator continuation lines,
+  and collapses runs of blank lines. Every Geno program in the repository is
+  kept in this form, and a test enforces it.
+- Arithmetic on an operand that already failed to type-check no longer adds a
+  second "Cannot apply '+' to Any and Int" error.
+- The standard library is generic throughout: `List`, `Option` and `Result`
+  work at any element type, `Map` at any hashable key type and `Math.abs`,
+  `min`, `max` and `clamp` at `Int` or `Float`, instead of `Int` or `String`
+  only. The checker no longer substitutes builtin signatures for them.
 - `geno check` warns when a `let` or `var` redeclares a mutable variable from
   the same or an enclosing block (W300), as in `var y = f(y)` inside a loop
   where `y = f(y)` was meant. The program still passes. The warning is
@@ -16,12 +240,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Severity.WARNING`, and published by the language server. It covers the
   project's own modules, not the standard library or installed dependencies.
 
+### Changed (breaking)
+
+- One error model ([proposal 0009](docs/proposals/0009-result-only-errors.md)):
+  `throw`, `try`/`catch` and the `throw` effect are removed. Each is rejected
+  with the new E205 and a message naming its replacement. A runtime error,
+  failed contract or resource limit can no longer be caught by the program.
+- `fs_read_text`, `fs_write_text`, `http_fetch` and `http_post` return
+  `Result[T, String]` instead of raising on I/O, path-policy and network
+  failures, like `fs_list_dir` and `http_request` already did. Embedding
+  `host_callbacks` for them keep returning the plain value and raising on
+  failure; the API wraps both.
+
+- `string_index_of` and `string_last_index_of` (`s.index_of(t)`) return
+  `Option[Int]` instead of `-1` for "not found".
+- Removed builtins: `square`, `is_positive`, `is_sorted`, `is_permutation`,
+  `is_numeric_string`, `repeat_string`, `contains_substring` and
+  `sort_strings`. Calling one reports E302 with its replacement.
+- A block closer's `end` and its keyword must be on the same line. `end` with
+  `if` on the next line was read as `end if`, so a bare `end` (Ruby, Lua)
+  silently swallowed the next `if`, `for` or `while` statement's keyword. It
+  is E201 at the `end`, with a fix that adds the keyword.
+
+### Migration to 0.6
+
+Run `geno migrate` first; it performs every rewrite below that is mechanical
+and lists the rest.
+
+- An uncaught `throw "message"` becomes `panic("message")`; the diagnostic text
+  is unchanged.
+- A thrown and caught user error becomes `return Err(MyError(...))` from a
+  function returning `Result[T, MyError]`, handled with `match` or `?`.
+- A `try`/`catch` around a runtime error becomes a check (`xs.get(i)`,
+  `if d != 0 then`) or is removed and left to panic.
+- Delete `throw` from effect lists.
+- `string_index_of(s, t)` becomes `s.index_of(t)` with a `match`, or
+  `.unwrap_or(-1)` to keep the sentinel.
+- `square(x)` becomes `x * x`, `repeat_string` becomes `s.repeat(n)`, and so on
+  per the E302 message.
+- `let text = fs_read_text(path)` becomes `fs_read_text(path)?` in a function
+  returning `Result`, a `match`, or `fs_read_text(path).unwrap()` to keep 0.5's
+  failure behavior. The same applies to `fs_write_text`, `http_fetch` and
+  `http_post`.
+
 ### Fixed
 
+- A lambda in a pipeline stage takes its parameter types from the piped
+  value, as it does in a call: `xs |> filter(_, fn(x) -> x > 1)` and
+  `xs |> fold(_, 0, fn(acc, x) -> acc + x)` type-check instead of asking for
+  annotations.
+- A failing `example` clause is reported with its own code, E409, instead of
+  E499.
+- `geno doc` renders tuple types as Geno writes them, `(A, B)`, instead of
+  `Tuple[A, B]`.
+- Building or walking a linked structure is linear again: the interpreter no
+  longer re-walks a whole value at every call to enforce collection limits,
+  and compiled Python no longer scans lists to track identity. A 9,000-node
+  list took over 30 seconds to build in the interpreter.
+- A JavaScript program's `func max` no longer replaces the runtime's own
+  `max_`, and 28 builtin names that one backend accepted as user functions
+  and the other rejected now compile on both.
+- `import List` no longer makes `length("abc")` a type error, and `import
+  Option` no longer breaks `map` on a list: an unqualified standard-library
+  import leaves always-available builtins their meaning.
+- `geno.run()` and `geno.check()` resolve an imported standard-library module
+  (`import List`) as `geno run` does; they ignored it before.
+- After a parse error, recovery no longer stops at the `func` of `end func`,
+  which reported a spurious "Expected function name" and skipped the next
+  definition.
+- Imports are not transitive. 0.5 accepted a call to a function from module `A`
+  in a program that imported only a module `B` which imports `A`; the program
+  ran in the interpreter and failed with a name error in compiled Python and
+  JavaScript. `geno check` now rejects the call and suggests `import A`.
+- An imported module no longer sees the entry program's functions or imports in
+  the interpreter. A module that called the builtin `length` ran another
+  module's `length` instead whenever the entry program imported one, while
+  compiled Python and JavaScript called the builtin.
+- An exported function whose signature contains a tuple, such as
+  `export func pair(x: Int) -> (Int, Int)`, is no longer rejected as exposing a
+  non-exported type `Tuple`.
 - `http_listen` dispatches `OPTIONS` and `PATCH` requests to routes registered
   for them in the interpreter and in generated Python. Before, both methods
   were answered with 501 Unsupported method, so CORS preflight handlers never
   ran. Unregistered paths still return 404.
+- `json_stringify`, `json_stringify_pretty` and `json_to_string` check the
+  collection size limit before building their output. Before, the whole string
+  was built first, so a value that repeats one subtree or string many times,
+  or a very large `indent`, could use far more memory than the limit and run
+  past the timeout. In the interpreter, a value that repeats a subtree is now
+  converted once instead of once per repeat.
+- `json_stringify_pretty` treats an `indent` above 10 as 10 in the interpreter
+  and in generated Python, as generated JavaScript already did.
+- Generated JavaScript renames variables, parameters and functions named
+  `eval` or `arguments`, which strict-mode JavaScript forbids. Before, such a
+  program compiled but Node.js rejected it with a SyntaxError. A constructor
+  field with either name is now a JavaScript compile error, as `class` already
+  was.
 - Reference apps:
   - geno-form stacks its fields and highlights the active tab.
   - tetris.geno draws all seven pieces correctly and fits the default canvas.

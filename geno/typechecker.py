@@ -54,6 +54,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ImportStatement,
     IndexAccess,
     IndexAssignStatement,
+    InferredType,
     IntegerLiteral,
     LambdaExpr,
     LetStatement,
@@ -61,10 +62,12 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchArm,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
+    Parameter,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -76,9 +79,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     Statement,
     StringLiteral,
     TestBlock,
-    ThrowExpression,
     TraitDef,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -96,19 +97,23 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .constructor_args import constructor_argument_order
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, Fix, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
+from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
 from .types import (
+    BUILTIN_BOUNDS,
     AnyType,
     ArrayType,
     AsyncType,
     BoolType,
     FloatType,
     FuncType,
+    GenericInstance,
+    GenericSignature,
     IntType,
     ListType,
     MapType,
@@ -125,11 +130,13 @@ from .types import (
     TypeEnv,
     TypeError,
     TypeErrors,
+    TypeParam,
     TypeVar,
     UnitType,
     UserType,
     VecType,
     any_child,
+    close_bounds,
     map_type,
     type_children,
 )
@@ -179,61 +186,35 @@ _RESERVED_TYPE_NAMES = (
     | _BUILTIN_ADT_NAMES
     | {"Tuple"}
 )
+_NUMERIC_OPERATORS = frozenset({"+", "-", "*", "/", "%", "**", "&", "^", "<<", ">>"})
 
-_STDLIB_FORWARDER_BUILTINS: dict[str, dict[str, str]] = {
-    "List": {
-        "zip": "list_zip",
-        "enumerate": "list_enumerate",
-        "flatten": "list_flatten",
-        "chunk": "list_chunk",
-        "take": "list_take",
-        "drop": "list_drop",
-        "find": "list_find",
-        "find_index": "list_find_index",
-        "all": "list_all",
-        "any": "list_any",
-        "fold_right": "list_fold_right",
-        "intersperse": "list_intersperse",
-        "group_by": "list_group_by",
-        "length": "list_length",
-        "map": "list_map",
-        "filter": "list_filter",
-    },
-    "Map": {
-        "from_list": "map_from_list",
-        "merge": "map_merge",
-        "filter_map": "map_filter_map",
-        "map_values": "map_map_values",
-        "entries": "map_entries",
-        "from_entries": "map_from_entries",
-        "get": "map_get",
-        "insert": "map_insert",
-    },
-    "Option": {
-        "map": "option_map",
-        "and_then": "option_and_then",
-        "unwrap_or": "option_unwrap_or",
-        "is_some": "option_is_some",
-        "is_none": "option_is_none",
-        "flatten": "option_flatten",
-        "to_result": "option_to_result",
-    },
-    "Result": {
-        "map": "result_map",
-        "map_err": "result_map_err",
-        "and_then": "result_and_then",
-        "unwrap_or": "result_unwrap_or",
-        "is_ok": "result_is_ok",
-        "is_err": "result_is_err",
-        "to_option": "result_to_option",
-    },
-    "Math": {
-        "abs": "math_abs",
-        "min": "math_min",
-        "max": "math_max",
-        "clamp": "math_clamp",
-    },
+# Entrypoints a host calls without type arguments, so they cannot be generic.
+_NON_GENERIC_ENTRYPOINTS = frozenset({"main", "init", "update", "render"})
+
+# Builtins named `<prefix>_<method>` are methods of the receiver type the
+# prefix names: `opt.map(f)` calls `option_map`, `v.push(x)` calls `vec_push`.
+# `length` is the one size method on every collection (proposal 0010); these
+# collections spell their builtin `size`.
+_LENGTH_METHODS: dict[type, str] = {
+    MapType: "map_size",
+    MutableMapType: "mutable_map_size",
+    SetType: "set_size",
 }
+
+_METHOD_PREFIXES: dict[type, str] = {
+    IntType: "int",
+    FloatType: "float",
+    ListType: "list",
+    OptionType: "option",
+    ResultType: "result",
+    MapType: "map",
+    MutableMapType: "mutable_map",
+    VecType: "vec",
+    ArrayType: "array",
+    SetType: "set",
+    StringType: "string",
+}
+
 
 # =============================================================================
 # Project import summaries
@@ -316,6 +297,56 @@ def _display_type(type_: Type) -> str:
     return _FRESH_TYPE_VAR_NAME.sub("_", str(type_))
 
 
+def _is_numeric(type_: Type) -> bool:
+    """Int, Float, or a type parameter bounded by `Num`."""
+    if isinstance(type_, (IntType, FloatType)):
+        return True
+    return isinstance(type_, TypeParam) and type_.has_bound("Num")
+
+
+def _unbounded_params(*types: Type) -> list[TypeParam]:
+    return [t for t in types if isinstance(t, TypeParam)]
+
+
+def _numeric_bound_hint(left: Type, right: Type) -> str:
+    params = [p for p in _unbounded_params(left, right) if not p.has_bound("Num")]
+    if not params:
+        return ""
+    return f". Declare a numeric bound to use arithmetic: [{params[0].name}: Num]"
+
+
+def _ordering_bound_hint(left: Type, right: Type) -> str:
+    params = [p for p in _unbounded_params(left, right) if not p.has_bound("Ord")]
+    if not params:
+        return ""
+    return f". Declare an ordering bound to compare: [{params[0].name}: Ord]"
+
+
+def _literal_key(expr: Expression) -> object | None:
+    """A literal map key as a comparable value, or None for computed keys."""
+    if isinstance(expr, (StringLiteral, IntegerLiteral, BooleanLiteral)):
+        return (type(expr).__name__, expr.value)
+    return None
+
+
+def _render_literal_key(key: object) -> str:
+    _kind, value = cast(tuple[str, object], key)
+    return f'"{value}"' if isinstance(value, str) else str(value).lower()
+
+
+def _bound_hint(bound: str, type_: Type) -> str:
+    """Explain which types meet *bound*, for an unsatisfied-bound error."""
+    if isinstance(type_, TypeParam):
+        return f"; declare it on the caller's own parameter: [{type_.name}: {bound}]"
+    if bound == "Num":
+        return "; only Int and Float are numbers"
+    if bound == "Ord":
+        return "; only Int, Float and String are ordered"
+    if bound == "Hash":
+        return "; lists, arrays, vectors, sets, maps and functions cannot be hashed"
+    return f"; add `impl {bound} for {type_}`" if isinstance(type_, UserType) else ""
+
+
 @dataclass(frozen=True)
 class _ModuleImportSummary:
     """Compact import-facing view of a checked module."""
@@ -323,12 +354,18 @@ class _ModuleImportSummary:
     imports: tuple[ImportStatement, ...]
     type_aliases: dict[str, tuple[list[str], TypeAnnotation]]
     type_defs: dict[str, TypeDefInfo]
+    type_def_locations: dict[str, SourceLocation]
     functions: dict[str, FuncType]
     func_param_names: dict[str, list[str]]
     func_default_counts: dict[str, int]
     module_symbols: dict[str, Type]
     module_param_names: dict[str, list[str]]
     module_default_counts: dict[str, int]
+    # The exported generic functions, recorded with no defining module; the
+    # importer fills that in when it applies the summary.
+    generic_functions: dict[str, GenericSignature] = dataclasses.field(
+        default_factory=dict
+    )
 
 
 def _block_returns(statements: list[Statement]) -> Iterator[ReturnStatement]:
@@ -344,9 +381,6 @@ def _block_returns(statements: list[Statement]) -> Iterator[ReturnStatement]:
         elif isinstance(stmt, MatchStatement):
             for arm in stmt.arms:
                 yield from _block_returns(arm.body)
-        elif isinstance(stmt, TryStatement):
-            yield from _block_returns(stmt.try_body)
-            yield from _block_returns(stmt.catch_clause.body)
 
 
 @dataclass(frozen=True)
@@ -398,16 +432,204 @@ def _levenshtein(a: str, b: str) -> int:
 _STDLIB_FUNCTION_MODULES: dict[str, tuple[str, ...]] | None = None
 
 
-def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> str:
-    """Return ' Did you mean: X?' suffix if a close match exists, else ''."""
+def _closest_name(
+    name: str, candidates: Iterable[str], max_dist: int = 2
+) -> str | None:
+    """The candidate nearest ``name`` by edit distance, if one is close enough.
+
+    Swapping two adjacent letters counts as one edit, so ``lenght`` is
+    nearest ``length`` rather than ``height``. A short name allows fewer
+    edits: two of the three letters of `sum` are not a near miss of `m`.
+    """
+    max_dist = min(max_dist, max(1, len(name) // 2))
     best, best_dist = None, max_dist + 1
     for c in candidates:
-        d = _levenshtein(name, c)
+        d = _transposition_distance(name, c)
         if d < best_dist:
             best, best_dist = c, d
     if best is not None and best_dist <= max_dist:
-        return f" Did you mean '{best}'?"
-    return ""
+        return best
+    return None
+
+
+def _suggest_name(name: str, candidates: Iterable[str], max_dist: int = 2) -> str:
+    """Return ' Did you mean: X?' suffix if a close match exists, else ''."""
+    best = _closest_name(name, candidates, max_dist)
+    return f" Did you mean '{best}'?" if best is not None else ""
+
+
+def _transposition_distance(a: str, b: str, substitution: int = 1) -> int:
+    """Edit distance that counts swapping two adjacent letters as one edit.
+
+    With ``substitution=2`` a changed letter costs a deletion and an
+    insertion, which separates typos from different words.
+    """
+    rows = [list(range(len(b) + 1))] + [
+        [i] + [0] * len(b) for i in range(1, len(a) + 1)
+    ]
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = substitution if a[i - 1] != b[j - 1] else 0
+            rows[i][j] = min(
+                rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost
+            )
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                rows[i][j] = min(rows[i][j], rows[i - 2][j - 2] + 1)
+    return rows[-1][-1]
+
+
+# Other languages' names for an operation Geno spells differently, with the
+# same arguments: the fix for using the foreign name. Where the Geno name
+# depends on the receiver, the first one the receiver has is used.
+_FOREIGN_NAMES: dict[str, tuple[str, ...]] = {
+    "len": ("length",),
+    "size": ("length",),
+    "str": ("to_string",),
+    "to_str": ("to_string",),
+    "toString": ("to_string",),
+    "upper": ("to_upper",),
+    "toUpperCase": ("to_upper",),
+    "uppercase": ("to_upper",),
+    "lower": ("to_lower",),
+    "toLowerCase": ("to_lower",),
+    "lowercase": ("to_lower",),
+    "strip": ("trim",),
+    "lstrip": ("trim_start",),
+    "rstrip": ("trim_end",),
+    "trimStart": ("trim_start",),
+    "trimEnd": ("trim_end",),
+    "startswith": ("starts_with",),
+    "startsWith": ("starts_with",),
+    "endswith": ("ends_with",),
+    "endsWith": ("ends_with",),
+    "isdigit": ("is_digit",),
+    "isalpha": ("is_alpha",),
+    "isalnum": ("is_alphanumeric",),
+    "isspace": ("is_whitespace",),
+    "isupper": ("is_upper",),
+    "islower": ("is_lower",),
+    "splitlines": ("lines",),
+    "split_whitespace": ("words",),
+    "chars": ("to_chars",),
+    "ord": ("char_code",),
+    "chr": ("from_char_code",),
+    "sorted": ("sort",),
+    "reversed": ("reverse",),
+    "rev": ("reverse",),
+    "skip": ("drop",),
+    "position": ("find_index",),
+    "findIndex": ("find_index",),
+    "find": ("index_of",),
+    "indexOf": ("index_of",),
+    "includes": ("contains",),
+    "isEmpty": ("is_empty",),
+    "distinct": ("unique",),
+    "dedup": ("unique",),
+    "items": ("entries",),
+    "has": ("contains_key", "contains"),
+    "contains": ("contains_key",),
+    "containsKey": ("contains_key",),
+    "set": ("insert",),
+    "put": ("insert",),
+    "flat_map": ("and_then",),
+    "get_or": ("unwrap_or",),
+    "get_or_default": ("get",),
+    "getOrDefault": ("get",),
+    "to_float": ("int_to_float",),
+    "float": ("int_to_float",),
+    "to_int": ("float_to_int", "parse_int"),
+    "int": ("float_to_int", "parse_int"),
+    "println": ("print",),
+}
+
+# Spellings of an absent value in other languages; Geno's is `None`.
+_NULL_NAMES = frozenset({"null", "nil", "undefined", "NULL", "Nil"})
+
+# Hints for a name with no one-for-one Geno replacement.
+_FOREIGN_HINTS = {
+    "pow": "Geno writes powers with '**': a ** b",
+    "math_pow": "Geno writes powers with '**': a ** b",
+}
+
+
+def _rename_fixes(
+    name: str, candidates: Iterable[str], location: SourceLocation | None
+) -> tuple[str, tuple[Fix, ...]]:
+    """The ' Did you mean ...?' hint for ``name`` and the fix that applies it.
+
+    The hint names the nearest candidate. The fix is only attached when the
+    correction is unambiguous: another language's name for the candidate,
+    or a likely typo of a single candidate (see ``_likely_typo``).
+    """
+    if name in _FOREIGN_HINTS:
+        return f" {_FOREIGN_HINTS[name]}.", ()
+    names = set(candidates) - {name}
+    foreign = next(
+        (target for target in _FOREIGN_NAMES.get(name, ()) if target in names), None
+    )
+    if foreign is not None:
+        best: str | None = foreign
+        confident = True
+    else:
+        best = _closest_name(name, names)
+        confident = best is not None and _likely_typo(name, best, names)
+    if best is None:
+        return "", ()
+    hint = f" Did you mean '{best}'?"
+    if location is None or not confident:
+        return hint, ()
+    return hint, (replace_fix(location, name, best),)
+
+
+def _likely_typo(name: str, best: str, candidates: set[str]) -> bool:
+    """Whether ``best`` is the one candidate ``name`` is a slip of the keys for.
+
+    One edit, or two for names of six letters or more, counting a swap of
+    adjacent letters as one; at most one changed letter, and none in a name of
+    four letters or fewer (`set` is not a typo of `get`, nor `is_upper` of
+    `to_upper`); and no other candidate as close.
+    """
+    distance = _transposition_distance(name, best)
+    if distance > (1 if len(name) < 6 else 2):
+        return False
+    changed = _transposition_distance(name, best, substitution=2) - distance
+    if changed > (0 if len(name) <= 4 else 1):
+        return False
+    return not any(
+        other != best and _transposition_distance(name, other) <= distance
+        for other in candidates
+        if abs(len(other) - len(name)) <= distance
+    )
+
+
+# Removed builtins whose replacement takes the same arguments.
+_REMOVED_BUILTIN_RENAMES = {
+    "contains_substring": "string_contains",
+    "repeat_string": "string_repeat",
+    "sort_strings": "sort",
+}
+
+
+def _name_arguments_fix(
+    arguments: Sequence[CallArg], param_names: Sequence[str]
+) -> tuple[Fix, ...]:
+    """Insert ``name: `` before each argument of an all-positional call."""
+    if (
+        not arguments
+        or len(arguments) > len(param_names)
+        or not all(param_names)
+        or any(arg.name is not None or arg.value.location is None for arg in arguments)
+    ):
+        return ()
+    return (
+        insert_fix(
+            "Name the arguments",
+            [
+                (arg.value.location, f"{name}: ")
+                for arg, name in zip(arguments, param_names)
+            ],
+        ),
+    )
 
 
 def _named_argument_example(func_name: str | None, param_names: Sequence[str]) -> str:
@@ -573,6 +795,27 @@ def _import_hint(
     return f" It is defined in {listed}; import the one you mean."
 
 
+# Builtins Geno 0.6 removed as duplicates or one-liners (proposal 0010), with
+# what to write instead.
+_REMOVED_BUILTINS: dict[str, str] = {
+    "contains_substring": "text.contains(substring)",
+    "is_numeric_string": "parse_int(text).is_some()",
+    "is_permutation": "a.sort() == b.sort()",
+    "is_positive": "n > 0",
+    "is_sorted": "xs == xs.sort()",
+    "repeat_string": "text.repeat(count)",
+    "sort_strings": "items.sort()",
+    "square": "x * x",
+}
+
+
+def _removed_builtin_hint(name: str) -> str:
+    replacement = _REMOVED_BUILTINS.get(name)
+    if replacement is None:
+        return ""
+    return f" '{name}' was removed in Geno 0.6; write {replacement}."
+
+
 def _suggest_import(name: str, imported: Mapping[str, str | None]) -> str:
     """Return an import hint when a standard module defines ``name``.
 
@@ -637,6 +880,16 @@ class TypeChecker(ExhaustivenessMixin):
         self._lambda_propagation_types: list[Type] | None = None
         self._lambda_capture_env: TypeEnv | None = None
         self.errors: list[TypeError] = []
+        # Opt-in for tools (the language server): every local the checker
+        # binds, as (location of its binding construct, name, type). When set,
+        # check_project_graph also keeps each module's checker here.
+        self.binding_types: list[tuple[SourceLocation, str, Type]] | None = None
+        # With ``binding_types``: each local's use and the binding it resolves to.
+        self.binding_uses: list[tuple[SourceLocation, SourceLocation]] = []
+        # The type of the expression statement checked last: a function body
+        # that ends with one may be missing its `return`.
+        self._last_expression_type: Type | None = None
+        self.module_checkers: dict[str, TypeChecker] = {}
         self._user_defined_names: set[str] = set()
         # Module-level constants: name -> type, rebuilt per check_program.
         self._module_constants: dict[str, Type] = {}
@@ -644,7 +897,13 @@ class TypeChecker(ExhaustivenessMixin):
         self._loop_depth: int = 0
         self._is_app_mode: bool = False
         self._resolving_aliases: set[str] = set()
-        self._resolved_type_cache: dict[tuple[int, tuple[str, ...]], Type] = {}
+        self._resolved_type_cache: dict[
+            tuple[int, tuple[str, ...], tuple[str, ...]], Type
+        ] = {}
+        # Type parameters of the generic function whose body is being checked,
+        # with their bounds closed under implication. Inside that body each
+        # one resolves to a rigid TypeParam.
+        self._rigid_type_params: dict[str, frozenset[str]] = {}
         self._declared_user_types: list[dict[str, tuple[str, ...]]] = []
         self._trait_self_type_depth = 0
         self._target_profile = target_profile
@@ -660,6 +919,12 @@ class TypeChecker(ExhaustivenessMixin):
         # Module param names for qualified calls: alias/name → {func: [param_names]}
         self._module_param_names: dict[str, dict[str, list[str]]] = {}
         self._module_default_counts: dict[str, dict[str, int]] = {}
+        # Generic functions visible unqualified, and reachable as Module.name.
+        self._generic_functions: dict[str, GenericSignature] = {}
+        self._module_generic_functions: dict[str, dict[str, GenericSignature]] = {}
+        # Generic functions referenced as values, checked once the program is,
+        # so each has its type arguments determined by its context.
+        self._generic_value_refs: list[Expression] = []
 
         # Trait support
         self.trait_defs: dict[str, TraitDef] = {}
@@ -856,9 +1121,10 @@ class TypeChecker(ExhaustivenessMixin):
         message: str,
         location: SourceLocation,
         error_code: ErrorCode | None = ErrorCode.TYPE_MISMATCH,
+        fixes: Sequence[Fix] = (),
     ) -> TypeError:
         """Create and record a type error."""
-        error = TypeError(message, location, error_code)
+        error = TypeError(message, location, error_code, fixes)
         self.errors.append(error)
         return error
 
@@ -1063,8 +1329,7 @@ class TypeChecker(ExhaustivenessMixin):
             set(self.type_defs) | set(self.type_aliases)
         ) - current_type_names
         visible_names = (
-            set(_BUILTIN_SIMPLE_TYPES)
-            | set(_PARAMETERIZED_BUILTIN_ARITY)
+            set(_RESERVED_TYPE_NAMES)
             | externally_visible_names
             | exported_current_names
         )
@@ -1117,6 +1382,7 @@ class TypeChecker(ExhaustivenessMixin):
             hidden_names = self._hidden_exported_type_names(
                 annotations,
                 visible_names=visible_names,
+                type_params=function_def.type_params,
                 local_aliases=local_aliases,
             )
             if hidden_names:
@@ -1133,6 +1399,9 @@ class TypeChecker(ExhaustivenessMixin):
         """Return whether values of *type_* can be used as stable hash keys."""
         if isinstance(type_, (AnyType, NeverType, TypeVar)):
             return True
+        if isinstance(type_, TypeParam):
+            # Without a bound a caller may instantiate it with a list.
+            return type_.has_bound("Hash")
         if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
             return True
         if isinstance(type_, TupleType):
@@ -1170,10 +1439,32 @@ class TypeChecker(ExhaustivenessMixin):
         self, collection_name: str, role: str, key_type: Type, location: SourceLocation
     ) -> None:
         if not self._is_hashable_type(key_type):
+            rigid = sorted(
+                {t.name for t in self._iter_types(key_type) if isinstance(t, TypeParam)}
+            )
+            if rigid:
+                names = ", ".join(f"'{name}'" for name in rigid)
+                bounds = ", ".join(f"{name}: Hash" for name in rigid)
+                self._error(
+                    f"{collection_name} {role} type must be hashable, got "
+                    f"{key_type}; type parameter {names} may be a list, which "
+                    f"cannot be hashed. Declare the bound: [{bounds}]",
+                    location,
+                )
+                return
             self._error(
                 f"{collection_name} {role} type must be hashable, got {key_type}",
                 location,
             )
+
+    @staticmethod
+    def _iter_types(type_: Type) -> Iterator[Type]:
+        """Yield *type_* and every type nested inside it."""
+        yield type_
+        parts = type_children(type_)
+        if parts is not None:
+            for child in parts[0]:
+                yield from TypeChecker._iter_types(child)
 
     def _validate_keyed_collection_type(
         self, type_: Type, location: SourceLocation
@@ -1342,7 +1633,10 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(defn, ImplDef):
                 for method in defn.methods:
                     self._check_function_def(
-                        method, update_signature=False, validate_effects=False
+                        method,
+                        update_signature=False,
+                        validate_effects=False,
+                        is_impl_method=True,
                     )
 
         if not self.errors:
@@ -1354,12 +1648,17 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions:
                 if isinstance(defn, ImplDef):
                     for method in defn.methods:
-                        self._check_function_def(method, update_signature=False)
+                        self._check_function_def(
+                            method, update_signature=False, is_impl_method=True
+                        )
 
         # Fourth pass: check test blocks
         for defn in program.definitions:
             if isinstance(defn, TestBlock):
                 self._check_test_block(defn)
+
+        self._check_generic_value_refs()
+        self._dedupe_errors()
 
         if self.errors:
             if len(self.errors) == 1:
@@ -1381,6 +1680,9 @@ class TypeChecker(ExhaustivenessMixin):
             # Each module gets a fresh TypeChecker; import resolution
             # via _resolve_import applies export visibility filtering.
             mod_checker = TypeChecker(target_profile=self._target_profile)
+            if self.binding_types is not None:
+                mod_checker.binding_types = []
+                self.module_checkers[mod_name] = mod_checker
             modules = module_summaries or None
             mod_checker.check_program(
                 program,
@@ -1507,8 +1809,16 @@ class TypeChecker(ExhaustivenessMixin):
         modules: Mapping[str, Union[Program, _ModuleImportSummary]],
         resolved: set[str],
         import_summaries: dict[str, _ModuleImportSummary],
+        *,
+        direct: bool = True,
     ) -> None:
-        """Resolve an import statement by loading module definitions."""
+        """Resolve an import statement by loading module definitions.
+
+        A *direct* import is one the program being checked wrote. The modules
+        it imports in turn are loaded only for the types their exports
+        mention: their functions and namespaces stay out of this program's
+        scope, as every backend keeps them out at run time.
+        """
         name = import_stmt.module_name
         if name in resolved:
             if name in import_summaries:
@@ -1516,6 +1826,7 @@ class TypeChecker(ExhaustivenessMixin):
                     module_name=name,
                     alias=import_stmt.alias,
                     summary=import_summaries[name],
+                    direct=direct,
                 )
             return  # Already imported
         if name not in modules:
@@ -1540,12 +1851,15 @@ class TypeChecker(ExhaustivenessMixin):
                         f"Unknown module: '{imported_name}'",
                         nested_import.location,
                     )
-                self._resolve_import(nested_import, modules, resolved, import_summaries)
+                self._resolve_import(
+                    nested_import, modules, resolved, import_summaries, direct=False
+                )
             import_summaries[name] = mod_entry
             self._apply_module_import_summary(
                 module_name=name,
                 alias=import_stmt.alias,
                 summary=mod_entry,
+                direct=direct,
             )
             return
 
@@ -1559,7 +1873,9 @@ class TypeChecker(ExhaustivenessMixin):
                         f"Circular import detected: module '{name}' imports itself",
                         defn.location,
                     )
-                self._resolve_import(defn, modules, resolved, import_summaries)
+                self._resolve_import(
+                    defn, modules, resolved, import_summaries, direct=False
+                )
 
         self._validate_type_definition_names(mod_program)
         for defn in mod_program.definitions:
@@ -1632,7 +1948,7 @@ class TypeChecker(ExhaustivenessMixin):
             # Collect function signatures from module
             module_param_names: dict[str, list[str]] = {}
             module_default_counts: dict[str, int] = {}
-            stdlib_module_name = self._stdlib_module_name_for_program(mod_program)
+            module_generic_functions: dict[str, GenericSignature] = {}
             for defn in mod_program.definitions:
                 if isinstance(defn, FunctionDef):
                     if has_exports and not defn.exported:
@@ -1640,22 +1956,26 @@ class TypeChecker(ExhaustivenessMixin):
                     func_type, param_names, num_defaults = (
                         self._function_signature_from_def(defn)
                     )
-                    func_type = (
-                        self._stdlib_forwarder_type(stdlib_module_name, defn.name)
-                        or func_type
-                    )
-                    if not is_aliased:
+                    generic = self._generic_signature(defn, name)
+                    if (
+                        direct
+                        and not is_aliased
+                        and binds_unqualified(mod_program, defn.name)
+                    ):
                         self._register_function_signature(
                             defn.name,
                             func_type,
                             param_names,
                             num_defaults,
+                            generic=generic,
                         )
                     # Track for qualified access
                     module_symbols[defn.name] = func_type
                     module_param_names[defn.name] = param_names
                     if num_defaults > 0:
                         module_default_counts[defn.name] = num_defaults
+                    if generic is not None:
+                        module_generic_functions[defn.name] = generic
             import_summaries[name] = self._build_module_import_summary(mod_program)
         finally:
             # Restore temporary-alias state even if signature resolution raised,
@@ -1673,11 +1993,15 @@ class TypeChecker(ExhaustivenessMixin):
                 # lookups do not observe private names.
                 self._resolved_type_cache.clear()
 
+        if not direct:
+            return
+
         # Register module namespace for qualified access (Foo.symbol)
         ns_name = import_stmt.alias or name
         self._module_exports[ns_name] = module_symbols
         self._module_param_names[ns_name] = module_param_names
         self._module_default_counts[ns_name] = module_default_counts
+        self._module_generic_functions[ns_name] = module_generic_functions
         self.global_env.bind(ns_name, ModuleType(name))
 
     def _find_ambiguous_imported_names(
@@ -1720,6 +2044,7 @@ class TypeChecker(ExhaustivenessMixin):
                     for item in entry.definitions
                     if isinstance(item, FunctionDef)
                     and (item.exported or not has_exports)
+                    and binds_unqualified(entry, item.name)
                 ]
             for name in names:
                 owners = sources.setdefault(name, [])
@@ -1763,53 +2088,20 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions
         )
 
-    @staticmethod
-    def _stdlib_module_name_for_program(program: Program) -> str | None:
-        """Return the std module name for a program loaded from geno/std."""
-        for defn in program.definitions:
-            filename = getattr(defn.location, "filename", None)
-            if not filename:
-                continue
-            path = Path(filename)
-            if (
-                path.suffix == ".geno"
-                and path.parent.name == "std"
-                and path.parent.parent.name == "geno"
-            ):
-                return path.stem
-        return None
-
-    def _stdlib_forwarder_type(
-        self,
-        stdlib_module_name: str | None,
-        function_name: str,
-    ) -> FuncType | None:
-        """Return the generic builtin signature for known std thin wrappers."""
-        if stdlib_module_name is None:
-            return None
-        builtin_name = _STDLIB_FORWARDER_BUILTINS.get(stdlib_module_name, {}).get(
-            function_name
-        )
-        if builtin_name is None:
-            return None
-        builtin = self.builtin_types.get(builtin_name)
-        if builtin is None:
-            return None
-        return builtin[0]
-
     def _build_module_import_summary(self, program: Program) -> _ModuleImportSummary:
         """Precompute the import-facing shape of a checked module."""
         has_exports = self._program_has_explicit_exports(program)
-        stdlib_module_name = self._stdlib_module_name_for_program(program)
         imports: list[ImportStatement] = []
         type_aliases: dict[str, tuple[list[str], TypeAnnotation]] = {}
         type_defs: dict[str, TypeDefInfo] = {}
+        type_def_locations: dict[str, SourceLocation] = {}
         functions: dict[str, FuncType] = {}
         func_param_names: dict[str, list[str]] = {}
         func_default_counts: dict[str, int] = {}
         module_symbols: dict[str, Type] = {}
         module_param_names: dict[str, list[str]] = {}
         module_default_counts: dict[str, int] = {}
+        generic_functions: dict[str, GenericSignature] = {}
         module_type_defs = [
             defn for defn in program.definitions if isinstance(defn, TypeDef)
         ]
@@ -1841,6 +2133,7 @@ class TypeChecker(ExhaustivenessMixin):
                     if has_exports and not defn.exported:
                         continue
                     type_defs[defn.name] = self._build_type_def_info(defn)
+                    type_def_locations[defn.name] = defn.location
                     for variant in defn.variants:
                         fields = []
                         for field_name, field_type in variant.fields:
@@ -1860,29 +2153,31 @@ class TypeChecker(ExhaustivenessMixin):
                     func_type, param_names, num_defaults = (
                         self._function_signature_from_def(defn)
                     )
-                    func_type = (
-                        self._stdlib_forwarder_type(stdlib_module_name, defn.name)
-                        or func_type
-                    )
-                    functions[defn.name] = func_type
+                    if binds_unqualified(program, defn.name):
+                        functions[defn.name] = func_type
                     func_param_names[defn.name] = param_names
                     if num_defaults > 0:
                         func_default_counts[defn.name] = num_defaults
                         module_default_counts[defn.name] = num_defaults
                     module_symbols[defn.name] = func_type
                     module_param_names[defn.name] = param_names
+                    generic = self._generic_signature(defn, None)
+                    if generic is not None:
+                        generic_functions[defn.name] = generic
         self._refresh_type_def_variance(type_defs)
 
         return _ModuleImportSummary(
             imports=tuple(imports),
             type_aliases=type_aliases,
             type_defs=type_defs,
+            type_def_locations=type_def_locations,
             functions=functions,
             func_param_names=func_param_names,
             func_default_counts=func_default_counts,
             module_symbols=module_symbols,
             module_param_names=module_param_names,
             module_default_counts=module_default_counts,
+            generic_functions=generic_functions,
         )
 
     def _apply_module_import_summary(
@@ -1890,29 +2185,41 @@ class TypeChecker(ExhaustivenessMixin):
         module_name: str,
         alias: str | None,
         summary: _ModuleImportSummary,
+        *,
+        direct: bool = True,
     ) -> None:
-        """Merge a precomputed module summary into the current checker."""
+        """Merge a precomputed module summary into the current checker.
+
+        An indirect import contributes its types only (see ``_resolve_import``).
+        """
         if alias is None:
             for alias_name, alias_info in summary.type_aliases.items():
                 self.type_aliases[alias_name] = (list(alias_info[0]), alias_info[1])
             for type_name, type_info in summary.type_defs.items():
-                # Remove stale constructor entries if type is being redefined
-                old_info = self.type_defs.get(type_name)
-                if old_info is not None:
-                    for old_ctor in old_info.variants:
-                        self._constructor_to_type.pop(old_ctor, None)
-                self.type_defs[type_name] = type_info
-                for constructor_name in type_info.variants:
-                    self._constructor_to_type[constructor_name] = type_name
-            for func_name, func_type in summary.functions.items():
+                self._register_type_def_info(
+                    type_info, summary.type_def_locations[type_name]
+                )
+            for func_name, func_type in summary.functions.items() if direct else ():
+                generic = summary.generic_functions.get(func_name)
                 self._register_function_signature(
                     func_name,
                     func_type,
                     summary.func_param_names[func_name],
                     summary.func_default_counts.get(func_name, 0),
+                    generic=(
+                        None
+                        if generic is None
+                        else dataclasses.replace(generic, module=module_name)
+                    ),
                 )
 
+        if not direct:
+            return
         ns_name = alias or module_name
+        self._module_generic_functions[ns_name] = {
+            func_name: dataclasses.replace(generic, module=module_name)
+            for func_name, generic in summary.generic_functions.items()
+        }
         self._module_exports[ns_name] = dict(summary.module_symbols)
         self._module_param_names[ns_name] = {
             name: list(param_names)
@@ -2104,31 +2411,39 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _collect_type_def(self, defn: TypeDef) -> None:
         """Collect a type definition."""
+        self._register_type_def_info(self._build_type_def_info(defn), defn.location)
+
+    def _register_type_def_info(
+        self, info: TypeDefInfo, location: SourceLocation
+    ) -> None:
+        """Register local or imported types with the same constructor checks."""
         # Remove stale constructor entries if this type name is being redefined
-        old_info = self.type_defs.get(defn.name)
+        old_info = self.type_defs.get(info.name)
         if old_info is not None:
             for old_ctor in old_info.variants:
                 self._constructor_to_type.pop(old_ctor, None)
 
-        info = self._build_type_def_info(defn)
-        self.type_defs[defn.name] = info
+        self.type_defs[info.name] = info
         for constructor_name in info.variants:
             existing_type = self._constructor_to_type.get(constructor_name)
-            if existing_type is not None and existing_type != defn.name:
+            if existing_type is not None and existing_type != info.name:
                 self._error(
                     f"Constructor '{constructor_name}' is already defined "
                     f"by type '{existing_type}'",
-                    defn.location,
+                    location,
                     ErrorCode.TYPE_DUPLICATE_DEFINITION,
                 )
-            self._constructor_to_type[constructor_name] = defn.name
+            self._constructor_to_type[constructor_name] = info.name
 
     def _function_signature_from_def(
         self, defn: FunctionDef
     ) -> tuple[FuncType, list[str], int]:
         """Build a function signature and named-arg metadata."""
-        param_types = tuple(self._resolve_type(p.param_type) for p in defn.params)
-        return_type = self._resolve_type(defn.return_type)
+        type_params = defn.type_params or None
+        param_types = tuple(
+            self._resolve_type(p.param_type, type_params) for p in defn.params
+        )
+        return_type = self._resolve_type(defn.return_type, type_params)
         defn.__dict__["_resolved_return_type"] = return_type
         for param_type in param_types:
             self._validate_keyed_collection_type(param_type, defn.location)
@@ -2153,6 +2468,8 @@ class TypeChecker(ExhaustivenessMixin):
         func_type: FuncType,
         param_names: list[str],
         num_defaults: int,
+        *,
+        generic: GenericSignature | None = None,
     ) -> None:
         """Register a function signature into the global environment."""
         self.global_env.bind(name, func_type)
@@ -2160,12 +2477,37 @@ class TypeChecker(ExhaustivenessMixin):
         self.func_param_names[name] = list(param_names)
         if num_defaults > 0:
             self.func_default_counts[name] = num_defaults
+        if generic is not None:
+            self._generic_functions[name] = generic
+        else:
+            self._generic_functions.pop(name, None)
+
+    @staticmethod
+    def _generic_signature(
+        defn: FunctionDef, module: str | None
+    ) -> GenericSignature | None:
+        """Describe *defn* for its callers, or ``None`` if it is not generic."""
+        if not defn.type_params:
+            return None
+        return GenericSignature(
+            module=module,
+            name=defn.name,
+            type_params=tuple(defn.type_params),
+            bounds=tuple(
+                tuple(defn.type_param_bounds.get(param, ()))
+                for param in defn.type_params
+            ),
+        )
 
     def _collect_function_sig(self, defn: FunctionDef) -> None:
         """Collect a function signature into the environment."""
         func_type, param_names, num_defaults = self._function_signature_from_def(defn)
         self._register_function_signature(
-            defn.name, func_type, param_names, num_defaults
+            defn.name,
+            func_type,
+            param_names,
+            num_defaults,
+            generic=self._generic_signature(defn, None),
         )
 
     def _collect_trait_def(self, defn: TraitDef) -> None:
@@ -2349,14 +2691,119 @@ class TypeChecker(ExhaustivenessMixin):
                 if isinstance(node.function, Identifier):
                     self._tested_by_block.add(node.function.name)
 
+    @contextmanager
+    def _generic_body_scope(self, defn: FunctionDef) -> Iterator[None]:
+        """Resolve *defn*'s type parameters as rigid types while checking it."""
+        previous = self._rigid_type_params
+        self._rigid_type_params = {
+            param: close_bounds(defn.type_param_bounds.get(param, ()))
+            for param in defn.type_params
+        }
+        try:
+            yield
+        finally:
+            self._rigid_type_params = previous
+
+    def _validate_function_type_params(
+        self, defn: FunctionDef, *, is_impl_method: bool = False
+    ) -> None:
+        """Check the type parameter list of a generic function definition."""
+        if not defn.type_params:
+            return
+        if is_impl_method:
+            self._error(
+                f"Impl method '{defn.name}' cannot declare type parameters; "
+                "move the generic code into a top-level function and call it "
+                "from the method",
+                defn.location,
+                ErrorCode.TYPE_GENERIC_PARAMS,
+            )
+            return
+        if defn.name in _NON_GENERIC_ENTRYPOINTS:
+            self._error(
+                f"Function '{defn.name}' is an entrypoint and cannot declare "
+                "type parameters",
+                defn.location,
+                ErrorCode.TYPE_GENERIC_PARAMS,
+            )
+            return
+        known_types = (
+            set(_BUILTIN_SIMPLE_TYPES)
+            | set(_PARAMETERIZED_BUILTIN_ARITY)
+            | set(_RESERVED_TYPE_NAMES)
+            | set(self.type_aliases)
+            | set(self.type_defs)
+        )
+        for declared in self._declared_user_types:
+            known_types.update(declared)
+        used = set()
+        for param in defn.params:
+            used |= self._type_annotation_names(param.param_type)
+        used |= self._type_annotation_names(defn.return_type)
+        for param_name, bounds in defn.type_param_bounds.items():
+            for bound in bounds:
+                if bound in BUILTIN_BOUNDS or bound in self.trait_defs:
+                    continue
+                hint = _suggest_name(bound, [*BUILTIN_BOUNDS, *self.trait_defs])
+                self._error(
+                    f"Unknown bound '{bound}' on type parameter {param_name} of "
+                    f"'{defn.name}': a bound is Num, Ord, Hash or the name of a "
+                    f"trait{'.' if hint else ''}{hint}",
+                    defn.location,
+                    ErrorCode.TYPE_UNKNOWN_BOUND,
+                )
+        seen: set[str] = set()
+        for name in defn.type_params:
+            if name in seen:
+                self._error(
+                    f"Duplicate type parameter '{name}' in function '{defn.name}'",
+                    defn.location,
+                    ErrorCode.TYPE_GENERIC_PARAMS,
+                )
+                continue
+            seen.add(name)
+            if name in known_types:
+                self._error(
+                    f"Type parameter '{name}' of function '{defn.name}' has the "
+                    f"same name as the type '{name}'; choose another name, "
+                    "such as 'T'",
+                    defn.location,
+                    ErrorCode.TYPE_GENERIC_PARAMS,
+                )
+            elif name not in used:
+                self._error(
+                    f"Type parameter '{name}' of function '{defn.name}' is not "
+                    "used in any parameter type or the return type, so a call "
+                    "could never determine it; remove it",
+                    defn.location,
+                    ErrorCode.TYPE_GENERIC_PARAMS,
+                )
+
     def _check_function_def(
         self,
         defn: FunctionDef,
         *,
         update_signature: bool = True,
         validate_effects: bool = True,
+        is_impl_method: bool = False,
     ) -> None:
         """Type check a function definition."""
+        self._validate_function_type_params(defn, is_impl_method=is_impl_method)
+        with self._generic_body_scope(defn):
+            self._check_function_def_in_scope(
+                defn,
+                update_signature=update_signature,
+                validate_effects=validate_effects,
+            )
+
+    def _check_function_def_in_scope(
+        self,
+        defn: FunctionDef,
+        *,
+        update_signature: bool,
+        validate_effects: bool,
+    ) -> None:
+        """Type check a function definition with its type parameters in scope."""
         # Enforce example requirement - every function must have at least one example
         # Exception: 'main' and app lifecycle functions don't require examples
         # In app mode, all functions are exempt (game helpers can't easily have examples)
@@ -2404,7 +2851,9 @@ class TypeChecker(ExhaustivenessMixin):
 
         for param in defn.params:
             param_type = self._resolve_type(param.param_type)
+            param._resolved_type = param_type
             local_env.bind(param.name, param_type)
+            self._record_binding(param.name, param_type, param.location, local_env)
 
         # Type-check default value expressions
         for param in defn.params:
@@ -2441,10 +2890,7 @@ class TypeChecker(ExhaustivenessMixin):
         # Check return-path coverage for non-Unit functions
         if not isinstance(self.current_return_type, UnitType):
             if not self._definitely_returns(defn.body):
-                self._error(
-                    f"Function '{defn.name}' may not return a value on all paths",
-                    defn.location,
-                )
+                self._report_missing_return(defn)
 
         if validate_effects:
             inferred = self._infer_function_effects(
@@ -2547,13 +2993,6 @@ class TypeChecker(ExhaustivenessMixin):
             self._validate_no_result_binding_in_match_arms(stmt.arms)
         elif isinstance(stmt, ReturnStatement):
             self._validate_no_result_binding_in_expr(stmt.value)
-        elif isinstance(stmt, TryStatement):
-            self._validate_no_result_binding_in_statements(stmt.try_body)
-            if stmt.catch_clause.variable == "result":
-                self._error_result_binding_collision(
-                    "catch binding", stmt.catch_clause.location
-                )
-            self._validate_no_result_binding_in_statements(stmt.catch_clause.body)
         elif isinstance(stmt, (ExpressionStatement, AssertStatement)):
             self._validate_no_result_binding_in_expr(stmt.expression)
 
@@ -2596,6 +3035,10 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(expr, ListLiteral):
             for element in expr.elements:
                 self._validate_no_result_binding_in_expr(element)
+        elif isinstance(expr, MapLiteral):
+            for entry in expr.entries:
+                self._validate_no_result_binding_in_expr(entry.key)
+                self._validate_no_result_binding_in_expr(entry.value)
         elif isinstance(expr, ListComprehension):
             if expr.variable == "result":
                 self._error_result_binding_collision(
@@ -2604,8 +3047,6 @@ class TypeChecker(ExhaustivenessMixin):
             self._validate_no_result_binding_in_expr(expr.iterable)
             self._validate_no_result_binding_in_expr(expr.condition)
             self._validate_no_result_binding_in_expr(expr.element_expr)
-        elif isinstance(expr, ThrowExpression):
-            self._validate_no_result_binding_in_expr(expr.value)
         elif isinstance(expr, AwaitExpr):
             self._validate_no_result_binding_in_expr(expr.expr)
         elif isinstance(expr, BinaryOp):
@@ -2665,8 +3106,9 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _stable_effects_for_function(self, defn: FunctionDef) -> frozenset[str]:
         """Return the final effect set for a function definition."""
-        local_env = self._effect_env_for_function(defn)
-        inferred = self._infer_function_effects(defn, local_env)
+        with self._generic_body_scope(defn):
+            local_env = self._effect_env_for_function(defn)
+            inferred = self._infer_function_effects(defn, local_env)
         if defn.effects:
             return frozenset(defn.effects)
         return inferred
@@ -2816,16 +3258,6 @@ class TypeChecker(ExhaustivenessMixin):
             body_env = env.child()
             body_env.bind(stmt.variable, self._resolve_type(stmt.var_type))
             effects |= self._infer_body_effects(stmt.body, body_env)
-        elif isinstance(stmt, TryStatement):
-            body_effects = self._infer_body_effects(stmt.try_body, env.child())
-            # try/catch masks the "throw" effect from the try body
-            effects |= body_effects - {"throw"}
-            catch_env = env.child()
-            catch_env.bind(
-                stmt.catch_clause.variable,
-                self._resolve_type(stmt.catch_clause.type_annotation),
-            )
-            effects |= self._infer_body_effects(stmt.catch_clause.body, catch_env)
         elif isinstance(stmt, MatchStatement):
             effects |= self._infer_expr_effects(stmt.scrutinee, env)
             scrutinee_type = self._check_expression(stmt.scrutinee, env)
@@ -2874,6 +3306,18 @@ class TypeChecker(ExhaustivenessMixin):
             if not ordered_args or ordered_args[0] is None:
                 continue
             receiver_type = self._check_expression(ordered_args[0].value, env)
+            if isinstance(receiver_type, TypeParam):
+                # `[T: Shape]` promises an impl at every instantiation; the
+                # call dispatches on the value at run time, as for any ADT.
+                if not receiver_type.has_bound(trait_name):
+                    continue
+                bounded = self._bounded_trait_method_type(
+                    trait_name, callee.name, receiver_type
+                )
+                if bounded is None:
+                    continue
+                self._record_captured_binding(callee.name, env)
+                return bounded, param_names, ordered_args
             if not isinstance(receiver_type, UserType):
                 continue
             resolved_type_name = self._constructor_to_type.get(
@@ -2885,6 +3329,34 @@ class TypeChecker(ExhaustivenessMixin):
             self._record_captured_binding(callee.name, env)
             return method_types[callee.name], param_names, ordered_args
         return None
+
+    def _bounded_trait_method_type(
+        self, trait_name: str, method_name: str, receiver: TypeParam
+    ) -> FuncType | None:
+        """A trait method's type when called through a type parameter bound.
+
+        Trait signatures declare no effects, so the call carries the effects
+        of every implementation this program can see.
+        """
+        trait_def = self.trait_defs.get(trait_name)
+        if trait_def is None:
+            return None
+        method_sig = next((m for m in trait_def.methods if m.name == method_name), None)
+        if method_sig is None:
+            return None
+        with self._allow_trait_self_type():
+            param_types = tuple(
+                self._substitute_trait_self(self._resolve_type(p.param_type), receiver)
+                for p in method_sig.params
+            )
+            return_type = self._substitute_trait_self(
+                self._resolve_type(method_sig.return_type), receiver
+            )
+        effects: frozenset[str] = frozenset()
+        for (impl_trait, _type_name), methods in self.impl_registry.items():
+            if impl_trait == trait_name and method_name in methods:
+                effects |= methods[method_name].effects
+        return FuncType(param_types, return_type, effects)
 
     def _infer_expr_effects(self, expr: Expression, env: TypeEnv) -> set[str]:
         """Infer effects from an expression."""
@@ -2914,10 +3386,6 @@ class TypeChecker(ExhaustivenessMixin):
                         module_callee_type = mod_exports.get(callee.field_name)
                         if isinstance(module_callee_type, FuncType):
                             effects |= module_callee_type.effects
-        elif isinstance(expr, ThrowExpression):
-            effects.add("throw")
-            effects |= self._infer_expr_effects(expr.value, env)
-
         elif isinstance(expr, BinaryOp):
             effects |= self._infer_expr_effects(expr.left, env)
             effects |= self._infer_expr_effects(expr.right, env)
@@ -2972,6 +3440,11 @@ class TypeChecker(ExhaustivenessMixin):
             for elem in expr.elements:
                 effects |= self._infer_expr_effects(elem, env)
 
+        elif isinstance(expr, MapLiteral):
+            for entry in expr.entries:
+                effects |= self._infer_expr_effects(entry.key, env)
+                effects |= self._infer_expr_effects(entry.value, env)
+
         elif isinstance(expr, ListComprehension):
             effects |= self._infer_expr_effects(expr.iterable, env)
             comp_env = env.child()
@@ -3011,9 +3484,7 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(stmt, ReturnStatement):
             return True
 
-        if isinstance(stmt, ExpressionStatement) and isinstance(
-            stmt.expression, ThrowExpression
-        ):
+        if isinstance(stmt, ExpressionStatement) and stmt._diverges:
             return True
 
         if isinstance(stmt, IfStatement):
@@ -3027,12 +3498,6 @@ class TypeChecker(ExhaustivenessMixin):
             if not stmt.arms:
                 return False
             return all(self._definitely_returns(arm.body) for arm in stmt.arms)
-
-        if isinstance(stmt, TryStatement):
-            # Both try body and catch body must definitely return
-            try_returns = self._definitely_returns(stmt.try_body)
-            catch_returns = self._definitely_returns(stmt.catch_clause.body)
-            return try_returns and catch_returns
 
         # While/for loops don't guarantee return (might not execute)
         # Let/var/assign statements don't return
@@ -3061,12 +3526,37 @@ class TypeChecker(ExhaustivenessMixin):
                 )
 
         # Check example clauses - input types must match params, output must match return
-        param_types = [self._resolve_type(p.param_type) for p in defn.params]
-        return_type = self.current_return_type
+        # Each example of a generic function is a separate instantiation, as
+        # a call is, so it sees the signature's type variables, not the
+        # rigid parameters the body sees.
+        type_params = defn.type_params or None
+        param_types = [
+            self._resolve_type(p.param_type, type_params) for p in defn.params
+        ]
+        return_type = (
+            self._resolve_type(defn.return_type, type_params)
+            if type_params
+            else self.current_return_type
+        )
         required_count = sum(1 for p in defn.params if p.default_value is None)
         total_count = len(defn.params)
+        example_subs: dict[str, Type] | None = None
+
+        def example_compatible(expected: Type, actual: Type) -> bool:
+            if example_subs is None:
+                return self._types_strictly_compatible(expected, actual)
+            if self._has_type_vars(actual):
+                actual = self._freshen_type_vars(actual, "__example_")
+            return self._types_compatible_with_subs(expected, actual, example_subs)
+
+        def shown(expected: Type | None) -> Type | None:
+            # Name the instantiated type in a diagnostic: "expected Int", not "T".
+            if example_subs is None or expected is None:
+                return expected
+            return self._apply_substitutions(expected, example_subs)
 
         for ex in defn.specs.examples:
+            example_subs = {} if type_params else None
             # Check input expression type
             input_type = self._check_expression(ex.input_expr, self.global_env)
 
@@ -3092,9 +3582,9 @@ class TypeChecker(ExhaustivenessMixin):
                     )
                 ):
                     pass
-                elif not self._types_strictly_compatible(param_types[0], input_type):
+                elif not example_compatible(param_types[0], input_type):
                     self._error(
-                        f"Example input type mismatch: expected {param_types[0]}, got {input_type}",
+                        f"Example input type mismatch: expected {shown(param_types[0])}, got {input_type}",
                         ex.input_expr.location,
                     )
             elif total_count > 1:
@@ -3113,9 +3603,9 @@ class TypeChecker(ExhaustivenessMixin):
                         for i, (expected, actual) in enumerate(
                             zip(param_types[:arity], input_type.element_types)
                         ):
-                            if not self._types_strictly_compatible(expected, actual):
+                            if not example_compatible(expected, actual):
                                 self._error(
-                                    f"Example input {i + 1} type mismatch: expected {expected}, got {actual}",
+                                    f"Example input {i + 1} type mismatch: expected {shown(expected)}, got {actual}",
                                     ex.input_expr.location,
                                 )
                 else:
@@ -3123,11 +3613,9 @@ class TypeChecker(ExhaustivenessMixin):
                     # argument is expected (i.e., the first parameter is
                     # required and every other parameter has a default).
                     if required_count <= 1 <= total_count:
-                        if not self._types_strictly_compatible(
-                            param_types[0], input_type
-                        ):
+                        if not example_compatible(param_types[0], input_type):
                             self._error(
-                                f"Example input type mismatch: expected {param_types[0]}, got {input_type}",
+                                f"Example input type mismatch: expected {shown(param_types[0])}, got {input_type}",
                                 ex.input_expr.location,
                             )
                     else:
@@ -3140,10 +3628,17 @@ class TypeChecker(ExhaustivenessMixin):
 
             # Check output expression type
             output_type = self._check_expression(ex.output_expr, self.global_env)
-            if not self._types_strictly_compatible(return_type, output_type):  # type: ignore[arg-type]
+            if not example_compatible(return_type, output_type):  # type: ignore[arg-type]
                 self._error(
-                    f"Example output type mismatch: expected {return_type}, got {output_type}",
+                    f"Example output type mismatch: expected {shown(return_type)}, got {output_type}",
                     ex.output_expr.location,
+                )
+            generic = self._generic_signature(defn, None)
+            if generic is not None and example_subs is not None:
+                self._check_instance_bounds(
+                    generic,
+                    self._generic_instance(generic, example_subs).type_args,
+                    ex.location,
                 )
 
     def _check_statement(self, stmt: Statement, env: TypeEnv) -> None:
@@ -3177,11 +3672,11 @@ class TypeChecker(ExhaustivenessMixin):
         elif stmt_type is ContinueStatement:
             if self._loop_depth == 0:
                 self._error("'continue' outside of loop", stmt.location)
-        elif stmt_type is TryStatement:
-            self._check_try_statement(cast(TryStatement, stmt), env)
         elif stmt_type is ExpressionStatement:
             expr_stmt = cast(ExpressionStatement, stmt)
-            self._check_expression(expr_stmt.expression, env)
+            expression_type = self._check_expression(expr_stmt.expression, env)
+            expr_stmt._diverges = isinstance(expression_type, NeverType)
+            self._last_expression_type = expression_type
         elif stmt_type is AssertStatement:
             assert_stmt = cast(AssertStatement, stmt)
             expr_type = self._check_expression(assert_stmt.expression, env)
@@ -3191,24 +3686,56 @@ class TypeChecker(ExhaustivenessMixin):
                     stmt.location,
                 )
 
-    def _check_try_statement(self, stmt: TryStatement, env: TypeEnv) -> None:
-        """Type check a try/catch statement."""
-        try_env = env.child()
-        for s in stmt.try_body:
-            self._check_statement(s, try_env)
+    def _report_missing_return(self, defn: FunctionDef) -> None:
+        """A function body that can end without returning its value.
 
-        catch = stmt.catch_clause
-        declared_type = self._resolve_type(catch.type_annotation)
-        if not isinstance(declared_type, (StringType, UserType)):
-            self._error(
-                f"Catch variable must be String or a user-defined type, got {declared_type}",
-                catch.location,
+        A body that ends with an expression of the return type is the
+        implicit return of Rust, Ruby and Scala: the fix writes `return`.
+        """
+        last = defn.body[-1] if defn.body else None
+        if (
+            isinstance(last, ExpressionStatement)
+            and self._last_expression_type is not None
+            and not isinstance(self._last_expression_type, AnyType)
+            and self.current_return_type is not None
+            and self._types_strictly_compatible(
+                self.current_return_type, self._last_expression_type
             )
+        ):
+            self._error(
+                f"Function '{defn.name}' ends with a value it does not return: "
+                "Geno returns with 'return'",
+                last.location,
+                fixes=(insert_fix("Add 'return'", [(last.location, "return ")]),),
+            )
+            return
+        self._error(
+            f"Function '{defn.name}' may not return a value on all paths",
+            defn.location,
+        )
 
-        catch_env = env.child()
-        catch_env.bind(catch.variable, declared_type)
-        for s in catch.body:
-            self._check_statement(s, catch_env)
+    def _record_binding(
+        self,
+        name: str,
+        type_: Type,
+        location: SourceLocation,
+        env: TypeEnv | None = None,
+    ) -> None:
+        """Note a local binding for tools that asked for ``binding_types``."""
+        if self.binding_types is not None:
+            self.binding_types.append((location, name, type_))
+            if env is not None:
+                if env.binding_locations is None:
+                    env.binding_locations = {}
+                env.binding_locations[name] = location
+
+    def _record_binding_use(self, name: str, use: SourceLocation, env: TypeEnv) -> None:
+        """Note which binding a local's use resolves to, lexically."""
+        scope = env.binding_scope(name)
+        if scope is not None and scope.binding_locations is not None:
+            binding = scope.binding_locations.get(name)
+            if binding is not None:
+                self.binding_uses.append((use, binding))
 
     def _bind_local(
         self,
@@ -3250,10 +3777,13 @@ class TypeChecker(ExhaustivenessMixin):
                 location,
             )
         env.bind(name, type_, mutable=mutable)
+        self._record_binding(name, type_, location, env)
 
     def _check_let_statement(self, stmt: LetStatement, env: TypeEnv) -> None:
         """Type check a let statement."""
         errors_before = len(self.errors)
+        if stmt.type_annotation is not None:
+            self._prime_lambda(stmt.value, self._resolve_type(stmt.type_annotation))
         actual_type = self._check_expression(stmt.value, env)
 
         if stmt.type_annotation is not None:
@@ -3337,6 +3867,8 @@ class TypeChecker(ExhaustivenessMixin):
     def _check_var_statement(self, stmt: VarStatement, env: TypeEnv) -> None:
         """Type check a var statement."""
         errors_before = len(self.errors)
+        if stmt.type_annotation is not None:
+            self._prime_lambda(stmt.value, self._resolve_type(stmt.type_annotation))
         actual_type = self._check_expression(stmt.value, env)
 
         if stmt.type_annotation is not None:
@@ -3366,8 +3898,22 @@ class TypeChecker(ExhaustivenessMixin):
         self, stmt: TupleDestructureStatement, env: TypeEnv
     ) -> None:
         """Type check a tuple destructuring statement."""
-        declared_type = self._resolve_type(stmt.type_annotation)
-        actual_type = self._check_expression(stmt.value, env)
+        if isinstance(stmt.type_annotation, InferredType):
+            actual_type = self._check_expression(stmt.value, env)
+            if self._has_type_vars(actual_type) or self._contains_any(actual_type):
+                if not isinstance(actual_type, AnyType):
+                    self._error(
+                        "Cannot infer the element types of this tuple "
+                        f"destructuring from {_display_type(actual_type)}; add a "
+                        "type annotation, as in `let (a, b): (Int, String) = ...`",
+                        stmt.location,
+                    )
+                return
+            stmt.type_annotation._inferred = actual_type
+            declared_type = actual_type
+        else:
+            declared_type = self._resolve_type(stmt.type_annotation)
+            actual_type = self._check_expression(stmt.value, env)
         self._record_expected_runtime_type(stmt.value, declared_type)
 
         if not self._types_strictly_compatible(declared_type, actual_type):
@@ -3399,11 +3945,14 @@ class TypeChecker(ExhaustivenessMixin):
         """Type check an assignment statement."""
         var_type = env.lookup(stmt.target)
         if var_type is None:
-            hint = _suggest_name(stmt.target, self._env_names(env))
+            hint, fixes = _rename_fixes(
+                stmt.target, self._env_names(env), stmt.location
+            )
             self._error(
-                f"Undefined variable: {stmt.target}{hint}",
+                f"Undefined variable: {stmt.target}{'.' if hint else ''}{hint}",
                 stmt.location,
                 ErrorCode.TYPE_UNDEFINED_VAR,
+                fixes,
             )
             return
 
@@ -3606,6 +4155,8 @@ class TypeChecker(ExhaustivenessMixin):
         else:
             elem_type = iterable_type.element_type
 
+        if isinstance(stmt.var_type, InferredType):
+            stmt.var_type._inferred = elem_type
         declared_type = self._resolve_type(stmt.var_type)
         if not self._types_strictly_compatible(declared_type, elem_type):
             self._error(
@@ -3619,6 +4170,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         body_env = env.child()
         body_env.bind(stmt.variable, declared_type)
+        self._record_binding(stmt.variable, declared_type, stmt.location, body_env)
 
         self._loop_depth += 1
         for s in stmt.body:
@@ -3652,6 +4204,8 @@ class TypeChecker(ExhaustivenessMixin):
             self._error("Return outside of function", stmt.location)
             return
 
+        if self._lambda_return_types is None:
+            self._prime_lambda(stmt.value, self.current_return_type)
         value_type = self._check_expression(stmt.value, env)
         if self._lambda_return_types is not None:
             # Collecting return types for block lambda inference
@@ -3669,8 +4223,13 @@ class TypeChecker(ExhaustivenessMixin):
     def _record_expected_runtime_type(self, expr: Expression, expected: Type) -> None:
         """Attach concrete contextual types used by backend lowering."""
         expr._expected_runtime_type = expected
+        if getattr(expr, "_generic_target", None) is not None:
+            self._record_generic_value_instance(expr, expected)
+        if isinstance(expr, FunctionCall):
+            self._settle_generic_call(expr, expected)
         if not isinstance(
-            expr, (IntegerLiteral, ListLiteral, TupleExpr, ListComprehension)
+            expr,
+            (IntegerLiteral, ListLiteral, MapLiteral, TupleExpr, ListComprehension),
         ):
             # Where an existing Int value lands in a Float slot, record how
             # deep the backends must widen it (#137).  Literals widen their
@@ -3682,6 +4241,12 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(expr, ListLiteral) and isinstance(expected, ListType):
             for element in expr.elements:
                 self._record_expected_runtime_type(element, expected.element_type)
+            return
+
+        if isinstance(expr, MapLiteral) and isinstance(expected, MapType):
+            for entry in expr.entries:
+                self._record_expected_runtime_type(entry.key, expected.key_type)
+                self._record_expected_runtime_type(entry.value, expected.value_type)
             return
 
         if isinstance(expr, TupleExpr) and isinstance(expected, TupleType):
@@ -3785,6 +4350,205 @@ class TypeChecker(ExhaustivenessMixin):
                 if update_field_type is not None:
                     self._record_expected_runtime_type(value, update_field_type)
 
+    def _generic_target(
+        self, expr: Expression, env: TypeEnv
+    ) -> GenericSignature | None:
+        """Return the generic function *expr* names, if it names one.
+
+        A local binding that shadows the function makes this ``None``.
+        """
+        if isinstance(expr, Identifier):
+            target = self._generic_functions.get(expr.name)
+            if target is None or env.binding_scope(expr.name) is not self.global_env:
+                return None
+            return target
+        if isinstance(expr, FieldAccess) and isinstance(
+            expr.target, (Identifier, TypeIdentifier)
+        ):
+            namespace = expr.target.name
+            if not isinstance(env.lookup(namespace), ModuleType):
+                return None
+            if env.binding_scope(namespace) is not self.global_env:
+                return None
+            return self._module_generic_functions.get(namespace, {}).get(
+                expr.field_name
+            )
+        return None
+
+    @staticmethod
+    def _generic_instance(
+        target: GenericSignature,
+        subs: Mapping[str, Type],
+        prefix: str = "",
+    ) -> GenericInstance:
+        return GenericInstance(
+            module=target.module,
+            name=target.name,
+            type_params=target.type_params,
+            type_args=tuple(
+                TypeChecker._apply_substitutions(TypeVar(prefix + param), dict(subs))
+                for param in target.type_params
+            ),
+        )
+
+    def _satisfies_bound(self, type_: Type, bound: str) -> bool:
+        """Return whether *type_* meets a type parameter bound."""
+        if isinstance(type_, (AnyType, NeverType, TypeVar)):
+            return True
+        if isinstance(type_, TypeParam):
+            return type_.has_bound(bound)
+        if bound == "Num":
+            return isinstance(type_, (IntType, FloatType))
+        if bound == "Ord":
+            return isinstance(type_, (IntType, FloatType, StringType))
+        if bound == "Hash":
+            return self._is_hashable_type(type_)
+        if isinstance(type_, UserType):
+            type_name = self._constructor_to_type.get(type_.name, type_.name)
+            return (bound, type_name) in self.impl_registry
+        return False
+
+    def _check_instance_bounds(
+        self,
+        target: GenericSignature,
+        type_args: Sequence[Type],
+        location: SourceLocation,
+    ) -> None:
+        """Report each type argument that misses a bound of its parameter."""
+        for index, (param, arg) in enumerate(zip(target.type_params, type_args)):
+            for bound in target.bounds_of(index):
+                if bound not in BUILTIN_BOUNDS and bound not in self.trait_defs:
+                    continue  # reported as E322 where the function is defined
+                if self._satisfies_bound(arg, bound):
+                    continue
+                self._error(
+                    f"Type {_display_type(arg)} does not satisfy the bound "
+                    f"'{bound}' on type parameter {param} of '{target.name}'"
+                    f"{_bound_hint(bound, arg)}",
+                    location,
+                    ErrorCode.TYPE_UNSATISFIED_BOUND,
+                )
+
+    def _record_generic_value_instance(self, expr: Expression, expected: Type) -> None:
+        """Instantiate a generic function used as a value from its context."""
+        target = expr._generic_target
+        signature = getattr(expr, "_resolved_type", None)
+        if target is None or not isinstance(signature, FuncType):
+            return
+        # Rename the signature's variables apart from any left in *expected*,
+        # which may come from a builtin signature that also says "T".
+        prefix = "__ref_"
+        fresh = self._freshen_type_vars(signature, prefix)
+        subs: dict[str, Type] = {}
+        if not self._types_compatible_with_subs(expected, fresh, subs):
+            return
+        instance = self._generic_instance(target, subs, prefix)
+        previous = getattr(expr, "_generic_instance", None)
+        if (
+            previous is not None
+            and any(self._has_type_vars(arg) for arg in instance.type_args)
+            and not any(self._has_type_vars(arg) for arg in previous.type_args)
+        ):
+            # A less specific context never undoes a settled instantiation.
+            return
+        expr._generic_instance = instance
+
+    def _settle_generic_call(self, call: FunctionCall, expected: Type) -> None:
+        """Settle the type arguments of a generic call from its result context.
+
+        In `let f: (String) -> String = incrementer()` only the annotation
+        decides `T`, after the call itself was checked, so the instance is
+        updated and its bounds are checked again.
+        """
+        callee = call.function
+        target = getattr(callee, "_generic_target", None)
+        instance = getattr(callee, "_generic_instance", None)
+        result = getattr(call, "_resolved_type", None)
+        if target is None or instance is None or not isinstance(result, Type):
+            return
+        unsettled = sum(self._has_type_vars(arg) for arg in instance.type_args)
+        if not unsettled:
+            return
+        # Rename the call's open variables apart from any left in *expected*.
+        prefix = "__result_"
+        mapping: dict[str, TypeVar] = {}
+        fresh_result = self._freshen_type_vars(result, prefix, mapping)
+        subs: dict[str, Type] = {}
+        if not self._types_compatible_with_subs(fresh_result, expected, subs):
+            return
+        type_args = tuple(
+            self._apply_substitutions(
+                self._freshen_type_vars(arg, prefix, mapping), subs
+            )
+            for arg in instance.type_args
+        )
+        if sum(self._has_type_vars(arg) for arg in type_args) >= unsettled:
+            return
+        callee._generic_instance = GenericInstance(
+            module=instance.module,
+            name=instance.name,
+            type_params=instance.type_params,
+            type_args=type_args,
+        )
+        self._check_instance_bounds(target, type_args, call.location)
+
+    def _dedupe_errors(self) -> None:
+        """Report an error once even when checked code was duplicated.
+
+        An or-pattern arm's body is checked once per alternative, so a
+        mistake inside it would otherwise be reported once per alternative.
+        """
+        seen: set[tuple[str, int, int, str]] = set()
+        unique: list[TypeError] = []
+        for error in self.errors:
+            key = (
+                str(error.location.filename),
+                error.location.line,
+                error.location.column,
+                error.message,
+            )
+            if key not in seen:
+                seen.add(key)
+                unique.append(error)
+        self.errors = unique
+
+    def _check_generic_value_refs(self) -> None:
+        """Require every generic function used as a value to be instantiated."""
+        refs = list({id(expr): expr for expr in self._generic_value_refs}.values())
+        self._generic_value_refs = []
+        # A binding like `let f = show` already reports that its own type
+        # cannot be inferred; one diagnostic per line is enough.
+        reported_lines = {
+            (error.location.filename, error.location.line) for error in self.errors
+        }
+        for expr in refs:
+            if getattr(expr, "_generic_callee", False):
+                continue
+            if (expr.location.filename, expr.location.line) in reported_lines:
+                continue
+            instance = getattr(expr, "_generic_instance", None)
+            if instance is not None and not any(
+                self._has_type_vars(arg) for arg in instance.type_args
+            ):
+                if expr._generic_target is not None:
+                    self._check_instance_bounds(
+                        expr._generic_target, instance.type_args, expr.location
+                    )
+                continue
+            target = expr._generic_target
+            if target is None:
+                continue
+            params = ", ".join(target.type_params)
+            plural = "s" if len(target.type_params) > 1 else ""
+            self._error(
+                f"Cannot infer the type argument{plural} {params} of generic "
+                f"function '{target.name}' used as a value; state the function "
+                "type it is used at, for example in an annotated binding such as "
+                f"`let f: (Int) -> Int = {target.name}`",
+                expr.location,
+                ErrorCode.TYPE_GENERIC_INFERENCE,
+            )
+
     def _check_expression(self, expr: Expression, env: TypeEnv) -> Type:
         """Type check an expression and return its type."""
         result = self._check_expression_inner(expr, env)
@@ -3814,6 +4578,8 @@ class TypeChecker(ExhaustivenessMixin):
             return self._check_type_identifier(cast(TypeIdentifier, expr), env)
         elif expr_type is ListLiteral:
             return self._check_list_literal(cast(ListLiteral, expr), env)
+        elif expr_type is MapLiteral:
+            return self._check_map_literal(cast(MapLiteral, expr), env)
         elif expr_type is BinaryOp:
             return self._check_binary_op(cast(BinaryOp, expr), env)
         elif expr_type is UnaryOp:
@@ -3843,8 +4609,6 @@ class TypeChecker(ExhaustivenessMixin):
             return self._check_propagate_expr(cast(PropagateExpr, expr), env)
         elif expr_type is ListComprehension:
             return self._check_list_comprehension(cast(ListComprehension, expr), env)
-        elif expr_type is ThrowExpression:
-            return self._check_throw_expression(cast(ThrowExpression, expr), env)
         elif expr_type is AwaitExpr:
             return self._check_await_expr(cast(AwaitExpr, expr), env)
         else:
@@ -3878,16 +4642,32 @@ class TypeChecker(ExhaustivenessMixin):
             if expr.name in self._target_rejected:
                 self._error(self._target_rejected[expr.name], expr.location)
                 return AnyType()
-            hint = _suggest_name(expr.name, self._env_names(env))
-            self._error(
-                f"Undefined variable: {expr.name}{hint}",
-                expr.location,
-                ErrorCode.TYPE_UNDEFINED_VAR,
-            )
+            removed = _removed_builtin_hint(expr.name)
+            fixes: tuple[Fix, ...] = ()
+            if expr.name in _NULL_NAMES:
+                message = (
+                    f"Geno has no '{expr.name}': an absent value is None, "
+                    "of type Option[T]"
+                )
+                fixes = (replace_fix(expr.location, expr.name, "None"),)
+            elif removed:
+                message = f"Undefined variable: {expr.name}.{removed}"
+            else:
+                hint, fixes = _rename_fixes(
+                    expr.name, self._env_names(env), expr.location
+                )
+                message = f"Undefined variable: {expr.name}{'.' if hint else ''}{hint}"
+            self._error(message, expr.location, ErrorCode.TYPE_UNDEFINED_VAR, fixes)
             return AnyType()
         self._record_captured_binding(expr.name, env)
+        if self.binding_types is not None and expr.location is not None:
+            self._record_binding_use(expr.name, expr.location, env)
         if self._identifier_resolves_to_builtin(expr.name, env):
             expr._resolved_builtin_name = expr.name
+        target = self._generic_target(expr, env)
+        if target is not None:
+            expr._generic_target = target
+            self._generic_value_refs.append(expr)
         return type_
 
     def _record_captured_binding(
@@ -3954,8 +4734,22 @@ class TypeChecker(ExhaustivenessMixin):
         if expr.name in self._module_exports:
             return ModuleType(expr.name)
 
-        hint = _suggest_name(expr.name, self._all_constructors())
-        self._error(f"Unknown constructor: {expr.name}{hint}", expr.location)
+        if expr.name in ("True", "False"):
+            lowercase = expr.name.lower()
+            self._error(
+                f"Booleans are lowercase in Geno: write '{lowercase}'",
+                expr.location,
+                ErrorCode.TYPE_UNDEFINED_VAR,
+                (replace_fix(expr.location, expr.name, lowercase),),
+            )
+            return BoolType()
+        hint, fixes = _rename_fixes(expr.name, self._all_constructors(), expr.location)
+        self._error(
+            f"Unknown constructor: {expr.name}{'.' if hint else ''}{hint}",
+            expr.location,
+            ErrorCode.TYPE_MISMATCH,
+            fixes,
+        )
         return _ANY_TYPE
 
     def _check_list_literal(self, expr: ListLiteral, env: TypeEnv) -> Type:
@@ -4006,10 +4800,130 @@ class TypeChecker(ExhaustivenessMixin):
 
         return ListType(elem_type)
 
+    def _check_map_literal(self, expr: MapLiteral, env: TypeEnv) -> Type:
+        """Type check `{key: value, ...}`: one key type, one value type."""
+        if not expr.entries:
+            return MapType(self._fresh_type_var("key"), self._fresh_type_var("value"))
+        key_types = [self._check_expression(e.key, env) for e in expr.entries]
+        value_types = [self._check_expression(e.value, env) for e in expr.entries]
+        if any(isinstance(t, NeverType) for t in key_types + value_types):
+            return NeverType()
+
+        def widest(types: list[Type]) -> Type:
+            # As for list elements: widen Int to Float in any order.
+            chosen = types[0]
+            for candidate in types[1:]:
+                if not self._types_compatible(
+                    chosen, candidate
+                ) and self._types_compatible(candidate, chosen):
+                    chosen = candidate
+            return chosen
+
+        key_type = widest(key_types)
+        value_type = widest(value_types)
+        seen_keys: set[object] = set()
+        for entry, k_type, v_type in zip(expr.entries, key_types, value_types):
+            if not self._types_compatible(key_type, k_type):
+                self._error(
+                    f"Map key type mismatch: expected {key_type}, got {k_type}",
+                    entry.key.location,
+                )
+            if not self._types_compatible(value_type, v_type):
+                self._error(
+                    f"Map value type mismatch: expected {value_type}, got {v_type}",
+                    entry.value.location,
+                )
+            literal = _literal_key(entry.key)
+            if literal is not None:
+                if literal in seen_keys:
+                    self._error(
+                        f"Duplicate key {_render_literal_key(literal)} in map literal",
+                        entry.key.location,
+                    )
+                seen_keys.add(literal)
+            self._record_expected_runtime_type(entry.key, key_type)
+            self._record_expected_runtime_type(entry.value, value_type)
+        self._validate_hashable_key_type("Map", "key", key_type, expr.location)
+        return MapType(key_type, value_type)
+
+    def _check_membership(
+        self, expr: BinaryOp, element_type: Type, container_type: Type
+    ) -> Type:
+        """``x in c``: an element of a list or set, a substring, or a map key.
+
+        Records the builtin that tests it, which every backend calls.
+        """
+        if isinstance(container_type, AnyType) or isinstance(element_type, AnyType):
+            return _BOOL_TYPE
+        member: tuple[str, Type] | None = None
+        if isinstance(container_type, ListType):
+            member = ("contains", container_type.element_type)
+        elif isinstance(container_type, SetType):
+            member = ("set_contains", container_type.element_type)
+        elif isinstance(container_type, StringType):
+            member = ("string_contains", _STRING_TYPE)
+        elif isinstance(container_type, MapType):
+            member = ("map_contains_key", container_type.key_type)
+        elif isinstance(container_type, MutableMapType):
+            member = ("mutable_map_contains", container_type.key_type)
+        if member is None:
+            self._error(
+                f"Cannot test membership in {_display_type(container_type)}: "
+                "'in' tests an element of a List or Set, a substring of a "
+                "String, or a key of a Map",
+                expr.location,
+            )
+            return _BOOL_TYPE
+        builtin, member_type = member
+        if not self._types_compatible(member_type, element_type):
+            self._error(
+                f"'in' on {_display_type(container_type)} needs "
+                f"{_display_type(member_type)}, got {_display_type(element_type)}",
+                expr.location,
+            )
+        expr._resolved_builtin_name = builtin
+        return _BOOL_TYPE
+
+    def _concatenated_list_type(
+        self, expr: BinaryOp, left: ListType, right: ListType
+    ) -> Type:
+        """``xs + ys`` concatenates two lists of one element type.
+
+        `[] + xs` takes the other list's type, and a `List[Int]` joins a
+        `List[Float]` as Floats, as it would be passed to one.
+        """
+        result: Type
+        if self._has_type_vars(left.element_type):
+            result = right
+        elif self._types_compatible(left, right):
+            result = left
+        elif self._types_compatible(right, left):
+            result = right
+        else:
+            self._error(
+                f"Cannot concatenate {_display_type(left)} and "
+                f"{_display_type(right)}: both lists need the same element type",
+                expr.location,
+            )
+            return left
+        self._record_expected_runtime_type(expr.left, result)
+        self._record_expected_runtime_type(expr.right, result)
+        expr._resolved_builtin_name = "concat"
+        return result
+
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""
         left_type = self._check_expression(expr.left, env)
         right_type = self._check_expression(expr.right, env)
+
+        if expr.operator == "in":
+            return self._check_membership(expr, left_type, right_type)
+
+        # An operand that already failed to check was reported where it failed.
+        if expr.operator in _NUMERIC_OPERATORS and (
+            isinstance(left_type, AnyType) or isinstance(right_type, AnyType)
+        ):
+            return _ANY_TYPE
 
         # Bitwise operators (Int only)
         if expr.operator in ("&", "^", "<<", ">>"):
@@ -4049,6 +4963,12 @@ class TypeChecker(ExhaustivenessMixin):
                 and isinstance(right_type, StringType)
             ):
                 return _STRING_TYPE
+            if (
+                expr.operator == "+"
+                and isinstance(left_type, ListType)
+                and isinstance(right_type, ListType)
+            ):
+                return self._concatenated_list_type(expr, left_type, right_type)
             if isinstance(left_type, IntType) and isinstance(right_type, IntType):
                 return _INT_TYPE
             elif (
@@ -4058,11 +4978,23 @@ class TypeChecker(ExhaustivenessMixin):
                 and isinstance(right_type, (IntType, FloatType))
             ):
                 return _FLOAT_TYPE
+            elif (
+                num_result := self._num_param_arithmetic(left_type, right_type)
+            ) is not None:
+                return num_result
             else:
+                hint = _numeric_bound_hint(left_type, right_type)
+                if (
+                    expr.operator == "*"
+                    and isinstance(left_type, StringType)
+                    and isinstance(right_type, IntType)
+                ):
+                    hint = ". To repeat a string, write s.repeat(n)"
                 self._error(
                     f"Cannot apply '{expr.operator}' to {left_type} and {right_type}: "
                     f"both operands must be numeric (Int or Float)"
-                    f"{' or both String for concatenation' if expr.operator == '+' else ''}",
+                    f"{' or both String for concatenation' if expr.operator == '+' else ''}"
+                    f"{hint}",
                     expr.location,
                 )
                 return _ANY_TYPE
@@ -4081,9 +5013,11 @@ class TypeChecker(ExhaustivenessMixin):
         # Ordering operators
         if expr.operator in ("<", ">", "<=", ">="):
             if not self._types_orderable(left_type, right_type):
+                hint = _ordering_bound_hint(left_type, right_type)
                 self._error(
                     f"Cannot apply '{expr.operator}' to {left_type} and {right_type}: "
-                    "operands must both be numeric (Int or Float) or both String",
+                    f"operands must both be numeric (Int or Float) or both String"
+                    f"{hint}",
                     expr.location,
                 )
             return _BOOL_TYPE
@@ -4109,11 +5043,38 @@ class TypeChecker(ExhaustivenessMixin):
         """Return whether the pair supports Geno ordering operators."""
         if isinstance(left_type, AnyType) or isinstance(right_type, AnyType):
             return True
-        if isinstance(left_type, (IntType, FloatType)) and isinstance(
-            right_type, (IntType, FloatType)
-        ):
+        if _is_numeric(left_type) and _is_numeric(right_type):
+            # A `Num` type parameter is an Int or a Float, so it compares
+            # with any number.
             return True
+        if isinstance(left_type, TypeParam) and left_type == right_type:
+            return left_type.has_bound("Ord")
         return isinstance(left_type, StringType) and isinstance(right_type, StringType)
+
+    @staticmethod
+    def _num_param_arithmetic(left_type: Type, right_type: Type) -> Type | None:
+        """Result type of arithmetic involving a `Num` type parameter.
+
+        ``T op T``, ``T op Int`` and ``Int op T`` are ``T``: for either
+        instantiation, Int or Float, the operation yields that same type. With
+        a Float operand the result is Float whatever ``T`` is.
+        """
+        param = next(
+            (
+                t
+                for t in (left_type, right_type)
+                if isinstance(t, TypeParam) and t.has_bound("Num")
+            ),
+            None,
+        )
+        if param is None:
+            return None
+        other = right_type if param is left_type else left_type
+        if other == param or isinstance(other, IntType):
+            return param
+        if isinstance(other, FloatType):
+            return _FLOAT_TYPE
+        return None
 
     def _check_unary_op(self, expr: UnaryOp, env: TypeEnv) -> Type:
         """Type check a unary operation."""
@@ -4124,6 +5085,8 @@ class TypeChecker(ExhaustivenessMixin):
                 return _INT_TYPE
             elif isinstance(operand_type, FloatType):
                 return _FLOAT_TYPE
+            elif isinstance(operand_type, TypeParam) and operand_type.has_bound("Num"):
+                return operand_type
             else:
                 self._error(
                     f"Cannot negate type {operand_type}: "
@@ -4147,6 +5110,10 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _check_function_call(self, expr: FunctionCall, env: TypeEnv) -> Type:
         """Type check a function call."""
+        if isinstance(expr.function, FieldAccess):
+            method = self._resolve_method_call(expr, env)
+            if method is not None:
+                return method
         func_expr = expr.function
         func_expr_type = type(func_expr)
         identifier_func = (
@@ -4161,11 +5128,13 @@ class TypeChecker(ExhaustivenessMixin):
             expr._resolved_builtin_name = builtin_name
             self._record_captured_binding(identifier_func.name, env)
 
-        # Special case: range accepts 2 or 3 arguments
-        if builtin_name == "range" and len(arguments) in (2, 3):
+        # Special case: range accepts 1 to 3 arguments; `range(n)` is `range(0, n)`
+        if builtin_name == "range" and len(arguments) in (1, 2, 3):
             if any(arg.name is not None for arg in arguments):
                 self._validate_special_builtin_named_args(
-                    arguments, ["start", "end"], expr.location
+                    arguments,
+                    ["end"] if len(arguments) == 1 else ["start", "end"],
+                    expr.location,
                 )
             for arg in arguments:
                 arg_type = self._check_expression(arg.value, env)
@@ -4182,11 +5151,33 @@ class TypeChecker(ExhaustivenessMixin):
             )
             arg_type = self._check_expression(arguments[0].value, env)
             if not isinstance(arg_type, (ListType, StringType, ArrayType)):
+                target = self._overload_target(expr, arg_type, env)
+                if target is not None:
+                    return self._check_overloaded_call(expr, target, env)
                 self._error(
                     f"Argument 1 type mismatch: expected List[T], String, or Array[T], got {arg_type}",
                     arguments[0].value.location,
                 )
             return _INT_TYPE
+
+        if builtin_name == "sort" and len(arguments) == 1:
+            # The comparator is optional: `xs.sort()` uses the natural order
+            # `sort_by` orders keys by (proposal 0010).
+            self._validate_special_builtin_named_args(
+                arguments, ["list"], expr.location
+            )
+            arg_type = self._check_expression(arguments[0].value, env)
+            if isinstance(arg_type, ListType):
+                return arg_type
+            target = self._overload_target(expr, arg_type, env)
+            if target is not None:
+                return self._check_overloaded_call(expr, target, env)
+            if not isinstance(arg_type, AnyType):
+                self._error(
+                    f"Argument 1 type mismatch: expected List[T], got {arg_type}",
+                    arguments[0].value.location,
+                )
+            return ListType(_ANY_TYPE)
 
         # Type checking and effect inference resolve the same lexical receiver.
         trait_call = self._resolve_trait_call(expr, env)
@@ -4194,8 +5185,13 @@ class TypeChecker(ExhaustivenessMixin):
             impl_func_type, trait_param_names, ordered_trait_args = trait_call
             assert identifier_func is not None
             method_name = identifier_func.name
-            positional_count = sum(1 for arg in arguments if arg.name is None)
-            if len(impl_func_type.param_types) >= 3 and positional_count > 0:
+            # As for any call, the receiver of a method call is not counted.
+            receiver = 1 if expr._method_call is not None else 0
+            positional_count = sum(
+                1 for arg in arguments[receiver:] if arg.name is None
+            )
+            written = max(len(arguments), len(impl_func_type.param_types)) - receiver
+            if written >= 3 and positional_count > 0:
                 self._error(
                     f"Function '{method_name}' has {len(impl_func_type.param_types)} parameters; use named arguments for clarity (e.g., param_name: value)",
                     expr.location,
@@ -4235,24 +5231,34 @@ class TypeChecker(ExhaustivenessMixin):
             and env.lookup(identifier_func.name) is None
             and identifier_func.name not in self._target_rejected
         ):
+            name = identifier_func.name
+            fixes: tuple[Fix, ...] = ()
             hint = (
-                _suggest_import(identifier_func.name, self._imported_module_names)
+                _removed_builtin_hint(name)
+                or _suggest_import(name, self._imported_module_names)
                 or _suggest_project_import(
-                    identifier_func.name,
+                    name,
                     expr.location,
                     self._imported_module_names,
                     self._project_module_index,
                 )
-                or _suggest_name(identifier_func.name, self._env_names(env))
             )
+            renamed = _REMOVED_BUILTIN_RENAMES.get(name)
+            if renamed is not None and identifier_func.location is not None:
+                fixes = (replace_fix(identifier_func.location, name, renamed),)
+            elif not hint:
+                hint, fixes = _rename_fixes(
+                    name, self._env_names(env), identifier_func.location
+                )
             # Every hint form is a sentence of its own, so the name needs a
             # stop before it: without one the two run together as
             # "Undefined function: char_at Did you forget to 'import String'?".
             # Only when a hint follows — a bare message keeps house style.
             self._error(
-                f"Undefined function: {identifier_func.name}{'.' if hint else ''}{hint}",
+                f"Undefined function: {name}{'.' if hint else ''}{hint}",
                 expr.location,
                 ErrorCode.TYPE_UNDEFINED_FUNC,
+                fixes,
             )
             return _ANY_TYPE
 
@@ -4281,6 +5287,17 @@ class TypeChecker(ExhaustivenessMixin):
         min_args = len(func_type.param_types) - num_defaults
         max_args = len(func_type.param_types)
 
+        if (
+            not (min_args <= len(arguments) <= max_args)
+            and arguments
+            and not self._needs_context(arguments[0].value)
+        ):
+            # `max(xs)`: a call the named function rejects by its argument
+            # count may still be the method call it spells (`xs.max()`).
+            first_type = self._check_expression(arguments[0].value, env)
+            target = self._overload_target(expr, first_type, env)
+            if target is not None:
+                return self._check_overloaded_call(expr, target, env)
         if not (min_args <= len(arguments) <= max_args):
             callee_desc = (
                 f"'{func_name_for_defaults}'" if func_name_for_defaults else "function"
@@ -4303,11 +5320,27 @@ class TypeChecker(ExhaustivenessMixin):
         # Get parameter names if available (for named argument support)
         param_names = list(call_param_info.param_names)
 
-        # For LLM-friendliness: require named arguments for functions with 3+ required parameters
-        required_param_count = max(len(arguments), min_args)
+        # For LLM-friendliness: a call that writes, or must write, three or more
+        # arguments names them. A method call's receiver is written before the
+        # dot, so it is not one of them: `xs.fold(0, f)` stays positional.
+        receiver = 1 if expr._method_call is not None else 0
+        required_param_count = max(len(arguments), min_args) - receiver
         if required_param_count >= 3:
-            positional_count = sum(1 for arg in arguments if arg.name is None)
-            if positional_count > 0:
+            positional_count = sum(
+                1 for arg in arguments[receiver:] if arg.name is None
+            )
+            if positional_count > 0 and expr._method_call is not None:
+                after_receiver = param_names[1:]
+                rendered = ", ".join(f"{param}: ..." for param in after_receiver)
+                self._error(
+                    f"Method '{expr._method_call}' takes {len(after_receiver)} "
+                    "arguments after the receiver; name them: "
+                    f".{expr._method_call}({rendered})",
+                    expr.location,
+                    ErrorCode.TYPE_MISMATCH,
+                    _name_arguments_fix(arguments[1:], after_receiver),
+                )
+            elif positional_count > 0:
                 callee_display = call_param_info.callee_display
                 self._error(
                     f"Function '{callee_display or 'function'}' has "
@@ -4315,6 +5348,8 @@ class TypeChecker(ExhaustivenessMixin):
                     f"use named arguments for clarity"
                     f"{_named_argument_example(callee_display, param_names)}",
                     expr.location,
+                    ErrorCode.TYPE_MISMATCH,
+                    _name_arguments_fix(arguments, param_names),
                 )
 
         # Handle named arguments by reordering to match parameter order
@@ -4351,11 +5386,19 @@ class TypeChecker(ExhaustivenessMixin):
                         expr.location,
                         ErrorCode.TYPE_WRONG_ARITY,
                     )
-            for i, (maybe_arg, expected_type) in enumerate(
-                zip(ordered_args, func_type.param_types)
-            ):
+            named = list(zip(ordered_args, func_type.param_types))
+
+            def waits_for_context(index: int) -> bool:
+                named_arg = named[index][0]
+                return named_arg is not None and self._needs_context(named_arg.value)
+
+            for i in sorted(range(len(named)), key=waits_for_context):
+                maybe_arg, expected_type = named[i]
                 if maybe_arg is not None:
                     ca = maybe_arg
+                    self._prime_lambda(
+                        ca.value, self._apply_substitutions(expected_type, subs)
+                    )
                     arg_type = self._check_expression(ca.value, env)
                     has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                     if self._has_type_vars(arg_type):
@@ -4380,32 +5423,70 @@ class TypeChecker(ExhaustivenessMixin):
                         self._apply_substitutions(expected_type, subs),
                     )
         else:
-            # Check argument types positionally
-            for i, (arg, expected_type) in enumerate(
-                zip(arguments, func_type.param_types)
+            # Check argument types positionally. A lambda whose parameters
+            # need context waits until the other arguments have bound what
+            # they can, as in `apply(fn(x) -> x + 1, 2)`.
+            positional = list(zip(arguments, func_type.param_types))
+            for i in sorted(
+                range(len(positional)),
+                key=lambda index: self._needs_context(positional[index][0].value),
             ):
+                arg, expected_type = positional[i]
+                self._prime_lambda(
+                    arg.value, self._apply_substitutions(expected_type, subs)
+                )
                 arg_type = self._check_expression(arg.value, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
                     arg_type = self._freshen_type_vars(arg_type, f"__arg{i}_")
-                if use_subs:
-                    if not self._types_compatible_with_subs(
-                        expected_type, arg_type, subs
-                    ):
-                        resolved = self._apply_substitutions(expected_type, subs)
-                        self._error(
-                            f"Argument {i + 1} type mismatch: expected {resolved}, got {arg_type}",
-                            arg.value.location,
-                        )
-                else:
-                    if not self._types_compatible(expected_type, arg_type):
-                        self._error(
-                            f"Argument {i + 1} type mismatch: expected {expected_type}, got {arg_type}",
-                            arg.value.location,
-                        )
+                # A method call's receiver is not an argument the caller wrote.
+                label = (
+                    f"Argument {i + 1}"
+                    if expr._method_call is None
+                    else ("Receiver" if i == 0 else f"Argument {i}")
+                )
+                accepted = (
+                    self._types_compatible_with_subs(expected_type, arg_type, subs)
+                    if use_subs
+                    else self._types_compatible(expected_type, arg_type)
+                )
+                if not accepted and i == 0:
+                    target = self._overload_target(expr, arg_type, env)
+                    if target is not None:
+                        return self._check_overloaded_call(expr, target, env)
+                if not accepted:
+                    resolved = (
+                        self._apply_substitutions(expected_type, subs)
+                        if use_subs
+                        else expected_type
+                    )
+                    self._error(
+                        f"{label} type mismatch: expected {resolved}, got {arg_type}",
+                        arg.value.location,
+                    )
                 self._record_expected_runtime_type(
                     arg.value,
                     self._apply_substitutions(expected_type, subs),
+                )
+
+        generic_target = getattr(func_expr, "_generic_target", None)
+        if generic_target is not None:
+            func_expr._generic_callee = True
+            instance = self._generic_instance(generic_target, subs)
+            func_expr._generic_instance = instance
+            self._check_instance_bounds(
+                generic_target, instance.type_args, expr.location
+            )
+        # A generic function passed as an argument is instantiated by this
+        # call's final substitution: its type may only be settled by a later
+        # argument, as in `apply(show, 2.0)`.
+        for call_arg in arguments:
+            if getattr(call_arg.value, "_generic_target", None) is None:
+                continue
+            arg_expected = getattr(call_arg.value, "_expected_runtime_type", None)
+            if isinstance(arg_expected, Type):
+                self._record_expected_runtime_type(
+                    call_arg.value, self._apply_substitutions(arg_expected, subs)
                 )
 
         if has_never_arg:
@@ -4418,6 +5499,233 @@ class TypeChecker(ExhaustivenessMixin):
             result_type = func_type.return_type
         self._validate_keyed_collection_type(result_type, expr.location)
         return result_type
+
+    # -----------------------------------------------------------------
+    # Method-call syntax (proposal 0006): `receiver.name(args)`
+    # -----------------------------------------------------------------
+
+    def _resolve_method_call(self, expr: FunctionCall, env: TypeEnv) -> Type | None:
+        """Rewrite `receiver.name(args)` into an ordinary call, if it is one.
+
+        Returns ``None`` when the callee is a module member or a field, which
+        the ordinary call path handles; otherwise the call's type, after the
+        call has been rewritten in place to ``chosen(receiver, args)`` so every
+        later pass and backend sees a plain call.
+        """
+        callee = expr.function
+        assert isinstance(callee, FieldAccess)
+        target = callee.target
+        if isinstance(target, (Identifier, TypeIdentifier)) and isinstance(
+            env.lookup(target.name), ModuleType
+        ):
+            return None
+        errors_before = len(self.errors)
+        receiver_type = self._check_expression(target, env)
+        if len(self.errors) > errors_before:
+            return _ANY_TYPE
+        if isinstance(receiver_type, (AnyType, ModuleType)):
+            return None
+        if isinstance(receiver_type, UserType):
+            field_types, _missing = self._resolved_variant_field_types(
+                receiver_type, callee.field_name
+            )
+            if field_types:
+                return None
+
+        method_name = callee.field_name
+        chosen = self._method_target(method_name, receiver_type, env)
+        if (
+            chosen == "map_get"
+            and len(expr.arguments) == 2
+            and self._identifier_resolves_to_builtin("map_get_or", env)
+        ):
+            # `m.get(key, default)`: the value, or the default, as Python's
+            # dict.get; `m.get(key)` stays an Option.
+            chosen = "map_get_or"
+        if chosen is None:
+            if not callee._method_error_reported:
+                candidates = self._method_names_for(receiver_type, env)
+                name_location = callee.name_location or callee.location
+                hint, fixes = _rename_fixes(
+                    method_name, candidates, callee.name_location
+                )
+                if method_name == "join" and isinstance(receiver_type, StringType):
+                    # Python's `", ".join(parts)`.
+                    hint = (
+                        " Geno joins from the list: write parts.join(separator), "
+                        'as in words.join(", ")'
+                    )
+                self._error(
+                    f"Type {_display_type(receiver_type)} has no method "
+                    f"'{method_name}'{'.' if hint else ''}{hint}",
+                    name_location,
+                    ErrorCode.TYPE_UNKNOWN_FIELD,
+                    fixes,
+                )
+                callee._method_error_reported = True
+            for arg in expr.arguments:
+                self._check_expression(arg.value, env)
+            return _ANY_TYPE
+
+        receiver_param = self._first_param_name(chosen)
+        named = any(arg.name is not None for arg in expr.arguments)
+        expr._method_call = method_name
+        expr.function = Identifier(name=chosen, location=callee.location)
+        expr.arguments = [
+            CallArg(name=receiver_param if named else None, value=target),
+            *expr.arguments,
+        ]
+        return self._check_function_call(expr, env)
+
+    def _overload_target(
+        self, expr: FunctionCall, first_type: Type, env: TypeEnv
+    ) -> str | None:
+        """What `x.name(args)` would call, for a `name(x, args)` that rejects `x`.
+
+        Proposal 0010: a free call whose first argument the named top-level
+        function or builtin cannot take is resolved as the method call it
+        spells, so `map(opt, f)` calls `option_map` and `length(m)` calls
+        `map_size`. It is consulted only where the call would otherwise be
+        rejected, so no program that checks without it changes meaning.
+        """
+        callee = expr.function
+        if not isinstance(callee, Identifier) or expr._method_call is not None:
+            return None
+        if not expr.arguments or expr.arguments[0].name is not None:
+            return None
+        if isinstance(first_type, (AnyType, NeverType, TypeVar)):
+            return None
+        name = callee.name
+        scope: TypeEnv | None = env
+        while scope is not None and name not in scope.bindings:
+            scope = scope.parent
+        if scope is not self.global_env:
+            return None  # a local binding is not overloaded
+        chosen = self._method_target(name, first_type, env)
+        if chosen is None or chosen == name:
+            return None
+        # Only a function that takes as many arguments as the call writes:
+        # `max(xs)` is `xs.max()`, but `max(xs, 2, 3)` stays a call of `max`.
+        chosen_type = env.lookup(chosen)
+        if not (
+            isinstance(chosen_type, FuncType)
+            and len(chosen_type.param_types) == len(expr.arguments)
+        ):
+            return None
+        return chosen
+
+    def _check_overloaded_call(
+        self, expr: FunctionCall, target: str, env: TypeEnv
+    ) -> Type:
+        """Check *expr* again as a call of *target* (see ``_overload_target``)."""
+        expr.function = Identifier(name=target, location=expr.function.location)
+        return self._check_function_call(expr, env)
+
+    def _method_target(
+        self, method_name: str, receiver_type: Type, env: TypeEnv
+    ) -> str | None:
+        """Choose the function a method call on *receiver_type* calls.
+
+        In order: a trait method implemented for the receiver, a function the
+        program defines or imports whose first parameter accepts it, the
+        receiver type's own builtin (`option_map` for an Option), and any
+        other builtin whose first parameter accepts it.
+        """
+        if method_name in self.trait_methods and self._receiver_implements(
+            method_name, receiver_type
+        ):
+            return method_name
+
+        if method_name == "length" and isinstance(
+            receiver_type, (ListType, StringType, ArrayType)
+        ):
+            # `length` is checked specially: it takes a list, string or array.
+            if self._identifier_resolves_to_builtin("length", env):
+                return "length"
+        size_builtin = _LENGTH_METHODS.get(type(receiver_type))
+        if (
+            method_name == "length"
+            and size_builtin is not None
+            and self._identifier_resolves_to_builtin(size_builtin, env)
+        ):
+            return size_builtin
+
+        if (
+            method_name in self._user_defined_names
+            and method_name not in self._ambiguous_imported_names
+            and self._first_param_accepts(env.lookup(method_name), receiver_type)
+        ):
+            return method_name
+
+        if (
+            method_name == "sum"
+            and isinstance(receiver_type, ListType)
+            and isinstance(receiver_type.element_type, FloatType)
+            and self._identifier_resolves_to_builtin("float_sum", env)
+        ):
+            # `sum` takes a List[Int]; a List[Float] sums from 0.0.
+            return "float_sum"
+
+        prefix = _METHOD_PREFIXES.get(type(receiver_type))
+        if prefix is not None:
+            prefixed = f"{prefix}_{method_name}"
+            if self._identifier_resolves_to_builtin(
+                prefixed, env
+            ) and self._first_param_accepts(env.lookup(prefixed), receiver_type):
+                return prefixed
+
+        if self._identifier_resolves_to_builtin(
+            method_name, env
+        ) and self._first_param_accepts(env.lookup(method_name), receiver_type):
+            return method_name
+        return None
+
+    def _receiver_implements(self, method_name: str, receiver_type: Type) -> bool:
+        for trait_name, _trait_def in self.trait_methods.get(method_name, []):
+            if isinstance(receiver_type, TypeParam):
+                if receiver_type.has_bound(trait_name):
+                    return True
+                continue
+            if isinstance(receiver_type, UserType):
+                type_name = self._constructor_to_type.get(
+                    receiver_type.name, receiver_type.name
+                )
+                if (trait_name, type_name) in self.impl_registry:
+                    return True
+        return False
+
+    def _first_param_accepts(self, func_type: Type | None, receiver_type: Type) -> bool:
+        if not isinstance(func_type, FuncType) or not func_type.param_types:
+            return False
+        first = self._freshen_type_vars(func_type.param_types[0], "__method_")
+        actual = receiver_type
+        if self._has_type_vars(actual):
+            actual = self._freshen_type_vars(actual, "__receiver_")
+        return self._types_compatible_with_subs(first, actual, {})
+
+    def _first_param_name(self, function_name: str) -> str | None:
+        names = self.func_param_names.get(function_name)
+        if names is None:
+            builtin = self.builtin_types.get(function_name)
+            names = builtin[1] if builtin is not None else None
+        return names[0] if names else None
+
+    def _method_names_for(self, receiver_type: Type, env: TypeEnv) -> list[str]:
+        """Method names a call on *receiver_type* could use, for suggestions."""
+        names: set[str] = set()
+        prefix = _METHOD_PREFIXES.get(type(receiver_type))
+        for name in self.builtin_types:
+            if prefix is not None and name.startswith(prefix + "_"):
+                names.add(name[len(prefix) + 1 :])
+            elif self._first_param_accepts(env.lookup(name), receiver_type):
+                names.add(name)
+        for name in self._user_defined_names:
+            if self._first_param_accepts(env.lookup(name), receiver_type):
+                names.add(name)
+        for method_name in self.trait_methods:
+            if self._receiver_implements(method_name, receiver_type):
+                names.add(method_name)
+        return sorted(names)
 
     def _validate_special_builtin_named_args(
         self,
@@ -4541,6 +5849,25 @@ class TypeChecker(ExhaustivenessMixin):
                     expr.location,
                 )
             return target_type.value_type
+        elif isinstance(target_type, TupleType):
+            # Each element has its own type, so the index must be a literal.
+            arity = len(target_type.element_types)
+            if not isinstance(expr.index, IntegerLiteral):
+                self._error(
+                    f"A tuple index must be a number written in the source, as in "
+                    f"pair.0 or pair[1]; this tuple has {arity} elements",
+                    expr.location,
+                )
+                return _ANY_TYPE
+            position = expr.index.value
+            if not 0 <= position < arity:
+                self._error(
+                    f"Tuple index {position} is out of range for "
+                    f"{_display_type(target_type)}, which has {arity} elements",
+                    expr.location,
+                )
+                return _ANY_TYPE
+            return target_type.element_types[position]
         else:
             self._error(f"Cannot index into {target_type}", expr.location)
             return AnyType()
@@ -4553,6 +5880,8 @@ class TypeChecker(ExhaustivenessMixin):
         Handles qualified module access (Foo.symbol) when target is a module.
         """
         target_type = self._check_expression(expr.target, env)
+        if expr._method_error_reported:
+            return _ANY_TYPE
 
         # Qualified module access: Foo.symbol
         if isinstance(target_type, ModuleType):
@@ -4567,6 +5896,10 @@ class TypeChecker(ExhaustivenessMixin):
             if ns_name in self._module_exports:
                 sym_type = self._module_exports[ns_name].get(expr.field_name)
                 if sym_type is not None:
+                    target = self._generic_target(expr, env)
+                    if target is not None:
+                        expr._generic_target = target
+                        self._generic_value_refs.append(expr)
                     return sym_type
             self._error(
                 f"Module '{ns_name}' has no exported symbol '{expr.field_name}'",
@@ -4601,10 +5934,19 @@ class TypeChecker(ExhaustivenessMixin):
                 if field_type is not None:
                     return field_type
 
+        known_fields: set[str] = set()
+        if isinstance(target_type, UserType):
+            info = self.type_defs.get(target_type.name)
+            if info is not None:
+                for variant_fields in info.variants.values():
+                    known_fields.update(name for name, _type in variant_fields)
+        hint, fixes = _rename_fixes(expr.field_name, known_fields, expr.name_location)
         self._error(
-            f"Unknown field '{expr.field_name}' on type {target_type}",
-            expr.location,
+            f"Unknown field '{expr.field_name}' on type {target_type}"
+            f"{'.' if hint else ''}{hint}",
+            expr.name_location or expr.location,
             ErrorCode.TYPE_UNKNOWN_FIELD,
+            fixes,
         )
         return AnyType()
 
@@ -4797,6 +6139,8 @@ class TypeChecker(ExhaustivenessMixin):
 
         # Bind loop variable in a child env
         comp_env = env.child()
+        if isinstance(expr.var_type, InferredType):
+            expr.var_type._inferred = elem_type
         var_type = self._resolve_type(expr.var_type)
         if not self._types_strictly_compatible(var_type, elem_type):
             self._error(
@@ -4804,6 +6148,7 @@ class TypeChecker(ExhaustivenessMixin):
                 expr.iterable.location,
             )
         comp_env.bind(expr.variable, var_type)
+        self._record_binding(expr.variable, var_type, expr.location, comp_env)
 
         # Check condition if present
         if expr.condition is not None:
@@ -4817,16 +6162,6 @@ class TypeChecker(ExhaustivenessMixin):
         # Check element expression
         result_type = self._check_expression(expr.element_expr, comp_env)
         return ListType(result_type)
-
-    def _check_throw_expression(self, expr: ThrowExpression, env: TypeEnv) -> Type:
-        """Type check a throw expression."""
-        value_type = self._check_expression(expr.value, env)
-        if not isinstance(value_type, (StringType, UserType)):
-            self._error(
-                f"throw requires String or user-defined type, got {value_type}",
-                expr.value.location,
-            )
-        return NeverType()
 
     def _check_await_expr(self, expr: AwaitExpr, env: TypeEnv) -> Type:
         """Type check an await expression."""
@@ -4930,11 +6265,22 @@ class TypeChecker(ExhaustivenessMixin):
                         stage.location,
                     )
 
-            for i, arg_expr in enumerate(stage.arguments):
+            # As in a call, a lambda whose parameters need context waits
+            # until the piped value and the other arguments have bound what
+            # they can: `xs |> fold(_, 0, fn(acc, x) -> acc + x)`.
+            for i in sorted(
+                range(len(stage.arguments)),
+                key=lambda index: self._needs_context(stage.arguments[index]),
+            ):
+                arg_expr = stage.arguments[i]
                 if i in placeholder_positions:
                     continue
 
                 param_index = i if placeholder_positions else i + 1
+                self._prime_lambda(
+                    arg_expr,
+                    self._apply_substitutions(func_type.param_types[param_index], subs),
+                )
                 arg_type = self._check_expression(arg_expr, env)
                 if self._has_type_vars(arg_type):
                     arg_type = self._freshen_type_vars(
@@ -4954,6 +6300,29 @@ class TypeChecker(ExhaustivenessMixin):
                     self._error(
                         f"Pipeline argument type mismatch: expected {expected_type}, got {arg_type}",
                         stage.location,
+                    )
+                self._record_expected_runtime_type(
+                    arg_expr, self._apply_substitutions(expected_type, subs)
+                )
+
+            # A stage is a call: a generic stage function and a generic
+            # function passed to it are instantiated by its substitution, as
+            # in `xs |> List.take(1)` and `xs |> map(show)`.
+            generic_target = getattr(stage.function, "_generic_target", None)
+            if generic_target is not None:
+                stage.function._generic_callee = True
+                instance = self._generic_instance(generic_target, subs)
+                stage.function._generic_instance = instance
+                self._check_instance_bounds(
+                    generic_target, instance.type_args, stage.location
+                )
+            for arg_expr in stage.arguments:
+                if getattr(arg_expr, "_generic_target", None) is None:
+                    continue
+                arg_expected = getattr(arg_expr, "_expected_runtime_type", None)
+                if isinstance(arg_expected, Type):
+                    self._record_expected_runtime_type(
+                        arg_expr, self._apply_substitutions(arg_expected, subs)
                     )
 
             current_type = (
@@ -5044,17 +6413,22 @@ class TypeChecker(ExhaustivenessMixin):
         effect_env = env.child()
         param_types: list[Type] = []
 
-        for param in expr.params:
+        expected_params = expr._expected_param_types
+        for index, param in enumerate(expr.params):
             if param.name in lambda_env.bindings:
                 self._error(
                     f"Duplicate parameter name '{param.name}'",
                     param.location,
                     ErrorCode.TYPE_DUPLICATE_DEFINITION,
                 )
+            if isinstance(param.param_type, InferredType):
+                self._infer_lambda_param(param, expected_params, index)
             param_type = self._resolve_type(param.param_type)
+            param._resolved_type = param_type
             param_types.append(param_type)
             lambda_env.bind(param.name, param_type)
             effect_env.bind(param.name, param_type)
+            self._record_binding(param.name, param_type, param.location, lambda_env)
 
         if expr.block_body is not None:
             self._lambda_return_types = []
@@ -5073,12 +6447,15 @@ class TypeChecker(ExhaustivenessMixin):
                         continue
                     if isinstance(rt, NeverType):
                         continue
-                    if not self._types_strictly_compatible(return_type, rt):
+                    merged_type = self._merge_match_expr_result_types(return_type, rt)
+                    if merged_type is None:
                         self._error(
                             f"Inconsistent return types in block lambda: "
                             f"{return_type} vs {rt}",
                             expr.location,
                         )
+                    else:
+                        return_type = merged_type
                 if not self._definitely_returns(expr.block_body):
                     self._error(
                         "Block lambda may not return a value on all paths",
@@ -5086,12 +6463,60 @@ class TypeChecker(ExhaustivenessMixin):
                     )
 
             lambda_effects = self._infer_body_effects(expr.block_body, effect_env)
-            return FuncType(tuple(param_types), return_type, lambda_effects)
+            function_type = FuncType(tuple(param_types), return_type, lambda_effects)
+            # Inferred Float results must also widen each returning branch at
+            # runtime, even when no surrounding function annotation is present.
+            self._record_expected_runtime_type(expr, function_type)
+            return function_type
 
         assert expr.body is not None
         body_type = self._check_expression(expr.body, lambda_env)
         lambda_effects = frozenset(self._infer_expr_effects(expr.body, effect_env))
         return FuncType(tuple(param_types), body_type, lambda_effects)
+
+    def _infer_lambda_param(
+        self,
+        param: Parameter,
+        expected_params: tuple[Type, ...] | None,
+        index: int,
+    ) -> None:
+        """Give an unannotated lambda parameter the type its context expects."""
+        annotation = param.param_type
+        assert isinstance(annotation, InferredType)
+        expected = (
+            expected_params[index]
+            if expected_params is not None and index < len(expected_params)
+            else None
+        )
+        if expected is None or self._has_type_vars(expected):
+            if annotation._inferred is None:
+                self._error(
+                    f"Cannot infer the type of lambda parameter '{param.name}' "
+                    "from where the lambda is used; annotate it, as in "
+                    f"`fn({param.name}: Int) -> ...`",
+                    param.location,
+                    ErrorCode.TYPE_GENERIC_INFERENCE,
+                )
+                annotation._inferred = _ANY_TYPE
+            return
+        annotation._inferred = expected
+
+    @staticmethod
+    def _prime_lambda(value: Expression, expected: Type) -> None:
+        """Tell an unannotated lambda what function type its context expects."""
+        if (
+            isinstance(value, LambdaExpr)
+            and isinstance(expected, FuncType)
+            and len(expected.param_types) == len(value.params)
+        ):
+            value._expected_param_types = expected.param_types
+
+    @staticmethod
+    def _needs_context(value: Expression) -> bool:
+        """A lambda with an unannotated parameter waits for its context."""
+        return isinstance(value, LambdaExpr) and any(
+            isinstance(param.param_type, InferredType) for param in value.params
+        )
 
     def _check_constructor_call(self, expr: ConstructorCall, env: TypeEnv) -> Type:
         """Type check a constructor call."""
@@ -5129,6 +6554,9 @@ class TypeChecker(ExhaustivenessMixin):
             for i, (arg, (_field_name, field_type)) in enumerate(
                 zip(arguments, fields)
             ):
+                self._prime_lambda(
+                    arg, self._apply_substitutions(field_type, type_param_bindings)
+                )
                 arg_type = self._check_expression(arg, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
@@ -5188,8 +6616,15 @@ class TypeChecker(ExhaustivenessMixin):
                 return UserType(type_name, inferred_params)
             return UserType(type_name)
 
-        hint = _suggest_name(expr.constructor, self._all_constructors())
-        self._error(f"Unknown constructor: {expr.constructor}{hint}", expr.location)
+        hint, fixes = _rename_fixes(
+            expr.constructor, self._all_constructors(), expr.location
+        )
+        self._error(
+            f"Unknown constructor: {expr.constructor}{'.' if hint else ''}{hint}",
+            expr.location,
+            ErrorCode.TYPE_MISMATCH,
+            fixes,
+        )
         return AnyType()
 
     def _check_tuple_expr(self, expr: TupleExpr, env: TypeEnv) -> Type:
@@ -5205,6 +6640,12 @@ class TypeChecker(ExhaustivenessMixin):
     def _check_match_expr(self, expr: MatchExpr, env: TypeEnv) -> Type:
         """Type check a match expression."""
         scrutinee_type = self._check_expression(expr.scrutinee, env)
+        if expr.from_if and not isinstance(scrutinee_type, (BoolType, AnyType)):
+            self._error(
+                f"If condition must be Bool, got {_display_type(scrutinee_type)}",
+                expr.scrutinee.location,
+            )
+            scrutinee_type = _BOOL_TYPE
 
         result_type: Type | None = None
         for arm in expr.arms:
@@ -5237,8 +6678,9 @@ class TypeChecker(ExhaustivenessMixin):
             else:
                 merged_type = self._merge_match_expr_result_types(result_type, arm_type)
                 if merged_type is None:
+                    what = "If branch" if expr.from_if else "Match arm"
                     self._error(
-                        "Match arm type mismatch: expected "
+                        f"{what} type mismatch: expected "
                         f"{_display_type(result_type)}, got {_display_type(arm_type)}",
                         arm.location,
                     )
@@ -5485,9 +6927,14 @@ class TypeChecker(ExhaustivenessMixin):
         self, type_annot: TypeAnnotation, type_params: list[str] | None = None
     ) -> Type:
         """Resolve a type annotation to an internal type."""
+        if isinstance(type_annot, InferredType):
+            # Filled in by the check that inferred it; unknown until then.
+            inferred = type_annot._inferred
+            return inferred if isinstance(inferred, Type) else _ANY_TYPE
         cache_key = (
             id(type_annot),
             tuple(type_params) if type_params is not None else (),
+            tuple(self._rigid_type_params),
         )
         cached = self._resolved_type_cache.get(cache_key)
         if cached is not None:
@@ -5506,6 +6953,16 @@ class TypeChecker(ExhaustivenessMixin):
                         type_annot.location,
                     )
                 resolved: Type = TypeVar(name)
+                self._resolved_type_cache[cache_key] = resolved
+                return resolved
+
+            if name in self._rigid_type_params:
+                if type_annot.type_params:
+                    raise TypeError(
+                        f"Type parameter '{name}' does not take type arguments",
+                        type_annot.location,
+                    )
+                resolved = TypeParam(name, self._rigid_type_params[name])
                 self._resolved_type_cache[cache_key] = resolved
                 return resolved
 
@@ -5691,11 +7148,12 @@ class TypeChecker(ExhaustivenessMixin):
             )
             for declared in self._declared_user_types:
                 known_types.update(declared)
-            hint = _suggest_name(name, known_types)
+            hint, fixes = _rename_fixes(name, known_types, type_annot.location)
             raise TypeError(
-                f"Unknown type: '{name}'{hint}",
+                f"Unknown type: '{name}'{'.' if hint else ''}{hint}",
                 type_annot.location,
                 ErrorCode.TYPE_UNDEFINED_TYPE,
+                fixes,
             )
 
         elif isinstance(type_annot, FunctionType):
@@ -5772,6 +7230,9 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(expected, TypeVar) or isinstance(actual, TypeVar):
             if allow_typevar_wildcards:
                 return True
+            return bool(expected == actual)
+        # A rigid type parameter is opaque: it is compatible only with itself.
+        if isinstance(expected, TypeParam) or isinstance(actual, TypeParam):
             return bool(expected == actual)
 
         def matches(expected_inner: Type, actual_inner: Type) -> bool:
@@ -5939,7 +7400,7 @@ class TypeChecker(ExhaustivenessMixin):
     @staticmethod
     def _typevar_accepts(type_var: TypeVar, actual: Type) -> bool:
         if type_var.name in _NUMERIC_TYPEVAR_NAMES:
-            return isinstance(actual, (IntType, FloatType, TypeVar))
+            return _is_numeric(actual) or isinstance(actual, TypeVar)
         return True
 
     def _types_compatible_with_subs(
@@ -6022,6 +7483,9 @@ class TypeChecker(ExhaustivenessMixin):
                 return False
             subs[actual.name] = expected
             return True
+
+        if isinstance(expected, TypeParam) or isinstance(actual, TypeParam):
+            return bool(expected == actual)
 
         if type(expected) != type(actual):
             return isinstance(expected, FloatType) and isinstance(actual, IntType)

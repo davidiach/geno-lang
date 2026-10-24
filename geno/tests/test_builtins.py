@@ -16,10 +16,7 @@ from geno.builtins import (
     builtin_divide,
     builtin_head,
     builtin_is_none,
-    builtin_is_numeric_string,
-    builtin_is_permutation,
     builtin_is_some,
-    builtin_is_sorted,
     builtin_join,
     builtin_length,
     builtin_map_entries,
@@ -32,7 +29,6 @@ from geno.builtins import (
     builtin_reverse,
     builtin_set_at,
     builtin_slice,
-    builtin_sort_strings,
     builtin_split,
     builtin_split_once,
     builtin_sqrt,
@@ -142,44 +138,6 @@ class TestListBuiltins:
         with pytest.raises(RuntimeError):
             builtin_reverse("not a list")
 
-    def test_is_sorted_true(self):
-        assert builtin_is_sorted([1, 2, 3]) is True
-
-    def test_is_sorted_false(self):
-        assert builtin_is_sorted([3, 1, 2]) is False
-
-    def test_is_sorted_empty(self):
-        assert builtin_is_sorted([]) is True
-
-    def test_is_sorted_non_list(self):
-        with pytest.raises(RuntimeError):
-            builtin_is_sorted("abc")
-
-    def test_is_permutation_true(self):
-        assert builtin_is_permutation([1, 2, 3], [3, 1, 2]) is True
-
-    def test_is_permutation_false(self):
-        assert builtin_is_permutation([1, 2, 3], [1, 2, 4]) is False
-
-    def test_is_permutation_non_lists(self):
-        with pytest.raises(RuntimeError):
-            builtin_is_permutation("abc", [1, 2])
-
-    def test_is_permutation_mixed_types_use_equality(self):
-        assert builtin_is_permutation([1, "a"], ["a", 1]) is True
-        assert builtin_is_permutation([1, "a"], ["a", 2]) is False
-
-    def test_is_permutation_unorderable_values_use_equality(self):
-        left = [ConstructorValue("Some", {"value": 1}), ConstructorValue("None", {})]
-        right = [ConstructorValue("None", {}), ConstructorValue("Some", {"value": 1})]
-        duplicate_mismatch = [
-            ConstructorValue("Some", {"value": 1}),
-            ConstructorValue("Some", {"value": 1}),
-        ]
-
-        assert builtin_is_permutation(left, right) is True
-        assert builtin_is_permutation(left, duplicate_mismatch) is False
-
 
 class TestStringBuiltins:
     """Tests for string operations."""
@@ -248,23 +206,8 @@ class TestStringBuiltins:
         with pytest.raises(RuntimeError, match="integer"):
             builtin_substring("hello", "a", 5)
 
-    def test_is_numeric_string_true(self):
-        assert builtin_is_numeric_string("123") is True
-        assert builtin_is_numeric_string(" -123 ") is True
-
-    def test_is_numeric_string_false(self):
-        assert builtin_is_numeric_string("abc") is False
-        assert builtin_is_numeric_string("+123") is False
-        assert builtin_is_numeric_string("1_000") is False
-
-    def test_is_numeric_string_non_string(self):
-        assert builtin_is_numeric_string(42) is False
-
     def test_to_chars(self):
         assert builtin_to_chars("abc") == ["a", "b", "c"]
-
-    def test_sort_strings(self):
-        assert builtin_sort_strings(["beta", "alpha"]) == ["alpha", "beta"]
 
 
 class TestEnvBuiltins:

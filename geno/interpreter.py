@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from functools import partial
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
@@ -52,6 +52,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
@@ -65,8 +66,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     SimpleType,
     Statement,
     StringLiteral,
-    ThrowExpression,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -92,6 +91,7 @@ from .builtin_registry import (
 from .capabilities import capability_denied_message
 from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
+from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
 from .float_promotion import float_shape
 from .harness import example_call_args, example_numbers_match
 from .sandbox import (
@@ -101,6 +101,7 @@ from .sandbox import (
     StepLimitExceeded,
 )
 from .sandbox import TimeoutError as SandboxTimeout
+from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
 from .types import FloatType
 
@@ -118,7 +119,6 @@ from .values import (
     ContractViolationError,
     Environment,
     GenoRuntimeError,
-    GenoThrowError,
     MutableMapValue,
     PropagateException,
     ReturnException,
@@ -132,6 +132,8 @@ from .values import (
 # =============================================================================
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # sys.setrecursionlimit is process-global. geno.run() is a documented embedding
 # API that may be invoked from multiple threads; a per-run raise/restore races
@@ -194,7 +196,6 @@ _COLLECTION_LIMITED_BUILTINS = frozenset(
         "range",
         "format",
         "to_string",
-        "repeat_string",
         "string_pad_left",
         "string_pad_right",
         "string_repeat",
@@ -221,6 +222,8 @@ _COLLECTION_LIMITED_BUILTINS = frozenset(
         "map_insert",
         "map_merge",
         "map_entries",
+        "map_keys",
+        "map_values",
         "map_from_entries",
         "set_from_list",
         "set_add",
@@ -417,6 +420,23 @@ def _explain_rejection_example(
 # =============================================================================
 
 
+def _membership_builtin(expr: BinaryOp, container: Any) -> str:
+    """The builtin that tests ``x in container``.
+
+    The checker records it; an unchecked program falls back to the
+    container's runtime type.
+    """
+    if expr._resolved_builtin_name is not None:
+        return expr._resolved_builtin_name
+    if isinstance(container, str):
+        return "string_contains"
+    if isinstance(container, dict):
+        return "map_contains_key"
+    if isinstance(container, list):
+        return "contains"
+    return "set_contains"
+
+
 class Interpreter:
     """
     Interpreter for Geno programs.
@@ -432,7 +452,7 @@ class Interpreter:
     # Maximum recursion depth to prevent stack overflow
     # Set conservatively because each Geno call uses multiple Python stack frames
     # Python's default limit is ~1000, and each Geno call uses ~4-5 Python frames
-    MAX_RECURSION_DEPTH = 500
+    MAX_RECURSION_DEPTH = DEFAULT_MAX_RECURSION_DEPTH
 
     def __init__(
         self,
@@ -454,6 +474,15 @@ class Interpreter:
         self.global_env = Environment()
         self.type_defs: dict[str, TypeDef] = {}
         self.functions: dict[str, FunctionDef] = {}
+        # The closure each entry in ``functions`` names, for example checks:
+        # an imported function is not bound in the entry program's scope
+        # unless that program imported it directly.
+        self._function_closures: dict[str, Closure] = {}
+        # Builtins as last seen, including host overrides and capability
+        # stubs. Imported modules see these and their own definitions only,
+        # never the entry program's functions or imports (see run()).
+        self._prelude_bindings: dict[str, BuiltinFunction] = {}
+        self._module_parent_env: Environment | None = None
         self.check_examples = check_examples
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.max_recursion_depth = (
@@ -477,6 +506,7 @@ class Interpreter:
         self.output_buffer: list[str] = []
         self._output_length = 0
         self._deadline: float | None = None
+        self._interrupted = False
 
         # Reverse index: constructor name -> parent type name (O(1) lookup)
         self._constructor_to_type: dict[str, str] = {}
@@ -648,7 +678,8 @@ class Interpreter:
             ("contains", _builtins.builtin_contains, 2, ["list", "element"]),
             ("take_while", self._builtin_take_while, 2, ["list", "predicate"]),
             ("all", self._builtin_all, 2, ["list", "predicate"]),
-            ("sort", self._builtin_sort, 2, ["list", "comparator"]),
+            ("sort", self._builtin_sort, -1, ["list", "comparator"]),
+            ("count", self._builtin_count, 2, ["list", "predicate"]),
             ("sort_by", self._builtin_sort_by, 2, ["list", "key_fn"]),
             ("zip", _builtins.builtin_zip, 2, ["list1", "list2"]),
             ("enumerate", _builtins.builtin_enumerate, 1, ["list"]),
@@ -664,14 +695,6 @@ class Interpreter:
             ("split_once", _builtins.builtin_split_once, 2, ["text", "delimiter"]),
             ("starts_with", _builtins.builtin_starts_with, 2, ["text", "prefix"]),
             ("to_chars", _builtins.builtin_to_chars, 1, ["text"]),
-            ("sort_strings", _builtins.builtin_sort_strings, 1, ["items"]),
-            (
-                "contains_substring",
-                _builtins.builtin_contains_substring,
-                2,
-                ["text", "substring"],
-            ),
-            ("repeat_string", _builtins.builtin_repeat_string, 2, ["text", "count"]),
             ("string_trim", _builtins.builtin_string_trim, 1, ["text"]),
             ("string_trim_start", _builtins.builtin_string_trim_start, 1, ["text"]),
             ("string_trim_end", _builtins.builtin_string_trim_end, 1, ["text"]),
@@ -778,6 +801,13 @@ class Interpreter:
                 2,
                 ["result", "default"],
             ),
+            ("result_unwrap", _builtins.builtin_result_unwrap, 1, ["result"]),
+            (
+                "result_expect",
+                _builtins.builtin_result_expect,
+                2,
+                ["result", "message"],
+            ),
             ("result_is_ok", _builtins.builtin_result_is_ok, 1, ["result"]),
             ("result_is_err", _builtins.builtin_result_is_err, 1, ["result"]),
             ("result_to_option", _builtins.builtin_result_to_option, 1, ["result"]),
@@ -789,6 +819,12 @@ class Interpreter:
                 _builtins.builtin_option_unwrap_or,
                 2,
                 ["option", "default"],
+            ),
+            (
+                "option_expect",
+                _builtins.builtin_option_expect,
+                2,
+                ["option", "message"],
             ),
             ("option_is_some", _builtins.builtin_option_is_some, 1, ["option"]),
             ("option_is_none", _builtins.builtin_option_is_none, 1, ["option"]),
@@ -828,6 +864,9 @@ class Interpreter:
             ("list_chunk", _builtins.builtin_list_chunk, 2, ["list", "size"]),
             ("list_take", _builtins.builtin_list_take, 2, ["list", "count"]),
             ("list_drop", _builtins.builtin_list_drop, 2, ["list", "count"]),
+            ("list_get", _builtins.builtin_list_get, 2, ["list", "index"]),
+            ("list_first", _builtins.builtin_list_first, 1, ["list"]),
+            ("list_last", _builtins.builtin_list_last, 1, ["list"]),
             ("list_find", self._builtin_list_find, 2, ["list", "predicate"]),
             (
                 "list_find_index",
@@ -859,14 +898,37 @@ class Interpreter:
             ("ceil", _builtins.builtin_ceil, 1, ["value"]),
             ("round", _builtins.builtin_round, 1, ["value"]),
             ("max", _builtins.builtin_max, 2, ["a", "b"]),
+            ("min", _builtins.builtin_min, 2, ["a", "b"]),
+            ("sum", _builtins.builtin_sum, 1, ["list"]),
+            ("float_sum", _builtins.builtin_float_sum, 1, ["list"]),
+            ("list_min", _builtins.builtin_list_min, 1, ["list"]),
+            ("list_max", _builtins.builtin_list_max, 1, ["list"]),
+            ("is_empty", _builtins.builtin_is_empty, 1, ["list"]),
+            ("list_index_of", _builtins.builtin_list_index_of, 2, ["list", "element"]),
+            ("unique", _builtins.builtin_unique, 1, ["list"]),
+            ("string_is_empty", _builtins.builtin_string_is_empty, 1, ["text"]),
+            ("string_reverse", _builtins.builtin_string_reverse, 1, ["text"]),
+            ("string_lines", _builtins.builtin_string_lines, 1, ["text"]),
+            ("string_words", _builtins.builtin_string_words, 1, ["text"]),
+            ("string_is_digit", _builtins.builtin_string_is_digit, 1, ["text"]),
+            ("string_is_alpha", _builtins.builtin_string_is_alpha, 1, ["text"]),
+            (
+                "string_is_alphanumeric",
+                _builtins.builtin_string_is_alphanumeric,
+                1,
+                ["text"],
+            ),
+            (
+                "string_is_whitespace",
+                _builtins.builtin_string_is_whitespace,
+                1,
+                ["text"],
+            ),
+            ("string_is_upper", _builtins.builtin_string_is_upper, 1, ["text"]),
+            ("string_is_lower", _builtins.builtin_string_is_lower, 1, ["text"]),
             ("clamp", _builtins.builtin_clamp, 3, ["value", "min", "max"]),
             ("abs", lambda x: abs(x), 1, ["value"]),
-            ("square", lambda x: x * x, 1, ["value"]),
             # Type predicates
-            ("is_sorted", _builtins.builtin_is_sorted, 1, ["list"]),
-            ("is_positive", lambda x: x > 0, 1, ["value"]),
-            ("is_numeric_string", _builtins.builtin_is_numeric_string, 1, ["text"]),
-            ("is_permutation", _builtins.builtin_is_permutation, 2, ["list1", "list2"]),
             # Conversions
             ("parse_int", _builtins.builtin_parse_int, 1, ["text"]),
             ("parse_float", _builtins.builtin_parse_float, 1, ["text"]),
@@ -891,11 +953,24 @@ class Interpreter:
             # Option operations
             ("is_some", _builtins.builtin_is_some, 1, ["option"]),
             ("is_none", _builtins.builtin_is_none, 1, ["option"]),
+            ("panic", _builtins.builtin_panic, 1, ["message"]),
             ("unwrap", _builtins.builtin_unwrap, 1, ["option"]),
             ("unwrap_or", _builtins.builtin_unwrap_or, 2, ["option", "default"]),
             # Map operations
             ("map_insert", _builtins.builtin_map_insert, 3, ["map", "key", "value"]),
             ("map_get", _builtins.builtin_map_get, 2, ["map", "key"]),
+            ("map_size", _builtins.builtin_map_size, 1, ["map"]),
+            ("map_contains_key", _builtins.builtin_map_contains_key, 2, ["map", "key"]),
+            (
+                "map_get_or",
+                _builtins.builtin_map_get_or,
+                3,
+                ["map", "key", "default"],
+            ),
+            ("map_is_empty", _builtins.builtin_map_is_empty, 1, ["map"]),
+            ("map_remove", _builtins.builtin_map_remove, 2, ["map", "key"]),
+            ("map_keys", _builtins.builtin_map_keys, 1, ["map"]),
+            ("map_values", _builtins.builtin_map_values, 1, ["map"]),
             # IO (for REPL)
             ("print", self._builtin_print, 1, ["value"]),
             # Clock / random
@@ -1078,6 +1153,12 @@ class Interpreter:
                 ["map", "key"],
             ),
             ("mutable_map_size", _builtins.builtin_mutable_map_size, 1, ["map"]),
+            (
+                "mutable_map_is_empty",
+                _builtins.builtin_mutable_map_is_empty,
+                1,
+                ["map"],
+            ),
             ("mutable_map_keys", _builtins.builtin_mutable_map_keys, 1, ["map"]),
             # Vec operations
             ("vec_new", _builtins.builtin_vec_new, 0, []),
@@ -1095,6 +1176,7 @@ class Interpreter:
             ("set_remove", _builtins.builtin_set_remove, 2, ["set", "item"]),
             ("set_contains", _builtins.builtin_set_contains, 2, ["set", "item"]),
             ("set_size", _builtins.builtin_set_size, 1, ["set"]),
+            ("set_is_empty", _builtins.builtin_set_is_empty, 1, ["set"]),
             ("set_to_list", _builtins.builtin_set_to_list, 1, ["set"]),
             ("set_union", _builtins.builtin_set_union, 2, ["a", "b"]),
             ("set_intersection", _builtins.builtin_set_intersection, 2, ["a", "b"]),
@@ -1120,16 +1202,18 @@ class Interpreter:
         cap = _builtins._InterpreterCap(self.sandbox_config.max_collection_size)
 
         shared_param_names = interpreter_builtin_param_name_lists()
+        # Kept apart from the global environment, which a program's own
+        # functions may shadow: `x in c` always calls the builtin.
+        self._builtin_functions: dict[str, BuiltinFunction] = {}
         for name, func, arity, param_names in builtins:
             if name in _COLLECTION_LIMITED_BUILTINS:
                 func = partial(func, max_collection_size=cap)
             if name == "to_string":
                 self._builtin_stringify_value = func
             resolved_param_names = shared_param_names.get(name, param_names)
-            self.global_env.bind(
-                name,
-                BuiltinFunction(name, func, arity, resolved_param_names.copy()),
-            )
+            builtin = BuiltinFunction(name, func, arity, resolved_param_names.copy())
+            self._builtin_functions[name] = builtin
+            self.global_env.bind(name, builtin)
 
     # =========================================================================
     # Host Callback Stubs
@@ -1160,6 +1244,11 @@ class Interpreter:
             if self._call_function(pred, [item]):
                 result.append(item)
         return result
+
+    def _builtin_count(self, lst: Any, pred: Any) -> int:
+        if not isinstance(lst, list):
+            raise RuntimeError(f"count expects list, got {type(lst).__name__}")
+        return sum(1 for item in lst if self._call_function(pred, [item]))
 
     def _builtin_map(self, lst: Any, func: Any) -> list:
         if not isinstance(lst, list):
@@ -1340,9 +1429,11 @@ class Interpreter:
             return self._call_function(f, [option.fields["value"]])
         return ConstructorValue("None", {})
 
-    def _builtin_sort(self, lst: Any, cmp: Any) -> list:
+    def _builtin_sort(self, lst: Any, cmp: Any = None) -> list:
         if not isinstance(lst, list):
             raise RuntimeError(f"sort expects list, got {type(lst).__name__}")
+        if cmp is None:
+            return sorted(lst, key=_builtins._geno_sort_key)
         import functools
 
         def comparator(a, b):
@@ -1425,111 +1516,135 @@ class Interpreter:
             SandboxTimeout: If execution exceeds timeout
             RuntimeError: For runtime errors
         """
-        # Ensure Python's recursion limit can accommodate the Geno depth.
-        # A bare Geno call uses ~4-5 Python frames, but try/catch and match
-        # paths chain ~8 (issue #650). 12 gives headroom on every path so
-        # the Geno-level check fires before Python's RecursionError.
+        return self.run_with_recursion_room(
+            lambda: self._run_program(program, modules, execute_main)
+        )
+
+    def run_with_recursion_room(self, body: Callable[[], _T]) -> _T:
+        """Run ``body`` with the Python stack this interpreter's depth needs.
+
+        A bare Geno call uses ~4-5 Python frames, but match and contract
+        paths chain ~8 (issue #650). 12 gives headroom on every path so the
+        Geno-level check fires before Python's RecursionError. A deep limit
+        runs on a thread with a matching C stack (execution_limits.py).
+        """
         needed = self.max_recursion_depth * 12 + 100
-        with _raised_recursion_limit(needed):
-            # Constant initializers execute too, including during imports.
-            # Charge initialization, examples and main to one deadline.
-            with self._execution_deadline(self.sandbox_config.timeout):
-                # Resolve imports first
-                entrypoint_main = next(
-                    (
-                        defn
-                        for defn in program.definitions
-                        if isinstance(defn, FunctionDef) and defn.name == "main"
-                    ),
-                    None,
-                )
 
-                if modules is not None:
-                    resolved: set[str] = set()
-                    module_imports: dict[
-                        str, tuple[dict[str, Closure], dict[str, FunctionDef]]
-                    ] = {}
-                    for defn in program.definitions:
-                        if isinstance(defn, ImportStatement):
-                            self._resolve_module_import(
-                                defn, modules, resolved, module_imports
-                            )
+        def with_limit(limit: int) -> _T:
+            with _raised_recursion_limit(limit):
+                return body()
 
-                self._bind_module_constants(program, self.global_env)
+        return call_with_recursion_room(needed, with_limit, interrupt=self.interrupt)
 
-                # First pass: collect type and function definitions
+    def interrupt(self) -> None:
+        """Stop a run on another thread at its next step check."""
+        self._interrupted = True
+
+    def _run_program(
+        self,
+        program: Program,
+        modules: dict[str, "Program"] | None,
+        execute_main: bool,
+    ) -> Any:
+        # Constant initializers execute too, including during imports.
+        # Charge initialization, examples and main to one deadline.
+        with self._execution_deadline(self.sandbox_config.timeout):
+            # Resolve imports first
+            entrypoint_main = next(
+                (
+                    defn
+                    for defn in program.definitions
+                    if isinstance(defn, FunctionDef) and defn.name == "main"
+                ),
+                None,
+            )
+
+            if modules is not None:
+                self._module_parent_env = self._prelude_environment()
+                resolved: set[str] = set()
+                module_imports: dict[
+                    str, tuple[dict[str, Closure], dict[str, FunctionDef]]
+                ] = {}
                 for defn in program.definitions:
-                    if isinstance(defn, TypeDef):
-                        # Remove stale constructor entries if type is being redefined
-                        old_def = self.type_defs.get(defn.name)
-                        if old_def is not None:
-                            for v in old_def.variants:
-                                self._constructor_to_type.pop(v.name, None)
-                        self.type_defs[defn.name] = defn
-                        for variant in defn.variants:
-                            self._constructor_to_type[variant.name] = defn.name
-                    elif isinstance(defn, FunctionDef):
-                        self.functions[defn.name] = defn
-                        closure = Closure(
-                            params=defn.params,
-                            body=defn.body,
-                            env=self.global_env,
-                            name=defn.name,
-                            specs=defn.specs,
-                            is_async=defn.is_async,
+                    if isinstance(defn, ImportStatement):
+                        self._resolve_module_import(
+                            defn, modules, resolved, module_imports
                         )
-                        self.global_env.bind(defn.name, closure)
 
-                # Second pass: process trait impls
-                for defn in program.definitions:
-                    if isinstance(defn, ImplDef):
-                        method_closures: dict[str, Closure] = {}
-                        for method in defn.methods:
-                            method_closures[method.name] = Closure(
-                                params=method.params,
-                                body=method.body,
-                                env=self.global_env,
-                                name=method.name,
-                                specs=method.specs,
-                            )
-                        self.trait_impls[(defn.trait_name, defn.target_type)] = (
-                            method_closures
-                        )
-                        # Register each trait method name for dispatch
-                        for method in defn.methods:
-                            self.trait_method_names.add(method.name)
-                            self.trait_method_param_names[
-                                (defn.trait_name, method.name)
-                            ] = [param.name for param in method.params]
+            self._bind_module_constants(program, self.global_env)
 
-                # Verify examples if enabled. Steps spent verifying examples
-                # count against the same max_steps budget as `main` so the
-                # advertised bound is a single honest global cap — otherwise
-                # adversarial example clauses could do up to max_steps work
-                # in verification *and* another max_steps in `main`.
-                if self.check_examples:
-                    try:
-                        self._verify_examples()
-                    finally:
-                        # Example output is never program output, even when
-                        # verification fails and callers report what was
-                        # printed so far (#130).
-                        self.output_buffer.clear()
-                        self._output_length = 0
-
-                # Look for a main function
-                if execute_main and entrypoint_main is not None:
-                    main_func = self.global_env.lookup("main")
-                    result = self._call_function(
-                        main_func, [], location=entrypoint_main.location
+            # First pass: collect type and function definitions
+            for defn in program.definitions:
+                if isinstance(defn, TypeDef):
+                    # Remove stale constructor entries if type is being redefined
+                    old_def = self.type_defs.get(defn.name)
+                    if old_def is not None:
+                        for v in old_def.variants:
+                            self._constructor_to_type.pop(v.name, None)
+                    self.type_defs[defn.name] = defn
+                    for variant in defn.variants:
+                        self._constructor_to_type[variant.name] = defn.name
+                elif isinstance(defn, FunctionDef):
+                    self.functions[defn.name] = defn
+                    closure = Closure(
+                        params=defn.params,
+                        body=defn.body,
+                        env=self.global_env,
+                        name=defn.name,
+                        specs=defn.specs,
+                        is_async=defn.is_async,
                     )
-                    if entrypoint_main.is_async:
-                        return self._execute_async_value(
-                            result, entrypoint_main.location
-                        )
-                    return result
+                    self.global_env.bind(defn.name, closure)
+                    self._function_closures[defn.name] = closure
 
-                return None
+            # Second pass: process trait impls
+            for defn in program.definitions:
+                if isinstance(defn, ImplDef):
+                    method_closures: dict[str, Closure] = {}
+                    for method in defn.methods:
+                        method_closures[method.name] = Closure(
+                            params=method.params,
+                            body=method.body,
+                            env=self.global_env,
+                            name=method.name,
+                            specs=method.specs,
+                        )
+                    self.trait_impls[(defn.trait_name, defn.target_type)] = (
+                        method_closures
+                    )
+                    # Register each trait method name for dispatch
+                    for method in defn.methods:
+                        self.trait_method_names.add(method.name)
+                        self.trait_method_param_names[
+                            (defn.trait_name, method.name)
+                        ] = [param.name for param in method.params]
+
+            # Verify examples if enabled. Steps spent verifying examples
+            # count against the same max_steps budget as `main` so the
+            # advertised bound is a single honest global cap — otherwise
+            # adversarial example clauses could do up to max_steps work
+            # in verification *and* another max_steps in `main`.
+            if self.check_examples:
+                try:
+                    self._verify_examples()
+                finally:
+                    # Example output is never program output, even when
+                    # verification fails and callers report what was
+                    # printed so far (#130).
+                    self.output_buffer.clear()
+                    self._output_length = 0
+
+            # Look for a main function
+            if execute_main and entrypoint_main is not None:
+                main_func = self.global_env.lookup("main")
+                result = self._call_function(
+                    main_func, [], location=entrypoint_main.location
+                )
+                if entrypoint_main.is_async:
+                    return self._execute_async_value(result, entrypoint_main.location)
+                return result
+
+            return None
 
     def _resolve_module_import(
         self,
@@ -1558,7 +1673,12 @@ class Interpreter:
         # Functions retain this module's imports even after another module
         # binds the same alias. Lexical environments also carry the namespace
         # through returned lambdas, callbacks, defaults and nested calls.
-        module_env = self.global_env.child()
+        # A module sees builtins, its own definitions and its own imports:
+        # nothing the entry program or another importer defines or imports
+        # can shadow a builtin the module calls.
+        if self._module_parent_env is None:
+            self._module_parent_env = self._prelude_environment()
+        module_env = self._module_parent_env.child()
 
         # Recursively resolve imports within the module
         for defn in mod_program.definitions:
@@ -1652,9 +1772,18 @@ class Interpreter:
         import_env.bind(ns_name, _ModuleNamespace(ns_name, dict(module_ns)))
         if import_stmt.alias is None:
             for func_name, closure in module_ns.items():
+                if not binds_unqualified(module_functions[func_name], func_name):
+                    continue  # see geno/stdlib_scope.py
                 self.functions[func_name] = module_functions[func_name]
-                self.global_env.bind(func_name, closure)
+                self._function_closures[func_name] = closure
                 import_env.bind(func_name, closure)
+
+    def _prelude_environment(self) -> Environment:
+        """An environment of builtins only, the parent of every module's scope."""
+        for name, value in self.global_env.bindings.items():
+            if isinstance(value, BuiltinFunction):
+                self._prelude_bindings[name] = value
+        return Environment(bindings=dict(self._prelude_bindings))
 
     @contextmanager
     def _execution_deadline(self, timeout: float | None) -> Generator[None, None, None]:
@@ -1719,7 +1848,9 @@ class Interpreter:
                 try:
                     # Examples resolve names in the defining module, just like
                     # the function body and its default arguments.
-                    func = self.global_env.lookup(name)
+                    func = self._function_closures.get(name)
+                    if func is None:
+                        func = self.global_env.lookup(name)
                     example_env = (
                         func.env if isinstance(func, Closure) else self.global_env
                     )
@@ -1759,6 +1890,7 @@ class Interpreter:
                             f"expected {self._format_value(expected)}, "
                             f"got {self._format_value(actual)}",
                             example.location,
+                            ErrorCode.RUNTIME_EXAMPLE_FAILED,
                         )
                 except ReturnException:
                     raise RuntimeError(
@@ -1950,6 +2082,8 @@ class Interpreter:
         deadline reports as a timeout, matching the pre-fast-path order.
         """
         self._check_timeout(location)
+        if self._interrupted:
+            raise KeyboardInterrupt
         if self.max_steps is not None and self.steps > self.max_steps:
             loc_str = f" at {location}" if location else ""
             raise StepLimitExceeded(
@@ -2035,6 +2169,23 @@ class Interpreter:
             for value, element in zip(list_result, expr.elements)
         ]
 
+    def _eval_map_literal(self, expr: MapLiteral, env: Environment) -> dict:
+        result: dict[Any, Any] = {}
+        for entry in expr.entries:
+            key = _promote_int_to_expected_float(
+                self.eval_expr(entry.key, env),
+                getattr(entry.key, "_expected_runtime_type", None),
+                entry.key,
+            )
+            value = _promote_list_element(
+                self.eval_expr(entry.value, env),
+                getattr(entry.value, "_expected_runtime_type", None),
+            )
+            if key not in result:
+                self._check_collection_size("Map", len(result) + 1, expr.location)
+            result[key] = value
+        return result
+
     def _eval_typed_hole(self, expr: TypedHole, env: Environment) -> Any:
         raise RuntimeError(f"Encountered unfilled hole: ?{expr.name}", expr.location)
 
@@ -2075,8 +2226,27 @@ class Interpreter:
                 return True
             return bool(self.eval_expr(expr.right, env))
 
+        if expr._resolved_builtin_name == "concat":
+            # List + List: the operands are concat's arguments, widened like
+            # any Int list passed where a Float list is expected.
+            return self._call_function(
+                self._builtin_functions["concat"],
+                [
+                    self._eval_argument(expr.left, env),
+                    self._eval_argument(expr.right, env),
+                ],
+                expr.location,
+            )
+
         left = self.eval_expr(expr.left, env)
         right = self.eval_expr(expr.right, env)
+
+        if operator == "in":
+            return self._call_function(
+                self._builtin_functions[_membership_builtin(expr, right)],
+                [right, left],
+                expr.location,
+            )
 
         op_func = _BINOP_FUNCS.get(operator)
         if op_func is None:
@@ -2353,6 +2523,15 @@ class Interpreter:
         else:
             return
 
+        # A constructor value changes only through a field assignment, which
+        # clears its mark, so once everything it reaches is known to fit these
+        # limits it needs no walking again. That holds only while no mutable
+        # container is reachable; those grow in place.
+        # Without this, building or passing a linked structure re-walks it
+        # at every call and costs quadratic time.
+        limits = (size_limit, max_bits)
+        constructors: list[ConstructorValue] = []
+        saw_mutable = False
         visited: set[int] = set()
         stack: list[Any] = list(roots)
         while stack:
@@ -2366,6 +2545,15 @@ class Interpreter:
             value_id = id(value)
             if value_id in visited:
                 continue
+
+            if isinstance(value, ConstructorValue):
+                visited.add(value_id)
+                if value._limits_checked != limits:
+                    constructors.append(value)
+                    stack.extend(value.fields.values())
+                continue
+            if isinstance(value, (MutableMapValue, SetValue, VecValue, ArrayValue)):
+                saw_mutable = True
 
             if isinstance(value, MutableMapValue):
                 visited.add(value_id)
@@ -2395,10 +2583,6 @@ class Interpreter:
                 visited.add(value_id)
                 size = len(value)
                 kind = "Tuple"
-            elif isinstance(value, ConstructorValue):
-                visited.add(value_id)
-                stack.extend(value.fields.values())
-                continue
             elif isinstance(value, str):
                 visited.add(value_id)
                 size = len(value)
@@ -2420,6 +2604,10 @@ class Interpreter:
             elif isinstance(value, dict):
                 stack.extend(value.keys())
                 stack.extend(value.values())
+
+        if not saw_mutable:
+            for constructor in constructors:
+                object.__setattr__(constructor, "_limits_checked", limits)
 
     def _check_collection_size(
         self, kind: str, size: int, location: SourceLocation | None
@@ -2452,9 +2640,8 @@ class Interpreter:
         self._check_timeout(location)
         if isinstance(func, Closure):
             if self.call_depth >= self.max_recursion_depth:
-                # RecursionLimitError (a SandboxError) is intentionally not
-                # GenoRuntimeError so user-level try/catch cannot swallow
-                # the limit and continue executing (issue #650).
+                # RecursionLimitError is a SandboxError rather than a
+                # GenoRuntimeError: hosts report it as a resource limit.
                 raise RecursionLimitError(
                     f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
                     f"Check for infinite recursion or increase the limit."
@@ -2494,6 +2681,17 @@ class Interpreter:
                         location,
                     )
 
+                # A contravariant function alias can advertise Int arguments
+                # while the actual closure accepts Float. Use the closure's
+                # parameter types at this boundary, including callbacks and
+                # deferred async calls that have no direct call-site coercion.
+                args = [
+                    _promote_int_to_expected_float(
+                        arg,
+                        param._resolved_type or param.param_type,
+                    )
+                    for param, arg in zip(func.params, args)
+                ]
                 self._check_collection_limits(args, location)
 
                 # For async functions, return an AsyncValue instead of executing
@@ -2693,6 +2891,9 @@ class Interpreter:
             if index not in target:
                 raise RuntimeError(f"Key not found: {index}", expr.location)
             return target[index]
+        elif isinstance(target, tuple) and isinstance(index, int):
+            # The checker allows only a literal index within the tuple's arity.
+            return target[index]
         else:
             raise RuntimeError(
                 f"Cannot index into {type(target).__name__}", expr.location
@@ -2786,13 +2987,6 @@ class Interpreter:
             result.append(item)
         return result
 
-    def _eval_throw(self, expr: ThrowExpression, env: Environment) -> Any:
-        """Evaluate a throw expression."""
-        value = self.eval_expr(expr.value, env)
-        if isinstance(value, str):
-            raise GenoRuntimeError(value, expr.location)
-        raise GenoThrowError(value, expr.location)
-
     def _eval_await(self, expr: AwaitExpr, env: Environment) -> Any:
         """Evaluate an await expression — execute the async value synchronously."""
         value = self.eval_expr(expr.expr, env)
@@ -2833,8 +3027,7 @@ class Interpreter:
         if func.specs:
             self._check_requires(func, call_env)
         if self.call_depth >= self.max_recursion_depth:
-            # See _call_function — RecursionLimitError is uncatchable
-            # by user try/catch (issue #650).
+            # See _call_function for why this is a RecursionLimitError.
             raise RecursionLimitError(
                 f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
                 f"Check for infinite recursion or increase the limit."
@@ -3182,6 +3375,7 @@ class Interpreter:
                 # Example verification looks functions up by name, so a stale
                 # entry would make it call the constant.
                 self.functions.pop(defn.name, None)
+                self._function_closures.pop(defn.name, None)
 
     def _exec_var(self, stmt: VarStatement, env: Environment) -> None:
         """Execute a var statement."""
@@ -3286,6 +3480,7 @@ class Interpreter:
                 new_fields = dict(parent.fields)
                 new_fields[expr.field_name] = child
                 object.__setattr__(parent, "_fields", MappingProxyType(new_fields))
+                object.__setattr__(parent, "_limits_checked", None)
                 return child
             return self._field_of(parent, expr)
         if isinstance(expr, IndexAccess):
@@ -3312,6 +3507,8 @@ class Interpreter:
                 new_fields = dict(target.fields)
                 new_fields[stmt.field_name] = value
                 object.__setattr__(target, "_fields", MappingProxyType(new_fields))
+                # The new field has not been walked with the rest of the value.
+                object.__setattr__(target, "_limits_checked", None)
             else:
                 raise RuntimeError(
                     f"No field '{stmt.field_name}' on {target.constructor}",
@@ -3398,58 +3595,6 @@ class Interpreter:
             f"No matching pattern in match statement for value {self._format_value(scrutinee)}",
             stmt.location,
         )
-
-    def _constructor_matches_type(self, constructor_name: str, type_name: str) -> bool:
-        """Check if a constructor belongs to the given type."""
-        if constructor_name == type_name:
-            return True  # Single-variant type where constructor == type name
-        type_def = self.type_defs.get(type_name)
-        if type_def is None:
-            return False
-        return any(v.name == constructor_name for v in type_def.variants)
-
-    def _exec_try(self, stmt: TryStatement, env: Environment) -> None:
-        """Execute a try/catch statement."""
-        catch_type_annot = stmt.catch_clause.type_annotation
-        catch_type_name = getattr(catch_type_annot, "name", "String")
-
-        try:
-            block_env = env.child()
-            for s in stmt.try_body:
-                self.exec_stmt(s, block_env)
-        except GenoThrowError as e:
-            # Structured error — catch expects a user-defined type
-            if catch_type_name == "String":
-                # String catch: convert thrown value to string
-                catch_env = env.child()
-                catch_env.bind(
-                    stmt.catch_clause.variable, str(e.thrown_value), mutable=False
-                )
-                for s in stmt.catch_clause.body:
-                    self.exec_stmt(s, catch_env)
-            elif isinstance(e.thrown_value, ConstructorValue):
-                # Verify the constructor belongs to the declared catch type
-                if not self._constructor_matches_type(
-                    e.thrown_value.constructor, catch_type_name
-                ):
-                    raise  # Re-throw: constructor doesn't match catch type
-                catch_env = env.child()
-                catch_env.bind(
-                    stmt.catch_clause.variable, e.thrown_value, mutable=False
-                )
-                for s in stmt.catch_clause.body:
-                    self.exec_stmt(s, catch_env)
-            else:
-                raise
-        except ContractViolationError:
-            raise
-        except GenoRuntimeError as e:
-            if catch_type_name != "String":
-                raise  # Non-string catch doesn't handle runtime errors
-            catch_env = env.child()
-            catch_env.bind(stmt.catch_clause.variable, e.message, mutable=False)
-            for s in stmt.catch_clause.body:
-                self.exec_stmt(s, catch_env)
 
     def _exec_return(self, stmt: ReturnStatement, env: Environment) -> None:
         """Execute a return statement."""
@@ -3633,6 +3778,7 @@ _EXPR_DISPATCH: dict[type, Any] = {
     Identifier: Interpreter._eval_identifier,
     TypeIdentifier: Interpreter._eval_type_identifier,
     ListLiteral: Interpreter._eval_list_literal,
+    MapLiteral: Interpreter._eval_map_literal,
     BinaryOp: Interpreter._eval_binary_op,
     UnaryOp: Interpreter._eval_unary_op,
     FunctionCall: Interpreter._eval_function_call,
@@ -3647,7 +3793,6 @@ _EXPR_DISPATCH: dict[type, Any] = {
     WithExpr: Interpreter._eval_with_expr,
     PropagateExpr: Interpreter._eval_propagate,
     ListComprehension: Interpreter._eval_list_comprehension,
-    ThrowExpression: Interpreter._eval_throw,
     AwaitExpr: Interpreter._eval_await,
 }
 
@@ -3665,7 +3810,6 @@ _STMT_DISPATCH: dict[type, Any] = {
     ReturnStatement: Interpreter._exec_return,
     BreakStatement: Interpreter._exec_break,
     ContinueStatement: Interpreter._exec_continue,
-    TryStatement: Interpreter._exec_try,
     ExpressionStatement: Interpreter._exec_expression_stmt,
     AssertStatement: Interpreter._exec_assert,
 }

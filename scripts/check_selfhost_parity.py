@@ -82,7 +82,9 @@ SELFHOST_REQUIRED_KEYWORDS = {
 # Keywords that canonical has but selfhost intentionally does not support yet
 SELFHOST_KEYWORD_GAP_GROUPS = {
     "loop_control": {"break", "continue"},
-    "exception_control": {"try", "catch", "throw"},
+    # Reserved so that 0.5 code gets a migration error (proposal 0009);
+    # they form no construct, so the selfhost has nothing to implement.
+    "removed_exception_keywords": {"try", "catch", "throw"},
     "abstraction": {"trait", "impl"},
     "async_control": {"async", "await"},
     "tests_and_exports": {"test", "assert", "export"},
@@ -122,7 +124,25 @@ def get_selfhost_builtins() -> set[str]:
 # visible and biased toward host-independent implementation work.
 SELFHOST_BUILTIN_GAP_GROUPS = {
     "pure_collection_next": {
+        "count",
+        "is_empty",
+        "list_index_of",
+        "list_max",
+        "list_min",
+        "map_get_or",
+        "map_is_empty",
+        "mutable_map_is_empty",
+        "set_is_empty",
+        "unique",
         "enumerate",
+        "map_contains_key",
+        "map_keys",
+        "map_remove",
+        "map_size",
+        "map_values",
+        "list_first",
+        "list_get",
+        "list_last",
         "flat_map",
         "list_all",
         "list_any",
@@ -158,9 +178,22 @@ SELFHOST_BUILTIN_GAP_GROUPS = {
         "zip",
     },
     "pure_string_next": {
+        "string_is_alpha",
+        "string_is_alphanumeric",
+        "string_is_digit",
+        "string_is_empty",
+        "string_is_lower",
+        "string_is_upper",
+        "string_is_whitespace",
+        "string_lines",
+        "string_reverse",
+        "string_words",
         "format",
     },
     "pure_math_next": {
+        "float_sum",
+        "min",
+        "sum",
         "bit_or",
         "ceil",
         "clamp",
@@ -180,6 +213,10 @@ SELFHOST_BUILTIN_GAP_GROUPS = {
         "round",
     },
     "pure_option_result_next": {
+        "option_expect",
+        "panic",
+        "result_expect",
+        "result_unwrap",
         "option_and_then",
         "option_flatten",
         "option_map",

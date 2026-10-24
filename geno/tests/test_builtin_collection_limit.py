@@ -476,12 +476,6 @@ def test_set_union_pre_check_honors_configured_limit():
         _builtins.builtin_set_union(s1, s2)
 
 
-def test_repeat_string_pre_check_honors_configured_limit():
-    _builtins.set_max_collection_size(100)
-    with pytest.raises(GenoRuntimeError, match="collection size limit"):
-        _builtins.builtin_repeat_string("ab", 200)
-
-
 def test_string_repeat_pre_check_honors_configured_limit():
     _builtins.set_max_collection_size(100)
     with pytest.raises(GenoRuntimeError, match="collection size limit"):
@@ -602,6 +596,111 @@ def test_json_stringify_pre_check_honors_configured_limit():
         _builtins.builtin_json_stringify_pretty(json_array, 2)
     with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
         _builtins.builtin_json_to_string(["abc"])
+
+
+def _fail_json_encoding(monkeypatch):
+    import json
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("encoded a value whose JSON exceeds the limit")
+
+    monkeypatch.setattr(json, "dumps", fail)
+    monkeypatch.setattr(json.JSONEncoder, "iterencode", fail)
+
+
+def _shared_json_tree(depth: int):
+    from geno.values import ConstructorValue
+
+    # 2**depth leaves in the JSON text, but only depth + 1 nodes in memory.
+    value = ConstructorValue("JsonInt", {"value": 1})
+    for _ in range(depth):
+        value = ConstructorValue("JsonArray", {"items": [value, value]})
+    return value
+
+
+_JSON_SERIALIZERS = [
+    pytest.param(_builtins.builtin_json_stringify, id="json_stringify"),
+    pytest.param(
+        lambda value: _builtins.builtin_json_stringify_pretty(value, 2),
+        id="json_stringify_pretty",
+    ),
+    pytest.param(
+        lambda value: _builtins.builtin_json_to_string([value]),
+        id="json_to_string",
+    ),
+]
+
+
+@pytest.mark.parametrize("serialize", _JSON_SERIALIZERS)
+def test_json_serializers_reject_shared_subtrees_before_encoding(
+    monkeypatch, serialize
+):
+    _fail_json_encoding(monkeypatch)
+    with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
+        serialize(_shared_json_tree(60))
+
+
+@pytest.mark.parametrize("serialize", _JSON_SERIALIZERS)
+def test_json_serializers_reject_repeated_strings_before_encoding(
+    monkeypatch, serialize
+):
+    from geno.values import ConstructorValue
+
+    _builtins.set_max_collection_size(1000)
+    text = ConstructorValue("JsonString", {"value": "a" * 100})
+    # Every collection fits the limit; the twenty copies of the string do not.
+    value = ConstructorValue("JsonArray", {"items": [text] * 20})
+    _fail_json_encoding(monkeypatch)
+    with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
+        serialize(value)
+
+
+def test_json_stringify_streams_to_the_exact_limit():
+    from geno.values import ConstructorValue
+
+    # Escapes make the size uncertain: this encodes to ["é"], 10 chars.
+    value = ConstructorValue(
+        "JsonArray", {"items": [ConstructorValue("JsonString", {"value": "é"})]}
+    )
+    _builtins.set_max_collection_size(10)
+    assert _builtins.builtin_json_stringify(value) == '["\\u00e9"]'
+    _builtins.set_max_collection_size(9)
+    with pytest.raises(GenoRuntimeError, match=r"\(10 > 9\)"):
+        _builtins.builtin_json_stringify(value)
+
+
+@pytest.mark.parametrize(
+    "serialize",
+    [
+        pytest.param(lambda rs, value: rs.json_stringify(value), id="json_stringify"),
+        pytest.param(
+            lambda rs, value: rs.json_stringify_pretty(value, 2),
+            id="json_stringify_pretty",
+        ),
+        pytest.param(lambda rs, value: rs.json_to_string([value]), id="json_to_string"),
+    ],
+)
+def test_compiled_json_serializers_reject_repeated_strings_before_encoding(
+    monkeypatch, serialize
+):
+    from geno import _runtime_support as rs
+
+    monkeypatch.setattr(rs, "_MAX_COLLECTION_SIZE", 1000)
+    value = rs.JsonArray([rs.JsonString("a" * 100)] * 20)
+    _fail_json_encoding(monkeypatch)
+    with pytest.raises(RuntimeError, match="String size exceeds limit"):
+        serialize(rs, value)
+
+
+def test_compiled_json_stringify_streams_to_the_exact_limit(monkeypatch):
+    from geno import _runtime_support as rs
+
+    value = rs.JsonArray([rs.JsonString("é")])
+    monkeypatch.setattr(rs, "_MAX_COLLECTION_SIZE", 10)
+    assert rs.json_stringify(value) == '["\\u00e9"]'
+    monkeypatch.setattr(rs, "_MAX_COLLECTION_SIZE", 9)
+    with pytest.raises(RuntimeError, match=r"\(10 > 9\)"):
+        rs.json_stringify(value)
 
 
 def test_csv_parse_pre_check_honors_configured_limit():
@@ -963,82 +1062,6 @@ def test_installed_serve_route_registry_honors_configured_limit():
 
     with pytest.raises(GenoRuntimeError, match="Route registry size exceeds limit"):
         http_route("GET", "/c", handler)
-
-
-def test_vec_push_limit_error_does_not_mutate_when_caught():
-    source = """
-    func main() -> Int
-        let v: Vec[Int] = vec_new()
-        vec_push(v, 1)
-        vec_push(v, 2)
-        vec_push(v, 3)
-        vec_push(v, 4)
-        vec_push(v, 5)
-        try
-            vec_push(v, 6)
-        catch err: String
-        end try
-        return vec_length(v)
-    end func
-    """
-    assert _run_source_with_limit(source, 5) == 5
-
-
-def test_mutable_map_set_limit_error_does_not_mutate_when_caught():
-    source = """
-    func main() -> Int
-        let m: MutableMap[String, Int] = mutable_map_new()
-        mutable_map_set(m, "a", 1)
-        mutable_map_set(m, "b", 2)
-        mutable_map_set(m, "c", 3)
-        mutable_map_set(m, "d", 4)
-        mutable_map_set(m, "e", 5)
-        try
-            mutable_map_set(m, "f", 6)
-        catch err: String
-        end try
-        return mutable_map_size(m)
-    end func
-    """
-    assert _run_source_with_limit(source, 5) == 5
-
-
-def test_set_add_limit_error_does_not_mutate_when_caught():
-    source = """
-    func main() -> Int
-        let s: Set[Int] = set_new()
-        set_add(s, 1)
-        set_add(s, 2)
-        set_add(s, 3)
-        set_add(s, 4)
-        set_add(s, 5)
-        try
-            set_add(s, 6)
-        catch err: String
-        end try
-        return set_size(s)
-    end func
-    """
-    assert _run_source_with_limit(source, 5) == 5
-
-
-def test_mutable_map_index_assign_honors_limit_before_mutating():
-    source = """
-    func main() -> Int
-        var m: MutableMap[String, Int] = mutable_map_new()
-        mutable_map_set(m, "a", 1)
-        mutable_map_set(m, "b", 2)
-        mutable_map_set(m, "c", 3)
-        mutable_map_set(m, "d", 4)
-        mutable_map_set(m, "e", 5)
-        try
-            m["f"] = 6
-        catch err: String
-        end try
-        return mutable_map_size(m)
-    end func
-    """
-    assert _run_source_with_limit(source, 5) == 5
 
 
 def test_closure_arguments_honor_configured_limit():

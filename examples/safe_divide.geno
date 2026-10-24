@@ -13,7 +13,6 @@ func safe_divide(a: Int, b: Int) -> Result[Int, String]
     end if
 end func safe_divide
 
-
 func find_positive(nums: List[Int]) -> Option[Int]
     example [0, 0, 3, 5] -> Some(3)
     example [0, 0, 0] -> None
@@ -30,7 +29,6 @@ func find_positive(nums: List[Int]) -> Option[Int]
     return None
 end func find_positive
 
-
 func result_message(r: Result[Int, String]) -> String
     example Ok(42) -> "ok"
     example Err("bad") -> "error"
@@ -41,7 +39,6 @@ func result_message(r: Result[Int, String]) -> String
     end match
 end func result_message
 
-
 func option_message(o: Option[Int]) -> String
     example Some(7) -> "found"
     example None -> "none"
@@ -51,7 +48,6 @@ func option_message(o: Option[Int]) -> String
         | None -> return "none"
     end match
 end func option_message
-
 
 func main() -> List[String]
     let r1: Result[Int, String] = safe_divide(10, 2)

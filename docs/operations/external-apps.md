@@ -18,14 +18,24 @@ pin is recorded as context and never selects or installs the tested Geno.
 Each application must pass `geno test`, default process-isolated `geno run`,
 and Python compilation. All tiers run, without fail-fast. The driver requires
 101 unique manifest IDs, complete result coverage, successful individual stages,
-consistent counters, and a successful harness exit. Compiled Python output is
-not executed by this harness, and application stdout is not checked. Backend
-parity and the release's separate exact-output/sitecheck checks remain relevant.
+consistent counters, and a harness exit that agrees with the results. Compiled
+Python output is not executed by this harness, and application stdout is not
+checked. Backend parity and the release's separate exact-output/sitecheck checks
+remain relevant.
+
+A release that breaks source compatibility carries applications across with
+`geno migrate` (proposal 0003). An application that fails as written must pass
+after the candidate's own migration: the driver copies the corpus, runs the
+candidate's `geno migrate --diff` and then `geno migrate` in each failing
+application, and runs every tier of the copy again, where all 101 must pass.
+The receipt records the as-written counts and, under `migrated`, the
+applications that needed migration; each one's diff is in the logs.
 
 The workflow uses a read-only token, disables persisted checkout credentials,
 and pins both actions and corpus source. Its evidence artifact retains the
 wheel, wheel hash, source and corpus revisions, installed location/environment,
-commands, logs, and per-application JSON for 30 days, including on failure. A
+commands, logs, and per-application JSON (as written and, when needed, after
+migration) for 30 days, including on failure. A
 failed setup can have partial evidence; absence of a passing receipt is never
 a pass. The virtual environment is not uploaded.
 

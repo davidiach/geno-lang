@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import platform
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -20,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CORPUS_REPOSITORY = "oskarasi/geno-corpus"
 CORPUS_REVISION = "977644bbc4a7ca3b0210cf8f024d9c9c67be2b42"
 EXPECTED_APPS = 101
+# IDs name evidence logs, so they stay plain file-name characters.
+_APP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # Isolated Python ignores the caller's import path. The ordinary console script
 # and corpus subprocesses also receive an environment without Python overrides.
@@ -82,8 +86,12 @@ def validate_manifest(manifest: dict[str, Any], corpus: Path) -> dict[str, str]:
     selected: dict[str, str] = {}
     for app in apps:
         app_id, tier = app["id"], app["tier"]
-        if not isinstance(app_id, str) or not app_id or app_id in selected:
-            raise ValueError("Corpus application IDs must be nonempty and unique")
+        if (
+            not isinstance(app_id, str)
+            or not _APP_ID.fullmatch(app_id)
+            or app_id in selected
+        ):
+            raise ValueError("Corpus application IDs must be plain names and unique")
         if tier not in {"flagship", "reference", "corpus"}:
             raise ValueError(f"Unknown corpus tier: {tier}")
         if not (corpus / app["path"]).resolve().is_relative_to(corpus.resolve()):
@@ -92,10 +100,16 @@ def validate_manifest(manifest: dict[str, Any], corpus: Path) -> dict[str, str]:
     return selected
 
 
-def validate_results(
+_STAGES = ("ok", "test_ok", "run_ok", "compile_ok")
+
+
+def failed_applications(
     results: dict[str, Any], selected: dict[str, str], executable: Path, version: str
-) -> None:
-    """A green harness exit alone cannot prove full candidate coverage."""
+) -> list[str]:
+    """Check that *results* cover the corpus once; return the apps that failed.
+
+    An application passes only when every stage reports exactly ``True``.
+    """
     if results["tier"] != "all" or results["geno"] != str(executable):
         raise ValueError("Corpus did not use all tiers and the explicit candidate")
     if results["geno_version"] != version:
@@ -104,18 +118,28 @@ def validate_results(
     ids = [app["id"] for app in apps]
     if len(ids) != len(selected) or set(ids) != set(selected):
         raise ValueError("Corpus results do not cover every selected application once")
+    failed = []
     for app in apps:
-        if app["tier"] != selected[app["id"]] or any(
-            app.get(key) is not True
-            for key in ("ok", "test_ok", "run_ok", "compile_ok")
-        ):
-            raise ValueError(f"Application did not pass every stage: {app['id']}")
+        if app["tier"] != selected[app["id"]]:
+            raise ValueError(f"Application changed tier: {app['id']}")
+        if any(app.get(key) is not True for key in _STAGES):
+            failed.append(app["id"])
     if (results["total"], results["passed"], results["failed"]) != (
         len(selected),
-        len(selected),
-        0,
+        len(selected) - len(failed),
+        len(failed),
     ):
         raise ValueError("Corpus summary counters are inconsistent")
+    return failed
+
+
+def validate_results(
+    results: dict[str, Any], selected: dict[str, str], executable: Path, version: str
+) -> None:
+    """A green harness exit alone cannot prove full candidate coverage."""
+    failed = failed_applications(results, selected, executable, version)
+    if failed:
+        raise ValueError(f"Application did not pass every stage: {failed[0]}")
 
 
 class Commands:
@@ -127,9 +151,19 @@ class Commands:
         self.env["PYTHONNOUSERSITE"] = "1"
         self.env["PYTHONDONTWRITEBYTECODE"] = "1"
         self.sequence = 0
+        self.returncode: int | None = None
 
-    def run(self, name: str, args: list[str], cwd: Path, timeout: int = 180) -> str:
+    def run(
+        self,
+        name: str,
+        args: list[str],
+        cwd: Path,
+        timeout: int = 180,
+        *,
+        check: bool = True,
+    ) -> str:
         self.sequence += 1
+        self.returncode = None
         log = self.output / "logs" / f"{self.sequence:02d}-{name}.log"
         log.parent.mkdir(exist_ok=True)
         started = time.monotonic()
@@ -146,8 +180,8 @@ class Commands:
                     timeout=timeout,
                     check=False,
                 )
-            record["returncode"] = result.returncode
-            if result.returncode:
+            record["returncode"] = self.returncode = result.returncode
+            if result.returncode and check:
                 raise RuntimeError(f"{name} failed ({result.returncode}); see {log}")
             return log.read_text(encoding="utf-8").strip()
         except subprocess.TimeoutExpired:
@@ -227,8 +261,58 @@ def qualify(wheel: Path, corpus: Path, output: Path, receipt: dict[str, Any]) ->
     version = commands.run("candidate-version", [str(executable), "--version"], output)
     if version != f"geno {identity['internal_version']}":
         raise ValueError("Console script does not match the imported candidate")
+    results = run_corpus(
+        commands, "corpus", python, executable, corpus, output / "corpus.json"
+    )
+    failed = failed_applications(results, selected, executable, version)
+    receipt["results"] = {k: results[k] for k in ("total", "passed", "failed")}
+    if not failed:
+        return
+
+    # A release may break source compatibility when `geno migrate` carries
+    # applications across it (proposal 0003): an application that fails as
+    # written must pass after the candidate's own migration, and the receipt
+    # names each one.
+    migrated = output / "migrated-corpus"
+    shutil.copytree(corpus, migrated, ignore=shutil.ignore_patterns(".git"))
+    paths = {
+        app["id"]: app["path"]
+        for app in json.loads((corpus / "manifest.json").read_text())["apps"]
+    }
+    for app_id in failed:
+        app_dir = migrated / paths[app_id]
+        commands.run(
+            f"migrate-diff-{app_id}",
+            [str(executable), "migrate", "--diff", "."],
+            app_dir,
+        )
+        commands.run(f"migrate-{app_id}", [str(executable), "migrate", "."], app_dir)
+    migrated_results = run_corpus(
+        commands,
+        "migrated-corpus",
+        python,
+        executable,
+        migrated,
+        output / "corpus-migrated.json",
+    )
+    validate_results(migrated_results, selected, executable, version)
+    receipt["migrated"] = {
+        "applications": failed,
+        "results": {k: migrated_results[k] for k in ("total", "passed", "failed")},
+    }
+
+
+def run_corpus(
+    commands: Commands,
+    name: str,
+    python: Path,
+    executable: Path,
+    corpus: Path,
+    json_out: Path,
+) -> dict[str, Any]:
+    """Run every tier of *corpus*; its exit must agree with its results."""
     commands.run(
-        "corpus",
+        name,
         [
             str(python),
             "-I",
@@ -239,14 +323,19 @@ def qualify(wheel: Path, corpus: Path, output: Path, receipt: dict[str, Any]) ->
             "--geno-bin",
             str(executable),
             "--json-out",
-            str(output / "corpus.json"),
+            str(json_out),
         ],
         corpus,
         timeout=900,
+        check=False,
     )
-    results = json.loads((output / "corpus.json").read_text())
-    validate_results(results, selected, executable, version)
-    receipt["results"] = {k: results[k] for k in ("total", "passed", "failed")}
+    returncode = commands.returncode
+    if returncode and not json_out.exists():
+        raise RuntimeError(f"{name} failed ({returncode}) without results")
+    results: dict[str, Any] = json.loads(json_out.read_text())
+    if bool(returncode) != bool(results.get("failed")):
+        raise ValueError(f"{name} exit status disagrees with its results")
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -268,8 +357,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         qualify(args.wheel.resolve(), args.corpus.resolve(), output, receipt)
         receipt["passed"] = True
+        migrated = receipt.get("migrated", {}).get("applications", [])
+        after = f" ({len(migrated)} after geno migrate: {', '.join(migrated)})"
         print(
-            f"PASS: all {EXPECTED_APPS} external applications passed test/run/Python compilation"
+            f"PASS: all {EXPECTED_APPS} external applications passed "
+            f"test/run/Python compilation{after if migrated else ''}"
         )
         return 0
     except (

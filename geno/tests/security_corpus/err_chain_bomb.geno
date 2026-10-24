@@ -1,0 +1,26 @@
+# EXPECT: E503
+# Propagate, wrap, and re-wrap Err values through recursion with ? and
+# map_err.  Each level wraps the error message and passes it on.  Tests
+# that error propagation chains are step-counted.
+func fail_at(depth: Int) -> Result[Int, String]
+    example 0 -> Err("base")
+    if depth <= 0 then
+        return Err("base")
+    end if
+    let inner = fail_at(depth - 1).map_err(fn(e) -> f"level-{to_string(depth)}({e})")
+    let value = inner?
+    return Ok(value + 1)
+end func
+
+func main() -> Int
+    var total: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        match fail_at(20) with
+            | Ok(v) -> total = total + v
+            | Err(e) -> total = total + length(e)
+        end match
+        i = i + 1
+    end while
+    return total
+end func

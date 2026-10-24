@@ -114,11 +114,9 @@ The following builtins require no capabilities and work on every target:
 
 **List operations:** `length`, `head`, `tail`, `append`, `concat`, `set_at`, `slice`, `filter`, `map`, `fold`, `contains`, `take_while`, `all`, `sort`, `sort_by`, `reverse`, `zip`, `enumerate`, `flat_map`
 
-**String operations:** `split`, `join`, `trim`, `to_lower`, `to_upper`, `replace`, `ends_with`, `split_once`, `starts_with`, `to_chars`, `sort_strings`, `contains_substring`, `repeat_string`, `substring`, `format`, `char_code`, `from_char_code`
+**String operations:** `split`, `join`, `trim`, `to_lower`, `to_upper`, `replace`, `ends_with`, `split_once`, `starts_with`, `to_chars`, `substring`, `format`, `char_code`, `from_char_code`
 
-**Math operations:** `add`, `subtract`, `multiply`, `divide`, `sqrt`, `floor`, `ceil`, `round`, `max`, `abs`, `square`, `clamp`, `bit_or`
-
-**Type predicates:** `is_sorted`, `is_positive`, `is_numeric_string`, `is_permutation`
+**Math operations:** `add`, `subtract`, `multiply`, `divide`, `sqrt`, `floor`, `ceil`, `round`, `max`, `abs`, `clamp`, `bit_or`
 
 **Conversions:** `parse_int`, `parse_float`, `to_string`, `float_to_int`, `int_to_float`
 

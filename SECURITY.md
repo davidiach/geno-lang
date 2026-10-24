@@ -415,7 +415,7 @@ different security profile than the Python sandbox.
 - **Regex pattern length limit**: Patterns are capped at 1,000 characters (`_MAX_REGEX_PATTERN_LEN`)
   to mitigate ReDoS.
 - **I/O stubs that fail closed**: `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, `fs_canonicalize`,
-  `exec`, and `exec_with_input` all throw or return `Err` in the browser context rather than
+  `exec`, and `exec_with_input` all fail or return `Err` in the browser context rather than
   silently succeeding.
 - **Immutable constructors**: ADT values (`Some`, `Ok`, `Err`, `JsonValue`, etc.) are created
   with `Object.freeze`, preventing mutation after construction.

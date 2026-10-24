@@ -456,8 +456,8 @@ class TestBrowserDeployGuide:
             '    getAllResponseHeaders() { return "x-test: ok\\r\\n"; }\n'
             "}\n"
             "globalThis.XMLHttpRequest = FakeXHR;\n" + JS_RUNTIME_PRELUDE + "\n"
-            'console.log(http_fetch("https://example.test/data"));\n'
-            'console.log(http_fetch("https://example.test/missing"));\n'
+            'console.log(http_fetch("https://example.test/data").value);\n'
+            'console.log(http_fetch("https://example.test/missing").value);\n'
             "const r = http_request(\n"
             '    "POST",\n'
             '    "https://example.test/post",\n'

@@ -136,6 +136,30 @@ class _GenoMissing:
 _GENO_MISSING = _GenoMissing()
 
 
+# The default ``object.__hash__`` is derived from identity. It keys the tables
+# below and is never shown to a program, so it discloses nothing; ``id`` stays
+# out of the sandbox.
+_geno_object_any: Any = _GENO_OBJECT
+_object_identity_hash: Callable[[Any], int] = _geno_object_any.__hash__
+
+
+def _identity_find(
+    table: dict[int, list[tuple[Any, Any]]], value: Any
+) -> tuple[Any, Any] | None:
+    """Return the ``(value, data)`` entry stored for this very object."""
+    for entry in table.get(_object_identity_hash(value), ()):
+        if entry[0] is value:
+            return entry
+    return None
+
+
+def _identity_store(
+    table: dict[int, list[tuple[Any, Any]]], value: Any, data: Any = None
+) -> None:
+    key = _object_identity_hash(value)
+    table[key] = [*table.get(key, ()), (value, data)]
+
+
 def _geno_seen_contains(seen: tuple[Any, ...], value: Any) -> bool:
     """Identity membership test over the containers enclosing ``value``.
 
@@ -358,40 +382,42 @@ class Constructor:
         return f"{type(self).__name__}({field_strs})"
 
 
-def _geno_deepcopy(value: Any, memo: list[tuple[Any, Any]] | None = None) -> Any:
+def _geno_deepcopy(
+    value: Any, memo: dict[int, list[tuple[Any, Any]]] | None = None
+) -> Any:
     """Copy Geno value containers while preserving explicit reference types."""
     if memo is None:
-        memo = []
+        memo = {}
 
     if isinstance(value, (_GenoArray, _GenoVec, _GenoMutableMap, _GenoSet)):
         return value
 
-    for original, copied in memo:
-        if original is value:
-            return copied
+    found = _identity_find(memo, value)
+    if found is not None:
+        return found[1]
 
     if isinstance(value, list):
         copied_list: list[Any] = []
-        memo += [(value, copied_list)]
+        _identity_store(memo, value, copied_list)
         copied_list.extend(_geno_deepcopy(item, memo) for item in value)
         return copied_list
 
     if isinstance(value, dict):
         copied_dict: dict[Any, Any] = {}
-        memo += [(value, copied_dict)]
+        _identity_store(memo, value, copied_dict)
         for key, nested_value in value.items():
             copied_dict[_geno_deepcopy(key, memo)] = _geno_deepcopy(nested_value, memo)
         return copied_dict
 
     if isinstance(value, tuple):
         copied_tuple = tuple(_geno_deepcopy(item, memo) for item in value)
-        memo += [(value, copied_tuple)]
+        _identity_store(memo, value, copied_tuple)
         return copied_tuple
 
     if isinstance(value, Constructor):
         geno_object: Any = _GENO_OBJECT
         copied_constructor = geno_object.__new__(type(value))
-        memo += [(value, copied_constructor)]
+        _identity_store(memo, value, copied_constructor)
         for field in _dataclasses_fields(value):
             _object_setattr(
                 copied_constructor,
@@ -541,23 +567,24 @@ class _PropagateReturn(Exception):
         self.value = value
 
 
-class _GenoThrow(Exception):
-    """Internal: raised by throw expressions to carry a typed error value."""
-
-    def __init__(self, value: Any) -> None:
-        self.value = value
-        super().__init__(str(value))
-
-
 class _GenoContractViolation(RuntimeError):
     """Internal: uncatchable requires/ensures failure."""
 
 
-def _geno_throw(value: Any) -> None:
-    """Runtime support for throw expressions."""
-    if isinstance(value, str):
-        raise RuntimeError(value)
-    raise _GenoThrow(value)
+def _geno_named_constructor(cls: Any, name: str) -> Any:
+    """Give a constructor class renamed away from a host name its Geno name.
+
+    The compiler renames a constructor such as ``T`` to ``T_g`` (see
+    geno/host_names.py); values still print and match as ``T``.
+    """
+    cls.__name__ = name
+    cls.__qualname__ = name
+    return cls
+
+
+def _geno_panic(message: str) -> None:
+    """End the program with *message*: Geno code cannot recover from a panic."""
+    raise RuntimeError(message)
 
 
 def _propagate(val: Any) -> Any:
@@ -659,6 +686,26 @@ def contains(lst: list[Any], item: Any) -> bool:
     return item in lst
 
 
+def _geno_in(element: Any, container: Any, member: Any = None) -> bool:
+    """``element in container``, the operands evaluated in source order.
+
+    ``member`` is the builtin the checker chose; unchecked code dispatches
+    on the container.
+    """
+    if member is None:
+        if isinstance(container, str):
+            member = string_contains
+        elif isinstance(container, list):
+            member = contains
+        elif isinstance(container, _GenoSet):
+            member = set_contains
+        elif isinstance(container, _GenoMutableMap):
+            member = mutable_map_contains
+        else:
+            member = map_contains_key
+    return bool(member(container, element))
+
+
 def take_while(lst: list, pred: Callable) -> list:
     result = []
     for x in lst:
@@ -673,7 +720,9 @@ def all_(lst: list, pred: Callable) -> bool:
     return all(pred(x) for x in lst)
 
 
-def sort(lst: list, cmp: Callable) -> list:
+def sort(lst: list, cmp: Callable | None = None) -> list:
+    if cmp is None:
+        return sorted(lst, key=_geno_sort_key)
     return sorted(lst, key=cmp_to_key(cmp))
 
 
@@ -735,14 +784,6 @@ def to_chars(s: str) -> list:
     return result
 
 
-def sort_strings(values: list) -> list:
-    if len(values) > 100_000:
-        raise RuntimeError("sort_strings: list too large (max 100,000 elements)")
-    if not all(isinstance(v, str) for v in values):
-        raise RuntimeError("sort_strings expects a list of strings")
-    return sorted(values)
-
-
 def divide(a: Any, b: Any) -> Any:
     if b == 0:
         raise RuntimeError("Division by zero")
@@ -782,37 +823,55 @@ def max_(a: Any, b: Any) -> Any:
     return _widen_mixed(a if a >= b else b, a, b)
 
 
-def is_sorted(lst: list) -> bool:
-    return all(lst[i] <= lst[i + 1] for i in range(len(lst) - 1))
+def min_(a: Any, b: Any) -> Any:
+    return _widen_mixed(a if a <= b else b, a, b)
 
 
-def is_positive(x: Any) -> bool:
-    return bool(x > 0)
+def sum_(lst: list) -> int:
+    total: int = _check_int_bits(sum(lst, 0))
+    return total
 
 
-def is_numeric_string(s: Any) -> bool:
-    if not isinstance(s, str):
-        return False
-    return _DECIMAL_INT_RE.fullmatch(s.strip()) is not None
+def float_sum(lst: list) -> float:
+    return float(sum(lst, 0.0))
 
 
-def is_permutation(lst1: list, lst2: list) -> bool:
-    if len(lst1) > 100_000 or len(lst2) > 100_000:
-        raise RuntimeError("is_permutation: list too large (max 100,000 elements)")
-    if len(lst1) != len(lst2):
-        return False
-    try:
-        return sorted(lst1) == sorted(lst2)
-    except TypeError:
-        used = [False] * len(lst2)
-        for left in lst1:
-            for index, right in enumerate(lst2):
-                if not used[index] and left == right:
-                    used[index] = True
-                    break
-            else:
-                return False
-        return True
+def list_min(lst: list) -> Any:
+    return Some(_builtin_min(lst, key=_geno_sort_key)) if lst else None_
+
+
+def list_max(lst: list) -> Any:
+    return Some(_builtin_max(lst, key=_geno_sort_key)) if lst else None_
+
+
+def is_empty(lst: list) -> bool:
+    return not lst
+
+
+def list_index_of(lst: list, item: Any) -> Any:
+    for index, element in enumerate(lst):
+        if element == item:
+            return Some(index)
+    return None_
+
+
+def count(lst: list, pred: Callable) -> int:
+    return sum(1 for item in lst if pred(item))
+
+
+def unique(lst: list) -> list:
+    result: list = []
+    seen: set = set()
+    for item in lst:
+        try:
+            if item in seen:
+                continue
+            seen.add(item)
+        except TypeError:  # an unhashable value (a list): compare instead
+            if item in result:
+                continue
+        result.append(item)
+    return result
 
 
 def parse_int(s: str) -> Any:
@@ -907,10 +966,6 @@ def to_string(x: Any) -> str:
     return result
 
 
-def square(x: Any) -> Any:
-    return x * x
-
-
 def add(a: Any, b: Any) -> Any:
     return a + b
 
@@ -936,13 +991,15 @@ def bit_or(a: int, b: int) -> int:
 
 
 def range_(*args: int) -> list[int]:
-    if len(args) == 2:
+    if len(args) == 1:
+        start, end, step = 0, args[0], 1
+    elif len(args) == 2:
         start, end = args
         step = 1
     elif len(args) == 3:
         start, end, step = args
     else:
-        raise RuntimeError(f"range expects 2 or 3 arguments, got {len(args)}")
+        raise RuntimeError(f"range expects 1 to 3 arguments, got {len(args)}")
     _require_int("range", start, "start")
     _require_int("range", end, "end")
     _require_int("range", step, "step")
@@ -1011,6 +1068,11 @@ def unwrap(opt: Any) -> Any:
     raise RuntimeError(f"unwrap expects Option, got {type(opt).__name__}")
 
 
+def panic(message: str) -> None:
+    """End the program with *message*; Geno code cannot recover from a panic."""
+    raise RuntimeError(message)
+
+
 def unwrap_or(opt: Any, default: Any) -> Any:
     if isinstance(opt, Some):
         return opt.value
@@ -1025,6 +1087,36 @@ def map_insert(m: dict[Any, Any], key: Any, value: Any) -> dict[Any, Any]:
     new_map = dict(m)
     new_map[key] = value
     return new_map
+
+
+def map_is_empty(m: dict[Any, Any]) -> bool:
+    return not m
+
+
+def map_get_or(m: dict[Any, Any], key: Any, default: Any) -> Any:
+    return m.get(key, default)
+
+
+def map_size(m: dict[Any, Any]) -> int:
+    return len(m)
+
+
+def map_contains_key(m: dict[Any, Any], key: Any) -> bool:
+    return key in m
+
+
+def map_remove(m: dict[Any, Any], key: Any) -> dict[Any, Any]:
+    return {k: v for k, v in m.items() if k != key}
+
+
+def map_keys(m: dict[Any, Any]) -> list[Any]:
+    _check_collection_kind("List", len(m))
+    return list(m.keys())
+
+
+def map_values(m: dict[Any, Any]) -> list[Any]:
+    _check_collection_kind("List", len(m))
+    return list(m.values())
 
 
 def map_get(m: dict[Any, Any], key: Any) -> Any:
@@ -1340,7 +1432,7 @@ def _check_collection_size(result):
     constructor cannot hide an over-limit inner value.
     """
     stack: list[Any] = [result]
-    visited: list[Any] = []
+    visited: dict[int, list[tuple[Any, Any]]] = {}
     while stack:
         value = stack.pop()
         if isinstance(value, bool):
@@ -1356,53 +1448,53 @@ def _check_collection_size(result):
             _check_collection_kind("String", len(value))
             continue
 
-        if any(seen is value for seen in visited):
+        if _identity_find(visited, value) is not None:
             continue
 
         if isinstance(value, list):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("List", len(value))
             stack.extend(value)
             continue
         if isinstance(value, tuple):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Tuple", len(value))
             stack.extend(value)
             continue
         if isinstance(value, dict):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Map", len(value))
             stack.extend(value.keys())
             stack.extend(value.values())
             continue
 
         if isinstance(value, _GenoArray):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Array", len(value))
             stack.extend(value._elements)
             continue
 
         if isinstance(value, _GenoVec):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Vec", len(value))
             stack.extend(value._elements)
             continue
 
         if isinstance(value, _GenoSet):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("Set", len(value))
             stack.extend(value._data)
             continue
 
         if isinstance(value, _GenoMutableMap):
-            visited.append(value)
+            _identity_store(visited, value)
             _check_collection_kind("MutableMap", len(value._data))
             stack.extend(value._data.keys())
             stack.extend(value._data.values())
             continue
 
         if isinstance(value, Constructor):
-            visited.append(value)
+            _identity_store(visited, value)
             stack.extend(
                 _object_getattribute(value, field.name)
                 for field in _dataclasses_fields(value)
@@ -1636,6 +1728,12 @@ def mutable_map_delete(m, key):
     return None
 
 
+def mutable_map_is_empty(m):
+    if not isinstance(m, _GenoMutableMap):
+        raise RuntimeError("mutable_map_is_empty expects MutableMap")
+    return not m._data
+
+
 def mutable_map_size(m):
     if not isinstance(m, _GenoMutableMap):
         raise RuntimeError("mutable_map_size expects MutableMap")
@@ -1760,8 +1858,8 @@ class _GenoAsync:
             try:
                 self._result = yield from self._awaitable.__await__()
                 finished = True
-            except (_GenoThrow, RuntimeError, IndexError) as exc:
-                # What a Geno `catch` can see; anything else ends the run.
+            except (RuntimeError, IndexError) as exc:
+                # A panic: an awaiter that is already waiting sees it too.
                 self._error = exc
                 finished = True
                 raise
@@ -1830,6 +1928,12 @@ def set_contains(s, item):
     if not isinstance(s, _GenoSet):
         raise RuntimeError("set_contains expects Set")
     return item in s._data
+
+
+def set_is_empty(s):
+    if not isinstance(s, _GenoSet):
+        raise RuntimeError("set_is_empty expects Set")
+    return not s._data
 
 
 def set_size(s):
@@ -3005,6 +3109,129 @@ def _json_value_to_python(value):
     )
 
 
+# JSON.stringify ignores indentation past 10 spaces. Clamp to match, which also
+# keeps the indent from multiplying the size of the output.
+_JSON_MAX_INDENT = 10
+# Size bound for anything the bounds do not model (including types json.dumps
+# rejects); it forces the exact streaming path, which raises json's own error.
+_JSON_SIZE_UNKNOWN = 1 << 62
+
+
+def _json_size_bounds(
+    obj: Any, pretty: bool, ensure_ascii: bool
+) -> tuple[int, int, int, int]:
+    """Bound the length of ``obj``'s JSON encoding without building it.
+
+    Returns ``(min_chars, max_chars, lines, indent_units)``. At nesting depth
+    ``d`` with indent width ``w`` the encoding is at least
+    ``min_chars + w * (indent_units + d * lines)`` characters and at most the
+    same with ``max_chars``. Only scalar text is inexact (string escapes and
+    number digits). Mirrors ``geno.builtins._json_size_bounds`` without its
+    shared-subtree cache: the sandbox has no id(), and the converted value here
+    is already a tree.
+    """
+    # An escape is at most 6 characters; with ensure_ascii an astral character
+    # becomes a 12-character surrogate pair.
+    escape_width = 12 if ensure_ascii else 6
+    if isinstance(obj, (list, dict)):
+        return _json_container_bounds(obj, pretty, escape_width)
+    # A scalar encodes the same at the top level as inside a compact list.
+    min_chars, max_chars, _, _ = _json_container_bounds([obj], False, escape_width)
+    return min_chars - 2, max_chars - 2, 0, 0
+
+
+def _json_container_bounds(
+    obj: Any, pretty: bool, escape_width: int
+) -> tuple[int, int, int, int]:
+    """``_json_size_bounds`` for a list or dict."""
+    count = len(obj)
+    if count == 0:
+        return 2, 2, 0, 0
+    # Brackets and commas, plus a newline before each item and the close.
+    min_chars = max_chars = 2 + (count - 1) + (count + 1 if pretty else 0)
+    lines = count + 1 if pretty else 0
+    indent_units = count if pretty else 0
+    children = obj
+    if isinstance(obj, dict):
+        children = obj.values()
+        separator = 2 if pretty else 1
+        for key in obj:
+            if type(key) is str:
+                min_chars += len(key) + 2 + separator
+                max_chars += len(key) * escape_width + 2 + separator
+            else:
+                max_chars += _JSON_SIZE_UNKNOWN
+    # Scalars are measured inline: a call per item would dominate the cost.
+    for child in children:
+        kind = type(child)
+        if kind is str:
+            min_chars += len(child) + 2
+            max_chars += len(child) * escape_width + 2
+        elif kind is int:
+            # Sign plus at most bit_length * log10(2) + 1 digits.
+            min_chars += 1
+            max_chars += child.bit_length() * 10 // 33 + 2
+        elif kind is float:
+            # repr is "0.0" to "-2.2250738585072014e-308".
+            min_chars += 3
+            max_chars += 24
+        elif kind is bool or child is None:
+            min_chars += 4
+            max_chars += 5
+        elif kind is list or kind is dict:
+            child_min, child_max, child_lines, child_units = _json_container_bounds(
+                child, pretty, escape_width
+            )
+            min_chars += child_min
+            max_chars += child_max
+            # Children sit one level deeper than this container.
+            lines += child_lines
+            indent_units += child_units + child_lines
+        else:
+            max_chars += _JSON_SIZE_UNKNOWN
+    return min_chars, max_chars, lines, indent_units
+
+
+def _json_dumps_under_limit(
+    func_name: str, obj: Any, *, indent: int | None = None, ensure_ascii: bool = True
+) -> str:
+    """``json.dumps`` that fails before building output over the size cap.
+
+    A subtree shared by reference is written once per occurrence, so a small
+    value can encode to an arbitrarily large string. Bound the size first and
+    stream the encoding only when the bounds cannot decide.
+    """
+    import json as _json
+
+    separators = (",", ":") if indent is None else (",", ": ")
+    min_chars, max_chars, _, indent_units = _json_size_bounds(
+        obj, indent is not None, ensure_ascii
+    )
+    indentation = (indent or 0) * indent_units
+    if max_chars + indentation <= _MAX_COLLECTION_SIZE:
+        return _json.dumps(
+            obj,
+            indent=indent,
+            separators=separators,
+            ensure_ascii=ensure_ascii,
+            allow_nan=False,
+        )
+    _check_string_result_size(func_name, min_chars + indentation)
+    encoder = _json.JSONEncoder(
+        indent=indent,
+        separators=separators,
+        ensure_ascii=ensure_ascii,
+        allow_nan=False,
+    )
+    size = 0
+    chunks = []
+    for chunk in encoder.iterencode(obj):
+        size += len(chunk)
+        _check_string_result_size(func_name, size)
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
 def _reject_json_constant(name: str) -> None:
     raise ValueError(f"Invalid JSON constant: {name}")
 
@@ -3024,36 +3251,29 @@ def json_parse(text: str):
 
 def json_stringify(value) -> str:
     """Convert a JsonValue to a JSON string."""
-    import json as _json
-
     _check_collection_size(value)
     obj = _json_value_to_python(value)
-    result = _json.dumps(obj, separators=(",", ":"), allow_nan=False)
-    _check_string_result_size("json_stringify", len(result))
-    return result
+    return _json_dumps_under_limit("json_stringify", obj)
 
 
 def json_stringify_pretty(value, indent) -> str:
     """Pretty-print a JsonValue. ``indent <= 0`` returns compact form.
 
+    Indents above 10 print as 10, matching JavaScript's JSON.stringify.
     Object key ordering matches JsonObject insertion order (no sorting).
     """
-    import json as _json
-
     if not isinstance(indent, int) or isinstance(indent, bool):
         raise RuntimeError(
             f"json_stringify_pretty: indent must be Int, got {type(indent).__name__}"
         )
     _check_collection_size(value)
     obj = _json_value_to_python(value)
-    if indent <= 0:
-        result = _json.dumps(
-            obj, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-        )
-    else:
-        result = _json.dumps(obj, indent=indent, ensure_ascii=False, allow_nan=False)
-    _check_string_result_size("json_stringify_pretty", len(result))
-    return result
+    return _json_dumps_under_limit(
+        "json_stringify_pretty",
+        obj,
+        indent=min(indent, _JSON_MAX_INDENT) if indent > 0 else None,
+        ensure_ascii=False,
+    )
 
 
 def _geno_value_to_python(value):
@@ -3112,13 +3332,9 @@ def _geno_value_to_python(value):
 
 def json_to_string(value) -> str:
     """Convert any Geno value to a JSON string."""
-    import json as _json
-
     _check_collection_size(value)
     obj = _geno_value_to_python(value)
-    result = _json.dumps(obj, separators=(",", ":"), allow_nan=False)
-    _check_string_result_size("json_to_string", len(result))
-    return result
+    return _json_dumps_under_limit("json_to_string", obj)
 
 
 # =============================================================================
@@ -3218,20 +3434,6 @@ def flat_map(lst, fn):
     return result
 
 
-def contains_substring(text, substring):
-    """Check if a string contains a substring."""
-    return substring in text
-
-
-def repeat_string(text, count):
-    """Repeat a string a given number of times."""
-    if count < 0:
-        raise RuntimeError("repeat_string: count must be non-negative")
-    if len(text) * count > _MAX_COLLECTION_SIZE:
-        raise RuntimeError("repeat_string: result would exceed collection size limit")
-    return text * count
-
-
 def string_trim(text):
     return text.strip()
 
@@ -3269,12 +3471,72 @@ def string_char_at(text, index):
     return text[index]
 
 
-def string_index_of(text, sub):
-    return _require_safe_js_int(text.find(sub), "string_index_of result")
+_ASCII_WHITESPACE = " \t\n\r\f\v"
+_ASCII_DIGITS = "0123456789"
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 
 
-def string_last_index_of(text, sub):
-    return _require_safe_js_int(text.rfind(sub), "string_last_index_of result")
+def _ascii_test(text: str, allowed: str) -> bool:
+    return bool(text) and all(char in allowed for char in text)
+
+
+def string_is_empty(text: str) -> bool:
+    return text == ""
+
+
+def string_reverse(text: str) -> str:
+    return text[::-1]
+
+
+def string_lines(text: str) -> list:
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
+def string_words(text: str) -> list:
+    spaced = "".join(" " if char in _ASCII_WHITESPACE else char for char in text)
+    return [word for word in spaced.split(" ") if word]
+
+
+def string_is_digit(text: str) -> bool:
+    return _ascii_test(text, _ASCII_DIGITS)
+
+
+def string_is_alpha(text: str) -> bool:
+    return _ascii_test(text, _ASCII_UPPER + _ASCII_LOWER)
+
+
+def string_is_alphanumeric(text: str) -> bool:
+    return _ascii_test(text, _ASCII_UPPER + _ASCII_LOWER + _ASCII_DIGITS)
+
+
+def string_is_whitespace(text: str) -> bool:
+    return _ascii_test(text, _ASCII_WHITESPACE)
+
+
+def string_is_upper(text: str) -> bool:
+    return _ascii_test(text, _ASCII_UPPER)
+
+
+def string_is_lower(text: str) -> bool:
+    return _ascii_test(text, _ASCII_LOWER)
+
+
+def string_index_of(text: str, sub: str) -> Any:
+    index = text.find(sub)
+    if index < 0:
+        return None_
+    return Some(_require_safe_js_int(index, "string_index_of result"))
+
+
+def string_last_index_of(text: str, sub: str) -> Any:
+    index = text.rfind(sub)
+    if index < 0:
+        return None_
+    return Some(_require_safe_js_int(index, "string_last_index_of result"))
 
 
 def string_repeat(text, count):
@@ -3447,6 +3709,18 @@ def result_unwrap_or(result, default):
     return default
 
 
+def result_unwrap(result: Any) -> Any:
+    if isinstance(result, Ok):
+        return result.value
+    raise RuntimeError(f"unwrap called on Err: {_geno_format(result.error)}")
+
+
+def result_expect(result: Any, message: str) -> Any:
+    if isinstance(result, Ok):
+        return result.value
+    raise RuntimeError(f"{message}: {_geno_format(result.error)}")
+
+
 def result_is_ok(result):
     return isinstance(result, Ok)
 
@@ -3482,6 +3756,12 @@ def option_unwrap_or(option, default):
     if isinstance(option, Some):
         return option.value
     return default
+
+
+def option_expect(option: Any, message: str) -> Any:
+    if isinstance(option, Some):
+        return option.value
+    raise RuntimeError(message)
 
 
 def option_is_some(option):
@@ -3875,6 +4155,19 @@ def map_from_list(pairs):
     return result
 
 
+def _map_literal(pairs: list[tuple[Any, Any]]) -> dict[Any, Any]:
+    """Build the Map a `{key: value, ...}` literal denotes.
+
+    A separate name from `map_from_list`, which a program may redefine.
+    """
+    result: dict[Any, Any] = {}
+    for key, value in pairs:
+        if key not in result:
+            _check_collection_kind("Map", len(result) + 1)
+        result[key] = value
+    return result
+
+
 def map_merge(m1, m2):
     expected = len(m1)
     for key in m2:
@@ -3944,6 +4237,20 @@ def list_take(xs, n):
 
 def list_drop(xs, n):
     return xs[max(0, n) :]
+
+
+def list_get(xs: list[Any], index: int) -> Any:
+    if -len(xs) <= index < len(xs):
+        return Some(xs[index])
+    return None_
+
+
+def list_first(xs: list[Any]) -> Any:
+    return Some(xs[0]) if xs else None_
+
+
+def list_last(xs: list[Any]) -> Any:
+    return Some(xs[-1]) if xs else None_
 
 
 def list_find(xs, pred):
@@ -4073,8 +4380,8 @@ def _require_cap(cap_name: str, builtin_name: str) -> None:
             message += f"; pass '--cap {cap_name}' to grant it"
         error: Any = RuntimeError(message)
         # Provenance for the process-sandbox worker: only this helper sets it,
-        # so a program cannot forge a denial by throwing the same text.  The
-        # type stays RuntimeError so compiled `catch e: String` still works.
+        # so a program cannot forge a denial by panicking with the same text.
+        # The type stays RuntimeError, as for every other runtime failure.
         error._geno_capability_denied = cap_name
         raise error
 
@@ -4550,24 +4857,34 @@ def _run_limited_process(argv, *, input_text=None):
 # =============================================================================
 
 
-def fs_read_text(path: str) -> str:
-    """Read a text file and return its contents."""
+def fs_read_text(path: str) -> Any:
+    """Read a text file, returning Result[String, String]."""
     _require_cap("fs", "fs_read_text")
-    path = _resolve_fs_path(path, "fs_read_text")
-    with open(path, encoding="utf-8") as f:
-        result = _read_limited_text_stream(f, "fs_read_text")
-    return result
+    try:
+        path = _resolve_fs_path(path, "fs_read_text")
+        with open(path, encoding="utf-8") as f:
+            result = _read_limited_text_stream(
+                f, "fs_read_text", limit_error_type=_GenoOutputLimitError
+            )
+    except _GenoOutputLimitError:
+        raise
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    return Ok(result)
 
 
-def fs_write_text(path: str, content: str):
-    """Write text to a file."""
+def fs_write_text(path: str, content: str) -> Any:
+    """Write text to a file, returning Result[Unit, String]."""
     _require_cap("fs", "fs_write_text")
     if not _fs_writes_allowed():
         raise RuntimeError("fs_write_text: filesystem writes are not allowed")
-    path = _resolve_fs_path(path, "fs_write_text")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return None
+    try:
+        path = _resolve_fs_path(path, "fs_write_text")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    return Ok(None)
 
 
 def fs_list_dir(path: str):
@@ -4791,48 +5108,46 @@ def _open_http_url(request, *, timeout: int, fn_name: str):
     ).open(request, timeout=timeout)
 
 
-def http_fetch(url: str) -> str:
-    """Fetch a URL and return the response body as a string."""
+def _http_body(method: str, url: str, body: Any, fn_name: str) -> Any:
+    """Send one request, returning Result[String, String] with the response body.
+
+    Every received status is a response. Scheme, transport, redirect-policy
+    and network-policy failures are ``Err``; exceeding the output limit is not.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    try:
+        _validate_http_scheme(url, fn_name)
+        req = Request(url, data=body, method=method)  # noqa: S310
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            response_handle = _open_http_url(req, timeout=30, fn_name=fn_name)
+        except HTTPError as http_error:
+            response_handle = http_error
+        with response_handle as resp:
+            result = _read_limited_utf8_stream(
+                resp, fn_name, limit_error_type=_GenoOutputLimitError
+            )
+    except _GenoOutputLimitError:
+        raise
+    except (OSError, ValueError, TypeError, RuntimeError) as e:
+        return Err(str(e))
+    _check_string_result_size(fn_name, len(result))
+    return Ok(result)
+
+
+def http_fetch(url: str) -> Any:
+    """GET a URL, returning Result[String, String] with the response body."""
     _require_cap("http", "http_fetch")
-    _validate_http_scheme(url, "http_fetch")
-    from urllib.error import HTTPError
-    from urllib.request import Request
-
-    try:
-        with _open_http_url(
-            Request(url),  # noqa: S310
-            timeout=30,
-            fn_name="http_fetch",
-        ) as resp:
-            result = _read_limited_utf8_stream(resp, "http_fetch")
-    except HTTPError as resp:
-        with resp:
-            result = _read_limited_utf8_stream(resp, "http_fetch")
-    except (OSError, ValueError, RuntimeError) as e:
-        raise RuntimeError(f"http_fetch: {e}")
-    _check_string_result_size("http_fetch", len(result))
-    return result
+    return _http_body("GET", url, None, "http_fetch")
 
 
-def http_post(url: str, body: str) -> str:
-    """POST to a URL and return the response body as a string."""
+def http_post(url: str, body: str) -> Any:
+    """POST JSON to a URL, returning Result[String, String] with the body."""
     _require_cap("http", "http_post")
-    _validate_http_scheme(url, "http_post")
-    from urllib.error import HTTPError
-    from urllib.request import Request
-
-    try:
-        req = Request(url, data=body.encode("utf-8"), method="POST")  # noqa: S310
-        req.add_header("Content-Type", "application/json")
-        with _open_http_url(req, timeout=30, fn_name="http_post") as resp:
-            result = _read_limited_utf8_stream(resp, "http_post")
-    except HTTPError as resp:
-        with resp:
-            result = _read_limited_utf8_stream(resp, "http_post")
-    except (OSError, ValueError, RuntimeError) as e:
-        raise RuntimeError(f"http_post: {e}")
-    _check_string_result_size("http_post", len(result))
-    return result
+    return _http_body("POST", url, body.encode("utf-8"), "http_post")
 
 
 def http_request(method: str, url: str, headers, body):

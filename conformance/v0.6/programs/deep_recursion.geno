@@ -1,0 +1,40 @@
+// Ordinary recursion runs under the default limits on every lane (0011).
+type Chain = Link(value: Int, next: Chain) | End
+
+func count(n: Int) -> Int
+    example 3 -> 3
+    if n == 0 then
+        return 0
+    end if
+    return 1 + count(n - 1)
+end func
+
+func build(n: Int) -> Chain
+    example 0 -> End
+    if n == 0 then
+        return End
+    end if
+    return Link(n, build(n - 1))
+end func
+
+func total(chain: Chain) -> Int
+    example End -> 0
+    match chain with
+        | Link(value, next) -> return value + total(next)
+        | End -> return 0
+    end match
+end func
+
+func fib(n: Int) -> Int
+    example 10 -> 55
+    if n < 2 then
+        return n
+    end if
+    return fib(n - 1) + fib(n - 2)
+end func
+
+func main() -> Unit
+    print(count(5000))
+    print(total(build(5000)))
+    print(fib(22))
+end func

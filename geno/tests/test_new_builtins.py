@@ -262,6 +262,18 @@ end func
         out = _run(source)
         assert "\n" not in out
 
+    @pytest.mark.parametrize("indent", [11, 10**12])
+    def test_indent_above_ten_prints_as_ten_like_javascript(self, indent):
+        from geno import _runtime_support as rs
+        from geno.builtins import builtin_json_stringify_pretty
+        from geno.values import ConstructorValue as CV
+
+        expected = "[\n" + " " * 10 + "1\n]"
+        value = CV("JsonArray", {"items": [CV("JsonInt", {"value": 1})]})
+        assert builtin_json_stringify_pretty(value, indent) == expected
+        compiled_value = rs.JsonArray([rs.JsonInt(1)])
+        assert rs.json_stringify_pretty(compiled_value, indent) == expected
+
     def test_negative_indent_is_compact(self):
         source = """
 func main() -> String

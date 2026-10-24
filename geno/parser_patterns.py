@@ -7,22 +7,89 @@ Contains PatternParserMixin with pattern parsing methods.
 
 from __future__ import annotations
 
+import copy
+
 from .ast_nodes import (
     ConstructorPattern,
+    Expression,
     ListPattern,
     LiteralPattern,
+    MatchArm,
     Pattern,
     RestPattern,
+    Statement,
     TuplePattern,
     VariablePattern,
     WildcardPattern,
 )
 from .parser_base import ParseError, ParserBase
-from .tokens import TokenType, token_type_to_str
+from .tokens import SourceLocation, TokenType, token_type_to_str
+
+
+def pattern_bound_names(pattern: Pattern) -> set[str]:
+    """The variable names *pattern* binds."""
+    if isinstance(pattern, VariablePattern):
+        return {pattern.name}
+    if isinstance(pattern, RestPattern):
+        return {pattern.name} if pattern.name else set()
+    if isinstance(pattern, ConstructorPattern):
+        children: list[Pattern] = pattern.subpatterns
+    elif isinstance(pattern, (ListPattern, TuplePattern)):
+        children = pattern.elements
+    else:
+        return set()
+    names: set[str] = set()
+    for child in children:
+        names |= pattern_bound_names(child)
+    return names
 
 
 class PatternParserMixin(ParserBase):
     """Mixin providing pattern parsing methods for the Parser."""
+
+    def _parse_arm_patterns(self) -> list[Pattern]:
+        """Parse a match arm's pattern, or its `|`-separated alternatives.
+
+        `| Red | Green -> ...` matches either; every alternative must bind
+        the same names, so the arm body sees the same variables either way.
+        """
+        patterns = [self._parse_pattern()]
+        while self._check(TokenType.BAR):
+            self._advance()
+            patterns.append(self._parse_pattern())
+        expected = pattern_bound_names(patterns[0])
+        for alternative in patterns[1:]:
+            names = pattern_bound_names(alternative)
+            if names != expected:
+                raise ParseError(
+                    "Every alternative of an or-pattern must bind the same names: "
+                    f"the first binds {_describe_names(expected)}, this one binds "
+                    f"{_describe_names(names)}",
+                    alternative.location,
+                )
+        return patterns
+
+    @staticmethod
+    def _or_pattern_arms(
+        patterns: list[Pattern],
+        guard: Expression | None,
+        body: list[Statement],
+        location: SourceLocation,
+    ) -> list[MatchArm]:
+        """One arm per alternative, each with its own copy of guard and body."""
+        arms = [
+            MatchArm(pattern=patterns[0], body=body, location=location, guard=guard)
+        ]
+        for alternative in patterns[1:]:
+            arms.append(
+                MatchArm(
+                    pattern=alternative,
+                    body=copy.deepcopy(body),
+                    location=location,
+                    guard=copy.deepcopy(guard),
+                )
+            )
+        return arms
 
     def _parse_pattern_element(self) -> Pattern:
         """Parse a pattern element, including rest patterns (...)."""
@@ -130,3 +197,7 @@ class PatternParserMixin(ParserBase):
             f"Expected match pattern (e.g., a literal, variable name, constructor, or '_' wildcard), "
             f"got {token_type_to_str(self._current().type)}"
         )
+
+
+def _describe_names(names: set[str]) -> str:
+    return ", ".join(f"'{name}'" for name in sorted(names)) if names else "nothing"

@@ -633,7 +633,7 @@ end func main
             f.write("""
 @untested("tests capability denial")
 func main() -> Unit
-    let content: String = fs_read_text("nope.txt")
+    let content: String = fs_read_text("nope.txt").unwrap()
     print(content)
     return ()
 end func main

@@ -35,10 +35,15 @@ def _format_error(label: str, error) -> str:
     already carry a phase label of its own (type errors do).
     """
     lines = []
-    for location, message in error_parts(error):
-        where = f"{location}: " if location is not None else ""
-        snippet = _format_source_snippet(location)
-        lines.append(f"{label}: {where}{message}{snippet}")
+    for err in getattr(error, "errors", None) or [error]:
+        fix_notes = "".join(
+            f"\n  fix: {fix.title} (`geno check --fix` applies it)"
+            for fix in getattr(err, "fixes", ())[:1]
+        )
+        for location, message in error_parts(err):
+            where = f"{location}: " if location is not None else ""
+            snippet = _format_source_snippet(location)
+            lines.append(f"{label}: {where}{message}{snippet}{fix_notes}")
     return "\n".join(lines)
 
 

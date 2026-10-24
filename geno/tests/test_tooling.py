@@ -864,7 +864,7 @@ class TestBenchmarkRunner:
                 let y: Int =
             end func identity
             func other() -> Int
-                return
+                let = 5
             end func other
             """,
         )
@@ -2723,23 +2723,23 @@ class TestPromptSpecExcerpt:
         from experiment.prompts import GENOTYPE_SPEC
 
         assert "end for" in GENOTYPE_SPEC
-        assert "for x: Int in" in GENOTYPE_SPEC
+        assert "for x in xs do" in GENOTYPE_SPEC
 
     def test_spec_documents_named_argument_rule(self):
         from experiment.prompts import GENOTYPE_SPEC
 
-        assert "Named Arguments" in GENOTYPE_SPEC
-        assert "slice(list: xs, start: 0, stop: 2)" in GENOTYPE_SPEC
+        assert "A call that writes 3+ arguments names them" in GENOTYPE_SPEC
+        assert "clamp(value: x, min: 0, max: 9)" in GENOTYPE_SPEC
 
     def test_spec_documents_string_and_fold_builtins(self):
         from experiment.prompts import GENOTYPE_SPEC
 
         for needle in (
-            "fold(list, initial, fn)",
-            "split(text, delimiter)",
-            "trim(text)",
-            "starts_with(text, prefix)",
-            "parse_int(text) -> Option[Int]",
-            "to_string(value)",
+            ".fold(initial: 0, reducer:",
+            ".split(",
+            ".trim()",
+            ".starts_with(",
+            "parse_int(",
+            "to_string(",
         ):
             assert needle in GENOTYPE_SPEC, f"spec excerpt missing: {needle}"

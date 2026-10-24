@@ -73,7 +73,7 @@ class TestCheckSelfhostParityScript:
             module._union_groups(module.SELFHOST_KEYWORD_GAP_GROUPS)
             == module.KNOWN_KEYWORD_GAPS
         )
-        assert "try" in module.SELFHOST_KEYWORD_GAP_GROUPS["exception_control"]
+        assert "try" in module.SELFHOST_KEYWORD_GAP_GROUPS["removed_exception_keywords"]
         assert "test" in module.SELFHOST_KEYWORD_GAP_GROUPS["tests_and_exports"]
         assert "export" in module.SELFHOST_KEYWORD_GAP_GROUPS["tests_and_exports"]
 

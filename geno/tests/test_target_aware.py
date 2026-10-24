@@ -182,7 +182,7 @@ class TestTargetAwareTypechecking:
         """fs_read_text on browser target produces a type error."""
         (tmp_path / "geno.toml").write_text('files = ["Main"]\n')
         (tmp_path / "Main.geno").write_text(
-            'func main() -> String\n  return fs_read_text("file.txt")\nend func\n'
+            'func main() -> String\n  return fs_read_text("file.txt").unwrap()\nend func\n'
         )
 
         pg = ProjectGraph.discover(tmp_path)
@@ -220,7 +220,7 @@ class TestTargetAwareTypechecking:
         (tmp_path / "Main.geno").write_text(
             '@untested("io")\n'
             "func main() -> String\n"
-            '  return fs_read_text("file.txt")\n'
+            '  return fs_read_text("file.txt").unwrap()\n'
             "end func\n"
         )
 
@@ -238,7 +238,7 @@ class TestTargetAwareTypechecking:
         (tmp_path / "Main.geno").write_text(
             '@untested("io")\n'
             "func main() -> String\n"
-            '  return fs_read_text("file.txt")\n'
+            '  return fs_read_text("file.txt").unwrap()\n'
             "end func\n"
         )
 
@@ -584,7 +584,7 @@ end func
         (tmp_path / "Main.geno").write_text(
             """
 func main() -> String
-  return fs_read_text("demo.txt")
+  return fs_read_text("demo.txt").unwrap()
 end func
 """,
             encoding="utf-8",

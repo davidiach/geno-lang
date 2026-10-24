@@ -95,15 +95,13 @@ class TestCapabilityBypassFs:
     """fs capability must be denied for all filesystem builtins."""
 
     def test_fs_read_text_denied(self):
-        source = (
-            'func main() -> String\n    return fs_read_text(path: "/tmp/x")\nend func'
-        )
+        source = 'func main() -> String\n    return fs_read_text(path: "/tmp/x").unwrap()\nend func'
         result = run(source, config=RunConfig(capabilities=set()))
         assert result.ok is False
         assert any(d.code.value == "E412" for d in result.diagnostics)
 
     def test_fs_write_text_denied(self):
-        source = 'func main() -> Unit\n    fs_write_text(path: "/tmp/x", content: "hi")\nend func'
+        source = 'func main() -> Unit\n    fs_write_text(path: "/tmp/x", content: "hi").unwrap()\nend func'
         result = run(source, config=RunConfig(capabilities=set()))
         assert result.ok is False
         assert any(d.code.value == "E412" for d in result.diagnostics)
@@ -125,7 +123,7 @@ class TestCapabilityBypassHttp:
     """http capability must be denied for all HTTP builtins."""
 
     def test_http_fetch_denied(self):
-        source = 'func main() -> String\n    return http_fetch(url: "http://example.com")\nend func'
+        source = 'func main() -> String\n    return http_fetch(url: "http://example.com").unwrap()\nend func'
         result = run(source, config=RunConfig(capabilities=set()))
         assert result.ok is False
         assert any(d.code.value == "E412" for d in result.diagnostics)
@@ -1048,14 +1046,14 @@ class TestGenoSandboxEscape:
 
     def test_http_post_denied_without_capability(self):
         """http_post is blocked without the http capability."""
-        source = 'func main() -> String\n    return http_post(url: "http://example.com", body: "{}")\nend func'
+        source = 'func main() -> String\n    return http_post(url: "http://example.com", body: "{}").unwrap()\nend func'
         result = run(source, config=RunConfig(capabilities=set()))
         assert result.ok is False
         assert any(d.code.value == "E412" for d in result.diagnostics)
 
     def test_geno_cannot_access_filesystem(self):
         """Without fs capability, filesystem access is denied."""
-        source = 'func main() -> String\n    return fs_read_text(path: "/etc/passwd")\nend func'
+        source = 'func main() -> String\n    return fs_read_text(path: "/etc/passwd").unwrap()\nend func'
         result = run(source, config=RunConfig(capabilities=set()))
         assert result.ok is False
         assert any(d.code.value == "E412" for d in result.diagnostics)

@@ -446,22 +446,30 @@ def install_fs_callbacks(
     )
 
     def _fs_read_text(path):
-        path = _resolve_scoped_path(
-            path, "fs_read_text", fs_roots, allow_absolute_paths=absolute_ok
+        try:
+            path = _resolve_scoped_path(
+                path, "fs_read_text", fs_roots, allow_absolute_paths=absolute_ok
+            )
+            with open(path, encoding="utf-8") as f:
+                result = _read_limited_text_stream(interpreter, f, "fs_read_text")
+        except (OSError, RuntimeError, ValueError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        return _checked_callback_result(
+            interpreter, ConstructorValue("Ok", {"value": result})
         )
-        with open(path, encoding="utf-8") as f:
-            result = _read_limited_text_stream(interpreter, f, "fs_read_text")
-        return _checked_callback_result(interpreter, result)
 
     def _fs_write_text(path, content):
         if not writes_ok:
             raise RuntimeError("fs_write_text: filesystem writes are not allowed")
-        path = _resolve_scoped_path(
-            path, "fs_write_text", fs_roots, allow_absolute_paths=absolute_ok
-        )
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return None
+        try:
+            path = _resolve_scoped_path(
+                path, "fs_write_text", fs_roots, allow_absolute_paths=absolute_ok
+            )
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except (OSError, RuntimeError, ValueError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        return ConstructorValue("Ok", {"value": None})
 
     def _fs_list_dir(path):
         try:
@@ -725,31 +733,30 @@ def install_http_callbacks(
             _HttpOnlyRedirectHandler,
         ).open(req, timeout=30)
 
-    def _http_fetch(url):
-        _check_scheme(url, "http_fetch")
+    def _http_body(method: str, url: str, body: bytes | None, fn_name: str) -> Any:
+        """One request whose body is the result; see ``_http_request``."""
         try:
-            with _open_request(Request(url), "http_fetch") as resp:
-                result = _read_limited_utf8_stream(interpreter, resp, "http_fetch")
-        except HTTPError as resp:
-            with resp:
-                result = _read_limited_utf8_stream(interpreter, resp, "http_fetch")
-        except (OSError, ValueError) as e:
-            raise RuntimeError(f"http_fetch: {e}")
-        return _checked_callback_result(interpreter, result)
+            _check_scheme(url, fn_name)
+            req = Request(url, data=body, method=method)
+            if body is not None:
+                req.add_header("Content-Type", "application/json")
+            try:
+                response_handle = _open_request(req, fn_name)
+            except HTTPError as http_error:
+                response_handle = http_error
+            with response_handle as resp:
+                result = _read_limited_utf8_stream(interpreter, resp, fn_name)
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        return _checked_callback_result(
+            interpreter, ConstructorValue("Ok", {"value": result})
+        )
+
+    def _http_fetch(url):
+        return _http_body("GET", url, None, "http_fetch")
 
     def _http_post(url, body):
-        _check_scheme(url, "http_post")
-        try:
-            req = Request(url, data=body.encode("utf-8"), method="POST")
-            req.add_header("Content-Type", "application/json")
-            with _open_request(req, "http_post") as resp:
-                result = _read_limited_utf8_stream(interpreter, resp, "http_post")
-        except HTTPError as resp:
-            with resp:
-                result = _read_limited_utf8_stream(interpreter, resp, "http_post")
-        except (OSError, ValueError) as e:
-            raise RuntimeError(f"http_post: {e}")
-        return _checked_callback_result(interpreter, result)
+        return _http_body("POST", url, body.encode("utf-8"), "http_post")
 
     def _http_request(method, url, headers, body):
         try:

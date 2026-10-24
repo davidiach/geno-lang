@@ -110,6 +110,30 @@ Taking the expected value from a real run and keeping all its digits is still
 the simplest habit. When the domain allows it, prefer `Int` arithmetic instead,
 which compares exactly: cents rather than fractional currency, for instance.
 
+### Method Calls
+
+Any function can be called on its first argument with a dot, which reads left
+to right and chains:
+
+```geno
+func shout(text: String) -> String
+    example "hi" -> "HI!"
+    return text.to_upper() + "!"
+end func
+
+func summary(scores: List[Int]) -> Int
+    example [50, 70, 90] -> 320
+    return scores
+        .filter(fn(s: Int) -> s >= 60)
+        .map(fn(s: Int) -> s * 2)
+        .fold(initial: 0, reducer: fn(acc: Int, s: Int) -> acc + s)
+end func
+```
+
+The receiver's type picks the function, so `Some(1).map(f)` and `[1].map(f)`
+call the `Option` and `List` versions. Builtins work the same way:
+`" a ".trim()`, `opt.unwrap_or(0)`, `v.push(x)`, `m.get(key)`, `xs.length()`.
+
 ### Named Parameters
 
 Functions with 3 or more parameters require named arguments at the call site:
@@ -154,12 +178,68 @@ func factorial(n: Int) -> Int
 end func
 ```
 
+### Generic Functions
+
+A function can work at any type by declaring type parameters in brackets after
+its name. Callers never write the types; each call works them out from its
+arguments:
+
+```geno
+func first_or[T](xs: List[T], fallback: T) -> T
+    example [1, 2], 0 -> 1
+    example [], "none" -> "none"
+    match xs with
+        | [] -> return fallback
+        | [x, ...] -> return x
+    end match
+end func
+
+func swap[A, B](pair: (A, B)) -> (B, A)
+    example (1, "x") -> ("x", 1)
+    let (a, b): (A, B) = pair
+    return (b, a)
+end func
+```
+
+Each example is checked on its own, so one function's examples can use
+different types. Inside the function, `T` stands for whatever type the caller
+chose, so the body can only do what works for every type: pass the value on,
+store it in a list, tuple or record, compare it with `==`, and print it or
+convert it with `to_string`. Arithmetic and `<` on a `T` are rejected, because
+`T` might be a `String` or a list.
+
+A generic function can also be passed as a value when the surrounding code
+fixes its types, as in `map([1.5, 2.5], show)` or
+`let render: (Int) -> String = show`.
+
+To compare, add up, or hash values of a type parameter, give it a bound:
+
+```geno
+func largest[T: Ord](xs: List[T], fallback: T) -> T
+    example [3, 9, 2], 0 -> 9
+    example ["b", "a"], "" -> "b"
+    var best = fallback
+    for x: T in xs do
+        if x > best then
+            best = x
+        end if
+    end for
+    return best
+end func
+```
+
+`Ord` allows `<` and friends and is met by `Int`, `Float` and `String`. `Num`
+allows arithmetic and is met by `Int` and `Float`. `Hash` allows use as a
+`Map` key or `Set` element. A trait name works as a bound too: `[T: Shape]`
+lets the function call `Shape`'s methods on a `T`. Calling `largest([true],
+false)` is rejected, because `Bool` is not ordered.
+
 ## Type Definitions (ADTs)
 
 ```geno
 type Shape = Circle(radius: Float)
-           | Rectangle(width: Float, height: Float)
-           | Triangle(base: Float, height: Float)
+    | Rectangle(width: Float, height: Float)
+    | Triangle(base: Float, height: Float)
 ```
 
 A leading `|` before the first variant is also accepted, which reads better for
@@ -209,6 +289,33 @@ end func
 A tuple pattern must have the same number of elements as the tuple type. Since
 every tuple has that fixed arity, an arm like `| (x, y) ->` already covers every
 value and needs no default arm.
+
+### If Expressions and Or-Patterns
+
+`if` produces a value when it is used as one. The `else` branch is required:
+
+```geno
+func parity(n: Int) -> String
+    example 4 -> "even"
+    example 7 -> "odd"
+    return if n % 2 == 0 then "even" else "odd" end if
+end func
+```
+
+A match arm can list alternatives that share a body:
+
+```geno
+type Color = Red | Orange | Green | Blue
+
+func warmth(c: Color) -> String
+    example Red -> "warm"
+    example Blue -> "cool"
+    match c with
+        | Red | Orange -> return "warm"
+        | Green | Blue -> return "cool"
+    end match
+end func
+```
 
 ## Option and Result
 
@@ -296,46 +403,80 @@ end impl
 
 ## Error Handling
 
-### Try/Catch
+Geno has one error model. A failure the caller should handle is a value of
+type `Result[T, E]`; a bug ends the program with a panic.
 
-```geno
-func safe_head(items: List[Int]) -> Int
-    example [1, 2, 3] -> 1
-    example [] -> 0
-    try
-        return head(items)
-    catch e: String
-        return 0
-    end try
-end func
-```
-
-### Throw and Structured Errors
-
-Throw string errors or user-defined error types:
+### Returning and Propagating Errors
 
 ```geno
 type ValidationError = ValidationError(field: String, message: String)
 
-func validate_age(age: Int) -> Int
-    example 25 -> 25
+func validate_age(age: Int) -> Result[Int, ValidationError]
+    example 25 -> Ok(25)
     if age < 0 then
-        throw ValidationError("age", "must be non-negative")
+        return Err(ValidationError("age", "must be non-negative"))
     end if
-    return age
+    return Ok(age)
+end func
+
+func describe_age(age: Int) -> Result[String, ValidationError]
+    example 30 -> Ok("30 years")
+    let valid = validate_age(age)?
+    return Ok(f"{valid} years")
 end func
 
 func main() -> String
-    try
-        let age: Int = validate_age(-1)
-        return to_string(age)
-    catch e: ValidationError
-        return f"Invalid {e.field}: {e.message}"
-    end try
+    match describe_age(-1) with
+        | Ok(text) -> return text
+        | Err(e) -> return f"Invalid {e.field}: {e.message}"
+    end match
 end func
 ```
 
-`catch e: String` catches runtime errors and thrown strings. `catch e: MyType` catches only thrown values of that type — unmatched types propagate outward.
+`?` returns the `Err` from the enclosing function and unwraps the `Ok`. Builtins
+that can fail return `Result` too: `fs_read_text`, `fs_write_text`,
+`http_fetch`, `http_post`, `json_parse`, `exec`.
+
+`main` may return a `Result`, so `?` works at the top level. An `Err` is
+printed to stderr as `Error: ...` and the program exits with status 1:
+
+```geno
+func main() -> Result[Unit, String] with fs, io
+    let text = fs_read_text("notes.txt")?
+    print(text)
+    return Ok(())
+end func
+```
+
+### Accessors That Cannot Fail
+
+```geno
+func first_or_zero(items: List[Int]) -> Int
+    example [1, 2, 3] -> 1
+    example [] -> 0
+    return items.first().unwrap_or(0)
+end func
+```
+
+`xs.get(i)`, `xs.first()` and `xs.last()` return `Option`. Indexing `xs[i]`
+panics when `i` is out of range.
+
+### Panics
+
+```geno
+func half(n: Int) -> Int
+    example 4 -> 2
+    if n % 2 != 0 then
+        panic("half expects an even number")
+    end if
+    return n / 2
+end func
+```
+
+`panic(message)` ends the program, as does every runtime error (division by
+zero, an index out of range, a failed `requires`). Geno code cannot catch a
+panic. Use `r.unwrap()` or `r.expect("why")` when an `Err` can only mean a bug.
+Geno 0.6 removed `throw`, `try` and `catch`.
 
 ### Async/Await
 
@@ -385,6 +526,32 @@ It raises if the index is out of range. Algorithms that write to the same
 collection repeatedly -- in-place sorts and the like -- are usually clearer with
 `Vec[T]` and `vec_set`, covered under Mutable Collections below.
 
+### Leaving Out Types
+
+Function parameters and return types are always written out, because they are
+the function's contract. Inside a function, Geno fills in the types the
+surrounding code already fixes:
+
+```geno
+func summarize(scores: List[Int]) -> (Int, List[Int])
+    example [1, 2, 3] -> (6, [4, 9])
+    let total = scores.fold(initial: 0, reducer: fn(acc, s) -> acc + s)
+    let big = [s * s for s in scores if s > 1]
+    for s in scores do
+        if s < 0 then
+            return (0, [])
+        end if
+    end for
+    let result = (total, big)
+    let (sum, squares) = result
+    return (sum, squares)
+end func
+```
+
+Here `acc` and `s` are `Int` because `fold` was given a list of `Int` and
+`initial: 0`. A lambda with nothing to learn its parameter types from, such as
+`let f = fn(x) -> x + 1`, needs them written: `fn(x: Int) -> x + 1`.
+
 ### List Comprehensions
 
 A concise syntax for transforming and filtering lists:
@@ -398,10 +565,19 @@ let evens: List[Int] = [x for x: Int in nums if x % 2 == 0]  // [2, 4]
 ### Maps (Immutable)
 
 ```geno
-let m: Map[String, Int] = {}
-let m2: Map[String, Int] = map_insert(m, "a", 1)
-let val: Option[Int] = map_get(m2, "a")  // Some(1)
+let ages = {"ada": 36, "alan": 41}
+let empty: Map[String, Int] = {}
+let more = ages.insert(key: "grace", value: 85)
+let maybe: Option[Int] = more.get("grace")  // Some(85)
+let known = more.contains_key("ada")        // true
+let fewer = more.remove("alan")             // a new map without "alan"
+let names = more.keys()                     // ["ada", "alan", "grace"]
+let size = more.length()                    // 3
 ```
+
+Every collection has `length()`. `xs.sort()` sorts in natural order and
+`xs.sort(fn(a, b) -> b - a)` with a comparator; `"hello".index_of("l")` is
+`Some(2)`.
 
 ### Mutable Collections
 
@@ -441,6 +617,17 @@ let output: String = json_stringify(value: JsonObject([("key", JsonString("value
 
 **Note:** `json_parse` returns `Result[JsonValue, String]`, not the original Geno type. A `json_parse` → `json_stringify` round-trip preserves the JSON structure faithfully, but the result is always a `JsonValue` tree — not your original Geno types. Use pattern matching to extract values from the `JsonValue` variants.
 
+## Tuples
+
+A tuple's elements are read by position:
+
+```geno
+func swap(pair: (Int, String)) -> (String, Int)
+    example (1, "a") -> ("a", 1)
+    return (pair.1, pair.0)
+end func
+```
+
 ## Type Aliases
 
 ```geno
@@ -471,14 +658,14 @@ Run shell commands with the `process` capability:
 ```geno
 // geno run myfile.geno --unsafe --cap process
 func main() -> String
-  let result: Result[ProcessResult, String] = exec("echo hello")
-  match result with
-  | Ok(pr) ->
-    match pr with
-    | ProcessResult(code, out, err) -> return out
+    let result: Result[ProcessResult, String] = exec("echo hello")
+    match result with
+        | Ok(pr) ->
+            match pr with
+                | ProcessResult(code, out, err) -> return out
+            end match
+        | Err(msg) -> return msg
     end match
-  | Err(msg) -> return msg
-  end match
 end func
 ```
 
@@ -486,7 +673,9 @@ end func
 
 ## Modules
 
-Split code across files:
+Split code across files. An import makes the imported module's exports
+visible, but not what that module imports in turn: to call a function from
+`Utils`, import `Utils` itself.
 
 ```geno
 // Utils.geno

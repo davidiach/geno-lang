@@ -1,0 +1,8 @@
+func largest[T: Ord](xs: List[T], fallback: T) -> T
+    example [3], 0 -> 0
+    return fallback
+end func
+
+func main() -> Unit
+    print(largest([true], false))
+end func

@@ -615,7 +615,7 @@ def _parse_module(path: Path) -> Tuple[Program, List[str]]:
 def _parse_module_source(source: str, path: Path) -> Tuple[Program, List[str]]:
     """Parse Geno source text and extract its direct imports."""
     tokens = Lexer(source, str(path)).tokenize()
-    program = Parser(tokens).parse_program()
+    program = Parser(tokens, source).parse_program()
     return program, _extract_imports(program)
 
 

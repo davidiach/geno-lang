@@ -24,7 +24,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, NoReturn, cast
+from types import TracebackType
+from typing import Any, Callable, Iterator, NoReturn, cast
 from urllib.parse import urlsplit
 
 from .lockfile import (
@@ -368,16 +369,58 @@ class _PublicationOutcome:
     committed: bool = False
 
 
+def _remove_checkout_tree(path: Path) -> None:
+    """Remove a validated tree, retrying Windows read-only Git object files."""
+    root = path.resolve()
+
+    def retry_readonly(
+        function: Callable[..., Any],
+        filename: str,
+        exc_info: tuple[type[BaseException], BaseException, TracebackType | None],
+    ) -> None:
+        error = exc_info[1]
+        if (
+            os.name != "nt"
+            or function not in (os.unlink, os.remove)
+            or not isinstance(error, PermissionError)
+            or getattr(error, "winerror", None) != 5
+        ):
+            raise error
+        failed = Path(filename)
+        info = failed.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_mode & stat.S_IWRITE
+            or info.st_nlink != 1
+            or getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            or not failed.resolve().is_relative_to(root)
+        ):
+            # Do not follow links or change permissions on a shared object,
+            # or reinterpret ACL/sharing errors as read-only-file failures.
+            raise error
+        os.chmod(failed, info.st_mode | stat.S_IWRITE)
+        try:
+            function(filename)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.chmod(failed, info.st_mode)
+            raise
+
+    # onerror remains supported by every supported Python (3.10-3.13).
+    shutil.rmtree(path, onerror=retry_readonly)
+
+
 def _remove_checkout(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
     elif path.exists():
-        shutil.rmtree(path)
+        _remove_checkout_tree(path)
 
 
 def _cleanup_transaction(transaction_root: Path) -> None:
     try:
-        shutil.rmtree(transaction_root)
+        _remove_checkout_tree(transaction_root)
     except OSError as exc:
         _LOGGER.warning(
             "Could not clean package transaction directory %s: %s",
@@ -1316,6 +1359,9 @@ def _git_clone(url: str, dest: Path, ref: str, depth: int | None = 1) -> None:
     cmd = [
         "git",
         "clone",
+        # A user URL rewrite can select a local repository. Keep its objects
+        # private so cleanup never needs to chmod files shared with the source.
+        "--no-hardlinks",
         "--branch",
         ref,
         "--single-branch",

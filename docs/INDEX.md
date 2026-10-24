@@ -15,7 +15,7 @@
 - [Embedding API](reference/embedding-api.md) -- use Geno as a Python library
 - [Portable Runtime Semantics](reference/runtime-semantics.md) -- cross-backend numbers, copies, maps, and output
 - [LLM Prompting Guide](llm-prompting.md) -- system prompts and common LLM mistakes
-- [Language Specification (v0.5)](spec/v0.5.md) -- normative syntax and semantics; [v0.4](spec/v0.4.md) is the frozen contract for the 0.4 series
+- [Language Specification (v0.6)](spec/v0.6.md) -- syntax and semantics of the 0.6 release candidate, normative from 0.6.0; [v0.5](spec/v0.5.md) is the normative contract for the 0.5 series and [v0.4](spec/v0.4.md) the frozen one for 0.4
 - [Supported Targets](SUPPORTED_TARGETS.md) -- compilation targets and builtin availability
 - [Benchmark Results](benchmark/results.md) -- published Geno-vs-Python results or current publication status
 
@@ -34,6 +34,7 @@
 
 ## Research and Benchmarks
 
+- [Seeded Mistakes](benchmark/seeded-mistakes.md) -- how diagnostics and fixes handle common LLM mistakes, reproducible without a model
 - [Benchmark Quality Criteria](benchmark/quality_criteria.md) -- benchmark problem standards
 - [Benchmark Validation Contract](benchmark/validation-contract.md) -- corpus validation rules
 - [Benchmark Results](../benchmarks/RESULTS.md) -- current or historical performance results

@@ -37,6 +37,8 @@ def _render_type(t: TypeAnnotation) -> str:
     if isinstance(t, SimpleType):
         if t.type_params:
             params = ", ".join(_render_type(p) for p in t.type_params)
+            if t.name == "Tuple":
+                return f"({params})"  # written `(A, B)` in Geno
             return f"{t.name}[{params}]"
         return t.name
     if isinstance(t, FunctionType):
@@ -129,6 +131,7 @@ def _render_expr(expr) -> str:
         Identifier,
         IntegerLiteral,
         ListLiteral,
+        MapLiteral,
         StringLiteral,
         TupleExpr,
         UnaryOp,
@@ -150,6 +153,11 @@ def _render_expr(expr) -> str:
     if isinstance(expr, TupleExpr):
         elems = ", ".join(_render_expr(e) for e in expr.elements)
         return f"({elems})"
+    if isinstance(expr, MapLiteral):
+        entries = ", ".join(
+            f"{_render_expr(e.key)}: {_render_expr(e.value)}" for e in expr.entries
+        )
+        return "{" + entries + "}"
     if isinstance(expr, ConstructorCall):
         if expr.arguments:
             names = expr.argument_names or [None] * len(expr.arguments)
@@ -190,10 +198,12 @@ class FuncDoc:
         "params",
         "requires",
         "return_type",
+        "type_params",
     )
 
     def __init__(self, fdef: FunctionDef, doc: str | None = None):
         self.name = fdef.name
+        self.type_params = list(fdef.type_params)
         self.params = fdef.params
         self.return_type = fdef.return_type
         self.effects = fdef.effects
@@ -380,7 +390,12 @@ def _render_signature_html(func: FuncDoc) -> str:
     effects = ""
     if func.effects:
         effects = f" {kw}with{end} {_esc(', '.join(sorted(func.effects)))}"
-    return f"{prefix} {_esc(func.name)}({params_str}) -> {ret}{effects}"
+    type_params = (
+        f"[{', '.join(f'{tn}{_esc(name)}{end}' for name in func.type_params)}]"
+        if func.type_params
+        else ""
+    )
+    return f"{prefix} {_esc(func.name)}{type_params}({params_str}) -> {ret}{effects}"
 
 
 def _render_func_html(func: FuncDoc) -> str:

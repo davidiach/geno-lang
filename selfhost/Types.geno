@@ -96,10 +96,10 @@ func type_env_lookup(env: TypeEnv, name: String) -> Option[GType]
     match result with
         | Some(t) -> return Some(t)
         | None ->
-        match env.parent with
-            | Some(p) -> return type_env_lookup(p, name)
-            | None -> return None
-        end match
+            match env.parent with
+                | Some(p) -> return type_env_lookup(p, name)
+                | None -> return None
+            end match
     end match
 end func type_env_lookup
 

@@ -209,11 +209,8 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
     register_builtin(cs: cs, name: "split_once", ft: TFunc([TString, TString], TOption(TTuple([TString, TString])), []), params: ["text", "delimiter"])
     register_builtin(cs: cs, name: "starts_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "prefix"])
     register_builtin(cs: cs, name: "ends_with", ft: TFunc([TString, TString], TBool, []), params: ["text", "suffix"])
-    register_builtin(cs: cs, name: "contains_substring", ft: TFunc([TString, TString], TBool, []), params: ["text", "substring"])
     register_builtin(cs: cs, name: "to_chars", ft: TFunc([TString], TList(TString), []), params: ["text"])
-    register_builtin(cs: cs, name: "sort_strings", ft: TFunc([TList(TString)], TList(TString), []), params: ["items"])
     register_builtin(cs: cs, name: "substring", ft: TFunc([TString, TInt, TInt], TString, []), params: ["text", "start", "stop"])
-    register_builtin(cs: cs, name: "repeat_string", ft: TFunc([TString, TInt], TString, []), params: ["text", "count"])
 
     // Namespaced string operations
     register_builtin(cs: cs, name: "string_trim", ft: TFunc([TString], TString, []), params: ["text"])
@@ -230,8 +227,8 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
     register_builtin(cs: cs, name: "string_contains", ft: TFunc([TString, TString], TBool, []), params: ["text", "substring"])
     register_builtin(cs: cs, name: "string_split_once", ft: TFunc([TString, TString], TOption(TTuple([TString, TString])), []), params: ["text", "delimiter"])
     register_builtin(cs: cs, name: "string_char_at", ft: TFunc([TString, TInt], TString, []), params: ["text", "index"])
-    register_builtin(cs: cs, name: "string_index_of", ft: TFunc([TString, TString], TInt, []), params: ["text", "substring"])
-    register_builtin(cs: cs, name: "string_last_index_of", ft: TFunc([TString, TString], TInt, []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_index_of", ft: TFunc([TString, TString], TOption(TInt), []), params: ["text", "substring"])
+    register_builtin(cs: cs, name: "string_last_index_of", ft: TFunc([TString, TString], TOption(TInt), []), params: ["text", "substring"])
     register_builtin(cs: cs, name: "string_pad_left", ft: TFunc([TString, TInt, TString], TString, []), params: ["text", "width", "fill_char"])
     register_builtin(cs: cs, name: "string_pad_right", ft: TFunc([TString, TInt, TString], TString, []), params: ["text", "width", "fill_char"])
     register_builtin(cs: cs, name: "string_repeat", ft: TFunc([TString, TInt], TString, []), params: ["text", "count"])
@@ -250,13 +247,8 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
     register_builtin(cs: cs, name: "abs", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
     register_builtin(cs: cs, name: "math_abs", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
     register_builtin(cs: cs, name: "math_max", ft: TFunc([TVar("Num"), TVar("Num")], TVar("Num"), []), params: ["a", "b"])
-    register_builtin(cs: cs, name: "square", ft: TFunc([TVar("Num")], TVar("Num"), []), params: ["value"])
 
     // Type predicates
-    register_builtin(cs: cs, name: "is_sorted", ft: TFunc([TList(TInt)], TBool, []), params: ["list"])
-    register_builtin(cs: cs, name: "is_positive", ft: TFunc([TInt], TBool, []), params: ["value"])
-    register_builtin(cs: cs, name: "is_numeric_string", ft: TFunc([TString], TBool, []), params: ["text"])
-    register_builtin(cs: cs, name: "is_permutation", ft: TFunc([TList(TVar("T")), TList(TVar("T"))], TBool, []), params: ["list1", "list2"])
 
     // Conversions
     register_builtin(cs: cs, name: "parse_int", ft: TFunc([TString], TOption(TInt), []), params: ["text"])
@@ -290,9 +282,9 @@ func init_builtin_funcs(cs: CheckerState) -> Unit
 
     // File/network
     register_builtin(cs: cs, name: "fs_exists", ft: TFunc([TString], TBool, []), params: ["path"])
-    register_builtin(cs: cs, name: "fs_read_text", ft: TFunc([TString], TString, []), params: ["path"])
-    register_builtin(cs: cs, name: "fs_write_text", ft: TFunc([TString, TString], TUnit, []), params: ["path", "content"])
-    register_builtin(cs: cs, name: "http_fetch", ft: TFunc([TString], TString, []), params: ["url"])
+    register_builtin(cs: cs, name: "fs_read_text", ft: TFunc([TString], TResult(TString, TString), []), params: ["path"])
+    register_builtin(cs: cs, name: "fs_write_text", ft: TFunc([TString, TString], TResult(TUnit, TString), []), params: ["path", "content"])
+    register_builtin(cs: cs, name: "http_fetch", ft: TFunc([TString], TResult(TString, TString), []), params: ["url"])
 
     // Graphics builtins
     register_builtin(cs: cs, name: "clear_screen", ft: TFunc([TString], TUnit, []), params: ["color"])
@@ -347,9 +339,9 @@ func resolve_type(cs: CheckerState, annot: TypeAnnot, tparams: List[String]) -> 
     match annot with
         | SimpleTypeAnnot(name, params) -> return resolve_simple_type(cs: cs, name: name, params: params, tparams: tparams)
         | FuncTypeAnnot(pt, rt, _effs) ->
-        let resolved_params: List[GType] = resolve_type_list(cs: cs, annots: pt, tparams: tparams)
-        let resolved_ret: GType = resolve_type(cs: cs, annot: rt, tparams: tparams)
-        return TFunc(resolved_params, resolved_ret, [])
+            let resolved_params: List[GType] = resolve_type_list(cs: cs, annots: pt, tparams: tparams)
+            let resolved_ret: GType = resolve_type(cs: cs, annot: rt, tparams: tparams)
+            return TFunc(resolved_params, resolved_ret, [])
     end match
 end func resolve_type
 
@@ -462,30 +454,30 @@ func resolve_alias(cs: CheckerState, name: String, params: List[TypeAnnot], tpar
     let alias: Def = unwrap(mutable_map_get(cs.type_aliases, name))
     match alias with
         | TypeAliasNode(alias_name, alias_params, target, span) ->
-        if length(alias_params) > 0 and length(alias_params) != length(params) then
-            tc_error(cs, "Type alias '" + name + "' expects " + to_string(length(alias_params)) + " type parameter(s)")
-            return TAny
-        end if
-        vec_push(cs.resolving_aliases, name)
-        // Freeze the alias template in its defining module. Actual type arguments
-        // still resolve in the caller, after any local type names are registered.
-        var resolved: GType = TAny
-        match mutable_map_get(cs.resolved_aliases, name) with
-            | Some(cached) -> resolved = cached
-            | None ->
-            resolved = resolve_type(cs: cs, annot: target, tparams: alias_params)
-            mutable_map_set(map: cs.resolved_aliases, key: name, value: resolved)
-        end match
-        let subs: MutableMap[String, GType] = mutable_map_new()
-        var i: Int = 0
-        while i < length(alias_params) do
-            validate_alias_target(cs: cs, annot: params[i], tparams: tparams)
-            let actual: GType = resolve_type(cs: cs, annot: params[i], tparams: tparams)
-            mutable_map_set(map: subs, key: alias_params[i], value: actual)
-            i = i + 1
-        end while
-        let ignore: Option[String] = vec_pop(cs.resolving_aliases)
-        return apply_subs(resolved, subs)
+            if length(alias_params) > 0 and length(alias_params) != length(params) then
+                tc_error(cs, "Type alias '" + name + "' expects " + to_string(length(alias_params)) + " type parameter(s)")
+                return TAny
+            end if
+            vec_push(cs.resolving_aliases, name)
+            // Freeze the alias template in its defining module. Actual type arguments
+            // still resolve in the caller, after any local type names are registered.
+            var resolved: GType = TAny
+            match mutable_map_get(cs.resolved_aliases, name) with
+                | Some(cached) -> resolved = cached
+                | None ->
+                    resolved = resolve_type(cs: cs, annot: target, tparams: alias_params)
+                    mutable_map_set(map: cs.resolved_aliases, key: name, value: resolved)
+            end match
+            let subs: MutableMap[String, GType] = mutable_map_new()
+            var i: Int = 0
+            while i < length(alias_params) do
+                validate_alias_target(cs: cs, annot: params[i], tparams: tparams)
+                let actual: GType = resolve_type(cs: cs, annot: params[i], tparams: tparams)
+                mutable_map_set(map: subs, key: alias_params[i], value: actual)
+                i = i + 1
+            end while
+            let ignore: Option[String] = vec_pop(cs.resolving_aliases)
+            return apply_subs(resolved, subs)
         | _ -> return TAny
     end match
 end func resolve_alias
@@ -511,18 +503,18 @@ func validate_type_names(cs: CheckerState, defs: List[Def]) -> Unit
     for defn: Def in defs do
         match defn with
             | TypeAliasNode(name, params, target, span) ->
-            check_type_name(cs: cs, name: name, span: span, seen: seen)
+                check_type_name(cs: cs, name: name, span: span, seen: seen)
             | TypeDefNode(name, params, variants, span) ->
-            check_type_name(cs: cs, name: name, span: span, seen: seen)
-            let variant_seen: MutableMap[String, Bool] = mutable_map_new()
-            for variant: TypeVariant in variants do
-                if mutable_map_contains(variant_seen, variant.name) then
-                    checker_push_span(cs, span)
-                    tc_error(cs, "Duplicate constructor '" + variant.name + "' in type '" + name + "'")
-                    checker_pop_span(cs)
-                end if
-                mutable_map_set(map: variant_seen, key: variant.name, value: true)
-            end for
+                check_type_name(cs: cs, name: name, span: span, seen: seen)
+                let variant_seen: MutableMap[String, Bool] = mutable_map_new()
+                for variant: TypeVariant in variants do
+                    if mutable_map_contains(variant_seen, variant.name) then
+                        checker_push_span(cs, span)
+                        tc_error(cs, "Duplicate constructor '" + variant.name + "' in type '" + name + "'")
+                        checker_pop_span(cs)
+                    end if
+                    mutable_map_set(map: variant_seen, key: variant.name, value: true)
+                end for
             | _ -> let ignore: Int = 0
         end match
     end for
@@ -550,13 +542,13 @@ func collect_type_headers(cs: CheckerState, defs: List[Def]) -> Unit
     for defn: Def in defs do
         match defn with
             | TypeAliasNode(name, params, target, span) ->
-            mutable_map_delete(cs.resolved_aliases, name)
-            mutable_map_set(map: cs.type_aliases, key: name, value: defn)
+                mutable_map_delete(cs.resolved_aliases, name)
+                mutable_map_set(map: cs.type_aliases, key: name, value: defn)
             | TypeDefNode(name, params, variants, span) ->
-            let header: TypeDefEntry = TypeDefEntry(name, params, collect_variant_names(variants), mutable_map_new())
-            mutable_map_set(map: cs.type_defs, key: name, value: header)
-            // Keep the final arity stable while older definitions' fields resolve.
-            mutable_map_set(map: cs.declared_type_params, key: name, value: params)
+                let header: TypeDefEntry = TypeDefEntry(name, params, collect_variant_names(variants), mutable_map_new())
+                mutable_map_set(map: cs.type_defs, key: name, value: header)
+                // Keep the final arity stable while older definitions' fields resolve.
+                mutable_map_set(map: cs.declared_type_params, key: name, value: params)
             | _ -> let ignore: Int = 0
         end match
     end for
@@ -569,15 +561,15 @@ func validate_type_aliases(cs: CheckerState, defs: List[Def]) -> Unit
     for defn: Def in defs do
         match defn with
             | TypeAliasNode(name, params, target, span) ->
-            checker_push_span(cs, span)
-            validate_alias_target(cs: cs, annot: target, tparams: params)
-            let resolved: GType = resolve_type(cs: cs, annot: target, tparams: params)
-            // Headers use the last declaration, matching the reference frontend.
-            // Validate older declarations without caching an obsolete template.
-            if defn == unwrap(mutable_map_get(cs.type_aliases, name)) then
-                mutable_map_set(map: cs.resolved_aliases, key: name, value: resolved)
-            end if
-            checker_pop_span(cs)
+                checker_push_span(cs, span)
+                validate_alias_target(cs: cs, annot: target, tparams: params)
+                let resolved: GType = resolve_type(cs: cs, annot: target, tparams: params)
+                // Headers use the last declaration, matching the reference frontend.
+                // Validate older declarations without caching an obsolete template.
+                if defn == unwrap(mutable_map_get(cs.type_aliases, name)) then
+                    mutable_map_set(map: cs.resolved_aliases, key: name, value: resolved)
+                end if
+                checker_pop_span(cs)
             | _ -> let ignore: Int = 0
         end match
     end for
@@ -589,40 +581,40 @@ end func validate_type_aliases
 func validate_alias_target(cs: CheckerState, annot: TypeAnnot, tparams: List[String]) -> Unit
     match annot with
         | FuncTypeAnnot(params, ret, effects) ->
-        for param: TypeAnnot in params do
-            validate_alias_target(cs: cs, annot: param, tparams: tparams)
-        end for
-        validate_alias_target(cs: cs, annot: ret, tparams: tparams)
+            for param: TypeAnnot in params do
+                validate_alias_target(cs: cs, annot: param, tparams: tparams)
+            end for
+            validate_alias_target(cs: cs, annot: ret, tparams: tparams)
         | SimpleTypeAnnot(name, params) ->
-        let builtins: List[String] = ["Int", "Float", "Bool", "String", "Unit", "List", "Array", "Option", "Result", "Map", "MutableMap", "Vec", "Tuple"]
-        if not list_contains_str(tparams, name) and not list_contains_str(builtins, name) and not mutable_map_contains(cs.type_defs, name) and not mutable_map_contains(cs.type_aliases, name) then
-            tc_error(cs, "Unknown type '" + name + "' in type alias")
-        end if
-        var arity: Int = -1
-        if list_contains_str(tparams, name) or list_contains_str(["Int", "Float", "Bool", "String", "Unit"], name) then
-            arity = 0
-        end if
-        if not list_contains_str(tparams, name) and list_contains_str(["List", "Array", "Option", "Vec"], name) then
-            arity = 1
-        end if
-        if not list_contains_str(tparams, name) and list_contains_str(["Result", "Map", "MutableMap"], name) then
-            arity = 2
-        end if
-        if not list_contains_str(tparams, name) and not mutable_map_contains(cs.type_aliases, name) and mutable_map_contains(cs.type_defs, name) then
-            match mutable_map_get(cs.declared_type_params, name) with
-                | Some(declared) -> arity = length(declared)
-                | None -> arity = length(unwrap(mutable_map_get(cs.type_defs, name)).type_params)
-            end match
-        end if
-        if arity >= 0 and length(params) != arity then
-            tc_error(cs, "Type '" + name + "' expects " + to_string(arity) + " type parameter(s) in type alias")
-        end if
-        if not list_contains_str(tparams, name) and name == "Tuple" and length(params) == 0 then
-            tc_error(cs, "Tuple requires type parameters in type alias")
-        end if
-        for param: TypeAnnot in params do
-            validate_alias_target(cs: cs, annot: param, tparams: tparams)
-        end for
+            let builtins: List[String] = ["Int", "Float", "Bool", "String", "Unit", "List", "Array", "Option", "Result", "Map", "MutableMap", "Vec", "Tuple"]
+            if not list_contains_str(tparams, name) and not list_contains_str(builtins, name) and not mutable_map_contains(cs.type_defs, name) and not mutable_map_contains(cs.type_aliases, name) then
+                tc_error(cs, "Unknown type '" + name + "' in type alias")
+            end if
+            var arity: Int = -1
+            if list_contains_str(tparams, name) or list_contains_str(["Int", "Float", "Bool", "String", "Unit"], name) then
+                arity = 0
+            end if
+            if not list_contains_str(tparams, name) and list_contains_str(["List", "Array", "Option", "Vec"], name) then
+                arity = 1
+            end if
+            if not list_contains_str(tparams, name) and list_contains_str(["Result", "Map", "MutableMap"], name) then
+                arity = 2
+            end if
+            if not list_contains_str(tparams, name) and not mutable_map_contains(cs.type_aliases, name) and mutable_map_contains(cs.type_defs, name) then
+                match mutable_map_get(cs.declared_type_params, name) with
+                    | Some(declared) -> arity = length(declared)
+                    | None -> arity = length(unwrap(mutable_map_get(cs.type_defs, name)).type_params)
+                end match
+            end if
+            if arity >= 0 and length(params) != arity then
+                tc_error(cs, "Type '" + name + "' expects " + to_string(arity) + " type parameter(s) in type alias")
+            end if
+            if not list_contains_str(tparams, name) and name == "Tuple" and length(params) == 0 then
+                tc_error(cs, "Tuple requires type parameters in type alias")
+            end if
+            for param: TypeAnnot in params do
+                validate_alias_target(cs: cs, annot: param, tparams: tparams)
+            end for
     end match
     return ()
 end func validate_alias_target
@@ -651,19 +643,19 @@ func types_compatible(expected: GType, actual: GType) -> Bool
     match expected with
         | TAny -> return true
         | _ ->
-        match actual with
-            | TAny -> return true
-            | _ ->
-            // TypeVar acts as wildcard
-            match expected with
-                | TVar(n1) -> return true
+            match actual with
+                | TAny -> return true
                 | _ ->
-                match actual with
-                    | TVar(n2) -> return true
-                    | _ -> return types_structural(expected, actual)
-                end match
+                    // TypeVar acts as wildcard
+                    match expected with
+                        | TVar(n1) -> return true
+                        | _ ->
+                            match actual with
+                                | TVar(n2) -> return true
+                                | _ -> return types_structural(expected, actual)
+                            end match
+                    end match
             end match
-        end match
     end match
 end func types_compatible
 
@@ -683,10 +675,10 @@ func types_structural_inner(expected: GType, actual: GType) -> Bool
         | TAny -> return true
         | TVar(n) -> return true
         | _ ->
-        match expected with
-            | TVar(n) -> return true
-            | _ -> return types_structural_core(expected, actual)
-        end match
+            match expected with
+                | TVar(n) -> return true
+                | _ -> return types_structural_core(expected, actual)
+            end match
     end match
 end func types_structural_inner
 
@@ -695,93 +687,93 @@ func types_structural_core(expected: GType, actual: GType) -> Bool
     // Primitives
     match expected with
         | TInt ->
-        match actual with
-            | TInt -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TInt -> return true
+                | _ -> return false
+            end match
         | TFloat ->
-        match actual with
-            | TFloat -> return true
-            | TInt -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TFloat -> return true
+                | TInt -> return true
+                | _ -> return false
+            end match
         | TBool ->
-        match actual with
-            | TBool -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TBool -> return true
+                | _ -> return false
+            end match
         | TString ->
-        match actual with
-            | TString -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TString -> return true
+                | _ -> return false
+            end match
         | TUnit ->
-        match actual with
-            | TUnit -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TUnit -> return true
+                | _ -> return false
+            end match
         | TList(e1) ->
-        match actual with
-            | TList(e2) -> return types_structural(e1, e2)
-            | _ -> return false
-        end match
+            match actual with
+                | TList(e2) -> return types_structural(e1, e2)
+                | _ -> return false
+            end match
         | TArray(e1) ->
-        match actual with
-            | TArray(e2) -> return types_structural(e1, e2)
-            | _ -> return false
-        end match
+            match actual with
+                | TArray(e2) -> return types_structural(e1, e2)
+                | _ -> return false
+            end match
         | TVec(e1) ->
-        match actual with
-            | TVec(e2) -> return types_structural(e1, e2)
-            | _ -> return false
-        end match
+            match actual with
+                | TVec(e2) -> return types_structural(e1, e2)
+                | _ -> return false
+            end match
         | TOption(v1) ->
-        match actual with
-            | TOption(v2) -> return types_structural(v1, v2)
-            | _ -> return false
-        end match
+            match actual with
+                | TOption(v2) -> return types_structural(v1, v2)
+                | _ -> return false
+            end match
         | TResult(o1, e1) ->
-        match actual with
-            | TResult(o2, e2) -> return types_structural(o1, o2) and types_structural(e1, e2)
-            | _ -> return false
-        end match
+            match actual with
+                | TResult(o2, e2) -> return types_structural(o1, o2) and types_structural(e1, e2)
+                | _ -> return false
+            end match
         | TTuple(elems1) ->
-        match actual with
-            | TTuple(elems2) -> return types_list_compatible(elems1, elems2)
-            | _ -> return false
-        end match
+            match actual with
+                | TTuple(elems2) -> return types_list_compatible(elems1, elems2)
+                | _ -> return false
+            end match
         | TFunc(p1, r1, _e1) ->
-        match actual with
-            | TFunc(p2, r2, _e2) ->
-            if length(p1) != length(p2) then
-                return false
-            end if
-            // Contravariant params, covariant return
-            if not types_list_compatible(p2, p1) then
-                return false
-            end if
-            return types_structural(r1, r2)
-            | _ -> return false
-        end match
+            match actual with
+                | TFunc(p2, r2, _e2) ->
+                    if length(p1) != length(p2) then
+                        return false
+                    end if
+                    // Contravariant params, covariant return
+                    if not types_list_compatible(p2, p1) then
+                        return false
+                    end if
+                    return types_structural(r1, r2)
+                | _ -> return false
+            end match
         | TMap(k1, v1) ->
-        match actual with
-            | TMap(k2, v2) -> return types_structural(k1, k2) and types_structural(v1, v2)
-            | _ -> return false
-        end match
+            match actual with
+                | TMap(k2, v2) -> return types_structural(k1, k2) and types_structural(v1, v2)
+                | _ -> return false
+            end match
         | TMutableMap(k1, v1) ->
-        match actual with
-            | TMutableMap(k2, v2) -> return types_structural(k1, k2) and types_structural(v1, v2)
-            | _ -> return false
-        end match
+            match actual with
+                | TMutableMap(k2, v2) -> return types_structural(k1, k2) and types_structural(v1, v2)
+                | _ -> return false
+            end match
         | TUser(n1, args1) ->
-        match actual with
-            | TUser(n2, args2) ->
-            if n1 != n2 then
-                return false
-            end if
-            return types_list_compatible(args1, args2)
-            | _ -> return false
-        end match
+            match actual with
+                | TUser(n2, args2) ->
+                    if n1 != n2 then
+                        return false
+                    end if
+                    return types_list_compatible(args1, args2)
+                | _ -> return false
+            end match
         | TVar(n) -> return true
         | TAny -> return true
     end match
@@ -842,11 +834,11 @@ func apply_subs(t: GType, subs: MutableMap[String, GType]) -> GType
     example (TInt, mutable_map_new()) -> TInt
     match t with
         | TVar(n) ->
-        let found: Option[GType] = mutable_map_get(subs, n)
-        match found with
-            | Some(bound) -> return bound
-            | None -> return t
-        end match
+            let found: Option[GType] = mutable_map_get(subs, n)
+            match found with
+                | Some(bound) -> return bound
+                | None -> return t
+            end match
         | TList(e) -> return TList(apply_subs(e, subs))
         | TArray(e) -> return TArray(apply_subs(e, subs))
         | TVec(e) -> return TVec(apply_subs(e, subs))
@@ -857,10 +849,10 @@ func apply_subs(t: GType, subs: MutableMap[String, GType]) -> GType
         | TTuple(elems) -> return TTuple(apply_subs_list(elems, subs))
         | TFunc(params, ret, effs) -> return TFunc(apply_subs_list(params, subs), apply_subs(ret, subs), effs)
         | TUser(n, args) ->
-        if length(args) > 0 then
-            return TUser(n, apply_subs_list(args, subs))
-        end if
-        return t
+            if length(args) > 0 then
+                return TUser(n, apply_subs_list(args, subs))
+            end if
+            return t
         | _ -> return t
     end match
 end func apply_subs
@@ -881,10 +873,10 @@ func types_compatible_with_subs(expected: GType, actual: GType, subs: MutableMap
     match expected with
         | TAny -> return true
         | _ ->
-        match actual with
-            | TAny -> return true
-            | _ -> return tcompat_subs_inner(expected: expected, actual: actual, subs: subs)
-        end match
+            match actual with
+                | TAny -> return true
+                | _ -> return tcompat_subs_inner(expected: expected, actual: actual, subs: subs)
+            end match
     end match
 end func types_compatible_with_subs
 
@@ -892,18 +884,18 @@ func tcompat_subs_inner(expected: GType, actual: GType, subs: MutableMap[String,
     example (TInt, TInt, mutable_map_new()) -> true
     match expected with
         | TVar(n) ->
-        let found: Option[GType] = mutable_map_get(subs, n)
-        match found with
-            | Some(bound) -> return types_structural(bound, actual)
-            | None ->
-            mutable_map_set(map: subs, key: n, value: actual)
-            return true
-        end match
+            let found: Option[GType] = mutable_map_get(subs, n)
+            match found with
+                | Some(bound) -> return types_structural(bound, actual)
+                | None ->
+                    mutable_map_set(map: subs, key: n, value: actual)
+                    return true
+            end match
         | _ ->
-        match actual with
-            | TVar(n2) -> return true
-            | _ -> return tcompat_subs_core(expected: expected, actual: actual, subs: subs)
-        end match
+            match actual with
+                | TVar(n2) -> return true
+                | _ -> return tcompat_subs_core(expected: expected, actual: actual, subs: subs)
+            end match
     end match
 end func tcompat_subs_inner
 
@@ -911,92 +903,92 @@ func tcompat_subs_core(expected: GType, actual: GType, subs: MutableMap[String, 
     example (TBool, TBool, mutable_map_new()) -> true
     match expected with
         | TInt ->
-        match actual with
-            | TInt -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TInt -> return true
+                | _ -> return false
+            end match
         | TFloat ->
-        match actual with
-            | TFloat -> return true
-            | TInt -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TFloat -> return true
+                | TInt -> return true
+                | _ -> return false
+            end match
         | TBool ->
-        match actual with
-            | TBool -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TBool -> return true
+                | _ -> return false
+            end match
         | TString ->
-        match actual with
-            | TString -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TString -> return true
+                | _ -> return false
+            end match
         | TUnit ->
-        match actual with
-            | TUnit -> return true
-            | _ -> return false
-        end match
+            match actual with
+                | TUnit -> return true
+                | _ -> return false
+            end match
         | TList(e1) ->
-        match actual with
-            | TList(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TList(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+                | _ -> return false
+            end match
         | TArray(e1) ->
-        match actual with
-            | TArray(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TArray(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+                | _ -> return false
+            end match
         | TVec(e1) ->
-        match actual with
-            | TVec(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TVec(e2) -> return types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+                | _ -> return false
+            end match
         | TOption(v1) ->
-        match actual with
-            | TOption(v2) -> return types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TOption(v2) -> return types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
+                | _ -> return false
+            end match
         | TResult(o1, e1) ->
-        match actual with
-            | TResult(o2, e2) -> return types_compatible_with_subs(expected: o1, actual: o2, subs: subs) and types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TResult(o2, e2) -> return types_compatible_with_subs(expected: o1, actual: o2, subs: subs) and types_compatible_with_subs(expected: e1, actual: e2, subs: subs)
+                | _ -> return false
+            end match
         | TTuple(elems1) ->
-        match actual with
-            | TTuple(elems2) -> return tcompat_subs_list(as_list: elems1, bs: elems2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TTuple(elems2) -> return tcompat_subs_list(as_list: elems1, bs: elems2, subs: subs)
+                | _ -> return false
+            end match
         | TFunc(p1, r1, _e1) ->
-        match actual with
-            | TFunc(p2, r2, _e2) ->
-            if length(p1) != length(p2) then
-                return false
-            end if
-            if not tcompat_subs_list(as_list: p2, bs: p1, subs: subs) then
-                return false
-            end if
-            return types_compatible_with_subs(expected: r1, actual: r2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TFunc(p2, r2, _e2) ->
+                    if length(p1) != length(p2) then
+                        return false
+                    end if
+                    if not tcompat_subs_list(as_list: p2, bs: p1, subs: subs) then
+                        return false
+                    end if
+                    return types_compatible_with_subs(expected: r1, actual: r2, subs: subs)
+                | _ -> return false
+            end match
         | TMap(k1, v1) ->
-        match actual with
-            | TMap(k2, v2) -> return types_compatible_with_subs(expected: k1, actual: k2, subs: subs) and types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TMap(k2, v2) -> return types_compatible_with_subs(expected: k1, actual: k2, subs: subs) and types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
+                | _ -> return false
+            end match
         | TMutableMap(k1, v1) ->
-        match actual with
-            | TMutableMap(k2, v2) -> return types_compatible_with_subs(expected: k1, actual: k2, subs: subs) and types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TMutableMap(k2, v2) -> return types_compatible_with_subs(expected: k1, actual: k2, subs: subs) and types_compatible_with_subs(expected: v1, actual: v2, subs: subs)
+                | _ -> return false
+            end match
         | TUser(n1, args1) ->
-        match actual with
-            | TUser(n2, args2) ->
-            if n1 != n2 then
-                return false
-            end if
-            return tcompat_subs_list(as_list: args1, bs: args2, subs: subs)
-            | _ -> return false
-        end match
+            match actual with
+                | TUser(n2, args2) ->
+                    if n1 != n2 then
+                        return false
+                    end if
+                    return tcompat_subs_list(as_list: args1, bs: args2, subs: subs)
+                | _ -> return false
+            end match
         | _ -> return false
     end match
 end func tcompat_subs_core
@@ -1054,8 +1046,8 @@ func check_ident(cs: CheckerState, name: String, env: TypeEnv) -> GType
     match found with
         | Some(t) -> return t
         | None ->
-        tc_error(cs, "Undefined variable: " + name)
-        return TAny
+            tc_error(cs, "Undefined variable: " + name)
+            return TAny
     end match
 end func check_ident
 
@@ -1168,10 +1160,10 @@ func check_arith_op(cs: CheckerState, op: String, lt: GType, rt: GType) -> GType
     if op == "+" then
         match lt with
             | TString ->
-            match rt with
-                | TString -> return TString
-                | _ -> return check_arith_numeric(cs: cs, op: op, lt: lt, rt: rt)
-            end match
+                match rt with
+                    | TString -> return TString
+                    | _ -> return check_arith_numeric(cs: cs, op: op, lt: lt, rt: rt)
+                end match
             | _ -> return check_arith_numeric(cs: cs, op: op, lt: lt, rt: rt)
         end match
     end if
@@ -1182,24 +1174,24 @@ func check_arith_numeric(cs: CheckerState, op: String, lt: GType, rt: GType) -> 
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), "+", TFloat, TFloat) -> TFloat
     match lt with
         | TInt ->
-        match rt with
-            | TInt -> return TInt
-            | TFloat -> return TFloat
-            | _ ->
-            tc_error(cs, "Cannot apply " + op + " to these types")
-            return TAny
-        end match
+            match rt with
+                | TInt -> return TInt
+                | TFloat -> return TFloat
+                | _ ->
+                    tc_error(cs, "Cannot apply " + op + " to these types")
+                    return TAny
+            end match
         | TFloat ->
-        match rt with
-            | TInt -> return TFloat
-            | TFloat -> return TFloat
-            | _ ->
+            match rt with
+                | TInt -> return TFloat
+                | TFloat -> return TFloat
+                | _ ->
+                    tc_error(cs, "Cannot apply " + op + " to these types")
+                    return TAny
+            end match
+        | _ ->
             tc_error(cs, "Cannot apply " + op + " to these types")
             return TAny
-        end match
-        | _ ->
-        tc_error(cs, "Cannot apply " + op + " to these types")
-        return TAny
     end match
 end func check_arith_numeric
 
@@ -1217,10 +1209,10 @@ func check_logic_op(cs: CheckerState, op: String, lt: GType, rt: GType) -> GType
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), "and", TBool, TBool) -> TBool
     match lt with
         | TBool ->
-        match rt with
-            | TBool -> return TBool
-            | _ -> tc_error(cs, "Right operand of '" + op + "' must be Bool")
-        end match
+            match rt with
+                | TBool -> return TBool
+                | _ -> tc_error(cs, "Right operand of '" + op + "' must be Bool")
+            end match
         | _ -> tc_error(cs, "Left operand of '" + op + "' must be Bool")
     end match
     return TBool
@@ -1235,16 +1227,16 @@ func check_unary(cs: CheckerState, op: String, operand: Expr, env: TypeEnv) -> G
             | TInt -> return TInt
             | TFloat -> return TFloat
             | _ ->
-            tc_error(cs, "Cannot negate non-numeric type")
-            return TAny
+                tc_error(cs, "Cannot negate non-numeric type")
+                return TAny
         end match
     end if
     if op == "not" then
         match ot with
             | TBool -> return TBool
             | _ ->
-            tc_error(cs, "'not' requires Bool")
-            return TBool
+                tc_error(cs, "'not' requires Bool")
+                return TBool
         end match
     end if
     tc_error(cs, "Unknown unary operator: " + op)
@@ -1257,13 +1249,13 @@ func check_call(cs: CheckerState, func_expr: Expr, args: List[CallArg], env: Typ
     // Special case: length() accepts List, String, or Array
     match func_expr with
         | Ident(fname) ->
-        if fname == "length" then
-            if length(args) == 1 then
-                if not mutable_map_contains(cs.user_defined, fname) then
-                    return check_length_call(cs: cs, args: args, env: env)
+            if fname == "length" then
+                if length(args) == 1 then
+                    if not mutable_map_contains(cs.user_defined, fname) then
+                        return check_length_call(cs: cs, args: args, env: env)
+                    end if
                 end if
             end if
-        end if
         | _ -> return check_call_general(cs: cs, func_expr: func_expr, args: args, env: env)
     end match
     return check_call_general(cs: cs, func_expr: func_expr, args: args, env: env)
@@ -1282,8 +1274,8 @@ func check_length_call(cs: CheckerState, args: List[CallArg], env: TypeEnv) -> G
             | TAny -> return TInt
             | TVar(n) -> return TInt
             | _ ->
-            tc_error(cs, "length() expects List, String, or Array")
-            return TInt
+                tc_error(cs, "length() expects List, String, or Array")
+                return TInt
         end match
     end if
     return TInt
@@ -1295,60 +1287,60 @@ func check_call_general(cs: CheckerState, func_expr: Expr, args: List[CallArg], 
     let func_type: GType = check_expr(cs: cs, expr: func_expr, env: env)
     match func_type with
         | TFunc(param_types, ret_type, _effs) ->
-        // Check argument count
-        if length(args) != length(param_types) then
-            tc_error(cs, "Expected " + to_string(length(param_types)) + " arguments, got " + to_string(length(args)))
-        end if
-        // Get parameter names if available
-        let param_names: List[String] = get_func_param_names(cs: cs, func_expr: func_expr)
-        // Named argument enforcement: 3+ params require named args
-        if length(param_types) >= 3 then
-            let pos_count: Int = count_positional_args(args)
-            if pos_count > 0 then
-                let fname: String = get_func_name(func_expr)
-                tc_error(cs, "Function '" + fname + "' has " + to_string(length(param_types)) + " parameters; use named arguments for clarity")
+            // Check argument count
+            if length(args) != length(param_types) then
+                tc_error(cs, "Expected " + to_string(length(param_types)) + " arguments, got " + to_string(length(args)))
             end if
-        end if
-        // Check argument types with substitution tracking
-        let use_subs: Bool = has_type_vars_list(param_types) or has_type_vars(ret_type)
-        if use_subs then
-            let subs: MutableMap[String, GType] = mutable_map_new()
-            let has_named: Bool = has_named_args(args)
-            if has_named then
-                if length(param_names) > 0 then
-                    let ordered: List[Option[CallArg]] = reorder_args(cs: cs, args: args, param_names: param_names)
-                    check_ordered_args_subs(cs: cs, ordered: ordered, param_types: param_types, param_names: param_names, env: env, subs: subs)
+            // Get parameter names if available
+            let param_names: List[String] = get_func_param_names(cs: cs, func_expr: func_expr)
+            // Named argument enforcement: 3+ params require named args
+            if length(param_types) >= 3 then
+                let pos_count: Int = count_positional_args(args)
+                if pos_count > 0 then
+                    let fname: String = get_func_name(func_expr)
+                    tc_error(cs, "Function '" + fname + "' has " + to_string(length(param_types)) + " parameters; use named arguments for clarity")
+                end if
+            end if
+            // Check argument types with substitution tracking
+            let use_subs: Bool = has_type_vars_list(param_types) or has_type_vars(ret_type)
+            if use_subs then
+                let subs: MutableMap[String, GType] = mutable_map_new()
+                let has_named: Bool = has_named_args(args)
+                if has_named then
+                    if length(param_names) > 0 then
+                        let ordered: List[Option[CallArg]] = reorder_args(cs: cs, args: args, param_names: param_names)
+                        check_ordered_args_subs(cs: cs, ordered: ordered, param_types: param_types, param_names: param_names, env: env, subs: subs)
+                    else
+                        tc_error(cs, "Named arguments not supported for this call")
+                        check_positional_args_subs(cs: cs, args: args, param_types: param_types, env: env, subs: subs)
+                    end if
                 else
-                    tc_error(cs, "Named arguments not supported for this call")
                     check_positional_args_subs(cs: cs, args: args, param_types: param_types, env: env, subs: subs)
                 end if
+                if mutable_map_size(subs) > 0 then
+                    return apply_subs(ret_type, subs)
+                end if
+                return ret_type
             else
-                check_positional_args_subs(cs: cs, args: args, param_types: param_types, env: env, subs: subs)
-            end if
-            if mutable_map_size(subs) > 0 then
-                return apply_subs(ret_type, subs)
-            end if
-            return ret_type
-        else
-            let has_named: Bool = has_named_args(args)
-            if has_named then
-                if length(param_names) > 0 then
-                    let ordered: List[Option[CallArg]] = reorder_args(cs: cs, args: args, param_names: param_names)
-                    check_ordered_args_no_subs(cs: cs, ordered: ordered, param_types: param_types, param_names: param_names, env: env)
+                let has_named: Bool = has_named_args(args)
+                if has_named then
+                    if length(param_names) > 0 then
+                        let ordered: List[Option[CallArg]] = reorder_args(cs: cs, args: args, param_names: param_names)
+                        check_ordered_args_no_subs(cs: cs, ordered: ordered, param_types: param_types, param_names: param_names, env: env)
+                    else
+                        tc_error(cs, "Named arguments not supported for this call")
+                        check_positional_args_no_subs(cs: cs, args: args, param_types: param_types, env: env, idx: 0)
+                    end if
                 else
-                    tc_error(cs, "Named arguments not supported for this call")
                     check_positional_args_no_subs(cs: cs, args: args, param_types: param_types, env: env, idx: 0)
                 end if
-            else
-                check_positional_args_no_subs(cs: cs, args: args, param_types: param_types, env: env, idx: 0)
+                return ret_type
             end if
-            return ret_type
-        end if
         | TAny -> return TAny
         | TVar(n) -> return TAny
         | _ ->
-        tc_error(cs, "Cannot call non-function type")
-        return TAny
+            tc_error(cs, "Cannot call non-function type")
+            return TAny
     end match
 end func check_call_general
 
@@ -1366,11 +1358,11 @@ func get_func_param_names(cs: CheckerState, func_expr: Expr) -> List[String]
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), Ident("f")) -> []
     match func_expr with
         | Ident(n) ->
-        let found: Option[List[String]] = mutable_map_get(cs.func_params, n)
-        match found with
-            | Some(names) -> return names
-            | None -> return []
-        end match
+            let found: Option[List[String]] = mutable_map_get(cs.func_params, n)
+            match found with
+                | Some(names) -> return names
+                | None -> return []
+            end match
         | _ -> return []
     end match
 end func get_func_param_names
@@ -1545,34 +1537,34 @@ func check_index(cs: CheckerState, target: Expr, idx: Expr, env: TypeEnv) -> GTy
     let idx_type: GType = check_expr(cs: cs, expr: idx, env: env)
     match target_type with
         | TList(elem) ->
-        match idx_type with
-            | TInt -> return elem
-            | _ ->
-            tc_error(cs, "List index must be Int")
-            return elem
-        end match
+            match idx_type with
+                | TInt -> return elem
+                | _ ->
+                    tc_error(cs, "List index must be Int")
+                    return elem
+            end match
         | TArray(elem) ->
-        match idx_type with
-            | TInt -> return elem
-            | _ ->
-            tc_error(cs, "Array index must be Int")
-            return elem
-        end match
+            match idx_type with
+                | TInt -> return elem
+                | _ ->
+                    tc_error(cs, "Array index must be Int")
+                    return elem
+            end match
         | TString ->
-        match idx_type with
-            | TInt -> return TString
-            | _ ->
-            tc_error(cs, "String index must be Int")
-            return TString
-        end match
+            match idx_type with
+                | TInt -> return TString
+                | _ ->
+                    tc_error(cs, "String index must be Int")
+                    return TString
+            end match
         | TMap(kt, vt) ->
-        if not types_compatible(kt, idx_type) then
-            tc_error(cs, "Map key type mismatch")
-        end if
-        return vt
+            if not types_compatible(kt, idx_type) then
+                tc_error(cs, "Map key type mismatch")
+            end if
+            return vt
         | _ ->
-        tc_error(cs, "Cannot index into this type")
-        return TAny
+            tc_error(cs, "Cannot index into this type")
+            return TAny
     end match
 end func check_index
 
@@ -1582,23 +1574,23 @@ func check_field(cs: CheckerState, target: Expr, field_name: String, env: TypeEn
     let target_type: GType = check_expr(cs: cs, expr: target, env: env)
     match target_type with
         | TUser(tname, targs) ->
-        let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
-        if is_some(tdef_opt) then
-            let tdef: TypeDefEntry = unwrap(tdef_opt)
-            let found: GType = find_field_in_variants(tdef: tdef, field_name: field_name)
-            match found with
-                | TAny ->
-                tc_error(cs, "Unknown field '" + field_name + "' on type " + tname)
+            let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+            if is_some(tdef_opt) then
+                let tdef: TypeDefEntry = unwrap(tdef_opt)
+                let found: GType = find_field_in_variants(tdef: tdef, field_name: field_name)
+                match found with
+                    | TAny ->
+                        tc_error(cs, "Unknown field '" + field_name + "' on type " + tname)
+                        return TAny
+                    | _ -> return found
+                end match
+            else
+                tc_error(cs, "Unknown type in field access: " + tname)
                 return TAny
-                | _ -> return found
-            end match
-        else
-            tc_error(cs, "Unknown type in field access: " + tname)
-            return TAny
-        end if
+            end if
         | _ ->
-        tc_error(cs, "Cannot access field on this type")
-        return TAny
+            tc_error(cs, "Cannot access field on this type")
+            return TAny
     end match
 end func check_field
 
@@ -1644,22 +1636,22 @@ func check_with(cs: CheckerState, target: Expr, updates: List[FieldUpdate], env:
     let target_type: GType = check_expr(cs: cs, expr: target, env: env)
     match target_type with
         | TUser(tname, targs) ->
-        let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
-        if is_some(tdef_opt) then
-            let tdef: TypeDefEntry = unwrap(tdef_opt)
-            if length(tdef.variant_names) != 1 then
-                tc_error(cs, "'with' expression requires a single-variant type")
+            let tdef_opt: Option[TypeDefEntry] = mutable_map_get(cs.type_defs, tname)
+            if is_some(tdef_opt) then
+                let tdef: TypeDefEntry = unwrap(tdef_opt)
+                if length(tdef.variant_names) != 1 then
+                    tc_error(cs, "'with' expression requires a single-variant type")
+                    return TAny
+                end if
+                check_with_updates(cs: cs, updates: updates, tdef: tdef, env: env)
+                return target_type
+            else
+                tc_error(cs, "Unknown type in 'with' expression")
                 return TAny
             end if
-            check_with_updates(cs: cs, updates: updates, tdef: tdef, env: env)
-            return target_type
-        else
-            tc_error(cs, "Unknown type in 'with' expression")
-            return TAny
-        end if
         | _ ->
-        tc_error(cs, "'with' expression requires a user-defined type")
-        return TAny
+            tc_error(cs, "'with' expression requires a user-defined type")
+            return TAny
     end match
 end func check_with
 
@@ -1673,10 +1665,10 @@ func check_with_updates(cs: CheckerState, updates: List[FieldUpdate], tdef: Type
     match expected_field with
         | TAny -> tc_error(cs, "Unknown field '" + upd.name + "' in with expression")
         | _ ->
-        let val_type: GType = check_expr(cs: cs, expr: upd.value, env: env)
-        if not types_compatible(expected_field, val_type) then
-            tc_error(cs, "Field '" + upd.name + "' type mismatch in with expression")
-        end if
+            let val_type: GType = check_expr(cs: cs, expr: upd.value, env: env)
+            if not types_compatible(expected_field, val_type) then
+                tc_error(cs, "Field '" + upd.name + "' type mismatch in with expression")
+            end if
     end match
     check_with_updates(cs: cs, updates: tail(updates), tdef: tdef, env: env)
     return ()
@@ -1698,33 +1690,33 @@ func check_pipeline_stages(cs: CheckerState, stages: List[PipeStage], cur_type: 
     let func_type: GType = check_expr(cs: cs, expr: stage.func_expr, env: env)
     match func_type with
         | TFunc(param_types, ret_type, _effs) ->
-        if length(param_types) == 0 then
-            tc_error(cs, "Pipeline function must take at least one argument")
-            return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: cur_type, env: env)
-        end if
-        // Check placeholder positions
-        let has_placeholder: Bool = has_placeholder_in_list(stage.args)
-        if has_placeholder then
-            // Placeholder mode: stage.args count == param_types count
-            if length(stage.args) != length(param_types) then
-                tc_error(cs, "Pipeline stage argument count mismatch")
+            if length(param_types) == 0 then
+                tc_error(cs, "Pipeline function must take at least one argument")
+                return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: cur_type, env: env)
             end if
-        else
-            // No placeholder: piped value prepended
-            if length(stage.args) + 1 != length(param_types) then
-                tc_error(cs, "Pipeline stage argument count mismatch")
+            // Check placeholder positions
+            let has_placeholder: Bool = has_placeholder_in_list(stage.args)
+            if has_placeholder then
+                // Placeholder mode: stage.args count == param_types count
+                if length(stage.args) != length(param_types) then
+                    tc_error(cs, "Pipeline stage argument count mismatch")
+                end if
+            else
+                // No placeholder: piped value prepended
+                if length(stage.args) + 1 != length(param_types) then
+                    tc_error(cs, "Pipeline stage argument count mismatch")
+                end if
+                // Check piped value against first param
+                if not types_compatible(head(param_types), cur_type) then
+                    tc_error(cs, "Pipeline type mismatch")
+                end if
             end if
-            // Check piped value against first param
-            if not types_compatible(head(param_types), cur_type) then
-                tc_error(cs, "Pipeline type mismatch")
-            end if
-        end if
-        // Check stage extra arguments
-        check_pipeline_args(cs: cs, args: stage.args, param_types: param_types, env: env, has_placeholder: has_placeholder)
-        return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: ret_type, env: env)
+            // Check stage extra arguments
+            check_pipeline_args(cs: cs, args: stage.args, param_types: param_types, env: env, has_placeholder: has_placeholder)
+            return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: ret_type, env: env)
         | _ ->
-        tc_error(cs, "Pipeline stage must be a function")
-        return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: cur_type, env: env)
+            tc_error(cs, "Pipeline stage must be a function")
+            return check_pipeline_stages(cs: cs, stages: tail(stages), cur_type: cur_type, env: env)
     end match
 end func check_pipeline_stages
 
@@ -1747,32 +1739,32 @@ func check_pipeline_args(cs: CheckerState, args: List[Expr], param_types: List[G
     let arg: Expr = head(args)
     match arg with
         | PlaceholderE ->
-        check_pipeline_args(cs: cs, args: tail(args), param_types: tail(param_types), env: env, has_placeholder: has_placeholder)
-        return ()
+            check_pipeline_args(cs: cs, args: tail(args), param_types: tail(param_types), env: env, has_placeholder: has_placeholder)
+            return ()
         | _ ->
-        // Determine which param type to check against
-        let pt: List[GType] = param_types
-        if not has_placeholder then
-            if length(pt) > 0 then
-                // Skip first param (piped value)
-                let remaining_pt: List[GType] = tail(pt)
-                if length(remaining_pt) > 0 then
+            // Determine which param type to check against
+            let pt: List[GType] = param_types
+            if not has_placeholder then
+                if length(pt) > 0 then
+                    // Skip first param (piped value)
+                    let remaining_pt: List[GType] = tail(pt)
+                    if length(remaining_pt) > 0 then
+                        let arg_type: GType = check_expr(cs: cs, expr: arg, env: env)
+                        if not types_compatible(head(remaining_pt), arg_type) then
+                            tc_error(cs, "Pipeline argument type mismatch")
+                        end if
+                    end if
+                end if
+            else
+                if length(pt) > 0 then
                     let arg_type: GType = check_expr(cs: cs, expr: arg, env: env)
-                    if not types_compatible(head(remaining_pt), arg_type) then
+                    if not types_compatible(head(pt), arg_type) then
                         tc_error(cs, "Pipeline argument type mismatch")
                     end if
                 end if
             end if
-        else
-            if length(pt) > 0 then
-                let arg_type: GType = check_expr(cs: cs, expr: arg, env: env)
-                if not types_compatible(head(pt), arg_type) then
-                    tc_error(cs, "Pipeline argument type mismatch")
-                end if
-            end if
-        end if
-        check_pipeline_args(cs: cs, args: tail(args), param_types: tail(param_types), env: env, has_placeholder: has_placeholder)
-        return ()
+            check_pipeline_args(cs: cs, args: tail(args), param_types: tail(param_types), env: env, has_placeholder: has_placeholder)
+            return ()
     end match
 end func check_pipeline_args
 
@@ -1860,9 +1852,9 @@ func check_constructor_args(cs: CheckerState, args: List[Expr], fields: List[Fie
     match fi.field_type with
         | TVar(n) -> mutable_map_set(map: bindings, key: n, value: arg_type)
         | _ ->
-        if not types_compatible(fi.field_type, arg_type) then
-            tc_error(cs, "Constructor field type mismatch")
-        end if
+            if not types_compatible(fi.field_type, arg_type) then
+                tc_error(cs, "Constructor field type mismatch")
+            end if
     end match
     check_constructor_args(cs: cs, args: tail(args), fields: tail(fields), env: env, bindings: bindings)
     return ()
@@ -1944,8 +1936,8 @@ func get_arm_return_type(cs: CheckerState, stmts: List[Stmt], env: TypeEnv) -> G
     match stmt with
         | ReturnStmt(value) -> return check_expr(cs: cs, expr: value, env: env)
         | _ ->
-        check_stmt(cs: cs, stmt: stmt, env: env)
-        return get_arm_return_type(cs: cs, stmts: tail(stmts), env: env)
+            check_stmt(cs: cs, stmt: stmt, env: env)
+            return get_arm_return_type(cs: cs, stmts: tail(stmts), env: env)
     end match
 end func get_arm_return_type
 
@@ -1966,8 +1958,8 @@ func check_stmt(cs: CheckerState, stmt: Stmt, env: TypeEnv) -> Unit
         | MatchStmt(scrutinee, arms) -> check_match_stmt(cs: cs, scrutinee: scrutinee, arms: arms, env: env)
         | ReturnStmt(value) -> check_return_stmt(cs: cs, value: value, env: env)
         | ExprStmt(expr) ->
-        let ignore: GType = check_expr(cs: cs, expr: expr, env: env)
-        return ()
+            let ignore: GType = check_expr(cs: cs, expr: expr, env: env)
+            return ()
     end match
 end func check_stmt
 
@@ -2001,18 +1993,18 @@ func check_assign_stmt(cs: CheckerState, target: String, value: Expr, env: TypeE
     let var_type_opt: Option[GType] = type_env_lookup(env, target)
     match var_type_opt with
         | None ->
-        tc_error(cs, "Undefined variable: " + target)
-        return ()
-        | Some(var_type) ->
-        if not type_env_is_mutable(env, target) then
-            tc_error(cs, "Cannot assign to immutable variable: " + target)
+            tc_error(cs, "Undefined variable: " + target)
             return ()
-        end if
-        let val_type: GType = check_expr(cs: cs, expr: value, env: env)
-        if not types_compatible(var_type, val_type) then
-            tc_error(cs, "Type mismatch in assignment to '" + target + "'")
-        end if
-        return ()
+        | Some(var_type) ->
+            if not type_env_is_mutable(env, target) then
+                tc_error(cs, "Cannot assign to immutable variable: " + target)
+                return ()
+            end if
+            let val_type: GType = check_expr(cs: cs, expr: value, env: env)
+            if not types_compatible(var_type, val_type) then
+                tc_error(cs, "Type mismatch in assignment to '" + target + "'")
+            end if
+            return ()
     end match
 end func check_assign_stmt
 
@@ -2066,8 +2058,8 @@ func extract_elem_type(cs: CheckerState, iter_type: GType) -> GType
         | TAny -> return TAny
         | TVar(n) -> return TAny
         | _ ->
-        tc_error(cs, "For loop requires List or Array")
-        return TAny
+            tc_error(cs, "For loop requires List or Array")
+            return TAny
     end match
 end func extract_elem_type
 
@@ -2125,20 +2117,20 @@ func check_pattern(cs: CheckerState, pat: Pattern, expected: GType, env: TypeEnv
     match pat with
         | WildcardPat -> return ()
         | VarPat(name) ->
-        type_env_bind(env: env, name: name, t: expected)
-        return ()
+            type_env_bind(env: env, name: name, t: expected)
+            return ()
         | LitPat(value) ->
-        let lit_type: GType = check_expr(cs: cs, expr: value, env: env)
-        if not types_compatible(expected, lit_type) then
-            tc_error(cs, "Pattern type mismatch")
-        end if
-        return ()
+            let lit_type: GType = check_expr(cs: cs, expr: value, env: env)
+            if not types_compatible(expected, lit_type) then
+                tc_error(cs, "Pattern type mismatch")
+            end if
+            return ()
         | CtorPat(ctor_name, sub_pats) ->
-        check_ctor_pattern(cs: cs, ctor_name: ctor_name, sub_pats: sub_pats, expected: expected, env: env)
-        return ()
+            check_ctor_pattern(cs: cs, ctor_name: ctor_name, sub_pats: sub_pats, expected: expected, env: env)
+            return ()
         | ListPat(elems) ->
-        check_list_pattern(cs: cs, elems: elems, expected: expected, env: env)
-        return ()
+            check_list_pattern(cs: cs, elems: elems, expected: expected, env: env)
+            return ()
     end match
 end func check_pattern
 
@@ -2207,13 +2199,13 @@ func check_list_pattern(cs: CheckerState, elems: List[Pattern], expected: GType,
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), [], TList(TInt), new_type_env(None)) -> ()
     match expected with
         | TList(elem_type) ->
-        check_list_pattern_elems(cs: cs, elems: elems, elem_type: elem_type, env: env)
-        return ()
+            check_list_pattern_elems(cs: cs, elems: elems, elem_type: elem_type, env: env)
+            return ()
         | TAny -> return ()
         | TVar(n) -> return ()
         | _ ->
-        tc_error(cs, "List pattern used with non-list type")
-        return ()
+            tc_error(cs, "List pattern used with non-list type")
+            return ()
     end match
 end func check_list_pattern
 
@@ -2239,28 +2231,28 @@ func check_exhaustiveness(cs: CheckerState, scrut_type: GType, arms: List[MatchA
     end if
     match scrut_type with
         | TOption(v) ->
-        check_option_exhaustiveness(cs: cs, arms: arms)
-        return ()
+            check_option_exhaustiveness(cs: cs, arms: arms)
+            return ()
         | TResult(o, e) ->
-        check_result_exhaustiveness(cs: cs, arms: arms)
-        return ()
+            check_result_exhaustiveness(cs: cs, arms: arms)
+            return ()
         | TUser(tname, targs) ->
-        check_user_type_exhaustiveness(cs: cs, tname: tname, arms: arms)
-        return ()
+            check_user_type_exhaustiveness(cs: cs, tname: tname, arms: arms)
+            return ()
         | TBool ->
-        check_bool_exhaustiveness(cs: cs, arms: arms)
-        return ()
+            check_bool_exhaustiveness(cs: cs, arms: arms)
+            return ()
         | TList(elem) ->
-        // Matching on ``List[T]`` without a wildcard / variable
-        // catch-all is non-exhaustive: a fixed-length list pattern
-        // can only cover one length, but lists are unbounded.
-        // Python's reference check only returns exhaustive when a
-        // rest pattern (``| [x, ...xs] -> ...``) is present; the
-        // selfhost pattern grammar doesn't support rest patterns,
-        // so the only way to be exhaustive here is the catch-all
-        // (already handled above).  F-0031 in #665.
-        tc_error(cs, "Non-exhaustive patterns: match on " + format_gtype(scrut_type) + " requires a default arm")
-        return ()
+            // Matching on ``List[T]`` without a wildcard / variable
+            // catch-all is non-exhaustive: a fixed-length list pattern
+            // can only cover one length, but lists are unbounded.
+            // Python's reference check only returns exhaustive when a
+            // rest pattern (``| [x, ...xs] -> ...``) is present; the
+            // selfhost pattern grammar doesn't support rest patterns,
+            // so the only way to be exhaustive here is the catch-all
+            // (already handled above).  F-0031 in #665.
+            tc_error(cs, "Non-exhaustive patterns: match on " + format_gtype(scrut_type) + " requires a default arm")
+            return ()
         | _ -> return ()
     end match
 end func check_exhaustiveness
@@ -2348,10 +2340,10 @@ func has_ctor_pattern(arms: List[MatchArm], ctor_name: String) -> Bool
     let arm: MatchArm = head(arms)
     match arm.pat with
         | CtorPat(cn, sp) ->
-        if cn == ctor_name then
-            return true
-        end if
-        return has_ctor_pattern(tail(arms), ctor_name)
+            if cn == ctor_name then
+                return true
+            end if
+            return has_ctor_pattern(tail(arms), ctor_name)
         | _ -> return has_ctor_pattern(tail(arms), ctor_name)
     end match
 end func has_ctor_pattern
@@ -2364,14 +2356,14 @@ func has_bool_lit_pattern(arms: List[MatchArm], val: Bool) -> Bool
     let arm: MatchArm = head(arms)
     match arm.pat with
         | LitPat(expr) ->
-        match expr with
-            | BoolLit(b) ->
-            if b == val then
-                return true
-            end if
-            return has_bool_lit_pattern(tail(arms), val)
-            | _ -> return has_bool_lit_pattern(tail(arms), val)
-        end match
+            match expr with
+                | BoolLit(b) ->
+                    if b == val then
+                        return true
+                    end if
+                    return has_bool_lit_pattern(tail(arms), val)
+                | _ -> return has_bool_lit_pattern(tail(arms), val)
+            end match
         | _ -> return has_bool_lit_pattern(tail(arms), val)
     end match
 end func has_bool_lit_pattern
@@ -2384,17 +2376,17 @@ func check_specs(cs: CheckerState, defn: Def, env: TypeEnv) -> Unit
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), ImportDef("M", dummy_span(0)), new_type_env(None)) -> ()
     match defn with
         | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
-        checker_push_span(cs, span)
-        // Check requires clauses
-        check_requires_clauses(cs: cs, clauses: specs.req_clauses, env: env)
-        // Check ensures clauses (with 'result' bound)
-        let ensures_env: TypeEnv = type_env_child(env)
-        type_env_bind(env: ensures_env, name: "result", t: current_return_type(cs))
-        check_ensures_clauses(cs: cs, clauses: specs.ens_clauses, env: ensures_env)
-        // Check example clauses
-        check_example_clauses(cs: cs, examples: specs.examples, params: params, env: env)
-        checker_pop_span(cs)
-        return ()
+            checker_push_span(cs, span)
+            // Check requires clauses
+            check_requires_clauses(cs: cs, clauses: specs.req_clauses, env: env)
+            // Check ensures clauses (with 'result' bound)
+            let ensures_env: TypeEnv = type_env_child(env)
+            type_env_bind(env: ensures_env, name: "result", t: current_return_type(cs))
+            check_ensures_clauses(cs: cs, clauses: specs.ens_clauses, env: ensures_env)
+            // Check example clauses
+            check_example_clauses(cs: cs, examples: specs.examples, params: params, env: env)
+            checker_pop_span(cs)
+            return ()
         | _ -> return ()
     end match
 end func check_specs
@@ -2446,9 +2438,9 @@ func check_example_clauses(cs: CheckerState, examples: List[ExampleClause], para
     if length(params) > 1 then
         match input_type with
             | TTuple(elem_types) ->
-            if length(elem_types) != length(params) then
-                tc_error(cs, "Example expects " + to_string(length(params)) + " inputs")
-            end if
+                if length(elem_types) != length(params) then
+                    tc_error(cs, "Example expects " + to_string(length(params)) + " inputs")
+                end if
             | _ -> return check_example_clauses(cs: cs, examples: tail(examples), params: params, env: env)
         end match
     end if
@@ -2484,9 +2476,9 @@ func stmt_returns(stmt: Stmt) -> Bool
     match stmt with
         | ReturnStmt(v) -> return true
         | IfStmt(cond, then_body, else_body) ->
-        return definitely_returns(then_body) and definitely_returns(else_body)
+            return definitely_returns(then_body) and definitely_returns(else_body)
         | MatchStmt(scrutinee, arms) ->
-        return all_arms_return(arms)
+            return all_arms_return(arms)
         | _ -> return false
     end match
 end func stmt_returns
@@ -2512,14 +2504,14 @@ func collect_type_def(cs: CheckerState, defn: Def) -> Unit
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), ImportDef("M", dummy_span(0))) -> ()
     match defn with
         | TypeDefNode(name, type_params, variants, span) ->
-        checker_push_span(cs, span)
-        let variant_fields: MutableMap[String, List[FieldInfo]] = mutable_map_new()
-        let variant_names: List[String] = collect_variant_names(variants)
-        collect_variant_fields(cs: cs, variants: variants, variant_fields: variant_fields, type_params: type_params)
-        let tde: TypeDefEntry = TypeDefEntry(name, type_params, variant_names, variant_fields)
-        mutable_map_set(map: cs.type_defs, key: name, value: tde)
-        checker_pop_span(cs)
-        return ()
+            checker_push_span(cs, span)
+            let variant_fields: MutableMap[String, List[FieldInfo]] = mutable_map_new()
+            let variant_names: List[String] = collect_variant_names(variants)
+            collect_variant_fields(cs: cs, variants: variants, variant_fields: variant_fields, type_params: type_params)
+            let tde: TypeDefEntry = TypeDefEntry(name, type_params, variant_names, variant_fields)
+            mutable_map_set(map: cs.type_defs, key: name, value: tde)
+            checker_pop_span(cs)
+            return ()
         | _ -> return ()
     end match
 end func collect_type_def
@@ -2561,16 +2553,16 @@ func collect_function_sig(cs: CheckerState, defn: Def) -> Unit
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), ImportDef("M", dummy_span(0))) -> ()
     match defn with
         | FuncDef(name, params, ret_type, specs, body, closing, _anns, _effs, span) ->
-        checker_push_span(cs, span)
-        let param_types: List[GType] = resolve_param_types(cs: cs, params: params)
-        let return_t: GType = resolve_type(cs: cs, annot: ret_type, tparams: [])
-        let func_t: GType = TFunc(param_types, return_t, [])
-        type_env_bind(env: cs.global_env, name: name, t: func_t)
-        mutable_map_set(map: cs.user_defined, key: name, value: true)
-        let pnames: List[String] = extract_param_names(params)
-        mutable_map_set(map: cs.func_params, key: name, value: pnames)
-        checker_pop_span(cs)
-        return ()
+            checker_push_span(cs, span)
+            let param_types: List[GType] = resolve_param_types(cs: cs, params: params)
+            let return_t: GType = resolve_type(cs: cs, annot: ret_type, tparams: [])
+            let func_t: GType = TFunc(param_types, return_t, [])
+            type_env_bind(env: cs.global_env, name: name, t: func_t)
+            mutable_map_set(map: cs.user_defined, key: name, value: true)
+            let pnames: List[String] = extract_param_names(params)
+            mutable_map_set(map: cs.func_params, key: name, value: pnames)
+            checker_pop_span(cs)
+            return ()
         | _ -> return ()
     end match
 end func collect_function_sig
@@ -2611,44 +2603,44 @@ func check_function_def(cs: CheckerState, defn: Def) -> Unit
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), ImportDef("M", dummy_span(0))) -> ()
     match defn with
         | FuncDef(name, params, ret_type, specs, body, closing, anns, _effs, span) ->
-        checker_push_span(cs, span)
-        // Enforce example requirement (except main, init, update, render)
-        if name != "main" then
-            if name != "init" then
-                if name != "update" then
-                    if name != "render" then
-                        if not has_annotation(anns, "untested") then
-                            if length(specs.examples) == 0 then
-                                tc_error(cs, "Function '" + name + "' must have at least one example clause")
+            checker_push_span(cs, span)
+            // Enforce example requirement (except main, init, update, render)
+            if name != "main" then
+                if name != "init" then
+                    if name != "update" then
+                        if name != "render" then
+                            if not has_annotation(anns, "untested") then
+                                if length(specs.examples) == 0 then
+                                    tc_error(cs, "Function '" + name + "' must have at least one example clause")
+                                end if
                             end if
                         end if
                     end if
                 end if
             end if
-        end if
-        // Check for duplicate parameter names
-        check_duplicate_params(cs: cs, params: params, seen: mutable_map_new())
-        // Create local environment with parameters
-        let local_env: TypeEnv = type_env_child(cs.global_env)
-        bind_params(cs: cs, params: params, env: local_env)
-        // Set return type
-        let return_t: GType = resolve_type(cs: cs, annot: ret_type, tparams: [])
-        push_return_type(cs, return_t)
-        // Check specs
-        check_specs(cs: cs, defn: defn, env: local_env)
-        // Check body
-        check_stmts(cs: cs, stmts: body, env: local_env)
-        // Check return path coverage for non-Unit functions
-        match return_t with
-            | TUnit -> let dummy: Int = 0
-            | _ ->
-            if not definitely_returns(body) then
-                tc_error(cs, "Function '" + name + "' may not return a value on all paths")
-            end if
-        end match
-        pop_return_type(cs)
-        checker_pop_span(cs)
-        return ()
+            // Check for duplicate parameter names
+            check_duplicate_params(cs: cs, params: params, seen: mutable_map_new())
+            // Create local environment with parameters
+            let local_env: TypeEnv = type_env_child(cs.global_env)
+            bind_params(cs: cs, params: params, env: local_env)
+            // Set return type
+            let return_t: GType = resolve_type(cs: cs, annot: ret_type, tparams: [])
+            push_return_type(cs, return_t)
+            // Check specs
+            check_specs(cs: cs, defn: defn, env: local_env)
+            // Check body
+            check_stmts(cs: cs, stmts: body, env: local_env)
+            // Check return path coverage for non-Unit functions
+            match return_t with
+                | TUnit -> let dummy: Int = 0
+                | _ ->
+                    if not definitely_returns(body) then
+                        tc_error(cs, "Function '" + name + "' may not return a value on all paths")
+                    end if
+            end match
+            pop_return_type(cs)
+            checker_pop_span(cs)
+            return ()
         | _ -> return ()
     end match
 end func check_function_def
@@ -2689,27 +2681,27 @@ func resolve_import(cs: CheckerState, imp: Def, modules: MutableMap[String, Prog
     example (CheckerState(new_type_env(None), mutable_map_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), vec_new(), mutable_map_new(), vec_new(), mutable_map_new(), mutable_map_new()), ImportDef("M", dummy_span(0)), mutable_map_new(), mutable_map_new()) -> ()
     match imp with
         | ImportDef(mod_name, span) ->
-        checker_push_span(cs, span)
-        if mutable_map_contains(resolved, mod_name) then
+            checker_push_span(cs, span)
+            if mutable_map_contains(resolved, mod_name) then
+                checker_pop_span(cs)
+                return ()
+            end if
+            mutable_map_set(map: resolved, key: mod_name, value: true)
+            let mod_opt: Option[Program] = mutable_map_get(modules, mod_name)
+            if not is_some(mod_opt) then
+                tc_error(cs, "Unknown module: '" + mod_name + "'")
+                checker_pop_span(cs)
+                return ()
+            end if
+            let mod_prog: Program = unwrap(mod_opt)
+            resolve_module_imports(cs: cs, defs: mod_prog.defs, modules: modules, resolved: resolved, mod_name: mod_name)
+            validate_type_names(cs, mod_prog.defs)
+            collect_type_headers(cs, mod_prog.defs)
+            collect_defs_pass1(cs: cs, defs: mod_prog.defs)
+            validate_type_aliases(cs, mod_prog.defs)
+            collect_defs_pass2(cs: cs, defs: mod_prog.defs)
             checker_pop_span(cs)
             return ()
-        end if
-        mutable_map_set(map: resolved, key: mod_name, value: true)
-        let mod_opt: Option[Program] = mutable_map_get(modules, mod_name)
-        if not is_some(mod_opt) then
-            tc_error(cs, "Unknown module: '" + mod_name + "'")
-            checker_pop_span(cs)
-            return ()
-        end if
-        let mod_prog: Program = unwrap(mod_opt)
-        resolve_module_imports(cs: cs, defs: mod_prog.defs, modules: modules, resolved: resolved, mod_name: mod_name)
-        validate_type_names(cs, mod_prog.defs)
-        collect_type_headers(cs, mod_prog.defs)
-        collect_defs_pass1(cs: cs, defs: mod_prog.defs)
-        validate_type_aliases(cs, mod_prog.defs)
-        collect_defs_pass2(cs: cs, defs: mod_prog.defs)
-        checker_pop_span(cs)
-        return ()
         | _ -> return ()
     end match
 end func resolve_import
@@ -2722,15 +2714,15 @@ func resolve_module_imports(cs: CheckerState, defs: List[Def], modules: MutableM
     let d: Def = head(defs)
     match d with
         | ImportDef(sub_mod, span) ->
-        checker_push_span(cs, span)
-        if sub_mod == mod_name then
-            tc_error(cs, "Circular import: module '" + mod_name + "' imports itself")
-        else
-            if not mutable_map_contains(resolved, sub_mod) then
-                resolve_import(cs: cs, imp: d, modules: modules, resolved: resolved)
+            checker_push_span(cs, span)
+            if sub_mod == mod_name then
+                tc_error(cs, "Circular import: module '" + mod_name + "' imports itself")
+            else
+                if not mutable_map_contains(resolved, sub_mod) then
+                    resolve_import(cs: cs, imp: d, modules: modules, resolved: resolved)
+                end if
             end if
-        end if
-        checker_pop_span(cs)
+            checker_pop_span(cs)
         | _ -> return resolve_module_imports(cs: cs, defs: tail(defs), modules: modules, resolved: resolved, mod_name: mod_name)
     end match
     resolve_module_imports(cs: cs, defs: tail(defs), modules: modules, resolved: resolved, mod_name: mod_name)
@@ -2807,11 +2799,11 @@ func validate_entrypoint_main_params(cs: CheckerState, defs: List[Def]) -> Unit
     for d: Def in defs do
         match d with
             | FuncDef(name, params, _, _, _, _, _, _, span) ->
-            if name == "main" and length(params) > 0 then
-                checker_push_span(cs, span)
-                tc_error(cs, "The entrypoint `main` must take no parameters; it is called as `main()`. Read command-line arguments with `cli_args()` instead")
-                checker_pop_span(cs)
-            end if
+                if name == "main" and length(params) > 0 then
+                    checker_push_span(cs, span)
+                    tc_error(cs, "The entrypoint `main` must take no parameters; it is called as `main()`. Read command-line arguments with `cli_args()` instead")
+                    checker_pop_span(cs)
+                end if
             | _ -> ()
         end match
     end for

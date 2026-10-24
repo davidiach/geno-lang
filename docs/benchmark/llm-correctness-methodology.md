@@ -54,6 +54,26 @@ A publishable result directory must include:
 The raw generation artifacts are part of the result. Do not publish only the
 aggregate report.
 
+## Prompts And Repair
+
+The Geno prompt is `GENOTYPE_SPEC` in `experiment/prompts.py`: the rules under
+"System Prompt Essentials" in `docs/llm-prompting.md` (a test keeps the two
+identical) followed by a complete reference program. The program and the
+few-shot samples are checked to type-check, pass their examples, and be in
+`geno fmt` form, so the prompt never teaches syntax the language rejects.
+
+Two repair conditions are reported beside pass@1, never instead of it:
+
+- **Autofix** (on by default; `--no-autofix` or `autofix: false` turns it
+  off): a Geno solution that fails to parse or type-check is run through
+  `geno.fix`, which applies the fixes Geno's diagnostics carry, and evaluated
+  again. No model call is made. The fixed code is recorded in
+  `autofix_results`.
+- **Repair** (`--max-repair-rounds N`): the model is re-prompted with the
+  diagnostics of its failed attempt. A Geno attempt's errors are listed as
+  `geno check` reports them, with stable code, line and column, and the title
+  of the fix each carries. Hidden tests are never revealed.
+
 ## Metrics
 
 Report:
@@ -67,6 +87,7 @@ Report:
 - difficulty breakdown
 - error-category breakdown: syntax, type, runtime, wrong answer, timeout,
   incomplete
+- Geno pass@1 after autofix, and pass after repair when repair rounds ran
 
 ## Publication Gate
 

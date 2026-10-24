@@ -1,0 +1,8 @@
+// Geno 0.6 removed try/catch (proposal 0009): rejected with E205.
+func main() -> Unit
+    try
+        print(1 / 0)
+    catch e: String
+        print(e)
+    end try
+end func

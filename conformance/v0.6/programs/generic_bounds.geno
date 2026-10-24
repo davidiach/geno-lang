@@ -1,0 +1,53 @@
+trait Shape
+    func area(self: Self) -> Float
+end trait
+
+type Rect = Rect(w: Float, h: Float)
+
+impl Shape for Rect
+    func area(self: Rect) -> Float
+        example Rect(1.0, 2.0) -> 2.0
+        return self.w * self.h
+    end func
+end impl
+
+func largest[T: Ord](xs: List[T], fallback: T) -> T
+    example [3, 9, 2], 0 -> 9
+    var best = fallback
+    for x: T in xs do
+        if x > best then
+            best = x
+        end if
+    end for
+    return best
+end func
+
+func halve[T: Num](x: T) -> T
+    example 9 -> 4
+    example 9.0 -> 4.5
+    return x / 2
+end func
+
+func total_area[T: Shape](shapes: List[T]) -> Float
+    example [Rect(1.0, 2.0)] -> 2.0
+    var total = 0.0
+    for s: T in shapes do
+        total = total + area(s)
+    end for
+    return total
+end func
+
+func distinct_count[T: Hash](xs: List[T]) -> Int
+    example [1, 1, 2] -> 2
+    let seen: Set[T] = set_from_list(xs)
+    return set_size(seen)
+end func
+
+func main() -> Unit
+    print(largest([3, 9, 2], 0))
+    print(largest(["pear", "apple"], ""))
+    print(halve(9.0))
+    print(halve(9))
+    print(total_area([Rect(1.0, 3.0), Rect(2.0, 2.0)]))
+    print(distinct_count(["a", "b", "a"]))
+end func

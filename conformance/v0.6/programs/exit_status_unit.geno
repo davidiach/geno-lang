@@ -1,0 +1,9 @@
+func report() -> String
+    example () -> "unit entrypoint"
+    return "unit entrypoint"
+end func
+
+func main() -> Unit
+    print(report())
+    return ()
+end func

@@ -2,8 +2,8 @@
 // Delete the Triangle arm and press Check.
 
 type Shape = Circle(radius: Float)
-           | Rectangle(width: Float, height: Float)
-           | Triangle(base: Float, height: Float)
+    | Rectangle(width: Float, height: Float)
+    | Triangle(base: Float, height: Float)
 
 func area(s: Shape) -> Float
     example Circle(1.0) -> 3.14159

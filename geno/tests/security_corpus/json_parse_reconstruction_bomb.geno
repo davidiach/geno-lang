@@ -24,10 +24,10 @@ func probe_json(n: Int) -> Int
         let parsed: Result[JsonValue, String] = json_parse(text: payload)
         match parsed with
             | Ok(val) ->
-            let repr: String = to_string(val)
-            total = total + length(repr)
+                let repr: String = to_string(val)
+                total = total + length(repr)
             | Err(e) ->
-            total = total + length(e)
+                total = total + length(e)
         end match
         i = i + 1
     end while

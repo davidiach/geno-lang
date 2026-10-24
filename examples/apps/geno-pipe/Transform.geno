@@ -27,7 +27,7 @@ end func
 func sort_by(table: Table, column: String) -> Table
     let idx: Int = column_index(headers: table.headers, name: column)
     let keys: List[String] = map(table.rows, fn(r: Row) -> cell_at(row: r, index: idx))
-    let sorted_keys: List[String] = sort_strings(keys)
+    let sorted_keys: List[String] = sort(keys)
     return Table(table.headers, reorder_rows(rows: table.rows, sorted_keys: sorted_keys, idx: idx))
 end func
 

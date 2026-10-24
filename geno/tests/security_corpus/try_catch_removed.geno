@@ -1,0 +1,17 @@
+# EXPECT: E205
+# Geno 0.6 removed try/catch (proposal 0009): runtime errors, resource
+# limits and contract failures can no longer be caught and inspected by
+# the program.  The construct is rejected before anything runs.
+func main() -> Int
+    var count: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        try
+            let bad: Int = 1 / 0
+        catch e: String
+            count = count + length(e)
+        end try
+        i = i + 1
+    end while
+    return count
+end func

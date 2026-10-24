@@ -117,16 +117,15 @@
     ],
     "description": "While loop"
   },
-  "Try/Catch": {
-    "prefix": "try",
+  "Match Result": {
+    "prefix": "matchres",
     "body": [
-      "try",
-      "    ${1}",
-      "catch ${2:e}: String",
-      "    ${0}",
-      "end try"
+      "match ${1:result} with",
+      "    | Ok(${2:value}) -> ${3}",
+      "    | Err(${4:error}) -> ${0}",
+      "end match"
     ],
-    "description": "Try/catch block"
+    "description": "Handle a Result (Geno has no try/catch)"
   },
   "Let binding": {
     "prefix": "let",

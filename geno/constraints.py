@@ -36,7 +36,6 @@ BLOCK_STARTERS = {
     "trait": "trait",
     "impl": "impl",
     "test": "test",
-    "try": "try",
 }
 
 # All keyword token types (Geno uses individual token types for each keyword).
@@ -311,10 +310,6 @@ def step(
             state.open_blocks.append("test")
             return state
 
-        if token.type == TokenType.TRY:
-            state.open_blocks.append("try")
-            return state
-
         # Check if this closes a block (e.g., "end func")
         if keyword_value in BLOCK_STARTERS.values():
             # This might be closing a block
@@ -396,6 +391,14 @@ def allowed_next(state: ConstraintState) -> AllowedNext:
     if state.expecting_module_name:
         return AllowedNext(
             allow_type_identifier=True,
+            expected_end_stack=expected_end_stack,
+        )
+
+    # Inside a generic function's type parameter list: func name[T, U]
+    if state.expecting_func_name and state.bracket_depth > 0:
+        return AllowedNext(
+            allow_type_identifier=True,
+            allow_punct=[",", "]"],
             expected_end_stack=expected_end_stack,
         )
 

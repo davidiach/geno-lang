@@ -13,7 +13,6 @@ func count_words(text: String) -> Int
     return length(words)
 end func count_words
 
-
 func normalize(text: String) -> String
     example "  hello   world  " -> "hello world"
 
@@ -24,7 +23,6 @@ func normalize(text: String) -> String
     return join(words, " ")
 end func normalize
 
-
 func word_list(text: String) -> List[String]
     example "  hi   there  " -> ["hi", "there"]
     example "" -> []
@@ -33,7 +31,6 @@ func word_list(text: String) -> List[String]
         |> split(" ")
         |> filter(fn(w: String) -> w != "")
 end func word_list
-
 
 func main() -> List[Int]
     let texts: List[String] = ["hello world", "  one  two  three  ", ""]

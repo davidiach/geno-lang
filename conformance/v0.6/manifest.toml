@@ -1,0 +1,447 @@
+schema_version = 2
+language_version = "0.6"
+description = "Geno 0.6 source and diagnostic compatibility corpus"
+
+# The 0.6 corpus carries every 0.5 case forward unchanged, then adds the
+# contract changes of the 0.6 specification (`docs/spec/v0.6.md`): generic
+# functions (proposal 0004), type parameter bounds (proposal 0005), method-call
+# syntax (proposal 0006), types inferred from context (proposal 0007),
+# expression forms (proposal 0008), the Result-only error model and
+# `main() -> Result` (proposal 0009), the coherent standard library (proposal
+# 0010), host-name hygiene and default runtime limits (proposal 0011), the
+# operations models reach for (proposal 0012), and `end` sharing a line with its
+# keyword. It is frozen from 0.6.0-rc.1. Non-transitive imports need several
+# modules, which a case here cannot express; `geno/tests/test_qualified_imports.py`
+# covers them.
+#
+# A run case's `expected_exit_status` defaults to 0 when omitted, which is what
+# every displayed result kind exits with. It is the status a host actually
+# reports, so it is always 0-255: normalizing 258 to 2 is the implementation's
+# job, and the case below states the 2 an executable is required to report.
+#
+# `expected_stderr = ""` is the "no traceback for an expected nonzero status"
+# half of the contract: a status of 3 is a reported result, not a crash, so a
+# host that prints a trace beside it fails.  `expected_json_value` is the JSON
+# text of the `geno run --json` envelope's `value`, which stays *un*normalized:
+# 258 is still 258 there while the process exits 2.
+#
+# Two entrypoint requirements deliberately stay in `geno/tests/test_exit_semantics.py`
+# instead of here, because a case cannot state them: a synchronous `main` that
+# returns an un-awaited `Async[Int]` is displayed, and its rendering is a host's
+# own coroutine repr rather than stable text; and entry-module ownership needs a
+# second module on disk, which the single-source `python` and `js` lanes do not
+# compile.
+
+[[cases]]
+id = "arithmetic-control-flow"
+path = "programs/arithmetic_control_flow.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "3\n2\n55\n"
+
+[[cases]]
+id = "adt-pattern-matching"
+path = "programs/adt_pattern_matching.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "75\n12\n9\n"
+
+[[cases]]
+id = "option-result"
+path = "programs/option_result.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "10\n-1\n5\n-1\n"
+
+[[cases]]
+id = "module-constants"
+path = "programs/module_constants.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "geno:1\nV\n7\n"
+
+[[cases]]
+id = "exit-status-unit"
+path = "programs/exit_status_unit.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "unit entrypoint\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "exit-status-int"
+path = "programs/exit_status_int.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 3
+expected_stderr = ""
+expected_json_value = "3"
+
+[[cases]]
+id = "exit-status-int-wraps"
+path = "programs/exit_status_int_wraps.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 2
+expected_stderr = ""
+expected_json_value = "258"
+
+[[cases]]
+id = "exit-status-int-negative"
+path = "programs/exit_status_int_negative.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 255
+expected_stderr = ""
+expected_json_value = "-1"
+
+[[cases]]
+id = "exit-status-output-before-result"
+path = "programs/exit_status_output_before_result.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "work done\n"
+expected_exit_status = 3
+expected_stderr = ""
+expected_json_value = "3"
+
+[[cases]]
+id = "exit-status-aliased-int"
+path = "programs/exit_status_aliased_int.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 4
+expected_stderr = ""
+expected_json_value = "4"
+
+[[cases]]
+id = "exit-status-async-main"
+path = "programs/exit_status_async_main.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 5
+expected_stderr = ""
+expected_json_value = "5"
+
+[[cases]]
+id = "exit-status-await-in-sync-main"
+path = "programs/exit_status_await_in_sync_main.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 6
+expected_stderr = ""
+expected_json_value = "6"
+
+[[cases]]
+id = "exit-status-no-main"
+path = "programs/exit_status_no_main.geno"
+kind = "run"
+# The fourth row of the 4.1.1 result table: an entry program with no `main` is a
+# successful no-op on every boundary. `expected_json_value = "null"` is the
+# envelope's own report of "there was no result", which is why the field holds
+# JSON text rather than a TOML value.
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = "null"
+
+[[cases]]
+id = "runtime-error-out-of-bounds"
+path = "programs/runtime_error_out_of_bounds.geno"
+kind = "run"
+# Every lane that owns a real stderr, which is what this case is about. The
+# `interpreter` lane returns diagnostics to its caller as data because it is an
+# embedding boundary, and `cli-json` reports them inside the envelope, so
+# neither has the channel `expected_stderr_contains` reads.
+targets = [
+    "cli-process",
+    "cli-direct",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["Index 2 out of bounds"]
+
+[[cases]]
+id = "diagnostic-type-mismatch"
+path = "programs/diagnostic_type_mismatch.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]
+
+[[cases]]
+id = "generic-functions"
+path = "programs/generic_functions.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "3\nempty\n(true, 1)\n2.0\nSome(value: 6.0)\n[\"1.0\", \"2.5\"]\n"
+
+[[cases]]
+id = "diagnostic-generic-opaque-body"
+path = "programs/diagnostic_generic_opaque_body.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]
+
+[[cases]]
+id = "diagnostic-generic-unused-parameter"
+path = "programs/diagnostic_generic_unused_parameter.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E320"]
+
+[[cases]]
+id = "diagnostic-generic-value-uninferred"
+path = "programs/diagnostic_generic_value_uninferred.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E321"]
+
+[[cases]]
+id = "generic-bounds"
+path = "programs/generic_bounds.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "9\npear\n4.5\n4\n7.0\n2\n"
+
+[[cases]]
+id = "diagnostic-generic-unknown-bound"
+path = "programs/diagnostic_generic_unknown_bound.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E322"]
+
+[[cases]]
+id = "diagnostic-generic-unsatisfied-bound"
+path = "programs/diagnostic_generic_unsatisfied_bound.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E323"]
+
+[[cases]]
+id = "method-calls"
+path = "programs/method_calls.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "[30, 20]\n3\nHI!\na-b-c\n5\n7\n(1, 2)\nheLLo\n"
+
+[[cases]]
+id = "contextual-inference"
+path = "programs/contextual_inference.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "[30, 20]\n6\n5\n42\n6\n[9, 4]\ntwo1\n"
+
+[[cases]]
+id = "diagnostic-lambda-without-context"
+path = "programs/diagnostic_lambda_without_context.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E321"]
+
+[[cases]]
+id = "diagnostic-bare-end"
+path = "programs/diagnostic_bare_end.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E201"]
+
+[[cases]]
+id = "familiar-idioms"
+path = "programs/familiar_idioms.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "[\"the\", \"kiwi\", \"and\", \"fig\"]\ntrue\n2\nfalse\n16\n4\n3\n4.0\n16\n3\ntrue\ntrue\nSome(value: 2)\n3.5\n"
+
+[[cases]]
+id = "expression-ergonomics"
+path = "programs/expression_ergonomics.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "odd\nwarm\ncool\ntwo\n2\n{\"ada\": 36, \"alan\": 41}\n{\"tea\": 2.0}\n"
+
+[[cases]]
+id = "error-model"
+path = "programs/error_model.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "ok 42\nempty\nnot a number: x\nSome(value: 5)\nNone\n3\nSome(value: 8)\n4\n7\nfour\n"
+
+[[cases]]
+id = "diagnostic-removed-throw"
+path = "programs/diagnostic_removed_throw.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E205"]
+
+[[cases]]
+id = "diagnostic-removed-try-catch"
+path = "programs/diagnostic_removed_try_catch.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E205"]
+
+[[cases]]
+id = "diagnostic-removed-throw-effect"
+path = "programs/diagnostic_removed_throw_effect.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E205"]
+
+# `main() -> Result[T, E]` (proposal 0009). The embedding lanes return the raw
+# `Err` without a stderr channel, so the `Err` case lists only the lanes that
+# own a process.
+[[cases]]
+id = "result-main-ok"
+path = "programs/result_main_ok.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+expected_stdout = ""
+expected_exit_status = 2
+expected_stderr = ""
+expected_json_value = '{"_constructor": "Ok", "fields": {"value": 258}}'
+
+[[cases]]
+id = "result-main-err"
+path = "programs/result_main_err.geno"
+kind = "run"
+targets = ["cli-process", "cli-direct", "python", "js", "js-esm"]
+capabilities = ["print"]
+expected_stdout = "starting\n"
+expected_exit_status = 1
+expected_stderr = "Error: not a port: http\n"
+
+[[cases]]
+id = "coherent-stdlib"
+path = "programs/coherent_stdlib.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "Some(value: 20)\n2\n2\ntrue\n{\"alan\": 41}\n[\"ada\", \"alan\"]\n[36, 41]\n2\nSome(value: 2)\nNone\n[1, 2, 3]\n[\"apple\", \"pear\"]\n"
+
+[[cases]]
+id = "diagnostic-removed-builtin"
+path = "programs/diagnostic_removed_builtin.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E302"]
+
+[[cases]]
+id = "host-names"
+path = "programs/host_names.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "7\ns\n0\n[\"error x\", \"exception 2\", \"object\"]\nError(msg: \"y\")\n"
+
+[[cases]]
+id = "deep-recursion"
+path = "programs/deep_recursion.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "5000\n12502500\n17711\n"

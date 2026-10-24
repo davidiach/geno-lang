@@ -110,7 +110,7 @@ Geno is immutable by default and includes:
 
 - Static typing with local inference, generics, traits, and `impl` blocks
 - Algebraic data types, exhaustive pattern matching, guards, and rest patterns
-- `Result` / `Option`, `try` / `catch`, `throw`, and `?` propagation
+- One error model: `Result` / `Option` with `?` propagation, and `panic` for bugs
 - Lists, arrays, vectors, maps, mutable maps, and sets
 - Lambdas, pipelines with `|>`, async functions, and `await`
 - F-strings plus CSV, TOML, and JSON helpers
@@ -119,8 +119,11 @@ Geno is immutable by default and includes:
 The [Language Tour](docs/guide/language-tour.md) explains these features with
 runnable examples. Target-specific behavior is documented in
 [Portable Runtime Semantics](docs/reference/runtime-semantics.md).
-The [Language Specification](docs/spec/v0.5.md) defines the normative 0.5
-contract; [v0.4](docs/spec/v0.4.md) remains frozen for the 0.4 series.
+The [Language Specification](docs/spec/v0.6.md) is the 0.6 contract, shipped
+as release candidate 0.6.0-rc.3 and normative from 0.6.0;
+[v0.5](docs/spec/v0.5.md) remains the normative contract for the 0.5 series
+and [v0.4](docs/spec/v0.4.md) stays frozen for 0.4. Coming from 0.5? Run
+`geno migrate`, then see the [migration notes](CHANGELOG.md#migration-to-06).
 
 ## Examples
 
@@ -157,7 +160,10 @@ Geno tracks a reproducible [runtime benchmark snapshot](benchmarks/RESULTS.md),
 whose committed run meets the suite target of `<=2x` for at least 80% of
 measured problems. The [LLM correctness benchmark](docs/benchmark/llm-correctness-results.md)
 documents its methodology, but public frontier-model results are deferred and
-no Geno-vs-Python correctness advantage is currently claimed.
+no Geno-vs-Python correctness advantage is currently claimed. The
+[seeded-mistake results](docs/benchmark/seeded-mistakes.md), which need no
+model, show how Geno's diagnostics locate and fix the mistakes models carry
+over from other languages.
 
 ## Develop Geno
 

@@ -42,16 +42,16 @@ func char_at(text: String, index: Int) -> String
     return string_char_at(text, index)
 end func
 
-func index_of(text: String, sub: String) -> Int
-    example "hello world", "world" -> 6
-    example "hello", "xyz" -> -1
-    example "abcabc", "bc" -> 1
+func index_of(text: String, sub: String) -> Option[Int]
+    example "hello world", "world" -> Some(6)
+    example "hello", "xyz" -> None
+    example "abcabc", "bc" -> Some(1)
     return string_index_of(text, sub)
 end func
 
-func last_index_of(text: String, sub: String) -> Int
-    example "abcabc", "bc" -> 4
-    example "hello", "xyz" -> -1
+func last_index_of(text: String, sub: String) -> Option[Int]
+    example "abcabc", "bc" -> Some(4)
+    example "hello", "xyz" -> None
     return string_last_index_of(text, sub)
 end func
 
