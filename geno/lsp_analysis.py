@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -63,6 +63,9 @@ class Analysis:
     checker: TypeChecker
     facts: dict[int, list[Fact]]
     scopes: list[tuple[int, int]]  # line ranges of functions and methods
+    # Each local's use, (line, column), and where the binding it resolves to
+    # is written, as the checker's lexical scopes found it.
+    uses: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
 
     def fact_at(self, line: int, character: int) -> Fact | None:
         """The fact for the name at 0-based ``line``/``character``."""
@@ -104,37 +107,33 @@ class Analysis:
         return best.type if best is not None else None
 
     def binding_of(self, fact: Fact) -> Fact | None:
-        """The binding a local's use refers to: the nearest one before it."""
-        scope = self._scope_of(fact.line)
-        if fact.kind != "use" or scope is None:
+        """The binding a local's use refers to, by the checker's scopes.
+
+        A binding inside a block that has closed is not the one a later use
+        of the same name refers to.
+        """
+        if fact.kind != "use":
             return None
-        best: Fact | None = None
-        for line in range(scope[0], fact.line + 1):
-            for other in self.facts.get(line, ()):
-                if (
-                    other.name == fact.name
-                    and other.kind in ("local", "parameter")
-                    and (other.line, other.column) <= (fact.line, fact.column)
-                    and (
-                        best is None
-                        or (other.line, other.column) > (best.line, best.column)
-                    )
-                ):
-                    best = other
-        return best
+        written = self.uses.get((fact.line, fact.column))
+        if written is None:
+            return None
+        line, column = written
+        lines = self.source.splitlines()
+        name_column = _name_column(lines, line, column, fact.name)
+        for other in self.facts.get(line, ()):
+            if (
+                other.name == fact.name
+                and other.kind in ("local", "parameter")
+                and other.column == name_column
+            ):
+                return other
+        return None
 
     def is_local(self, fact: Fact) -> bool:
         """Whether a use names a binding of its own function, not a global."""
         if fact.kind != "use":
             return True
-        scope = self._scope_of(fact.line)
-        if scope is None:
-            return False
-        return any(
-            other.name == fact.name and other.kind in ("local", "parameter")
-            for line in range(scope[0], fact.line + 1)
-            for other in self.facts.get(line, ())
-        )
+        return (fact.line, fact.column) in self.uses
 
     def methods_for(self, receiver: Type) -> list[tuple[str, str, str | None]]:
         """``(method, signature, target)`` for each method ``receiver`` offers.
@@ -259,6 +258,11 @@ def analyze(source: str, path: Path | None) -> Analysis | None:
             source, program, checker.binding_types, filename, checker.global_env
         ),
         scopes=_scopes(program, source),
+        uses={
+            (use.line, use.column): (binding.line, binding.column)
+            for use, binding in checker.binding_uses
+            if filename is None or use.filename == filename
+        },
     )
 
 

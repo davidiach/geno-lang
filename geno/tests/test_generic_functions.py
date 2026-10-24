@@ -614,6 +614,31 @@ def test_generic_standard_library_works_at_any_element_type(tmp_path: Path) -> N
     assert outputs == dict.fromkeys(outputs, expected)
 
 
+def test_pipeline_stages_instantiate_generic_functions(tmp_path: Path) -> None:
+    """A stage is a call: its substitution settles the stage and its callbacks."""
+    outputs = _cli_outputs(
+        tmp_path,
+        "import List\n" + SHOW + "func scale[T: Num](x: T, k: T) -> T\n"
+        "    example 2, 3 -> 6\n"
+        "    return x * k\n"
+        "end func\n"
+        "func half[T: Num](x: T) -> T\n"
+        "    example 5 -> 2\n"
+        "    return x / 2\n"
+        "end func\n"
+        "func main() -> Unit\n"
+        "    print([1, 2] |> List.take(1))\n"
+        "    print(1 |> show)\n"
+        "    print([1, 2] |> map(show))\n"
+        "    print(1.5 |> scale(2.0))\n"
+        "    print(5.0 |> half)\n"
+        "    print([5.0] |> map(half))\n"
+        "end func\n",
+    )
+    expected = '[1]\n1\n["1", "2"]\n3.0\n2.5\n[2.5]\n'
+    assert outputs == dict.fromkeys(outputs, expected)
+
+
 # ---------------------------------------------------------------------------
 # JavaScript specialization and tooling surfaces
 # ---------------------------------------------------------------------------

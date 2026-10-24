@@ -397,6 +397,9 @@ class TypeEnv:
     captured_types: dict[str, Type] = field(default_factory=dict)
     captured_global_calls: set[str] = field(default_factory=set)
     captured_mutations: set[str] = field(default_factory=set)
+    # Where each local of this scope is bound, kept only for tools that ask
+    # the checker for ``binding_uses``.
+    binding_locations: dict[str, SourceLocation] | None = None
 
     def lookup(self, name: str) -> Type | None:
         """Look up a name in the environment."""

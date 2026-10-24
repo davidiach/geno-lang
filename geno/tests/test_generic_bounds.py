@@ -208,6 +208,55 @@ def test_function_values_must_satisfy_bounds() -> None:
     assert [error.error_code for error in errors] == [ErrorCode.TYPE_UNSATISFIED_BOUND]
 
 
+INCREMENTER = """func incrementer[T: Num]() -> (T) -> T
+    return fn(x: T) -> x + 1
+end func
+
+test "integer incrementer"
+    let f: (Int) -> Int = incrementer()
+    assert f(2) == 3
+end test
+
+"""
+
+
+def test_bounds_hold_for_type_arguments_only_the_result_decides() -> None:
+    errors = _errors(
+        INCREMENTER + "func main() -> Unit\n"
+        "    let f: (String) -> String = incrementer()\n"
+        '    print(f("x"))\n'
+        "end func\n"
+    )
+    assert [error.error_code for error in errors] == [ErrorCode.TYPE_UNSATISFIED_BOUND]
+    assert "Type String does not satisfy the bound 'Num'" in errors[0].message
+
+
+def test_the_result_context_settles_a_numeric_instance() -> None:
+    _assert_parity(
+        INCREMENTER.replace("x + 1", "x / 2").replace("== 3", "== 1")
+        + "func main() -> Unit\n"
+        "    let h: (Float) -> Float = incrementer()\n"
+        "    print(h(5.0))\n"
+        "    let g: (Int) -> Int = incrementer()\n"
+        "    print(g(5))\n"
+        "end func\n",
+        "2.5\n2\n",
+    )
+
+
+def test_pipeline_stages_must_satisfy_bounds() -> None:
+    errors = _errors(
+        "func scale[T: Num](x: T, k: T) -> T\n"
+        "    example 2, 3 -> 6\n"
+        "    return x * k\n"
+        "end func\n"
+        "func main() -> Unit\n"
+        '    print("a" |> scale("b"))\n'
+        "end func\n"
+    )
+    assert [error.error_code for error in errors] == [ErrorCode.TYPE_UNSATISFIED_BOUND]
+
+
 def test_unbounded_caller_must_declare_the_bound_it_forwards() -> None:
     errors = _errors(
         LARGEST + "func wrap[T](xs: List[T], fallback: T) -> T\n"

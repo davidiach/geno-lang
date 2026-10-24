@@ -184,6 +184,33 @@ def test_definition_of_a_local_is_its_binding(editor) -> None:
     )
 
 
+def test_definition_and_hover_follow_block_scope() -> None:
+    """A binding in a closed block does not shadow the outer one after it."""
+    scoped = _Editor(
+        "func main() -> Unit\n"
+        "    let x = 1\n"
+        "    if true then\n"
+        '        let x = "inner"\n'
+        "        print(x)\n"
+        "    end if\n"
+        "    print(x)\n"
+        "end func\n"
+    )
+    for line, binding_line, label in [(6, 1, "x: Int"), (4, 3, "x: String")]:
+        position = types.Position(
+            line=line, character=scoped.source.split("\n")[line].index("(x") + 1
+        )
+        location = scoped._handler(types.TEXT_DOCUMENT_DEFINITION)(
+            types.DefinitionParams(text_document=scoped.document, position=position)
+        )
+        assert location.range.start.line == binding_line
+        hover = scoped._handler(types.TEXT_DOCUMENT_HOVER)(
+            types.HoverParams(text_document=scoped.document, position=position)
+        )
+        assert f"```\n{label}\n```" in hover.contents.value
+        assert scoped.source.split("\n")[binding_line].strip() in hover.contents.value
+
+
 def test_definition_of_a_trait_method_is_the_receivers_impl(editor) -> None:
     location = editor.definition("shape.describe", 7)
     impl_method = editor.position("func describe(self: Shape)", 5)

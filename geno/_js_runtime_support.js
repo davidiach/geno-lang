@@ -1378,12 +1378,18 @@ function count(lst, pred) {
     return n;
 }
 function unique(lst) {
+    // Geno equality decides; a key string would merge distinct maps and
+    // functions. Numbers, strings and booleans are equal exactly when ===.
     const seen = new _GENO_SET();
     const result = [];
     for (const x of lst) {
-        const key = _setKey(x);
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const kind = typeof x;
+        if (kind === 'number' || kind === 'string' || kind === 'boolean') {
+            if (seen.has(x)) continue;
+            seen.add(x);
+        } else if (result.some(y => _valuesEqual(x, y))) {
+            continue;
+        }
         result.push(x);
     }
     return result;

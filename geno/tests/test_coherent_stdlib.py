@@ -372,3 +372,49 @@ def test_migrate_command(tmp_path: Path) -> None:
     assert migrated.returncode == 0
     assert f"{app}:25: needs a manual rewrite: try/catch" in migrated.stdout
     assert app.read_text(encoding="utf-8") == MIGRATED
+
+
+@pytest.mark.parametrize(
+    ("legacy", "migrated"),
+    [
+        # An f-string keeps its prefix, so it stays an interpolation.
+        ('print(is_numeric_string(f"{42}"))', 'print(is_some(parse_int(f"{42}")))'),
+        # Named arguments bind to their parameters; labels are not values.
+        ("print(is_positive(value: 2))", "print((2 > 0))"),
+        (
+            "print(is_permutation(list2: [2, 1], list1: [1, 2]))",
+            "print((sort([1, 2]) == sort([2, 1])))",
+        ),
+        ('print(sort_strings(items: ["b", "a"]))', 'print(sort(list: ["b", "a"]))'),
+        # A rewrite inside another one is applied too.
+        ("print(is_positive(square(2)))", "print((((2 * 2)) > 0))"),
+        (
+            "print(is_positive(value: square(value: 2)))",
+            "print((((2 * 2)) > 0))",
+        ),
+    ],
+)
+def test_migrate_rewrites_calls_whole(legacy: str, migrated: str) -> None:
+    def program(line: str) -> str:
+        return f"func main() -> Unit\n    {line}\nend func\n"
+
+    result = migrate_source(program(legacy))
+    assert result.source == program(migrated)
+    assert result.manual == []
+    TypeChecker().check_program(parse(result.source))
+
+
+def test_migrate_keeps_an_interpolated_panic_message() -> None:
+    source = (
+        'func f(name: String) -> Unit with throw\n    throw f"bad {name}"\nend func\n'
+    )
+    assert migrate_source(source).source == (
+        'func f(name: String) -> Unit\n    panic(f"bad {name}")\nend func\n'
+    )
+
+
+def test_migrate_reports_a_call_it_cannot_bind() -> None:
+    source = "func main() -> Unit\n    print(is_positive(nope: 2))\nend func\n"
+    result = migrate_source(source)
+    assert result.source == source
+    assert [note.line for note in result.manual] == [2]

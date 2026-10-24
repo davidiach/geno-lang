@@ -364,6 +364,39 @@ class TestProjectResolutionApi:
         assert run_result.ok is True, [d.message for d in run_result.diagnostics]
         assert run_result.value == ["a"]
 
+    def test_supplied_modules_import_the_standard_library(self):
+        util = (
+            "import List\n"
+            "export func size(xs: List[Int]) -> Int\n"
+            "    example [1, 2] -> 2\n"
+            "    return List.length(xs)\n"
+            "end func\n"
+        )
+        source = (
+            "import Util\nfunc main() -> Int\n    return Util.size([1, 2])\nend func\n"
+        )
+
+        check_result = check(source, modules={"Util": util})
+        run_result = run(source, RunConfig(timeout=None, modules={"Util": util}))
+
+        assert check_result.ok is True, [d.message for d in check_result.diagnostics]
+        assert run_result.ok is True, [d.message for d in run_result.diagnostics]
+        assert run_result.value == 2
+
+    def test_a_supplied_module_overrides_the_standard_library(self):
+        own_list = (
+            "export func length(xs: List[Int]) -> Int\n"
+            "    example [1] -> 7\n"
+            "    return 7\n"
+            "end func\n"
+        )
+        source = "import List\nfunc main() -> Int\n    return List.length([1, 2])\nend func\n"
+
+        result = run(source, RunConfig(timeout=None, modules={"List": own_list}))
+
+        assert result.ok is True, [d.message for d in result.diagnostics]
+        assert result.value == 7
+
     def test_run_path_resolves_imports_for_legacy_direct_file_extensions(
         self, tmp_path
     ):

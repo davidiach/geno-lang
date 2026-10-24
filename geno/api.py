@@ -492,16 +492,22 @@ def _with_stdlib_modules(
     ]
     merged = dict(modules or {})
     added = False
+    visited: set[str] = set()
     while pending:
         name = pending.pop()
-        if name in merged or not _MODULE_NAME_RE.fullmatch(name):
+        if name in visited or not _MODULE_NAME_RE.fullmatch(name):
             continue
-        path = _STDLIB_DIR / f"{name}.geno"
-        if not path.is_file():
-            continue
-        source = path.read_text(encoding="utf-8")
-        merged[name] = source
-        added = True
+        visited.add(name)
+        if name in merged:
+            # The caller's module wins, but its own imports still resolve.
+            source = merged[name]
+        else:
+            path = _STDLIB_DIR / f"{name}.geno"
+            if not path.is_file():
+                continue
+            source = path.read_text(encoding="utf-8")
+            merged[name] = source
+            added = True
         pending.extend(_IMPORT_RE.findall(source))
     return merged if added or modules is not None else None
 

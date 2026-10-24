@@ -88,6 +88,23 @@ def test_the_embedding_api_runs_ordinary_recursion() -> None:
     assert result.output == DEEP_OUTPUT
 
 
+def _sandbox_stack_grows() -> bool:
+    """Whether the sandbox worker's stack holds a depth-10,000 run.
+
+    Before Python 3.12 the worker cannot start a thread, so only Linux, which
+    grows the main-thread stack up to the hard limit, gives it the room;
+    elsewhere it keeps the recursion limit within its stack (proposal 0011).
+    """
+    if sys.version_info >= (3, 12):
+        return True
+    if not sys.platform.startswith("linux"):
+        return False
+    import resource
+
+    hard = resource.getrlimit(resource.RLIMIT_STACK)[1]
+    return hard == resource.RLIM_INFINITY or hard >= 96 * 1024 * 1024
+
+
 @pytest.mark.parametrize("lane", [[], ["--unsafe", "--cap", "print"]])
 def test_geno_run_runs_ordinary_recursion(tmp_path: Path, lane: list[str]) -> None:
     path = tmp_path / "deep.geno"
@@ -100,6 +117,13 @@ def test_geno_run_runs_ordinary_recursion(tmp_path: Path, lane: list[str]) -> No
         check=False,
         cwd=_REPO_ROOT,
     )
+    if not lane and not _sandbox_stack_grows():
+        # The documented fallback: a recursion error, never a crash.
+        assert completed.returncode == 1, completed.stderr
+        assert completed.stderr.strip() == (
+            "Runtime Error: maximum recursion depth exceeded"
+        )
+        return
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == DEEP_OUTPUT
 

@@ -61,6 +61,17 @@ _RENAMED_BUILTINS = {
     "contains_substring": "string_contains",
     "sort_strings": "sort",
 }
+# Argument names a renamed builtin's replacement spells differently.
+_RENAMED_LABELS = {"sort_strings": {"items": "list"}}
+# The 0.5 parameters of the removed builtins rewritten to expressions, so a
+# named argument is bound to its parameter and only its value is used.
+_REMOVED_PARAMS = {
+    "square": ["value"],
+    "is_positive": ["value"],
+    "is_sorted": ["list"],
+    "is_permutation": ["list1", "list2"],
+    "is_numeric_string": ["text"],
+}
 _OPENERS = {TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE}
 _CLOSERS = {TokenType.RPAREN, TokenType.RBRACKET, TokenType.RBRACE}
 
@@ -80,7 +91,10 @@ class _Source:
 
     def start(self, token: Token) -> int:
         location = token.location
-        return self._line_starts[location.line - 1] + location.column - 1
+        offset = self._line_starts[location.line - 1] + location.column - 1
+        if token.type is TokenType.FSTRING:
+            offset -= 1  # the token is located at its quote; include the `f`
+        return offset
 
     def end(self, token: Token) -> int:
         start = self.start(token)
@@ -94,7 +108,7 @@ class _Source:
             return lexer.pos
         if kind is TokenType.FSTRING:
             lexer = Lexer(self.text)
-            lexer.pos = start + 1  # past the `f`
+            lexer.pos = start + 2  # past the `f` and the opening quote
             lexer._read_fstring()
             return lexer.pos
         if kind in (TokenType.INTEGER, TokenType.FLOAT):
@@ -142,16 +156,80 @@ class _Source:
             args.append((first, close_index - 1))
         return args
 
+    def argument_label(self, first: int, last: int) -> str | None:
+        """The name of a named argument spanning tokens ``first``..``last``."""
+        if (
+            first < last
+            and self.tokens[first].type is TokenType.IDENTIFIER
+            and self.tokens[first + 1].type is TokenType.COLON
+        ):
+            return str(self.tokens[first].value)
+        return None
+
+    def bind_arguments(
+        self, ranges: list[tuple[int, int]], params: list[str]
+    ) -> list[tuple[int, int]] | None:
+        """Each parameter's value token range, in parameter order.
+
+        ``None`` when the arguments do not match ``params`` one to one.
+        """
+        bound: dict[int, tuple[int, int]] = {}
+        for position, (first, last) in enumerate(ranges):
+            label = self.argument_label(first, last)
+            if label is None:
+                slot = position
+            elif label in params:
+                slot, first = params.index(label), first + 2
+            else:
+                return None
+            if slot in bound or slot >= len(params):
+                return None
+            bound[slot] = (first, last)
+        if len(bound) != len(params):
+            return None
+        return [bound[slot] for slot in range(len(params))]
+
+
+# A rewrite inside another (`is_positive(square(2))`) is made by the next
+# pass over the result; nesting deeper than this is left to a later run.
+_MAX_PASSES = 8
+
 
 def migrate_source(source: str) -> MigrationResult:
-    """Rewrite *source* from Geno 0.5 to Geno 0.6 where that is mechanical."""
+    """Rewrite *source* from Geno 0.5 to Geno 0.6 where that is mechanical.
+
+    Overlapping rewrites keep the outer one, so passes repeat until the
+    source stops changing. What is left for a person is what the last pass
+    found, which describes the migrated source.
+    """
+    result = _migrate_once(source)
+    changes = list(result.changes)
+    for _pass in range(_MAX_PASSES - 1):
+        again = _migrate_once(result.source)
+        if again.source == result.source:
+            break
+        changes.extend(again.changes)
+        result = again
+    else:
+        result = _migrate_once(result.source)
+    return MigrationResult(source=result.source, changes=changes, manual=result.manual)
+
+
+def _migrate_once(source: str) -> MigrationResult:
+    """One pass of every rewrite over *source*."""
     src = _Source(source)
     tokens = src.tokens
     edits: list[tuple[int, int, str]] = []
     result = MigrationResult(source)
+    # Each change owns the edits made since the previous one, and is applied
+    # whole or not at all.
+    changes: list[tuple[list[tuple[int, int, str]], Note]] = []
+    owned = 0
 
     def change(token: Token, message: str) -> None:
-        result.changes.append(Note(token.location.line, message))
+        nonlocal owned
+        changes.append((edits[owned:], Note(token.location.line, message)))
+        owned = len(edits)
 
     def manual(token: Token, message: str) -> None:
         result.manual.append(Note(token.location.line, message))
@@ -290,15 +368,37 @@ def migrate_source(source: str) -> MigrationResult:
                 edits.append(
                     (src.start(token), src.end(token), _RENAMED_BUILTINS[name])
                 )
+                close = src.matching_close(index + 1)
+                labels = _RENAMED_LABELS.get(name, {})
+                for first, last in (
+                    src.call_arguments(index + 1, close) if close is not None else []
+                ):
+                    label = src.argument_label(first, last)
+                    if label in labels:
+                        label_token = tokens[first]
+                        edits.append(
+                            (
+                                src.start(label_token),
+                                src.end(label_token),
+                                labels[label],
+                            )
+                        )
                 change(token, f"{name} -> {_RENAMED_BUILTINS[name]}")
                 continue
             close = src.matching_close(index + 1)
             if close is None:
                 continue
-            args = [
-                src.span_text(a, b) for a, b in src.call_arguments(index + 1, close)
-            ]
-            simple = [a == b for a, b in src.call_arguments(index + 1, close)]
+            bound = src.bind_arguments(
+                src.call_arguments(index + 1, close), _REMOVED_PARAMS[name]
+            )
+            if bound is None:
+                manual(
+                    token,
+                    f"'{name}' was removed in Geno 0.6; rewrite this call by hand",
+                )
+                continue
+            args = [src.span_text(a, b) for a, b in bound]
+            simple = [a == b for a, b in bound]
             replacement = _REMOVED_REWRITES[name](args, simple)
             if replacement is None:
                 manual(
@@ -309,7 +409,8 @@ def migrate_source(source: str) -> MigrationResult:
             edits.append((src.start(token), src.end(tokens[close]), replacement))
             change(token, f"{name}(...) -> {replacement}")
 
-    result.source = _apply(source, edits)
+    result.source, applied = _apply(source, [group for group, _note in changes])
+    result.changes = [note for (_group, note), ok in zip(changes, applied) if ok]
     return result
 
 
@@ -420,15 +521,38 @@ _REMOVED_REWRITES: dict[str, Callable[[list[str], list[bool]], str | None]] = {
 }
 
 
-def _apply(source: str, edits: list[tuple[int, int, str]]) -> str:
-    """Apply non-overlapping ``(start, end, text)`` edits."""
+def _apply(
+    source: str, groups: list[list[tuple[int, int, str]]]
+) -> tuple[str, list[bool]]:
+    """Apply each group of ``(start, end, text)`` edits whole, or not at all.
+
+    A group that overlaps one already taken is skipped; groups are taken in
+    source order, so of two overlapping rewrites the outer one is made.
+    Returns the new text and whether each group was applied.
+    """
+    taken: list[tuple[int, int]] = []
+    applied = [False] * len(groups)
+    chosen: list[tuple[int, int, int, str]] = []
+    order = sorted(
+        (index for index, group in enumerate(groups) if group),
+        key=lambda index: min((start, end) for start, end, _text in groups[index]),
+    )
+    for index in order:
+        group = groups[index]
+        if any(
+            start < taken_end and taken_start < end
+            for start, end, _text in group
+            for taken_start, taken_end in taken
+        ):
+            continue
+        applied[index] = True
+        taken.extend((start, end) for start, end, _text in group)
+        chosen.extend((start, end, index, text) for start, end, text in group)
     out: list[str] = []
     position = 0
-    for start, end, text in sorted(edits, key=lambda edit: (edit[0], edit[1])):
-        if start < position:
-            continue  # overlapping edit: keep the first
+    for start, end, _index, text in sorted(chosen, key=lambda edit: edit[:3]):
         out.append(source[position:start])
         out.append(text)
         position = end
     out.append(source[position:])
-    return "".join(out)
+    return "".join(out), applied

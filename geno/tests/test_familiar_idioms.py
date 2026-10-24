@@ -494,6 +494,24 @@ print(counts.get("a"))
             "false\n[0, 1, 2]\n1\nSome(value: 1)\n",
         )
 
+    def test_unique_follows_geno_equality_on_every_backend(self) -> None:
+        """Maps and functions are not merged by how they serialize."""
+        _assert_parity(
+            _main(
+                """
+print([{"a": 1}, {"a": 2}, {"a": 1}].unique())
+let inc = fn(x: Int) -> x + 1
+let dbl = fn(x: Int) -> x * 2
+print([inc, dbl, inc].unique().length())
+print([Some(1), None, Some(1), Some(2)].unique())
+print([(1, "a"), (1, "b"), (1, "a")].unique())
+print(["1", "1", "2"].unique())
+"""
+            ),
+            '[{"a": 1}, {"a": 2}]\n2\n[Some(value: 1), None, Some(value: 2)]\n'
+            '[(1, "a"), (1, "b")]\n["1", "2"]\n',
+        )
+
     def test_sum_of_a_list_of_ints_stays_an_int(self) -> None:
         result = geno.check(_main("let total: Int = [1, 2].sum()\nprint(total)"))
         assert result.ok

@@ -883,6 +883,8 @@ class TypeChecker(ExhaustivenessMixin):
         # binds, as (location of its binding construct, name, type). When set,
         # check_project_graph also keeps each module's checker here.
         self.binding_types: list[tuple[SourceLocation, str, Type]] | None = None
+        # With ``binding_types``: each local's use and the binding it resolves to.
+        self.binding_uses: list[tuple[SourceLocation, SourceLocation]] = []
         # The type of the expression statement checked last: a function body
         # that ends with one may be missing its `return`.
         self._last_expression_type: Type | None = None
@@ -2846,7 +2848,7 @@ class TypeChecker(ExhaustivenessMixin):
         for param in defn.params:
             param_type = self._resolve_type(param.param_type)
             local_env.bind(param.name, param_type)
-            self._record_binding(param.name, param_type, param.location)
+            self._record_binding(param.name, param_type, param.location, local_env)
 
         # Type-check default value expressions
         for param in defn.params:
@@ -3707,10 +3709,28 @@ class TypeChecker(ExhaustivenessMixin):
             defn.location,
         )
 
-    def _record_binding(self, name: str, type_: Type, location: SourceLocation) -> None:
+    def _record_binding(
+        self,
+        name: str,
+        type_: Type,
+        location: SourceLocation,
+        env: TypeEnv | None = None,
+    ) -> None:
         """Note a local binding for tools that asked for ``binding_types``."""
         if self.binding_types is not None:
             self.binding_types.append((location, name, type_))
+            if env is not None:
+                if env.binding_locations is None:
+                    env.binding_locations = {}
+                env.binding_locations[name] = location
+
+    def _record_binding_use(self, name: str, use: SourceLocation, env: TypeEnv) -> None:
+        """Note which binding a local's use resolves to, lexically."""
+        scope = env.binding_scope(name)
+        if scope is not None and scope.binding_locations is not None:
+            binding = scope.binding_locations.get(name)
+            if binding is not None:
+                self.binding_uses.append((use, binding))
 
     def _bind_local(
         self,
@@ -3752,7 +3772,7 @@ class TypeChecker(ExhaustivenessMixin):
                 location,
             )
         env.bind(name, type_, mutable=mutable)
-        self._record_binding(name, type_, location)
+        self._record_binding(name, type_, location, env)
 
     def _check_let_statement(self, stmt: LetStatement, env: TypeEnv) -> None:
         """Type check a let statement."""
@@ -4145,7 +4165,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         body_env = env.child()
         body_env.bind(stmt.variable, declared_type)
-        self._record_binding(stmt.variable, declared_type, stmt.location)
+        self._record_binding(stmt.variable, declared_type, stmt.location, body_env)
 
         self._loop_depth += 1
         for s in stmt.body:
@@ -4200,6 +4220,8 @@ class TypeChecker(ExhaustivenessMixin):
         expr._expected_runtime_type = expected
         if getattr(expr, "_generic_target", None) is not None:
             self._record_generic_value_instance(expr, expected)
+        if isinstance(expr, FunctionCall):
+            self._settle_generic_call(expr, expected)
         if not isinstance(
             expr,
             (IntegerLiteral, ListLiteral, MapLiteral, TupleExpr, ListComprehension),
@@ -4426,6 +4448,45 @@ class TypeChecker(ExhaustivenessMixin):
             return
         expr._generic_instance = instance
 
+    def _settle_generic_call(self, call: FunctionCall, expected: Type) -> None:
+        """Settle the type arguments of a generic call from its result context.
+
+        In `let f: (String) -> String = incrementer()` only the annotation
+        decides `T`, after the call itself was checked, so the instance is
+        updated and its bounds are checked again.
+        """
+        callee = call.function
+        target = getattr(callee, "_generic_target", None)
+        instance = getattr(callee, "_generic_instance", None)
+        result = getattr(call, "_resolved_type", None)
+        if target is None or instance is None or not isinstance(result, Type):
+            return
+        unsettled = sum(self._has_type_vars(arg) for arg in instance.type_args)
+        if not unsettled:
+            return
+        # Rename the call's open variables apart from any left in *expected*.
+        prefix = "__result_"
+        mapping: dict[str, TypeVar] = {}
+        fresh_result = self._freshen_type_vars(result, prefix, mapping)
+        subs: dict[str, Type] = {}
+        if not self._types_compatible_with_subs(fresh_result, expected, subs):
+            return
+        type_args = tuple(
+            self._apply_substitutions(
+                self._freshen_type_vars(arg, prefix, mapping), subs
+            )
+            for arg in instance.type_args
+        )
+        if sum(self._has_type_vars(arg) for arg in type_args) >= unsettled:
+            return
+        callee._generic_instance = GenericInstance(
+            module=instance.module,
+            name=instance.name,
+            type_params=instance.type_params,
+            type_args=type_args,
+        )
+        self._check_instance_bounds(target, type_args, call.location)
+
     def _dedupe_errors(self) -> None:
         """Report an error once even when checked code was duplicated.
 
@@ -4594,6 +4655,8 @@ class TypeChecker(ExhaustivenessMixin):
             self._error(message, expr.location, ErrorCode.TYPE_UNDEFINED_VAR, fixes)
             return AnyType()
         self._record_captured_binding(expr.name, env)
+        if self.binding_types is not None and expr.location is not None:
+            self._record_binding_use(expr.name, expr.location, env)
         if self._identifier_resolves_to_builtin(expr.name, env):
             expr._resolved_builtin_name = expr.name
         target = self._generic_target(expr, env)
@@ -6080,7 +6143,7 @@ class TypeChecker(ExhaustivenessMixin):
                 expr.iterable.location,
             )
         comp_env.bind(expr.variable, var_type)
-        self._record_binding(expr.variable, var_type, expr.location)
+        self._record_binding(expr.variable, var_type, expr.location, comp_env)
 
         # Check condition if present
         if expr.condition is not None:
@@ -6233,6 +6296,29 @@ class TypeChecker(ExhaustivenessMixin):
                         f"Pipeline argument type mismatch: expected {expected_type}, got {arg_type}",
                         stage.location,
                     )
+                self._record_expected_runtime_type(
+                    arg_expr, self._apply_substitutions(expected_type, subs)
+                )
+
+            # A stage is a call: a generic stage function and a generic
+            # function passed to it are instantiated by its substitution, as
+            # in `xs |> List.take(1)` and `xs |> map(show)`.
+            generic_target = getattr(stage.function, "_generic_target", None)
+            if generic_target is not None:
+                stage.function._generic_callee = True
+                instance = self._generic_instance(generic_target, subs)
+                stage.function._generic_instance = instance
+                self._check_instance_bounds(
+                    generic_target, instance.type_args, stage.location
+                )
+            for arg_expr in stage.arguments:
+                if getattr(arg_expr, "_generic_target", None) is None:
+                    continue
+                arg_expected = getattr(arg_expr, "_expected_runtime_type", None)
+                if isinstance(arg_expected, Type):
+                    self._record_expected_runtime_type(
+                        arg_expr, self._apply_substitutions(arg_expected, subs)
+                    )
 
             current_type = (
                 self._apply_substitutions(func_type.return_type, subs)
@@ -6336,7 +6422,7 @@ class TypeChecker(ExhaustivenessMixin):
             param_types.append(param_type)
             lambda_env.bind(param.name, param_type)
             effect_env.bind(param.name, param_type)
-            self._record_binding(param.name, param_type, param.location)
+            self._record_binding(param.name, param_type, param.location, lambda_env)
 
         if expr.block_body is not None:
             self._lambda_return_types = []
