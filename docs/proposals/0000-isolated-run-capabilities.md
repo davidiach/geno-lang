@@ -1,7 +1,7 @@
 # Proposal 0000: Capability Grants in the Isolated `geno run` Lane
 
 - Status: Draft
-- Authors: Claude Code (AI-assisted draft for maintainer review)
+- Authors: Claude Code and Codex (AI-assisted draft for maintainer review)
 - Created: 2026-10-16
 - Updated: 2026-10-24
 - Target release: 0.7.0 or later (tentative; next feature cycle after 0.6)
@@ -26,9 +26,10 @@ The proposed rollout separates five milestones:
    allowlist and the same grants for examples and `main`. This step addresses
    [#68](https://github.com/davidiach/geno-lang/issues/68).
 3. `stdin`, read lazily inside the supervised worker under the run's deadline.
-4. `fs`, after its facade, roots and write-limit policy are settled.
-5. `http`, after its scheme, address, redirect, size and timeout policy is
-   reviewed against the other Python surfaces.
+4. `fs`, through a narrow facade with the existing roots and read-only policy,
+   plus portable per-file and aggregate write limits.
+5. `http`, preserving the existing validated connection, redirect, proxy and
+   response-size protections under the remaining run deadline.
 
 Each milestone needs its own implementation and validation; unsupported
 capabilities remain refused until their milestone lands.
@@ -57,11 +58,12 @@ The problem remains on `main` at `4e70283` (0.6.0-rc.3):
 The proposal remains Draft. Its elapsed public-review period and passing
 documentation checks do not constitute acceptance.
 
-The three design decisions below are recorded at the maintainer's direction.
-They resolve the earlier environment, example-grant and stdin-policy questions;
-they do not mark the proposal Accepted or enable any capability. The PR remains
-Draft pending formal acceptance and its review record. Filesystem and HTTP
-policy questions still need resolution before their implementation milestones.
+The design decisions below are recorded at the maintainer's direction.
+They resolve the environment, example, stdin, filesystem and HTTP policy
+questions; they do not mark the proposal Accepted or enable any capability.
+The PR remains Draft pending explicit formal acceptance. Platform mechanics
+and executable evidence remain gates for the corresponding implementation
+milestones, rather than prerequisites for accepting the design direction.
 
 The filesystem-only argument-forwarding review finding is already addressed:
 trusted worker setup receives program arguments independently of the
@@ -83,6 +85,20 @@ record separately from implementation. Merging this document does not close #68.
    worker. The parent does not read stdin to EOF before supervision. Reads are
    incremental and size-bounded, preserve UTF-8 error behavior, and share the
    deadline covering startup, examples and `main`. There is no rewind or replay.
+4. **Filesystem boundary:** expose only a narrow facade and route every
+   operation through the existing root, symlink and read-only policy. Do not
+   inject raw `os` or unrestricted file access.
+5. **Writes:** default to 64 MiB per file and 64 MiB cumulatively per run,
+   configurable and enforced in the facade on Windows and POSIX. Count actual
+   UTF-8 bytes after the existing platform newline conversion across examples
+   and `main`, including rewrites. Reserve a write's cost
+   before opening or truncating a file; do not refund failed attempts after
+   reservation. These are conservative policy defaults, not measured needs.
+6. **HTTP:** reuse the existing validated connection and redirect machinery,
+   including destination checks, cross-origin credential stripping, proxy
+   bypass protection and bounded responses. Private-network access requires
+   trusted host opt-in. Keep that policy separate from program-visible
+   environment access and bound requests by the remaining run deadline.
 
 The detailed contracts and required regression cases are specified below.
 These decisions record the requested direction, not completed implementation,
@@ -215,9 +231,11 @@ The rules a user sees:
   During rollout, this hint applies only to capabilities already implemented
   in the isolated lane. Unsupported capabilities retain explicit alternative-mode
   advice. After all five milestones, only `process` and `serve` need that advice.
-- **`fs` has the same scope as `--unsafe --cap fs`:** the working directory,
+- **`fs` has the same roots as `--unsafe --cap fs`:** the working directory,
   the source file's directory, the project root, and any path-like arguments
-  after `--`.
+  after `--`. Isolated writes additionally default to 64 MiB per file and
+  64 MiB cumulatively per run, shared by examples and `main`. Rewrites consume
+  the budget again; the limits apply on Windows as well as POSIX.
 - **Environment reads need an allowlist.** `--cap env` enables `cli_args()`
   without exposing environment variables. The proposed repeatable option
   `--allow-env NAME` permits individual variables; it never grants `env`
@@ -245,9 +263,15 @@ The rules a user sees:
     before the worker starts.
 - `--max-file-size-bytes` gets a "lane default" (argparse default `None`):
   - 0 when `fs` is not granted, which is today's value;
-  - 64 MiB when it is (see [Filesystem](#filesystem-fs)).
-
-  An explicit value always wins, including `0`, which makes every write fail.
+  - 64 MiB (67,108,864 bytes) when it is.
+- Add process-only `--max-total-write-bytes` with the same lane defaults:
+  0 without `fs`, or 64 MiB with it. Validate both limits as nonnegative
+  integers. Explicit values override defaults but never grant `fs` or bypass
+  read-only policy. A zero value for either limit disables all facade write
+  operations, including empty writes or truncation.
+- The per-file limit applies through the portable facade as well as any
+  available OS file-size limit; the aggregate counter belongs to the whole
+  run. See [Filesystem](#filesystem-fs).
 - `--cap` help text lists the capabilities currently supported in process mode
   and identifies those that still require another execution mode.
 - The `env` milestone adds repeatable `--allow-env NAME` for exact variable
@@ -263,8 +287,8 @@ select its own grant, policy or inherited handles:
 
 - **Grant and policy flags** travel in the worker configuration the parent sets
   (`GENO_SANDBOX_CONFIG`). That includes the grant set, environment allowlist,
-  read-only mode and private-address switch. The worker reads them at startup, before any
-  untrusted input. Reading the grant early lets the worker preload the host
+  read-only mode, both write limits and the private-address switch. The worker
+  validates these fields at startup, before any untrusted input. Reading the grant early lets the worker preload the host
   modules for granted capabilities before it freezes the Darwin address-space
   baseline (see [HTTP](#http-http)).
 - **Environment data** travels in the request only when `env` is granted.
@@ -283,6 +307,11 @@ select its own grant, policy or inherited handles:
   program runs, from the file name, the resolved project root and the program
   arguments. This is how `--unsafe` computes them (see
   [Filesystem](#filesystem-fs)).
+- **Host policy is separate from environment data.** The parent resolves
+  `GENO_FS_READ_ONLY` and `GENO_HTTP_ALLOW_PRIVATE` into trusted configuration,
+  even when `env` is not granted. Runtime policy checks use that configuration,
+  never the filtered environment snapshot, and expose no additional variables
+  to the program. Allowing a variable for `env_get` does not alter policy.
 
 The worker validates the grant before use. Any name outside the lane's
 supported set, `process` and `serve` included, is a `startup_error`, so
@@ -301,7 +330,7 @@ It holds only what the granted capabilities need:
 | `print`, `clock`, `random`, `regex` | none new; existing injected modules | worker (today) |
 | `env` | allowlist, snapshot of allowed values (read-only mapping) and program arguments | parent |
 | `stdin` | private bounded reader over a dedicated input handle | parent supplies handle; supervised worker reads on demand |
-| `fs` | filesystem facade plus root and write policy | worker imports; policy from parent and the resolved project |
+| `fs` | filesystem facade, roots, read-only policy and shared write-budget state | worker imports; policy from parent and the resolved project |
 | `http` | client modules plus address policy | worker preloads; policy from parent |
 
 The runtime prelude (`geno/_runtime_support.py`) reaches the host only through
@@ -333,10 +362,16 @@ Generated program code cannot name the table or the helpers:
   function, binding or reference that uses one of these names fails to
   compile.
 
-Bindings expose the narrowest object the builtins need. For `fs`, that means
-a facade with the path functions, `open`, `listdir`, `stat` and `lstat`, not
-the `os` module with `system`, `fork` and `kill`. HTTP needs the standard
-client modules whole and binds them only under `http`.
+Bindings expose only the operations the builtins need. The filesystem facade
+provides guarded read, write, list, existence, metadata and canonicalization
+operations. Every operation reaches the established root, symlink and read-only
+checks; writes also pass both budgets. Raw `os`, unrestricted `open` and host
+handles are not exposed to Geno code. Reuse the existing policy validators
+rather than maintain a second set inside the facade.
+
+HTTP's trusted runtime may bind the standard client modules needed by the
+existing validated handlers, only under `http`. Program code cannot reach
+those modules or select an unvalidated opener.
 
 ### Environment and arguments (`env`)
 
@@ -406,42 +441,93 @@ below.
 
 ### Filesystem (`fs`)
 
-- **Roots.** The worker computes the roots in `_prepare_process_run`, which is
-  trusted code that runs before the program. It calls
+Decision: use a narrow filesystem facade with portable per-file and aggregate
+write limits. Keep the existing roots and read-only policy.
+
+- **Roots.** Trusted worker setup calls
   `_explicit_fs_roots_for_run(filename, project_root, program_args)`, the
-  function `--unsafe` uses, with absolute paths allowed inside those roots.
-- **Read-only mode.** The parent reads `GENO_FS_READ_ONLY` and forwards it as
-  policy; the worker does not inherit the variable.
-- **Shared policy code.** Symlink escapes and the metadata, canonicalize and
-  read-only rules go through the prelude's existing policy code, which
-  standalone output already runs.
-- **Write limit.** `RLIMIT_FSIZE` defaults to 64 MiB per file when `fs` is
-  granted. That covers the largest string the runtime can produce: 10,000,000
-  characters at up to 4 UTF-8 bytes each, about 40 MB. Windows has no per-file
-  limit, as today.
-- **Over-limit writes.** A write past the limit must fail with a Geno message
-  such as `fs_write_text: file exceeds the sandbox file-size limit (67108864
-  bytes)`. The prototype surfaced a raw `OSError: [Errno 27] File too large`.
+  function `--unsafe` uses. Absolute paths are allowed only within those roots.
+  Program arguments reach setup even under an `fs`-only grant, while
+  `cli_args()` remains denied without `env`.
+- **Policy.** Route every operation through the established root, symlink,
+  metadata, canonicalization and read-only validators. Trusted configuration
+  carries the parent's `GENO_FS_READ_ONLY` policy separately from any
+  program-visible environment snapshot. The facade must not offer an unchecked
+  operation or return host handles to Geno code.
+- **Defaults.** Use 64 MiB per file and 64 MiB cumulatively per run. These are
+  conservative, configurable policy choices, not benchmark-derived capacity
+  requirements. Both examples and compiled `main` use the same facade policy
+  and aggregate counter.
+- **Portable enforcement.** The facade enforces both byte limits on Windows
+  and POSIX. Where available, `RLIMIT_FSIZE` also applies the configured
+  per-file limit as an additional guard. Its absence on Windows does not
+  remove the Geno-level limit. A zero limit disables facade writes, including
+  zero-byte writes and truncation.
+- **Accounting.** Count the UTF-8 bytes actually emitted after the existing
+  platform newline conversion, not source characters or net file growth.
+  Preserve `fs_write_text`'s current text-write behavior: on Windows, newline
+  expansion must be included before reservation. The implementation must emit
+  exactly the bytes it budgeted, with no additional unchecked translation.
+  For `fs_write_text`, the per-file check covers the complete resulting file
+  size. Validate capability, path, read-only policy and both limits before
+  opening or truncating the destination. Reserve the full encoded write cost
+  from the aggregate budget before I/O. Every rewrite counts again, even for
+  the same path; a failed I/O attempt after reservation is not refunded.
+  A capability, policy or quota rejection must leave the destination unchanged.
+- **Errors.** Per-file, aggregate and zero-limit rejection return `Err(String)`
+  from `fs_write_text`, preserving its `Result[Unit, String]` contract.
+  Name the exceeded or disabled limit and configured byte count in the error.
+  Both the example interpreter and compiled path return the same result
+  category; these quota rejections do not themselves raise an execution error
+  or terminate the run. A caller may handle `Err` and continue, and a later
+  smaller write may succeed if it fits the unchanged remaining allowance.
+  Rejection before reservation consumes no budget; an I/O failure after
+  reservation does not refund it.
+  Missing `fs` still follows the existing E412 capability-denial behavior.
+  Collection/output limits and hard timeout, memory or CPU enforcement retain
+  their existing behavior. An ordinary I/O failure can leave a partial write;
+  this proposal does not promise transactional rollback.
+- **Scope.** The budgets bound Geno-mediated file writes. They are not disk
+  quotas, do not account for filesystem metadata or pre-existing contents,
+  and do not constrain external processes. The existing process deadline
+  continues to bound work, including repeated empty-file operations.
 
 ### HTTP (`http`)
 
-- **Policy.** The prelude's existing policy applies:
-  - only the `http` and `https` schemes;
-  - loopback, private, link-local and similar targets rejected;
-  - redirect targets checked against the same rules;
-  - bounded response bodies.
+Decision: reuse the existing validated connection and redirect machinery with
+the same network policy, bounded by the remaining run deadline. Do not add an
+alternate unvalidated client stack.
 
-  The parent forwards `GENO_HTTP_ALLOW_PRIVATE` as policy.
-- **Preloading.** The worker imports the client modules in trusted setup, only
-  when `http` is granted:
-  - On Linux, `socket`, `ssl`, `http.client` and `urllib.request` took about
-    49 ms and added 7.5 MiB of resident memory.
-  - Importing them before the Darwin baseline is frozen keeps that cost out of
-    the program's memory budget.
-- **Timeouts.** The hard wall-clock limit also stops a request that is stuck
-  in a blocking call. In-process lanes cannot preempt such a call.
-- **No threads.** The client must not start threads: `RLIMIT_NPROC` stays at
-  1, and on Linux that limit counts threads.
+- **Destinations.** Permit only `http` and `https`. Preserve the existing
+  rejection of non-public destinations unless the trusted host explicitly
+  opts in. Resolve and validate destination addresses, then connect to the
+  validated addresses using `_create_validated_http_connection` and the
+  existing HTTP/HTTPS handlers; do not validate once and reconnect through an
+  unchecked resolution path. Preserve TLS certificate and hostname checks.
+- **Redirects.** Apply the same scheme and destination checks to every hop.
+  Keep the existing redirect-count and method/body rules, including removal
+  of credentials and other caller headers across origins. Validate the actual
+  connection destination for each hop.
+- **Proxies.** Preserve the explicit `ProxyHandler({})` behavior. Neither the
+  worker's environment nor variables permitted for program reads may silently
+  route requests through an unvalidated proxy.
+- **Trusted policy.** The parent resolves `GENO_HTTP_ALLOW_PRIVATE` and sends
+  it as trusted configuration. This works without an `env` grant and is
+  independent of the program's variable allowlist. A program cannot enable
+  private-network access by naming or reading a variable.
+- **Bounds.** Reuse the existing bounded response readers and size-error
+  behavior. Each request, connection attempt and redirect uses at most the
+  smaller of the normal operation timeout and the remaining run time. The
+  overall deadline also covers DNS, TLS and blocked body reads; the supervisor
+  terminates a worker that cannot return before that deadline. No hop or
+  example-to-main transition resets the budget.
+- **Preloading.** Trusted setup loads only the client modules required for a
+  granted `http` capability before freezing the Darwin address-space baseline.
+  This is a setup requirement, not a measured startup-cost claim. Validate its
+  effect on supported platforms in the implementation milestone.
+- **No threads.** Do not add client background threads or relax the existing
+  process limit. The implementation must preserve the worker's resource
+  restrictions while reusing the validated client machinery.
 
 ### Why `process` and `serve` stay out
 
@@ -516,8 +602,8 @@ For implemented capabilities, the intended parity with `--unsafe --cap` covers
 the filesystem roots, read-only mode and absolute-path rule, the HTTP policy,
 and program arguments. Examples use the run grant in both lanes. Isolated
 environment access intentionally differs: it exposes only explicitly allowed
-snapshot values. Shared aggregate budgets and hard limits can also cause an
-isolated run to stop where direct execution continues.
+snapshot values. Portable file-write quotas, shared aggregate budgets and hard
+limits can also cause an isolated run to stop where direct execution continues.
 
 Behavior and differences under the recorded decisions:
 
@@ -525,9 +611,10 @@ Behavior and differences under the recorded decisions:
 |---|---|---|
 | Output | shown when the program ends | streamed |
 | `stdin` | read on call in worker; size-bounded; shared run deadline and stream | read on call |
-| Examples | exact run grant and restrictions; shared deadline, budgets and stdin | run with the grant |
+| Examples | exact run grant and restrictions; shared deadline, output/write budgets and stdin | run with the grant |
 | Environment | exact-name allowlist, empty by default; snapshot of allowed values | full caller environment with `env` |
-| Hard limits | wall clock (kill), memory, CPU, file size, processes | none; cooperative timeout and step limit |
+| Write quotas | portable per-file and aggregate byte limits, shared by examples and `main` | existing direct-mode behavior; no new quotas |
+| Hard limits | wall clock (kill), memory, CPU, file size where supported, processes | none; cooperative timeout and step limit |
 | `process`, `serve` | refused | available |
 
 ## Compatibility And Migration
@@ -540,6 +627,13 @@ Behavior and differences under the recorded decisions:
   with many automatic examples to reach its limit earlier than under separate
   phase budgets; document and test that enforcement change. The
   `--max-file-size-bytes` default changes only when `fs` is granted.
+- **Write quotas:** isolated `fs` runs have portable per-file and total-write
+  limits; direct execution retains its existing behavior. Large exports or
+  repeated writes may require an explicit higher limit. A zero limit disables
+  all facade writes, and quota rejection occurs before truncation. The
+  aggregate budget is not reclaimed after failed reserved writes. Per-file,
+  aggregate and zero-limit rejection return `Err` from `fs_write_text`; they
+  do not by themselves turn the run into an execution error.
 - **Environment migration:** `--cap env` alone is sufficient for `cli_args()`.
   Programs using `env_get` or `env_get_or` must explicitly allow each variable
   with `--allow-env NAME` when moving from `--unsafe` to isolated mode. Unlisted
@@ -613,8 +707,9 @@ sent over granted HTTP, including by an example; document that scope. Existing
 **Denial of service.** Existing wall-clock, memory, CPU, output, collection,
 integer and recursion limits stay in force. Step guards retain their existing
 interpreter-only scope. On top of that:
-- `fs` allows writes up to the per-file limit, but the number of files is
-  bounded only by the timeout;
+- `fs` has per-file and aggregate byte limits enforced in the facade, with
+  one counter across examples and `main`; the number of files and filesystem
+  metadata costs are still bounded only indirectly by the deadline;
 - `http` uses the network until the timeout;
 - stdin is read only inside the supervised worker, bounded in size and by
   the same deadline as startup, examples and main execution;
@@ -631,8 +726,9 @@ interpreter-only scope. On top of that:
 
 ## Testing And Validation
 
-- **Parent:** grant validation, `process`/`serve` refusal and the
-  `--max-file-size-bytes` defaults. Also that, without `--cap`, the default
+- **Parent:** grant validation, `process`/`serve` refusal, and defaults,
+  explicit overrides and invalid values for `--max-file-size-bytes` and
+  `--max-total-write-bytes`. Also that, without `--cap`, the default
   grant is unchanged; `--allow-env` requires an explicit isolated `env` grant;
   and only permitted, present variables are sent in the snapshot.
 - **Worker:**
@@ -641,7 +737,8 @@ interpreter-only scope. On top of that:
   - generated code that names `_GENO_HOST` or a helper is rejected;
   - Geno code that defines or references those names fails to compile.
 
-  A prototype confirmed the last two with the existing mechanisms.
+  Validate both rejection paths against the implemented bindings; historical
+  prototype reports do not substitute for these regressions.
 - **Per capability**, in the isolated lane:
   - `regex`;
   - `env`: `cli_args` with an empty allowlist; exact-name allowed values;
@@ -662,14 +759,26 @@ interpreter-only scope. On top of that:
   - `fs`: read, write, list, metadata and canonicalize; `..` and symlink
     escapes; absolute paths inside and outside the roots; a path argument
     after `--` authorizing its directory under an `fs`-only grant, while
-    `cli_args` is still denied; `GENO_FS_READ_ONLY`; the over-limit write
-    message;
-  - `http`: a local test server with `GENO_HTTP_ALLOW_PRIVATE`, scheme and
-    private-address rejection, redirects and size limits.
+    `cli_args` is still denied; read-only policy without an `env` grant;
+    per-file and aggregate limits on Windows and POSIX; multibyte UTF-8 and
+    newline-heavy Windows accounting (including LF/CRLF mixtures); rewrites
+    and failed attempts consuming reservations; shared
+    example/main counters; zero limits rejecting empty writes and truncation;
+    unchanged destinations after policy or quota rejection; distinct per-file,
+    aggregate and disabled-limit error messages; identical `Err` results in
+    example/interpreter and compiled paths; callers recovering from quota
+    rejection and continuing; and preservation of E412 and hard-limit behavior;
+  - `http`: local servers under trusted private-network opt-in without an
+    `env` grant; scheme and non-public-address rejection; validated address
+    pinning and DNS-rebinding regressions; redirect target, count and
+    cross-origin-header handling; proxy-variable bypass attempts; TLS
+    validation; bounded bodies; and DNS, connection, redirect and body-read
+    stalls under the same run deadline.
 - **Parity:** with equivalent policies, inputs and grants, the same
   programs under `--cap` and `--unsafe --cap` produce the same output and errors
   within the isolated lane's limits. Add explicit expectations for documented
-  differences in environment scope, example execution and stdin behavior.
+  differences in environment scope, write quotas, example execution and stdin
+  behavior.
 - **Diagnostics:** the [#187](https://github.com/davidiach/geno-lang/pull/187) tests in
   `geno/tests/test_capability_denial_diagnostics.py` are updated for the new
   hint and still prove a forged message gets no hint.
@@ -677,35 +786,25 @@ interpreter-only scope. On top of that:
   escape, an absolute path outside the roots, and a grant without `fs` that
   calls a filesystem builtin.
 - **Platforms:** Linux, macOS (the Darwin baseline with the `http` preload)
-  and Windows (Job Object limits, no per-file limit).
+  and Windows (Job Object limits and portable facade write quotas, without
+  POSIX file-size rlimits).
 - **Gates:** `make security`, `python3 scripts/local_ci.py release`, the docs
   snippet tests and the website build tests for the updated figures.
 
-### Prototype evidence
+### Prototype background
 
-A historical throwaway prototype, not proposed for merge, implemented `env`
-and `fs` before the recorded decisions above. It changed about 85 lines across
-`geno/cli/run.py`, `geno/sandbox.py` and `geno/_runtime_support.py`, using raw
-module bindings rather than facades. It did not validate the empty-by-default
-allowlist, shared example budgets or lazy stdin contract. In that prototype's
-isolated lane:
-
-- `--cap env,print` returned the program arguments and the caller's
-  environment.
-- `--cap fs,print` read and wrote inside the roots and refused `..` and
-  absolute escapes.
-- `--cap print,regex` matched.
-- `--cap process` was still refused.
-
-The worker rejected generated code that named any of the three private names,
-and the compiler rejected Geno definitions and references using them. With
-warm bytecode caches, a granted `env` or `fs` run took the same time as an
-ungranted one, about 0.5 s on the test machine. `--unsafe` took about 0.17 s,
-and that gap is the existing cost of the worker.
+A historical throwaway prototype explored `env` and `fs` before these
+decisions. Reproducible artifacts and a documented measurement environment
+are not included in this proposal, so no prototype timings, memory figures,
+patch-size measurements or startup-overhead claims are retained as evidence.
+It did not validate the recorded allowlist, shared budgets, lazy stdin,
+portable write quotas or complete HTTP contract. Acceptance and implementation
+must rely on the stated design, review and required validation, not on the
+prototype anecdotes.
 
 ## Rollout And Observability
 
-Keep this proposal and its PR Draft. The three decisions above are recorded,
+Keep this proposal and its PR Draft. The design decisions above are recorded,
 but formal proposal acceptance and its review record remain pending. Recording
 those choices does not authorize marking the PR ready or merging it. After
 formal acceptance, assign a permanent proposal number and merge the design
@@ -729,10 +828,14 @@ each in a separate reviewed PR and independently revertible:
    the supervised worker, one shared stream and deadline, interruption cleanup,
    and Linux, macOS and Windows handle tests. Keep the capability refused
    until those checks pass.
-4. **`fs`:** settle and implement the facade, root and write-limit policies,
-   preserving the reviewed filesystem-only argument-forwarding behavior.
-5. **`http`:** review and implement preload, address and redirect policy,
-   response bounds and timeout behavior.
+4. **`fs`:** implement the narrow facade, existing roots and read-only policy,
+   portable per-file and aggregate quotas, and shared reservation accounting.
+   Preserve filesystem-only argument forwarding and pass the Windows/POSIX
+   quota and policy tests before enabling the capability.
+5. **`http`:** integrate the existing validated client with trusted policy,
+   preload, redirects, proxy protection, bounded responses and the remaining
+   deadline. Pass the network-policy, timeout and supported-platform checks
+   before enabling the capability.
 
 Every stage continues to reject capabilities it has not implemented.
 `process` and `serve` remain refused throughout. Reverting a stage restores
@@ -780,21 +883,45 @@ Follow-ups outside this proposal:
 7. **Let `--cap` switch to `--unsafe` automatically.** This is the silent
    downgrade the current rejection exists to prevent.
 
-## Unresolved Questions
+## Implementation Gates And Formal Acceptance
 
-1. **Facades or raw modules for `fs`?** The proposal asks for a facade. Is the
-   extra code worth it, compared with raw `os` behind both gates?
-2. **Write limits.** Is 64 MiB per file the right default? Should there also
-   be a total-bytes-written budget?
-3. **Stdin platform implementation.** Which dedicated-handle mechanism and
-   cleanup path meet the recorded lazy-input contract on each supported
-   platform? The policy is decided; handle inheritance, never-ending pipes,
-   interruption and cleanup still need implementation evidence.
-4. **HTTP implementation review.** Confirm preload, address and redirect
-   policy, size limits and blocking-call timeout behavior before that milestone.
-5. **Independent review.** The proposal process requires at least seven days
-   of public review. `GOVERNANCE.md` allows the project lead to accept a
-   substantial proposal while Geno has only one active maintainer, provided
-   the proposal records the absence of independent review and the review it
-   did receive. Independent technical review is still desirable for this
-   security boundary. Who reviews it? See [#28](https://github.com/davidiach/geno-lang/issues/28).
+The policy choices above are recorded. Remaining implementation work includes
+the dedicated stdin-handle and cleanup mechanism for each platform, portable
+write accounting, and integration of the existing HTTP client under the
+worker's import and resource restrictions. These require executable evidence
+before their milestones are enabled, not a completed implementation before
+formal acceptance of the design.
+
+- **Stdin gate:** validate unused input, shared stream semantics, never-ending
+  pipes, timeouts, interruption and handle cleanup on Linux, macOS and Windows.
+- **Filesystem gate:** validate every facade operation, root/read-only policy,
+  both quotas and shared reservation accounting on Windows and POSIX.
+- **HTTP gate:** validate destination pinning, every redirect, credential
+  stripping, proxy protection, TLS, response bounds, deadlines and preloading
+  on the supported platforms.
+- **Release gates:** run the applicable security, parity and release checks
+  for each implementation PR. Keep a capability refused until its gate passes.
+- **Formal acceptance:** the project lead must explicitly accept the proposal,
+  record the acceptance date and review received, and assign the next available
+  permanent number. Only then may the design record proceed through merge
+  checks separately from implementation. Target 0.7.0 or later remains tentative,
+  and #68 remains open until implementation and validation resolve it.
+
+### Review record (2026-10-24)
+
+The review received to date consists of Codex automated advisory review and
+focused documentation validation; the final automated design-review outcome
+and exact validation commands are recorded in the PR description. No
+independent human technical review is claimed. Automated review and CI are
+not independent human approval or proof of runtime safety.
+
+The proposal has been open since 2026-10-16, satisfying the process's minimum
+seven-day public-review period. While Geno has one active maintainer,
+`GOVERNANCE.md` permits the project lead to accept without independent review
+if its absence and the review actually received are recorded. Independent
+human review remains desirable for this security boundary; see
+[#28](https://github.com/davidiach/geno-lang/issues/28).
+
+**Formal acceptance is pending.** This proposal and PR remain Draft until
+the project lead explicitly accepts it. Recording these decisions and running
+the final design review does not authorize changing that status or merging.
