@@ -1,12 +1,15 @@
 # Proposal 0007: Types Inferred From Context
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-10-24
+- Accepted by: David Iach, project lead
 - Authors: David Iach (direction), Claude Code (drafting and implementation)
 - Created: 2026-10-23
-- Discussion: TBD
+- Discussion: https://github.com/davidiach/geno-lang/pull/212
 - Supersedes: None
-- Review: None (single-maintainer acceptance under `GOVERNANCE.md`); automated
-  review and CI only
+- Review: No independent review (single-maintainer acceptance under
+  `GOVERNANCE.md`). The implementation was reviewed by the project lead and by
+  Codex automated review on #212, and by CI.
 - Roadmap: milestone M4 of [proposal 0003](0003-geno-0.6-language-upgrade.md)
 
 ## Summary

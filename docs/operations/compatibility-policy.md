@@ -70,17 +70,19 @@ result and never terminate their caller, and importing a generated Python or
 Node ESM artifact stays inert. Browser-targeted JavaScript keeps displaying an
 `Int` result, because it has no process to give a status to.
 
-### 0.6 (in development): imports are not transitive
+### 0.6: imports are not transitive
 
 0.5 accepted a call to a function exported by module `A` from a program that
 imported only a module `B` which imports `A`. The interpreter ran it, but
 compiled Python and JavaScript failed with a name error, so the accepted
 program was not portable. From 0.6, `geno check` rejects the call and suggests
 `import A`; the migration is to add that import. The rule is stated in
-`docs/spec/v0.6.md` section 6.10 and recorded in `CHANGELOG.md`. This entry
-will gain the proposal and conformance references of the 0.6 release.
+`docs/spec/v0.6.md` section 6.10 and recorded in `CHANGELOG.md`. It was a
+defect fix, so it has no proposal of its own, and the conformance corpus runs
+single-file programs, so the rule is covered by
+`geno/tests/test_qualified_imports.py` instead.
 
-### 0.6 (in development): one error model
+### 0.6: one error model
 
 [Proposal 0009](../proposals/0009-result-only-errors.md) removes `throw`,
 `try`/`catch` and the `throw` effect, and changes `fs_read_text`,
@@ -91,7 +93,7 @@ none changes meaning silently. `CHANGELOG.md` carries the migration steps,
 `error-model` and `diagnostic-removed-*` cases. Embedding hosts that supply
 `host_callbacks` for the four builtins need no change.
 
-### 0.6 (in development): a coherent standard library
+### 0.6: a coherent standard library
 
 [Proposal 0010](../proposals/0010-coherent-standard-library.md) removes eight
 duplicate or one-line builtins and makes `string_index_of` return
@@ -100,7 +102,7 @@ replacement, and `geno migrate` rewrites them. The import and free-call rules
 of the same proposal change no accepted program. `conformance/v0.6` adds the
 `coherent-stdlib` and `diagnostic-removed-builtin` cases.
 
-### 0.6 (in development): `end` and its keyword share a line
+### 0.6: `end` and its keyword share a line
 
 A block closer written across two lines, `end` and then `if` on the next
 line, was accepted as `end if`. Because the same text is also a bare `end`
@@ -129,11 +131,12 @@ Node.js is optional for local single-backend work. Release and scheduled
 evidence must use `--require-node`; silently omitting a declared production
 backend is not a passing all-target run.
 
-`conformance/v0.5/manifest.toml` is the current corpus and the v0.4 corpus
-remains in the repository unchanged. Release qualification runs both the current
-corpus and at least the immediately preceding minor corpus. Cases may be
-corrected only when the original fixture was internally inconsistent; such
-corrections require a proposal and a changelog entry.
+`conformance/v0.6/manifest.toml` is the current corpus, frozen from
+0.6.0-rc.1, and the v0.5 and v0.4 corpora remain in the repository unchanged.
+Release qualification runs both the current corpus and at least the immediately
+preceding minor corpus. Cases may be corrected only when the original fixture
+was internally inconsistent; such corrections require a proposal and a changelog
+entry.
 
 ## What Users Can Rely On
 
