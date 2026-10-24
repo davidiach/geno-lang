@@ -1,6 +1,9 @@
-# Proposal 0000: Capability Grants in the Isolated `geno run` Lane
+# Proposal 0013: Capability Grants in the Isolated `geno run` Lane
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-10-24
+- Accepted by: David Iach, project lead
+- Review: No independent human technical review; Codex automated advisory reviews and focused documentation validation (details below)
 - Authors: Claude Code and Codex (AI-assisted draft for maintainer review)
 - Created: 2026-10-16
 - Updated: 2026-10-24
@@ -46,29 +49,32 @@ The proposal adds capability selection without changing language syntax or
 builtin names. Example checking will share the run's grants and cumulative
 budgets; the compatibility implications are recorded below. Implementation
 targets the next feature cycle
-after 0.6, provisionally 0.7.0 or later, subject to acceptance and validation.
+after 0.6, provisionally 0.7.0 or later, subject to implementation validation.
 This is not a delivery commitment or an addition to the current 0.6 release
 candidate. [Proposal 0002](0002-0.5-stable-promotion.md) originally deferred
 [#68](https://github.com/davidiach/geno-lang/issues/68) beyond 0.5.0.
 
-### Draft refresh (2026-10-24)
+### Acceptance record (2026-10-24)
 
 The problem remains on `main` at `4e70283` (0.6.0-rc.3):
 [`run_file` still rejects every explicit `--cap` in process mode](https://github.com/davidiach/geno-lang/blob/4e70283e04f1521cc1164a270e2b8a9d63ba30e7/geno/cli/run.py#L619).
-The proposal remains Draft. Its elapsed public-review period and passing
-documentation checks do not constitute acceptance.
+David Iach, project lead, formally accepted this proposal on 2026-10-24 and
+authorized its merge once all required checks pass. Acceptance is recorded
+under the existing sole-maintainer provision in `GOVERNANCE.md`: no
+independent human technical review took place. The review actually received
+is documented below; automated review and CI are not independent human approval.
 
-The design decisions below are recorded at the maintainer's direction.
-They resolve the environment, example, stdin, filesystem and HTTP policy
-questions; they do not mark the proposal Accepted or enable any capability.
-The PR remains Draft pending explicit formal acceptance. Platform mechanics
+The accepted design resolves the environment, example, stdin, filesystem and
+HTTP policy questions. It does not enable any capability. Platform mechanics
 and executable evidence remain gates for the corresponding implementation
-milestones, rather than prerequisites for accepting the design direction.
+milestones. This acceptance does not waive security, parity, supported-platform
+or release validation and does not commit to a shipping date.
 
 The filesystem-only argument-forwarding review finding is already addressed:
 trusted worker setup receives program arguments independently of the
-program-visible `env` grant. Following formal acceptance, merge the design
-record separately from implementation. Merging this document does not close #68.
+program-visible `env` grant. Merge this accepted design record separately from
+implementation after the required checks pass. Merging this document does not
+close #68.
 
 ### Recorded design decisions (2026-10-24)
 
@@ -101,8 +107,8 @@ record separately from implementation. Merging this document does not close #68.
    environment access and bound requests by the remaining run deadline.
 
 The detailed contracts and required regression cases are specified below.
-These decisions record the requested direction, not completed implementation,
-cross-platform validation or independent technical review.
+Acceptance records the design direction, not completed implementation,
+cross-platform validation or independent human technical review.
 
 ## Motivation
 
@@ -804,11 +810,10 @@ prototype anecdotes.
 
 ## Rollout And Observability
 
-Keep this proposal and its PR Draft. The design decisions above are recorded,
-but formal proposal acceptance and its review record remain pending. Recording
-those choices does not authorize marking the PR ready or merging it. After
-formal acceptance, assign a permanent proposal number and merge the design
-record separately from code. Acceptance or merging the document does not
+This proposal was accepted by David Iach on 2026-10-24 and assigned permanent
+number 0013. The project lead authorized marking PR #192 ready and merging
+the accepted design record once all required checks pass. Implementation stays
+in separate reviewed PRs, and acceptance or merging this document does not
 close #68.
 
 Implementation is planned for 0.7.0 or later through five small milestones,
@@ -847,7 +852,7 @@ shared budget enforcement also covers runs using the default grant and is
 documented as a compatibility change above. Each implementation PR adds its
 own changelog entry and scoped tests, then runs the applicable security,
 parity and release gates. No implementation or capability behavior changes
-are included in this draft PR.
+are included in this design-only PR.
 
 Follow-ups outside this proposal:
 - an issue for host callbacks in `--json` mode;
@@ -901,19 +906,24 @@ formal acceptance of the design.
   on the supported platforms.
 - **Release gates:** run the applicable security, parity and release checks
   for each implementation PR. Keep a capability refused until its gate passes.
-- **Formal acceptance:** the project lead must explicitly accept the proposal,
-  record the acceptance date and review received, and assign the next available
-  permanent number. Only then may the design record proceed through merge
-  checks separately from implementation. Target 0.7.0 or later remains tentative,
-  and #68 remains open until implementation and validation resolve it.
+- **Formal acceptance:** completed on 2026-10-24 by David Iach, project lead,
+  with permanent number 0013. Merge remains conditional on passing required
+  checks and is separate from implementation. Target 0.7.0 or later remains
+  tentative, and #68 remains open until implementation and validation resolve it.
 
 ### Review record (2026-10-24)
 
-The review received to date consists of Codex automated advisory review and
-focused documentation validation; the final automated design-review outcome
-and exact validation commands are recorded in the PR description. No
-independent human technical review is claimed. Automated review and CI are
-not independent human approval or proof of runtime safety.
+No independent human technical review took place. David Iach accepted the
+proposal using the existing sole-maintainer provision in `GOVERNANCE.md`.
+
+The review received consists of Codex automated advisory review and focused
+documentation validation. Two final automated reviewers checked the whole
+proposal and its runtime/security contracts. Windows newline-byte accounting
+and write-quota result semantics were clarified, then both reviewers reported
+no remaining actionable findings on the design published in `29d85ff`.
+The PR description records exact validation commands and results, including
+the acceptance/numbering checks. Automated review and CI are not independent
+human approval or proof of an implementation's runtime safety.
 
 The proposal has been open since 2026-10-16, satisfying the process's minimum
 seven-day public-review period. While Geno has one active maintainer,
@@ -922,6 +932,10 @@ if its absence and the review actually received are recorded. Independent
 human review remains desirable for this security boundary; see
 [#28](https://github.com/davidiach/geno-lang/issues/28).
 
-**Formal acceptance is pending.** This proposal and PR remain Draft until
-the project lead explicitly accepts it. Recording these decisions and running
-the final design review does not authorize changing that status or merging.
+**Formal acceptance is recorded.** On 2026-10-24, the project lead directed:
+
+> I formally accept PR #192. Record the acceptance and lack of independent human review, assign a permanent proposal number, and merge it once all required checks pass.
+
+This authorizes acceptance metadata, permanent numbering and merge after the
+required checks pass. It does not authorize bypassing checks or claim that the
+future capability implementations have been validated.
