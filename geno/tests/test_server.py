@@ -2319,13 +2319,19 @@ class TestWorkerStartupGrace:
         assert payload == {"ok": True}
 
     def test_execute_worker_reports_startup_timeout_separately(self):
+        # The supervisor must give up on the 0.05s startup grace before the
+        # worker's "ready" arrives. At the original 0.2s startup delay that
+        # left ~0.15s, which a loaded macOS runner missed: "ready" won and the
+        # run came back as "result". 1.0s leaves room to spare, and the
+        # cancelled worker returns immediately, so the passing path is no
+        # slower.
         with patch(
             "geno.server.multiprocessing.get_context",
             return_value=_ThreadContext(),
         ):
             status, payload = _execute_worker_with_wall_timeout(
                 _delayed_ready_worker,
-                (0.2, {"ok": True}),
+                (1.0, {"ok": True}),
                 wall_timeout=1.0,
                 startup_grace=0.05,
             )
