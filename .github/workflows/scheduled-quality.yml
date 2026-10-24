@@ -1,98 +1,126 @@
-name: Scheduled Quality
+name: Stable performance A/B diagnostic
 
 on:
-  schedule:
-    - cron: '17 3 * * 0'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: scheduled-quality-${{ github.ref }}
+  group: stable-performance-abba
   cancel-in-progress: false
 
 jobs:
-  deep-conformance-fuzz:
+  paired-diagnostic:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.11'
+    - name: Install runtime dependencies once
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -e "."
+    - name: Record fixed A-B-B-A measurements
+      run: |
+        cat > "$RUNNER_TEMP/geno-perf-abba-diagnostic.py" <<'PY'
+        import hashlib
+        import importlib.metadata
+        import json
+        import os
+        from pathlib import Path
+        import platform
+        import subprocess
+        import sys
+        import time
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.11'
+        root = Path(os.environ["GITHUB_WORKSPACE"])
+        out = Path(os.environ["RUNNER_TEMP"]) / "geno-perf-abba"
+        out.mkdir(parents=True, exist_ok=True)
+        baseline = "c71cfb779e0a221b45805c5db3234057f551ba61"
+        candidate = "6449724f2de38d3e58d667a548bffb605b76bbc6"
+        order = [("A1", baseline), ("B1", candidate), ("B2", candidate), ("A2", baseline)]
+        inputs = ["geno", "benchmarks", "scripts/check_perf_ratchets.py", "perf-budgets.toml", "pyproject.toml", "requirements.lock", ".github/workflows/scheduled-quality.yml"]
 
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '20'
+        def command(args):
+            return subprocess.check_output(args, cwd=root, text=True).strip()
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        def read_optional(path):
+            try:
+                return Path(path).read_text().strip()
+            except OSError as error:
+                return str(error)
 
-      - name: Run frozen conformance corpus
-        run: python scripts/run_conformance.py --all-retained --target all --require-node --json
+        def environment():
+            cpu = read_optional("/proc/cpuinfo")
+            model = next((line.split(":", 1)[1].strip() for line in cpu.splitlines() if line.startswith("model name")), "unavailable")
+            return {
+                "python": sys.version,
+                "executable": sys.executable,
+                "platform": platform.platform(),
+                "cpu_model": model,
+                "cpu_count": os.cpu_count(),
+                "cpu_max": read_optional("/sys/fs/cgroup/cpu.max"),
+                "cpu_stat": read_optional("/sys/fs/cgroup/cpu.stat"),
+                "proc_stat_cpu": read_optional("/proc/stat").splitlines()[0],
+                "loadavg": read_optional("/proc/loadavg"),
+                "pyyaml": importlib.metadata.version("PyYAML"),
+                "pip": importlib.metadata.version("pip"),
+            }
 
-      - name: Run deep differential fuzzing
-        env:
-          GENO_FUZZ_DEEP: '1'
-          GENO_FUZZ_REQUIRE_NODE: '1'
-        run: >-
-          python -m pytest geno/tests/test_differential_fuzzing.py
-          -q --tb=short --timeout=900
+        records = []
+        for label, sha in order:
+            subprocess.run(["git", "checkout", "--detach", sha], cwd=root, check=True)
+            actual = command(["git", "rev-parse", "HEAD"])
+            if actual != sha:
+                raise RuntimeError(f"Wrong source for {label}: {actual}")
+            tracked = command(["git", "ls-tree", "-r", "HEAD", "--", *inputs])
+            (out / f"{label}-tracked-inputs.txt").write_text(tracked + "\n", encoding="utf-8")
+            identity = json.loads(command([sys.executable, "-c", "import geno,json,sys; print(json.dumps({'file':geno.__file__,'version':geno.__version__,'executable':sys.executable}))"]))
+            if Path(identity["file"]).resolve() != (root / "geno" / "__init__.py").resolve():
+                raise RuntimeError(f"Unexpected imported package: {identity}")
+            before = environment()
+            started = time.time()
+            result = subprocess.run([sys.executable, "scripts/check_perf_ratchets.py", "--out", str(out / f"{label}.json")], cwd=root, text=True, capture_output=True)
+            after = environment()
+            (out / f"{label}.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+            measurement = json.loads((out / f"{label}.json").read_text()) if (out / f"{label}.json").exists() else None
+            record = {
+                "label": label, "source": sha, "exit_code": result.returncode,
+                "started_unix": started, "duration_seconds": time.time() - started,
+                "tracked_inputs_sha256": hashlib.sha256(tracked.encode()).hexdigest(),
+                "identity": identity, "before": before, "after": after,
+                "measurement": measurement,
+            }
+            records.append(record)
+            (out / f"{label}-record.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            print(f"DIAGNOSTIC {label} {sha} checker_exit={result.returncode}", flush=True)
+            print(result.stdout, flush=True)
 
-      - name: Retain minimized fuzz failures
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: scheduled-fuzz-failures-${{ github.run_id }}
-          path: |
-            .hypothesis/
-            geno/tests/fuzzing/failures/
-          if-no-files-found: warn
-          include-hidden-files: true
-          retention-days: 30
+        summary = {
+            "purpose": "Fixed A-B-B-A diagnostic only; not release qualification",
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "order": [label for label, _ in order],
+            "identical_tracked_inputs": len({record["tracked_inputs_sha256"] for record in records}) == 1,
+            "records": records,
+            "decision": "Retain all measurements; no automatic retry, budget change or release authorization.",
+        }
+        (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        print("All four diagnostic measurements retained. Individual failures are recorded, not waived.", flush=True)
+        if not summary["identical_tracked_inputs"]:
+            raise RuntimeError("Inputs differ; inspect the recorded trees before interpreting timings")
 
-  cli-latency-ratchet:
-    # Not on PR CI yet. The budgets in perf-budgets.toml were recorded on a
-    # developer machine, and the calibration in benchmarks/cli_latency.py only
-    # ever widens them, never tightens — so a hosted runner needs a few clean
-    # weekly runs before the numbers are trustworthy enough to gate merges on.
-    # Promote this to .github/workflows/ci.yml once they are, re-recording the
-    # baselines on the runner with `make perf-ratchets-update`.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e "."
-
-      # --out archives this run's numbers. Re-running the suite to capture them
-      # would measure something else: the suite is noisy, so a second run can
-      # disagree with the one that just failed, and it doubles the benchmark
-      # work for an artifact that then cannot explain the failure.
-      - name: Enforce performance budgets
-        run: python scripts/check_perf_ratchets.py --out cli-latency.json
-
-      - name: Upload the measurement
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: cli-latency-${{ github.run_id }}
-          path: cli-latency.json
-          if-no-files-found: warn
-          retention-days: 90
+        PY
+        python "$RUNNER_TEMP/geno-perf-abba-diagnostic.py"
+    - name: Preserve every measurement and environment record
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: stable-performance-abba
+        path: ${{ runner.temp }}/geno-perf-abba/
+        if-no-files-found: error
+        retention-days: 90
