@@ -5,7 +5,7 @@ Geno Type System
 Type representations used by the type checker.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -19,10 +19,15 @@ class GenoTypeError(Exception):
     The old name ``TypeError`` is kept as an alias for backward compatibility.
     """
 
-    def __init__(self, message: str, location: SourceLocation, error_code=None):
+    def __init__(
+        self, message: str, location: SourceLocation, error_code=None, fixes=()
+    ):
         self.message = message
         self.location = location
         self.error_code = error_code
+        # Edits that resolve the error, when the correction is unambiguous
+        # (geno.diagnostics.Fix).
+        self.fixes = tuple(fixes)
         super().__init__(f"{location}: Type Error: {message}")
 
 
@@ -186,6 +191,79 @@ class TypeVar(Type):
         return self.name
 
 
+# Built-in bounds a type parameter can declare, and what each one implies:
+# a `Num` is `Int` or `Float`, so it is ordered; every ordered type (`Int`,
+# `Float`, `String`) is hashable.
+BUILTIN_BOUNDS: dict[str, frozenset[str]] = {
+    "Num": frozenset({"Num", "Ord", "Hash"}),
+    "Ord": frozenset({"Ord", "Hash"}),
+    "Hash": frozenset({"Hash"}),
+}
+
+
+def close_bounds(bounds: "Iterable[str]") -> frozenset[str]:
+    """Add the built-in bounds that *bounds* imply."""
+    closed: set[str] = set()
+    for bound in bounds:
+        closed |= BUILTIN_BOUNDS.get(bound, frozenset({bound}))
+    return frozenset(closed)
+
+
+@dataclass(frozen=True)
+class TypeParam(Type):
+    """A generic function's type parameter, seen from inside that function.
+
+    Callers see ``func f[T](x: T) -> T`` as ``(T) -> T`` over a ``TypeVar``
+    they instantiate per call. The body sees ``T`` as this rigid type
+    instead: an opaque type equal only to itself, so the body cannot assume
+    anything about the values it receives beyond its *bounds* (built-in
+    bounds closed under implication, plus trait names).
+    """
+
+    name: str
+    bounds: frozenset[str] = frozenset()
+
+    def __str__(self) -> str:
+        return self.name
+
+    def has_bound(self, bound: str) -> bool:
+        return bound in self.bounds
+
+
+@dataclass(frozen=True)
+class GenericSignature:
+    """A generic function as its callers see it, for checking each use.
+
+    ``module`` is the defining module, or ``None`` for the module being
+    checked; ``bounds`` lists each type parameter's declared bounds.
+    """
+
+    module: str | None
+    name: str
+    type_params: tuple[str, ...]
+    bounds: tuple[tuple[str, ...], ...] = ()
+
+    def bounds_of(self, index: int) -> tuple[str, ...]:
+        return self.bounds[index] if index < len(self.bounds) else ()
+
+
+@dataclass(frozen=True)
+class GenericInstance:
+    """Which generic function a call or reference uses, and at which types.
+
+    The type checker attaches one to every call of a user-defined generic
+    function and every reference to one used as a value. ``module`` names the
+    module that defines the function, or is ``None`` for the module being
+    checked. ``type_args`` follow the function's type parameter order; an
+    argument no context determined is left as a ``TypeVar``.
+    """
+
+    module: str | None
+    name: str
+    type_params: tuple[str, ...]
+    type_args: tuple["Type", ...]
+
+
 @dataclass(frozen=True)
 class UserType(Type):
     """User-defined type."""
@@ -210,7 +288,7 @@ class AnyType(Type):
 
 @dataclass(frozen=True)
 class NeverType(Type):
-    """Bottom type for divergent expressions (throw, unreachable branches).
+    """Bottom type for divergent expressions (panic, unreachable branches).
 
     Assignable TO any type (a divergent expression can appear anywhere a
     value is expected), but no value can be assigned FROM NeverType.
@@ -319,6 +397,9 @@ class TypeEnv:
     captured_types: dict[str, Type] = field(default_factory=dict)
     captured_global_calls: set[str] = field(default_factory=set)
     captured_mutations: set[str] = field(default_factory=set)
+    # Where each local of this scope is bound, kept only for tools that ask
+    # the checker for ``binding_uses``.
+    binding_locations: dict[str, SourceLocation] | None = None
 
     def lookup(self, name: str) -> Type | None:
         """Look up a name in the environment."""

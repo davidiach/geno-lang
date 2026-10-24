@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 if TYPE_CHECKING:
     from .ast_nodes import (
         Expression,
         FunctionDef,
+        MatchArm,
         Parameter,
         Pattern,
         Statement,
@@ -27,10 +28,15 @@ if TYPE_CHECKING:
 class ParseError(Exception):
     """Exception raised for parsing errors."""
 
-    def __init__(self, message: str, location: SourceLocation, error_code=None):
+    def __init__(
+        self, message: str, location: SourceLocation, error_code=None, fixes=()
+    ):
         self.message = message
         self.location = location
         self.error_code = error_code
+        # Edits that resolve the error, when the correction is unambiguous
+        # (geno.diagnostics.Fix).
+        self.fixes = tuple(fixes)
         self.partial_program: object | None = (
             None  # Set by parse_program for LSP recovery
         )
@@ -53,6 +59,25 @@ class ParseErrors(Exception):
 
 
 T = TypeVar("T")
+
+
+# Geno 0.6 removed exceptions (proposal 0009). The keywords stay reserved so
+# that 0.5 code gets one error naming the replacement instead of a cascade.
+REMOVED_THROW = (
+    "'throw' was removed in Geno 0.6. Return Err(...) from a function that "
+    'returns Result, or call panic("...") for a bug'
+)
+REMOVED_TRY = (
+    "'try'/'catch' was removed in Geno 0.6. Call a function that returns "
+    "Result and handle Err with match, or pass it on with ?"
+)
+REMOVED_THROW_EFFECT = (
+    "The 'throw' effect was removed in Geno 0.6; delete it from the effect list"
+)
+
+
+# The keyword that must follow an `if` condition or a loop header.
+_CLAUSE_KEYWORDS = {TokenType.THEN: "then", TokenType.DO: "do"}
 
 
 class ParserBase:
@@ -82,6 +107,7 @@ class ParserBase:
         TokenType.GT: 1,
         TokenType.LTE: 1,
         TokenType.GTE: 1,
+        TokenType.IN: 1,
         TokenType.CARET: 2,
         TokenType.AMPERSAND: 3,
         TokenType.LSHIFT: 4,
@@ -100,6 +126,7 @@ class ParserBase:
         TokenType.GT: ">",
         TokenType.LTE: "<=",
         TokenType.GTE: ">=",
+        TokenType.IN: "in",
         TokenType.CARET: "^",
         TokenType.AMPERSAND: "&",
         TokenType.LSHIFT: "<<",
@@ -119,6 +146,7 @@ class ParserBase:
             TokenType.GT,
             TokenType.LTE,
             TokenType.GTE,
+            TokenType.IN,
         }
     )
     _RIGHT_ASSOCIATIVE_TOKENS = frozenset({TokenType.DOUBLESTAR})
@@ -131,13 +159,16 @@ class ParserBase:
         TokenType.AND: "and",
     }
 
-    def __init__(self, tokens: list[Token]):
+    def __init__(self, tokens: list[Token], source: str | None = None):
         """
         Initialize the parser.
 
         Args:
             tokens: List of tokens from the lexer (must end with EOF)
+            source: The text the tokens came from, when known; some errors
+                then carry a fix placed relative to it
         """
+        self._source_lines = source.split("\n") if source is not None else None
         self.tokens = tokens
         self._tokens_len = len(tokens)
         self.pos = 0
@@ -220,10 +251,124 @@ class ParserBase:
             return self._advance()
         if message is None:
             message = f"Expected {token_type_to_str(token_type)}, got {token_type_to_str(self._current().type)}"
+        fixes: tuple[Fix, ...] = ()
+        location = self._current().location
+        keyword = _CLAUSE_KEYWORDS.get(token_type)
+        if keyword is not None and self._ends_line_with_colon():
+            # Python's `if c:` / `for x in xs:`.
+            fixes = (
+                replace_fix(location, ":", f" {keyword}", f"Change ':' to '{keyword}'"),
+            )
+        elif (
+            keyword is not None
+            and self.pos > 0
+            and self._current().location.line > self.tokens[self.pos - 1].location.line
+        ):
+            # `if c` / `while c` / `for x in xs` missing its `then` or `do`:
+            # reported where it belongs, at the end of the line.
+            end = self._line_end(self.tokens[self.pos - 1].location.line)
+            if end is not None:
+                fixes = (insert_fix(f"Add '{keyword}'", [(end, f" {keyword}")]),)
+                location = end
         raise ParseError(
             message,
-            self._current().location,
+            location,
             ErrorCode.PARSE_EXPECTED_TOKEN,
+            fixes,
+        )
+
+    def _ends_line_with_colon(self) -> bool:
+        """The current token is a ``:`` that ends its line, as in Python."""
+        current = self._current()
+        following = self._peek(1)
+        return current.type is TokenType.COLON and (
+            following.type is TokenType.EOF
+            or following.location.line > current.location.line
+        )
+
+    def _reject_trailing_colon(self, keyword: str) -> None:
+        """``else:`` is Python; Geno's ``else`` ends the line on its own."""
+        if self._ends_line_with_colon():
+            raise ParseError(
+                f"Geno writes '{keyword}' with no ':'",
+                self._current().location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+                (replace_fix(self._current().location, ":", "", "Remove ':'"),),
+            )
+
+    def _expect_end(self, keyword: TokenType) -> None:
+        """Consume ``end <keyword>``, which closes a block.
+
+        A bare ``end`` (Ruby, Lua) is an error with a fix that names the
+        block, rather than a confusing one about the next line's first token.
+        """
+        end = self._expect(TokenType.END)
+        current = self._current()
+        if current.location.line == end.location.line and current.type is not (
+            TokenType.EOF
+        ):
+            self._expect(keyword)
+            return
+        word = token_type_to_str(keyword).strip("'")
+        after_end = SourceLocation(
+            end.location.line, end.location.column + 3, end.location.filename
+        )
+        raise ParseError(
+            f"Expected '{word}' after 'end': this block closes with 'end {word}'",
+            end.location,
+            ErrorCode.PARSE_EXPECTED_TOKEN,
+            (insert_fix(f"Write 'end {word}'", [(after_end, f" {word}")]),),
+        )
+
+    def _reject_let_mut(self, let_token: Token) -> None:
+        """`let mut x = ...` is Rust; Geno declares a mutable binding with `var`."""
+        current = self._current()
+        if not (
+            current.type is TokenType.IDENTIFIER
+            and current.value == "mut"
+            and self._peek(1).type is TokenType.IDENTIFIER
+        ):
+            return
+        start, mut = let_token.location, current.location
+        raise ParseError(
+            "Geno has no 'let mut'; declare a mutable variable with 'var'",
+            start,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            (
+                Fix(
+                    "Use 'var'",
+                    (
+                        TextEdit(
+                            start.line, start.column, mut.line, mut.column + 3, "var"
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def _line_end(self, line: int) -> SourceLocation | None:
+        """Where the code on ``line`` ends, before any trailing comment."""
+        if self._source_lines is None or not 0 < line <= len(self._source_lines):
+            return None
+        text = self._source_lines[line - 1]
+        in_string = False
+        end = len(text)
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                if char == "\\":
+                    index += 1
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif text.startswith("//", index):
+                end = index
+                break
+            index += 1
+        return SourceLocation(
+            line, len(text[:end].rstrip()) + 1, self._eof_token.location.filename
         )
 
     def _error(
@@ -246,6 +391,8 @@ class ParserBase:
         self._panic_mode = False
 
         while not self._check(TokenType.EOF):
+            # `end func` closes the definition that failed; stopping at its
+            # `func` would report "Expected function name" as a second error.
             if self._current().type in {
                 TokenType.FUNC,
                 TokenType.TYPE,
@@ -253,7 +400,9 @@ class ParserBase:
                 TokenType.TRAIT,
                 TokenType.IMPL,
                 TokenType.TEST,
-            }:
+            } and (
+                self.pos == 0 or self.tokens[self.pos - 1].type is not TokenType.END
+            ):
                 return
             self._advance()
 
@@ -273,30 +422,37 @@ class ParserBase:
     def _parse_pattern(self) -> Pattern:
         raise NotImplementedError
 
-    def _parse_parameter_list(self) -> list[Parameter]:
+    def _parse_arm_patterns(self) -> list[Pattern]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _or_pattern_arms(
+        patterns: list[Pattern],
+        guard: Expression | None,
+        body: list[Statement],
+        location: SourceLocation,
+    ) -> list[MatchArm]:
+        raise NotImplementedError
+
+    def _parse_parameter_list(
+        self, *, allow_inferred_types: bool = False
+    ) -> list[Parameter]:
         raise NotImplementedError
 
     def _parse_effect_list(self) -> list[str]:
-        """Parse a comma-separated list of effect names.
-
-        Effect names are typically identifiers (fs, io, http, etc.) but
-        'throw' is also valid and is a keyword token.
-        """
-        _EFFECT_TOKENS = (TokenType.IDENTIFIER, TokenType.THROW)
-
+        """Parse a comma-separated list of effect names."""
         effects: list[str] = []
-        tok = self._current()
-        if tok.type not in _EFFECT_TOKENS:
-            raise self._error("Expected effect name after 'with'")
-        self._advance()
-        effects.append(tok.value)
-        while self._match(TokenType.COMMA):
+        while True:
             tok = self._current()
-            if tok.type not in _EFFECT_TOKENS:
-                raise self._error("Expected effect name after ','")
+            if tok.type is TokenType.THROW:
+                raise self._error(REMOVED_THROW_EFFECT, ErrorCode.PARSE_REMOVED_SYNTAX)
+            if tok.type is not TokenType.IDENTIFIER:
+                after = "','" if effects else "'with'"
+                raise self._error(f"Expected effect name after {after}")
             self._advance()
             effects.append(tok.value)
-        return effects
+            if not self._match(TokenType.COMMA):
+                return effects
 
     def _parse_function_def(self, is_async: bool = False) -> FunctionDef:
         raise NotImplementedError

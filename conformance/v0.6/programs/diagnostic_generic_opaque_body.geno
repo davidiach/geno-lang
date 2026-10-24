@@ -1,0 +1,4 @@
+func double[T](x: T) -> T
+    example 1 -> 2
+    return x + x
+end func

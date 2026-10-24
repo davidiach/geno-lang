@@ -350,39 +350,6 @@ class TestCompileMatchADT:
 # ---------------------------------------------------------------------------
 
 
-class TestCompileTryCatch:
-    """Try/catch compilation with typed errors."""
-
-    def test_try_catch_string_error(self):
-        """throw string caught by String catch compiles."""
-        src = """
-        func main() -> String
-            try
-                throw "oops"
-            catch e: String
-                return e
-            end try
-            return "unreachable"
-        end func
-        """
-        assert compile_and_run(src) == "oops"
-
-    def test_try_catch_runtime_error(self):
-        """Runtime error (division by zero) caught by String catch compiles."""
-        src = """
-        func main() -> String
-            try
-                let x: Int = 1 / 0
-                return "ok"
-            catch e: String
-                return "caught"
-            end try
-            return "unreachable"
-        end func
-        """
-        assert compile_and_run(src) == "caught"
-
-
 # ---------------------------------------------------------------------------
 # List comprehension compilation  (lines 1148-1156)
 # ---------------------------------------------------------------------------
@@ -702,25 +669,6 @@ class TestCompileForLoop:
 class TestCompileCodeGenPaths:
     """Tests that verify compiler output via compile_to_python."""
 
-    def test_typed_catch_codegen(self):
-        """Typed catch generates _GenoThrow handler."""
-        src = """
-        type MyError = NotFound(msg: String)
-
-        func main() -> String
-            try
-                throw NotFound("missing")
-            catch e: MyError
-                match e with
-                | NotFound(m) -> return m
-                end match
-            end try
-            return "unreachable"
-        end func
-        """
-        code = compile_to_python(src)
-        assert "_GenoThrow" in code
-
     def test_field_assign_codegen(self):
         """Field assignment mutates frozen constructor dataclasses."""
         src = """
@@ -763,27 +711,6 @@ class TestCompileCodeGenPaths:
         """
         with pytest.raises(GenoTypeError, match="immutable variable: p"):
             compile_to_python(src)
-
-    def test_contract_failure_bypasses_string_catch(self):
-        """Compiled Python does not catch contract failures as String errors."""
-        src = """
-        @untested("contract repro")
-        func f(x: Int) -> Int
-            requires x > 0
-            return x
-        end func
-
-        func main() -> String
-            try
-                let y: Int = f(0)
-                return "not caught"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        with pytest.raises(RuntimeError, match="Precondition failed"):
-            compile_and_run(src)
 
     def test_async_main_codegen(self):
         """Async main generates asyncio.run."""
@@ -856,20 +783,6 @@ class TestCompileCodeGenPaths:
         """
         code = compile_to_python(src)
         assert ">" in code
-
-    def test_empty_catch_body_codegen(self):
-        """Empty catch body generates pass."""
-        src = """
-        func main() -> Int
-            try
-                let x: Int = 1 / 0
-            catch e: String
-            end try
-            return 0
-        end func
-        """
-        code = compile_to_python(src)
-        assert "pass" in code
 
     def test_while_loop_compiled(self):
         """While loop compiles and runs."""

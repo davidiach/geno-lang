@@ -1,0 +1,4 @@
+// Geno 0.6 removed square (proposal 0010): E302 names the replacement.
+func main() -> Unit
+    print(square(3))
+end func

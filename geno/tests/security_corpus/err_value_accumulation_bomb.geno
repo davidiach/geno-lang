@@ -1,0 +1,23 @@
+# EXPECT: E503
+# Build and inspect Err values in a tight loop, accumulating their
+# messages into a growing list.  Each iteration does f-string
+# interpolation, constructs an Err, matches it, and appends.  Tests
+# that step counting covers the Result construct/match/accumulate path
+# that replaced throw/catch in Geno 0.6.
+func check(i: Int) -> Result[Int, String]
+    example 1 -> Err("error-1")
+    return Err(f"error-{to_string(i)}")
+end func
+
+func main() -> Int
+    var messages: List[String] = []
+    var i: Int = 0
+    while i < 1000000 do
+        match check(i) with
+            | Ok(_) -> i = i + 1
+            | Err(e) -> messages = append(messages, e)
+        end match
+        i = i + 1
+    end while
+    return length(messages)
+end func

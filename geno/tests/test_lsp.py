@@ -186,15 +186,14 @@ class TestVirtualDocuments:
         )
 
         identifier = types.TextDocumentIdentifier(uri=uri)
-        assert (
-            hover(
-                types.HoverParams(
-                    text_document=identifier,
-                    position=types.Position(line=1, character=8),
-                )
+        typed = hover(
+            types.HoverParams(
+                text_document=identifier,
+                position=types.Position(line=1, character=8),
             )
-            is None
         )
+        assert typed is not None
+        assert "value: Int" in typed.contents.value
         assert (
             definition(
                 types.DefinitionParams(
@@ -2062,7 +2061,7 @@ class TestSemanticInvariants:
             types.RenameParams(
                 text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
                 position=types.Position(line=2, character=10),
-                new_name="count",
+                new_name="tally",
             )
         )
 
@@ -4181,7 +4180,7 @@ class TestSemanticInvariants:
             types.RenameParams(
                 text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
                 position=types.Position(line=2, character=11),
-                new_name="count",
+                new_name="tally",
             )
         )
 
@@ -4201,9 +4200,9 @@ class TestDocumentSyncDiagnostics:
         self, tmp_path, monkeypatch, kind, runnable
     ):
         source = (
-            "func widen(len: Int) -> Int\n"
+            "func widen(_safe_add: Int) -> Int\n"
             "  example 2 -> 4\n"
-            "  return len * 2\n"
+            "  return _safe_add * 2\n"
             "end func\n"
         )
         if runnable:
@@ -4221,7 +4220,7 @@ class TestDocumentSyncDiagnostics:
         uri = "untitled:Main.geno" if kind == "virtual" else main_file.as_uri()
         if kind != "virtual":
             # Check the unsaved buffer, even when the disk source is valid.
-            main_file.write_text(source.replace("len", "count"))
+            main_file.write_text(source.replace("_safe_add", "count"))
         server = create_server(diag_debounce_sec=0)
         server.lsp._workspace = Workspace(
             None, sync_kind=types.TextDocumentSyncKind.Full

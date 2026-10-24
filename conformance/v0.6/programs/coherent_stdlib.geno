@@ -1,0 +1,19 @@
+// Geno 0.6 standard library (proposal 0010): free calls resolve like method
+// calls, every collection has length(), Map is complete, index_of returns an
+// Option, and sort needs no comparator.
+func main() -> Unit
+    let maybe = Some(2)
+    print(map(maybe, fn(x) -> x * 10))
+    let ages = {"ada": 36, "alan": 41}
+    print(ages.length())
+    print(length(ages))
+    print(ages.contains_key("ada"))
+    print(ages.remove("ada"))
+    print(ages.keys())
+    print(ages.values())
+    print(set_from_list([1, 2, 2]).length())
+    print("hello".index_of("l"))
+    print("hello".index_of("z"))
+    print([3, 1, 2].sort())
+    print(["pear", "apple"].sort())
+end func

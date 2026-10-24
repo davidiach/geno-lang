@@ -1,0 +1,20 @@
+func apply[A, B](f: (A) -> B, x: A) -> B
+    example fn(v: Int) -> v + 1, 1 -> 2
+    return f(x)
+end func
+
+func main() -> Unit
+    let xs = [3, 1, 2]
+    print(xs.map(fn(x) -> x * 10).filter(fn(x) -> x > 10))
+    print(xs.fold(initial: 0, reducer: fn(acc, x) -> acc + x))
+    print(xs |> filter(_, fn(x) -> x > 1) |> fold(_, 0, fn(acc, x) -> acc + x))
+    print(apply(fn(x) -> x * 2, 21))
+    var total = 0
+    for x in xs do
+        total = total + x
+    end for
+    print(total)
+    print([x * x for x in xs if x > 1])
+    let (a, b) = (1, "two")
+    print(b + to_string(a))
+end func

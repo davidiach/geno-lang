@@ -35,7 +35,10 @@ from .capabilities import normalize_capability_values
 from .dependency_graph import DependencyGraphError
 from .diagnostics import Diagnostic, ErrorCode, Severity
 from .entrypoint import EntrypointResultKind, classify_entrypoint_result
-from .execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
+from .execution_limits import (
+    DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_MAX_RECURSION_DEPTH,
+)
 from .lexer import LexerError
 from .parser_base import ParseError, ParseErrors
 from .project_graph import ProjectGraphError
@@ -158,7 +161,7 @@ class RunConfig:
 
     timeout: float | None = 5.0
     max_steps: int | None = DEFAULT_INTERPRETER_MAX_STEPS
-    max_recursion_depth: int = 500
+    max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH
     max_output_length: int = 100_000
     max_collection_size: int = 10_000_000
     max_integer_bits: int = 33_219
@@ -346,6 +349,23 @@ class CheckResult:
     timing: Timing = field(default_factory=Timing)
 
 
+@dataclass
+class FixResult:
+    """
+    Result of geno.fix().
+
+    Attributes:
+        source: The source with every applied fix.
+        applied: How many fixes were applied.
+        check: The check of ``source``; ``check.ok`` says whether the fixes
+            resolved every error.
+    """
+
+    source: str
+    applied: int
+    check: CheckResult
+
+
 @dataclass(frozen=True)
 class ConstraintResult:
     """Result of geno.constrain_prefix()."""
@@ -377,6 +397,7 @@ def _make_diagnostic(exc, default_code: ErrorCode) -> Diagnostic:
         message=getattr(exc, "message", str(exc)),
         severity=Severity.ERROR,
         location=getattr(exc, "location", None),
+        fixes=tuple(getattr(exc, "fixes", ())),
     )
 
 
@@ -428,6 +449,7 @@ def _prefix_diagnostics_for_target(
             message=f"[{target}] {diag.message}",
             severity=diag.severity,
             location=diag.location,
+            fixes=diag.fixes,
         )
         for diag in diagnostics
     ]
@@ -449,6 +471,47 @@ def _module_filename(name: str, source: str) -> str:
     return f"<module:{name}>"
 
 
+_IMPORT_RE = re.compile(r"^\s*import\s+([A-Z][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def _with_stdlib_modules(
+    program: Program, modules: dict[str, str] | None
+) -> dict[str, str] | None:
+    """Add the standard-library modules *program* imports and *modules* lacks.
+
+    ``geno run`` and ``geno check`` resolve ``import List`` from ``geno/std``;
+    the embedding API does the same, so a program means the same thing in
+    both. Modules the caller supplies win over the standard library.
+    """
+    from .ast_nodes import ImportStatement
+
+    pending = [
+        defn.module_name
+        for defn in program.definitions
+        if isinstance(defn, ImportStatement)
+    ]
+    merged = dict(modules or {})
+    added = False
+    visited: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited or not _MODULE_NAME_RE.fullmatch(name):
+            continue
+        visited.add(name)
+        if name in merged:
+            # The caller's module wins, but its own imports still resolve.
+            source = merged[name]
+        else:
+            path = _STDLIB_DIR / f"{name}.geno"
+            if not path.is_file():
+                continue
+            source = path.read_text(encoding="utf-8")
+            merged[name] = source
+            added = True
+        pending.extend(_IMPORT_RE.findall(source))
+    return merged if added or modules is not None else None
+
+
 def _parse_modules(modules: dict[str, str]) -> dict[str, Program]:
     """Parse module source strings into Program ASTs.
 
@@ -468,7 +531,7 @@ def _parse_modules(modules: dict[str, str]) -> dict[str, Program]:
     for name, source in modules.items():
         lexer = Lexer(source, _module_filename(name, source))
         tokens = lexer.tokenize()
-        parser = Parser(tokens)
+        parser = Parser(tokens, source)
         parsed[name] = parser.parse_program()
     return parsed
 
@@ -665,7 +728,7 @@ def run(
     # --- Parse ---
     t_parse = time.perf_counter()
     try:
-        parser = Parser(tokens)
+        parser = Parser(tokens, source)
         program = parser.parse_program()
     except ParseErrors as e:
         _finalize_timing(timing, "parse_ms", t_parse, t0)
@@ -685,9 +748,10 @@ def run(
 
     # Parse module sources (if any)
     parsed_modules = None
-    if cfg.modules is not None:
+    module_sources = _with_stdlib_modules(program, cfg.modules)
+    if module_sources is not None:
         try:
-            parsed_modules = _parse_modules(cfg.modules)
+            parsed_modules = _parse_modules(module_sources)
         except ValueError as e:
             _finalize_timing(timing, "parse_ms", t_parse, t0)
             diagnostics.append(_make_config_diagnostic(str(e)))
@@ -849,7 +913,7 @@ def run(
 
     except RecursionError as e:
         # Host-language recursion limit can still be reached even with the
-        # interpreter's own depth check (e.g. effects + try/catch chains use
+        # interpreter's own depth check (e.g. effects and match chains use
         # extra Python frames). Convert to a Geno-level E502 rather than
         # letting the host RecursionError leak past the sandbox (issue #650).
         _finalize_timing(timing, "run_ms", t_run, t0)
@@ -1095,7 +1159,7 @@ def check(
     # --- Parse ---
     t_parse = time.perf_counter()
     try:
-        parser = Parser(tokens)
+        parser = Parser(tokens, source)
         program = parser.parse_program()
     except ParseErrors as e:
         _finalize_timing(timing, "parse_ms", t_parse, t0)
@@ -1109,9 +1173,10 @@ def check(
 
     # Parse module sources (if any)
     parsed_modules = None
-    if modules is not None:
+    module_sources = _with_stdlib_modules(program, modules)
+    if module_sources is not None:
         try:
-            parsed_modules = _parse_modules(modules)
+            parsed_modules = _parse_modules(module_sources)
         except ValueError as e:
             _finalize_timing(timing, "parse_ms", t_parse, t0)
             diagnostics.append(_make_config_diagnostic(str(e)))
@@ -1204,6 +1269,45 @@ def _redeclared_var_warnings(
             continue
         found.extend(find_redeclared_vars(module))
     return found
+
+
+def fix(
+    source: str,
+    filename: str = "<api>",
+    modules: dict[str, str] | None = None,
+    target: str | None = None,
+    *,
+    max_rounds: int = 10,
+) -> FixResult:
+    """
+    Apply the fixes that ``check`` reports until none is left.
+
+    Each round applies the first fix of every error in ``source``, skipping
+    one that overlaps a fix already taken, and checks again: a fixed parse
+    error can reveal a type error with a fix of its own. Errors in
+    ``modules`` are reported in the result but not fixed: their edits are
+    positions in another text. Stops after ``max_rounds`` rounds or when a
+    round changes nothing.
+    """
+    from .diagnostics import apply_fixes
+
+    applied = 0
+    result = check(source, filename, modules, target)
+    for _round in range(max_rounds):
+        fixes = [
+            diagnostic.fixes[0]
+            for diagnostic in result.diagnostics
+            if diagnostic.fixes
+            and diagnostic.severity is Severity.ERROR
+            and diagnostic.location is not None
+            and diagnostic.location.filename == filename
+        ]
+        fixed, count = apply_fixes(source, fixes)
+        if count == 0 or fixed == source:
+            break
+        source, applied = fixed, applied + count
+        result = check(source, filename, modules, target)
+    return FixResult(source=source, applied=applied, check=result)
 
 
 def check_path(
@@ -1352,6 +1456,29 @@ def _apply_capabilities(interp, capabilities: set[str] | None) -> None:
     interp.apply_capabilities(capabilities)
 
 
+# Builtins that return Result since Geno 0.6 (proposal 0009). A host callback
+# for one keeps the 0.5 contract: it returns the success value and raises on
+# failure, and the interpreter sees Ok(value) or Err(message).
+_RESULT_HOST_CALLBACKS = frozenset(
+    {"fs_read_text", "fs_write_text", "http_fetch", "http_post"}
+)
+
+
+def _result_host_callback(callback: Callable) -> Callable:
+    from .values import ConstructorValue
+
+    def call(*args: Any) -> Any:
+        try:
+            value = callback(*args)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        if isinstance(value, ConstructorValue) and value.constructor in {"Ok", "Err"}:
+            return value
+        return ConstructorValue("Ok", {"value": value})
+
+    return call
+
+
 def _install_host_callbacks(
     interp, host_callbacks: dict[str, Callable], capabilities: set[str] | None
 ) -> None:
@@ -1384,7 +1511,11 @@ def _install_host_callbacks(
         if isinstance(current, BuiltinFunction):
             env.bindings[name] = BuiltinFunction(
                 name=current.name,
-                func=callback,
+                func=(
+                    _result_host_callback(callback)
+                    if name in _RESULT_HOST_CALLBACKS
+                    else callback
+                ),
                 arity=current.arity,
                 param_names=current.param_names,
             )

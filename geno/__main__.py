@@ -38,6 +38,7 @@ from .cli._util import (
 )
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
@@ -50,9 +51,11 @@ from .execution_limits import (
 # re-exports for existing callers (tests, scripts).
 _LAZY_REEXPORTS = {
     "format_files": "geno._cli_format",
+    "migrate_files": "geno.cli.migrate",
     "build_app": "geno.cli.build",
     "bundle_project": "geno.cli.build",
     "check_file": "geno.cli.check",
+    "fix_file": "geno.cli.check",
     "compile_file": "geno.cli.compile",
     "constrain_cli": "geno.cli.constrain",
     "_resolve_doc_modules": "geno.cli.docs",
@@ -172,8 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-recursion-depth",
         type=_positive_int_arg,
-        default=500,
-        help="Maximum Geno call depth (default: 500)",
+        default=DEFAULT_MAX_RECURSION_DEPTH,
+        help=f"Maximum Geno call depth (default: {DEFAULT_MAX_RECURSION_DEPTH})",
     )
     run_parser.add_argument(
         "--max-output-length",
@@ -278,6 +281,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         choices=["python-cli", "node-cli", "browser", "python-hosted"],
         help="Target platform for availability and backend validation",
+    )
+    check_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Apply the unambiguous fixes the diagnostics carry, then check",
     )
 
     # Constraints command
@@ -422,6 +430,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--diff",
         action="store_true",
         help="Show diff without modifying files",
+    )
+
+    # Migrate command
+    migrate_parser = subparsers.add_parser(
+        "migrate", help="Rewrite Geno 0.5 source for Geno 0.6"
+    )
+    migrate_parser.add_argument(
+        "path", nargs="?", default=".", help="File or directory (default: .)"
+    )
+    migrate_mode = migrate_parser.add_mutually_exclusive_group()
+    migrate_mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Report without modifying (exit 1 if anything needs migrating)",
+    )
+    migrate_mode.add_argument(
+        "--diff",
+        action="store_true",
+        help="Show the rewrites as a diff without modifying files",
     )
 
     # Package manager commands
@@ -648,8 +675,12 @@ def dispatch_args(
             source_map=args.source_map,
         )
     elif args.command == "check":
-        check_file = _command("check_file")
-        check_file(args.file, target=getattr(args, "target", None))
+        if getattr(args, "fix", False):
+            fix_file = _command("fix_file")
+            fix_file(args.file, target=getattr(args, "target", None))
+        else:
+            check_file = _command("check_file")
+            check_file(args.file, target=getattr(args, "target", None))
     elif args.command == "constrain":
         constrain_cli = _command("constrain_cli")
         constrain_cli(
@@ -679,6 +710,9 @@ def dispatch_args(
     elif args.command == "fmt":
         format_files = _command("format_files")
         format_files(args.path, check=args.check, diff=args.diff)
+    elif args.command == "migrate":
+        migrate_files = _command("migrate_files")
+        migrate_files(args.path, check=args.check, diff=args.diff)
     elif args.command == "dev":
         dev_server = _command("dev_server")
         dev_server(

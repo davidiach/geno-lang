@@ -22,10 +22,14 @@ from .ast_nodes import (
     FunctionCall,
     Identifier,
     IndexAccess,
+    InferredType,
     IntegerLiteral,
     LambdaExpr,
     ListComprehension,
     ListLiteral,
+    LiteralPattern,
+    MapEntry,
+    MapLiteral,
     MatchArm,
     MatchExpr,
     Pipeline,
@@ -35,15 +39,16 @@ from .ast_nodes import (
     ReturnStatement,
     Statement,
     StringLiteral,
-    ThrowExpression,
     TupleExpr,
+    TypeAnnotation,
     TypedHole,
     TypeIdentifier,
     UnaryOp,
     WithExpr,
 )
+from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
 from .lexer import Lexer, LexerError
-from .parser_base import ParseError, ParserBase
+from .parser_base import REMOVED_THROW, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType, token_type_to_str
 
 
@@ -121,8 +126,13 @@ class ExpressionParserMixin(ParserBase):
         func = self._parse_primary()
         while self._current_type is TokenType.DOT:
             self._advance()
-            field = self._expect(TokenType.IDENTIFIER).value
-            func = FieldAccess(location=func.location, target=func, field_name=field)
+            name = self._expect(TokenType.IDENTIFIER)
+            func = FieldAccess(
+                location=func.location,
+                target=func,
+                field_name=name.value,
+                name_location=name.location,
+            )
         return func
 
     def _parse_pipeline_arg(self) -> Expression:
@@ -184,6 +194,29 @@ class ExpressionParserMixin(ParserBase):
         while True:
             current_type = self._current_type
             precedence = precedence_map.get(current_type)
+            if (
+                precedence is None
+                and current_type is TokenType.NOT
+                and min_precedence <= precedence_map[TokenType.IN]
+                and self._peek(1).type is TokenType.IN
+            ):
+                # `x not in c` is `not (x in c)`.
+                location = left.location
+                self._advance()
+                self._advance()
+                right = self._parse_nested_infix_expr(precedence_map[TokenType.IN] + 1)
+                if self._current_type in comparison_tokens:
+                    raise self._error(
+                        "Comparison chaining is not supported; "
+                        "write 'a < b and b < c' instead"
+                    )
+                return UnaryOp(
+                    location=location,
+                    operator="not",
+                    operand=BinaryOp(
+                        location=location, operator="in", left=left, right=right
+                    ),
+                )
             if precedence is None or precedence < min_precedence:
                 return left
 
@@ -327,10 +360,28 @@ class ExpressionParserMixin(ParserBase):
                 expr = IndexAccess(location=expr.location, target=expr, index=index)
             elif current_type is TokenType.DOT:
                 self._advance()
+                if self._check(TokenType.INTEGER):
+                    # Tuple field: pair.0 is the index access pair[0].
+                    index_token = self._advance()
+                    expr = IndexAccess(
+                        location=expr.location,
+                        target=expr,
+                        index=IntegerLiteral(
+                            location=index_token.location, value=index_token.value
+                        ),
+                    )
+                    continue
+                if self._check(TokenType.FLOAT):
+                    raise self._error(
+                        "Write a nested tuple field with parentheses, as in (t.0).1"
+                    )
                 # Field access
-                field = self._expect(TokenType.IDENTIFIER).value
+                name = self._expect(TokenType.IDENTIFIER)
                 expr = FieldAccess(
-                    location=expr.location, target=expr, field_name=field
+                    location=expr.location,
+                    target=expr,
+                    field_name=name.value,
+                    name_location=name.location,
                 )
             elif current_type is TokenType.QUESTION:
                 self._advance()
@@ -444,6 +495,50 @@ class ExpressionParserMixin(ParserBase):
             )
         return expr
 
+    def _reject_python_lambda(self) -> None:
+        """``lambda x, y: body`` is Python; Geno writes ``fn(x, y) -> body``.
+
+        Only with a parameter: ``lambda:`` alone could be a map key named
+        ``lambda``, but a name followed by a name is never Geno.
+        """
+        start = self._current().location
+        names: list[str] = []
+        offset = 1
+        while True:
+            token = self._peek(offset)
+            if token.location.line != start.line:
+                return
+            if token.type is TokenType.COLON:
+                if not names:
+                    return
+                break
+            if token.type is not TokenType.IDENTIFIER:
+                return
+            names.append(token.value)
+            offset += 1
+            if self._peek(offset).type is TokenType.COMMA:
+                offset += 1
+        colon = self._peek(offset).location
+        raise ParseError(
+            "Geno writes a lambda as 'fn(x) -> body', not 'lambda x: body'",
+            start,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            (
+                Fix(
+                    f"Write 'fn({', '.join(names)}) ->'",
+                    (
+                        TextEdit(
+                            start.line,
+                            start.column,
+                            colon.line,
+                            colon.column + 1,
+                            f"fn({', '.join(names)}) ->",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
     def _parse_primary(self) -> Expression:
         """Parse primary expression (literals, identifiers, grouping)."""
         current = self._current()
@@ -451,6 +546,8 @@ class ExpressionParserMixin(ParserBase):
         location = current.location
 
         if current_type is TokenType.IDENTIFIER:
+            if current.value == "lambda":
+                self._reject_python_lambda()
             return Identifier(location=location, name=self._advance().value)
 
         if current_type is TokenType.TYPE_IDENTIFIER:
@@ -505,11 +602,8 @@ class ExpressionParserMixin(ParserBase):
             self._advance()
             return BooleanLiteral(location=location, value=False)
 
-        # throw expression
         if current_type is TokenType.THROW:
-            self._advance()
-            value = self._parse_expression()
-            return ThrowExpression(location=location, value=value)
+            raise self._error(REMOVED_THROW, ErrorCode.PARSE_REMOVED_SYNTAX)
 
         # await expression
         if current_type is TokenType.AWAIT:
@@ -518,6 +612,9 @@ class ExpressionParserMixin(ParserBase):
             return AwaitExpr(location=location, expr=expr)
 
         # List literal or list comprehension
+        if current_type is TokenType.LBRACE:
+            return self._parse_map_literal()
+
         if current_type is TokenType.LBRACKET:
             self._advance()
             if self._current_type is TokenType.RBRACKET:
@@ -529,11 +626,15 @@ class ExpressionParserMixin(ParserBase):
             # Check for list comprehension: [expr for var: Type in iterable]
             if self._current_type is TokenType.FOR:
                 self._advance()  # consume 'for'
-                variable = self._expect(
+                variable_token = self._expect(
                     TokenType.IDENTIFIER, "Expected variable name"
-                ).value
-                self._expect(TokenType.COLON)
-                var_type = self._parse_type()
+                )
+                variable = variable_token.value
+                var_type: TypeAnnotation = InferredType(
+                    location=variable_token.location
+                )
+                if self._match(TokenType.COLON):
+                    var_type = self._parse_type()
                 self._expect(TokenType.IN)
                 iterable = self._parse_expression()
                 condition = None
@@ -562,7 +663,7 @@ class ExpressionParserMixin(ParserBase):
         if current_type is TokenType.FN:
             self._advance()
             self._expect(TokenType.LPAREN)
-            params = self._parse_parameter_list()
+            params = self._parse_parameter_list(allow_inferred_types=True)
             self._expect(TokenType.RPAREN)
             return_type = None
 
@@ -570,8 +671,7 @@ class ExpressionParserMixin(ParserBase):
                 self._advance()
                 # Block lambda: fn(params) do ... end fn
                 block_body = self._parse_statement_list()
-                self._expect(TokenType.END)
-                self._expect(TokenType.FN)
+                self._expect_end(TokenType.FN)
                 return LambdaExpr(
                     location=location,
                     params=params,
@@ -607,6 +707,9 @@ class ExpressionParserMixin(ParserBase):
             )
 
         # Match expression (inline): match expr with ... end match
+        if current_type is TokenType.IF:
+            return self._parse_if_expression()
+
         if current_type is TokenType.MATCH:
             return self._parse_match_expression()
 
@@ -637,10 +740,83 @@ class ExpressionParserMixin(ParserBase):
                 self._expect(TokenType.RPAREN)
                 return first
 
+        current = self._current()
+        previous = self.tokens[self.pos - 1] if self.pos > 0 else None
+        if (
+            current.type is TokenType.PLUS
+            and previous is not None
+            and previous.type is TokenType.PLUS
+            and previous.location.line == current.location.line
+            and previous.location.column + 1 == current.location.column
+        ):
+            raise ParseError(
+                "Geno concatenates with '+'; '++' is not an operator",
+                previous.location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+                (replace_fix(previous.location, "++", "+"),),
+            )
         raise self._error(
             f"Expected expression (e.g., a value, variable, or function call), "
             f"got {token_type_to_str(self._current().type)}"
         )
+
+    def _parse_map_literal(self) -> MapLiteral:
+        """Parse `{key: value, ...}`; `{}` is the empty map."""
+        location = self._current().location
+        self._expect(TokenType.LBRACE)
+        entries: list[MapEntry] = []
+        while not self._check(TokenType.RBRACE):
+            key = self._parse_expression()
+            self._expect(
+                TokenType.COLON, "Expected ':' between a map key and its value"
+            )
+            value = self._parse_expression()
+            entries.append(MapEntry(key=key, value=value))
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.RBRACE, "Expected ',' or '}' in a map literal")
+        return MapLiteral(location=location, entries=entries)
+
+    def _parse_if_expression(self) -> MatchExpr:
+        """Parse `if c then a else if d then b else e end if` as a value.
+
+        It is the match `match c with | true -> a | false -> ... end match`,
+        which every later pass and backend already handles.
+        """
+        expr = self._parse_if_expression_chain()
+        self._expect_end(TokenType.IF)
+        return expr
+
+    def _parse_if_expression_chain(self) -> MatchExpr:
+        location = self._current().location
+        self._expect(TokenType.IF)
+        condition = self._parse_expression()
+        self._expect(TokenType.THEN)
+        then_value = self._parse_expression()
+        if not self._match(TokenType.ELSE):
+            raise self._error(
+                "An if expression needs an else branch, because it must produce "
+                "a value: if condition then a else b end if"
+            )
+        if self._check(TokenType.IF):
+            else_value: Expression = self._parse_if_expression_chain()
+        else:
+            else_value = self._parse_expression()
+        arms = [
+            MatchArm(
+                pattern=LiteralPattern(location=then_value.location, value=True),
+                body=[ReturnStatement(location=then_value.location, value=then_value)],
+                location=then_value.location,
+            ),
+            MatchArm(
+                pattern=LiteralPattern(location=else_value.location, value=False),
+                body=[ReturnStatement(location=else_value.location, value=else_value)],
+                location=else_value.location,
+            ),
+        ]
+        expr = MatchExpr(location=location, scrutinee=condition, arms=arms)
+        expr.from_if = True
+        return expr
 
     def _parse_match_expression(self) -> MatchExpr:
         """Parse inline match expression."""
@@ -652,7 +828,7 @@ class ExpressionParserMixin(ParserBase):
         arms: list[MatchArm] = []
         while self._match(TokenType.BAR):
             arm_location = self._current().location
-            pattern = self._parse_pattern()
+            patterns = self._parse_arm_patterns()
             guard = None
             if self._check(TokenType.IDENTIFIER) and self._current().value == "when":
                 self._advance()  # consume 'when'
@@ -663,16 +839,13 @@ class ExpressionParserMixin(ParserBase):
             body: list[Statement] = [
                 ReturnStatement(location=body_expr.location, value=body_expr)
             ]
-            arms.append(
-                MatchArm(pattern=pattern, body=body, location=arm_location, guard=guard)
-            )
+            arms.extend(self._or_pattern_arms(patterns, guard, body, arm_location))
 
         if not arms:
             raise self._error(
                 "Match must have at least one arm (each arm starts with '|')"
             )
 
-        self._expect(TokenType.END)
-        self._expect(TokenType.MATCH)
+        self._expect_end(TokenType.MATCH)
 
         return MatchExpr(location=location, scrutinee=scrutinee, arms=arms)

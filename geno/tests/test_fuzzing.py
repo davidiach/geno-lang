@@ -343,7 +343,7 @@ class TestHostCallbackFuzzing:
         """Host callbacks returning arbitrary strings should not crash."""
         source = """
 func main() -> String
-    return fs_read_text(path: "/test")
+    return fs_read_text(path: "/test").unwrap()
 end func
 """
 
@@ -487,29 +487,6 @@ func check_val() -> Int
         var count: Int = count - 1
     end while
     return count
-end func
-"""
-        lexer = Lexer(source, "<fuzz>")
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        program = parser.parse_program()
-        assert program is not None
-
-    @given(
-        st.integers(min_value=-100, max_value=100),
-        st.integers(min_value=-100, max_value=100),
-    )
-    @settings(max_examples=30, deadline=None)
-    def test_try_catch(self, a, b):
-        """Parser handles try/catch blocks."""
-        source = f"""
-func check_val() -> Int
-    example 0 -> 0
-    try
-        return {a} + {b}
-    catch err: String
-        return 0
-    end try
 end func
 """
         lexer = Lexer(source, "<fuzz>")

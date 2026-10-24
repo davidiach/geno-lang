@@ -96,8 +96,8 @@ func average(values: List[Int]) -> Int
     match length(values) with
         | 0 -> return 0
         | n ->
-        let total: Int = fold(list: values, initial: 0, reducer: fn(a: Int, b: Int) -> a + b)
-        return total / n
+            let total: Int = fold(list: values, initial: 0, reducer: fn(a: Int, b: Int) -> a + b)
+            return total / n
     end match
 end func
 

@@ -100,7 +100,8 @@ python3 -m geno compile examples/fibonacci.geno --target js -o out.js
 - **Examples**: every function needs `example` clauses (except `main`, async, app lifecycle)
 - **Zero-arg examples**: `example () -> value`
 - **Keyword conflicts**: `end`, `in`, `with`, `type` are reserved - do not use them as parameter names
-- **Block terminators**: `end func`, `end if`, `end for`, `end while`, `end match`, `end try`
+- **Block terminators**: `end func`, `end if`, `end for`, `end while`, `end match`
+- **Errors**: return `Result[T, E]` and propagate with `?`; call `panic("...")` for bugs. `throw`/`try`/`catch` were removed in 0.6
 - **`then`** required after `if` condition; **`do`** required after `for`/`while`
 - **Integer division** truncates: `7 / 2 = 3`
 - **Naming**: PascalCase for types/constructors, snake_case for functions/variables

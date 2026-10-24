@@ -55,9 +55,9 @@ end func
 
 // Read markdown input: from a file if a path is given, or sample data.
 @untested("uses fs_read_text capability")
-func read_input(args: List[String]) -> String
+func read_input(args: List[String]) -> Result[String, String]
     if length(args) == 0 then
-        return sample_markdown()
+        return Ok(sample_markdown())
     end if
     return fs_read_text(args[0])
 end func
@@ -106,12 +106,15 @@ func main() -> Int
         end if
     end if
 
-    let input: String = read_input(args)
-    let mode: OutputMode = detect_mode(args)
-    let result: ConvertResult = convert_with_mode(input, mode)
-
-    print(result.html)
-    print("")
-    print("<!-- " + format_summary(result) + " -->")
-    return 0
+    match read_input(args) with
+        | Err(message) ->
+            print("Error: cannot read input: " + message)
+            return 1
+        | Ok(input) ->
+            let result: ConvertResult = convert_with_mode(input, detect_mode(args))
+            print(result.html)
+            print("")
+            print("<!-- " + format_summary(result) + " -->")
+            return 0
+    end match
 end func

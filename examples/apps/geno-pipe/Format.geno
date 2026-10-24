@@ -43,7 +43,7 @@ func pad(text: String, width: Int) -> String
     if padding <= 0 then
         return text
     end if
-    return text + repeat_string(" ", padding)
+    return text + string_repeat(" ", padding)
 end func
 
 // Get max width for a column across all rows.
@@ -83,7 +83,7 @@ func format_table(table: Table) -> String
     let header_line: String = join(header_padded, " | ")
 
     // Separator
-    let sep_parts: List[String] = map(widths, fn(w: Int) -> repeat_string("-", w))
+    let sep_parts: List[String] = map(widths, fn(w: Int) -> string_repeat("-", w))
     let sep_line: String = join(sep_parts, "-+-")
 
     // Data rows

@@ -230,14 +230,6 @@ func outer() -> Int
         assert get_unclosed_blocks("impl Show for Point\n") == ["impl"]
         assert get_unclosed_blocks('test "math"\n') == ["test"]
 
-    def test_try_blocks_are_tracked_inside_functions(self):
-        """try/catch blocks should be tracked like parser statements."""
-        source = """
-func main() -> Int
-    try
-"""
-        assert get_unclosed_blocks(source) == ["try", "func"]
-
     def test_impl_header_for_does_not_start_loop_block(self):
         """The `for` in `impl Trait for Type` is not a for-loop starter."""
         unclosed = get_unclosed_blocks("impl Show for Point\n")

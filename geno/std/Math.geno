@@ -1,26 +1,26 @@
-func abs(x: Int) -> Int
+func abs[T: Num](x: T) -> T
     example 5 -> 5
     example -3 -> 3
-    example 0 -> 0
+    example -2.5 -> 2.5
     return math_abs(x)
 end func
 
-func min(a: Int, b: Int) -> Int
+func min[T: Num](a: T, b: T) -> T
     example 3, 7 -> 3
-    example 10, 2 -> 2
+    example 2.5, 1.5 -> 1.5
     return math_min(a, b)
 end func
 
-func max(a: Int, b: Int) -> Int
+func max[T: Num](a: T, b: T) -> T
     example 3, 7 -> 7
-    example 10, 2 -> 10
+    example 2.5, 1.5 -> 2.5
     return math_max(a, b)
 end func
 
-func clamp(value: Int, lo: Int, hi: Int) -> Int
+func clamp[T: Num](value: T, lo: T, hi: T) -> T
     example 5, 0, 10 -> 5
     example -3, 0, 10 -> 0
-    example 15, 0, 10 -> 10
+    example 1.5, 0.0, 1.0 -> 1.0
     return math_clamp(value: value, lo: lo, hi: hi)
 end func
 

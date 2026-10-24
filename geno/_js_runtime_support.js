@@ -917,6 +917,8 @@ function _safe_add(a, b) {
             + _toSafeJsBigInt(b, "Addition operand");
         return _fromSafeJsBigInt(result, "Addition result");
     }
+    // List + List concatenates; JavaScript's own + would join them as text.
+    if (Array.isArray(a) && Array.isArray(b)) return concat(a, b);
     const result = a + b;
     if (typeof result === 'string' || Array.isArray(result)) _checkCollectionSize(result);
     return result;
@@ -1154,6 +1156,19 @@ function contains(lst, item) {
     return false;
 }
 
+// `element in container`, the operands evaluated in source order. `member` is
+// the builtin the checker chose; unchecked code dispatches on the container.
+function _geno_in(element, container, member) {
+    if (member === undefined) {
+        if (typeof container === 'string') member = string_contains;
+        else if (Array.isArray(container)) member = contains;
+        else if (container instanceof GenoSet) member = set_contains;
+        else if (container instanceof GenoMutableMap) member = mutable_map_contains;
+        else member = map_contains_key;
+    }
+    return member(container, element);
+}
+
 function reverse(lst) {
     return [...lst].reverse();
 }
@@ -1164,13 +1179,15 @@ function bit_or(a, b) {
 
 function range_(...args) {
     let start, end, step;
-    if (args.length === 2) {
+    if (args.length === 1) {
+        [start, end, step] = [0, args[0], 1];
+    } else if (args.length === 2) {
         [start, end] = args;
         step = 1;
     } else if (args.length === 3) {
         [start, end, step] = args;
     } else {
-        throw new Error(`range expects 2 or 3 arguments, got ${args.length}`);
+        throw new Error(`range expects 1 to 3 arguments, got ${args.length}`);
     }
     _requireInt("range", start, "start");
     _requireInt("range", end, "end");
@@ -1205,6 +1222,7 @@ function all_(lst, pred) {
 }
 
 function sort(lst, cmp) {
+    if (cmp === undefined) cmp = _compareGenoValues;
     const indexed = lst.map((x, i) => [x, i]);
     indexed.sort((a, b) => {
         const c = cmp(a[0], b[0]);
@@ -1256,12 +1274,6 @@ function to_chars(s) {
     const result = [...s];
     _checkCollectionSize(result);
     return result;
-}
-
-function sort_strings(values) {
-    if (values.length > 100000) throw new Error("sort_strings: list too large");
-    if (!values.every(v => typeof v === 'string')) throw new Error("sort_strings expects a list of strings");
-    return [...values].sort(_comparePythonStrings);
 }
 
 function split_once(s, sep) {
@@ -1332,8 +1344,57 @@ function _roundNearest(x, context) {
 function round_(x) { return _roundNearest(x, "round result"); }
 
 function max_(a, b) { return a >= b ? a : b; }
+function min_(a, b) { return a <= b ? a : b; }
+function sum(lst) {
+    let total = 0;
+    for (const x of lst) total = _safe_add(total, x);
+    return total;
+}
+function float_sum(lst) {
+    let total = 0.0;
+    for (const x of lst) total += x;
+    return total;
+}
+function _listExtreme(lst, sign) {
+    if (lst.length === 0) return None_;
+    let best = lst[0];
+    for (const x of lst) {
+        if (sign * _compareGenoValues(x, best) < 0) best = x;
+    }
+    return Some(best);
+}
+function list_min(lst) { return _listExtreme(lst, 1); }
+function list_max(lst) { return _listExtreme(lst, -1); }
+function is_empty(lst) { return lst.length === 0; }
+function list_index_of(lst, item) {
+    for (let i = 0; i < lst.length; i++) {
+        if (_valuesEqual(lst[i], item)) return Some(i);
+    }
+    return None_;
+}
+function count(lst, pred) {
+    let n = 0;
+    for (const x of lst) if (pred(x)) n += 1;
+    return n;
+}
+function unique(lst) {
+    // Geno equality decides; a key string would merge distinct maps and
+    // functions. Numbers, strings and booleans are equal exactly when ===.
+    const seen = new _GENO_SET();
+    const result = [];
+    for (const x of lst) {
+        const kind = typeof x;
+        if (kind === 'number' || kind === 'string' || kind === 'boolean') {
+            if (seen.has(x)) continue;
+            seen.add(x);
+        } else if (result.some(y => _valuesEqual(x, y))) {
+            continue;
+        }
+        result.push(x);
+    }
+    return result;
+}
 function abs_(x) { return _GENO_MATH.abs(x); }
-function square(x) { return _safe_mul(x, x); }
 function add(a, b) { return _safe_add(a, b); }
 function subtract(a, b) { return _safe_sub(a, b); }
 function multiply(a, b) { return _safe_mul(a, b); }
@@ -1389,8 +1450,9 @@ function int_to_float(x) { return x; }
 class _PropagateReturn {
     constructor(value) { this.value = value; }
 }
-class _GenoThrow {
-    constructor(value) { this.value = value; }
+// End the program with `message`: Geno code cannot recover from a panic.
+function _genoPanic(message) {
+    throw new Error(message);
 }
 class _GenoContractViolation extends Error {
     constructor(message) {
@@ -1414,6 +1476,10 @@ function unwrap(opt) {
     throw new Error("unwrap called on None");
 }
 
+function panic(message) {
+    throw new Error(message);
+}
+
 function unwrap_or(opt, def) {
     if (isConstructor(opt) && opt._tag === 'Some') return opt.value;
     return def;
@@ -1430,6 +1496,37 @@ function map_insert(m, key, value) {
     const result = _mapClone(m);
     _mapSet(result, key, value);
     return result;
+}
+
+function map_size(m) {
+    return m.size;
+}
+
+function map_is_empty(m) { return m.size === 0; }
+
+function map_get_or(m, key, fallback) {
+    const value = _mapGetValue(m, key);
+    return value === _MAP_MISSING ? fallback : value;
+}
+
+function map_contains_key(m, key) {
+    return _mapFindKey(m, key) !== _MAP_MISSING;
+}
+
+function map_remove(m, key) {
+    const result = _mapClone(m);
+    _mapDelete(result, key);
+    return result;
+}
+
+function map_keys(m) {
+    _checkCollectionKind("List", m.size);
+    return Array.from(m.keys());
+}
+
+function map_values(m) {
+    _checkCollectionKind("List", m.size);
+    return Array.from(m.values());
 }
 
 function map_get(m, key) {
@@ -1478,36 +1575,6 @@ function random_float() {
 // =============================================================================
 // Predicates
 // =============================================================================
-
-function is_sorted(lst) {
-    for (let i = 0; i < lst.length - 1; i++) {
-        if (lst[i] > lst[i + 1]) return false;
-    }
-    return true;
-}
-
-function is_positive(x) { return x > 0; }
-
-function is_numeric_string(s) {
-    if (typeof s !== 'string') return false;
-    return _isDecimalIntString(s);
-}
-
-function is_permutation(lst1, lst2) {
-    if (lst1.length > 100000 || lst2.length > 100000) {
-        throw new Error("is_permutation: list too large (max 100,000 elements)");
-    }
-    if (lst1.length !== lst2.length) return false;
-
-    // Canonical structural sort keys turn the previous O(n^2) unmatched scan
-    // into O(n log n), while the final equality check preserves Geno semantics.
-    const left = [...lst1].sort(_compareGenoValues);
-    const right = [...lst2].sort(_compareGenoValues);
-    for (let i = 0; i < left.length; i++) {
-        if (!_valuesEqual(left[i], right[i])) return false;
-    }
-    return true;
-}
 
 // =============================================================================
 // Array Helpers
@@ -1780,6 +1847,11 @@ function mutable_map_delete(m, key) {
     return null;
 }
 
+function mutable_map_is_empty(m) {
+    if (!(m instanceof GenoMutableMap)) throw new Error("mutable_map_is_empty expects MutableMap");
+    return m._data.size === 0;
+}
+
 function mutable_map_size(m) {
     if (!(m instanceof GenoMutableMap)) throw new Error("mutable_map_size expects MutableMap");
     return _requireSafeJsInt(m._data.size, "mutable_map_size result");
@@ -1902,6 +1974,11 @@ function set_remove(s, item) {
 function set_contains(s, item) {
     if (!(s instanceof GenoSet)) throw new Error("set_contains expects Set");
     return s._data.has(_setKey(item));
+}
+
+function set_is_empty(s) {
+    if (!(s instanceof GenoSet)) throw new Error("set_is_empty expects Set");
+    return s.size === 0;
 }
 
 function set_size(s) {
@@ -2136,22 +2213,31 @@ function _processEnv() {
 function fs_read_text(path) {
     _requireCap("fs", "fs_read_text");
     if (typeof require === "undefined") {
-        throw new Error("fs_read_text is not available in browser context");
+        return { _tag: "Err", error: "fs_read_text is not available in browser context" };
     }
     const fs = require("fs");
-    const result = fs.readFileSync(path, "utf-8").replace(/\r\n?/g, "\n");
+    let result;
+    try {
+        result = fs.readFileSync(path, "utf-8").replace(/\r\n?/g, "\n");
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
     _checkStringResultSize("fs_read_text", _stringLength(result));
-    return result;
+    return Ok(result);
 }
 
 function fs_write_text(path, content) {
     _requireCap("fs", "fs_write_text");
     if (typeof require === "undefined") {
-        throw new Error("fs_write_text is not available in browser context");
+        return { _tag: "Err", error: "fs_write_text is not available in browser context" };
     }
     const fs = require("fs");
-    fs.writeFileSync(path, content, "utf-8");
-    return null;
+    try {
+        fs.writeFileSync(path, content, "utf-8");
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
+    return Ok(null);
 }
 
 function fs_list_dir(path) {
@@ -2768,24 +2854,32 @@ function _syncFetch(method, url, headers, body, builtinName) {
     return parsed;
 }
 
+// One request whose response body is the result: Err for scheme, transport,
+// redirect-policy and network-policy failures, but not for the output limit.
+function _httpBody(method, url, headers, body, builtinName) {
+    let r;
+    try {
+        _validateHttpScheme(url, builtinName);
+        r = _syncFetch(method, url, headers, body, builtinName);
+    } catch (e) {
+        if (e && e._genoCollectionLimit) throw e;
+        return { _tag: "Err", error: e.message };
+    }
+    if (!r.ok) return { _tag: "Err", error: r.error };
+    _checkStringResultSize(builtinName, _stringLength(r.body));
+    return Ok(r.body);
+}
+
 function http_fetch(url) {
     _requireCap("http", "http_fetch");
-    _validateHttpScheme(url, "http_fetch");
-    const r = _syncFetch("GET", url, null, null, "http_fetch");
-    if (!r.ok) throw new Error(r.error);
-    _checkStringResultSize("http_fetch", _stringLength(r.body));
-    return r.body;
+    return _httpBody("GET", url, null, null, "http_fetch");
 }
 
 function http_post(url, body) {
     _requireCap("http", "http_post");
-    _validateHttpScheme(url, "http_post");
-    const r = _syncFetch(
+    return _httpBody(
         "POST", url, [["Content-Type", "application/json"]], body, "http_post"
     );
-    if (!r.ok) throw new Error(r.error);
-    _checkStringResultSize("http_post", _stringLength(r.body));
-    return r.body;
 }
 
 function http_request(method, url, headers, body) {
@@ -4181,18 +4275,6 @@ function flat_map(lst, fn) {
     return result;
 }
 
-function contains_substring(text, substring) {
-    return text.includes(substring);
-}
-
-function repeat_string(text, count) {
-    if (count < 0) throw new Error("repeat_string: count must be non-negative");
-    if (_stringLength(text) * count > _MAX_COLLECTION_SIZE) {
-        throw new Error("repeat_string: result would exceed collection size limit");
-    }
-    return text.repeat(count);
-}
-
 function string_trim(text) { return _trimPythonWhitespace(text, true, true); }
 function string_trim_start(text) { return _trimPythonWhitespace(text, true, false); }
 function string_trim_end(text) { return _trimPythonWhitespace(text, false, true); }
@@ -4215,11 +4297,43 @@ function string_pad_right(text, width, fill_char) {
     return _stringPad(text, width, fill_char, false);
 }
 function string_char_at(text, index) { return _stringCharAt(text, index); }
+const _ASCII_WHITESPACE = " \t\n\r\f\v";
+const _ASCII_DIGITS = "0123456789";
+const _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz";
+function _asciiTest(text, allowed) {
+    if (text.length === 0) return false;
+    for (const ch of text) if (!allowed.includes(ch)) return false;
+    return true;
+}
+function string_is_empty(text) { return text.length === 0; }
+function string_reverse(text) { return Array.from(text).reverse().join(""); }
+function string_lines(text) {
+    const lines = text.split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.map(line => line.endsWith("\r") ? line.slice(0, -1) : line);
+}
+function string_words(text) {
+    let spaced = "";
+    for (const ch of text) spaced += _ASCII_WHITESPACE.includes(ch) ? " " : ch;
+    return spaced.split(" ").filter(word => word.length > 0);
+}
+function string_is_digit(text) { return _asciiTest(text, _ASCII_DIGITS); }
+function string_is_alpha(text) { return _asciiTest(text, _ASCII_UPPER + _ASCII_LOWER); }
+function string_is_alphanumeric(text) {
+    return _asciiTest(text, _ASCII_UPPER + _ASCII_LOWER + _ASCII_DIGITS);
+}
+function string_is_whitespace(text) { return _asciiTest(text, _ASCII_WHITESPACE); }
+function string_is_upper(text) { return _asciiTest(text, _ASCII_UPPER); }
+function string_is_lower(text) { return _asciiTest(text, _ASCII_LOWER); }
+
 function string_index_of(text, sub) {
-    return _requireSafeJsInt(_stringIndexOf(text, sub), "string_index_of result");
+    const index = _stringIndexOf(text, sub);
+    return index < 0 ? None_ : Some(_requireSafeJsInt(index, "string_index_of result"));
 }
 function string_last_index_of(text, sub) {
-    return _requireSafeJsInt(_stringLastIndexOf(text, sub), "string_last_index_of result");
+    const index = _stringLastIndexOf(text, sub);
+    return index < 0 ? None_ : Some(_requireSafeJsInt(index, "string_last_index_of result"));
 }
 function string_repeat(text, count) {
     if (count < 0) throw new Error("string_repeat: count must be non-negative");
@@ -4330,6 +4444,16 @@ function result_unwrap_or(result, defaultVal) {
     return defaultVal;
 }
 
+function result_unwrap(result) {
+    if (result._tag === 'Ok') return result.value;
+    throw new Error("unwrap called on Err: " + _stringifyValue(result.error));
+}
+
+function result_expect(result, message) {
+    if (result._tag === 'Ok') return result.value;
+    throw new Error(message + ": " + _stringifyValue(result.error));
+}
+
 function result_is_ok(result) {
     return result._tag === 'Ok';
 }
@@ -4360,6 +4484,11 @@ function option_and_then(option, f) {
 function option_unwrap_or(option, defaultVal) {
     if (option._tag === 'Some') return option.value;
     return defaultVal;
+}
+
+function option_expect(option, message) {
+    if (option._tag === 'Some') return option.value;
+    throw new Error(message);
 }
 
 function option_is_some(option) {
@@ -4484,6 +4613,18 @@ function map_from_list(pairs) {
     }
     return m;
 }
+function _mapLiteral(pairs) {
+    // A `{key: value, ...}` literal; separate from map_from_list, which a
+    // program may redefine.
+    const m = new _GENO_MAP();
+    for (const pair of pairs) {
+        if (_mapFindKey(m, pair[0]) === _MAP_MISSING) {
+            _checkCollectionKind("Map", m.size + 1);
+        }
+        _mapSet(m, pair[0], pair[1]);
+    }
+    return m;
+}
 function map_merge(m1, m2) {
     let expected = m1.size;
     for (const key of m2.keys()) {
@@ -4551,6 +4692,16 @@ function list_chunk(xs, n) {
 }
 function list_take(xs, n) { return xs.slice(0, _GENO_MATH.max(0, n)); }
 function list_drop(xs, n) { return xs.slice(_GENO_MATH.max(0, n)); }
+function list_get(xs, index) {
+    if (index < 0) index += xs.length;
+    return (index >= 0 && index < xs.length) ? Some(xs[index]) : None_;
+}
+function list_first(xs) {
+    return xs.length > 0 ? Some(xs[0]) : None_;
+}
+function list_last(xs) {
+    return xs.length > 0 ? Some(xs[xs.length - 1]) : None_;
+}
 function list_find(xs, pred) {
     for (const x of xs) if (pred(x)) return Some(x);
     return None_;

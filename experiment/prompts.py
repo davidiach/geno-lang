@@ -13,81 +13,143 @@ from benchmark.schema import (
     python_return_convention,
 )
 
-# Language specification excerpt for Geno prompts
-GENOTYPE_SPEC = """
-Geno Language Quick Reference:
+# The rules every Geno prompt carries. Kept identical to the block under
+# "System Prompt Essentials" in docs/llm-prompting.md, which documents it;
+# geno/tests/test_experiment_prompts.py checks the two agree.
+GENO_RULES = """\
+You are writing code in Geno, a statically typed, functional-first language.
 
-## Functions
-```geno
-func name(param: Type, ...) -> ReturnType
-    requires condition     // precondition (optional)
-    ensures condition      // postcondition (optional)
-    example input -> output   // example (recommended)
-
-    // function body
-    return value
-end func name
-```
-
-## Types
-- Int, Float, Bool, String, Unit
-- List[T], Option[T], Tuple[T1, T2]
-- Custom: type Name = Variant1(field: T) | Variant2
-
-## Variables
-- let x: Int = 5      // immutable
-- var x: Int = 5      // mutable
-
-## Control Flow
-```geno
-if condition then
-    // body
-else if condition then
-    // body
-else
-    // body
-end if
-
-while condition do
-    // body
-end while "optional label"
-
-for x: Int in [1, 2, 3] do
-    // body; the loop variable requires a type annotation
-end for
-```
-
-## Pattern Matching
-```geno
-match value with
-    | Pattern1 -> result1
-    | Pattern2(x) -> result2
-    | _ -> default
-end match
-```
-
-## Pipeline
-```geno
-data |> function1(_) |> function2(_, arg)
-```
-
-## Built-in Functions
-- length(list), head(list), tail(list)
-- append(list, item), concat(list1, list2)
-- filter(list, fn), map(list, fn), fold(list, initial, fn)
-- contains(list, element)
-- slice(list: xs, start: i, stop: j)
-- max(a, b), abs(n), clamp(value: v, min: lo, max: hi)  // no min(a, b) builtin
-- to_chars(string), to_lower(string), to_upper(string), trim(text)
-- split(text, delimiter), join(parts, separator)
-- starts_with(text, prefix), ends_with(text, suffix)
-- to_string(value), parse_int(text) -> Option[Int]
-
-## Named Arguments
-Most calls with 3 or more arguments require named arguments:
-slice(list: xs, start: 0, stop: 2)
-Pipeline stages stay positional: xs |> fold(_, 0, fn(acc: Int, x: Int) -> acc + x)
+Key syntax rules:
+- Use `let` for immutable bindings: `let x: Int = 5` or `let x = 5`
+- Use `var` for mutable bindings: `var count: Int = 0` or `var count = 0`
+- Update a `var` by assigning to it: `count = count + 1`, not `var count = count + 1`
+- Function parameters and return values require type annotations
+- Boolean literals are lowercase: `true`, `false`
+- String concatenation uses `+` (same as arithmetic addition)
+- Integer division truncates: `7 / 2 = 3`
+- Blocks: `if c then ... else if c then ... else ... end if`,
+  `for x in xs do ... end for`, `while c do ... end while`,
+  `match v with | Some(x) -> ... | None -> ... end match`. `then` and `do` are
+  required, and every block closes with `end` and its keyword (`end func`)
+- Logical operators are words: `and`, `or`, `not`. There is no `&&`, `||`, `!`
+  or `null`: an absent value is `None`
+- Return values with `return`; a function's last expression is not returned
+  implicitly
+- Every function needs at least one `example` clause
+- A call that writes 3+ arguments names them: `clamp(value: x, min: 0, max: 9)`.
+  A method call's receiver is not counted, so `xs.fold(0, f)` and
+  `s.replace("a", "b")` stay positional
+- Use `Option[T]` instead of null, `Result[T, E]` for errors. There is no
+  `throw`, `try` or `catch`: return `Err(...)`, propagate with `?` (also from
+  `main() -> Result[Unit, String]`), and call `panic("...")` only for bugs.
+  `fs_read_text`, `fs_write_text`, `http_fetch` and `http_post` return
+  `Result[_, String]`. Use `xs.get(i)` / `xs.first()` for an `Option` instead of
+  an index that may be out of range
+- Generic functions declare type parameters in brackets after the name:
+  `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
+  write `first_or[Int](...)` or `<T>`. To use `<`, arithmetic, or a `T` as a map
+  key, add a bound: `[T: Ord]`, `[T: Num]`, `[K: Hash]`, or a trait name
+- Lambda parameters, `for` variables, comprehension variables and tuple
+  destructuring may omit types when context fixes them: `xs.map(fn(x) -> x * 2)`,
+  `for x in xs do`, `[x * 2 for x in xs]`, `let (a, b) = pair`. Function
+  parameters and return types are always annotated
+- `if` is an expression when used as a value, with a required `else`:
+  `let label = if x > 0 then "pos" else "neg" end if`. Match arms can share a
+  body: `| Red | Orange -> ...`. Tuple fields: `pair.0`. Map literals:
+  `{"a": 1, "b": 2}`, and `{}` for an empty map
+- Method calls work on any value: `xs.map(f).filter(g).length()`,
+  `s.trim().to_upper()`, `opt.unwrap_or(0)`, `n.to_float()`. The free form works
+  too: `map(opt, f)` is `opt.map(f)`
+- Membership: `x in xs`, `c in "aeiou"`, `key in m`, `x not in xs`. Lists
+  concatenate with `+`: `xs + [4]`
+- Every collection has `length()` and `is_empty()`. Maps: `m.get(k)` (Option),
+  `m.get(k, default)`, `m.contains_key(k)`, `m.insert(k, v)`, `m.remove(k)`,
+  `m.keys()`, `m.values()`. `xs.sort()` needs no comparator. Lists:
+  `xs.sum()`, `xs.min()` and `xs.max()` (Option), `xs.index_of(x)` (Option),
+  `xs.count(pred)`, `xs.unique()`. Strings: `s.index_of(t)` (Option),
+  `s.reverse()`, `s.lines()`, `s.words()`, `c.is_digit()`, `c.is_alpha()`.
+  `min(a, b)`, `max(a, b)`, `range(n)`, `n.to_float()`, `f.to_int()`
+- Comments: `// line` or `/* block */`
+- Doc comments: `/// text`
+- Any ordinary name works, including host names such as `len`, `id`, `list`,
+  `str`, `max` or a constructor `Error`; the compilers rename them. Only
+  names beginning with `_` that the runtime uses are reserved
 """
+
+# A complete Geno 0.6 program showing the forms the rules describe. The
+# prompt test checks it type-checks, its examples pass, and it is formatted.
+GENO_REFERENCE_PROGRAM = """\
+type Shape = Circle(radius: Float) | Rect(width: Float, height: Float)
+
+/// Sum types are matched; every arm returns a value.
+func area(shape: Shape) -> Float
+    example Circle(1.0) -> 3.0
+    example Rect(2.0, 3.0) -> 6.0
+    return match shape with
+        | Circle(r) -> 3.0 * r * r
+        | Rect(w, h) -> w * h
+    end match
+end func
+
+/// Errors are values: return Err(...), and the caller propagates with ?.
+func parse_ages(text: String) -> Result[List[Int], String]
+    example "36, 41" -> Ok([36, 41])
+    example "36, x" -> Err("not a number: x")
+    var ages: List[Int] = []
+    for part in text.split(",") do
+        let trimmed = part.trim()
+        match parse_int(trimmed) with
+            | Some(age) -> ages = ages.append(age)
+            | None -> return Err("not a number: " + trimmed)
+        end match
+    end for
+    return Ok(ages)
+end func
+
+func describe(text: String) -> Result[String, String]
+    example "36, 41" -> Ok("2 ages, oldest 41")
+    example "7" -> Ok("1 age, oldest 7")
+    let ages = parse_ages(text)?
+    let oldest = ages.fold(initial: 0, reducer: fn(best, age) -> max(best, age))
+    let noun = if ages.length() == 1 then "age" else "ages" end if
+    return Ok(f"{ages.length()} {noun}, oldest {oldest}")
+end func
+
+/// Generic functions name their type parameters; bounds enable < and +.
+func largest[T: Ord](xs: List[T], fallback: T) -> T
+    example ([3, 9, 4], 0) -> 9
+    example ([], 5) -> 5
+    var best = fallback
+    for x in xs do
+        if x > best then
+            best = x
+        end if
+    end for
+    return best
+end func
+
+func main() -> Unit
+    let words = ["kiwi", "fig", "apple"]
+    let lengths = words.map(fn(w) -> w.length())
+    let long = words.filter(fn(w) -> w.length() > 3)
+    let k_words = words.filter(fn(w) -> w.starts_with("k"))
+    let counts = {"kiwi": 2, "fig": 5}
+    print(lengths)
+    print(long.join(", ").to_upper())
+    print(counts.get("fig").unwrap_or(0))
+    print(to_string(largest(lengths, 0)) + " letters, " + to_string(k_words))
+    print(describe("36, 41"))
+end func
+"""
+
+# Language reference for Geno prompts: the rules, then the program.
+GENOTYPE_SPEC = (
+    "\nGeno Language Quick Reference (Geno 0.6):\n\n"
+    + GENO_RULES
+    + "\n## Reference Program\n\n```geno\n"
+    + GENO_REFERENCE_PROGRAM
+    + "```\n"
+)
 
 # Zero-shot Geno template
 GENOTYPE_ZERO_SHOT = """You are an expert programmer in Geno, a programming language designed for clarity and correctness.
@@ -277,33 +339,28 @@ def format_python_prompt(problem, few_shot_examples: list | None = None) -> str:
         )
 
 
-# Sample few-shot examples for Geno
+# Sample few-shot examples for Geno, written as Geno 0.6 code. The prompt
+# test checks each one type-checks, passes its examples, and is formatted.
 GENOTYPE_FEW_SHOT_SAMPLES = [
     # Example 1: Simple function
     """```geno
 func double(n: Int) -> Int
     example 5 -> 10
     example 0 -> 0
-
     return n * 2
-end func double
+end func
 ```""",
     # Example 2: With loop
     """```geno
 func sum_list(arr: List[Int]) -> Int
     example [1, 2, 3] -> 6
     example [] -> 0
-
-    var total: Int = 0
-    var i: Int = 0
-
-    while i < length(arr) do
-        total = total + arr[i]
-        i = i + 1
-    end while
-
+    var total = 0
+    for x in arr do
+        total = total + x
+    end for
     return total
-end func sum_list
+end func
 ```""",
     # Example 3: With recursion
     """```geno
@@ -311,39 +368,36 @@ func factorial(n: Int) -> Int
     requires n >= 0
     example 5 -> 120
     example 0 -> 1
-
     if n <= 1 then
         return 1
     else
         return n * factorial(n - 1)
     end if
-end func factorial
+end func
 ```""",
     # Example 4: With Option type
     """```geno
 func find_first(arr: List[Int], target: Int) -> Option[Int]
     example [1, 2, 3], 2 -> Some(1)
     example [1, 2, 3], 5 -> None
-
-    var i: Int = 0
-    while i < length(arr) do
+    var i = 0
+    while i < arr.length() do
         if arr[i] == target then
             return Some(i)
         end if
         i = i + 1
     end while
     return None
-end func find_first
+end func
 ```""",
-    # Example 5: With pipeline
+    # Example 5: With methods and lambdas
     """```geno
 func sum_evens(arr: List[Int]) -> Int
     example [1, 2, 3, 4, 5, 6] -> 12
     example [1, 3, 5] -> 0
-
-    let evens: List[Int] = arr |> filter(_, fn(x: Int) -> x % 2 == 0)
-    return evens |> fold(_, 0, fn(acc: Int, x: Int) -> acc + x)
-end func sum_evens
+    let evens = arr.filter(fn(x) -> x % 2 == 0)
+    return evens.fold(initial: 0, reducer: fn(acc, x) -> acc + x)
+end func
 ```""",
 ]
 

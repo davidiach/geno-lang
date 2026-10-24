@@ -315,7 +315,6 @@ class TestTypecheckerArithmetic:
             'clamp(value: "b", min: "a", max: "c")',
             'max("a", "b")',
             'abs("x")',
-            'square("x")',
         ],
     )
     def test_numeric_typevar_builtins_reject_non_numeric_arguments(self, expr):
@@ -2063,7 +2062,7 @@ class TestTypecheckerReturnPathAnalysis:
         """
         check_program(source)  # Should not raise
 
-    def test_throw_in_else_branch_counts_as_return(self):
+    def test_panic_in_else_branch_counts_as_return(self):
         """Throwing in one branch satisfies return-path analysis."""
         source = """
         func good(x: Int) -> Int
@@ -2071,7 +2070,7 @@ class TestTypecheckerReturnPathAnalysis:
             if x > 0 then
                 return x
             else
-                throw "negative"
+                panic("negative")
             end if
         end func
         """
@@ -2661,15 +2660,15 @@ class TestUserTypeInvariance:
 
 
 class TestNeverType:
-    """throw expressions return NeverType (bottom), assignable to any type."""
+    """panic(...) has type Never (bottom), assignable to any type."""
 
-    def test_throw_in_if_branch_compatible_with_return_type(self):
-        """throw can appear in an if-branch where a value is expected."""
+    def test_panic_in_if_branch_compatible_with_return_type(self):
+        """panic can appear in an if-branch where a value is expected."""
         source = """
         func safe_div(a: Int, b: Int) -> Int
             example (10, 2) -> 5
             if b == 0 then
-                throw "division by zero"
+                panic("division by zero")
             end if
             return a / b
         end func
@@ -2680,58 +2679,58 @@ class TestNeverType:
         """
         check_program(source)
 
-    def test_throw_in_match_arm(self):
-        """throw can appear in a match arm alongside typed return values."""
+    def test_panic_in_match_arm(self):
+        """panic can appear in a match arm alongside typed return values."""
         source = """
-        func unwrap_or_throw(opt: Option[Int]) -> Int
+        func unwrap_or_panic(opt: Option[Int]) -> Int
             example Some(5) -> 5
             match opt with
                 | Some(x) -> return x
-                | None -> throw "was None"
+                | None -> panic("was None")
             end match
         end func
 
         func main() -> Int
-            return unwrap_or_throw(Some(42))
+            return unwrap_or_panic(Some(42))
         end func
         """
         check_program(source)
 
-    def test_throw_in_first_match_expression_arm(self):
+    def test_panic_in_first_match_expression_arm(self):
         """Bottom should not make match-expression result typing order-sensitive."""
         source = """
         func main() -> Int
             return match Some(1) with
-                | None -> throw "none"
+                | None -> panic("none")
                 | Some(x) -> x
             end match
         end func
         """
         check_program(source)
 
-    def test_throw_argument_does_not_bind_generic_builtin_typevar(self):
+    def test_panic_argument_does_not_bind_generic_builtin_typevar(self):
         """Bottom arguments should not poison generic call inference."""
         source = """
         func main() -> Int
-            return add(throw "boom", 1)
+            return add(panic("boom"), 1)
         end func
         """
         check_program(source)
 
-    def test_throw_argument_keeps_generic_builder_compatible_with_context(self):
+    def test_panic_argument_keeps_generic_builder_compatible_with_context(self):
         """Divergent generic arguments should still fit concrete return contexts."""
         source = """
         func main() -> Array[Int]
-            return array_new(size: 2, default: throw "boom")
+            return array_new(size: 2, default: panic("boom"))
         end func
         """
         check_program(source)
 
-    def test_throw_first_list_element_keeps_literal_compatible(self):
-        """List literal typing should not depend on throw element position."""
+    def test_panic_first_list_element_keeps_literal_compatible(self):
+        """List literal typing should not depend on panic element position."""
         source = """
         func main() -> List[Int]
-            return [throw "boom", 1]
+            return [panic("boom"), 1]
         end func
         """
         check_program(source)
@@ -2739,10 +2738,10 @@ class TestNeverType:
     def test_block_lambda_return_join_ignores_never(self):
         """Block lambda return inference should ignore divergent paths."""
         source = """
-        func main() -> Int with throw
-            let f: (Bool) -> Int with throw = fn(flag: Bool) do
+        func main() -> Int
+            let f: (Bool) -> Int = fn(flag: Bool) do
                 if flag then
-                    return throw "boom"
+                    return panic("boom")
                 end if
                 return 1
             end fn

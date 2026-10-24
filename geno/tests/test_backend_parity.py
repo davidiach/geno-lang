@@ -173,25 +173,6 @@ class AlgebraicParitySpec:
 
 
 @dataclass(frozen=True)
-class TryCatchParitySpec:
-    """Inputs for one generated ``try`` / ``catch`` parity scenario.
-
-    Three input integers exercise each of the three code paths through
-    ``safe_run`` (see ``_try_catch_program_for_spec``): the success
-    path, a ``throw "negative"`` caught by the explicit match arm, and
-    a ``throw "too big"`` caught by the fallback arm.  A generated
-    ``multiplier`` is applied to the recovered values so different
-    Hypothesis draws produce different reference outputs instead of
-    converging on the same printed numbers.
-    """
-
-    pass_value: int
-    negative_value: int
-    big_value: int
-    multiplier: int
-
-
-@dataclass(frozen=True)
 class ParityProgramScenario:
     """One generated Geno program plus its expected stdout."""
 
@@ -508,66 +489,6 @@ end func
     )
 
 
-def _try_catch_program_for_spec(spec: TryCatchParitySpec) -> ParityProgramScenario:
-    """Build a small ``try`` / ``catch`` program and its reference stdout.
-
-    Exercises the three backend code paths for exception control-flow
-    (#627 gap: the existing fuzz suite covered pure arithmetic, higher-
-    order list programs, imported projects, and ADT/Option/Result
-    programs — but no ``try`` / ``catch``).  ``safe_run`` dispatches
-    on the thrown message so each arm of the catch actually runs on
-    every backend rather than just the success path.
-    """
-    inputs = (spec.pass_value, spec.negative_value, spec.big_value)
-
-    # Keep the branching in ``_reference_output`` in sync with the
-    # constants in the generated ``maybe_throw`` / ``safe_run`` source
-    # below (the ``< 0`` / ``> 100`` guards and the ``+10`` / ``-1`` /
-    # ``-2`` payloads).  Drift between the two sides turns this test
-    # into a false positive / negative.
-    def _reference_output(n: int, mult: int) -> int:
-        if n < 0:
-            return -1 * mult
-        if n > 100:
-            return -2 * mult
-        return (n + 10) * mult
-
-    source = f"""\
-@untested("generated parity")
-func maybe_throw(n: Int) -> Int
-    if n < 0 then
-        throw "negative"
-    end if
-    if n > 100 then
-        throw "too big"
-    end if
-    return n
-end func
-
-@untested("generated parity")
-func safe_run(n: Int, mult: Int) -> Int
-    try
-        return (maybe_throw(n) + 10) * mult
-    catch msg: String
-        if msg == "negative" then
-            return (0 - 1) * mult
-        else
-            return (0 - 2) * mult
-        end if
-    end try
-end func
-
-func main() -> Unit
-    print(safe_run({_geno_int_literal(spec.pass_value)}, {_geno_int_literal(spec.multiplier)}))
-    print(safe_run({_geno_int_literal(spec.negative_value)}, {_geno_int_literal(spec.multiplier)}))
-    print(safe_run({_geno_int_literal(spec.big_value)}, {_geno_int_literal(spec.multiplier)}))
-    return ()
-end func
-"""
-    expected = "".join(f"{_reference_output(n, spec.multiplier)}\n" for n in inputs)
-    return ParityProgramScenario(source=source, expected_output=expected)
-
-
 if HYPOTHESIS_AVAILABLE:
     _LEAF_EXPR_STRATEGY = st.integers(min_value=-9, max_value=9).map(_lit)
     _INT_TRANSFORM_STRATEGY = st.builds(
@@ -611,22 +532,6 @@ if HYPOTHESIS_AVAILABLE:
         result_value=st.integers(min_value=-8, max_value=8),
         nested_tag=st.sampled_from(["none", "ok", "err"]),
         nested_value=st.integers(min_value=-8, max_value=8),
-    )
-    _TRY_CATCH_PARITY_SPEC_STRATEGY = st.builds(
-        TryCatchParitySpec,
-        # Success path — a value ``maybe_throw`` does not reject.
-        pass_value=st.integers(min_value=0, max_value=100),
-        # Negative-throw path — exercised by the explicit catch arm.
-        negative_value=st.integers(min_value=-50, max_value=-1),
-        # Too-big-throw path — exercised by the fallback catch arm.
-        big_value=st.integers(min_value=101, max_value=200),
-        # Non-zero multiplier keeps the three printed paths distinct;
-        # allowing ``0`` would collapse the whole program to ``0 0 0``
-        # and turn the parity check into a vacuous pass.
-        multiplier=st.one_of(
-            st.integers(min_value=-5, max_value=-1),
-            st.integers(min_value=1, max_value=5),
-        ),
     )
 
     def _expr_strategy_with_terms(
@@ -2726,10 +2631,10 @@ class TestBackendParity:
                 | Some(n) -> print(n)
                 | None -> print(-999)
             end match
-            print(is_numeric_string(" 42 "))
-            print(is_numeric_string("+42"))
-            print(is_numeric_string("1_000"))
-            print(is_numeric_string("-7"))
+            print(is_some(parse_int(" 42 ")))
+            print(is_some(parse_int("+42")))
+            print(is_some(parse_int("1_000")))
+            print(is_some(parse_int("-7")))
             return ()
         end func
         """
@@ -2771,26 +2676,6 @@ class TestBackendParity:
             label="parse_int safe range",
             context=source,
             expected="1\n1\n1\n1\n",
-            interp_out=_interpreter_output(source),
-            py_out=_compiled_python_output(source),
-            js_out=_compiled_js_output(source),
-        )
-
-    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-    def test_is_permutation_uses_equality_across_backends(self):
-        source = """
-        func main() -> Unit
-            print(is_permutation([1, 2, 1], [2, 1, 1]))
-            print(is_permutation([Some(1), None], [None, Some(1)]))
-            print(is_permutation([Some(1), Some(1)], [Some(1), None]))
-            return ()
-        end func
-        """
-
-        _assert_expected_backend_outputs(
-            label="is_permutation equality",
-            context=source,
-            expected="true\ntrue\nfalse\n",
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),
@@ -2860,7 +2745,10 @@ class TestBackendParity:
         _assert_expected_backend_outputs(
             label="unicode string code point operations",
             context=source,
-            expected="1\n4\n128512\n128512\n128512\n1\n128512\n1\n128512\n1\n3\n",
+            expected=(
+                "1\n4\n128512\n128512\n128512\n1\n128512\n1\n128512\n"
+                "Some(value: 1)\nSome(value: 3)\n"
+            ),
             interp_out=_interpreter_output(source),
             py_out=_compiled_python_output(source),
             js_out=_compiled_js_output(source),
@@ -2916,12 +2804,12 @@ class TestBackendParity:
         )
 
     @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-    def test_sort_strings_orders_astral_strings_across_backends(self):
+    def test_sort_orders_astral_strings_across_backends(self):
         source = """
         func main() -> Unit
             let smile: String = from_char_code(128512)
             let private_use: String = from_char_code(57344)
-            let sorted: List[String] = sort_strings([smile, private_use])
+            let sorted: List[String] = sort([smile, private_use])
             print(char_code(sorted[0]))
             print(char_code(sorted[1]))
             return ()
@@ -2929,7 +2817,7 @@ class TestBackendParity:
         """
 
         _assert_expected_backend_outputs(
-            label="sort_strings astral string ordering",
+            label="sort astral string ordering",
             context=source,
             expected="57344\n128512\n",
             interp_out=_interpreter_output(source),
@@ -4273,26 +4161,6 @@ class TestBackendParity:
             _compiled_js_project_output(main_source, {})
 
     @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-    def test_try_catch_deterministic_fixture_matches_across_backends(self):
-        scenario = _try_catch_program_for_spec(
-            TryCatchParitySpec(
-                pass_value=5,
-                negative_value=-3,
-                big_value=200,
-                multiplier=2,
-            )
-        )
-
-        _assert_expected_backend_outputs(
-            label="deterministic try-catch",
-            context=f"--- source ---\n{scenario.source}\n",
-            expected=scenario.expected_output,
-            interp_out=_interpreter_output(scenario.source),
-            py_out=_compiled_python_output(scenario.source),
-            js_out=_compiled_js_output(scenario.source),
-        )
-
-    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
     def test_qualified_pipeline_stage_matches_across_backends(self):
         main_source = """
         import Math
@@ -4339,19 +4207,6 @@ class TestBackendParity:
 )
 class TestBackendParityProperties:
     """Differential property tests for generated backend-parity programs."""
-
-    def test_try_catch_strategy_excludes_zero_multiplier(self):
-        """Regression for #627 review follow-up: zero would collapse the
-        success and both catch paths to identical printed output."""
-        from hypothesis import find
-        from hypothesis.errors import NoSuchExample
-
-        with pytest.raises(NoSuchExample):
-            find(
-                _TRY_CATCH_PARITY_SPEC_STRATEGY,
-                lambda spec: spec.multiplier == 0,
-                settings=settings(max_examples=200, deadline=None),
-            )
 
     @given(_PROGRAM_SCENARIO_STRATEGY)
     @example(_program_for_scenario([], [_print_step(_combine("/", _lit(-7), _lit(2)))]))
@@ -4591,381 +4446,3 @@ class TestBackendParityProperties:
             py_out=py_out,
             js_out=js_out,
         )
-
-    @given(_TRY_CATCH_PARITY_SPEC_STRATEGY)
-    @example(
-        TryCatchParitySpec(
-            pass_value=5,
-            negative_value=-3,
-            big_value=200,
-            multiplier=1,
-        )
-    )
-    @example(
-        TryCatchParitySpec(
-            pass_value=0,
-            negative_value=-50,
-            big_value=101,
-            multiplier=-1,
-        )
-    )
-    @example(
-        TryCatchParitySpec(
-            pass_value=100,
-            negative_value=-1,
-            big_value=150,
-            multiplier=3,
-        )
-    )
-    @settings(max_examples=20, deadline=None)
-    def test_generated_try_catch_programs_match_across_backends(  # type: ignore[misc]
-        self, spec: TryCatchParitySpec
-    ):
-        """Generated ``try`` / ``catch`` programs agree across backends.
-
-        Closes the #627 gap on exception control-flow: ``safe_run``
-        dispatches on the thrown message so every run exercises the
-        success path, the explicit catch arm, and the fallback catch
-        arm.  Any divergence in how a backend raises / catches strings
-        surfaces as a parity-check mismatch.
-        """
-        scenario = _try_catch_program_for_spec(spec)
-        source = scenario.source
-        expected = scenario.expected_output
-
-        interp_out = _interpreter_output(source)
-        py_out = _compiled_python_output(source)
-        js_out = _compiled_js_output(source)
-
-        _assert_expected_backend_outputs(
-            label="try-catch",
-            context=f"--- source ---\n{source}\n",
-            expected=expected,
-            interp_out=interp_out,
-            py_out=py_out,
-            js_out=js_out,
-        )
-
-
-@pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-class TestTypedCatchParity:
-    """#193: a typed catch binds only values of the ADT its clause names.
-
-    The compiled backends used to catch every thrown value, so an unrelated
-    ADT entered the wrong recovery branch while the interpreter correctly
-    propagated it. These programs pin the interpreter's behaviour on all three
-    backends.
-    """
-
-    @staticmethod
-    def _check_all(source: str, expected: str, label: str) -> None:
-        _assert_expected_backend_outputs(
-            label=label,
-            context=f"--- source ---\n{source}\n",
-            expected=expected,
-            interp_out=_interpreter_output(source),
-            py_out=_compiled_python_output(source),
-            js_out=_compiled_js_output(source),
-        )
-
-    def test_unrelated_adt_is_not_caught_by_a_typed_catch(self):
-        source = """
-        type ExpectedError = Expected(message: String)
-        type OtherError = Other(message: String)
-
-        func main() -> Unit
-            try
-                try
-                    throw Other("oops")
-                catch err: ExpectedError
-                    print(1)
-                end try
-            catch err: OtherError
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(source, "2\n", "unrelated-ADT typed catch (#193)")
-
-    def test_a_string_thrown_inside_an_adt_catch_propagates(self):
-        source = """
-        type ExpectedError = Expected(message: String)
-
-        func main() -> Unit
-            try
-                try
-                    throw "oops"
-                catch err: ExpectedError
-                    print(1)
-                end try
-            catch msg: String
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(source, "2\n", "string thrown into a typed catch (#193)")
-
-    def test_matching_typed_catches_still_bind(self):
-        source = """
-        type ExpectedError = Expected(message: String)
-
-        func main() -> Unit
-            try
-                throw Expected("planned")
-            catch err: ExpectedError
-                print(1)
-            end try
-            try
-                throw "plain string"
-            catch msg: String
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(source, "1\n2\n", "matching typed catch control (#193)")
-
-    def test_multi_variant_adt_typed_catch(self):
-        source = """
-        type ShapeError = BadCircle(r: Int) | BadRect(w: Int, h: Int)
-        type OtherError = Unrelated(msg: String)
-
-        func main() -> Unit
-            try
-                try
-                    throw BadRect(1, 2)
-                catch err: OtherError
-                    print(1)
-                end try
-            catch err: ShapeError
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(source, "2\n", "multi-variant ADT typed catch (#193)")
-
-    def test_type_alias_typed_catch(self):
-        source = """
-        type BaseError = Base(msg: String)
-        type AliasError = BaseError
-        type OtherError = Other(msg: String)
-
-        func main() -> Unit
-            try
-                try
-                    throw Base("alias test")
-                catch err: OtherError
-                    print(1)
-                end try
-            catch err: AliasError
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(source, "2\n", "type alias typed catch (#193)")
-
-    def test_builtin_adt_typed_catch(self):
-        source = """
-        type OtherError = Other(msg: String)
-
-        func main() -> Unit
-            try
-                try
-                    throw JsonString("json error")
-                catch err: OtherError
-                    print(1)
-                end try
-            catch err: JsonValue
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(source, "2\n", "builtin ADT typed catch (#193)")
-
-    @pytest.mark.parametrize("typecheck", [True, False])
-    def test_alias_catch_with_optional_typechecking(self, typecheck: bool):
-        source = """
-        type BaseError = Base(msg: String)
-        type AliasError = BaseError
-
-        func main() -> Unit
-            try
-                try
-                    throw Base("alias test")
-                catch err: AliasError
-                    print(1)
-                end try
-            catch err: String
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        py_result = run_python_code(
-            compile_to_python(source, typecheck=typecheck),
-            python_executable=sys.executable,
-            args=["--cap", "print"],
-        )
-        js_result = run_node_code(
-            compile_to_js(source, typecheck=typecheck), args=["--cap", "print"]
-        )
-        for result in (py_result, js_result):
-            assert result.returncode == 0, result.stderr
-            assert result.stdout == "1\n"
-
-    def test_multi_module_project_typed_catch(self):
-        modules = {
-            "Unrelated": """
-type CustomError = FromUnrelated(msg: String)
-""",
-            "Lib": """
-export type CustomError = FromLib(msg: String)
-
-export
-@untested("helper")
-func fail() -> Unit
-    throw FromLib("hello")
-end func
-""",
-        }
-        main_source = """
-import Lib
-
-func main() -> Unit
-    try
-        Lib.fail()
-    catch err: CustomError
-        print(2)
-    end try
-    return ()
-end func
-"""
-        interp_out = _interpreter_project_output(
-            main_source=main_source,
-            modules=modules,
-        )
-        py_out = _compiled_python_project_output(
-            main_source=main_source,
-            modules=modules,
-        )
-        js_out = _compiled_js_project_output(
-            main_source=main_source,
-            modules=modules,
-        )
-        assert interp_out == "2\n"
-        assert py_out == "2\n"
-        assert js_out == "2\n"
-
-    def test_multi_module_ambiguous_constructor_name_typed_catch(self):
-        # Two modules define a constructor with the same name.
-        # Matching by constructor name across modules succeeds without NameError (#193 review).
-        modules = {
-            "A": """
-export type AErr = Expected(message: String)
-""",
-            "B": """
-export type BErr = Expected(message: String)
-
-export
-@untested("helper")
-func fb() -> Unit
-    throw Expected("b")
-end func
-""",
-        }
-        main_source = """
-import A
-import B
-
-func main() -> Unit with io
-    try
-        try
-            B.fb()
-        catch err: AErr
-            print(1)
-        end try
-    catch err: BErr
-        print(2)
-    end try
-    return ()
-end func
-"""
-        py_out = _compiled_python_project_output(
-            main_source=main_source,
-            modules=modules,
-        )
-        js_out = _compiled_js_project_output(
-            main_source=main_source,
-            modules=modules,
-        )
-        assert py_out == "1\n"
-        assert js_out == "1\n"
-
-    def test_typed_catch_when_type_names_another_constructor(self):
-        # A type named like another type's constructor:
-        # Inner = Leaf does not shadow constructor class Inner in module globals.
-        # Thrown Inner(1) rethrows under catch err: Inner and is caught by catch e2: Outer (#193 review).
-        source = """
-        type Outer = Inner(x: Int)
-        type Inner = Leaf(y: Int)
-
-        func main() -> Unit with io
-            try
-                try
-                    throw Inner(1)
-                catch err: Inner
-                    print(1)
-                end try
-            catch e2: Outer
-                print(2)
-            end try
-            return ()
-        end func
-        """
-        self._check_all(
-            source,
-            "2\n",
-            "type named like another type's constructor rethrows to outer catch (#193 review)",
-        )
-
-    def test_unresolved_catch_type_rethrows_across_backends(self):
-        # When resolved_variants is empty (an unresolved user type),
-        # all backends rethrow rather than catching everything (#193 review).
-        import pytest
-
-        from geno.compiler import Compiler
-        from geno.interpreter import GenoThrowError, Interpreter
-        from geno.js_compiler import JSCompiler
-        from geno.lexer import Lexer
-        from geno.parser import Parser
-
-        source = """
-        type MyErr = Fail(msg: String)
-        func main() -> Unit
-            try
-                throw Fail("oops")
-            catch err: MyErr
-                return ()
-            end try
-            return ()
-        end func
-        """
-        program = Parser(Lexer(source).tokenize()).parse_program()
-        try_stmt = program.definitions[1].body[0]
-        try_stmt.catch_clause.resolved_variants = ()
-
-        py_code = Compiler().compile(program)
-        assert "raise" in py_code
-        assert "type(__geno_err__.value).__name__" not in py_code
-
-        js_code = JSCompiler().compile(program)
-        assert "throw __geno_err__;" in js_code
-
-        interp = Interpreter()
-        with pytest.raises(GenoThrowError):
-            interp.run(program)

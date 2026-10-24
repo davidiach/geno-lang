@@ -21,9 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from geno._runtime_support import _safe_add, _safe_mul
 from geno.api import RunConfig, check, run
 from geno.builtins import (
-    builtin_is_permutation,
     builtin_parse_int,
-    builtin_sort_strings,
 )
 from geno.compiler import compile_and_exec, compile_to_python
 from geno.lexer import Lexer, LexerError
@@ -569,33 +567,6 @@ class TestP3_1_BlockMathFactorialCombPerm:
         """math.floor must still work through the proxy."""
         proxy = _create_module_proxy(math)
         assert proxy.floor(3.7) == 3
-
-
-class TestP3_2_SizeChecksInIsPermutationSortStrings:
-    """P3-2: is_permutation and sort_strings reject oversized lists."""
-
-    def test_is_permutation_200k_rejected(self):
-        """200k-element lists must be rejected by is_permutation."""
-        big = list(range(200_000))
-        with pytest.raises(Exception, match="too large"):
-            builtin_is_permutation(big, big)
-
-    def test_is_permutation_1k_ok(self):
-        """1k-element lists should work fine in is_permutation."""
-        xs = list(range(1000))
-        assert builtin_is_permutation(xs, xs) is True
-
-    def test_sort_strings_200k_rejected(self):
-        """200k-element lists must be rejected by sort_strings."""
-        big = ["a"] * 200_000
-        with pytest.raises(Exception, match="too large"):
-            builtin_sort_strings(big)
-
-    def test_sort_strings_1k_ok(self):
-        """1k-element lists should work fine in sort_strings."""
-        xs = [f"item_{i}" for i in range(1000)]
-        result = builtin_sort_strings(xs)
-        assert result == sorted(xs)
 
 
 class TestP3_8_CompilerStringEscapingCatchAll:

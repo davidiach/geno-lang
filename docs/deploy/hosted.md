@@ -364,6 +364,7 @@ server reads these operator knobs (all optional; defaults in parentheses):
 | `GENO_REQUEST_TIMEOUT_SECONDS` | Per-request wall-clock ceiling |
 | `GENO_SHUTDOWN_GRACE_SECONDS` | Time allowed for active requests to finish before forced cleanup (5 seconds) |
 | `GENO_DEFAULT_MAX_STEPS` / `GENO_MAX_STEPS` | Default and hard cap for interpreter steps |
+| `GENO_MAX_RECURSION_DEPTH` | Geno call depth for hosted runs (default 500; local lanes default to 10,000) |
 | `GENO_MAX_MODULES` / `GENO_MAX_MODULE_SOURCE_BYTES` | Multi-module submission limits |
 | `GENO_CONSTRAIN_WALL_CLOCK_SECONDS` | Wall-clock ceiling for `/constrain` |
 | `GENO_SANDBOX_DEBUG` | Attach the sandbox worker traceback to server logs for compiler-bug diagnosis (off by default; log-only, never returned to clients) |

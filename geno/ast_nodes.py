@@ -52,6 +52,17 @@ class Expression(ASTNode):
     _float_promotion: Any = field(
         default=FLOAT_PROMOTION_UNKNOWN, init=False, repr=False, compare=False
     )
+    # Generic functions (proposal 0004). On a name that refers to a generic
+    # function: ``_generic_target`` is its ``GenericSignature``,
+    # ``_generic_instance`` the ``GenericInstance`` its context chose, and
+    # ``_generic_callee`` marks the name as the callee of a call.
+    _generic_target: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _generic_instance: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _generic_callee: bool = field(default=False, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -127,6 +138,25 @@ class FunctionType(TypeAnnotation):
         if self.effects:
             return f"{base} with {', '.join(sorted(self.effects))}"
         return base
+
+
+@dataclass
+class InferredType(TypeAnnotation):
+    """A type the source leaves out for inference to fill in.
+
+    Stands where a lambda parameter, `for` variable, comprehension variable or
+    destructuring `let` omits its annotation: `fn(x) -> x * 2`,
+    `for x in xs do`, `let (a, b) = pair`.
+    """
+
+    # The type the checker inferred, once it has.
+    _inferred: Any | None = field(default=None, init=False, repr=False, compare=False)
+
+    def accept(self, visitor: "ASTVisitor") -> Any:
+        return visitor.visit_inferred_type(self)
+
+    def __str__(self) -> str:
+        return "_"
 
 
 # =============================================================================
@@ -215,6 +245,24 @@ class ListLiteral(Expression):
 
 
 @dataclass
+class MapEntry:
+    """One `key: value` entry of a map literal."""
+
+    key: Expression
+    value: Expression
+
+
+@dataclass
+class MapLiteral(Expression):
+    """Map literal: {"a": 1, "b": 2}, or {} for an empty map."""
+
+    entries: list[MapEntry]
+
+    def accept(self, visitor: "ASTVisitor") -> Any:
+        return visitor.visit_map_literal(self)
+
+
+@dataclass
 class ListComprehension(Expression):
     """List comprehension: [expr for var: Type in iterable if cond]"""
 
@@ -226,16 +274,6 @@ class ListComprehension(Expression):
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_list_comprehension(self)
-
-
-@dataclass
-class ThrowExpression(Expression):
-    """throw expr — throws a typed error value"""
-
-    value: Expression
-
-    def accept(self, visitor: "ASTVisitor") -> Any:
-        return visitor.visit_throw_expression(self)
 
 
 @dataclass
@@ -288,6 +326,11 @@ class FunctionCall(Expression):
     _resolved_builtin_name: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Set when the typechecker rewrote `receiver.name(args)` into this call:
+    # the method name as written, for diagnostics.
+    _method_call: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_function_call(self)
@@ -310,6 +353,15 @@ class FieldAccess(Expression):
 
     target: Expression
     field_name: str
+    # Where the field name itself is written; ``location`` is the target's.
+    name_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
+    # Set once "Type X has no method 'name'" is reported for `x.name(...)`, so
+    # a later pass over the same call does not report it again as a field.
+    _method_error_reported: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_field_access(self)
@@ -355,6 +407,11 @@ class LambdaExpr(Expression):
     return_type: TypeAnnotation | None
     body: Expression | None = None
     block_body: list["Statement"] | None = None
+    # The parameter types the call or binding receiving this lambda expects,
+    # for parameters written without a type: fn(x) -> x * 2.
+    _expected_param_types: tuple[Any, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_lambda(self)
@@ -369,6 +426,8 @@ class MatchExpr(Expression):
 
     scrutinee: Expression
     arms: list["MatchArm"]
+    # Written as `if c then a else b end if`: a match on the Bool `c`.
+    from_if: bool = field(default=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_match_expr(self)
@@ -684,32 +743,13 @@ class ContinueStatement(Statement):
 
 
 @dataclass
-class CatchClause:
-    """Catch clause: catch e: String"""
-
-    variable: str
-    type_annotation: TypeAnnotation
-    body: list[Statement]
-    location: SourceLocation
-    resolved_variants: tuple[str, ...] | None = None
-
-
-@dataclass
-class TryStatement(Statement):
-    """Try/catch statement: try ... catch e: String ... end try"""
-
-    try_body: list[Statement]
-    catch_clause: CatchClause
-
-    def accept(self, visitor: "ASTVisitor") -> Any:
-        return visitor.visit_try_statement(self)
-
-
-@dataclass
 class ExpressionStatement(Statement):
     """Expression as statement: f(x)"""
 
     expression: Expression
+    # Set by the type checker when the expression has type Never, as in
+    # `panic("...")`: control does not continue past the statement.
+    _diverges: bool = field(default=False, init=False, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_expression_statement(self)
@@ -805,6 +845,9 @@ class FunctionDef(Definition):
     untested_reason: str | None = None  # @untested("reason") annotation
     exported: bool = False  # True when declared with `export func`
     effects: list[str] = field(default_factory=list)  # Effect annotations: with fs, io
+    type_params: list[str] = field(default_factory=list)  # func name[T, U](...)
+    # Declared bounds per type parameter: func name[T: Ord + Hash](...)
+    type_param_bounds: dict[str, list[str]] = field(default_factory=dict)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_function_def(self)
@@ -836,7 +879,6 @@ _NON_CONSTANT_FORMS: dict[str, str] = {
     "FieldAccess": "a field access",
     "Pipeline": "a pipeline",
     "AwaitExpr": "an await expression",
-    "ThrowExpression": "a throw expression",
     "PropagateExpr": "error propagation",
     "WithExpr": "a functional update",
     "TypedHole": "a typed hole",
@@ -1036,6 +1078,12 @@ class ASTVisitor(ABC):
     def visit_function_type(self, node: FunctionType) -> None:
         pass
 
+    def visit_inferred_type(self, node: InferredType) -> None:
+        pass
+
+    def visit_map_literal(self, node: "MapLiteral") -> None:
+        pass
+
     # Expressions
     def visit_integer_literal(self, node: IntegerLiteral) -> None:
         pass
@@ -1062,9 +1110,6 @@ class ASTVisitor(ABC):
         pass
 
     def visit_list_comprehension(self, node: ListComprehension) -> None:
-        pass
-
-    def visit_throw_expression(self, node: ThrowExpression) -> None:
         pass
 
     def visit_await_expr(self, node: AwaitExpr) -> None:
@@ -1172,9 +1217,6 @@ class ASTVisitor(ABC):
         pass
 
     def visit_continue_statement(self, node: "ContinueStatement") -> None:
-        pass
-
-    def visit_try_statement(self, node: "TryStatement") -> None:
         pass
 
     def visit_expression_statement(self, node: ExpressionStatement) -> None:

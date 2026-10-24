@@ -12,6 +12,7 @@ import re as _re
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import lru_cache
 from io import StringIO
 from typing import TYPE_CHECKING, Optional, Tuple, Union, cast
 
@@ -22,13 +23,16 @@ from ._backend_fastpath import (
     STRING_CHAR_AT_FAST_PATH_BUILTIN,
     SUBSTRING_FAST_PATH_BUILTINS,
     has_len_fast_path,
-    is_int_type,
     is_list_type,
-    is_numeric_type,
     is_simple_fast_path_expr,
     is_string_type,
 )
 from ._definition_index import collect_definitions
+from ._js_generics import (
+    SpecializationPlan,
+    plan_specializations,
+    substitute_type_params,
+)
 from .ast_nodes import (
     AssignStatement,
     AwaitExpr,
@@ -61,6 +65,7 @@ from .ast_nodes import (
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
@@ -74,8 +79,6 @@ from .ast_nodes import (
     SimpleType,
     Statement,
     StringLiteral,
-    ThrowExpression,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -103,14 +106,16 @@ if TYPE_CHECKING:
 from .ast_nodes import (
     FunctionType as ASTFunctionType,
 )
-from .base_compiler import BaseCompiler
+from .base_compiler import BaseCompiler, top_level_runtime_shadows
 from .builtin_registry import (
     all_builtin_names,
     js_backend_builtin_helper_names,
     js_backend_builtin_name_map,
 )
+from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .js_runtime_prelude import JS_RUNTIME_PRELUDE
 from .manifest import validate_module_name
+from .stdlib_scope import binds_unqualified
 from .types import (
     AnyType,
     ArrayType,
@@ -128,6 +133,7 @@ from .types import (
     StringType,
     TupleType,
     Type,
+    TypeParam,
     TypeVar,
     UnitType,
     UserType,
@@ -195,7 +201,7 @@ _CORE_NAMES = (
             "_safe_index",
             "_PropagateReturn",
             "_propagate",
-            "_GenoThrow",
+            "_genoPanic",
             "_GenoContractViolation",
         }
     )
@@ -524,7 +530,7 @@ _JS_LOCAL_RESERVED_NAMES = (
             "set_intersection",
             "_propagate",
             "_PropagateReturn",
-            "_GenoThrow",
+            "_genoPanic",
         }
     )
     | _JS_EMITTED_LOCAL_HELPER_NAMES
@@ -552,6 +558,25 @@ JS_RESERVED_PRELUDE_NAMES = (
 JS_DIRECT_REFERENCE_RESERVED_NAMES = (
     JS_RESERVED_PRELUDE_NAMES - _JS_HOST_INTRINSIC_NAMES
 )
+
+
+@lru_cache(maxsize=1)
+def _js_host_names() -> frozenset[str]:
+    """Runtime names a Geno identifier is renamed away from (0011).
+
+    Underscored runtime internals such as ``_GENO_CAPS`` stay rejected instead.
+    """
+    names = (JS_RESERVED_PRELUDE_NAMES | _JS_LOCAL_RESERVED_NAMES) - (
+        geno_runtime_names() | _JS_RESERVED
+    )
+    return frozenset(name for name in names if not name.startswith("_"))
+
+
+@lru_cache(maxsize=1)
+def _js_renamed_names() -> frozenset[str]:
+    """Every name `_mangle_name` renames: keywords get `_kw`, the rest `_g`."""
+    renamed = _JS_RESERVED - geno_runtime_names()
+    return _js_host_names() | {name for name in renamed if not name.startswith("_")}
 
 
 class JSCompileError(Exception):
@@ -631,16 +656,38 @@ class JSCompiler(BaseCompiler):
         # (`let x = 1` then `let x = 2`) used to emit, making the program a
         # SyntaxError that would not run at all.
         self._js_block_scopes: list[_JSBlockScope] = []
+        # Float-dependent copies of generic functions (see _js_generics), the
+        # module being compiled, and while compiling a copy, the types that
+        # replace its type parameters and the name it is emitted under.
+        self._spec_plan = SpecializationPlan()
+        self._current_module: str | None = None
+        self._type_subst: dict[str, Type] = {}
+        self._function_name_override: str | None = None
 
     _BUILTIN_NAME_MAP: dict[str, str] = js_backend_builtin_name_map()
 
+    def _mangle_name(self, name: str) -> str:
+        if "$" in name:
+            base, _, suffix = name.partition("$")
+            return f"{self._mangle_name(base)}${suffix}"
+        return super()._mangle_name(name)
+
     @staticmethod
-    def _mangle_name(name: str) -> str:
+    def _target_name(name: str) -> str:
+        if "$" in name:
+            # A generic function's specialized copy: `show$g1`. Geno names
+            # never contain `$`, so only the base part needs mangling.
+            base, _, suffix = name.partition("$")
+            return f"{JSCompiler._target_name(base)}${suffix}"
         mapped = JSCompiler._BUILTIN_NAME_MAP.get(name)
         if mapped is not None:
             return mapped
         if name in _JS_RESERVED:
             return f"{name}_kw"
+        if name in _js_host_names():
+            # `fetch`, `Error`, `get_field`: a host or runtime name (see
+            # host_names.py).
+            return f"{name}{HOST_NAME_SUFFIX}"
         return name
 
     @contextmanager
@@ -783,16 +830,6 @@ class JSCompiler(BaseCompiler):
         its result, which is the behaviour a browser artifact is supposed to
         keep (docs/spec/v0.5.md 4.1.1).
         """
-        if kind is EntrypointResultKind.INT and node_host:
-            # The result is the status, so it is never displayed.
-            # `process.exitCode` rather than `process.exit` so stdout still
-            # flushes. JavaScript's `%` truncates toward zero where Python's
-            # floors, so a bare `% 256` would leave -1 as -1; the doubled form
-            # matches `geno/exit_status.py`, which is the one definition of this
-            # normalization. A standalone artifact cannot import geno, so the
-            # expression is inlined here as it is in the Python backend.
-            self._writeln("process.exitCode = ((_main_result % 256) + 256) % 256;")
-            return
         resolved_return_type = (
             main_def.__dict__.get("_resolved_return_type")
             if main_def is not None
@@ -807,13 +844,62 @@ class JSCompiler(BaseCompiler):
             if main_def is not None
             else None
         )
+        if not kind.is_result:
+            self._emit_main_value(
+                "_main_result", main_result_type, kind=kind, node_host=node_host
+            )
+            return
+        # Proposal 0009: an `Err` is reported on the error stream with status 1,
+        # and an `Ok` is then handled as a `main` returning its value would be.
+        ok_type: Type | None = None
+        err_type: Type | None = None
+        if isinstance(main_result_type, ResultType):
+            ok_type, err_type = main_result_type.ok_type, main_result_type.err_type
+        self._writeln('if (_main_result._tag === "Err") {')
+        self._indent()
+        self._writeln("const _main_error = _main_result.error;")
+        rendered_error = self._compile_formatted_value(
+            "_main_error", err_type, mode="display", top_level=True
+        )
+        self._writeln(f'console.error("Error: " + {rendered_error});')
+        if node_host:
+            self._writeln("process.exitCode = 1;")
+        self._dedent()
+        self._writeln("} else {")
+        self._indent()
+        self._writeln("const _main_ok = _main_result.value;")
+        self._emit_main_value(
+            "_main_ok", ok_type, kind=kind.ok_kind, node_host=node_host
+        )
+        self._dedent()
+        self._writeln("}")
+
+    def _emit_main_value(
+        self,
+        name: str,
+        value_type: Type | None,
+        *,
+        kind: EntrypointResultKind,
+        node_host: bool,
+    ) -> None:
+        """Emit the status or display line for a completed main's value."""
+        if kind is EntrypointResultKind.INT and node_host:
+            # The result is the status, so it is never displayed.
+            # `process.exitCode` rather than `process.exit` so stdout still
+            # flushes. JavaScript's `%` truncates toward zero where Python's
+            # floors, so a bare `% 256` would leave -1 as -1; the doubled form
+            # matches `geno/exit_status.py`, which is the one definition of this
+            # normalization. A standalone artifact cannot import geno, so the
+            # expression is inlined here as it is in the Python backend.
+            self._writeln(f"process.exitCode = (({name} % 256) + 256) % 256;")
+            return
         rendered_main = self._compile_formatted_value(
-            "_main_result",
-            main_result_type,
+            name,
+            value_type,
             mode="display",
             top_level=True,
         )
-        self._writeln("if (_main_result !== null && _main_result !== undefined) {")
+        self._writeln(f"if ({name} !== null && {name} !== undefined) {{")
         self._indent()
         self._writeln(f"console.log({rendered_main});")
         self._dedent()
@@ -884,6 +970,7 @@ class JSCompiler(BaseCompiler):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._shadow_runtime_names(program)
         self._active_module_bindings = {}
         self._reserve_user_temp_names(program)
         self._out_line = 0
@@ -894,15 +981,20 @@ class JSCompiler(BaseCompiler):
 
         # First pass: collect type, function, trait, and impl definitions
         collect_definitions(program, into=self._definition_index)
+        self._spec_plan = plan_specializations([(None, program)])
+        self._current_module = None
 
         # Validate no user names shadow prelude names
         self._validate_runtime_name_collisions(
             program,
-            JS_RESERVED_PRELUDE_NAMES,
-            _JS_LOCAL_RESERVED_NAMES,
+            JS_RESERVED_PRELUDE_NAMES - _js_renamed_names(),
+            _JS_LOCAL_RESERVED_NAMES - _js_renamed_names(),
             JSCompileError,
-            direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
+            direct_reference_reserved_names=(
+                JS_DIRECT_REFERENCE_RESERVED_NAMES - _js_renamed_names()
+            ),
         )
+        self._validate_renamed_identifiers(program, JSCompileError)
 
         self._compile_module_constants(program)
 
@@ -912,6 +1004,7 @@ class JSCompiler(BaseCompiler):
                 self._compile_type_def(defn)
             elif isinstance(defn, FunctionDef):
                 self._compile_function_def(defn)
+                self._compile_specializations(defn)
             elif isinstance(defn, ImplDef):
                 self._compile_impl_def(defn)
             elif isinstance(defn, ImportStatement):
@@ -920,7 +1013,8 @@ class JSCompiler(BaseCompiler):
                 # which concatenates modules in dependency order, so no codegen
                 # is needed here for the single-program path.
                 if defn.alias:
-                    self._write(f"const {defn.alias} = {defn.module_name};\n")
+                    alias = self._mangle_name(defn.alias)
+                    self._write(f"const {alias} = {defn.module_name};\n")
             # TestBlock definitions are skipped in compiled output
 
         # Emit trait dispatch wrapper functions
@@ -1051,11 +1145,13 @@ class JSCompiler(BaseCompiler):
             self._reserve_user_temp_names(program)
             self._validate_runtime_name_collisions(
                 program,
-                JS_RESERVED_PRELUDE_NAMES,
-                _JS_LOCAL_RESERVED_NAMES,
+                JS_RESERVED_PRELUDE_NAMES - _js_renamed_names(),
+                _JS_LOCAL_RESERVED_NAMES - _js_renamed_names(),
                 JSCompileError,
                 top_level_dispatchers_share_scope=False,
-                direct_reference_reserved_names=JS_DIRECT_REFERENCE_RESERVED_NAMES,
+                direct_reference_reserved_names=(
+                    JS_DIRECT_REFERENCE_RESERVED_NAMES - _js_renamed_names()
+                ),
             )
         for mod_name in dep_graph.sorted_modules:
             try:
@@ -1081,6 +1177,10 @@ class JSCompiler(BaseCompiler):
 
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
         self._emit_function_assignments = False
+        self._spec_plan = plan_specializations(
+            (mod_name, dep_graph.parsed[mod_name])
+            for mod_name in dep_graph.sorted_modules
+        )
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
         for mod_name in dep_graph.sorted_modules:
@@ -1088,7 +1188,11 @@ class JSCompiler(BaseCompiler):
             self._register_module_param_names(mod_name, program)
             public_exports, impl_exports = self._module_runtime_exports(program)
             module_impl_exports[mod_name] = impl_exports
-            module_runtime_exports[mod_name] = public_exports + impl_exports
+            module_runtime_exports[mod_name] = (
+                public_exports
+                + self._spec_plan.export_names(mod_name, public_exports)
+                + impl_exports
+            )
 
         # Compile each module in topological order
         for mod_name in dep_graph.sorted_modules:
@@ -1122,9 +1226,12 @@ class JSCompiler(BaseCompiler):
             for defn in program.definitions:
                 if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
+                imported_program = dep_graph.parsed.get(defn.module_name)
                 for export_name in module_runtime_exports.get(defn.module_name, []):
                     if export_name in own_local_names:
                         continue
+                    if not binds_unqualified(imported_program, export_name):
+                        continue  # see geno/stdlib_scope.py
                     if export_name in imported_runtime_names:
                         ambiguous_imported_names.add(export_name)
                     else:
@@ -1139,6 +1246,7 @@ class JSCompiler(BaseCompiler):
                 JSCompileError,
                 imported_names=imported_runtime_names.keys(),
             )
+            self._validate_renamed_identifiers(program, JSCompileError)
 
             self._write(f"\n\n// === Module: {mod_name} ===\n")
             self._writeln(f"const {module_bindings[mod_name]} = (() => {{")
@@ -1157,14 +1265,17 @@ class JSCompiler(BaseCompiler):
             self._compile_module_constants(program)
 
             # Compile definitions
+            self._current_module = mod_name
             for defn in program.definitions:
                 if isinstance(defn, TypeDef):
                     self._compile_type_def(defn)
                 elif isinstance(defn, FunctionDef):
                     self._compile_function_def(defn)
+                    self._compile_specializations(defn)
                 elif isinstance(defn, ImplDef):
                     self._compile_impl_def(defn)
                 # TestBlock is skipped
+            self._current_module = None
 
             attrs = ", ".join(f"{n}: {self._mangle_name(n)}" for n in runtime_exports)
             self._writeln(f"return {{{attrs}}};" if attrs else "return {};")
@@ -1434,9 +1545,10 @@ class JSCompiler(BaseCompiler):
                 context="variant field",
                 variant_name=variant.name,
             )
+        function_name = self._mangle_name(variant.name)
         if variant.fields:
             params = ", ".join(name for name, _ in variant.fields)
-            self._writeln(f"function {variant.name}({params}) {{")
+            self._writeln(f"function {function_name}({params}) {{")
             self._indent()
             self._writeln(
                 f"return _withGenoFormatter("
@@ -1446,7 +1558,7 @@ class JSCompiler(BaseCompiler):
             self._writeln("}")
         else:
             self._writeln(
-                f"function {variant.name}() {{ "
+                f"function {function_name}() {{ "
                 f"return _withGenoFormatter("
                 f"{{ _tag: '{variant.name}' }}, {formatter_name}); "
                 "}"
@@ -1557,7 +1669,7 @@ class JSCompiler(BaseCompiler):
                 part += f" = {self._compile_expr(p.default_value)}"
             param_parts.append(part)
         params = ", ".join(param_parts)
-        func_name = self._mangle_name(defn.name)
+        func_name = self._mangle_name(self._function_name_override or defn.name)
         async_prefix = "async " if is_async_execution_form(defn) else ""
         if self._emit_function_assignments:
             self._writeln(
@@ -1645,6 +1757,52 @@ class JSCompiler(BaseCompiler):
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
 
+    def _compile_specializations(self, defn: FunctionDef) -> None:
+        """Emit each planned Float-dependent copy of a generic function."""
+        if not defn.type_params:
+            return
+        for spec in self._spec_plan.specializations(self._current_module, defn.name):
+            previous = (self._type_subst, self._function_name_override)
+            self._type_subst = spec.subst
+            self._function_name_override = spec.export_name
+            try:
+                self._compile_function_def(defn)
+            finally:
+                self._type_subst, self._function_name_override = previous
+
+    def _specialized_name(self, expr: Expression) -> str | None:
+        """Name of the generic function copy *expr* refers to, if not the base."""
+        instance = getattr(expr, "_generic_instance", None)
+        if instance is None:
+            return None
+        return self._spec_plan.lookup(instance, self._type_subst, self._current_module)
+
+    def _static_type(self, type_: Type | None) -> Type | None:
+        """A static type with the current copy's type arguments substituted."""
+        if type_ is None or not self._type_subst:
+            return type_
+        return substitute_type_params(type_, self._type_subst)
+
+    def _expr_static_type(self, expr: Expression) -> Type | None:
+        return self._static_type(getattr(expr, "_resolved_type", None))
+
+    def _is_int_expr(self, expr: Expression) -> bool:
+        """Whether *expr* is statically an Int in the code being emitted.
+
+        A `Num` type parameter left after substitution is an Int: every
+        instantiation that makes it a Float compiles its own copy.
+        """
+        type_ = self._expr_static_type(expr)
+        if isinstance(type_, TypeParam):
+            return type_.has_bound("Num")
+        return isinstance(type_, IntType)
+
+    def _is_numeric_expr(self, expr: Expression) -> bool:
+        type_ = self._expr_static_type(expr)
+        if isinstance(type_, TypeParam):
+            return type_.has_bound("Num")
+        return isinstance(type_, (IntType, FloatType))
+
     # =========================================================================
     # Statements
     # =========================================================================
@@ -1677,73 +1835,10 @@ class JSCompiler(BaseCompiler):
             self._writeln("break;")
         elif isinstance(stmt, ContinueStatement):
             self._writeln("continue;")
-        elif isinstance(stmt, TryStatement):
-            self._compile_try_statement(stmt)
         elif isinstance(stmt, ExpressionStatement):
             self._writeln(f"{self._compile_expr(stmt.expression)};")
         else:
             raise JSCompileError(f"Unsupported statement type: {type(stmt).__name__}")
-
-    def _compile_try_statement(self, stmt: TryStatement) -> None:
-        """Compile a try/catch statement to JavaScript try/catch."""
-        catch_type_annot = stmt.catch_clause.type_annotation
-        catch_type_name = getattr(catch_type_annot, "name", "String")
-        is_string_catch = catch_type_name == "String"
-
-        self._writeln("try {")
-        self._indent()
-        with self._block_scope(statements=stmt.try_body):
-            for s in stmt.try_body:
-                self._compile_statement(s)
-        self._dedent()
-        var_name = self._mangle_name(stmt.catch_clause.variable)
-        self._writeln("} catch (__geno_err__) {")
-        self._indent()
-        if is_string_catch:
-            self._writeln("if (__geno_err__ instanceof _GenoThrow) {")
-            self._indent()
-            self._writeln(f"let {var_name} = String(__geno_err__.value);")
-            with self._block_scope(
-                [stmt.catch_clause.variable], stmt.catch_clause.body
-            ):
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-            self._dedent()
-            self._writeln(
-                "} else if ((__geno_err__ instanceof Error) "
-                "&& __geno_err__.constructor === Error) {"
-            )
-            self._indent()
-            self._writeln(f"let {var_name} = __geno_err__.message;")
-            with self._block_scope(
-                [stmt.catch_clause.variable], stmt.catch_clause.body
-            ):
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-            self._dedent()
-            self._writeln("} else { throw __geno_err__; }")
-        else:
-            self._writeln(
-                "if (!(__geno_err__ instanceof _GenoThrow)) throw __geno_err__;"
-            )
-            variants = self._catch_variant_names(stmt)
-            if variants:
-                tag_checks = " || ".join(
-                    f'__geno_err__.value._tag === "{v}"' for v in variants
-                )
-                self._writeln(
-                    f"if (!(__geno_err__.value && ({tag_checks}))) throw __geno_err__;"
-                )
-            elif variants is not None:
-                self._writeln("throw __geno_err__;")
-            self._writeln(f"let {var_name} = __geno_err__.value;")
-            with self._block_scope(
-                [stmt.catch_clause.variable], stmt.catch_clause.body
-            ):
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-        self._dedent()
-        self._writeln("}")
 
     # Types that are immutable in JS and never need deep copying
     _IMMUTABLE_TYPES = frozenset(
@@ -1996,7 +2091,10 @@ class JSCompiler(BaseCompiler):
         active_user_types: frozenset[UserType] = frozenset(),
         seen_ref: str | None = None,
     ) -> str:
-        if resolved_type is None or isinstance(resolved_type, (AnyType, TypeVar)):
+        resolved_type = self._static_type(resolved_type)
+        if resolved_type is None or isinstance(
+            resolved_type, (AnyType, TypeVar, TypeParam)
+        ):
             return self._compile_runtime_formatted_value(
                 value_ref, mode=mode, top_level=top_level, seen_ref=seen_ref
             )
@@ -2218,7 +2316,10 @@ class JSCompiler(BaseCompiler):
     def _compile_json_object_key_value(
         self, value_ref: str, resolved_type: Type | None
     ) -> str | None:
-        if resolved_type is None or isinstance(resolved_type, (AnyType, TypeVar)):
+        resolved_type = self._static_type(resolved_type)
+        if resolved_type is None or isinstance(
+            resolved_type, (AnyType, TypeVar, TypeParam)
+        ):
             return None
 
         if isinstance(resolved_type, AsyncType):
@@ -2344,7 +2445,10 @@ class JSCompiler(BaseCompiler):
         resolved_type: Type | None,
         active_user_types: frozenset[str] = frozenset(),
     ) -> str | None:
-        if resolved_type is None or isinstance(resolved_type, (AnyType, TypeVar)):
+        resolved_type = self._static_type(resolved_type)
+        if resolved_type is None or isinstance(
+            resolved_type, (AnyType, TypeVar, TypeParam)
+        ):
             return None
 
         if isinstance(resolved_type, AsyncType):
@@ -2827,6 +2931,9 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     "First-class divide requires a concrete Int or Float function type"
                 )
+            specialized = self._specialized_name(expr)
+            if specialized is not None:
+                return self._compiled_identifier_name(specialized)
             return self._compiled_identifier_name(expr.name)
 
         if isinstance(expr, TypeIdentifier):
@@ -2835,13 +2942,21 @@ class JSCompiler(BaseCompiler):
             if expr.name == "None":
                 return "None_"
             variant = self._constructor_to_variant.get(expr.name)
+            name = self._mangle_name(expr.name)
             if variant is not None and not variant.fields:
-                return f"{expr.name}()"
-            return cast(str, expr.name)
+                return f"{name}()"
+            return name
 
         if isinstance(expr, ListLiteral):
             elements = ", ".join(self._compile_expr(e) for e in expr.elements)
             return f"_checkCollectionSize([{elements}])"
+
+        if isinstance(expr, MapLiteral):
+            pairs = ", ".join(
+                f"[{self._compile_expr(entry.key)}, {self._compile_expr(entry.value)}]"
+                for entry in expr.entries
+            )
+            return f"_mapLiteral([{pairs}])"
 
         if isinstance(expr, BinaryOp):
             return self._compile_binary_op(expr)
@@ -2859,7 +2974,8 @@ class JSCompiler(BaseCompiler):
 
         if isinstance(expr, FieldAccess):
             target = self._compile_expr(expr.target)
-            return f"get_field({target}, {expr.field_name!r})"
+            field_name = self._specialized_name(expr) or expr.field_name
+            return f"get_field({target}, {field_name!r})"
 
         if isinstance(expr, Pipeline):
             return self._compile_pipeline(expr)
@@ -2916,10 +3032,6 @@ class JSCompiler(BaseCompiler):
                 )
             return f"_checkCollectionSize(({iterable}).map(({var}) => {elem}))"
 
-        if isinstance(expr, ThrowExpression):
-            value = self._compile_expr(expr.value)
-            return f"(() => {{ throw new _GenoThrow({value}); }})()"
-
         if isinstance(expr, AwaitExpr):
             inner = self._compile_expr(expr.expr)
             return f"(await {inner})"
@@ -2929,8 +3041,18 @@ class JSCompiler(BaseCompiler):
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         left = self._compile_expr(expr.left)
         right = self._compile_expr(expr.right)
-        both_int = is_int_type(expr.left) and is_int_type(expr.right)
-        both_numeric = is_numeric_type(expr.left) and is_numeric_type(expr.right)
+        if expr.operator == "in":
+            member = expr._resolved_builtin_name
+            runtime = (
+                self._BUILTIN_NAME_MAP.get(member, member)
+                if member is not None
+                else "undefined"
+            )
+            return f"_geno_in({left}, {right}, {runtime})"
+        both_int = self._is_int_expr(expr.left) and self._is_int_expr(expr.right)
+        both_numeric = self._is_numeric_expr(expr.left) and self._is_numeric_expr(
+            expr.right
+        )
 
         if expr.operator == "/":
             if both_int:
@@ -2949,7 +3071,7 @@ class JSCompiler(BaseCompiler):
         if expr.operator == "%":
             if both_int:
                 return f"_safe_mod({left}, {right})"
-            if is_numeric_type(expr.left) and is_numeric_type(expr.right):
+            if self._is_numeric_expr(expr.left) and self._is_numeric_expr(expr.right):
                 if is_simple_fast_path_expr(expr.left) and is_simple_fast_path_expr(
                     expr.right
                 ):
@@ -2985,7 +3107,11 @@ class JSCompiler(BaseCompiler):
             return f"_safe_bitand({left}, {right})"
         if expr.operator == "^":
             return f"_safe_bitxor({left}, {right})"
-        if expr.operator == "-" and is_int_type(expr.left) and is_int_type(expr.right):
+        if (
+            expr.operator == "-"
+            and self._is_int_expr(expr.left)
+            and self._is_int_expr(expr.right)
+        ):
             return f"_safe_sub({left}, {right})"
         if expr.operator in ("<", ">", "<=", ">="):
             cmp = f"_compareOrderedValues({left}, {right})"
@@ -3009,13 +3135,13 @@ class JSCompiler(BaseCompiler):
     def _compile_unary_op(self, expr: UnaryOp) -> str:
         operand = self._compile_expr(expr.operand)
         if expr.operator == "-":
-            if is_int_type(expr.operand):
+            if self._is_int_expr(expr.operand):
                 return f"_safe_neg({operand})"
             return f"(-{operand})"
         if expr.operator == "not":
             return f"(!{operand})"
         if expr.operator == "~":
-            if is_int_type(expr.operand):
+            if self._is_int_expr(expr.operand):
                 return f"_safe_bitnot({operand})"
             return f"(~{operand})"
         return operand
@@ -3084,8 +3210,8 @@ class JSCompiler(BaseCompiler):
             right_expr = call_args[1].value
             left = self._compile_expr(left_expr)
             right = self._compile_expr(right_expr)
-            if is_numeric_type(left_expr) and is_numeric_type(right_expr):
-                if is_int_type(left_expr) and is_int_type(right_expr):
+            if self._is_numeric_expr(left_expr) and self._is_numeric_expr(right_expr):
+                if self._is_int_expr(left_expr) and self._is_int_expr(right_expr):
                     return f"_safe_div({left}, {right})"
                 return f"_float_div({left}, {right})"
 
@@ -3247,7 +3373,7 @@ class JSCompiler(BaseCompiler):
         if builtin_name == STRING_CHAR_AT_FAST_PATH_BUILTIN and len(call_args) == 2:
             text_expr = call_args[0].value
             index_expr = call_args[1].value
-            if is_string_type(text_expr) and is_int_type(index_expr):
+            if is_string_type(text_expr) and self._is_int_expr(index_expr):
                 text = self._compile_expr(text_expr)
                 index = self._compile_expr(index_expr)
                 return f"_stringCharAt({text}, {index})"
@@ -3258,8 +3384,8 @@ class JSCompiler(BaseCompiler):
             stop_expr = call_args[2].value
             if (
                 is_string_type(text_expr)
-                and is_int_type(start_expr)
-                and is_int_type(stop_expr)
+                and self._is_int_expr(start_expr)
+                and self._is_int_expr(stop_expr)
             ):
                 text = self._compile_expr(text_expr)
                 start = self._compile_expr(start_expr)
@@ -3410,7 +3536,7 @@ class JSCompiler(BaseCompiler):
             names, values, call = reordered
             return f"(({', '.join(names)}) => {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
-        return f"{expr.constructor}({args})"
+        return f"{self._mangle_name(expr.constructor)}({args})"
 
     def _compile_fstring_expr(self, expr: FStringExpr) -> str:
         """Compile an f-string expression to a JavaScript template literal."""
@@ -3488,10 +3614,8 @@ class JSCompiler(BaseCompiler):
             result_parts.append((cond, body_expr))
 
         # Fallback must raise at runtime rather than silently returning null.
-        # Mirrors the Python backend via _geno_throw — see issue #657.
-        result = (
-            '(() => { throw new _GenoThrow("Non-exhaustive match expression"); })()'
-        )
+        # Mirrors the Python backend via _geno_panic — see issue #657.
+        result = '_genoPanic("Non-exhaustive match expression")'
         for cond, body in reversed(result_parts):
             result = f"({cond} ? {body} : {result})"
 
@@ -3583,11 +3707,19 @@ def compile_to_js(
     return js_code
 
 
+def _top_level_js_name(name: str, shadows: frozenset[str]) -> str:
+    """The name a single-file program's top-level definition compiles to."""
+    if name in shadows:
+        return f"{name}{HOST_NAME_SUFFIX}"
+    return JSCompiler._target_name(name)
+
+
 def generate_dts(program: Program) -> str:
     """Generate TypeScript declaration file (.d.ts) from a Geno program."""
     from .ast_nodes import FunctionDef, TypeDef
 
     lines: list[str] = []
+    shadows = top_level_runtime_shadows(program)
 
     for defn in program.definitions:
         if isinstance(defn, TypeDef):
@@ -3605,16 +3737,18 @@ def generate_dts(program: Program) -> str:
                     lines.append(f"  readonly _tag: '{variant.name}';")
                     lines.append("}")
                 # Constructor function
+                constructor = JSCompiler._target_name(variant.name)
                 if variant.fields:
                     params = ", ".join(
                         f"{fn}: {_geno_type_to_ts(ft)}" for fn, ft in variant.fields
                     )
                     lines.append(
-                        f"export declare function {variant.name}({params}): {variant.name};"
+                        f"export declare function {constructor}({params}): "
+                        f"{variant.name};"
                     )
                 else:
                     lines.append(
-                        f"export declare function {variant.name}(): {variant.name};"
+                        f"export declare function {constructor}(): {variant.name};"
                     )
                 lines.append("")
 
@@ -3629,8 +3763,11 @@ def generate_dts(program: Program) -> str:
                 f"{p.name}: {_geno_type_to_ts(p.param_type)}" for p in defn.params
             )
             ret = _geno_type_to_ts(defn.return_type)
-            mangled = JSCompiler._mangle_name(defn.name)
-            lines.append(f"export declare function {mangled}({params}): {ret};")
+            mangled = _top_level_js_name(defn.name, shadows)
+            generics = f"<{', '.join(defn.type_params)}>" if defn.type_params else ""
+            lines.append(
+                f"export declare function {mangled}{generics}({params}): {ret};"
+            )
             lines.append("")
 
     return "\n".join(lines) + "\n" if lines else ""
@@ -3711,12 +3848,13 @@ def _to_esm(js_code: str, program: Program, *, include_node_preamble: bool) -> s
 
     # Collect exported names
     exports: list[str] = []
+    shadows = top_level_runtime_shadows(program)
     for defn in program.definitions:
         if isinstance(defn, FunctionDef):
-            exports.append(JSCompiler._mangle_name(defn.name))
+            exports.append(_top_level_js_name(defn.name, shadows))
         elif isinstance(defn, TypeDef):
             for variant in defn.variants:
-                exports.append(variant.name)
+                exports.append(JSCompiler._target_name(variant.name))
 
     if exports:
         export_line = "export { " + ", ".join(exports) + " };\n"

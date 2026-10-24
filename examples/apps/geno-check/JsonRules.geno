@@ -28,7 +28,7 @@ func has_json_key(text: String, key: String) -> Bool
     example ("{\"host\": \"localhost\"}", "host") -> true
     example ("{\"port\": 8080}", "name") -> false
 
-    return contains_substring(text, "\"" + key + "\"")
+    return string_contains(text, "\"" + key + "\"")
 end func
 
 // Validate a JSON config file. Returns list of violations.
@@ -37,18 +37,18 @@ end func
 func validate_json(file: String, text: String) -> List[Violation]
     match json_parse(text) with
         | Err(msg) ->
-        return [Violation(file, "<root>", "parse", "invalid JSON: " + msg, "valid JSON", "parse error", Error)]
+            return [Violation(file, "<root>", "parse", "invalid JSON: " + msg, "valid JSON", "parse error", Error)]
         | Ok(json) ->
-        match json with
-            | JsonObject(entries) ->
-            let raw: String = json_to_string(json)
-            // Pipeline: accumulate violations from each rule
-            return []
-                |> concat(_, check_required_key(file: file, raw: raw, key: "host"))
-                |> concat(_, check_required_key(file: file, raw: raw, key: "port"))
-            | _ ->
-            return [Violation(file, "<root>", "type", "expected a JSON object", "object", "non-object", Error)]
-        end match
+            match json with
+                | JsonObject(entries) ->
+                    let raw: String = json_to_string(json)
+                    // Pipeline: accumulate violations from each rule
+                    return []
+                        |> concat(_, check_required_key(file: file, raw: raw, key: "host"))
+                        |> concat(_, check_required_key(file: file, raw: raw, key: "port"))
+                | _ ->
+                    return [Violation(file, "<root>", "type", "expected a JSON object", "object", "non-object", Error)]
+            end match
     end match
 end func
 

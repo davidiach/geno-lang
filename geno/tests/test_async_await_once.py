@@ -18,14 +18,6 @@ async func load_value(n: Int) -> Int
     return n
 end func
 
-async func fail(n: Int) -> Int
-    print("failing")
-    if n > 0 then
-        throw "boom"
-    end if
-    return n
-end func
-
 func main() -> Unit
     let a = load_value(20)
     let x = await a
@@ -33,22 +25,11 @@ func main() -> Unit
     print(x + y)
     let p = 5 |> load_value(_)
     print((await p) + (await p))
-    let f = fail(1)
-    try
-        print(await f)
-    catch e: String
-        print("caught " + e)
-    end try
-    try
-        print(await f)
-    catch e: String
-        print("caught " + e)
-    end try
     return ()
 end func
 """
 
-EXPECTED = "loading\n40\nloading\n10\nfailing\ncaught boom\ncaught boom\n"
+EXPECTED = "loading\n40\nloading\n10\n"
 
 
 @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")

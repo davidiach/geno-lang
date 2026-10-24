@@ -1,0 +1,29 @@
+type Point = Point(x: Int, y: Int)
+
+func norm1(p: Point) -> Int
+    example Point(1, -2) -> 3
+    return abs(p.x) + abs(p.y)
+end func
+
+trait Describe
+    func describe(self: Self) -> String
+end trait
+
+impl Describe for Point
+    func describe(self: Point) -> String
+        example Point(1, 2) -> "(1, 2)"
+        return f"({self.x}, {self.y})"
+    end func
+end impl
+
+func main() -> Unit
+    let xs = [3, 1, 2]
+    print(xs.map(fn(x: Int) -> x * 10).filter(fn(x: Int) -> x > 10))
+    print(xs.length())
+    print("  hi  ".trim().to_upper() + "!")
+    print("a,b,c".split(",").join("-"))
+    print(Some(4).map(fn(x: Int) -> x + 1).unwrap_or(0))
+    print(Point(3, -4).norm1())
+    print(Point(1, 2).describe())
+    print("hello".replace(old: "l", new: "L"))
+end func

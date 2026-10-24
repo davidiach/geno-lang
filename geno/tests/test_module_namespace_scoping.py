@@ -67,3 +67,64 @@ end func
     result = run(source, RunConfig(modules=_modules()))
     assert result.ok, result.diagnostics
     assert result.value == expected
+
+
+def test_imported_module_calls_builtins_not_another_modules_function():
+    """A module's call to a builtin never reaches a same-named import elsewhere.
+
+    The interpreter used to bind the entry program's imports into the scope
+    every imported module inherits, so `Words` below ran `Shadow.length`
+    instead of the builtin while compiled Python and JavaScript called the
+    builtin.
+    """
+    modules = {
+        "Shadow": """
+export func length(xs: List[Int]) -> Int
+    example [1] -> 100
+    return 100
+end func
+""",
+        "Words": """
+export func word_len(text: String) -> Int
+    example "abc" -> 3
+    return length(text)
+end func
+""",
+    }
+    source = """
+import Shadow
+import Words
+
+func main() -> Int
+    return word_len("hello") * 1000 + length([1])
+end func
+"""
+    result = run(source, config=RunConfig(modules=modules, timeout=10.0))
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.value == 5100
+
+
+def test_imported_module_does_not_see_the_entry_programs_functions():
+    modules = {
+        "Words": """
+export func word_len(text: String) -> Int
+    example "abc" -> 3
+    return length(text)
+end func
+""",
+    }
+    source = """
+import Words
+
+func length(xs: List[Int]) -> Int
+    example [1] -> 100
+    return 100
+end func
+
+func main() -> Int
+    return word_len("hello")
+end func
+"""
+    result = run(source, config=RunConfig(modules=modules, timeout=10.0))
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.value == 5

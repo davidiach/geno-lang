@@ -31,7 +31,9 @@ from typing import Any, Callable, Collection
 
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
+    DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
+    INLINE_RECURSION_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,7 +148,7 @@ class SandboxConfig:
     max_processes: int = 1
 
     # Maximum recursion depth
-    max_recursion_depth: int = 500
+    max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH
 
     # Maximum output length (characters)
     max_output_length: int = 100000
@@ -1030,9 +1032,11 @@ class SandboxContext:
     def __enter__(self) -> "SandboxContext":
         # Set recursion limit
         self._old_recursion_limit = sys.getrecursionlimit()
+        # Each Geno call uses ~4-5 Python frames. This runs on the caller's
+        # thread, so stay within what an ordinary C stack holds.
         sys.setrecursionlimit(
-            self.config.max_recursion_depth * 6 + 100
-        )  # Each Geno call uses ~4-5 Python frames
+            min(self.config.max_recursion_depth * 6 + 100, INLINE_RECURSION_LIMIT)
+        )
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -1179,7 +1183,7 @@ class ProcessSandboxConfig:
 
     # Maximum Geno call depth — forwarded to the worker's sys.setrecursionlimit
     # so compiled code hits Geno's limit before Python's default (~1000).
-    max_recursion_depth: int = 500
+    max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH
 
     # Compiler-generated Python can opt into runtime-prelude symbol
     # injection after its leading import block is stripped.
@@ -2317,6 +2321,38 @@ def _worker_rlimit_as_ceiling(requested_bytes):
 
     return rlimit_as_ceiling(requested_bytes, resource_module)
 
+def _fit_recursion_to_stack(frames):
+    # Before Python 3.12 every Python frame may also spend C stack (up to
+    # ~1 KiB), and this worker cannot start a thread with a larger one
+    # (RLIMIT_NPROC). Linux grows the main-thread stack on demand up to
+    # RLIMIT_STACK and keeps at least 128 MiB below it free, so raise the
+    # soft limit there; elsewhere keep the recursion limit within the stack,
+    # so a deep program fails with a recursion error instead of a crash.
+    if sys.version_info >= (3, 12):
+        return frames
+    try:
+        import resource as _stack_resource
+    except ImportError:
+        return min(frames, 3100)
+    bytes_per_frame = 2048
+    ceiling = 96 * 1024 * 1024
+    unlimited = _stack_resource.RLIM_INFINITY
+    soft, hard = _stack_resource.getrlimit(_stack_resource.RLIMIT_STACK)
+    if sys.platform.startswith("linux"):
+        target = min(frames * bytes_per_frame, ceiling)
+        if hard != unlimited:
+            target = min(target, hard)
+        if soft != unlimited and soft < target:
+            try:
+                _stack_resource.setrlimit(
+                    _stack_resource.RLIMIT_STACK, (target, hard)
+                )
+                soft = target
+            except (ValueError, OSError):
+                pass
+    available = ceiling if soft == unlimited else min(soft, ceiling)
+    return max(1000, min(frames, available // bytes_per_frame))
+
 def main():
     # Load configuration from environment variable
     config = json.loads(os.environ["GENO_SANDBOX_CONFIG"])
@@ -3125,8 +3161,10 @@ def main():
     # Same pattern for the integer bit-length ceiling.
     max_int_bits = int(os.environ.get('GENO_MAX_INTEGER_BITS', 33_219))
 
-    # Set recursion limit to match the interpreter (100 + headroom)
-    recursion_limit = int(os.environ.get('GENO_RECURSION_LIMIT', 150))
+    # The parent derives the recursion limit from the Geno call depth.
+    recursion_limit = _fit_recursion_to_stack(
+        int(os.environ.get('GENO_RECURSION_LIMIT', 150))
+    )
     sys.setrecursionlimit(recursion_limit)
 
     globals_dict = {

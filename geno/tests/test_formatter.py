@@ -124,25 +124,6 @@ class TestBasicIndentation:
         assert lines[4] == "            return x"
         assert lines[5] == "        end while"
 
-    def test_try_catch(self):
-        source = (
-            "func f(x: Int) -> Int\n"
-            "example 1 -> 1\n"
-            "try\n"
-            "return x\n"
-            "catch e: String\n"
-            "return 0\n"
-            "end try\n"
-            "end func\n"
-        )
-        result = format_source(source)
-        lines = result.strip().split("\n")
-        assert lines[2] == "    try"
-        assert lines[3] == "        return x"
-        assert lines[4] == "    catch e: String"
-        assert lines[5] == "        return 0"
-        assert lines[6] == "    end try"
-
 
 class TestCommentPreservation:
     def test_line_comments_preserved(self):
@@ -604,7 +585,9 @@ class TestStructurePreservation:
             "end func\n"
         )
         broken = source.replace("    if n < 0", "        if n < 0")
-        monkeypatch.setattr(formatter, "_format_source_text", lambda _src: broken)
+        monkeypatch.setattr(
+            formatter, "_format_source_text", lambda _src, **_options: broken
+        )
         with pytest.raises(FormatError):
             format_source(source)
 
@@ -625,7 +608,9 @@ class TestStructurePreservation:
             "end func\n"
         )
         broken = source.replace("    if n < 0", "        if n < 0")
-        monkeypatch.setattr(formatter, "_format_source_text", lambda _src: broken)
+        monkeypatch.setattr(
+            formatter, "_format_source_text", lambda _src, **_options: broken
+        )
         with pytest.raises(FormatError):
             format_source(source)
 
@@ -638,7 +623,9 @@ class TestStructurePreservation:
         target = tmp_path / "prog.geno"
         target.write_text("func main() -> Unit\nprint(1)\nend func\n")
         monkeypatch.setattr(
-            formatter, "_format_source_text", lambda _src: "func main( -> Unit\n"
+            formatter,
+            "_format_source_text",
+            lambda _src, **_options: "func main( -> Unit\n",
         )
         with pytest.raises(SystemExit) as exc_info:
             format_files(str(target))
@@ -679,3 +666,131 @@ class TestContinuationLines:
             "end func\n"
         )
         _assert_fixed_point_and_parses(source)
+
+
+class TestCanonicalLayout:
+    """Layout rules added when the formatter became Stable (milestone M9)."""
+
+    def test_an_arm_body_below_its_pattern_is_indented_under_it(self):
+        source = (
+            "func f(o: Option[Int]) -> Int\n"
+            "    example None -> 0\n"
+            "    match o with\n"
+            "    | Some(n) ->\n"
+            "    let m = n + 1\n"
+            "    return m\n"
+            "    // the empty case\n"
+            "    | None ->\n"
+            "    return 0\n"
+            "    end match\n"
+            "end func\n"
+        )
+        assert format_source(source) == (
+            "func f(o: Option[Int]) -> Int\n"
+            "    example None -> 0\n"
+            "    match o with\n"
+            "        | Some(n) ->\n"
+            "            let m = n + 1\n"
+            "            return m\n"
+            "        // the empty case\n"
+            "        | None ->\n"
+            "            return 0\n"
+            "    end match\n"
+            "end func\n"
+        )
+
+    def test_a_method_chain_continues_the_line_above(self):
+        source = (
+            "func main() -> Unit\n"
+            "    let total = [1, 2]\n"
+            ".map(fn(x) -> x * 2)\n"
+            "        .filter(fn(x) -> x > 2)\n"
+            "    print(total)\n"
+            "end func\n"
+        )
+        assert format_source(source) == (
+            "func main() -> Unit\n"
+            "    let total = [1, 2]\n"
+            "        .map(fn(x) -> x * 2)\n"
+            "        .filter(fn(x) -> x > 2)\n"
+            "    print(total)\n"
+            "end func\n"
+        )
+
+    @pytest.mark.parametrize("ending", ["=", "+", "and", "->", "|>"])
+    def test_a_line_ending_in_an_operator_continues(self, ending):
+        rest = {"->": "fn(x: Int) ->", "|>": "1 |>"}.get(ending, f"x {ending}")
+        tail = {"->": "x * 2", "|>": "inc(_)"}.get(ending, "1")
+        source = f"func main() -> Unit\n    let y = {rest}\n{tail}\nend func\n"
+        lines = format_source(source).splitlines()
+        assert lines[2] == "        " + tail
+
+    def test_a_string_at_the_end_of_a_line_does_not_continue_it(self):
+        source = (
+            "func f(s: String) -> String\n"
+            '    example "a" -> "b"\n'
+            '    return "b"\n'
+            "end func\n"
+        )
+        assert format_source(source) == source
+
+    def test_an_open_bracket_already_indents_a_lambda_body(self):
+        source = (
+            "func main() -> Unit\n"
+            "    print([1].map(fn(x: Int) ->\n"
+            "        x * 2\n"
+            "    ))\n"
+            "end func\n"
+        )
+        assert format_source(source) == source
+
+    def test_runs_of_blank_lines_collapse(self):
+        source = "\n\nfunc main() -> Unit\n\n\n    print(1)\nend func\n\n\n"
+        assert (
+            format_source(source) == "func main() -> Unit\n\n    print(1)\nend func\n"
+        )
+
+
+class TestCanonicalSpacing:
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            ("let x=a+b*-c", "let x = a + b * -c"),
+            ("print( f(x ,y) )", "print(f(x, y))"),
+            ("xs.map(fn (x)->x*2)", "xs.map(fn(x) -> x * 2)"),
+            ("let [x , ...rest] = xs", "let [x, ...rest] = xs"),
+            ("let y = ?todo", "let y = ?todo"),
+            ("return f(x)?", "return f(x)?"),
+            ('let m = { "a" : 1 }', 'let m = {"a": 1}'),
+            ('let s = f"a {b}"  +  "  c  "', 'let s = f"a {b}" + "  c  "'),
+            ("let r = p with (x:1)", "let r = p with (x: 1)"),
+            ("let n = t.0.1 + x.0", "let n = t.0.1 + x.0"),
+            ("return not(x) and ~y", "return not (x) and ~y"),
+            ("let a = b   // keep   this", "let a = b   // keep   this"),
+            ('@untested( "r" )', '@untested("r")'),
+        ],
+    )
+    def test_spaces_between_tokens(self, line, expected):
+        from geno.formatter import _normalize_spacing
+
+        assert _normalize_spacing(line) == expected
+
+    def test_a_signature_is_spaced(self):
+        source = "func id[T: Ord](x:T)->T\n    example 1 -> 1\n    return x\nend func\n"
+        assert format_source(source).splitlines()[0] == "func id[T: Ord](x: T) -> T"
+
+    def test_a_mistyped_compound_assignment_stays_together(self):
+        from geno.formatter import _normalize_spacing
+
+        assert _normalize_spacing("x += 1") == "x += 1"
+
+    def test_spacing_falls_back_to_indentation_when_it_would_change_the_program(
+        self, monkeypatch
+    ):
+        from geno import formatter
+
+        source = "func main() -> Unit\nprint(1 - 2)\nend func\n"
+        monkeypatch.setattr(formatter, "_normalize_spacing", lambda _line: "print(1)")
+        assert format_source(source) == (
+            "func main() -> Unit\n    print(1 - 2)\nend func\n"
+        )

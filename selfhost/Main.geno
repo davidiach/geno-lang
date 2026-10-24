@@ -179,11 +179,10 @@ func load_source(path: String) -> Option[String]
     if not fs_exists(path) then
         return None
     end if
-    try
-        return Some(fs_read_text(path))
-    catch e: String
-        return None
-    end try
+    match fs_read_text(path) with
+        | Ok(content) -> return Some(content)
+        | Err(_) -> return None
+    end match
 end func load_source
 
 // Load and parse a module by name, given a base directory.
@@ -193,11 +192,14 @@ func load_module(base_dir: String, mod_name: String) -> Option[Program]
     if not fs_exists(path) then
         return None
     end if
-    let source: String = fs_read_text(path)
-    if length(source) == 0 then
-        return None
-    end if
-    return Some(parse_with_filename(source: source, filename: path))
+    match fs_read_text(path) with
+        | Ok(source) ->
+            if length(source) == 0 then
+                return None
+            end if
+            return Some(parse_with_filename(source: source, filename: path))
+        | Err(_) -> return None
+    end match
 end func load_module
 
 // Collect imported module names from a definition list.
@@ -232,14 +234,14 @@ func load_named_modules(
         let mod_opt: Option[Program] = load_module(base_dir, mod_name)
         match mod_opt with
             | Some(mod_program) ->
-            mutable_map_set(map: modules, key: mod_name, value: mod_program)
-            let nested_imports: List[String] = collect_import_names(mod_program.defs)
-            load_named_modules(
-                base_dir: base_dir,
-                names: nested_imports,
-                modules: modules,
-                seen: seen
-            )
+                mutable_map_set(map: modules, key: mod_name, value: mod_program)
+                let nested_imports: List[String] = collect_import_names(mod_program.defs)
+                load_named_modules(
+                    base_dir: base_dir,
+                    names: nested_imports,
+                    modules: modules,
+                    seen: seen
+                )
             | None -> let _unused: Int = 0
         end match
     end if

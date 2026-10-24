@@ -10,7 +10,6 @@ from __future__ import annotations
 from .ast_nodes import (
     AssignStatement,
     BreakStatement,
-    CatchClause,
     ContinueStatement,
     Expression,
     ExpressionStatement,
@@ -20,18 +19,20 @@ from .ast_nodes import (
     IfStatement,
     IndexAccess,
     IndexAssignStatement,
+    InferredType,
     LetStatement,
     MatchArm,
     MatchStatement,
     ReturnStatement,
     Statement,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
+    TypeAnnotation,
     VarStatement,
     WhileStatement,
 )
-from .parser_base import ParseError, ParserBase
+from .diagnostics import ErrorCode, replace_fix
+from .parser_base import REMOVED_TRY, ParseError, ParserBase
 from .tokens import SourceLocation, TokenType
 
 
@@ -42,20 +43,36 @@ class StatementParserMixin(ParserBase):
         """Parse statements until we hit a block terminator."""
         statements: list[Statement] = []
         while not self._check(
-            TokenType.END, TokenType.ELSE, TokenType.BAR, TokenType.CATCH, TokenType.EOF
+            TokenType.END, TokenType.ELSE, TokenType.BAR, TokenType.EOF
         ):
             statements.append(self._parse_statement())
         return statements
 
     def _parse_statement(self) -> Statement:
         """Parse a single statement."""
+        current = self._current()
+        if (
+            current.type is TokenType.IDENTIFIER
+            and current.value == "elif"
+            and self._peek(1).type
+            not in (
+                TokenType.ASSIGN,
+                TokenType.LPAREN,
+                TokenType.DOT,
+                TokenType.LBRACKET,
+            )
+        ):
+            raise ParseError(
+                "Geno writes 'else if', not 'elif'",
+                current.location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+                (replace_fix(current.location, "elif", "else if"),),
+            )
         if self._check(TokenType.LET):
             return self._parse_let_statement()
         elif self._check(TokenType.VAR):
             return self._parse_var_statement()
-        elif self._check(
-            TokenType.IF, TokenType.WHILE, TokenType.FOR, TokenType.MATCH, TokenType.TRY
-        ):
+        elif self._check(TokenType.IF, TokenType.WHILE, TokenType.FOR, TokenType.MATCH):
             # Track nesting depth for compound statements to prevent
             # deeply nested code from causing Python RecursionError.
             self._nesting_depth += 1
@@ -71,12 +88,12 @@ class StatementParserMixin(ParserBase):
                     return self._parse_while_statement()
                 elif self._check(TokenType.FOR):
                     return self._parse_for_statement()
-                elif self._check(TokenType.TRY):
-                    return self._parse_try_statement()
                 else:
                     return self._parse_match_statement()
             finally:
                 self._nesting_depth -= 1
+        elif self._check(TokenType.TRY, TokenType.CATCH):
+            raise self._error(REMOVED_TRY, ErrorCode.PARSE_REMOVED_SYNTAX)
         elif self._check(TokenType.RETURN):
             return self._parse_return_statement()
         elif self._check(TokenType.BREAK):
@@ -98,9 +115,10 @@ class StatementParserMixin(ParserBase):
     def _parse_let_statement(self) -> Statement:
         """Parse: let x: Type = value  or  let x = value  or  let (x, y): (Int, Int) = value"""
         location = self._current().location
-        self._expect(TokenType.LET)
+        let_token = self._expect(TokenType.LET)
         if self._check(TokenType.LPAREN):
             return self._parse_tuple_destructure(location, mutable=False)
+        self._reject_let_mut(let_token)
         name = self._expect(TokenType.IDENTIFIER).value
         type_annotation = None
         if self._match(TokenType.COLON):
@@ -138,8 +156,9 @@ class StatementParserMixin(ParserBase):
                 self._expect(TokenType.IDENTIFIER, "Expected variable name").value
             )
         self._expect(TokenType.RPAREN)
-        self._expect(TokenType.COLON)
-        type_annotation = self._parse_type()
+        type_annotation: TypeAnnotation = InferredType(location=location)
+        if self._match(TokenType.COLON):
+            type_annotation = self._parse_type()
         self._expect(TokenType.ASSIGN)
         value = self._parse_expression()
         return TupleDestructureStatement(
@@ -195,6 +214,7 @@ class StatementParserMixin(ParserBase):
         else_body: list[Statement] = []
         if self._check(TokenType.ELSE):
             else_token = self._advance()
+            self._reject_trailing_colon("else")
             # A chain may be written as ``else if`` or wrapped with ``if`` at
             # the same indentation.  A more-indented ``if`` remains an
             # ordinary nested statement with its own ``end if``.
@@ -208,8 +228,7 @@ class StatementParserMixin(ParserBase):
                 else_body = self._parse_statement_list()
 
         if consume_end:
-            self._expect(TokenType.END)
-            self._expect(TokenType.IF)
+            self._expect_end(TokenType.IF)
 
             label = None
             if self._check(TokenType.STRING):
@@ -232,8 +251,7 @@ class StatementParserMixin(ParserBase):
         condition = self._parse_expression()
         self._expect(TokenType.DO)
         body = self._parse_statement_list()
-        self._expect(TokenType.END)
-        self._expect(TokenType.WHILE)
+        self._expect_end(TokenType.WHILE)
 
         label = None
         if self._check(TokenType.STRING):
@@ -247,15 +265,16 @@ class StatementParserMixin(ParserBase):
         """Parse: for x: Type in items do ... end for [label]"""
         location = self._current().location
         self._expect(TokenType.FOR)
-        variable = self._expect(TokenType.IDENTIFIER).value
-        self._expect(TokenType.COLON)
-        var_type = self._parse_type()
+        variable_token = self._expect(TokenType.IDENTIFIER)
+        variable = variable_token.value
+        var_type: TypeAnnotation = InferredType(location=variable_token.location)
+        if self._match(TokenType.COLON):
+            var_type = self._parse_type()
         self._expect(TokenType.IN)
         iterable = self._parse_expression()
         self._expect(TokenType.DO)
         body = self._parse_statement_list()
-        self._expect(TokenType.END)
-        self._expect(TokenType.FOR)
+        self._expect_end(TokenType.FOR)
 
         label = None
         if self._check(TokenType.STRING):
@@ -270,35 +289,6 @@ class StatementParserMixin(ParserBase):
             label=label,
         )
 
-    def _parse_try_statement(self) -> TryStatement:
-        """Parse: try ... catch e: Type ... end try"""
-        location = self._current().location
-        self._expect(TokenType.TRY)
-        try_body = self._parse_statement_list()
-
-        catch_loc = self._current().location
-        self._expect(TokenType.CATCH)
-        var_name = self._expect(TokenType.IDENTIFIER).value
-        self._expect(TokenType.COLON)
-        type_annotation = self._parse_type()
-        catch_body = self._parse_statement_list()
-
-        catch_clause = CatchClause(
-            variable=var_name,
-            type_annotation=type_annotation,
-            body=catch_body,
-            location=catch_loc,
-        )
-
-        self._expect(TokenType.END)
-        self._expect(TokenType.TRY)
-
-        return TryStatement(
-            location=location,
-            try_body=try_body,
-            catch_clause=catch_clause,
-        )
-
     def _parse_match_statement(self) -> MatchStatement:
         """Parse: match expr with | pattern -> body ... end match [label]"""
         location = self._current().location
@@ -309,7 +299,7 @@ class StatementParserMixin(ParserBase):
         arms: list[MatchArm] = []
         while self._match(TokenType.BAR):
             arm_location = self._current().location
-            pattern = self._parse_pattern()
+            patterns = self._parse_arm_patterns()
             guard = None
             if self._check(TokenType.IDENTIFIER) and self._current().value == "when":
                 self._advance()  # consume 'when'
@@ -318,17 +308,14 @@ class StatementParserMixin(ParserBase):
             body = self._parse_statement_list()
             if not body:
                 raise self._error("Match arm body must contain at least one statement")
-            arms.append(
-                MatchArm(pattern=pattern, body=body, location=arm_location, guard=guard)
-            )
+            arms.extend(self._or_pattern_arms(patterns, guard, body, arm_location))
 
         if not arms:
             raise self._error(
                 "Match must have at least one arm (each arm starts with '|')"
             )
 
-        self._expect(TokenType.END)
-        self._expect(TokenType.MATCH)
+        self._expect_end(TokenType.MATCH)
 
         label = None
         if self._check(TokenType.STRING):
@@ -350,7 +337,6 @@ class StatementParserMixin(ParserBase):
             TokenType.END,
             TokenType.ELSE,
             TokenType.BAR,
-            TokenType.CATCH,
             TokenType.EOF,
         )
         if self._check(*terminators) or self._current().location.line > location.line:

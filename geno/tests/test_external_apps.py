@@ -64,7 +64,9 @@ def manifest() -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("damage", ["empty", "missing", "duplicate", "escape"])
+@pytest.mark.parametrize(
+    "damage", ["empty", "missing", "duplicate", "escape", "unsafe_id"]
+)
 def test_rejects_incomplete_or_unsafe_manifest(tmp_path, damage):
     data = manifest()
     assert len(external.validate_manifest(data, tmp_path)) == 101
@@ -74,8 +76,10 @@ def test_rejects_incomplete_or_unsafe_manifest(tmp_path, damage):
         data["apps"].pop()
     elif damage == "duplicate":
         data["apps"][-1]["id"] = data["apps"][0]["id"]
-    else:
+    elif damage == "escape":
         data["apps"][0]["path"] = "../outside"
+    else:
+        data["apps"][0]["id"] = "../outside"
     with pytest.raises(ValueError):
         external.validate_manifest(data, tmp_path)
 
@@ -144,6 +148,23 @@ def test_rejects_false_green_results(tmp_path, damage):
         external.validate_results(data, selected, executable, "geno 0.5.0")
 
 
+def test_failed_applications_are_counted_not_hidden(tmp_path):
+    executable = tmp_path / "venv/bin/geno"
+    selected = external.validate_manifest(manifest(), tmp_path)
+    data = successful_results(executable)
+    data["apps"][3]["run_ok"] = False
+    data["apps"][3]["ok"] = False
+    data["passed"], data["failed"] = 100, 1
+    assert external.failed_applications(data, selected, executable, "geno 0.5.0") == [
+        "app-3"
+    ]
+    with pytest.raises(ValueError):
+        external.validate_results(data, selected, executable, "geno 0.5.0")
+    data["passed"], data["failed"] = 101, 0
+    with pytest.raises(ValueError):
+        external.failed_applications(data, selected, executable, "geno 0.5.0")
+
+
 @pytest.mark.parametrize(
     "revision,status",
     [
@@ -184,8 +205,9 @@ def test_driver_selects_candidate_and_retains_failure_evidence(
     identity = installed(candidate, output / "venv")
     real_run = external.Commands.run
 
-    def run(self, name, args, cwd, timeout=180):
+    def run(self, name, args, cwd, timeout=180, *, check=True):
         calls.append((name, args, cwd))
+        self.returncode = 0
         if name == "corpus-revision":
             return external.CORPUS_REVISION
         if name == "identity":
@@ -209,6 +231,7 @@ def test_driver_selects_candidate_and_retains_failure_evidence(
                         'print("corpus failure"); raise SystemExit(7)',
                     ],
                     cwd,
+                    check=check,
                 )
             if outcome != "missing":
                 (output / "corpus.json").write_text(
@@ -237,6 +260,77 @@ def test_driver_selects_candidate_and_retains_failure_evidence(
         assert "corpus failure" in Path(records[-1]["log"]).read_text()
     if outcome == "success":
         assert receipt["results"] == {"total": 101, "passed": 101, "failed": 0}
+
+
+@pytest.mark.parametrize("after", ["passes", "still_fails", "exit_disagrees"])
+def test_an_application_failing_as_written_must_pass_after_migration(
+    monkeypatch, tmp_path, wheel, after
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "manifest.json").write_text(json.dumps(manifest()))
+    (corpus / "pin.json").write_text('{"pip": "geno-lang==0.4.3"}')
+    output = tmp_path / "evidence"
+    migrated = output / "migrated-corpus"
+    calls = []
+    candidate = external.wheel_identity(wheel)
+    identity = installed(candidate, output / "venv")
+
+    def run(self, name, args, cwd, timeout=180, *, check=True):
+        calls.append((name, args, cwd))
+        self.returncode = 0
+        if name == "corpus-revision":
+            return external.CORPUS_REVISION
+        if name == "identity":
+            return json.dumps(identity)
+        if name == "candidate-version":
+            return "geno 0.5.0"
+        if name in {"corpus", "migrated-corpus"}:
+            assert check is False
+            broken = {"app-3", "app-7"} if name == "corpus" else set()
+            if name == "migrated-corpus" and after == "still_fails":
+                broken = {"app-7"}
+            data = successful_results(Path(args[args.index("--geno-bin") + 1]))
+            for app in data["apps"]:
+                if app["id"] in broken:
+                    app.update(ok=False, compile_ok=False)
+            data["passed"], data["failed"] = 101 - len(broken), len(broken)
+            self.returncode = 1 if broken and after != "exit_disagrees" else 0
+            Path(args[args.index("--json-out") + 1]).write_text(json.dumps(data))
+        return ""
+
+    monkeypatch.setattr(external.Commands, "run", run)
+    code = external.main(
+        ["--wheel", str(wheel), "--corpus", str(corpus), "--output", str(output)]
+    )
+    receipt = json.loads((output / "receipt.json").read_text())
+    assert code == (0 if after == "passes" else 1)
+    assert receipt["passed"] is (after == "passes")
+    if after == "exit_disagrees":
+        assert not any(name.startswith("migrate") for name, _, _ in calls)
+        return
+    assert receipt["results"] == {"total": 101, "passed": 99, "failed": 2}
+    executable = str(output / "venv/bin/geno")
+    migrations = [(name, args, cwd) for name, args, cwd in calls if "migrate" in args]
+    assert migrations == [
+        (f"migrate-diff-{app}", [executable, "migrate", "--diff", "."], cwd)
+        if diff
+        else (f"migrate-{app}", [executable, "migrate", "."], cwd)
+        for app in ("app-3", "app-7")
+        for diff, cwd in (
+            (True, migrated / f"apps/{app}"),
+            (False, migrated / f"apps/{app}"),
+        )
+    ]
+    rerun = next(args for name, args, _ in calls if name == "migrated-corpus")
+    assert rerun[2] == str(migrated / "harness" / "run_corpus.py")
+    if after == "passes":
+        assert receipt["migrated"] == {
+            "applications": ["app-3", "app-7"],
+            "results": {"total": 101, "passed": 101, "failed": 0},
+        }
+    else:
+        assert "app-7" in receipt["error"]
 
 
 def test_driver_refuses_existing_results_without_overwriting(tmp_path, wheel):
@@ -298,6 +392,7 @@ def test_workflow_has_unprivileged_pinned_inputs_and_failure_artifacts():
         "receipt.json",
         "commands.jsonl",
         "corpus.json",
+        "corpus-migrated.json",
         "logs/*.log",
         "candidate-wheel/*.whl",
     ):

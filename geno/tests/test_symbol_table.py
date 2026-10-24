@@ -353,21 +353,6 @@ class TestBlockScopes:
 
         assert table.symbol_at("test.geno", 5, 12, name="x") is None
 
-    def test_try_body_local_does_not_resolve_after_block(self):
-        source = (
-            "func main() -> Int\n"
-            "    try\n"
-            "        let x: Int = 1\n"
-            "    catch e: String\n"
-            "        return 0\n"
-            "    end try\n"
-            "    return x\n"
-            "end func\n"
-        )
-        table = _build(source)
-
-        assert table.symbol_at("test.geno", 7, 12, name="x") is None
-
     def test_block_local_reference_still_resolves_inside_block(self):
         source = (
             "func main() -> Int\n"

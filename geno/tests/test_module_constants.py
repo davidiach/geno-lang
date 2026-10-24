@@ -302,15 +302,24 @@ class TestNameCollisions:
             compile_fn(self.TRAIT_PROGRAM, "<test>", typecheck=False)
         assert "conflicts with a trait dispatcher" in str(excinfo.value)
 
-    @pytest.mark.parametrize("compile_fn", [compile_to_python, compile_to_js])
-    def test_a_prelude_name_is_rejected_under_either_spelling(self, compile_fn):
-        # 'print' is reserved in the Python prelude under its own name and in
-        # the JavaScript prelude as the mangled 'print_'. Both are rejected,
-        # and both name the identifier the author actually wrote.
-        source = "let print = 1\n\nfunc main() -> Int\n    return print\nend func\n"
-        with pytest.raises((CompileError, JSCompileError)) as excinfo:
-            compile_fn(source, "<test>")
-        assert "'print' is a reserved runtime name" in str(excinfo.value)
+    @pytest.mark.parametrize(
+        ("compile_fn", "runner"),
+        [
+            (
+                compile_to_python,
+                lambda code: run_python_code(code, python_executable=sys.executable),
+            ),
+            (compile_to_js, run_node_code),
+        ],
+    )
+    def test_a_constant_shadowing_a_builtin_is_renamed(self, compile_fn, runner):
+        # 'print' is the runtime's 'print' in Python and 'print_' in
+        # JavaScript; the program's own constant becomes 'print_g' in both
+        # (proposal 0011), so neither runtime binding is replaced.
+        source = "let print = 7\n\nfunc main() -> Int\n    return print\nend func\n"
+        code = compile_fn(source, "<test>")
+        assert "print_g" in code
+        assert runner(code).returncode == 7
 
 
 class TestTooling:

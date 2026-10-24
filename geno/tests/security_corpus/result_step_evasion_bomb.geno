@@ -1,0 +1,25 @@
+# EXPECT: E503
+# Use ? propagation as control flow in a tight loop, verifying that the
+# early-return path is step-counted like any other.
+func always_err(i: Int) -> Result[Int, String]
+    example 0 -> Err("step")
+    return Err("step")
+end func
+
+func forward(i: Int) -> Result[Int, String]
+    example 0 -> Err("step")
+    let value = always_err(i)?
+    return Ok(value)
+end func
+
+func main() -> Int
+    var count: Int = 0
+    var i: Int = 0
+    while i < 1000000 do
+        if result_is_err(forward(i)) then
+            count = count + 1
+        end if
+        i = i + 1
+    end while
+    return count
+end func

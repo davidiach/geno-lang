@@ -151,9 +151,14 @@ CONSTRAIN_WALL_CLOCK_SECONDS: float = _env_positive_float(
     "GENO_CONSTRAIN_WALL_CLOCK_SECONDS", 5.0
 )
 DEFAULT_MAX_STEPS: int = _env_int("GENO_DEFAULT_MAX_STEPS", 10_000)
+# The hosted runtime keeps its own call-depth limit; local lanes default to
+# execution_limits.DEFAULT_MAX_RECURSION_DEPTH (proposal 0011).
+MAX_RECURSION_DEPTH: int = _env_int("GENO_MAX_RECURSION_DEPTH", 500)
 MAX_STEPS: int = _env_int("GENO_MAX_STEPS", 10_000_000)
 if DEFAULT_MAX_STEPS <= 0:
     raise ValueError("GENO_DEFAULT_MAX_STEPS must be positive")
+if MAX_RECURSION_DEPTH <= 0:
+    raise ValueError("GENO_MAX_RECURSION_DEPTH must be positive")
 if DEFAULT_MAX_STEPS > MAX_STEPS:
     raise ValueError("GENO_DEFAULT_MAX_STEPS must be <= GENO_MAX_STEPS")
 WORKER_STARTUP_GRACE_SECONDS: float = _env_positive_float(
@@ -1412,6 +1417,7 @@ def _build_run_config(
     return RunConfig(
         timeout=float(timeout),
         max_steps=max_steps,
+        max_recursion_depth=MAX_RECURSION_DEPTH,
         check_examples=check_examples,
         modules=_coerce_modules(payload),
         capabilities=capabilities,

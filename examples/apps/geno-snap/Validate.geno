@@ -64,10 +64,10 @@ func get_param(query: String, param: String) -> String
     match length(matching) with
         | 0 -> return ""
         | _ ->
-        let parts: List[String] = split(head(matching), "=")
-        match length(parts) with
-            | 1 -> return ""
-            | _ -> return head(tail(parts))
-        end match
+            let parts: List[String] = split(head(matching), "=")
+            match length(parts) with
+                | 1 -> return ""
+                | _ -> return head(tail(parts))
+            end match
     end match
 end func

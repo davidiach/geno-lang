@@ -71,6 +71,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ListLiteral,
     ListPattern,
     LiteralPattern,
+    MapLiteral,
     MatchExpr,
     MatchStatement,
     ModuleConstant,
@@ -84,8 +85,6 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     SimpleType,
     Statement,
     StringLiteral,
-    ThrowExpression,
-    TryStatement,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -104,7 +103,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
-from .base_compiler import BaseCompiler
+from .base_compiler import BaseCompiler, top_level_runtime_shadows
 from .builtin_registry import (
     all_builtin_names,
     python_backend_builtin_helper_names,
@@ -115,9 +114,12 @@ from .entrypoint import (
     classify_entrypoint_result,
     is_async_execution_form,
 )
+from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH
 from .float_promotion import float_shape
+from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
+from .stdlib_scope import binds_unqualified
 from .types import AsyncType, FloatType, ListType, UserType
 
 
@@ -216,7 +218,9 @@ _PYTHON_EMITTED_HOST_INTRINSIC_NAMES = frozenset(
     }
 )
 _PYTHON_HOST_INTRINSIC_NAMES = frozenset(dir(_python_builtins))
-_PYTHON_FIXED_GLOBAL_NAMES = frozenset({"__name__", "asyncio", "_geno_entry_main"})
+_PYTHON_FIXED_GLOBAL_NAMES = frozenset(
+    {"__name__", "asyncio", "_geno_entry_main", "_geno_run_deep"}
+)
 
 
 # Shadowing these could disable safety mechanisms (get_field, _safe_div) or
@@ -285,11 +289,11 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             # ? operator support
             "_propagate",
             "_PropagateReturn",
-            # throw/catch support
-            "_GenoThrow",
+            # contracts and panics
             "_GenoContractViolation",
             "_GENO_MISSING",
-            "_geno_throw",
+            "_geno_panic",
+            "_geno_named_constructor",
         }
     )
     | _PYTHON_EMITTED_LOCAL_HELPER_NAMES
@@ -316,6 +320,26 @@ _PYTHON_PROJECT_RESERVED_NAMES = (
 _PYTHON_KEYWORDS: frozenset[str] = frozenset(keyword.kwlist) | frozenset(
     getattr(keyword, "softkwlist", [])
 )
+
+
+def compiled_python_name(program: Program, name: str) -> str:
+    """The name a single-file program's top-level `name` has in compiled Python."""
+    if name in top_level_runtime_shadows(program):
+        return f"{name}{HOST_NAME_SUFFIX}"
+    return Compiler._target_name(name)
+
+
+@lru_cache(maxsize=1)
+def _python_host_names() -> frozenset[str]:
+    """Host and runtime names a Geno identifier is renamed away from (0011).
+
+    Underscored runtime internals such as ``_GENO_CAPS`` stay rejected instead.
+    """
+    names = (RESERVED_PRELUDE_NAMES | _PYTHON_PROJECT_RESERVED_NAMES) - (
+        geno_runtime_names() | _PYTHON_KEYWORDS
+    )
+    return frozenset(name for name in names if not name.startswith("_"))
+
 
 # ---------------------------------------------------------------------------
 # Integer-limit contract of the compiled Python backend
@@ -380,11 +404,6 @@ class Compiler(BaseCompiler, ASTVisitor):
         # expression, where Python forbids assignment expressions, so the
         # inline integer guard must fall back to its call form.
         self._in_comprehension_iterable = 0
-        # Depth counter: >0 while compiling statements inside a try block.
-        # Statement-form integer guards assign before checking, which a
-        # same-function catch could observe, so try bodies keep the
-        # expression-form guard (target stays unassigned on failure).
-        self._try_depth = 0
         # Stack of active block scopes for the function being compiled.
         # Python has no block scope, so a `let` inside a nested Geno block
         # would otherwise overwrite a same-named binding from an enclosing
@@ -717,16 +736,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                         arm.body, arm_scope, referenced, active
                     )
                 continue
-            if isinstance(stmt, TryStatement):
-                self._collect_loop_var_refs_in_statements(
-                    stmt.try_body, set(scope), referenced, active
-                )
-                catch_scope = set(scope)
-                catch_scope.add(stmt.catch_clause.variable)
-                self._collect_loop_var_refs_in_statements(
-                    stmt.catch_clause.body, catch_scope, referenced, active
-                )
-                continue
 
             for value in vars(stmt).values():
                 self._collect_loop_var_refs_in_value(value, scope, referenced, active)
@@ -789,13 +798,16 @@ class Compiler(BaseCompiler, ASTVisitor):
     _BUILTIN_NAME_MAP: dict[str, str] = python_backend_builtin_name_map()
 
     @staticmethod
-    def _mangle_name(name: str) -> str:
+    def _target_name(name: str) -> str:
         """Mangle a Geno identifier so it is a valid, non-keyword Python name."""
         mapped = Compiler._BUILTIN_NAME_MAP.get(name)
         if mapped is not None:
             return mapped
         if name in _PYTHON_KEYWORDS:
             return f"{name}_kw"
+        if name in _python_host_names():
+            # `len`, `list`, `T`: a host or runtime name (see host_names.py).
+            return f"{name}{HOST_NAME_SUFFIX}"
         return name
 
     @staticmethod
@@ -831,6 +843,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         self.output = StringIO()
         self.indent_level = 0
         self._reset_definition_state()
+        self._shadow_runtime_names(program)
         self._active_module_bindings = {}
         self._reserve_user_temp_names(program)
 
@@ -842,11 +855,14 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         self._validate_runtime_name_collisions(
             program,
-            RESERVED_PRELUDE_NAMES,
-            _PYTHON_LOCAL_RESERVED_NAMES,
+            RESERVED_PRELUDE_NAMES - _python_host_names(),
+            _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names(),
             CompileError,
-            direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
+            direct_reference_reserved_names=(
+                _PYTHON_DIRECT_REFERENCE_RESERVED_NAMES - _python_host_names()
+            ),
         )
+        self._validate_renamed_identifiers(program, CompileError)
 
         self._compile_module_constants(program)
 
@@ -862,7 +878,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._compile_impl_def(defn)
             elif isinstance(defn, ImportStatement):
                 if defn.alias:
-                    self.output.write(f"{defn.alias} = {defn.module_name}\n")
+                    alias = self._mangle_name(defn.alias)
+                    self.output.write(f"{alias} = {defn.module_name}\n")
             # TestBlock definitions are skipped in compiled output
 
         # Emit trait dispatch wrapper functions
@@ -916,11 +933,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             self._validate_runtime_name_collisions(
                 program,
-                _PYTHON_PROJECT_RESERVED_NAMES,
-                _PYTHON_LOCAL_RESERVED_NAMES,
+                _PYTHON_PROJECT_RESERVED_NAMES - _python_host_names(),
+                _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names(),
                 CompileError,
                 top_level_dispatchers_share_scope=False,
-                direct_reference_reserved_names=_PYTHON_DIRECT_REFERENCE_RESERVED_NAMES,
+                direct_reference_reserved_names=(
+                    _PYTHON_DIRECT_REFERENCE_RESERVED_NAMES - _python_host_names()
+                ),
             )
         for mod_name in dep_graph.sorted_modules:
             try:
@@ -987,9 +1006,12 @@ class Compiler(BaseCompiler, ASTVisitor):
             for defn in program.definitions:
                 if not isinstance(defn, ImportStatement) or defn.alias:
                     continue
+                imported_program = dep_graph.parsed.get(defn.module_name)
                 for export_name in module_runtime_exports.get(defn.module_name, []):
                     if export_name in own_local_names:
                         continue
+                    if not binds_unqualified(imported_program, export_name):
+                        continue  # see geno/stdlib_scope.py
                     if export_name in imported_runtime_names:
                         ambiguous_imported_names.add(export_name)
                     else:
@@ -1004,6 +1026,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 CompileError,
                 imported_names=imported_runtime_names.keys(),
             )
+            self._validate_renamed_identifiers(program, CompileError)
 
             self.output.write(f"\n\n# === Module: {mod_name} ===\n")
             factory_name = f"_geno_module_{self._mangle_name(mod_name)}"
@@ -1124,15 +1147,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Emit a Union type alias so the type name resolves in annotations
         variant_names = [v.name for v in defn.variants]
-        if defn.name in self._constructor_to_variant and defn.name not in variant_names:
-            # A variant from another type shares this type's name. Avoid emitting
-            # an assignment that would shadow the constructor class (#193).
-            pass
-        elif len(variant_names) == 1:
-            if defn.name != variant_names[0]:
-                self._writeln(f"{defn.name} = {variant_names[0]}")
+        emitted = [self._mangle_name(name) for name in variant_names]
+        if len(variant_names) == 1:
+            self._writeln(f"{self._mangle_name(defn.name)} = {emitted[0]}")
         elif defn.name not in variant_names:
-            self._writeln(f"{defn.name} = Union[{', '.join(variant_names)}]")
+            self._writeln(
+                f"{self._mangle_name(defn.name)} = Union[{', '.join(emitted)}]"
+            )
         # A variant that shares the type's name (``type Shape = Shape(n: Int)
         # | Other``) already binds that name to its constructor class; a
         # Union alias would shadow the constructor and make it uncallable
@@ -1141,13 +1162,10 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _collect_same_name_union_variants(self, program: Program) -> None:
         for defn in program.definitions:
-            if not isinstance(defn, TypeDef):
+            if not isinstance(defn, TypeDef) or len(defn.variants) < 2:
                 continue
             variant_names = [v.name for v in defn.variants]
-            if (len(defn.variants) >= 2 and defn.name in variant_names) or (
-                defn.name in self._constructor_to_variant
-                and defn.name not in variant_names
-            ):
+            if defn.name in variant_names:
                 self._same_name_union_variants[defn.name] = variant_names
 
     def _compile_variant(
@@ -1165,7 +1183,8 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # repr=False so Constructor.__repr__ (matching interpreter format) is used
         self._writeln("@dataclass(frozen=True, repr=False)")
-        self._writeln(f"class {variant.name}(Constructor):")
+        class_name = self._mangle_name(variant.name)
+        self._writeln(f"class {class_name}(Constructor):")
         self._indent()
 
         # Emit __slots__ for memory efficiency
@@ -1182,6 +1201,10 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("pass")
 
         self._dedent()
+        if class_name != variant.name:
+            # Renamed away from a host name (host_names.py); values still
+            # print and match by their Geno name.
+            self._writeln(f"_geno_named_constructor({class_name}, {variant.name!r})")
         self._writeln()
 
     def _compile_type_annotation(self, type_annot: TypeAnnotation) -> str:
@@ -1240,8 +1263,6 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             same_name_variants = self._same_name_union_variants.get(type_annot.name)
             if same_name_variants is not None:
-                if len(same_name_variants) == 1:
-                    return same_name_variants[0]
                 return f"Union[{', '.join(same_name_variants)}]"
 
             if type_annot.type_params:
@@ -1469,7 +1490,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             ForStatement,
             MatchStatement,
             ReturnStatement,
-            TryStatement,
         ) or isinstance(
             stmt,
             (
@@ -1480,7 +1500,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                 ForStatement,
                 MatchStatement,
                 ReturnStatement,
-                TryStatement,
             ),
         ):
             self._emit_source_location(stmt.location)
@@ -1511,8 +1530,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("break")
         elif stmt_type is ContinueStatement:
             self._writeln("continue")
-        elif stmt_type is TryStatement:
-            self._compile_try_statement(cast(TryStatement, stmt))
         elif stmt_type is ExpressionStatement:
             expr_stmt = cast(ExpressionStatement, stmt)
             self._writeln(self._compile_expr(expr_stmt.expression))
@@ -1547,8 +1564,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("break")
         elif isinstance(stmt, ContinueStatement):
             self._writeln("continue")
-        elif isinstance(stmt, TryStatement):
-            self._compile_try_statement(stmt)
         elif isinstance(stmt, ExpressionStatement):
             self._writeln(self._compile_expr(stmt.expression))
         else:
@@ -1573,65 +1588,6 @@ class Compiler(BaseCompiler, ASTVisitor):
             index = self._compile_expr(expr.index)
             return f"_geno_own_index({parent}, {index})"
         return self._compile_expr(expr)
-
-    def _compile_try_statement(self, stmt: TryStatement) -> None:
-        """Compile a try/catch statement to Python try/except."""
-        catch_type_annot = stmt.catch_clause.type_annotation
-        catch_type_name = getattr(catch_type_annot, "name", "String")
-        is_string_catch = catch_type_name == "String"
-
-        self._writeln("try:")
-        self._indent()
-        self._try_depth += 1
-        try:
-            if stmt.try_body:
-                with self._block_scope():
-                    for s in stmt.try_body:
-                        self._compile_statement(s)
-            else:
-                self._writeln("pass")
-        finally:
-            self._try_depth -= 1
-        self._dedent()
-        if is_string_catch:
-            self._writeln(
-                "except (_GenoThrow, RuntimeError, IndexError) as __geno_err__:"
-            )
-        else:
-            self._writeln("except _GenoThrow as __geno_err__:")
-        self._indent()
-        with self._block_scope([stmt.catch_clause.variable]):
-            var_name = self._compiled_identifier_name(stmt.catch_clause.variable)
-            if is_string_catch:
-                self._writeln("if isinstance(__geno_err__, _GenoThrow):")
-                self._indent()
-                self._writeln(f"{var_name} = str(__geno_err__.value)")
-                self._dedent()
-                self._writeln("elif type(__geno_err__) in (RuntimeError, IndexError):")
-                self._indent()
-                self._writeln(f"{var_name} = str(__geno_err__)")
-                self._dedent()
-                self._writeln("else: raise")
-            else:
-                variants = self._catch_variant_names(stmt)
-                if variants:
-                    if len(variants) == 1:
-                        self._writeln(
-                            f"if type(__geno_err__.value).__name__ != {variants[0]!r}: raise"
-                        )
-                    else:
-                        self._writeln(
-                            f"if type(__geno_err__.value).__name__ not in {variants!r}: raise"
-                        )
-                elif variants is not None:
-                    self._writeln("raise")
-                self._writeln(f"{var_name} = __geno_err__.value")
-            if stmt.catch_clause.body:
-                for s in stmt.catch_clause.body:
-                    self._compile_statement(s)
-            else:
-                self._writeln("pass")
-            self._dedent()
 
     def _compile_while_statement(self, stmt: WhileStatement) -> None:
         self._loop_capture_names.append(self._loop_lambda_names(stmt.body))
@@ -1821,11 +1777,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         needs a post-assignment bits check.
 
         The statement form (assign raw, then check the target name) saves
-        the assignment-expression temp of the inline guard. It is skipped
-        inside try blocks, where a same-function catch could observe the
-        over-limit value already bound to the target.
+        the assignment-expression temp of the inline guard. Nothing can
+        observe the over-limit value it binds first: the check panics.
         """
-        if self._try_depth or self._in_comprehension_iterable:
+        if self._in_comprehension_iterable:
             return None
         if self._is_int_addsub(value_expr):
             binary = cast(BinaryOp, value_expr)
@@ -1989,7 +1944,9 @@ class Compiler(BaseCompiler, ASTVisitor):
             if pattern.constructor == "None":
                 cond = f"isinstance({scrutinee}, _None)"
             else:
-                cond = f"isinstance({scrutinee}, {pattern.constructor})"
+                cond = (
+                    f"isinstance({scrutinee}, {self._mangle_name(pattern.constructor)})"
+                )
 
             # Handle subpatterns
             for i, subpat in enumerate(pattern.subpatterns):
@@ -2138,9 +2095,13 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return "None_"
             # Check if this is a nullary constructor (type variant with no fields)
             variant = self._constructor_to_variant.get(type_identifier.name)
+            name = self._mangle_name(type_identifier.name)
             if variant is not None and not variant.fields:
-                return f"{type_identifier.name}()"
-            return str(type_identifier.name)
+                return f"{name}()"
+            return name
+
+        if expr_type is MapLiteral:
+            return self._compile_map_literal(cast(MapLiteral, expr))
 
         if expr_type is ListLiteral:
             list_expr = cast(ListLiteral, expr)
@@ -2222,11 +2183,6 @@ class Compiler(BaseCompiler, ASTVisitor):
                     return f"_check_collection_size([{elem} for {var} in {iterable} if {cond}])"
                 return f"_check_collection_size([{elem} for {var} in {iterable}])"
 
-        if expr_type is ThrowExpression:
-            throw_expr = cast(ThrowExpression, expr)
-            value = self._compile_expr(throw_expr.value)
-            return f"_geno_throw({value})"
-
         if expr_type is AwaitExpr:
             await_expr = cast(AwaitExpr, expr)
             inner = self._compile_await_operand(await_expr.expr)
@@ -2304,9 +2260,13 @@ class Compiler(BaseCompiler, ASTVisitor):
             if expr.name == "None":
                 return "None_"
             variant = self._constructor_to_variant.get(expr.name)
+            name = self._mangle_name(expr.name)
             if variant is not None and not variant.fields:
-                return f"{expr.name}()"
-            return str(expr.name)
+                return f"{name}()"
+            return name
+
+        if isinstance(expr, MapLiteral):
+            return self._compile_map_literal(expr)
 
         if isinstance(expr, ListLiteral):
             elements = ", ".join(
@@ -2376,15 +2336,19 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return f"_check_collection_size([{elem} for {var} in {iterable} if {cond}])"
             return f"_check_collection_size([{elem} for {var} in {iterable}])"
 
-        if isinstance(expr, ThrowExpression):
-            value = self._compile_expr(expr.value)
-            return f"_geno_throw({value})"
-
         if isinstance(expr, AwaitExpr):
             inner = self._compile_await_operand(expr.expr)
             return f"(await {inner})"
 
         raise CompileError(f"Unsupported expression node: {type(expr).__name__}")
+
+    def _compile_map_literal(self, expr: MapLiteral) -> str:
+        pairs = ", ".join(
+            f"({self._promote_list_element(self._compile_expr(entry.key), getattr(entry.key, '_expected_runtime_type', None))}, "
+            f"{self._promote_list_element(self._compile_expr(entry.value), getattr(entry.value, '_expected_runtime_type', None))})"
+            for entry in expr.entries
+        )
+        return f"_map_literal([{pairs}])"
 
     @staticmethod
     def _is_float_type(expr: Expression) -> bool:
@@ -2639,6 +2603,23 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         """Compile a binary operation."""
+        if expr._resolved_builtin_name == "concat":
+            # List + List: concat's arguments, widened like any Int list
+            # passed where a Float list is expected.
+            concat = self._BUILTIN_NAME_MAP.get("concat", "concat")
+            left = self._compile_call_argument(expr.left)
+            right = self._compile_call_argument(expr.right)
+            return f"{concat}({left}, {right})"
+        if expr.operator == "in":
+            member = expr._resolved_builtin_name
+            runtime = (
+                self._BUILTIN_NAME_MAP.get(member, member)
+                if member is not None
+                else "None"
+            )
+            left = self._compile_expr(expr.left)
+            right = self._compile_expr(expr.right)
+            return f"_geno_in({left}, {right}, {runtime})"
         # Numeric operands still use guarded helpers for +, *, and - because
         # Geno permits Int values where Float is expected, so runtime values may
         # be Python ints even when the static operand type is Float.
@@ -3139,7 +3120,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             names, values, call = reordered
             return f"(lambda {', '.join(names)}: {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
-        return f"{expr.constructor}({args})"
+        return f"{self._mangle_name(expr.constructor)}({args})"
 
     def _compile_fstring_expr(self, expr: FStringExpr) -> str:
         """Compile an f-string expression to a Python f-string."""
@@ -3219,7 +3200,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         # that raises at runtime — a trailing `# no match` comment turns the
         # surrounding ternary into a truncated line and produces a SyntaxError
         # (see issue #657).
-        result = '_geno_throw("Non-exhaustive match expression")'
+        result = '_geno_panic("Non-exhaustive match expression")'
         for cond, body in reversed(result_parts):
             result = f"({body} if {cond} else {result})"
 
@@ -3491,8 +3472,39 @@ def _compiled_main_guard_opening(*, is_async: bool, main_name: str = "main") -> 
     lines = ["\n\nif __name__ == '__main__':\n"]
     if is_async:
         lines.append("    import asyncio\n")
-    lines.append(f"    result = {call}\n")
+    lines.append(_STANDALONE_DEEP_RUNNER)
+    lines.append(f"    result = _geno_run_deep(lambda: {call})\n")
     return "".join(lines)
+
+
+# A standalone program allows the default Geno call depth (proposal 0011): a
+# compiled call is one Python frame, as in the process sandbox. Before Python
+# 3.12 each frame can also spend C stack, so `main` then runs on a thread
+# whose stack holds that many (execution_limits.call_with_recursion_room;
+# a standalone artifact must not import geno).
+_STANDALONE_RECURSION_FRAMES = DEFAULT_MAX_RECURSION_DEPTH * 6 + 100
+_STANDALONE_DEEP_RUNNER = f"""\
+    def _geno_run_deep(body):
+        import sys
+        sys.setrecursionlimit({_STANDALONE_RECURSION_FRAMES})
+        if sys.version_info >= (3, 12):
+            return body()
+        import threading
+        outcome = []
+        def run():
+            try:
+                outcome.append((True, body()))
+            except BaseException as exc:
+                outcome.append((False, exc))
+        threading.stack_size({_STANDALONE_RECURSION_FRAMES * 2048})
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join()
+        succeeded, value = outcome[0]
+        if not succeeded:
+            raise value
+        return value
+"""
 
 
 def _compiled_main_guard(
@@ -3507,6 +3519,18 @@ def _compiled_main_guard(
     definition, through ``_compiled_main_guard_opening``.
     """
     opening = _compiled_main_guard_opening(is_async=is_async, main_name=main_name)
+    if kind.is_result:
+        # Proposal 0009: an `Err` is reported on stderr with status 1, after
+        # the program's own output, and an `Ok` is then handled by its kind.
+        opening += (
+            "    if isinstance(result, Err):\n"
+            "        import sys\n"
+            "        sys.stdout.flush()\n"
+            '        print("Error: " + _geno_format(result.error), file=sys.stderr)\n'
+            "        raise SystemExit(1)\n"
+            "    result = result.value\n"
+        )
+        kind = kind.ok_kind
     if kind is EntrypointResultKind.INT:
         # docs/spec/v0.5.md 4.1.1: an `Int` result is the process's status, not
         # its output, so it is never displayed. `geno/exit_status.py` holds the

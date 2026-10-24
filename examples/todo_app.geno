@@ -8,7 +8,6 @@ type Status = Pending | Done
 
 type Todo = Task(title: String, priority: Priority, status: Status)
 
-
 // Return a display name for a priority level
 func priority_name(p: Priority) -> String
     example High -> "high"
@@ -22,7 +21,6 @@ func priority_name(p: Priority) -> String
     end match
 end func priority_name
 
-
 // Return a display name for a status
 func status_name(s: Status) -> String
     example Pending -> "pending"
@@ -33,7 +31,6 @@ func status_name(s: Status) -> String
         | Done -> return "done"
     end match
 end func status_name
-
 
 // Check whether a todo item is still pending
 func is_pending(todo: Todo) -> Bool
@@ -46,7 +43,6 @@ func is_pending(todo: Todo) -> Bool
     end match
 end func is_pending
 
-
 // Check whether a todo item has the given priority
 func has_priority(todo: Todo, p: Priority) -> Bool
     example (Task("Buy milk", High, Pending), High) -> true
@@ -54,26 +50,25 @@ func has_priority(todo: Todo, p: Priority) -> Bool
 
     match todo with
         | Task(_, High, _) ->
-        match p with
-            | High -> return true
-            | Medium -> return false
-            | Low -> return false
-        end match
+            match p with
+                | High -> return true
+                | Medium -> return false
+                | Low -> return false
+            end match
         | Task(_, Medium, _) ->
-        match p with
-            | High -> return false
-            | Medium -> return true
-            | Low -> return false
-        end match
+            match p with
+                | High -> return false
+                | Medium -> return true
+                | Low -> return false
+            end match
         | Task(_, Low, _) ->
-        match p with
-            | High -> return false
-            | Medium -> return false
-            | Low -> return true
-        end match
+            match p with
+                | High -> return false
+                | Medium -> return false
+                | Low -> return true
+            end match
     end match
 end func has_priority
-
 
 // Mark a todo item as done
 func mark_done(todo: Todo) -> Todo
@@ -85,7 +80,6 @@ func mark_done(todo: Todo) -> Todo
     end match
 end func mark_done
 
-
 // Count how many items in the list are still pending
 func count_pending(todos: List[Todo]) -> Int
     example [Task("A", High, Pending), Task("B", Low, Done)] -> 1
@@ -95,17 +89,15 @@ func count_pending(todos: List[Todo]) -> Int
     return length(pending)
 end func count_pending
 
-
 // Format a single todo item as a readable string
 func describe(todo: Todo) -> String
     example Task("Buy milk", High, Pending) -> "[pending] Buy milk (high)"
 
     match todo with
         | Task(title, pri, stat) ->
-        return format(template: "[{}] {} ({})", values: [status_name(stat), title, priority_name(pri)])
+            return format(template: "[{}] {} ({})", values: [status_name(stat), title, priority_name(pri)])
     end match
 end func describe
-
 
 func main() -> Int
     // Build a list of todos

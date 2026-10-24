@@ -156,7 +156,8 @@ class TestRunBasic:
     def test_run_short_circuits_boolean_operators(self):
         source = """
         func main() -> Bool
-            return true or is_positive(head([]))
+            let empty: List[Int] = []
+            return true or head(empty) > 0
         end func
         """
         result = run(source)
@@ -290,30 +291,6 @@ class TestRunErrors:
         diag = result.diagnostics[0]
         assert diag.code is not None
 
-    def test_contract_failure_is_not_caught_as_string_runtime_error(self):
-        source = """
-        @untested("contract repro")
-        func f(x: Int) -> Int
-            requires false
-            return x
-        end func
-
-        func main() -> String
-            try
-                let y: Int = f(1)
-                return "not caught"
-            catch e: String
-                return "caught"
-            end try
-        end func
-        """
-        result = run(source, RunConfig(check_examples=False))
-
-        assert result.ok is False
-        assert result.value is None
-        assert result.diagnostics
-        assert "Precondition failed" in result.diagnostics[0].message
-
     def test_negative_shift_reports_runtime_diagnostic(self):
         source = """
         func main() -> Int
@@ -386,6 +363,39 @@ class TestProjectResolutionApi:
         assert check_result.ok is True, [d.message for d in check_result.diagnostics]
         assert run_result.ok is True, [d.message for d in run_result.diagnostics]
         assert run_result.value == ["a"]
+
+    def test_supplied_modules_import_the_standard_library(self):
+        util = (
+            "import List\n"
+            "export func size(xs: List[Int]) -> Int\n"
+            "    example [1, 2] -> 2\n"
+            "    return List.length(xs)\n"
+            "end func\n"
+        )
+        source = (
+            "import Util\nfunc main() -> Int\n    return Util.size([1, 2])\nend func\n"
+        )
+
+        check_result = check(source, modules={"Util": util})
+        run_result = run(source, RunConfig(timeout=None, modules={"Util": util}))
+
+        assert check_result.ok is True, [d.message for d in check_result.diagnostics]
+        assert run_result.ok is True, [d.message for d in run_result.diagnostics]
+        assert run_result.value == 2
+
+    def test_a_supplied_module_overrides_the_standard_library(self):
+        own_list = (
+            "export func length(xs: List[Int]) -> Int\n"
+            "    example [1] -> 7\n"
+            "    return 7\n"
+            "end func\n"
+        )
+        source = "import List\nfunc main() -> Int\n    return List.length([1, 2])\nend func\n"
+
+        result = run(source, RunConfig(timeout=None, modules={"List": own_list}))
+
+        assert result.ok is True, [d.message for d in result.diagnostics]
+        assert result.value == 7
 
     def test_run_path_resolves_imports_for_legacy_direct_file_extensions(
         self, tmp_path
@@ -1166,7 +1176,7 @@ class TestRunConfig:
         cfg = RunConfig()
         assert cfg.timeout == 5.0
         assert cfg.max_steps == DEFAULT_INTERPRETER_MAX_STEPS
-        assert cfg.max_recursion_depth == 500
+        assert cfg.max_recursion_depth == 10_000
         assert cfg.max_output_length == 100_000
         assert cfg.max_collection_size == 10_000_000
         assert cfg.max_integer_bits == 33_219
@@ -1382,7 +1392,7 @@ class TestHostCallbacks:
     def test_fs_read_text_with_callback(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
 
@@ -1400,7 +1410,7 @@ class TestHostCallbacks:
     def test_http_fetch_with_callback(self):
         source = """
         func main() -> String
-            return http_fetch(url: "https://example.com")
+            return http_fetch(url: "https://example.com").unwrap()
         end func
         """
 
@@ -1418,7 +1428,7 @@ class TestHostCallbacks:
     def test_fs_read_text_denied_without_capability(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         config = RunConfig(capabilities=set())  # No fs cap
@@ -1434,7 +1444,7 @@ class TestHostCallbacks:
     def test_fs_callback_not_installed_without_capability(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
 
@@ -1454,7 +1464,7 @@ class TestHostCallbacks:
     def test_host_callback_missing_when_cap_granted_but_no_callback(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         config = RunConfig(capabilities={"fs"})  # Cap granted, no callback
@@ -1470,7 +1480,7 @@ class TestHostCallbacks:
     def test_http_fetch_missing_when_cap_granted_but_no_callback(self):
         source = """
         func main() -> String
-            return http_fetch(url: "https://example.com")
+            return http_fetch(url: "https://example.com").unwrap()
         end func
         """
         config = RunConfig(capabilities={"http"})  # Cap granted, no callback
@@ -1566,7 +1576,7 @@ class TestTimeoutBehavior:
         from geno.parser import parse
         from geno.sandbox import SandboxConfig
 
-        source = 'let answer = 42\nfunc main() -> Int\n    throw "called"\nend func\n'
+        source = 'let answer = 42\nfunc main() -> Int\n    panic("called")\nend func\n'
         interpreter = Interpreter(sandbox_config=SandboxConfig(timeout=0.25))
 
         assert interpreter.run(parse(source), execute_main=False) is None
@@ -1649,7 +1659,7 @@ class TestTimeoutBehavior:
     def test_timeout_waits_for_host_callback_completion(self):
         source = """
         func main() -> String
-            return fs_read_text(path: "/test.txt")
+            return fs_read_text(path: "/test.txt").unwrap()
         end func
         """
         side_effects = []

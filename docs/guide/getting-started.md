@@ -66,6 +66,37 @@ geno check hello.geno
 #   2 definitions
 ```
 
+When an error has an unambiguous correction, such as a misspelled name, the
+message says so (`fix: Change 'lenght' to 'length'`). `geno check --fix
+hello.geno` applies every such fix and then checks again; editors offer them
+as quick fixes.
+
+## Formatting
+
+`geno fmt` puts every file under a path in the one canonical layout:
+
+```bash
+geno fmt .            # rewrite files in place
+geno fmt --check .    # exit 1 if any file would change (for CI)
+geno fmt --diff .     # show the changes without writing them
+```
+
+The layout is four-space indentation per block, with:
+
+- a match arm's body, when it is written below `| pattern ->`, indented under
+  the arm;
+- a line that starts with `.method(...)` or `|>`, or follows a line ending in
+  an operator, indented one step further;
+- one space around binary operators and `->` and after `,` and `:`, and none
+  inside brackets or before a call's `(`;
+- at most one blank line in a row.
+
+Line breaks, comments and string contents are kept as written. Formatting
+never changes what a file means: a file whose formatted text would parse to a
+different program is left unchanged and reported. Every Geno program in the
+Geno repository is kept in this form. Editors format through the language
+server (`geno lsp`).
+
 ## Compiling
 
 ### To Python

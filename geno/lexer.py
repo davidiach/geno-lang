@@ -6,9 +6,10 @@ Lexical analyzer that converts source code into a stream of tokens.
 """
 
 import re
+from collections.abc import Sequence
 from typing import Iterator
 
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, Fix, replace_fix
 from .tokens import KEYWORDS, SourceLocation, Token, TokenType
 
 _WHITESPACE = " \t\r\n"
@@ -59,9 +60,16 @@ def _is_ascii_alnum(ch: str) -> bool:
 class LexerError(Exception):
     """Exception raised for lexical analysis errors."""
 
-    def __init__(self, message: str, location: SourceLocation, error_code=None):
+    def __init__(
+        self,
+        message: str,
+        location: SourceLocation,
+        error_code=None,
+        fixes: Sequence[Fix] = (),
+    ):
         self.message = message
         self.location = location
+        self.fixes = tuple(fixes)
         if error_code is None:
             if message.startswith("Unterminated block comment"):
                 error_code = ErrorCode.LEX_UNTERMINATED_COMMENT
@@ -71,6 +79,17 @@ class LexerError(Exception):
                 error_code = ErrorCode.LEX_INVALID_ESCAPE
         self.error_code = error_code
         super().__init__(f"{location}: {message}")
+
+
+# Other languages' spellings of an operator, arrow or comment: what was
+# written, and how Geno writes it.
+_FOREIGN_OPERATORS = {
+    "&&": ("&&", "and"),
+    "||": ("||", "or"),
+    "!": ("!", "not "),
+    "=>": ("=>", "->"),
+    "#": ("#", "//"),
+}
 
 
 class Lexer:
@@ -462,6 +481,25 @@ class Lexer:
                 column += 2
                 append_token(token_cls(TokenType.GTE, ">=", start_loc))
                 continue
+
+            if char in "&|!=#" and (
+                foreign := _FOREIGN_OPERATORS.get(char + next_char)
+                or _FOREIGN_OPERATORS.get(char)
+            ):
+                written, geno_word = foreign
+                raise LexerError(
+                    f"Geno writes '{geno_word.strip()}', not '{written}'",
+                    start_loc,
+                    ErrorCode.LEX_UNEXPECTED_CHAR,
+                    (
+                        replace_fix(
+                            start_loc,
+                            written,
+                            geno_word,
+                            f"Change '{written}' to '{geno_word.strip()}'",
+                        ),
+                    ),
+                )
 
             token_type = single_char_tokens.get(char)
             if token_type is not None:

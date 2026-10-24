@@ -66,13 +66,13 @@ func display_text(value: FieldValue, placeholder: String) -> String
     example (StringVal(""), "default") -> "default"
     match value with
         | StringVal(v) ->
-        if length(v) > 0 then
-            return v
-        end if
+            if length(v) > 0 then
+                return v
+            end if
         | IntVal(n) ->
-        if n > 0 then
-            return to_string(n)
-        end if
+            if n > 0 then
+                return to_string(n)
+            end if
         | _ -> placeholder
     end match
     return placeholder
@@ -84,13 +84,13 @@ func display_color(value: FieldValue) -> String
     example (StringVal("")) -> "#999999"
     match value with
         | StringVal(v) ->
-        if length(v) > 0 then
-            return color_text()
-        end if
+            if length(v) > 0 then
+                return color_text()
+            end if
         | IntVal(n) ->
-        if n > 0 then
-            return color_text()
-        end if
+            if n > 0 then
+                return color_text()
+            end if
         | _ -> color_placeholder()
     end match
     return color_placeholder()

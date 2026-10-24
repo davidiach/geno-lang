@@ -34,6 +34,7 @@
 
 ## Research and Benchmarks
 
+- [Seeded Mistakes](benchmark/seeded-mistakes.md) -- how diagnostics and fixes handle common LLM mistakes, reproducible without a model
 - [Benchmark Quality Criteria](benchmark/quality_criteria.md) -- benchmark problem standards
 - [Benchmark Validation Contract](benchmark/validation-contract.md) -- corpus validation rules
 - [Benchmark Results](../benchmarks/RESULTS.md) -- current or historical performance results

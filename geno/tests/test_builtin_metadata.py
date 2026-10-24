@@ -125,8 +125,8 @@ def test_backend_builtin_remaps_stay_aligned_across_compilers():
     assert python_backend_builtin_name_map() == Compiler._BUILTIN_NAME_MAP
     assert js_backend_builtin_name_map() == JSCompiler._BUILTIN_NAME_MAP
 
-    assert Compiler._mangle_name("exec") == "exec_"
-    assert JSCompiler._mangle_name("exec") == "exec"
+    assert Compiler._target_name("exec") == "exec_"
+    assert JSCompiler._target_name("exec") == "exec"
 
 
 def test_backend_reserved_helper_names_match_shared_remap_metadata():

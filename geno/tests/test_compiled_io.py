@@ -176,7 +176,7 @@ class TestPythonFsBuiltins:
 
         source = """
 func main() -> String
-  return fs_read_text("hello.txt")
+  return fs_read_text("hello.txt").unwrap()
 end func
 """
 
@@ -191,7 +191,7 @@ end func
         """Compiled Python output can write a file with --cap fs."""
         source = """
 func main() -> Int
-  fs_write_text("output.txt", "written by geno")
+  fs_write_text("output.txt", "written by geno").unwrap()
   return 0
 end func
 """
@@ -255,7 +255,7 @@ class TestCapabilityGating:
         """fs builtins raise capability error when --cap fs not granted."""
         source = """
 func main() -> String
-  return fs_read_text("/tmp/anything.txt")
+  return fs_read_text("/tmp/anything.txt").unwrap()
 end func
 """
         py_code = compile_to_python(source)
@@ -270,7 +270,7 @@ end func
         """http builtins raise capability error when --cap http not granted."""
         source = """
 func main() -> String
-  return http_fetch("http://example.com")
+  return http_fetch("http://example.com").unwrap()
 end func
 """
         py_code = compile_to_python(source)
@@ -286,7 +286,7 @@ end func
 
         source = """
 func main() -> String
-  return fs_read_text("test.txt")
+  return fs_read_text("test.txt").unwrap()
 end func
 """
 
@@ -319,7 +319,7 @@ class TestJsFsBuiltins:
 
         source = """
 func main() -> String
-  return fs_read_text("{path}")
+  return fs_read_text("{path}").unwrap()
 end func
 """.replace("{path}", str(test_file).replace("\\", "\\\\"))
 
@@ -342,7 +342,7 @@ end func
 
         source = """
 func main() -> String
-  return fs_read_text("{path}")
+  return fs_read_text("{path}").unwrap()
 end func
 """.replace("{path}", str(test_file).replace("\\", "\\\\"))
 
@@ -364,7 +364,7 @@ end func
 
         source = """
 func main() -> Int
-  fs_write_text("{path}", "written by geno js")
+  fs_write_text("{path}", "written by geno js").unwrap()
   return 0
 end func
 """.replace("{path}", str(out_file).replace("\\", "\\\\"))
@@ -442,7 +442,7 @@ end func
         """JS fs builtins raise capability error when --cap fs not granted."""
         source = """
 func main() -> String
-  return fs_read_text("/tmp/anything.txt")
+  return fs_read_text("/tmp/anything.txt").unwrap()
 end func
 """
         js_code = compile_to_js(source)
@@ -478,7 +478,7 @@ class TestJsHttpBuiltins:
         """JS compiled output rejects non-http schemes for http_fetch."""
         source = """
 func main() -> String
-  return http_fetch("data:text/plain,hello")
+  return http_fetch("data:text/plain,hello").unwrap()
 end func
 """
         js_code = compile_to_js(source)
@@ -545,12 +545,12 @@ func header_values(headers: List[(String, String)], name: String) -> String
 end func
 
 func main() -> String
-  let fetched: String = http_fetch("{base_url}/fetch")
-  let large: String = http_fetch("{base_url}/large")
+  let fetched: String = http_fetch("{base_url}/fetch").unwrap()
+  let large: String = http_fetch("{base_url}/large").unwrap()
   if length(large) != 1048577 then
     return "wrong-large-body"
   end if
-  let posted: String = http_post("{base_url}/post", "post-body")
+  let posted: String = http_post("{base_url}/post", "post-body").unwrap()
   let get_request: Result[HttpResponse, String] = http_request(
     method: "GET",
     url: "{base_url}/fetch",
@@ -680,7 +680,7 @@ end func
         with _compiled_http_server() as base_url:
             source = f"""
 func main() -> String
-  return http_fetch("{base_url}/fetch")
+  return http_fetch("{base_url}/fetch").unwrap()
 end func
 """
             js_file = tmp_path / "private.js"
@@ -704,7 +704,7 @@ end func
         with _compiled_http_server() as base_url:
             source = f"""
 func main() -> String
-  return http_fetch("{base_url}/large")
+  return http_fetch("{base_url}/large").unwrap()
 end func
 """
             js_file = tmp_path / "limited.js"
@@ -786,8 +786,8 @@ func header_values(headers: List[(String, String)], name: String) -> String
 end func
 
 func main() -> String
-  let fetched_status: String = http_fetch("{base_url}/status")
-  let posted_status: String = http_post("{base_url}/status", "request")
+  let fetched_status: String = http_fetch("{base_url}/status").unwrap()
+  let posted_status: String = http_post("{base_url}/status", "request").unwrap()
   let status_result: Result[HttpResponse, String] = http_request(
     method: "GET",
     url: "{base_url}/status",
@@ -842,11 +842,10 @@ end func
             interpreter = Interpreter()
             install_http_callbacks(interpreter, allow_private_networks=True)
             callbacks = interpreter.global_env.bindings
-            assert callbacks["http_fetch"].func(f"{base_url}/status") == "not-found"
-            assert (
-                callbacks["http_post"].func(f"{base_url}/status", "request")
-                == "not-found-post"
-            )
+            fetched = callbacks["http_fetch"].func(f"{base_url}/status")
+            assert fetched.fields["value"] == "not-found"
+            posted = callbacks["http_post"].func(f"{base_url}/status", "request")
+            assert posted.fields["value"] == "not-found-post"
             hosted_result = callbacks["http_request"].func(
                 "GET", f"{base_url}/status", [], ""
             )
@@ -959,7 +958,7 @@ class TestPythonHttpBuiltins:
         """Compiled Python output contains http builtin functions."""
         source = """
 func main() -> String
-  return http_fetch("http://example.com")
+  return http_fetch("http://example.com").unwrap()
 end func
 """
         py_code = compile_to_python(source)

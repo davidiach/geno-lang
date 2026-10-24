@@ -70,6 +70,44 @@ result and never terminate their caller, and importing a generated Python or
 Node ESM artifact stays inert. Browser-targeted JavaScript keeps displaying an
 `Int` result, because it has no process to give a status to.
 
+### 0.6 (in development): imports are not transitive
+
+0.5 accepted a call to a function exported by module `A` from a program that
+imported only a module `B` which imports `A`. The interpreter ran it, but
+compiled Python and JavaScript failed with a name error, so the accepted
+program was not portable. From 0.6, `geno check` rejects the call and suggests
+`import A`; the migration is to add that import. The rule is stated in
+`docs/spec/v0.6.md` section 6.10 and recorded in `CHANGELOG.md`. This entry
+will gain the proposal and conformance references of the 0.6 release.
+
+### 0.6 (in development): one error model
+
+[Proposal 0009](../proposals/0009-result-only-errors.md) removes `throw`,
+`try`/`catch` and the `throw` effect, and changes `fs_read_text`,
+`fs_write_text`, `http_fetch` and `http_post` to return `Result`. Programs that
+used them fail to check with E205 or a type error naming the `Result` type;
+none changes meaning silently. `CHANGELOG.md` carries the migration steps,
+`conformance/v0.5` keeps the 0.5 behavior, and `conformance/v0.6` adds the
+`error-model` and `diagnostic-removed-*` cases. Embedding hosts that supply
+`host_callbacks` for the four builtins need no change.
+
+### 0.6 (in development): a coherent standard library
+
+[Proposal 0010](../proposals/0010-coherent-standard-library.md) removes eight
+duplicate or one-line builtins and makes `string_index_of` return
+`Option[Int]`. Affected programs fail to check with a message naming the
+replacement, and `geno migrate` rewrites them. The import and free-call rules
+of the same proposal change no accepted program. `conformance/v0.6` adds the
+`coherent-stdlib` and `diagnostic-removed-builtin` cases.
+
+### 0.6 (in development): `end` and its keyword share a line
+
+A block closer written across two lines, `end` and then `if` on the next
+line, was accepted as `end if`. Because the same text is also a bare `end`
+followed by a new `if` statement, it is now rejected with E201, reported at
+the `end`, with a fix that writes `end if`. `geno fmt` never produced the
+two-line form. `conformance/v0.6` adds the `diagnostic-bare-end` case.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

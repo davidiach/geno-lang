@@ -18,15 +18,53 @@ Key syntax rules:
 - Boolean literals are lowercase: `true`, `false`
 - String concatenation uses `+` (same as arithmetic addition)
 - Integer division truncates: `7 / 2 = 3`
-- Functions end with `end func`, loops with `end for` / `end while`
+- Blocks: `if c then ... else if c then ... else ... end if`,
+  `for x in xs do ... end for`, `while c do ... end while`,
+  `match v with | Some(x) -> ... | None -> ... end match`. `then` and `do` are
+  required, and every block closes with `end` and its keyword (`end func`)
+- Logical operators are words: `and`, `or`, `not`. There is no `&&`, `||`, `!`
+  or `null`: an absent value is `None`
+- Return values with `return`; a function's last expression is not returned
+  implicitly
 - Every function needs at least one `example` clause
-- Functions with 3+ parameters require named arguments at call sites
-- Use `Option[T]` instead of null, `Result[T, E]` for errors
+- A call that writes 3+ arguments names them: `clamp(value: x, min: 0, max: 9)`.
+  A method call's receiver is not counted, so `xs.fold(0, f)` and
+  `s.replace("a", "b")` stay positional
+- Use `Option[T]` instead of null, `Result[T, E]` for errors. There is no
+  `throw`, `try` or `catch`: return `Err(...)`, propagate with `?` (also from
+  `main() -> Result[Unit, String]`), and call `panic("...")` only for bugs.
+  `fs_read_text`, `fs_write_text`, `http_fetch` and `http_post` return
+  `Result[_, String]`. Use `xs.get(i)` / `xs.first()` for an `Option` instead of
+  an index that may be out of range
+- Generic functions declare type parameters in brackets after the name:
+  `func first_or[T](xs: List[T], fallback: T) -> T`. Calls infer them; never
+  write `first_or[Int](...)` or `<T>`. To use `<`, arithmetic, or a `T` as a map
+  key, add a bound: `[T: Ord]`, `[T: Num]`, `[K: Hash]`, or a trait name
+- Lambda parameters, `for` variables, comprehension variables and tuple
+  destructuring may omit types when context fixes them: `xs.map(fn(x) -> x * 2)`,
+  `for x in xs do`, `[x * 2 for x in xs]`, `let (a, b) = pair`. Function
+  parameters and return types are always annotated
+- `if` is an expression when used as a value, with a required `else`:
+  `let label = if x > 0 then "pos" else "neg" end if`. Match arms can share a
+  body: `| Red | Orange -> ...`. Tuple fields: `pair.0`. Map literals:
+  `{"a": 1, "b": 2}`, and `{}` for an empty map
+- Method calls work on any value: `xs.map(f).filter(g).length()`,
+  `s.trim().to_upper()`, `opt.unwrap_or(0)`, `n.to_float()`. The free form works
+  too: `map(opt, f)` is `opt.map(f)`
+- Membership: `x in xs`, `c in "aeiou"`, `key in m`, `x not in xs`. Lists
+  concatenate with `+`: `xs + [4]`
+- Every collection has `length()` and `is_empty()`. Maps: `m.get(k)` (Option),
+  `m.get(k, default)`, `m.contains_key(k)`, `m.insert(k, v)`, `m.remove(k)`,
+  `m.keys()`, `m.values()`. `xs.sort()` needs no comparator. Lists:
+  `xs.sum()`, `xs.min()` and `xs.max()` (Option), `xs.index_of(x)` (Option),
+  `xs.count(pred)`, `xs.unique()`. Strings: `s.index_of(t)` (Option),
+  `s.reverse()`, `s.lines()`, `s.words()`, `c.is_digit()`, `c.is_alpha()`.
+  `min(a, b)`, `max(a, b)`, `range(n)`, `n.to_float()`, `f.to_int()`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
-- Do not name anything after a Python builtin (`len`, `id`, `map`, `abs`,
-  `format`, `type`, `list`, `str`, ...) — these are reserved runtime names and
-  are rejected when the program is compiled
+- Any ordinary name works, including host names such as `len`, `id`, `list`,
+  `str`, `max` or a constructor `Error`; the compilers rename them. Only
+  names beginning with `_` that the runtime uses are reserved
 ```
 
 ## Common LLM Mistakes
@@ -81,7 +119,7 @@ Correct:
 func substring(text: String, start: Int, stop: Int) -> String
 ```
 
-### 5. Forgetting named arguments for 3+ parameters
+### 5. Forgetting named arguments for 3+ arguments
 
 Wrong:
 ```
@@ -91,6 +129,7 @@ substring("hello world", 0, 5)
 Correct:
 ```
 substring(text: "hello world", start: 0, stop: 5)
+"hello world".substring(0, 5)    // two arguments after the receiver
 ```
 
 ### 6. Forgetting `example` clauses
@@ -166,22 +205,15 @@ for i: Int in range(0, 10) do
 end for
 ```
 
-### 11. Reserved runtime names
+### 11. Avoiding host names (no longer needed)
 
-`geno check`, `geno test`, editor diagnostics, and the default `geno run` reject
-bindings that would shadow the compiled runtime in programs whose entrypoint
-defines `main`. Targetless library checks remain permissive. The names come from the backend's host builtins, so
-`len`, `id`, `map`, `abs`, `format`, `type`, `list`, `print`, and `str` are not
-usable as function, parameter, or local names.
+Geno 0.6 accepts any ordinary name: a parameter `len`, a local `list`, a
+function `max` or a constructor `Error` all compile, because the backends
+rename them. Only names starting with `_` that the runtime uses (`_safe_add`)
+are reserved. There is no need to steer a model away from Python builtins.
 
-Wrong:
 ```
 func trim_to(s: String, len: Int) -> String
-```
-
-Correct:
-```
-func trim_to(s: String, count: Int) -> String
 ```
 
 ### 12. Destructuring tuples in `match`
@@ -474,6 +506,25 @@ Fix this Geno code. Common issues to check:
 - `end func`/`end if`/`end for`/`end while` block terminators
 - `stop` not `end` as parameter name (keyword conflict)
 ```
+
+### Repair loop with fixes
+
+Diagnostics carry a fix when the correction is unambiguous: a misspelled name
+("Did you mean 'length'?"), another language's name for a builtin (`len`,
+`str`, `upper`, `strip`), positional arguments to a function with three or more
+parameters, a missing `then`/`do` (or a Python `:` in its place), a bare `end`,
+a missing `return`, and `let mut`, `True`, `++`, `elif`, `else:`, `&&`, `||`,
+`!`, `=>`, `#`, `null` or `lambda x:`. In an agent loop, run
+`geno check --fix file.geno` before asking the model to repair anything: it
+applies those fixes and reports only what remains. Through the embedding API,
+each `geno.check()` diagnostic lists them in `fixes`, and `geno.fix(source)`
+applies them and returns the fixed source with its check.
+
+Seeded into the benchmark's reference solutions, these mistakes are each
+reported on the line they are on, and the fixes repair every mutant of every
+mistake that has a fix, without changing what any program computes; see
+`docs/benchmark/seeded-mistakes.md`. The experiment runner records the same
+repair as its "autofix" metric beside pass@1.
 
 ## Machine-Readable Specification
 

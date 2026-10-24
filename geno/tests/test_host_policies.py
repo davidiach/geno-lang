@@ -15,6 +15,22 @@ import pytest
 from geno.interpreter import Interpreter
 
 
+def _err_message(result: Any) -> str:
+    """The message of an ``Err`` from the interpreter or the compiled runtime."""
+    fields = getattr(result, "fields", None)
+    if fields is not None:
+        assert result.constructor == "Err", result
+        return str(fields["error"])
+    assert type(result).__name__ == "Err", result
+    return str(result.error)
+
+
+def _ok_value(result: Any) -> Any:
+    """The value of an interpreter ``Ok``."""
+    assert result.constructor == "Ok", result
+    return result.fields["value"]
+
+
 def _callback(interpreter: Interpreter, name: str) -> Any:
     return interpreter.global_env.bindings[name].func
 
@@ -115,8 +131,9 @@ def test_fs_callbacks_reject_absolute_paths_by_default(tmp_path):
     interpreter = Interpreter()
     install_fs_callbacks(interpreter, roots=[tmp_path])
 
-    with pytest.raises(RuntimeError, match="absolute paths are not allowed"):
+    assert "absolute paths are not allowed" in _err_message(
         _callback(interpreter, "fs_read_text")(str(target))
+    )
 
 
 def test_fs_callbacks_can_be_read_only(tmp_path):
@@ -127,7 +144,7 @@ def test_fs_callbacks_can_be_read_only(tmp_path):
     interpreter = Interpreter()
     install_fs_callbacks(interpreter, roots=[tmp_path], allow_write=False)
 
-    assert _callback(interpreter, "fs_read_text")("data.txt") == "ok"
+    assert _ok_value(_callback(interpreter, "fs_read_text")("data.txt")) == "ok"
     with pytest.raises(RuntimeError, match="filesystem writes are not allowed"):
         _callback(interpreter, "fs_write_text")("out.txt", "nope")
     assert not (tmp_path / "out.txt").exists()
@@ -150,8 +167,9 @@ def test_fs_callbacks_reject_symlink_escape(tmp_path):
     interpreter = Interpreter()
     install_fs_callbacks(interpreter, roots=[root])
 
-    with pytest.raises(RuntimeError, match="escapes configured filesystem roots"):
+    assert "escapes configured filesystem roots" in _err_message(
         _callback(interpreter, "fs_read_text")("link/secret.txt")
+    )
 
 
 def test_http_callbacks_strip_headers_on_cross_origin_redirect():
@@ -264,8 +282,9 @@ def test_http_callbacks_reject_non_public_targets(monkeypatch, resolved_address)
     interpreter = Interpreter()
     install_http_callbacks(interpreter)
 
-    with pytest.raises(RuntimeError, match="non-public network targets"):
+    assert "non-public network targets" in _err_message(
         _callback(interpreter, "http_fetch")("http://metadata.local/latest")
+    )
 
 
 def test_http_callbacks_recheck_address_used_for_connection(monkeypatch) -> None:
@@ -278,8 +297,9 @@ def test_http_callbacks_recheck_address_used_for_connection(monkeypatch) -> None
     install_http_callbacks(interpreter)
 
     with _marker_server() as (url, hits):
-        with pytest.raises(RuntimeError, match="non-public network targets"):
+        assert "non-public network targets" in _err_message(
             _callback(interpreter, "http_fetch")(url)
+        )
 
     assert state["calls"] == 2
     assert hits == []
@@ -317,9 +337,8 @@ def test_compiled_runtime_fs_policy_rejects_absolute_path(monkeypatch, tmp_path)
     path = tmp_path / "data.txt"
     path.write_text("ok")
 
-    assert rs.fs_read_text("data.txt") == "ok"
-    with pytest.raises(RuntimeError, match="absolute paths are not allowed"):
-        rs.fs_read_text(str(path))
+    assert rs.fs_read_text("data.txt").value == "ok"
+    assert "absolute paths are not allowed" in _err_message(rs.fs_read_text(str(path)))
 
 
 def test_compiled_runtime_fs_policy_can_be_read_only(monkeypatch, tmp_path):
@@ -330,7 +349,7 @@ def test_compiled_runtime_fs_policy_can_be_read_only(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data.txt").write_text("ok")
 
-    assert rs.fs_read_text("data.txt") == "ok"
+    assert rs.fs_read_text("data.txt").value == "ok"
     with pytest.raises(RuntimeError, match="filesystem writes are not allowed"):
         rs.fs_write_text("out.txt", "nope")
     assert not (tmp_path / "out.txt").exists()
@@ -372,8 +391,9 @@ def test_compiled_runtime_http_policy_rejects_non_public_target(
     monkeypatch.setattr(rs, "_GENO_CAPS", {"http"})
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
-    with pytest.raises(RuntimeError, match="non-public network targets"):
+    assert "non-public network targets" in _err_message(
         rs.http_fetch("http://localhost/")
+    )
 
 
 def test_compiled_runtime_http_policy_rechecks_connected_address(monkeypatch) -> None:
@@ -385,8 +405,7 @@ def test_compiled_runtime_http_policy_rechecks_connected_address(monkeypatch) ->
     monkeypatch.delenv("GENO_HTTP_ALLOW_PRIVATE", raising=False)
 
     with _marker_server() as (url, hits):
-        with pytest.raises(RuntimeError, match="non-public network targets"):
-            rs.http_fetch(url)
+        assert "non-public network targets" in _err_message(rs.http_fetch(url))
 
     assert state["calls"] == 2
     assert hits == []
@@ -440,9 +459,34 @@ class TestHostCallbackValidation:
         )
         source = """
         func main() -> String
-            return http_fetch(url: "https://example.com")
+            match http_fetch(url: "https://example.com") with
+                | Ok(body) -> return body
+                | Err(message) -> return "failed: " + message
+            end match
         end func
         """
         result = run(source, config=config)
         assert result.ok is True
         assert result.value == "intercepted"
+
+    def test_raising_callback_for_a_result_builtin_becomes_err(self):
+        from geno.api import RunConfig, run
+
+        def unreachable(url: str) -> str:
+            raise OSError(f"cannot reach {url}")
+
+        config = RunConfig(
+            capabilities={"http"},
+            host_callbacks={"http_fetch": unreachable},
+        )
+        source = """
+        func main() -> String
+            match http_fetch(url: "https://example.com") with
+                | Ok(body) -> return body
+                | Err(message) -> return "failed: " + message
+            end match
+        end func
+        """
+        result = run(source, config=config)
+        assert result.ok is True
+        assert result.value == "failed: cannot reach https://example.com"

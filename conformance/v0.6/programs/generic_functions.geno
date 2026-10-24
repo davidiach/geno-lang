@@ -1,0 +1,29 @@
+func first_or[T](xs: List[T], fallback: T) -> T
+    example [1, 2], 0 -> 1
+    example [], "none" -> "none"
+    match xs with
+        | [] -> return fallback
+        | [x, ...] -> return x
+    end match
+end func
+
+func swap[A, B](pair: (A, B)) -> (B, A)
+    example (1, "x") -> ("x", 1)
+    let (a, b): (A, B) = pair
+    return (b, a)
+end func
+
+func show[T](value: T) -> String
+    example 1 -> "1"
+    example 2.0 -> "2.0"
+    return to_string(value)
+end func
+
+func main() -> Unit
+    print(first_or([3, 4], 0))
+    print(first_or([], "empty"))
+    print(swap((1, true)))
+    print(show(2.0))
+    print(show(Some(6.0)))
+    print(map([1.0, 2.5], show))
+end func

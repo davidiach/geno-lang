@@ -15,7 +15,6 @@ func salary_above(salary_str: String, threshold: Int) -> Bool
     end match
 end func salary_above
 
-
 // Safely parse a string to Int, returning 0 for non-numeric values
 func safe_parse_int(s: String) -> Int
     example "42" -> 42
@@ -25,7 +24,6 @@ func safe_parse_int(s: String) -> Int
     let parsed: Option[Int] = parse_int(s)
     return unwrap_or(parsed, 0)
 end func safe_parse_int
-
 
 // Get a column from a CSV row by index, with a default for out-of-bounds
 func get_col(row: List[String], index: Int, default: String) -> String
@@ -39,7 +37,6 @@ func get_col(row: List[String], index: Int, default: String) -> String
     return default
 end func get_col
 
-
 // Format a row as "name (dept) - $salary" assuming columns: name, dept, salary
 func format_row(row: List[String]) -> String
     example ["Alice", "Eng", "90000"] -> "Alice (Eng) - $90000"
@@ -51,7 +48,6 @@ func format_row(row: List[String]) -> String
     return format(template: "{} ({}) - ${}", values: [name, dept, salary])
 end func format_row
 
-
 // Extract salary (column 2) from a row and parse to Int
 func row_salary(row: List[String]) -> Int
     example ["Alice", "Eng", "90000"] -> 90000
@@ -61,7 +57,6 @@ func row_salary(row: List[String]) -> Int
     return safe_parse_int(s)
 end func row_salary
 
-
 // Check if a row's department (column 1) matches the given value
 func in_dept(row: List[String], dept: String) -> Bool
     example (["Alice", "Eng", "90000"], "Eng") -> true
@@ -70,7 +65,6 @@ func in_dept(row: List[String], dept: String) -> Bool
     let row_dept: String = get_col(row: row, index: 1, default: "")
     return row_dept == dept
 end func in_dept
-
 
 // Sum up all salaries in a list of rows
 func total_salary(rows: List[List[String]]) -> Int
@@ -85,7 +79,6 @@ func total_salary(rows: List[List[String]]) -> Int
     end while
     return total
 end func total_salary
-
 
 // Find the row with the highest salary
 func highest_earner(rows: List[List[String]]) -> String
@@ -111,7 +104,6 @@ func highest_earner(rows: List[List[String]]) -> String
 
     return best_name
 end func highest_earner
-
 
 func main() -> Int
     // CSV data: employee records with name, department, salary

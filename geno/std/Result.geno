@@ -1,40 +1,41 @@
-func map(result: Result[Int, String], f: (Int) -> Int) -> Result[Int, String]
+func map[T, E, U](result: Result[T, E], f: (T) -> U) -> Result[U, E]
     example Ok(5), fn(x: Int) -> x * 2 -> Ok(10)
-    example Err("fail"), fn(x: Int) -> x * 2 -> Err("fail")
+    example Ok(5), fn(x: Int) -> to_string(x) -> Ok("5")
     return result_map(result, f)
 end func
 
-func map_err(result: Result[Int, String], f: (String) -> String) -> Result[Int, String]
+func map_err[T, E, F](result: Result[T, E], f: (E) -> F) -> Result[T, F]
     example Err("fail"), fn(s: String) -> s + "!" -> Err("fail!")
-    example Ok(5), fn(s: String) -> s + "!" -> Ok(5)
+    example Err("fail"), fn(s: String) -> length(s) -> Err(4)
     return result_map_err(result, f)
 end func
 
-func and_then(result: Result[Int, String], f: (Int) -> Result[Int, String]) -> Result[Int, String]
+func and_then[T, E, U](result: Result[T, E], f: (T) -> Result[U, E]) -> Result[U, E]
     example Ok(5), fn(x: Int) -> Ok(x * 2) -> Ok(10)
-    example Err("fail"), fn(x: Int) -> Ok(x * 2) -> Err("fail")
+    example Ok("5"), fn(s: String) -> Ok(length(s)) -> Ok(1)
     return result_and_then(result, f)
 end func
 
-func unwrap_or(result: Result[Int, String], default: Int) -> Int
+func unwrap_or[T, E](result: Result[T, E], default: T) -> T
     example Ok(5), 0 -> 5
-    example Err("oops"), 0 -> 0
+    example Ok("a"), "b" -> "a"
     return result_unwrap_or(result, default)
 end func
 
-func is_ok(result: Result[Int, String]) -> Bool
+func is_ok[T, E](result: Result[T, E]) -> Bool
     example Ok(1) -> true
-    example Err("fail") -> false
+    example Ok("a") -> true
     return result_is_ok(result)
 end func
 
-func is_err(result: Result[Int, String]) -> Bool
-    example Err("fail") -> true
+func is_err[T, E](result: Result[T, E]) -> Bool
     example Ok(1) -> false
+    example Ok("a") -> false
     return result_is_err(result)
 end func
 
-func to_option(result: Result[Int, String]) -> Option[Int]
+func to_option[T, E](result: Result[T, E]) -> Option[T]
     example Ok(42) -> Some(42)
+    example Ok("a") -> Some("a")
     return result_to_option(result)
 end func

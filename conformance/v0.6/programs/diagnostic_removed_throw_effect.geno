@@ -1,0 +1,5 @@
+// Geno 0.6 removed the throw effect (proposal 0009): rejected with E205.
+func risky() -> Int with throw
+    example () -> 1
+    return 1
+end func

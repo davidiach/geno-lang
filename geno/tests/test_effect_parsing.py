@@ -40,7 +40,7 @@ end func add
         program = _parse("""
 func read_file(path: String) -> String with fs
     example "test.txt" -> "hello"
-    return fs_read_text(path)
+    return fs_read_text(path).unwrap()
 end func read_file
 """)
         func_def = program.definitions[0]

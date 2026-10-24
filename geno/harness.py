@@ -204,7 +204,9 @@ def _coerce_value_for_compiled_harness(value: Any, globals_dict: dict[str, Any])
     if isinstance(value, ConstructorValue):
         if value.constructor == "None" and "None_" in globals_dict:
             return globals_dict["None_"]
-        constructor = globals_dict.get(value.constructor)
+        from .compiler import Compiler
+
+        constructor = globals_dict.get(Compiler._target_name(value.constructor))
         if callable(constructor):
             fields = {
                 name: _coerce_value_for_compiled_harness(field_value, globals_dict)
@@ -480,7 +482,7 @@ def run_harness_from_compiled(source: str) -> HarnessResult:
     primary ``geno test`` runner uses the interpreter path and covers
     those; this helper stays scoped to top-level functions.
     """
-    from .compiler import compile_and_exec
+    from .compiler import compile_and_exec, compiled_python_name
     from .interpreter import Interpreter
     from .lexer import Lexer
     from .parser import Parser
@@ -503,7 +505,7 @@ def run_harness_from_compiled(source: str) -> HarnessResult:
 
     # Create runner that gets functions from compiled globals
     def get_func(name: str) -> Callable | None:
-        return globals_dict.get(name)
+        return globals_dict.get(compiled_python_name(program, name))
 
     def eval_compiled_input(example: ExampleClause) -> Any:
         return _coerce_value_for_compiled_harness(

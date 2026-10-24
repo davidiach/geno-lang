@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..diagnostics import Fix
 
 from ._util import (
     _format_source_snippet,
@@ -131,7 +136,11 @@ def check_file(filename: str, target: str | None = None):
         print(f"Parse Errors ({len(e.errors)} errors):", file=sys.stderr)
         for err in e.errors:
             snippet = _format_source_snippet(getattr(err, "location", None))
-            print(f"  {err}{snippet}", file=sys.stderr)
+            fix_note = "".join(
+                f"\n    fix: {fix.title} (`geno check --fix` applies it)"
+                for fix in err.fixes[:1]
+            )
+            print(f"  {err}{snippet}{fix_note}", file=sys.stderr)
         sys.exit(1)
     except ParseError as e:
         _print_error("Parse Error", e)
@@ -141,3 +150,72 @@ def check_file(filename: str, target: str | None = None):
         sys.exit(1)
     except RecursionError:
         report_deep_nesting_error(filename)
+
+
+# A fix can expose the next error (a misspelled name in a call that also lacks
+# argument names); a few rounds settle any realistic file.
+_MAX_FIX_ROUNDS = 10
+
+
+def fix_file(filename: str, target: str | None = None) -> None:
+    """Apply every unambiguous fix the diagnostics of ``filename`` carry.
+
+    Then report what remains exactly as ``geno check`` does.
+    """
+    from ..diagnostics import apply_fixes
+
+    path = Path(filename)
+    applied = 0
+    for _round in range(_MAX_FIX_ROUNDS):
+        fixes = _available_fixes(path)
+        if not fixes:
+            break
+        source = path.read_text(encoding="utf-8")
+        fixed, count = apply_fixes(source, fixes)
+        if count == 0 or fixed == source:
+            break
+        path.write_text(fixed, encoding="utf-8")
+        applied += count
+    noun = "fix" if applied == 1 else "fixes"
+    print(f"Applied {applied} {noun} to {filename}")
+    check_file(filename, target=target)
+
+
+def _available_fixes(path: Path) -> list[Fix]:
+    """The first fix of each error in ``path`` that has one."""
+    from ..dependency_graph import DependencyGraphError
+    from ..lexer import LexerError
+    from ..parser import ParseError, ParseErrors
+    from ..project_graph import ProjectGraphError
+    from ..project_resolution import ProjectResolutionError, resolve_project_context
+    from ..typechecker import TypeChecker, TypeError
+
+    target = path.resolve()
+    try:
+        resolved = resolve_project_context(str(path))
+        TypeChecker().check_project_graph(resolved.dependency_graph)
+        return []
+    except (ParseError, ParseErrors, TypeError) as error:
+        errors = getattr(error, "errors", None) or [error]
+    except (
+        DependencyGraphError,
+        LexerError,
+        ProjectGraphError,
+        ProjectResolutionError,
+        OSError,
+        ValueError,
+    ):
+        return []
+
+    def in_file(err: Exception) -> bool:
+        location = getattr(err, "location", None)
+        if location is None:
+            return False
+        try:
+            return bool(Path(location.filename).resolve() == target)
+        except (OSError, ValueError):
+            return False
+
+    return [
+        err.fixes[0] for err in errors if getattr(err, "fixes", ()) and in_file(err)
+    ]

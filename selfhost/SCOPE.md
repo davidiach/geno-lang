@@ -23,9 +23,9 @@ must either be implemented in `selfhost/` or added to a named gap group there;
 otherwise the parity check fails.
 
 Keyword gaps are grouped by implementation area so features like
-exception control (`try`/`catch`/`throw`) and test/export syntax
-(`test`/`assert`/`export`) remain explicit staged work rather than untracked
-drift.
+test/export syntax (`test`/`assert`/`export`) remain explicit staged work
+rather than untracked drift. `try`/`catch`/`throw` are listed only because
+they stay reserved after Geno 0.6 removed them (proposal 0009).
 
 Builtin gaps are ordered with pure host-independent groups first
 (`pure_collection_next`, `pure_string_next`, `pure_math_next`,
@@ -41,6 +41,8 @@ selfhost parser does not yet implement:
 - Bare zero-argument examples (`example -> value`); use `example () -> value`.
 - Tuple patterns in match arms, including nested tuple patterns. Tuple `let`
   destructuring is also outside the current selfhost parser subset.
+- Generic functions (`func first_or[T](xs: List[T], fallback: T) -> T`), from
+  the 0.6 draft specification.
 
 These are parser/interpreter gaps, so the keyword and builtin parity checks do
 not detect them. Canonical frontend and backend tests cover the new forms.

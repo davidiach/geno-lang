@@ -177,6 +177,9 @@ def _load_config_defaults(config_path):
     if config.get("max_repair_rounds") is not None:
         defaults["max_repair_rounds"] = int(config["max_repair_rounds"])
 
+    if config.get("autofix") is not None:
+        defaults["autofix"] = bool(config["autofix"])
+
     if config.get("track"):
         defaults["track"] = str(config["track"])
 
@@ -259,6 +262,16 @@ def _build_parser(defaults):
         help=(
             "Diagnostics-guided repair attempts after a failed evaluation "
             "(default: 0, pure pass@1)"
+        ),
+    )
+    parser.add_argument(
+        "--no-autofix",
+        dest="autofix",
+        action="store_false",
+        default=defaults.get("autofix", True),
+        help=(
+            "Do not record pass@1 after applying the fixes Geno's diagnostics "
+            "carry (no model call; pass@1 is unaffected either way)"
         ),
     )
     parser.add_argument(
@@ -388,6 +401,7 @@ def main():
         output_dir=output_dir,
         few_shot_examples=args.few_shot_examples,
         max_repair_rounds=args.max_repair_rounds,
+        autofix=args.autofix,
         repo_revision=_current_repo_revision(),
         model_metadata={
             model: args.model_metadata.get(model, {}) for model in args.models
