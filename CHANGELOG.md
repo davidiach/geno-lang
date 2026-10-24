@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-24
+
+### Changed
+
+- Promote the qualified 0.6.0-rc.3 feature set to a non-prerelease version
+  under the [0.6 stable-promotion proposal](https://github.com/davidiach/geno-lang/pull/218).
+  Promotion changes release metadata and documentation, with no additional
+  language, runtime, dependency, or supported-target changes.
+- Make [the 0.6 specification](docs/spec/v0.6.md) the normative pre-1.0 contract
+  for its series. Keep older specifications and frozen conformance corpora.
+- Retain the project's Preview maturity and Alpha package classifier. This
+  release does not claim serious-beta or organizational production readiness.
+
+### Fixed
+
+- Include the RC.2 and RC.3 fixes for lambda capture, callback inference,
+  floating-point argument semantics, JavaScript JSON formatting, Windows
+  package cleanup, TypeScript Option declarations, and imported constructor
+  collisions (#188, #189, #190, #191, #194, #195, #209).
+- Make the worker startup-timeout regression test tolerate slow CI scheduling
+  while preserving its assertions and production timeout behavior (#216).
+
+### Migration and known limitations
+
+- Users upgrading from 0.5 should follow the [0.6 migration notes](#migration-to-06).
+- Pre-existing Git objects hardlinked outside a checkout remain protected and
+  may require manual cleanup. New dependency clones avoid shared hardlinks.
+
 ## [0.6.0-rc.3] - 2026-10-24
 
 Third release candidate for the 0.6 series, retaining the frozen 0.6 language
