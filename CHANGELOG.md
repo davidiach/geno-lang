@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Promote the qualified 0.6.0-rc.3 feature set to a non-prerelease version
-  under [accepted proposal 0013](docs/proposals/0013-0.6-stable-promotion.md).
+  under [accepted proposal 0014](docs/proposals/0014-0.6-stable-promotion.md).
   Promotion changes release metadata and documentation, with no additional
   language, runtime, dependency, or supported-target changes.
 - Make [the 0.6 specification](docs/spec/v0.6.md) the normative pre-1.0 contract
