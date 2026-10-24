@@ -648,6 +648,8 @@ class JSCompiler(BaseCompiler):
         self._source_index: dict[str, int] = {}  # filename -> index
         # mappings: list of (out_line, out_col, src_idx, src_line, src_col)
         self._mappings: list[tuple[int, int, int, int, int]] = []
+        self._mapping_buffer_depth = 0
+        self._deferred_mappings: list[tuple[int, int, int]] = []
         self._emit_function_assignments = False
         self._active_module_bindings: dict[str, str] = {}
         # Stack of JavaScript block scopes.  JS is block scoped, so nesting
@@ -977,6 +979,7 @@ class JSCompiler(BaseCompiler):
         self._source_files = []
         self._source_index = {}
         self._mappings = []
+        self._deferred_mappings = []
         self._emit_function_assignments = False
 
         # First pass: collect type, function, trait, and impl definitions
@@ -1174,6 +1177,7 @@ class JSCompiler(BaseCompiler):
         self._source_files = []
         self._source_index = {}
         self._mappings = []
+        self._deferred_mappings = []
 
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
         self._emit_function_assignments = False
@@ -1396,6 +1400,25 @@ class JSCompiler(BaseCompiler):
 
     def _write(self, text: str) -> None:
         """Override to track line count for source maps."""
+        if not self._mapping_buffer_depth and "\0geno-map:" in text:
+            # A buffered arrow may be embedded after another multiline
+            # expression. Resolve its mappings only once the final placement
+            # is known. Geno string literals escape NUL, so these markers
+            # cannot be confused with user text.
+            line = self._out_line
+            previous = 0
+
+            def resolve_mapping(match: _re.Match[str]) -> str:
+                nonlocal line, previous
+                line += text[previous : match.start()].count("\n")
+                previous = match.end()
+                src_idx, src_line, src_col = self._deferred_mappings[
+                    int(match.group(1))
+                ]
+                self._mappings.append((line, 0, src_idx, src_line, src_col))
+                return ""
+
+            text = _re.sub(r"\x00geno-map:(\d+)\x00", resolve_mapping, text)
         super()._write(text)
         self._out_line += text.count("\n")
 
@@ -1442,6 +1465,13 @@ class JSCompiler(BaseCompiler):
             self._source_index[fname] = len(self._source_files)
             self._source_files.append(fname)
         src_idx = self._source_index[fname]
+        if self._mapping_buffer_depth:
+            marker = len(self._deferred_mappings)
+            self._deferred_mappings.append(
+                (src_idx, location.line - 1, location.column - 1)
+            )
+            self.output.write(f"\0geno-map:{marker}\0")
+            return
         # out_col 0, source line/col are 0-based in source maps
         self._mappings.append(
             (self._out_line, 0, src_idx, location.line - 1, location.column - 1)
@@ -3493,8 +3523,31 @@ class JSCompiler(BaseCompiler):
 
         uses_propagate = self._uses_propagate(expr)
         if expr.block_body is not None or uses_propagate:
-            func_name = self._fresh_temp()
-            self._writeln(f"const {func_name} = (({params}) => {{")
+            outer_output = self.output
+            outer_line = self._out_line
+            self.output = StringIO()
+            self._mapping_buffer_depth += 1
+            try:
+                return self._compile_block_lambda(expr, params, uses_propagate)
+            finally:
+                self._mapping_buffer_depth -= 1
+                self.output = outer_output
+                # The enclosing statement writes these lines once it embeds
+                # the arrow expression; do not count the buffer twice.
+                self._out_line = outer_line
+        else:
+            assert expr.body is not None
+            with self._function_scope(p.name for p in expr.params):
+                body = self._compile_expr(expr.body)
+            return f"(({params}) => {body})"
+
+    def _compile_block_lambda(
+        self, expr: LambdaExpr, params: str, uses_propagate: bool
+    ) -> str:
+        """Return a block arrow expression in its owning lexical scope."""
+        initial_indent = self.indent_level
+        try:
+            self._writeln(f"(({params}) => {{")
             self._indent()
             if uses_propagate:
                 self._writeln("try {")
@@ -3520,13 +3573,10 @@ class JSCompiler(BaseCompiler):
                 self._dedent()
                 self._writeln("}")
             self._dedent()
-            self._writeln("});")
-            return cast(str, func_name)
-        else:
-            assert expr.body is not None
-            with self._function_scope(p.name for p in expr.params):
-                body = self._compile_expr(expr.body)
-            return f"(({params}) => {body})"
+            self._writeln("})")
+            return self.output.getvalue().strip()
+        finally:
+            self.indent_level = initial_indent
 
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:
         if expr.constructor == "None":

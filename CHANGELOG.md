@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.2] - 2026-10-24
+
+Second release candidate for the 0.6 series. This remains a prerelease for
+evaluation under the same frozen 0.6 language contract and migration guidance
+as 0.6.0-rc.1.
+
+### Fixed
+
+- Preserve floating-point argument semantics when an interpreter function is
+  called through a contravariantly typed alias, matching both compiled
+  backends (#191).
+- Preserve lexical capture when nested block lambdas are compiled to Python
+  and JavaScript (#188).
+- Preserve valid object fields when JavaScript formats pretty JSON (#194).
+- Use the expected callback return type when checking block-lambda returns,
+  including branches that return `None` before `Some` (#189).
+
+### Known limitations
+
+- Generated TypeScript declarations describe `Option[T]` as `T | null`, while
+  the JavaScript runtime returns tagged `Some` and `None` values. TypeScript
+  consumers must handle the runtime representation explicitly until #195 is
+  fixed.
+- Projects importing same-named constructors from different modules can pass
+  checking and interpretation but fail in generated Python or JavaScript.
+  Keep constructor names distinct across imported modules until #209 is fixed.
+- On Windows, package-update cleanup can leave transaction backups containing
+  read-only Git object files. The installed dependency contents are unaffected
+  (#190).
+
 ## [0.6.0-rc.1] - 2026-10-24
 
 Release candidate for the first publication of the 0.6 series, which implements

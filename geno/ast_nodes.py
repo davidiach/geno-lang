@@ -823,6 +823,10 @@ class Parameter:
     param_type: TypeAnnotation
     location: SourceLocation
     default_value: Expression | None = None
+    # The checked type, with aliases resolved, for closure-call conversion.
+    _resolved_type: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 @dataclass

@@ -2847,6 +2847,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         for param in defn.params:
             param_type = self._resolve_type(param.param_type)
+            param._resolved_type = param_type
             local_env.bind(param.name, param_type)
             self._record_binding(param.name, param_type, param.location, local_env)
 
@@ -6419,6 +6420,7 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(param.param_type, InferredType):
                 self._infer_lambda_param(param, expected_params, index)
             param_type = self._resolve_type(param.param_type)
+            param._resolved_type = param_type
             param_types.append(param_type)
             lambda_env.bind(param.name, param_type)
             effect_env.bind(param.name, param_type)
@@ -6441,12 +6443,15 @@ class TypeChecker(ExhaustivenessMixin):
                         continue
                     if isinstance(rt, NeverType):
                         continue
-                    if not self._types_strictly_compatible(return_type, rt):
+                    merged_type = self._merge_match_expr_result_types(return_type, rt)
+                    if merged_type is None:
                         self._error(
                             f"Inconsistent return types in block lambda: "
                             f"{return_type} vs {rt}",
                             expr.location,
                         )
+                    else:
+                        return_type = merged_type
                 if not self._definitely_returns(expr.block_body):
                     self._error(
                         "Block lambda may not return a value on all paths",
@@ -6454,7 +6459,11 @@ class TypeChecker(ExhaustivenessMixin):
                     )
 
             lambda_effects = self._infer_body_effects(expr.block_body, effect_env)
-            return FuncType(tuple(param_types), return_type, lambda_effects)
+            function_type = FuncType(tuple(param_types), return_type, lambda_effects)
+            # Inferred Float results must also widen each returning branch at
+            # runtime, even when no surrounding function annotation is present.
+            self._record_expected_runtime_type(expr, function_type)
+            return function_type
 
         assert expr.body is not None
         body_type = self._check_expression(expr.body, lambda_env)

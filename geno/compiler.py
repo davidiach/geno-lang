@@ -3103,11 +3103,29 @@ class Compiler(BaseCompiler, ASTVisitor):
             return cast(str, func_name)
         else:
             assert expr.body is not None
-            with self._with_shadowed_bindings([p.name for p in expr.params]):
-                body = self._promote_expr_to_expected_float(
-                    self._compile_expr(expr.body),
-                    getattr(expr.body, "_expected_runtime_type", None),
-                )
+            outer_output = self.output
+            self.output = StringIO()
+            self._indent()
+            try:
+                with self._function_scope(p.name for p in expr.params):
+                    body = self._promote_expr_to_expected_float(
+                        self._compile_expr(expr.body),
+                        getattr(expr.body, "_expected_runtime_type", None),
+                    )
+                statements = self.output.getvalue()
+            finally:
+                self._dedent()
+                self.output = outer_output
+            if statements:
+                # Nested block lambdas emit definitions. Keep those definitions
+                # inside the function that binds the expression's parameters.
+                func_name = self._fresh_temp()
+                self._writeln(f"def {func_name}({params}):")
+                self._write(statements)
+                self._indent()
+                self._writeln(f"return {body}")
+                self._dedent()
+                return cast(str, func_name)
             return f"(lambda {params}: {body})"
 
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:

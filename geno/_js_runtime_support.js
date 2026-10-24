@@ -3839,15 +3839,37 @@ function json_stringify_pretty(value, indent) {
         throw new Error("json_stringify_pretty: indent must be Int");
     }
     _checkCollectionSize(value);
-    const obj = _jsonValueToPython(value);
-    let result;
-    if (indent <= 0) {
-        result = _GENO_JSON.stringify(obj);
-    } else {
-        result = _GENO_JSON.stringify(obj, null, indent);
-    }
+    const width = indent <= 0 ? 0 : _GENO_MATH.min(indent, 10);
+    const result = _jsonValueToPrettyString(value, width, 0);
     _checkStringResultSize("json_stringify_pretty", _stringLength(result));
     return result;
+}
+
+function _jsonValueToPrettyString(value, indent, depth) {
+    const context = "json_stringify_pretty";
+    if (!value || !value._tag) {
+        throw new Error(`${context}: expected JsonValue`);
+    }
+    if (value._tag === "JsonString") return _GENO_JSON.stringify(value.value);
+    const object = value._tag === "JsonObject";
+    if (!object && value._tag !== "JsonArray") {
+        return _jsonValueToString(value, context);
+    }
+    // Last duplicate key wins, retaining its first insertion position, as in
+    // the Python serializer; a Map also treats __proto__ as ordinary data.
+    const items = object ? [...new _GENO_MAP(value.entries)] : value.items;
+    const open = object ? "{" : "[";
+    const close = object ? "}" : "]";
+    if (items.length === 0) return open + close;
+    const padding = " ".repeat(indent * (depth + 1));
+    const pieces = items.map((item) => {
+        const child = object ? item[1] : item;
+        const key = object ? _GENO_JSON.stringify(item[0]) + (indent ? ": " : ":") : "";
+        return key + _jsonValueToPrettyString(child, indent, depth + 1);
+    });
+    if (!indent) return open + pieces.join(",") + close;
+    return open + "\n" + padding + pieces.join(",\n" + padding)
+        + "\n" + " ".repeat(indent * depth) + close;
 }
 
 function _genoValueToJs(value) {
