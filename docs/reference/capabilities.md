@@ -121,11 +121,16 @@ below, but those checks do not sandbox the artifact. See
 
 - `fs` paths are resolved under configured filesystem roots. By default the
   only root is the current working directory and absolute paths are rejected.
-  The CLI also scopes `--cap fs` to the source project and explicit path-like
-  program arguments, so tools can safely receive file paths after `--`. Set
-  `GENO_FS_ROOTS` to an `os.pathsep`-separated root list and
+  Without an explicit root policy, the CLI also scopes `--cap fs` to the source
+  project and explicit path-like program arguments, allowing absolute paths
+  inside that scope so tools can receive file paths after `--`. Set
+  `GENO_FS_ROOTS` to an `os.pathsep`-separated root list to replace those automatic
+  CLI grants; an explicitly empty list is rejected by the CLI. With configured
+  roots, absolute paths are rejected by default. Set
   `GENO_FS_ALLOW_ABSOLUTE=1` only for trusted deployments that need absolute
-  paths inside those roots. Set `GENO_FS_READ_ONLY=1` to allow filesystem reads
+  paths inside those roots. The CLI also honors an explicitly false
+  `GENO_FS_ALLOW_ABSOLUTE` value when using automatic roots.
+  Set `GENO_FS_READ_ONLY=1` to allow filesystem reads
   while rejecting `fs_write_text`. Symlink escapes are rejected after realpath
   resolution. `fs_metadata` follows the final link, `fs_symlink_metadata`
   inspects that link itself, and `fs_canonicalize` returns an existing absolute
@@ -146,6 +151,12 @@ below, but those checks do not sandbox the artifact. See
 HTTP response bodies and process stdout/stderr are read through bounded paths
 before they are converted into Geno values, so sandbox collection limits are
 enforced without first materializing unbounded host output in memory.
+Process stdout and stderr are captured through pipes and checked incrementally,
+with a separate character limit for each stream. Exceeding either limit stops
+the command; its output is never spooled to disk. Explicit process input uses
+a temporary file bounded by the collection limit (up to four UTF-8 bytes per
+character). These callbacks supervise the invoked command, not an isolated
+process tree; use an OS sandbox when executing untrusted external programs.
 
 ### Embedding API
 

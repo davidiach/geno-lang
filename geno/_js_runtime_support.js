@@ -239,6 +239,158 @@ function _checkCollectionKind(kind, size) {
     }
 }
 
+class _GenoFString {
+    constructor() {
+        this.parts = [];
+        this.size = 0;
+        this.active = new _GENO_SET();
+    }
+
+    append(part) {
+        let size = this.size;
+        // Match Python's Unicode code-point limit without allocating an array.
+        for (const _character of part) {
+            size += 1;
+            _checkCollectionKind("String", size);
+        }
+        this.size = size;
+        if (part) this.parts.push(part);
+    }
+
+    finish() {
+        return this.parts.join("");
+    }
+
+    appendQuoted(value) {
+        this.append('"');
+        // Escape one code point at a time instead of allocating an expanded
+        // JSON string before checking the available output budget.
+        for (const character of value) {
+            this.append(_GENO_JSON.stringify(character).slice(1, -1));
+        }
+        this.append('"');
+    }
+
+    appendSequence(items, opening, closing, shape = null, tuple = false) {
+        this.append(opening);
+        let index = 0;
+        for (const item of items) {
+            if (index > 0) this.append(", ");
+            this.appendValue(item, tuple ? shape[index] : shape, false);
+            index += 1;
+        }
+        this.append(closing);
+    }
+
+    appendMapping(entries, opening, closing, shape) {
+        this.append(opening);
+        let first = true;
+        for (const [key, value] of entries) {
+            if (!first) this.append(", ");
+            first = false;
+            this.appendValue(key, shape ? shape[1] : null, false);
+            this.append(": ");
+            this.appendValue(value, shape ? shape[2] : null, false);
+        }
+        this.append(closing);
+    }
+
+    appendValue(value, shape = null, topLevel = true) {
+        if (shape === "unit" || value === null || value === undefined) {
+            this.append("()");
+            return;
+        }
+        if (typeof value === "string") {
+            if (topLevel) this.append(value);
+            else this.appendQuoted(value);
+            return;
+        }
+        if (typeof value === "number") {
+            this.append(shape === "float" || !_GENO_NUMBER.isFinite(value)
+                ? _formatFloat(value) : _GENO_STRING(value));
+            return;
+        }
+        if (typeof value !== "object") {
+            this.append(_GENO_STRING(value));
+            return;
+        }
+        if (this.active.has(value)) {
+            if (value instanceof GenoArray) this.append("Array([...])");
+            else if (value instanceof GenoMutableMap) this.append("MutableMap({...})");
+            else if (value instanceof GenoVec) this.append("Vec([...])");
+            else if (value instanceof GenoSet) this.append("Set({...})");
+            else if (value instanceof _GENO_MAP) this.append("{...}");
+            else if (Array.isArray(value)) this.append(shape && shape[0] === "tuple" ? "(...)" : "[...]");
+            else if (isConstructor(value)) {
+                this.append(value._tag);
+                this.append("(...)");
+            } else this.append(_GENO_STRING(value));
+            return;
+        }
+
+        let fields = null;
+        if (isConstructor(value)) {
+            fields = shape && shape[0] === "record" ? shape[1][value._tag] : null;
+            if (!fields) {
+                const formatter = value[_GENO_FORMATTER];
+                if (typeof formatter === "function") {
+                    // Compiled formatters have a bounded writer branch, which
+                    // preserves field types even through recursive/Any values.
+                    formatter(value, undefined, topLevel, this);
+                    return;
+                }
+                fields = _GENO_FSTRING_BUILTIN_FIELDS[value._tag] || null;
+            }
+        }
+
+        this.active.add(value);
+        try {
+            const itemShape = shape && shape[0] === "sequence" ? shape[1] : null;
+            if (value instanceof GenoArray) {
+                this.appendSequence(value._elements, "Array([", "])", itemShape);
+            } else if (value instanceof GenoVec) {
+                this.appendSequence(value._elements, "Vec([", "])", itemShape);
+            } else if (value instanceof GenoSet) {
+                this.appendSequence([...value._data.values()].sort(_compareGenoValues), "Set({", "})", itemShape);
+            } else if (value instanceof GenoMutableMap) {
+                this.appendMapping(value._data.entries(), "MutableMap({", "})", shape);
+            } else if (value instanceof _GENO_MAP) {
+                this.appendMapping(value.entries(), "{", "}", shape);
+            } else if (Array.isArray(value)) {
+                const tuple = shape && shape[0] === "tuple";
+                this.appendSequence(value, tuple ? "(" : "[", tuple ? (value.length === 1 ? ",)" : ")") : "]", tuple ? shape[1] : itemShape, tuple);
+            } else if (isConstructor(value)) {
+                this.append(value._tag);
+                fields = fields || Object.keys(value).filter(key => key !== "_tag").map(key => [key, null]);
+                if (fields.length > 0) {
+                    this.append("(");
+                    let first = true;
+                    for (const [name, fieldShape] of fields) {
+                        if (!first) this.append(", ");
+                        first = false;
+                        this.append(name);
+                        this.append(": ");
+                        this.appendValue(value[name], fieldShape, false);
+                    }
+                    this.append(")");
+                }
+            } else this.append(_GENO_STRING(value));
+        } finally {
+            this.active.delete(value);
+        }
+    }
+}
+
+// Dynamic built-in values need the same Float/tuple distinctions as the
+// ordinary _BUILTIN_TAG_FORMATTERS path. User-defined values carry a formatter.
+const _GENO_FSTRING_BUILTIN_FIELDS = Object.freeze(Object.assign(Object.create(null), {
+    JsonFloat: [["value", "float"]],
+    JsonArray: [["items", ["sequence", null]]],
+    JsonObject: [["entries", ["sequence", ["tuple", [null, null]]]]],
+    HttpRequest: [["method", null], ["path", null], ["query", null], ["headers", ["sequence", ["tuple", [null, null]]]], ["body", null]],
+    HttpResponse: [["status", null], ["body", null], ["headers", ["sequence", ["tuple", [null, null]]]]],
+}));
+
 function _checkStringResultSize(funcName, size) {
     try {
         _checkCollectionKind("String", size);

@@ -1509,6 +1509,152 @@ def _check_collection_kind(kind: str, size: int) -> None:
         )
 
 
+class _GenoFString:
+    """Accumulate interpolation parts only while their combined size fits."""
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+        self.size = 0
+
+    def append(self, part: str) -> None:
+        size = self.size + len(part)
+        _check_collection_kind("String", size)
+        self.size = size
+        if part:
+            self.parts.append(part)
+
+    def append_value(self, value: Any) -> None:
+        """Format an interpolated value without materializing its full text."""
+        self._append_value(value, (), top_level=True)
+
+    def _append_quoted_string(self, value: str) -> None:
+        backslash = chr(92)
+        escapes = {
+            backslash: backslash + backslash,
+            '"': backslash + '"',
+            chr(8): backslash + "b",
+            chr(12): backslash + "f",
+            chr(10): backslash + "n",
+            chr(13): backslash + "r",
+            chr(9): backslash + "t",
+        }
+        self.append('"')
+        for char in value:
+            escaped = escapes.get(char)
+            if escaped is not None:
+                self.append(escaped)
+            elif ord(char) < 0x20:
+                self.append(backslash + "u" + f"{ord(char):04x}")
+            else:
+                self.append(char)
+        self.append('"')
+
+    def _append_items(self, values: Any, seen: tuple[Any, ...]) -> None:
+        first = True
+        for item in values:
+            if not first:
+                self.append(", ")
+            first = False
+            self._append_value(item, seen, top_level=False)
+
+    def _append_mapping(self, values: dict, seen: tuple[Any, ...]) -> None:
+        first = True
+        for key, item in values.items():
+            if not first:
+                self.append(", ")
+            first = False
+            self._append_value(key, seen, top_level=False)
+            self.append(": ")
+            self._append_value(item, seen, top_level=False)
+
+    def _append_value(
+        self, value: Any, seen: tuple[Any, ...], *, top_level: bool
+    ) -> None:
+        if isinstance(
+            value,
+            (list, dict, tuple, _GenoArray, _GenoMutableMap, _GenoVec, _GenoSet),
+        ):
+            if _geno_seen_contains(seen, value):
+                if isinstance(value, _GenoArray):
+                    self.append("Array([...])")
+                elif isinstance(value, _GenoMutableMap):
+                    self.append("MutableMap({...})")
+                elif isinstance(value, _GenoVec):
+                    self.append("Vec([...])")
+                elif isinstance(value, _GenoSet):
+                    self.append("Set({...})")
+                elif isinstance(value, dict):
+                    self.append("{...}")
+                else:
+                    self.append("[...]" if isinstance(value, list) else "(...)")
+                return
+            seen = seen + (value,)
+
+        if value is None:
+            self.append("()")
+        elif isinstance(value, bool):
+            self.append("true" if value else "false")
+        elif isinstance(value, str):
+            if top_level:
+                self.append(value)
+            else:
+                self._append_quoted_string(value)
+        elif isinstance(value, Constructor):
+            fields = _dataclasses_fields(value)
+            self.append("None" if isinstance(value, _None) else type(value).__name__)
+            if fields:
+                self.append("(")
+                first = True
+                for field in fields:
+                    if not first:
+                        self.append(", ")
+                    first = False
+                    self.append(field.name)
+                    self.append(": ")
+                    self._append_value(
+                        _object_getattribute(value, field.name), seen, top_level=False
+                    )
+                self.append(")")
+        elif isinstance(value, _GenoArray):
+            self.append("Array([")
+            self._append_items(value._elements, seen)
+            self.append("])")
+        elif isinstance(value, _GenoMutableMap):
+            self.append("MutableMap({")
+            self._append_mapping(value._data, seen)
+            self.append("})")
+        elif isinstance(value, _GenoVec):
+            self.append("Vec([")
+            self._append_items(value._elements, seen)
+            self.append("])")
+        elif isinstance(value, _GenoSet):
+            self.append("Set({")
+            self._append_items(sorted(value._data, key=_geno_sort_key), seen)
+            self.append("})")
+        elif isinstance(value, list):
+            self.append("[")
+            self._append_items(value, seen)
+            self.append("]")
+        elif isinstance(value, tuple):
+            self.append("(")
+            self._append_items(value, seen)
+            if len(value) == 1:
+                self.append(",")
+            self.append(")")
+        elif isinstance(value, dict):
+            self.append("{")
+            self._append_mapping(value, seen)
+            self.append("}")
+        else:
+            self.append(str(value))
+
+    def finish(self) -> str:
+        return "".join(self.parts)
+
+    async def finish_async(self) -> str:
+        return self.finish()
+
+
 def _check_string_result_size(func_name: str, size: int) -> None:
     try:
         _check_collection_kind("String", size)
@@ -4780,11 +4926,139 @@ def _create_validated_http_connection(
     raise OSError(f"{fn_name}: cannot resolve host {hostname!r}")
 
 
-def _read_limited_temp_text(handle, fn_name: str) -> str:
-    handle.seek(0)
-    return _read_limited_utf8_stream(
-        handle, fn_name, limit_error_type=_GenoOutputLimitError
-    )
+def _process_pipe_chunk(stream: Any) -> "bytes | None":
+    """Read ready bytes without blocking on a child that retains a pipe."""
+    import os as _os
+
+    if _os.name == "nt":
+        import ctypes as _ctypes
+        import msvcrt as _msvcrt
+        from ctypes import wintypes as _wintypes
+
+        kernel = cast(Any, _ctypes).WinDLL("kernel32", use_last_error=True)
+        peek = kernel.PeekNamedPipe
+        peek.argtypes = [
+            _wintypes.HANDLE,
+            _wintypes.LPVOID,
+            _wintypes.DWORD,
+            _wintypes.LPDWORD,
+            _wintypes.LPDWORD,
+            _wintypes.LPDWORD,
+        ]
+        peek.restype = _wintypes.BOOL
+        available = _wintypes.DWORD()
+        if not peek(
+            cast(Any, _msvcrt).get_osfhandle(stream.fileno()),
+            None,
+            0,
+            None,
+            _ctypes.byref(available),
+            None,
+        ):
+            error = cast(Any, _ctypes).get_last_error()
+            if error == 109:  # ERROR_BROKEN_PIPE: every writer closed its handle
+                return b""
+            raise cast(Any, _ctypes).WinError(error)
+        if not available.value:
+            return None
+        return _os.read(stream.fileno(), min(8192, available.value))
+
+    import select as _select
+
+    poll_api = cast(Any, _select)  # Unix-only API absent from Windows type stubs.
+    poller = poll_api.poll()
+    poller.register(stream, poll_api.POLLIN | poll_api.POLLHUP | poll_api.POLLERR)
+    if not poller.poll(0):
+        return None
+    return _os.read(stream.fileno(), 8192)
+
+
+def _capture_process_output(
+    argv: list[str],
+    *,
+    input_text: "str | None",
+    env: Any,
+    timeout: float,
+    limit: int,
+    limit_error: "type[Exception]",
+) -> Any:
+    """Capture bounded UTF-8 output; never spool child output to disk.
+
+    Poll raw pipes so timeout/overflow cleanup cannot wait on reader threads
+    or on descendants retaining pipe handles. Explicit input uses a bounded
+    file, avoiding pipe backpressure while stdout and stderr are drained.
+    """
+    import contextlib as _contextlib
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+    import time as _time
+
+    if input_text is not None and len(input_text) > limit:
+        raise limit_error(
+            f"process: String size exceeds limit ({len(input_text)} > {limit})"
+        )
+    deadline = _time.monotonic() + timeout
+    with _contextlib.ExitStack() as cleanup:
+        stdin_file = None
+        if input_text is not None:
+            stdin_file = cleanup.enter_context(_tempfile.TemporaryFile())
+            stdin_file.write(input_text.encode("utf-8"))
+            stdin_file.seek(0)
+        if _time.monotonic() >= deadline:
+            raise _subprocess.TimeoutExpired(argv, timeout)
+        process = _subprocess.Popen(  # noqa: S603 - validated executable/argv
+            argv,
+            stdin=stdin_file,
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+            env=env,
+            bufsize=0,
+        )
+        streams = [process.stdout, process.stderr]
+        decoders = [
+            _runtime_codecs.getincrementaldecoder("utf-8")(errors="replace")
+            for _ in streams
+        ]
+        parts: list[list[str]] = [[], []]
+        sizes = [0, 0]
+        active = {0, 1}
+        try:
+            while active:
+                if _time.monotonic() >= deadline:
+                    raise _subprocess.TimeoutExpired(argv, timeout)
+                progressed = False
+                for index in tuple(active):
+                    chunk = _process_pipe_chunk(streams[index])
+                    if chunk is None:
+                        continue
+                    progressed = True
+                    text = decoders[index].decode(chunk, final=not chunk)
+                    sizes[index] += len(text)
+                    if sizes[index] > limit:
+                        raise limit_error(
+                            f"process: String size exceeds limit ({sizes[index]} > {limit})"
+                        )
+                    if text:
+                        parts[index].append(text)
+                    if not chunk:
+                        active.remove(index)
+                if not progressed:
+                    _time.sleep(min(0.005, max(0.0, deadline - _time.monotonic())))
+            process.wait(timeout=max(0.0, deadline - _time.monotonic()))
+            return _subprocess.CompletedProcess(
+                argv, process.returncode, "".join(parts[0]), "".join(parts[1])
+            )
+        finally:
+            # Unbuffered handles close immediately, even if descendants keep
+            # their write ends open. Kill/reap the command on every failure.
+            try:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=1)
+            finally:
+                for stream in streams:
+                    if stream is not None:
+                        stream.close()
 
 
 def _process_allowlist():
@@ -4826,30 +5100,18 @@ def _validate_process_argv(argv, fn_name: str, *, process_env):
 
 
 def _run_limited_process(argv, *, input_text=None):
-    import subprocess as _subprocess
-    import tempfile as _tempfile
-
     env = _process_env()
     argv, err = _validate_process_argv(argv, "process", process_env=env)
     if err is not None:
         raise ValueError(err)
-    stdin_payload = input_text.encode("utf-8") if input_text is not None else None
-    with _tempfile.TemporaryFile() as stdout_file:
-        with _tempfile.TemporaryFile() as stderr_file:
-            result = _subprocess.run(  # noqa: S603
-                argv,
-                input=stdin_payload,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                env=env,
-                timeout=30,
-            )
-            return _subprocess.CompletedProcess(
-                argv,
-                result.returncode,
-                _read_limited_temp_text(stdout_file, "process"),
-                _read_limited_temp_text(stderr_file, "process"),
-            )
+    return _capture_process_output(
+        argv,
+        input_text=input_text,
+        env=env,
+        timeout=30,
+        limit=_MAX_COLLECTION_SIZE,
+        limit_error=_GenoOutputLimitError,
+    )
 
 
 # =============================================================================

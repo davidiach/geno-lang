@@ -371,11 +371,6 @@ def _create_validated_http_connection(
     raise OSError(f"{fn_name}: cannot resolve host {hostname!r}")
 
 
-def _read_limited_temp_text(interpreter, handle, fn_name: str) -> str:
-    handle.seek(0)
-    return _read_limited_utf8_stream(interpreter, handle, fn_name)
-
-
 def _resolve_executable_allowlist(allowed_executables: Iterable[str] | None):
     import os
 
@@ -840,11 +835,12 @@ def install_process_callbacks(
     """Install real process execution callbacks for --cap process."""
     import shlex
     import subprocess
-    import tempfile
     import time
 
+    from ._runtime_support import _capture_process_output
     from .sandbox import TimeoutError as SandboxTimeout
     from .values import BuiltinFunction, ConstructorValue
+    from .values import RuntimeError as GenoRuntimeError
 
     TIMEOUT = 30
     process_env = None if inherit_env else _minimal_process_env()
@@ -880,24 +876,15 @@ def install_process_callbacks(
         if err is not None:
             raise ValueError(err)
         timeout, bounded_by_deadline = _bounded_process_timeout()
-        stdin_payload = input_text.encode("utf-8") if input_text is not None else None
         try:
-            with tempfile.TemporaryFile() as stdout_file:
-                with tempfile.TemporaryFile() as stderr_file:
-                    result = subprocess.run(
-                        argv,
-                        input=stdin_payload,
-                        stdout=stdout_file,
-                        stderr=stderr_file,
-                        env=process_env,
-                        timeout=timeout,
-                    )
-                    return subprocess.CompletedProcess(
-                        argv,
-                        result.returncode,
-                        _read_limited_temp_text(interpreter, stdout_file, "process"),
-                        _read_limited_temp_text(interpreter, stderr_file, "process"),
-                    )
+            return _capture_process_output(
+                argv,
+                input_text=input_text,
+                env=process_env,
+                timeout=timeout,
+                limit=interpreter.sandbox_config.max_collection_size,
+                limit_error=GenoRuntimeError,
+            )
         except subprocess.TimeoutExpired:
             if bounded_by_deadline:
                 raise _timeout_error()
