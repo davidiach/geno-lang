@@ -7,12 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-10-24
+## [0.6.0] - 2026-10-25
 
 ### Changed
 
-- Promote the qualified 0.6.0-rc.3 feature set to a non-prerelease version
-  under [accepted proposal 0014](docs/proposals/0014-0.6-stable-promotion.md).
+- Promote the qualified 0.6.0-rc.4 feature set to a non-prerelease version
+  under [accepted proposal 0014](docs/proposals/0014-0.6-stable-promotion.md)
+  and its [RC.4 baseline amendment 0015](docs/proposals/0015-0.6-rc4-promotion-baseline.md).
   Promotion changes release metadata and documentation, with no additional
   language, runtime, dependency, or supported-target changes.
 - Make [the 0.6 specification](docs/spec/v0.6.md) the normative pre-1.0 contract
@@ -26,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floating-point argument semantics, JavaScript JSON formatting, Windows
   package cleanup, TypeScript Option declarations, and imported constructor
   collisions (#188, #189, #190, #191, #194, #195, #209).
+- Retain RC.4's faster compiler startup: reuse generated prelude bindings only
+  for the exact source hash, preserving the original parser and safety checks (#220).
 - Make the worker startup-timeout regression test tolerate slow CI scheduling
   while preserving its assertions and production timeout behavior (#216).
 
@@ -34,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Users upgrading from 0.5 should follow the [0.6 migration notes](#migration-to-06).
 - Pre-existing Git objects hardlinked outside a checkout remain protected and
   may require manual cleanup. New dependency clones avoid shared hardlinks.
+
+## [0.6.0-rc.4] - 2026-10-24
+
+Fourth release candidate for the frozen 0.6 language contract. Stable promotion
+remains held until fresh qualification and an explicit promotion-baseline update.
+
+### Fixed
+
+- Avoid reparsing the compiler-owned Python runtime prelude during compiler
+  startup. A generated binding inventory is used only when the exact source hash
+  matches; modified sources retain the original parser and reserved-name checks.
+  Backend validation, dependency versions, and performance budgets are unchanged.
 
 ## [0.6.0-rc.3] - 2026-10-24
 
