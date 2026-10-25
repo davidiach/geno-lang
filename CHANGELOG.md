@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Promote the qualified 0.6.0-rc.4 feature set to a non-prerelease version
+- Promote the qualified 0.6.0-rc.5 feature set to a non-prerelease version
   under [accepted proposal 0014](docs/proposals/0014-0.6-stable-promotion.md)
-  and its [RC.4 baseline amendment 0015](docs/proposals/0015-0.6-rc4-promotion-baseline.md).
+  and its [RC.5 baseline amendment 0016](docs/proposals/0016-0.6-rc5-promotion-baseline.md).
   Promotion changes release metadata and documentation, with no additional
   language, runtime, dependency, or supported-target changes.
 - Make [the 0.6 specification](docs/spec/v0.6.md) the normative pre-1.0 contract
@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collisions (#188, #189, #190, #191, #194, #195, #209).
 - Retain RC.4's faster compiler startup: reuse generated prelude bindings only
   for the exact source hash, preserving the original parser and safety checks (#220).
+- Include RC.5's patched Python build minimum and MSAL publishing-tool
+  dependency override (#222).
 - Make the worker startup-timeout regression test tolerate slow CI scheduling
   while preserving its assertions and production timeout behavior (#216).
 
@@ -37,6 +39,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Users upgrading from 0.5 should follow the [0.6 migration notes](#migration-to-06).
 - Pre-existing Git objects hardlinked outside a checkout remain protected and
   may require manual cleanup. New dependency clones avoid shared hardlinks.
+
+## [0.6.0-rc.5] - 2026-10-25
+
+Fifth release candidate for the frozen 0.6 language contract. It includes the
+dependency and build security fixes merged after RC.4; stable promotion remains
+held for fresh qualification and an explicit promotion-baseline amendment.
+
+### Security
+
+- Raise the isolated Python build requirement to setuptools 84.1.0, matching the
+  existing release-tool pin and excluding vulnerable older build backends.
+- Update VS Code publishing tooling to patched MSAL Node 7.1.1 with a scoped
+  Azure Identity override. The override crosses Identity's declared major-version
+  range; initialization, extension tests and packaging are validated, while live
+  authenticated publishing is not claimed.
+
+The Geno runtime, frozen language contract, capabilities, targets and performance
+budgets are unchanged from RC.4. No new source migration is required.
 
 ## [0.6.0-rc.4] - 2026-10-24
 

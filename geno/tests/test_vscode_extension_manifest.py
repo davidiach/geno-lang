@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from packaging.version import Version
+
 
 def _extension_root() -> Path:
     return Path(__file__).resolve().parents[2] / "vscode-geno"
@@ -37,3 +39,18 @@ def test_vscode_manifest_references_existing_files():
 
     for snippet in contributes.get("snippets", []):
         _assert_manifest_file_exists(extension_root, snippet["path"])
+
+
+def test_vscode_lock_uses_patched_msal_only_for_build_tools():
+    lock = json.loads((_extension_root() / "package-lock.json").read_text())
+    msal_packages = [
+        package
+        for path, package in lock["packages"].items()
+        if path.endswith("node_modules/@azure/msal-node")
+    ]
+
+    assert msal_packages, "expected the VSCE authentication dependency in the lockfile"
+    for package in msal_packages:
+        # GHSA-xcx6-jx8p-x3h5: reject vulnerable copies, including nested installs.
+        assert Version(package["version"]) >= Version("7.1.0")
+        assert package.get("dev") is True
