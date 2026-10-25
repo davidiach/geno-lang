@@ -4948,7 +4948,7 @@ def _process_pipe_chunk(stream: Any) -> "bytes | None":
         peek.restype = _wintypes.BOOL
         available = _wintypes.DWORD()
         if not peek(
-            _msvcrt.get_osfhandle(stream.fileno()),
+            cast(Any, _msvcrt).get_osfhandle(stream.fileno()),
             None,
             0,
             None,
