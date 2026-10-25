@@ -7,6 +7,7 @@ Compiles Geno source code to Python.
 
 import ast
 import builtins as _python_builtins
+import hashlib
 import keyword
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -36,6 +37,7 @@ from ._backend_fastpath import (
     is_string_type,
 )
 from ._definition_index import collect_definitions
+from ._prelude_bindings import PRELUDE_BINDING_NAMES, PRELUDE_SOURCE_SHA256
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
     AssignStatement,
@@ -137,6 +139,13 @@ class _BlockScope:
 
 # Names defined in the runtime prelude that must not be shadowed by user code.
 def _python_prelude_binding_names(source: str) -> frozenset[str]:
+    """Reuse generated bindings only for the exact compiler-owned prelude."""
+    if hashlib.sha256(source.encode("utf-8")).hexdigest() == PRELUDE_SOURCE_SHA256:
+        return PRELUDE_BINDING_NAMES
+    return _uncached_python_prelude_binding_names(source)
+
+
+def _uncached_python_prelude_binding_names(source: str) -> frozenset[str]:
     """Return every module-scope name bound by the generated Python prelude."""
     names: set[str] = set()
 
