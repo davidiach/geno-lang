@@ -310,7 +310,8 @@ def test_an_application_failing_as_written_must_pass_after_migration(
         assert not any(name.startswith("migrate") for name, _, _ in calls)
         return
     assert receipt["results"] == {"total": 101, "passed": 99, "failed": 2}
-    executable = str(output / "venv/bin/geno")
+    entrypoint = "Scripts/geno.exe" if sys.platform == "win32" else "bin/geno"
+    executable = str(output / "venv" / entrypoint)
     migrations = [(name, args, cwd) for name, args, cwd in calls if "migrate" in args]
     assert migrations == [
         (f"migrate-diff-{app}", [executable, "migrate", "--diff", "."], cwd)

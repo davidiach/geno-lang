@@ -1607,6 +1607,7 @@ class TestTimeoutBehavior:
     ):
         import subprocess
 
+        from geno import _runtime_support
         from geno._serve import install_process_callbacks
         from geno.interpreter import Interpreter
         from geno.sandbox import SandboxConfig
@@ -1622,7 +1623,7 @@ class TestTimeoutBehavior:
                 stderr="",
             )
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(_runtime_support, "_capture_process_output", fake_run)
 
         interp = Interpreter(sandbox_config=SandboxConfig(timeout=0.05))
         install_process_callbacks(interp)
@@ -1638,6 +1639,7 @@ class TestTimeoutBehavior:
     def test_process_active_deadline_timeout_raises_sandbox_timeout(self, monkeypatch):
         import subprocess
 
+        from geno import _runtime_support
         from geno._serve import install_process_callbacks
         from geno.interpreter import Interpreter
         from geno.sandbox import SandboxConfig
@@ -1646,7 +1648,7 @@ class TestTimeoutBehavior:
         def fake_run(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(_runtime_support, "_capture_process_output", fake_run)
 
         interp = Interpreter(sandbox_config=SandboxConfig(timeout=0.05))
         install_process_callbacks(interp)

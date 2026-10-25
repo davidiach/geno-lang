@@ -96,6 +96,7 @@ from .ast_nodes import (
 )
 from .entrypoint import (
     EntrypointResultKind,
+    _awaits_directly,
     classify_entrypoint_result,
     is_async_execution_form,
     visible_type_aliases,
@@ -494,6 +495,7 @@ _JS_LOCAL_RESERVED_NAMES = (
             "_safe_bitor",
             "_safe_bitand",
             "_safe_bitxor",
+            "_GenoFString",
             "_checkCollectionSize",
             "_MAX_COLLECTION_SIZE",
             "_MAX_INTEGER_BITS",
@@ -1597,19 +1599,40 @@ class JSCompiler(BaseCompiler):
     def _compile_variant_formatter(
         self, defn: TypeDef, variant: TypeVariant, formatter_name: str
     ) -> None:
-        self._writeln(f"function {formatter_name}(value, seen, topLevel) {{")
+        self._writeln(
+            f"function {formatter_name}(value, seen, topLevel, writer = null) {{"
+        )
         self._indent()
+        bindings: dict[str, Type] = {name: TypeVar(name) for name in defn.type_params}
+        active_type = UserType(
+            defn.name,
+            tuple(TypeVar(name) for name in defn.type_params),
+        )
+        field_shapes = ", ".join(
+            "["
+            + self._js_string_literal(name)
+            + ", "
+            + self._compile_fstring_shape(
+                self._annotation_to_type(annotation, bindings),
+                active_user_types=frozenset({active_type}),
+            )
+            + "]"
+            for name, annotation in variant.fields
+        )
+        shape = (
+            '["record", {'
+            + self._js_string_literal(variant.name)
+            + f": [{field_shapes}]}}]"
+        )
+        self._writeln(
+            f"if (writer !== null) {{ writer.appendValue(value, {shape}, topLevel); return; }}"
+        )
         if not variant.fields:
             self._writeln(f"return {self._js_string_literal(variant.name)};")
             self._dedent()
             self._writeln("}")
             return
 
-        bindings: dict[str, Type] = {name: TypeVar(name) for name in defn.type_params}
-        active_type = UserType(
-            defn.name,
-            tuple(TypeVar(name) for name in defn.type_params),
-        )
         field_parts: list[str] = []
         for field_name, field_type in variant.fields:
             resolved_field_type = self._annotation_to_type(field_type, bindings)
@@ -3589,24 +3612,79 @@ class JSCompiler(BaseCompiler):
         return f"{self._mangle_name(expr.constructor)}({args})"
 
     def _compile_fstring_expr(self, expr: FStringExpr) -> str:
-        """Compile an f-string expression to a JavaScript template literal."""
-        segments: list[str] = []
+        """Check each interpolation before evaluating the next or joining."""
+        builder = self._fresh_temp()
+        statements = [f"const {builder} = new _GenoFString();"]
         for part in expr.parts:
             if isinstance(part, str):
-                escaped = (
-                    part.replace("\\", "\\\\")
-                    .replace("`", "\\`")
-                    .replace("${", "\\${")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t")
-                    .replace("<", "\\x3C")
-                )
-                segments.append(escaped)
+                compiled = self._js_string_literal(part)
+                statements.append(f"{builder}.append({compiled});")
             else:
-                formatted = self._compile_formatted_expr(part, mode="stringify")
-                segments.append("${" + formatted + "}")
-        return "_checkCollectionSize(`" + "".join(segments) + "`)"
+                shape = self._compile_fstring_shape(
+                    getattr(part, "_resolved_type", None)
+                )
+                statements.append(
+                    f"{builder}.appendValue({self._compile_expr(part)}, {shape});"
+                )
+        statements.append(f"return {builder}.finish();")
+        body = " ".join(statements)
+        if _awaits_directly(expr.parts):
+            return f"(await (async () => {{ {body} }})())"
+        return f"(() => {{ {body} }})()"
+
+    def _compile_fstring_shape(
+        self,
+        resolved_type: Type | None,
+        *,
+        active_user_types: frozenset[UserType] = frozenset(),
+    ) -> str:
+        """Keep static Float/tuple/field information for bounded formatting.
+
+        Recursive user types use the existing constructor formatter callback,
+        whose writer branch carries that variant's field information.
+        """
+        resolved_type = self._static_type(resolved_type)
+        if isinstance(resolved_type, AsyncType):
+            resolved_type = self._static_type(resolved_type.result_type)
+        if isinstance(resolved_type, FloatType):
+            return '"float"'
+        if isinstance(resolved_type, UnitType):
+            return '"unit"'
+
+        def nested(value: Type | None) -> str:
+            return self._compile_fstring_shape(
+                value, active_user_types=active_user_types
+            )
+
+        if isinstance(resolved_type, (ListType, ArrayType, VecType, SetType)):
+            return '["sequence", ' + nested(resolved_type.element_type) + "]"
+        if isinstance(resolved_type, (MapType, MutableMapType)):
+            return (
+                '["map", '
+                + nested(resolved_type.key_type)
+                + ", "
+                + nested(resolved_type.value_type)
+                + "]"
+            )
+        if isinstance(resolved_type, TupleType):
+            elements = ", ".join(nested(item) for item in resolved_type.element_types)
+            return '["tuple", [' + elements + "]]"
+        if isinstance(resolved_type, UserType):
+            if resolved_type in active_user_types:
+                return "null"
+            active_user_types = active_user_types | {resolved_type}
+        if resolved_type is not None:
+            variants = self._variant_field_types(resolved_type)
+            if variants is not None:
+                cases = []
+                for name, fields in variants.items():
+                    field_shapes = ", ".join(
+                        "[" + self._js_string_literal(field) + ", " + nested(kind) + "]"
+                        for field, kind in fields
+                    )
+                    cases.append(self._js_string_literal(name) + f": [{field_shapes}]")
+                return '["record", {' + ", ".join(cases) + "}]"
+        return "null"
 
     # ``_compile_with_expr`` lives on ``BaseCompiler``; JS's emission
     # goes through ``_with_expr_emit`` below.  #622 slice.

@@ -299,7 +299,16 @@ def _explicit_fs_roots_for_run(
     project_root,
     program_args: list[str] | None,
 ) -> list[str]:
-    """Scope CLI fs grants to the project, cwd, source file, and path args."""
+    """Honor configured roots, otherwise grant the CLI's explicit input scope."""
+    configured_roots = os.environ.get("GENO_FS_ROOTS")
+    if configured_roots is not None:
+        roots = [root for root in configured_roots.split(os.pathsep) if root]
+        if not roots:
+            raise RuntimeError(
+                "GENO_FS_ROOTS must contain at least one filesystem root"
+            )
+        return roots
+
     roots = [os.getcwd(), os.path.dirname(os.path.abspath(filename))]
     if project_root is not None:
         roots.append(os.fspath(project_root))
@@ -882,7 +891,12 @@ def run_file(
                     roots=_explicit_fs_roots_for_run(
                         filename, resolved_run.project_root, program_args
                     ),
-                    allow_absolute_paths=True,
+                    allow_absolute_paths=(
+                        None
+                        if "GENO_FS_ROOTS" in os.environ
+                        or "GENO_FS_ALLOW_ABSOLUTE" in os.environ
+                        else True
+                    ),
                 )
             if capabilities is not None and "http" in capabilities:
                 _install_http_callbacks(interpreter)

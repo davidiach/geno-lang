@@ -2142,19 +2142,20 @@ class Interpreter:
     def _eval_fstring(self, expr: FStringExpr, env: Environment) -> str:
         parts = []
         limit = self.sandbox_config.max_collection_size
+        size = 0
         for part in expr.parts:
-            if isinstance(part, str):
-                parts.append(part)
-            else:
+            if not isinstance(part, str):
                 value = self.eval_expr(part, env)
-                parts.append(self._builtin_stringify_value(value))
-        result = "".join(parts)
-        if len(result) > limit:
-            raise RuntimeError(
-                f"String size exceeds limit ({len(result)} > {limit})",
-                expr.location,
-            )
-        return result
+                part = self._builtin_stringify_value(value)
+            size += len(part)
+            if size > limit:
+                raise RuntimeError(
+                    f"String size exceeds limit ({size} > {limit})",
+                    expr.location,
+                )
+            if part:
+                parts.append(part)
+        return "".join(parts)
 
     def _eval_list_literal(self, expr: ListLiteral, env: Environment) -> list:
         self._check_collection_size("List", len(expr.elements), expr.location)

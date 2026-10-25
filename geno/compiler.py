@@ -113,6 +113,7 @@ from .builtin_registry import (
 )
 from .entrypoint import (
     EntrypointResultKind,
+    _awaits_directly,
     classify_entrypoint_result,
     is_async_execution_form,
 )
@@ -267,6 +268,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_require_int_bit_limit",
             "_check_collection_size",
             "_check_collection_kind",
+            "_GenoFString",
             "_MAX_COLLECTION_SIZE",
             "_geno_run_async",
             "_GenoAsync",
@@ -3150,31 +3152,33 @@ class Compiler(BaseCompiler, ASTVisitor):
         return f"{self._mangle_name(expr.constructor)}({args})"
 
     def _compile_fstring_expr(self, expr: FStringExpr) -> str:
-        """Compile an f-string expression to a Python f-string."""
-        import re as _re
-
-        segments: list[str] = []
+        """Check each interpolation before evaluating the next or joining."""
+        builder = self._fresh_temp()
+        is_async = _awaits_directly(expr.parts)
+        operations = []
         for part in expr.parts:
             if isinstance(part, str):
-                escaped = (
-                    part.replace("\\", "\\\\")
-                    .replace('"', '\\"')
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t")
-                    .replace("\0", "\\0")
-                )
-                escaped = _re.sub(
-                    r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]",
-                    lambda m: f"\\x{ord(m.group()):02x}",
-                    escaped,
-                )
-                escaped = escaped.replace("{", "{{").replace("}", "}}")
-                segments.append(escaped)
+                compiled = self._emit_python_string_literal(part)
+                operations.append(f"{builder}.append({compiled})")
             else:
-                compiled = self._compile_expr(part)
-                segments.append("{" + f"_geno_format({compiled})" + "}")
-        return '_check_collection_size(f"' + "".join(segments) + '")'
+                operations.append(f"{builder}.append_value({self._compile_expr(part)})")
+        operations.append(builder if is_async else f"{builder}.finish()")
+        # A single-item comprehension scopes the builder without a walrus,
+        # which Python forbids in another comprehension's iterable. Unlike a
+        # lambda, its body can await in an async function. The flat tuple also
+        # avoids the AST depth of chaining a call for every interpolation.
+        result = (
+            "[("
+            + ", ".join(operations)
+            + f",)[-1] for {builder} in (_GenoFString(),)][0]"
+        )
+        if is_async:
+            # Python 3.10 does not infer an outer comprehension is async from
+            # an async inner comprehension alone. Expose an await in this
+            # expression so surrounding comprehension bodies/filters are also
+            # compiled as async, just as with the original interpolation.
+            return f"(await ({result}).finish_async())"
+        return result
 
     # ``_compile_with_expr`` lives on ``BaseCompiler``; Python's
     # emission goes through ``_with_expr_emit`` below.  #622 slice.
