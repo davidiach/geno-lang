@@ -151,7 +151,16 @@ export function deactivate(): Thenable<void> | undefined {
     diagnosticCollection.dispose();
   }
   if (client) {
-    return client.stop();
+    const stoppingClient = client;
+    client = undefined;
+    const wasRunning = stoppingClient.isRunning();
+    return stoppingClient.stop().catch((error: unknown) => {
+      // The Node client still terminates its process when stopping a pending
+      // initialization rejects because the protocol connection is not ready.
+      if (wasRunning) {
+        throw error;
+      }
+    });
   }
   return undefined;
 }
@@ -164,8 +173,9 @@ async function tryStartLSP(
   context: vscode.ExtensionContext,
   currentActivation: symbol | undefined
 ): Promise<boolean> {
+  let startingClient: any; // LanguageClient (dynamically loaded)
   try {
-    const { LanguageClient, TransportKind } = await import(
+    const { LanguageClient } = await import(
       "vscode-languageclient/node"
     );
     if (activationId !== currentActivation) {
@@ -175,7 +185,8 @@ async function tryStartLSP(
     const serverOptions = {
       command: getGenoServerPath(),
       args: ["lsp"],
-      transport: TransportKind.stdio,
+      // Executables use stdio by default; an explicit transport adds --stdio,
+      // which the Geno CLI does not accept.
     };
 
     const fileEvents = vscode.workspace.createFileSystemWatcher(
@@ -188,7 +199,7 @@ async function tryStartLSP(
       synchronize: { fileEvents },
     };
 
-    const startingClient = new LanguageClient(
+    startingClient = new LanguageClient(
       "genoLanguageServer",
       "Geno Language Server",
       serverOptions,
@@ -203,6 +214,9 @@ async function tryStartLSP(
     context.subscriptions.push({ dispose: () => startingClient.stop() });
     return true;
   } catch (error) {
+    if (client === startingClient) {
+      client = undefined;
+    }
     const failure = lspStartupFailureFromError(error);
     outputChannel?.appendLine(formatLspStartupFailure(failure));
     return false;

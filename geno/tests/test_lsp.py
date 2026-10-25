@@ -332,6 +332,20 @@ class TestKeywords:
 
 
 class TestServerCreation:
+    def test_initialize_advertises_full_document_sync(self):
+        server = create_server(diag_debounce_sec=0)
+        result = server.lsp.lsp_initialize(
+            types.InitializeParams(
+                process_id=None,
+                root_uri=None,
+                capabilities=types.ClientCapabilities(),
+            )
+        )
+        sync = result.capabilities.text_document_sync
+        assert isinstance(sync, types.TextDocumentSyncOptions)
+        assert sync.open_close is True
+        assert sync.change == types.TextDocumentSyncKind.Full
+
     def test_create_server_returns_language_server(self):
         server = create_server(diag_debounce_sec=0)
         assert server is not None
