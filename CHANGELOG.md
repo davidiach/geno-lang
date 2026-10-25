@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.5] - 2026-10-25
+
+Fifth release candidate for the frozen 0.6 language contract. It includes the
+dependency and build security fixes merged after RC.4; stable promotion remains
+held for fresh qualification and an explicit promotion-baseline amendment.
+
+### Security
+
+- Raise the isolated Python build requirement to setuptools 84.1.0, matching the
+  existing release-tool pin and excluding vulnerable older build backends.
+- Update VS Code publishing tooling to patched MSAL Node 7.1.1 with a scoped
+  Azure Identity override. The override crosses Identity's declared major-version
+  range; initialization, extension tests and packaging are validated, while live
+  authenticated publishing is not claimed.
+
+The Geno runtime, frozen language contract, capabilities, targets and performance
+budgets are unchanged from RC.4. No new source migration is required.
+
 ## [0.6.0-rc.4] - 2026-10-24
 
 Fourth release candidate for the frozen 0.6 language contract. Stable promotion

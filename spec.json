@@ -1,6 +1,6 @@
 {
   "name": "Geno",
-  "version": "0.6.0-rc.4",
+  "version": "0.6.0-rc.5",
   "description": "Machine-readable specification for the Geno programming language",
   "format_version": 1,
   "language_series": "0.6",
