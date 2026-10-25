@@ -37,7 +37,9 @@ command correct across version bumps.
 
 VSCE's Azure Identity dependency still requests MSAL Node 6.x, which is affected
 by [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
-The scoped npm override selects patched MSAL Node 7.1.1 or later within 7.x for
-this build tool. Remove the override when VSCE's dependency chain selects a
-patched version itself; validate authentication initialization and VSIX packaging
+The Azure Identity override selects patched MSAL Node 7.1.1 or later within 7.x
+for this build tool. It is scoped directly to Azure Identity so npm 10 (used with
+Node.js 22 in CI) also applies it when the dependency is hoisted. Remove the
+override when VSCE's dependency chain selects a patched version itself;
+validate authentication initialization and VSIX packaging
 when changing it. These authentication packages are development dependencies.
