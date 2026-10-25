@@ -4,6 +4,7 @@ from typing import Any, cast
 from unittest.mock import Mock
 
 import yaml  # type: ignore[import-untyped]
+from packaging.requirements import Requirement
 
 try:
     import tomllib
@@ -53,6 +54,18 @@ def _pyproject() -> dict[str, Any]:
 
 def test_distribution_name_avoids_the_unrelated_pypi_geno_project():
     assert _pyproject()["project"]["name"] == "geno-lang"
+
+
+def test_build_backend_requires_patched_setuptools():
+    requirements = [
+        Requirement(raw) for raw in _pyproject()["build-system"]["requires"]
+    ]
+    setuptools = next(req for req in requirements if req.name == "setuptools")
+
+    # GHSA-xmj3-9gf7-h52w also affects builds outside the pinned release workflow.
+    assert "82.0.1" not in setuptools.specifier
+    assert "84.0.0" not in setuptools.specifier
+    assert "84.1.0" in setuptools.specifier
 
 
 def test_package_discovery_excludes_test_suite():
