@@ -158,18 +158,58 @@ async function main(): Promise<void> {
   complete(new Error("old"));
   assert.strictEqual(diagnostics.size, 0, "deactivation must invalidate callbacks");
 
+  let failedClientStops = 0;
+  mockLsp = {
+    LanguageClient: class {
+      async start(): Promise<void> { throw new Error("spawn geno ENOENT"); }
+      async stop(): Promise<void> {
+        failedClientStops++;
+        throw new Error("Client is not running and cannot be stopped");
+      }
+    },
+  };
+  extension.activate({ subscriptions: [] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  save(doc);
+  complete(new Error("spawn geno ENOENT"));
+  assert.match(diagnostics.get(key)![0].message, /ENOENT/, "failed LSP startup must activate fallback diagnostics");
+  await extension.deactivate();
+  assert.strictEqual(failedClientStops, 0, "failed startup must not leave a client to stop on deactivation");
+
+  let pendingClientStops = 0;
+  mockLsp = {
+    LanguageClient: class {
+      start(): Promise<void> { return new Promise(() => {}); }
+      isRunning(): boolean { return false; }
+      async stop(): Promise<void> {
+        pendingClientStops++;
+        throw new Error("Client is not running and cannot be stopped");
+      }
+    },
+  };
+  extension.activate({ subscriptions: [] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await extension.deactivate();
+  assert.strictEqual(pendingClientStops, 1, "deactivation must cancel a client whose initialization never completes");
+
+  const launchedCommands: string[][] = [];
   const clients: Array<{ running: boolean; finishStart(): void }> = [];
   mockLsp = {
     TransportKind: { stdio: 0 },
     LanguageClient: class {
       running = false;
       finishStart = () => {};
-      constructor() { clients.push(this); }
+      constructor(_id: string, _name: string, server: { command: string; args: string[]; transport?: number }) {
+        // LanguageClient appends --stdio only when an executable's transport is explicit.
+        launchedCommands.push([server.command, ...server.args, ...(server.transport === 0 ? ["--stdio"] : [])]);
+        clients.push(this);
+      }
       start(): Promise<void> {
         return new Promise((resolve) => {
           this.finishStart = () => { this.running = true; resolve(); };
         });
       }
+      isRunning(): boolean { return this.running; }
       stop(): Promise<void> { this.running = false; return Promise.resolve(); }
     },
   };
@@ -181,6 +221,7 @@ async function main(): Promise<void> {
   extension.activate({ subscriptions: [] });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.strictEqual(clients.length, 1);
+  assert.deepStrictEqual(launchedCommands[0], ["geno", "lsp"], "LSP launch must preserve the Geno CLI argument contract");
   await extension.deactivate();
   extension.activate({ subscriptions: [] });
   await new Promise<void>((resolve) => setImmediate(resolve));

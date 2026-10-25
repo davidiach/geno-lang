@@ -987,8 +987,9 @@ class GenoLanguageServer:
                 "pygls is required for the LSP server. Install with: pip install geno-lang[lsp]"
             )
 
-        self.server = LanguageServer("geno-lsp", "0.1.0")
-        self.server.lsp._text_document_sync_kind = types.TextDocumentSyncKind.Full  # type: ignore[attr-defined]
+        self.server = LanguageServer(
+            "geno-lsp", "0.1.0", text_document_sync_kind=types.TextDocumentSyncKind.Full
+        )
         self._diag_debounce_sec = diag_debounce_sec
         self._state_lock = threading.RLock()
 
