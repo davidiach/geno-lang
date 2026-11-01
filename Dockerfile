@@ -1,4 +1,4 @@
-FROM python:3.11-slim@sha256:baf89808ec37adeaab83cec287adb4a2afa4a11c1d51e961c7ec737877e61af6 AS builder
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS builder
 
 WORKDIR /src
 
@@ -12,7 +12,7 @@ COPY geno /src/geno
 RUN python -m build --wheel --no-isolation \
     && python -m twine check --strict dist/*
 
-FROM python:3.11-slim@sha256:baf89808ec37adeaab83cec287adb4a2afa4a11c1d51e961c7ec737877e61af6 AS runtime
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS runtime
 
 # Run as non-root user
 RUN useradd --create-home --shell /bin/bash geno
