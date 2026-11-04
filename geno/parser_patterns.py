@@ -12,16 +12,23 @@ import copy
 from .ast_nodes import (
     ConstructorPattern,
     Expression,
+    Identifier,
+    InferredType,
     ListPattern,
     LiteralPattern,
     MatchArm,
+    MatchExpr,
+    MatchStatement,
     Pattern,
     RestPattern,
+    ReturnStatement,
     Statement,
     TuplePattern,
+    TypeAnnotation,
     VariablePattern,
     WildcardPattern,
 )
+from .diagnostics import ErrorCode, insert_fix
 from .parser_base import ParseError, ParserBase
 from .tokens import SourceLocation, TokenType, token_type_to_str
 
@@ -44,8 +51,113 @@ def pattern_bound_names(pattern: Pattern) -> set[str]:
     return names
 
 
+def _binds_only(pattern: Pattern) -> bool:
+    """Whether ``pattern`` matches every value of its tuple type."""
+    if isinstance(pattern, VariablePattern | WildcardPattern):
+        return True
+    if isinstance(pattern, TuplePattern):
+        return all(_binds_only(element) for element in pattern.elements)
+    return False
+
+
 class PatternParserMixin(ParserBase):
     """Mixin providing pattern parsing methods for the Parser."""
+
+    def _parse_loop_binding(
+        self,
+    ) -> tuple[str, TypeAnnotation, TuplePattern | None]:
+        """Parse what a ``for`` loop or comprehension binds before ``in``.
+
+        Either a name (``x``, ``x: Int``) or a tuple of names that unpacks
+        each element (``(i, x)``, ``(k, (a, b))``). For a tuple, the loop
+        binds a name no program can write, and the returned pattern unpacks
+        it: ``for (i, x) in xs`` is ``for item in xs`` whose body starts
+        with ``match item with | (i, x) -> ...``.
+        """
+        start = self._current()
+        if start.type is TokenType.LPAREN:
+            pattern = self._parse_pattern()
+            if not isinstance(pattern, TuplePattern) or not _binds_only(pattern):
+                raise ParseError(
+                    "A loop unpacks each element into names, as in (i, x); "
+                    "use match in the loop body to test the element",
+                    pattern.location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
+                )
+            location = start.location
+            var_type: TypeAnnotation = InferredType(location=location)
+            if self._match(TokenType.COLON):
+                var_type = self._parse_type()
+            name = f"_geno_item_{location.line}_{location.column}"
+            return name, var_type, pattern
+        if start.type is TokenType.IDENTIFIER and self._peek(1).type is TokenType.COMMA:
+            self._reject_unparenthesized_loop_names()
+        variable_token = self._expect(TokenType.IDENTIFIER, "Expected variable name")
+        var_type = InferredType(location=variable_token.location)
+        if self._match(TokenType.COLON):
+            var_type = self._parse_type()
+        return variable_token.value, var_type, None
+
+    def _reject_unparenthesized_loop_names(self) -> None:
+        """``for i, x in pairs`` is Python; Geno writes ``for (i, x) in pairs``."""
+        first = self._current()
+        offset = 0
+        last = first
+        while (
+            self._peek(offset).type is TokenType.IDENTIFIER
+            and self._peek(offset + 1).type is TokenType.COMMA
+            and self._peek(offset + 2).type is TokenType.IDENTIFIER
+        ):
+            offset += 2
+            last = self._peek(offset)
+        after_last = SourceLocation(
+            last.location.line,
+            last.location.column + len(last.value),
+            last.location.filename,
+        )
+        raise ParseError(
+            "A loop that unpacks each element writes the names in "
+            "parentheses: for (i, x) in ...",
+            first.location,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            (
+                insert_fix(
+                    "Add parentheses", [(first.location, "("), (after_last, ")")]
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _unpack_loop_body(
+        name: str, pattern: TuplePattern, body: list[Statement]
+    ) -> list[Statement]:
+        """The loop body that unpacks the element bound to ``name`` first."""
+        location = pattern.location
+        return [
+            MatchStatement(
+                location=location,
+                scrutinee=Identifier(location=location, name=name),
+                arms=[MatchArm(pattern=pattern, body=body, location=location)],
+            )
+        ]
+
+    @staticmethod
+    def _unpack_loop_value(
+        name: str, pattern: TuplePattern, value: Expression
+    ) -> MatchExpr:
+        """``value`` evaluated with ``pattern`` bound from the element ``name``."""
+        location = pattern.location
+        return MatchExpr(
+            location=value.location,
+            scrutinee=Identifier(location=location, name=name),
+            arms=[
+                MatchArm(
+                    pattern=copy.deepcopy(pattern),
+                    body=[ReturnStatement(location=value.location, value=value)],
+                    location=location,
+                )
+            ],
+        )
 
     def _parse_arm_patterns(self) -> list[Pattern]:
         """Parse a match arm's pattern, or its `|`-separated alternatives.

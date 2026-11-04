@@ -7,7 +7,7 @@ Contains ExpressionParserMixin with all expression parsing methods.
 
 from __future__ import annotations
 
-from typing import Union
+from typing import NoReturn, Union
 
 from .ast_nodes import (
     AwaitExpr,
@@ -22,7 +22,6 @@ from .ast_nodes import (
     FunctionCall,
     Identifier,
     IndexAccess,
-    InferredType,
     IntegerLiteral,
     LambdaExpr,
     ListComprehension,
@@ -40,7 +39,6 @@ from .ast_nodes import (
     Statement,
     StringLiteral,
     TupleExpr,
-    TypeAnnotation,
     TypedHole,
     TypeIdentifier,
     UnaryOp,
@@ -49,7 +47,7 @@ from .ast_nodes import (
 from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
 from .lexer import Lexer, LexerError
 from .parser_base import REMOVED_THROW, ParseError, ParserBase
-from .tokens import SourceLocation, TokenType, token_type_to_str
+from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 
 class ExpressionParserMixin(ParserBase):
@@ -218,6 +216,13 @@ class ExpressionParserMixin(ParserBase):
                     ),
                 )
             if precedence is None or precedence < min_precedence:
+                return left
+            if (
+                current_type in self._COMPOUND_ASSIGN_OPERATORS
+                and self._compound_assign_operator() is not None
+            ):
+                # `x += v` ends the expression `x`; the statement is the
+                # compound assignment.
                 return left
 
             location = left.location
@@ -413,68 +418,45 @@ class ExpressionParserMixin(ParserBase):
         """Parse an f-string token into an FStringExpr node."""
         token = self._advance()
         location = token.location
-        raw, interp_locations = token.value
+        raw, interp_locations, interp_spans = token.value
 
         parts: list[Union[str, Expression]] = []
-        i = 0
-        interp_index = 0
-        while i < len(raw):
-            brace_start = raw.find("{", i)
-            if brace_start == -1:
-                parts.append(raw[i:])
-                break
-            if brace_start > i:
-                parts.append(raw[i:brace_start])
-            brace_end = raw.find("}", brace_start + 1)
-            if brace_end == -1:
-                raise ParseError("Unterminated expression in f-string", location)
-            expr_location = interp_locations[interp_index]
-            interp_index += 1
-            expr_text = raw[brace_start + 1 : brace_end]
+        text_start = 0
+        for (expr_start, expr_end), expr_location in zip(
+            interp_spans, interp_locations
+        ):
+            # The text before the interpolation, without its opening `{`.
+            if expr_start - 1 > text_start:
+                parts.append(raw[text_start : expr_start - 1])
+            expr_text = raw[expr_start:expr_end]
             if not expr_text.strip():
                 raise ParseError("Empty expression in f-string", expr_location)
-            expr = self._parse_fstring_expr(expr_text, expr_location)
-            parts.append(expr)
-            i = brace_end + 1
+            parts.append(self._parse_fstring_expr(expr_text, expr_location))
+            text_start = expr_end + 1  # past the closing `}`
+        if text_start < len(raw):
+            parts.append(raw[text_start:])
 
         if not parts:
             parts.append("")
 
         return FStringExpr(location=location, parts=parts)
 
-    @staticmethod
-    def _fstring_inner_location(
-        base: SourceLocation, inner: SourceLocation
-    ) -> SourceLocation:
-        """Map a location relative to an interpolation onto absolute source coords.
-
-        ``inner`` is reported by the sub-lexer/sub-parser with line/column relative
-        to the interpolation text (line 1, column 1 == ``base``). Only the first
-        line is column-shifted; later lines already start at column 1.
-        """
-        if inner.line == 1:
-            return SourceLocation(
-                line=base.line,
-                column=base.column + (inner.column - 1),
-                filename=base.filename,
-            )
-        return SourceLocation(
-            line=base.line + (inner.line - 1),
-            column=inner.column,
-            filename=base.filename,
-        )
-
     def _parse_fstring_expr(
         self, expr_text: str, base_location: SourceLocation
     ) -> Expression:
-        """Tokenize and parse a single expression from an f-string."""
+        """Tokenize and parse a single expression from an f-string.
+
+        The expression is read from where it is written in the source, so its
+        nodes and errors carry their true locations.
+        """
         lexer = Lexer(expr_text, base_location.filename)
+        lexer.line = base_location.line
+        lexer.column = base_location.column
         try:
             tokens = lexer.tokenize()
         except LexerError as e:
             raise ParseError(
-                f"Invalid expression in f-string: {e.message}",
-                self._fstring_inner_location(base_location, e.location),
+                f"Invalid expression in f-string: {e.message}", e.location
             ) from e
         # Import here to avoid circular import; at runtime the final Parser class exists.
         from .parser import Parser
@@ -483,15 +465,12 @@ class ExpressionParserMixin(ParserBase):
         try:
             expr = sub_parser._parse_expression()
         except ParseError as e:
-            raise ParseError(
-                e.message,
-                self._fstring_inner_location(base_location, e.location),
-            ) from e
+            raise ParseError(e.message, e.location, e.error_code, e.fixes) from e
         if not sub_parser._check(TokenType.EOF):
             current = sub_parser._current()
             raise ParseError(
                 f"Unexpected token in f-string expression: {current}",
-                self._fstring_inner_location(base_location, current.location),
+                current.location,
             )
         return expr
 
@@ -551,7 +530,13 @@ class ExpressionParserMixin(ParserBase):
             return Identifier(location=location, name=self._advance().value)
 
         if current_type is TokenType.TYPE_IDENTIFIER:
-            name = self._advance().value
+            name_token = self._advance()
+            name = name_token.value
+            if (
+                self._current_type is TokenType.LBRACE
+                and self._current().location.line == location.line
+            ):
+                self._reject_struct_literal(name_token)
             if self._current_type is TokenType.LPAREN:
                 self._advance()
                 args: list[Expression] = []
@@ -626,15 +611,7 @@ class ExpressionParserMixin(ParserBase):
             # Check for list comprehension: [expr for var: Type in iterable]
             if self._current_type is TokenType.FOR:
                 self._advance()  # consume 'for'
-                variable_token = self._expect(
-                    TokenType.IDENTIFIER, "Expected variable name"
-                )
-                variable = variable_token.value
-                var_type: TypeAnnotation = InferredType(
-                    location=variable_token.location
-                )
-                if self._match(TokenType.COLON):
-                    var_type = self._parse_type()
+                variable, var_type, pattern = self._parse_loop_binding()
                 self._expect(TokenType.IN)
                 iterable = self._parse_expression()
                 condition = None
@@ -642,6 +619,12 @@ class ExpressionParserMixin(ParserBase):
                     self._advance()
                     condition = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
+                if pattern is not None:
+                    first_expr = self._unpack_loop_value(variable, pattern, first_expr)
+                    if condition is not None:
+                        condition = self._unpack_loop_value(
+                            variable, pattern, condition
+                        )
                 return ListComprehension(
                     location=location,
                     element_expr=first_expr,
@@ -764,9 +747,18 @@ class ExpressionParserMixin(ParserBase):
         """Parse `{key: value, ...}`; `{}` is the empty map."""
         location = self._current().location
         self._expect(TokenType.LBRACE)
+        if (
+            self._check(TokenType.DOT)
+            and self._peek(1).type is TokenType.DOT
+            and self._peek(2).type is TokenType.DOT
+        ):
+            self._reject_braced_record_update(location, spread=True)
         entries: list[MapEntry] = []
         while not self._check(TokenType.RBRACE):
+            key_start = self._current().location
             key = self._parse_expression()
+            if not entries and self._check(TokenType.WITH):
+                self._reject_braced_record_update(location, target_start=key_start)
             self._expect(
                 TokenType.COLON, "Expected ':' between a map key and its value"
             )
@@ -776,6 +768,66 @@ class ExpressionParserMixin(ParserBase):
                 break
         self._expect(TokenType.RBRACE, "Expected ',' or '}' in a map literal")
         return MapLiteral(location=location, entries=entries)
+
+    def _reject_braced_record_update(
+        self,
+        open_location: SourceLocation,
+        *,
+        target_start: SourceLocation | None = None,
+        spread: bool = False,
+    ) -> NoReturn:
+        """``{ p with x = 5 }`` (F#, OCaml) and ``{ ...p, x: 5 }`` (JavaScript)
+        update a record; Geno writes ``p with (x: 5)``.
+
+        With ``spread``, the current token is the ``...``; otherwise the
+        target has been read from ``target_start`` and ``with`` is current.
+        """
+        if spread or target_start is None:
+            for _dot in range(3):
+                self._advance()
+            target_start = self._current().location
+            self._parse_expression()
+            target_end = self._current().location
+            self._match(TokenType.COMMA)
+        else:
+            target_end = self._current().location
+            self._advance()  # `with`
+        target = self._source_between(target_start, target_end)
+        fields, _base, close = self._parse_braced_fields()
+        updates = self._field_list(fields)
+        text = (
+            None
+            if target is None or updates is None
+            else f"{target.strip()} with ({updates})"
+        )
+        raise ParseError(
+            "Geno writes a record update as value with (field: new_value), "
+            "as in p with (x: 5)",
+            open_location,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            self._rewrite_fix("Write it with 'with (...)'", open_location, close, text),
+        )
+
+    def _reject_struct_literal(self, name: Token) -> NoReturn:
+        """``Point { x: 1, y: 2 }`` (Rust, Swift) builds a record; Geno calls
+        the constructor, ``Point(x: 1, y: 2)``."""
+        self._advance()  # `{`
+        fields, base, close = self._parse_braced_fields(shorthand=True)
+        args = self._field_list(fields)
+        if args is None:
+            text = None
+        elif base is not None:
+            # `Point { x: 1, ..p }` is `p` with `x` changed.
+            text = f"{base.strip()} with ({args})"
+        else:
+            text = f"{name.value}({args})"
+        raise ParseError(
+            f"Geno builds a record by calling its constructor: "
+            f"{name.value}(field: value, ...)",
+            name.location,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            self._rewrite_fix(f"Write {name.value}(...)", name.location, close, text),
+        )
 
     def _parse_if_expression(self) -> MatchExpr:
         """Parse `if c then a else if d then b else e end if` as a value.

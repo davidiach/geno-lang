@@ -216,7 +216,10 @@ def test_a_missing_return_type_is_reported_on_the_signature() -> None:
     diagnostic = geno.check(source).diagnostics[0]
     assert "Function 'double' needs a return type" in diagnostic.message
     assert (diagnostic.location.line, diagnostic.location.column) == (1, 20)
-    assert diagnostic.fixes == ()
+    assert diagnostic.fixes[0].title == "Add '-> Int'"
+    assert apply_fix(source, diagnostic.fixes[0]).startswith(
+        "func double(n: Int) -> Int\n"
+    )
 
 
 def test_an_implicit_return_gets_a_return() -> None:

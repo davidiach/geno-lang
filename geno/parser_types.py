@@ -7,6 +7,8 @@ Contains TypeParserMixin with type definition and type annotation parsing method
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from .ast_nodes import (
     FunctionType,
     SimpleType,
@@ -15,8 +17,9 @@ from .ast_nodes import (
     TypeDef,
     TypeVariant,
 )
+from .diagnostics import ErrorCode, Fix, TextEdit
 from .parser_base import ParseError, ParserBase
-from .tokens import TokenType, token_type_to_str
+from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 
 class TypeParserMixin(ParserBase):
@@ -95,6 +98,9 @@ class TypeParserMixin(ParserBase):
                 target_type=target_type,
             )
 
+        if self._check(TokenType.LBRACE):
+            self._reject_record_braces(name)
+
         # Otherwise: algebraic data type with variants
         variants = [self._parse_type_variant()]
         while self._match(TokenType.BAR):
@@ -105,6 +111,73 @@ class TypeParserMixin(ParserBase):
             name=name,
             type_params=type_params,
             variants=variants,
+        )
+
+    def _reject_record_braces(self, name: str) -> NoReturn:
+        """``type Point = { x: Int }`` (TypeScript, F#) is a record type;
+        Geno's is a type with one constructor, ``type Point = Point(x: Int)``.
+        """
+        open_brace = self._advance()
+        first = self._current()
+        separators: list[Token] = []
+        last_type_token: Token | None = None
+        while not self._check(TokenType.RBRACE, TokenType.EOF):
+            self._expect(TokenType.IDENTIFIER, "Expected a field name")
+            self._expect(TokenType.COLON)
+            self._parse_type()
+            last_type_token = self.tokens[self.pos - 1]
+            separator = self._match(TokenType.COMMA, TokenType.SEMICOLON)
+            if separator is None:
+                break
+            separators.append(separator)
+        close = self._expect(TokenType.RBRACE)
+        start, end = open_brace.location, close.location
+        if last_type_token is None:
+            edits = [TextEdit(start.line, start.column, end.line, end.column + 1, name)]
+        else:
+            # `{` up to the first field becomes `Point(`, and the end of the
+            # last field's type through `}` (and any trailing comma) `)`.
+            opening_end = (
+                first.location
+                if first.location.line == start.line
+                else SourceLocation(start.line, start.column + 1, start.filename)
+            )
+            fields_end = self._token_end(last_type_token)
+            edits = [
+                TextEdit(
+                    start.line,
+                    start.column,
+                    opening_end.line,
+                    opening_end.column,
+                    f"{name}(",
+                ),
+                TextEdit(
+                    fields_end.line,
+                    fields_end.column,
+                    end.line,
+                    end.column + 1,
+                    ")",
+                ),
+            ]
+            edits.extend(
+                TextEdit(
+                    sep.location.line,
+                    sep.location.column,
+                    sep.location.line,
+                    sep.location.column + 1,
+                    ",",
+                )
+                for sep in separators
+                if sep.type is TokenType.SEMICOLON
+                and (sep.location.line, sep.location.column)
+                < (fields_end.line, fields_end.column)
+            )
+        raise ParseError(
+            "Geno declares a record as a type with one constructor: "
+            f"type {name} = {name}(field: Type, ...)",
+            start,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            (Fix(f"Write {name}(...)", tuple(edits)),),
         )
 
     def _parse_type_variant(self) -> TypeVariant:
