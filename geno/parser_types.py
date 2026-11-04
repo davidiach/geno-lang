@@ -136,13 +136,21 @@ class TypeParserMixin(ParserBase):
             edits = [TextEdit(start.line, start.column, end.line, end.column + 1, name)]
         else:
             # `{` up to the first field becomes `Point(`, and the end of the
-            # last field's type through `}` (and any trailing comma) `)`.
+            # last field's type through `}` (and any trailing comma) `)`. A
+            # comment in either span is kept: then only the brace, and a
+            # trailing separator, are replaced.
+            after_brace = SourceLocation(start.line, start.column + 1, start.filename)
             opening_end = (
                 first.location
                 if first.location.line == start.line
-                else SourceLocation(start.line, start.column + 1, start.filename)
+                and not self._contains_comment(start, first.location)
+                else after_brace
             )
             fields_end = self._token_end(last_type_token)
+            after_close = SourceLocation(end.line, end.column + 1, end.filename)
+            closing_start = (
+                end if self._contains_comment(fields_end, after_close) else fields_end
+            )
             edits = [
                 TextEdit(
                     start.line,
@@ -152,26 +160,31 @@ class TypeParserMixin(ParserBase):
                     f"{name}(",
                 ),
                 TextEdit(
-                    fields_end.line,
-                    fields_end.column,
+                    closing_start.line,
+                    closing_start.column,
                     end.line,
                     end.column + 1,
                     ")",
                 ),
             ]
-            edits.extend(
-                TextEdit(
-                    sep.location.line,
-                    sep.location.column,
-                    sep.location.line,
-                    sep.location.column + 1,
-                    ",",
-                )
-                for sep in separators
-                if sep.type is TokenType.SEMICOLON
-                and (sep.location.line, sep.location.column)
-                < (fields_end.line, fields_end.column)
-            )
+            for sep in separators:
+                position = (sep.location.line, sep.location.column)
+                if position < (fields_end.line, fields_end.column):
+                    replacement = "," if sep.type is TokenType.SEMICOLON else None
+                elif position < (closing_start.line, closing_start.column):
+                    replacement = ""  # a trailing separator the `)` edit keeps
+                else:
+                    replacement = None
+                if replacement is not None:
+                    edits.append(
+                        TextEdit(
+                            sep.location.line,
+                            sep.location.column,
+                            sep.location.line,
+                            sep.location.column + 1,
+                            replacement,
+                        )
+                    )
         raise ParseError(
             "Geno declares a record as a type with one constructor: "
             f"type {name} = {name}(field: Type, ...)",

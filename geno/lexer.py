@@ -57,6 +57,11 @@ def _is_ascii_alnum(ch: str) -> bool:
     return _is_ascii_digit(ch) or _is_ascii_alpha(ch)
 
 
+# How deeply string literals may nest inside f-string interpolations, as in
+# f"{f"{f"..."}"}": deeper nesting is an error rather than a recursion limit.
+MAX_FSTRING_NESTING = 50
+
+
 def _starts_fstring(chars: list[str]) -> bool:
     """Whether a quote written after ``chars`` opens an f-string (``f"``)."""
     if not chars or chars[-1] != "f":
@@ -284,7 +289,9 @@ class Lexer:
                     # A string literal in the interpolation, copied unchanged
                     # for the parser to read with the rest of the expression.
                     chars.extend(
-                        self._read_string_source(fstring=_starts_fstring(chars))
+                        self._read_string_source(
+                            fstring=_starts_fstring(chars), depth=1
+                        )
                     )
                     continue
                 self._advance()  # consume closing "
@@ -308,13 +315,20 @@ class Lexer:
             start_loc,
         )
 
-    def _read_string_source(self, *, fstring: bool) -> str:
+    def _read_string_source(self, *, fstring: bool, depth: int) -> str:
         """Read a one-line string literal inside an f-string interpolation and
         return its source text unchanged, quotes included.
 
-        A nested f-string's own interpolations may hold string literals too.
+        A nested f-string's own interpolations may hold string literals too;
+        ``depth`` counts how many interpolations this one is inside.
         """
         start_loc = self._current_location()
+        if depth > MAX_FSTRING_NESTING:
+            raise LexerError(
+                f"F-strings are nested too deeply (more than {MAX_FSTRING_NESTING} "
+                "levels); build the inner strings with let first",
+                start_loc,
+            )
         chars = [self._advance()]  # opening quote
         in_expr = False
         while True:
@@ -335,7 +349,11 @@ class Lexer:
                 if not in_expr:
                     chars.append(self._advance())
                     return "".join(chars)
-                chars.extend(self._read_string_source(fstring=_starts_fstring(chars)))
+                chars.extend(
+                    self._read_string_source(
+                        fstring=_starts_fstring(chars), depth=depth + 1
+                    )
+                )
                 continue
             chars.append(self._advance())
 

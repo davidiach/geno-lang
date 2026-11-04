@@ -287,6 +287,36 @@ print(total)
         assert error.code is ErrorCode.TYPE_PATTERN_MISMATCH
         assert error.fixes == ()
 
+    @pytest.mark.parametrize(
+        "comprehension",
+        [
+            "[await twice(a) for (a, b) in [(1, 2)]]",
+            "[a for (a, b) in [(1, 2)] if (await twice(b)) > 1]",
+        ],
+    )
+    def test_a_comprehension_that_unpacks_cannot_await(
+        self, comprehension: str
+    ) -> None:
+        source = (
+            "async func twice(n: Int) -> Int\n    return n * 2\nend func\n\n"
+            f"func main() -> String\n    let xs = {comprehension}\n"
+            '    return f"{xs}"\nend func\n'
+        )
+        (error,) = _errors(source)
+        assert "cannot use await; write a for loop" in error.message
+        line = source.split("\n")[5]
+        assert error.location.column == line.index("await") + 1
+
+    def test_a_loop_that_unpacks_can_await(self) -> None:
+        _assert_parity(
+            "async func twice(n: Int) -> Int\n    return n * 2\nend func\n\n"
+            + _main(
+                "var total = 0\nfor (a, b) in [(1, 2), (3, 4)] do\n"
+                "    total += await twice(a + b)\nend for\nprint(total)"
+            ),
+            "20\n",
+        )
+
 
 class TestStringLiteralsInFStrings:
     def test_literals_braces_quotes_and_nested_fstrings(self) -> None:
@@ -311,6 +341,18 @@ print(f"{f"[{"x"}]"} {"\"q\""} {"//"}")
             (3, line.index('n + "x"') + 1),
             (3, line.index("nope") + 1),
         ]
+
+    def test_nesting_is_bounded(self) -> None:
+        def nested(depth: int) -> str:
+            expr = '"x"'
+            for _level in range(depth):
+                expr = 'f"{' + expr + '}"'
+            return f"func main() -> String\n    return {expr}\nend func\n"
+
+        assert geno.check(nested(20)).ok
+        for depth in (60, 1200):
+            (error,) = _errors(nested(depth))
+            assert "nested too deeply" in error.message
 
     def test_an_unterminated_literal_inside_is_a_lexer_error(self) -> None:
         source = 'func main() -> String\n    return f"{"x}"\nend func\n'
@@ -444,6 +486,54 @@ class TestFixes:
         (error,) = _errors(source)
         assert "calling its constructor" in error.message
         assert f"    return {repaired}\n" in _fixed(source)
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "Point { x: n, y: 2 // note\n    }",
+            "Point { x: n, /* note */ y: 2 }",
+            "{ p with x = n // note\n    }",
+            "{ ...p, x: n // note\n    }",
+        ],
+    )
+    def test_a_rewrite_that_would_lose_a_comment_is_not_offered(
+        self, expression: str
+    ) -> None:
+        source = (
+            _POINT
+            + "func f(n: Int, p: Point) -> Point\n"
+            + "    example (1, Point(0, 2)) -> Point(1, 2)\n"
+            + f"    return {expression}\nend func\n"
+        )
+        (error,) = _errors(source)
+        assert error.fixes == ()
+
+    @pytest.mark.parametrize(
+        ("declaration", "repaired"),
+        [
+            (
+                "type Point = {\n    x: Int,\n    y: Int // last\n}",
+                "type Point = Point(\n    x: Int,\n    y: Int // last\n)",
+            ),
+            (
+                "type Point = {\n    x: Int;\n    y: Int; // last\n}",
+                "type Point = Point(\n    x: Int,\n    y: Int // last\n)",
+            ),
+            (
+                "type Point = { /* a point */ x: Int, y: Int }",
+                "type Point = Point( /* a point */ x: Int, y: Int)",
+            ),
+        ],
+    )
+    def test_a_record_type_fix_keeps_comments(
+        self, declaration: str, repaired: str
+    ) -> None:
+        source = (
+            declaration
+            + "\n\nfunc f(p: Point) -> Int\n    example Point(1, 2) -> 1\n"
+            + "    return p.x\nend func\n"
+        )
+        assert _fixed(source).startswith(repaired + "\n")
 
     def test_a_generic_trait_is_one_error(self) -> None:
         source = "trait Container[T]\n    func size(self: Self) -> Int\nend trait\n"

@@ -457,15 +457,32 @@ class ParserBase:
         close = self._expect(TokenType.RBRACE)
         return fields, base, close
 
-    @staticmethod
+    def _contains_comment(self, start: SourceLocation, end: SourceLocation) -> bool:
+        """Whether a comment is written between ``start`` and ``end``; true
+        when the source is unknown, so a fix never deletes one unseen."""
+        text = self._source_between(start, end)
+        if text is None:
+            return True
+        index = 0
+        while index < len(text):
+            if text[index] == '"':
+                index = string_literal_end(text, index)
+                continue
+            if text.startswith(("//", "/*"), index):
+                return True
+            index += 1
+        return False
+
     def _rewrite_fix(
-        title: str, start: SourceLocation, close: Token, text: str | None
+        self, title: str, start: SourceLocation, close: Token, text: str | None
     ) -> tuple[Fix, ...]:
         """A fix replacing ``start`` through the ``}`` token ``close`` with
-        ``text``; none when the text is unknown."""
-        if text is None:
-            return ()
+        ``text``; none when the text is unknown, or when the span holds a
+        comment, which the rewrite would delete or leave open."""
         end = close.location
+        after_close = SourceLocation(end.line, end.column + 1, end.filename)
+        if text is None or self._contains_comment(start, after_close):
+            return ()
         return (
             Fix(
                 title,

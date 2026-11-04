@@ -8,12 +8,15 @@ Contains PatternParserMixin with pattern parsing methods.
 from __future__ import annotations
 
 import copy
+from dataclasses import fields, is_dataclass
 
 from .ast_nodes import (
+    AwaitExpr,
     ConstructorPattern,
     Expression,
     Identifier,
     InferredType,
+    LambdaExpr,
     ListPattern,
     LiteralPattern,
     MatchArm,
@@ -49,6 +52,30 @@ def pattern_bound_names(pattern: Pattern) -> set[str]:
     for child in children:
         names |= pattern_bound_names(child)
     return names
+
+
+def first_await(node: object) -> AwaitExpr | None:
+    """The first ``await`` in ``node`` outside a nested lambda, if any."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, AwaitExpr):
+            return current
+        if isinstance(current, LambdaExpr):
+            continue
+        if isinstance(current, list | tuple):
+            stack.extend(reversed(current))
+        elif is_dataclass(current) and not isinstance(current, type):
+            stack.extend(
+                reversed(
+                    [
+                        getattr(current, item.name)
+                        for item in fields(current)
+                        if item.name != "location"
+                    ]
+                )
+            )
+    return None
 
 
 def _binds_only(pattern: Pattern) -> bool:

@@ -47,6 +47,7 @@ from .ast_nodes import (
 from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
 from .lexer import Lexer, LexerError
 from .parser_base import REMOVED_THROW, ParseError, ParserBase
+from .parser_patterns import first_await
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 
@@ -462,6 +463,9 @@ class ExpressionParserMixin(ParserBase):
         from .parser import Parser
 
         sub_parser = Parser(tokens)
+        # Nesting counts across f-string levels, so deeply nested f-strings
+        # meet the same limit as any other deeply nested expression.
+        sub_parser._nesting_depth = self._nesting_depth
         try:
             expr = sub_parser._parse_expression()
         except ParseError as e:
@@ -620,6 +624,17 @@ class ExpressionParserMixin(ParserBase):
                     condition = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
                 if pattern is not None:
+                    awaited = first_await([first_expr, condition])
+                    if awaited is not None:
+                        # The unpacking lowers to a match expression, which the
+                        # compiled backends evaluate in a function of its own.
+                        raise ParseError(
+                            "A comprehension that unpacks tuples cannot use "
+                            "await; write a for loop instead: "
+                            "for (a, b) in pairs do ... end for",
+                            awaited.location,
+                            ErrorCode.PARSE_INVALID_SYNTAX,
+                        )
                     first_expr = self._unpack_loop_value(variable, pattern, first_expr)
                     if condition is not None:
                         condition = self._unpack_loop_value(
