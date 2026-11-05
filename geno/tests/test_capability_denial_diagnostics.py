@@ -200,6 +200,26 @@ def test_cli_default_lane_hint_keeps_the_program_isolated(tmp_path: Path) -> Non
     assert hinted.stdout == "geno\n"
 
 
+def test_cli_default_lane_fs_hint_keeps_the_program_isolated(notes_dir: Path) -> None:
+    # Milestone 4 of proposal 0013: the isolated lane grants `fs`, so the
+    # hint for a filesystem denial no longer leaves process isolation.
+    result = _geno("notes.geno", cwd=notes_dir)
+
+    assert result.returncode == 1
+    caps = ",".join(sorted(DEFAULT_ALLOWED_CAPABILITIES | {"fs"}))
+    assert result.stderr.endswith(
+        f"Runtime Error: {FS_DENIED}\n"
+        "Hint: grant it with --cap; the program stays process-isolated:\n"
+        f"  geno run --cap {caps} notes.geno\n"
+    )
+    assert "--unsafe" not in result.stderr
+
+    (notes_dir / "notes.txt").write_text("from the facade", encoding="utf-8")
+    hinted = _geno("--cap", caps, "notes.geno", cwd=notes_dir)
+    assert hinted.returncode == 0, hinted.stderr
+    assert hinted.stdout == "from the facade\n"
+
+
 def test_cli_default_lane_names_unsupported_capability_with_unsafe_hint(
     tmp_path: Path,
 ) -> None:
