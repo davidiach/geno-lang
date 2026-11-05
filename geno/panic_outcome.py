@@ -17,7 +17,9 @@ Limits are identified by exception type, never by the Geno-facing message, so
 ``panic("List size exceeds limit")`` stays a panic. The one exception is
 compiled Python, whose runtime raises plain ``RuntimeError`` for its limits:
 ``classify_compiled_failure`` recognizes those by the fixed messages of
-``geno/_runtime_support.py``.
+``geno/_runtime_support.py``, after the provenance fields its ``panic``
+(``_geno_panic``) and capability check (``_geno_capability_denied``) set, so
+a program cannot make its own panic read as a limit or a refusal there either.
 """
 
 from __future__ import annotations
@@ -156,19 +158,46 @@ def compiled_limit(message: str) -> str | None:
     return None
 
 
+def is_compiled_capability_denial(exc: BaseException) -> bool:
+    """Whether compiled Python's ``_require_cap`` raised *exc*.
+
+    Only that runtime helper sets ``_geno_capability_denied`` (the process
+    sandbox reads the same field), so a program cannot forge a denial by
+    panicking with the same text.
+    """
+    denied = getattr(exc, "_geno_capability_denied", None)
+    return type(exc) is RuntimeError and isinstance(denied, str)
+
+
+def is_compiled_panic(exc: BaseException) -> bool:
+    """Whether compiled Python's ``panic`` (or ``option_expect``,
+    ``result_expect``, a compiler-emitted panic) raised *exc*.
+
+    Only the runtime's ``_geno_panic_error`` sets ``_geno_panic``, so a
+    panic stays a panic whatever its message says.
+    """
+    return type(exc) is RuntimeError and getattr(exc, "_geno_panic", None) is True
+
+
 def classify_compiled_failure(exc: BaseException) -> CallFailure | None:
     """Classify an exception a compiled-Python call raised.
 
     The compiled runtime raises plain ``RuntimeError``, ``ArithmeticError``
-    and ``LookupError`` for panics and for most of its limits alike, so its
-    limits are recognized by their fixed messages; anything the sandbox raises
-    is classified as for the interpreter.
+    and ``LookupError`` for panics and for most of its limits alike, so a
+    panic is recognized by the provenance field ``_geno_panic_error`` sets,
+    a capability denial by the one ``_require_cap`` sets, and the limits by
+    their fixed messages; anything the sandbox raises is classified as for
+    the interpreter.
     """
     interpreted = classify_call_failure(exc)
     if interpreted is not None:
         return interpreted
     if type(exc).__name__ == "_GenoOutputLimitError":
         return _limit(exc, "output limit")
+    if is_compiled_panic(exc):
+        return CallFailure("panic", str(exc))
+    if is_compiled_capability_denial(exc):
+        return _refused_or_panic(exc)
     if isinstance(exc, (RuntimeError, ArithmeticError, LookupError, ValueError)):
         message = str(exc)
         limit = compiled_limit(message)

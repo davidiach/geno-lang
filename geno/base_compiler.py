@@ -945,15 +945,24 @@ class BaseCompiler(ABC):
     @staticmethod
     def _uses_propagate(defn: FunctionDef | LambdaExpr) -> bool:
         """Check if a function body contains a ? (propagate) expression."""
-        from .ast_nodes import PropagateExpr
-
-        field_cache: dict[type, tuple[str, ...]] = {}
         body = (
             defn.block_body
             if isinstance(defn, LambdaExpr) and defn.block_body is not None
             else defn.body
         )
-        stack: list[object] = [body]
+        return BaseCompiler._contains_propagate(body)
+
+    @staticmethod
+    def _contains_propagate(root: object) -> bool:
+        """Whether *root* (a node or a list of them) contains a ``?`` of its own.
+
+        A ``?`` inside a nested lambda belongs to that lambda, so it is not
+        counted.
+        """
+        from .ast_nodes import PropagateExpr
+
+        field_cache: dict[type, tuple[str, ...]] = {}
+        stack: list[object] = [root]
 
         while stack:
             node = stack.pop()

@@ -1742,6 +1742,12 @@ class JSCompiler(BaseCompiler):
                 )
             with self._block_scope(p.name for p in defn.params):
                 cond = self._compile_expr(req.condition)
+            cond = self._contract_condition(
+                req.condition,
+                cond,
+                f"Precondition failed for {defn.name}: requires clause cannot "
+                "use '?' to propagate None/Err",
+            )
             self._writeln(f"if (!({cond})) {{")
             self._indent()
             self._writeln(
@@ -1795,6 +1801,12 @@ class JSCompiler(BaseCompiler):
                 with self._block_scope([*(p.name for p in defn.params), "result"]):
                     self._js_block_scopes[-1].overrides["result"] = result_name
                     cond = self._compile_expr(ens.condition)
+                cond = self._contract_condition(
+                    ens.condition,
+                    cond,
+                    f"Postcondition failed for {defn.name}: ensures clause "
+                    "cannot use '?' to propagate None/Err",
+                )
                 self._writeln(f"if (!({cond})) {{")
                 self._indent()
                 self._writeln(
@@ -1809,6 +1821,37 @@ class JSCompiler(BaseCompiler):
 
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
+
+    def _contract_condition(
+        self, condition: Expression, compiled: str, message: str
+    ) -> str:
+        """Evaluate a contract clause that uses ``?``; return what to test.
+
+        A ``?`` that propagates inside a ``requires`` or ``ensures`` clause
+        would otherwise be caught by the function's own ``?`` handler (or a
+        caller's) and silently return; like the interpreter, it is a
+        contract violation (*message*). A clause without a ``?`` of its own
+        is tested as compiled.
+        """
+        if not self._contains_propagate(condition):
+            return compiled
+        value = self._fresh_temp()
+        caught = self._fresh_temp()
+        self._writeln(f"let {value};")
+        self._writeln("try {")
+        self._indent()
+        self._writeln(f"{value} = {compiled};")
+        self._dedent()
+        self._writeln(f"}} catch ({caught}) {{")
+        self._indent()
+        self._writeln(
+            f"if ({caught} instanceof _PropagateReturn) "
+            f"throw new _GenoContractViolation({_json.dumps(message)});"
+        )
+        self._writeln(f"throw {caught};")
+        self._dedent()
+        self._writeln("}")
+        return value
 
     def _compile_specializations(self, defn: FunctionDef) -> None:
         """Emit each planned Float-dependent copy of a generic function."""

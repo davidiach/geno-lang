@@ -32,9 +32,13 @@ DEFAULT_PROPERTY_TRIALS = 100
 DEFAULT_PROPERTY_SEED = 0
 MAX_PROPERTY_TRIALS = 10_000
 # Per call: a step allowance (clipped to --max-steps when that is smaller)
-# and a deadline (clipped to --timeout).
+# and a wall-clock deadline (clipped to --timeout). The deadline is a safety
+# stop, like the per-function one: a call that reaches it has not used up its
+# steps, so it ends the checks as incomplete instead of failing them, and it
+# is far enough past the allowance (about 0.15 s) that a loop on a slow or
+# busy machine still runs out of steps first.
 PROPERTY_CALL_MAX_STEPS = 200_000
-PROPERTY_CALL_MAX_SECONDS = 1.0
+PROPERTY_CALL_MAX_SECONDS = DEFAULT_TEST_TIMEOUT
 # Per function: the trial phase, then a separate shrink phase, so a failure
 # found late always leaves room to shrink it.
 PROPERTY_TRIAL_STEP_BUDGET = 5_000_000

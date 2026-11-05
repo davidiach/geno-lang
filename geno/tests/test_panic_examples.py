@@ -15,6 +15,7 @@ import ast
 import textwrap
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -513,10 +514,45 @@ class TestClassifier:
         assert failure is not None
         assert failure.kind == ("panic" if limit is None else "limit")
 
+    def test_a_compiled_panic_is_recognized_by_its_provenance(self) -> None:
+        """``panic`` in compiled Python marks its exception, so its text never
+        makes it a limit; an unmarked error with the same text is one."""
+        from geno import _runtime_support as runtime
+
+        message = "List size exceeds limit (1 > 0)"
+        for raise_it in (
+            lambda: runtime.panic(message),
+            lambda: runtime._geno_panic(message),
+            lambda: runtime.option_expect(runtime.None_, message),
+        ):
+            with pytest.raises(RuntimeError) as raised:
+                raise_it()
+            assert type(raised.value) is RuntimeError
+            assert classify_compiled_failure(raised.value) == CallFailure(
+                "panic", message
+            )
+        limit = classify_compiled_failure(RuntimeError(message))
+        assert limit is not None and limit.kind == "limit"
+
     def test_compiled_arithmetic_and_lookup_errors_are_panics(self) -> None:
         for exc in (ZeroDivisionError("division by zero"), IndexError("index")):
             failure = classify_compiled_failure(exc)
             assert failure is not None and failure.kind == "panic"
+
+    def test_a_compiled_capability_denial_is_a_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recognized by the field ``_require_cap`` sets, never by its text."""
+        message = "Capability denied: 'env_get' requires the 'env' capability"
+        denial: Any = RuntimeError(message)
+        denial._geno_capability_denied = "env"
+        assert classify_compiled_failure(denial) == CallFailure("refused", message)
+        # A program's own panic with the same text carries no provenance.
+        forged = classify_compiled_failure(RuntimeError(message))
+        assert forged is not None and forged.kind == "panic"
+        # The one refusal switch covers compiled denials too.
+        monkeypatch.setattr(panic_outcome, "_refusal_satisfies_panics", lambda: True)
+        assert classify_compiled_failure(denial) == CallFailure("panic", message)
 
     def test_matching_ignores_case(self) -> None:
         assert panic_message_matches(
@@ -970,6 +1006,50 @@ def test_harness_runners_agree(runner: Callable[[str], HarnessResult]) -> None:
     )
     assert "expected a panic, but it returned 4" in returned
     assert "hit the integer size limit" in limit
+
+
+_HARNESS_REFUSAL_SOURCE = """
+func first_match(p: String) -> Option[String]
+    example "abc" panics
+    return regex_match(p, "abc")
+end func
+
+func home(k: String) -> String
+    example "HOME" panics
+    return unwrap_or(env_get(k), "x")
+end func
+
+func shout(k: String) -> Int
+    example "HOME" panics
+    print(k)
+    return 1
+end func
+"""
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [run_harness_from_source, run_harness_from_compiled],
+    ids=["source", "compiled"],
+)
+def test_harness_runners_agree_on_refusals_and_grants(
+    runner: Callable[[str], HarnessResult],
+) -> None:
+    """Both runners grant the same capabilities and refuse alike: a denied
+    ``regex``/``env`` call is a refusal, not a panic, and ``print`` runs."""
+    result = runner(_HARNESS_REFUSAL_SOURCE)
+    assert (result.total, result.passed, result.failed) == (3, 0, 3)
+    assert {v.function: v.message for v in result.violations} == {
+        "first_match": (
+            "Example failed: expected a panic, but the call was refused: "
+            "Capability denied: 'regex_match' requires the 'regex' capability"
+        ),
+        "home": (
+            "Example failed: expected a panic, but the call was refused: "
+            "Capability denied: 'env_get' requires the 'env' capability"
+        ),
+        "shout": "Example failed: expected a panic, but it returned 1",
+    }
 
 
 # =============================================================================

@@ -352,7 +352,7 @@ internal-error handling. Otherwise:
 | `RuntimeLimitError` (new, see below) | `limit` (named by its `limit` field: "collection size limit", "integer size limit", "numeric range limit", "output limit") |
 | `GenoRuntimeError` with E412 (capability denied) or E413 (host callback missing); `SecurityViolation` (E500) | `refused` (one switch, see below) |
 | Any other `GenoRuntimeError`, including `ContractViolationError` and E414 `panic(...)` | `panic` |
-| Compiled-Python harness only: builtin `RuntimeError` (not `RecursionError`), `ArithmeticError`, `LookupError` | `limit` when the message matches a compiled-runtime limit pattern, else `panic` |
+| Compiled-Python harness only: builtin `RuntimeError` (not `RecursionError`), `ArithmeticError`, `LookupError` | `panic` when tagged `_geno_panic` (compiled `panic` and friends), `refused` when tagged `_geno_capability_denied`, else `limit` when the message matches a compiled-runtime limit pattern, else `panic` |
 
 **Limits are marked structurally.** The interpreter and the builtins raise
 their sandbox-configurable limits as uncoded `GenoRuntimeError`s today, from
@@ -397,7 +397,13 @@ shared with every compiled program). For the compiled harness only,
 shift and output-limit messages above, plus `_GenoOutputLimitError` by type.
 A bare "Exponentiation result too large" (the `OverflowError` path) is the
 numeric range limit; "Exponentiation result too large (estimated N bits)" is the
-integer size limit.
+integer size limit. The patterns apply only after the provenance fields: the
+compiled `panic`, `option_expect`, `result_expect` and compiler-emitted panics
+raise through `_geno_panic_error`, a plain `RuntimeError` tagged
+`_geno_panic`, which `classify_compiled_failure` reads first, so a program's
+own `panic("List size exceeds limit (1 > 0)")` is a panic in the compiled
+harness as it is in the interpreter (review round 2 found the compiled harness
+counting it as the collection size limit).
 
 Fixed builtin argument caps that are not sandbox configuration
 (`parse_int`/`parse_float` "input string too long", regex pattern/text length
@@ -570,6 +576,22 @@ attempts regenerate at the same size.
 | User ADTs, generic or recursive | uniform over variants while depth `< 1 + s // 16`; at the depth bound, only variants of minimal construction depth (a fixpoint over the type definitions) | `Leaf`, `Node(Leaf, 1, Leaf)` (positional) |
 | `TypeVar` with satisfiable bounds | as `Int` | |
 
+The empty collection and `None` are values whatever the element type is, so
+the construction-depth fixpoint counts `List`, `Set`, `Vec`, `Array`, `Map` and
+`Option` as depth 0, and a `Result` as the smaller of its two sides. A type
+that recurses only through one of them (`type Rose = Rose(value: Int,
+children: List[Rose])`, `type Chain = Chain(next: Option[Chain])`,
+`type Attempt = Attempt(next: Result[Attempt, String])`) is generated, and a
+collection of a type with no value is generated empty (`List[Loop]` as `[]`).
+Non-empty collections, `Some` and a `Result` side are generated only when
+their element type has a value. A part with no generator at all (a function
+type, `Async`, `MutableMap`) still makes the type unsupported wherever it
+appears, so `List[(Int) -> Int]` is skipped; a user type that needs one is
+skipped with a note naming it (`parameter f: type Fn needs (Int) -> Int, which
+has no generator`), and only a type with no finite value at all
+(`type Loop = Loop(next: Loop)`) is "has no value to generate". (Review round 1
+found rose trees and Option-linked chains skipped with that note.)
+
 At the depth bound every structural choice is the smallest one (added while
 implementing package 3): an `Option` is `None`, a collection is empty, a
 `Result` takes the side of smaller construction depth, and an ADT takes a
@@ -620,7 +642,8 @@ The outcome of a call:
 | `ContractViolationError` with `clause == "requires"`, `reason == "false"` and `call_depth == 1` | **discard** |
 | `ContractViolationError` with `clause == "requires"`, `reason == "propagate"` (the clause used `?`) and `call_depth == 1` | **failure** `panic`: the precondition could not be evaluated (like any panic, exempted by a `panics` example) |
 | `ContractViolationError` with `clause == "ensures"` and `call_depth == 1` (either reason) | **failure** `ensures` |
-| `limit` (section 4) | **failure** `limit` |
+| `limit` (section 4), except a wall-clock deadline | **failure** `limit` |
+| `sandbox.TimeoutError` from the call's deadline (a safety stop, 5.4) | the function is `incomplete`; during shrinking, shrinking ends |
 | `refused` | the function is reported `skipped` with "needs capability X at run time" (an effect-inference gap, not the author's bug) |
 | other `panic` | **failure** `panic`, unless the function has a `panics` example (then pass) |
 
@@ -673,9 +696,7 @@ lines is quoted by its first line. Without the module's source text the clause
 is `null`. Contract messages do not carry clause text yet; F3 may supersede
 this helper.
 
-A limit failure caused by the per-call deadline is reported as "Execution timed
-out after 1 seconds (the property call deadline)" rather than the
-interpreter's message, which names the sandbox's own `timeout`. A step-limit
+A call stopped by a wall-clock deadline is never a failure (5.4). A step-limit
 failure is reported as "Step limit exceeded (200000 steps)", without the
 interpreter's " at <file>:<line>:<column>" suffix, whose filename is the
 module's resolved path (corrected during integration: the JSON message
@@ -691,8 +712,10 @@ by steps. Property checks therefore do not reuse those two numbers as their
 per-call caps.)
 
 - **Per call:** a fixed step allowance `PROPERTY_CALL_MAX_STEPS = 200_000`
-  (about 0.15 s), clipped to `--max-steps` if that is smaller, and a deadline
-  of `min(--timeout, 1 s)`. Generated inputs are small (at most 8 elements,
+  (about 0.15 s), clipped to `--max-steps` if that is smaller, and a
+  wall-clock deadline of `min(--timeout, PROPERTY_CALL_MAX_SECONDS = 5 s)`,
+  clipped to what is left of the function's safety stop. The deadline is a
+  safety stop, not a budget (see below). Generated inputs are small (at most 8 elements,
   `|n| ≤ 2048` outside the two extremes), so a call that needs more is treated
   as unbounded work for a small input, which `requires` should exclude. The
   interpreter gains `Interpreter.step_allowance(n)`, a context manager that
@@ -725,23 +748,31 @@ and `PROPERTY_MAX_ATTEMPTS_PER_TRIAL = 10` and
 How a cut-off call is classified:
 
 - If the call started with its full per-call allowance (the phase had at least
-  `PROPERTY_CALL_MAX_STEPS` left) and hit it, or hit its own per-call deadline,
-  recursion depth or a size limit, it is a **`limit` failure**, on any trial.
-  A loop first reached on trial 37 is a failure, not a warning.
+  `PROPERTY_CALL_MAX_STEPS` left) and hit it, or hit the recursion depth or a
+  size limit, it is a **`limit` failure**, on any trial. A loop first reached
+  on trial 37 is a failure, not a warning.
 - If the call started with less than a full allowance because the phase budget
   was nearly spent, and ran out, it is not counted: in the trial phase the run
   stops with status `incomplete` ("stopped after N trials: step budget
   spent") when no failure was found; in the shrink phase shrinking stops and
   the best counterexample so far is reported.
-- If the wall-clock safety stop fires, the status is `incomplete` with the note
-  "stopped by the wall-clock safety stop", or, during shrinking, the best
-  counterexample so far is reported with the note "shrinking stopped by the
-  wall-clock safety stop". This is the only machine-speed-dependent outcome,
-  and the note says so; with the step caps above it is not expected to bind.
+- If a wall-clock safety stop fires, the status is `incomplete` with the note
+  "stopped after N trials by the wall-clock safety stop" (the function's) or
+  "... by the per-call wall-clock safety stop (5 s): a call ran that long
+  without using its step allowance", or, during shrinking, the best
+  counterexample so far is reported with the note "shrinking stopped by ..."
+  naming the stop. Safety stops are the only machine-speed-dependent outcomes,
+  they are never failures, and the note says so; with the step caps above
+  they are not expected to bind.
 
-The per-call deadline (1 s against a 0.15 s step allowance) binds only for
-calls dominated by builtin work the step counter does not see; such a hit is a
-`limit` failure named "timeout". Constants live in `geno/execution_limits.py`.
+The per-call deadline (5 s against a 0.15 s step allowance) binds only for
+calls dominated by builtin work the step counter does not see, or on a machine
+far slower than the development one. Review round 2 found that classifying
+such a hit as a `limit` failure (named "timeout"), with a 1 s deadline, made
+the same seed exit 0 on an idle CPU and 1 on a busy one; it is now a safety
+stop, and its default was raised to the per-example `--timeout` so that a loop
+on a slow or loaded machine (or under coverage instrumentation) still runs out
+of steps first. Constants live in `geno/execution_limits.py`.
 
 `--trials` accepts 1 to 10,000 and `--seed` any non-negative integer.
 `--trials` or `--seed` without `--properties` is a usage error (exit 2,
@@ -766,7 +797,7 @@ not failures. A looping counterexample shrinks like any other: for
 | `String` | `""`, drop the first or last half, drop one character, replace a character with `a` |
 | `List`, `Vec`, `Array`, `Set`, `Map` | empty, drop the first or last half, drop one element, shrink one element |
 | Tuple, constructor fields | shrink one field |
-| ADT value | a minimal-depth variant, a recursive field of the same type (`Node(l, v, r)` to `l` or `r`), then its fields |
+| ADT value | a minimal-depth variant, a recursive field of the same type (`Node(l, v, r)` to `l` or `r`, or a subtree held in a `List`/`Set`/`Vec`/`Array` or `Option` field, such as a rose tree's child), then its fields |
 | `Option` | `None`, then the inner value |
 | `Result` | the inner value |
 
@@ -884,7 +915,22 @@ with a dedicated program.
 
 `run_harness_from_compiled` classifies compiled-Python exceptions with the same
 helper, so a panics example passes or fails identically in the interpreter and
-compiled harnesses for the messages both backends share. Messages are not
+compiled harnesses for the messages both backends share. A compiled capability
+denial is a refusal there too: compiled `_require_cap` raises a plain
+`RuntimeError` tagged with `_geno_capability_denied` (the field the process
+sandbox already trusts), and `classify_compiled_failure` reads that field,
+never the message, so a program's own `panic` with the same text stays a panic.
+Both harness runners grant `HARNESS_CAPABILITIES` (the direct interpreter's
+`print`, `clock` and `random`, as `geno test` does), so `print` runs and a
+denied `env` or `regex` call is refused alike in both (review round 1 found the
+compiled runner granting nothing and counting denials as panics). A `requires`
+or `ensures` clause whose `?` propagates is a contract violation on every
+backend, with the interpreter's message: compiled Python wraps such a clause
+so the internal `_PropagateReturn` cannot escape the function, and compiled
+JavaScript so the function's own `?` handler cannot return it (review round 2
+found `example None panics` for `requires o? > 0` passing in the interpreter
+harness and erroring in the compiled one; at base, compiled JavaScript
+silently returned from such a call). Messages are not
 identical across backends (`Division by zero: cannot compute 1 / 0` against
 `Division by zero`), which is why matching is a case-insensitive substring and
 the docs recommend the text the backends share or the author's own `panic`
@@ -1006,7 +1052,8 @@ set, and no selfhost file uses them.
   effect-based eligibility rule, so generated inputs cannot reach the
   filesystem, network, environment, processes, clock or randomness.
 - **Bounded work.** Property checks are opt-in. Per call they are capped at
-  200,000 steps and `min(--timeout, 1 s)`; per function at 5,000,000 trial
+  200,000 steps and `min(--timeout, 5 s)` of wall time (a safety stop);
+  per function at 5,000,000 trial
   steps, 4,000,000 shrink steps, `10 × trials` generated inputs, 500 shrink
   calls and a `2 × --timeout` wall-clock safety stop; `--trials` is capped at
   10,000. Generated collections are at
@@ -1213,6 +1260,31 @@ corpus, and no published contract depends on either.
   `Node(Leaf, "x", Node(Leaf, 1, Leaf))` and a `Tree[Int]` written for a
   `Tree[Bool]` are still rejected, and that no placeholder name leaks into a
   message. The `Tree[T]` round-trip property test is not an expected failure.
+
+  Review round 1 found the same renaming at two more sites, which the fix
+  above had not reached: the example-input check of a generic function and
+  generic function-call arguments. A bare `Leaf` for `size[T](t: Tree[T])`,
+  which is the counterexample such a function's property check prints, was
+  rejected as `example Leaf -> 0` ("expected Tree[T], got Tree[__fresh_T_1]"),
+  and so was `g(Leaf, x)` for `g[T](t: Tree[T], x: T)`. Both sites now keep
+  placeholders, as `_check_constructor_call` does. Regression tests are in
+  `TestBareNullaryGenericConstructorsForGenericParameters`; they cover example
+  inputs, positional and named call arguments, two bare constructors binding
+  separate parameters, and mistyped calls that are still rejected. A property
+  test also pastes a generic function's `Empty` counterexample back as an
+  example.
+
+  Review round 2 found that typing `Node(Leaf, "s", Leaf)` exposed an older
+  hole in list literals: an element type with a placeholder (`Leaf`'s
+  `Tree[_]`, `None`'s `Option[_]`) is compatible with anything, and a literal
+  that started with one kept it, so `let d: List[Tree[Int]] = [Leaf,
+  Node(Leaf, "s", Leaf)]` passed `geno check` and failed at run time with a
+  host error (`[None, Some("s")]` under `List[Option[Int]]` already did at
+  base). List and map literals now fill each placeholder from the other
+  elements with `_fill_fresh_placeholders`, as match arms already did, so the
+  literal is a `List[Tree[String]]` and the annotation rejects it. Elements
+  with rigid type variables keep the old behaviour. Regression tests are in
+  `TestLiteralElementsFillInferencePlaceholders`.
 - **`geno run` and impl-method examples.** Left unchecked by `geno run`, as
   today (section 4).
 - **Promotion of the 0.7 corpus.** Whether v0.7 carries every v0.6 case forward

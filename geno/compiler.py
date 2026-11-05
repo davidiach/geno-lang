@@ -1408,6 +1408,12 @@ class Compiler(BaseCompiler, ASTVisitor):
                 {p.name: self._mangle_name(p.name) for p in defn.params}
             ):
                 cond = self._compile_expr(req.condition)
+            cond = self._contract_condition(
+                req.condition,
+                cond,
+                f"Precondition failed for {defn.name}: requires clause cannot "
+                "use '?' to propagate None/Err",
+            )
             self._writeln(f"if not ({cond}):")
             self._indent()
             self._writeln(
@@ -1488,6 +1494,12 @@ class Compiler(BaseCompiler, ASTVisitor):
                 contract_bindings["result"] = result_name
                 with self._with_name_overrides(contract_bindings):
                     cond = self._compile_expr(ens.condition)
+                cond = self._contract_condition(
+                    ens.condition,
+                    cond,
+                    f"Postcondition failed for {defn.name}: ensures clause "
+                    "cannot use '?' to propagate None/Err",
+                )
                 self._writeln(f"if not ({cond}):")
                 self._indent()
                 self._writeln(
@@ -1497,6 +1509,29 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln(f"return {result_name}")
 
         self._dedent()
+
+    def _contract_condition(
+        self, condition: Expression, compiled: str, message: str
+    ) -> str:
+        """Evaluate a contract clause that uses ``?``; return what to test.
+
+        A ``?`` that propagates inside a ``requires`` or ``ensures`` clause
+        would otherwise escape the function as ``_PropagateReturn``; like the
+        interpreter, it is a contract violation (*message*). A clause
+        without a ``?`` of its own is tested as compiled.
+        """
+        if not self._contains_propagate(condition):
+            return compiled
+        value = self._fresh_temp()
+        self._writeln("try:")
+        self._indent()
+        self._writeln(f"{value} = {compiled}")
+        self._dedent()
+        self._writeln("except _PropagateReturn:")
+        self._indent()
+        self._writeln(f"raise _GenoContractViolation({json.dumps(message)}) from None")
+        self._dedent()
+        return value
 
     # =========================================================================
     # Statements

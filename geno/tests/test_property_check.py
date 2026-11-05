@@ -70,6 +70,21 @@ end func
 """
 
 
+# Step-cheap but slow: ten builtin sorts of 20,000 elements use few steps.
+SLOW_SORT = """\
+func slow(b: Bool) -> Int
+    example true -> 10
+    let big = reverse(range(0, 20000))
+    var i = 0
+    while i < 10 do
+        let s = sort(big)
+        i = i + 1
+    end while
+    return i
+end func
+"""
+
+
 def _load(source: str, filename: str = "props.geno") -> tuple[str, Any, TypeChecker]:
     text = textwrap.dedent(source)
     program = Parser(Lexer(text, filename).tokenize(), text).parse_program()
@@ -375,8 +390,8 @@ class TestPanicsExamples:
 class TestLimits:
     def test_the_failure_names_the_per_call_allowance(self):
         # A generous wall-clock allowance keeps the step limit the binding one
-        # on slow runners (coverage instrumentation makes 200,000 steps take
-        # longer than the default per-call deadline).
+        # on however slow a runner (coverage instrumentation slows 200,000
+        # steps several times over).
         result = check(SPIN, call_max_seconds=120.0, timeout=120.0)["spin"]
 
         assert result.status == "failed"
@@ -489,6 +504,61 @@ class TestLimits:
 
         assert result.status == "incomplete"
         assert result.note is not None and "wall-clock safety stop" in result.note
+
+    def test_a_slow_call_with_steps_left_is_incomplete_not_a_failure(self):
+        """The per-call deadline is a safety stop: a call that reaches it
+        before using its step allowance (step-cheap builtin work) says
+        something about the machine, not the input, so the same seed never
+        passes on an idle machine and fails on a busy one."""
+        result = check(SLOW_SORT, trials=3, call_max_seconds=0.005)["slow"]
+
+        assert result.status == "incomplete"
+        assert result.failure is None
+        assert result.counterexample is None
+        assert result.note == (
+            "stopped after 0 trials by the per-call wall-clock safety stop "
+            "(0.005 s): a call ran that long without using its step allowance"
+        )
+
+    def test_the_call_deadline_never_outlasts_the_functions_safety_stop(
+        self, monkeypatch
+    ):
+        # 9.95 s of the 10 s safety stop (2 x --timeout) are gone after the
+        # start, so the next call gets the 0.05 s that are left, not 5 s.
+        clock = itertools.chain([0.0], itertools.repeat(9.95))
+        monkeypatch.setattr(property_check, "_clock", lambda: next(clock))
+
+        result = check(SLOW_SORT, trials=3, timeout=5.0)["slow"]
+
+        assert result.status == "incomplete"
+        assert result.note == "stopped after 0 trials by the wall-clock safety stop"
+
+    def test_a_deadline_while_shrinking_ends_shrinking(self, monkeypatch):
+        """A shrink candidate stopped by a deadline is not accepted as the same
+        failure: shrinking ends with the best counterexample so far."""
+        original_call = property_check.PropertyRunner.call
+        failed: list[bool] = []
+
+        def call(self, check_, args, remaining):
+            if failed:
+                return self._deadline(0, safety_stop=False)
+            outcome = original_call(self, check_, args, remaining)
+            if outcome.is_failure:
+                failed.append(True)
+            return outcome
+
+        monkeypatch.setattr(property_check.PropertyRunner, "call", call)
+
+        result = check(ABS_BUG)["abs_val"]
+
+        assert result.status == "failed"
+        assert result.counterexample is not None
+        assert result.counterexample.arguments == result.counterexample.original
+        assert result.counterexample.shrink_steps == 0
+        assert result.note is not None
+        assert result.note.startswith(
+            "shrinking stopped by the per-call wall-clock safety stop"
+        )
 
     def test_default_budgets_do_not_make_ordinary_functions_incomplete(self):
         source = """\
@@ -675,6 +745,9 @@ type Box[T] = Box(value: T)
 type Tree[T] = Empty | Branch(left: Tree[T], value: T, right: Tree[T])
 type Expr = Num(value: Int) | Neg(inner: Expr) | Block(body: Stmt)
 type Stmt = Eval(expr: Expr) | Seq(first: Stmt, second: Stmt)
+type Rose = Rose(value: Int, children: List[Rose])
+type Chain = Chain(next: Option[Chain])
+type Attempt = Attempt(next: Result[Attempt, String])
 """
 
 TYPE_CASES = [
@@ -702,6 +775,10 @@ TYPE_CASES = [
     "Tree[Int]",
     "Expr",
     "List[Tree[Bool]]",
+    # Recursive only through a container, an Option or a Result.
+    "Rose",
+    "Chain",
+    "Attempt",
 ]
 
 
@@ -912,6 +989,74 @@ class TestGenerators:
         assert isinstance(func_type, FuncType)
         assert Generators(checker.type_defs).unsupported(func_type.param_types[0])
 
+    def test_recursion_through_a_container_option_or_result_is_generated(
+        self, probe_types
+    ):
+        """The empty collection, ``None`` and the other ``Result`` side end
+        the recursion, so these are generated, nested, and never skipped."""
+        checker, types = probe_types
+        gens = Generators(checker.type_defs)
+        rng = random.Random(3)
+        for name in ("Rose", "Chain", "Attempt"):
+            type_ = types[TYPE_CASES.index(name)]
+            assert gens.unsupported(type_) is None
+            assert gens.min_depth(type_) == 1
+            samples = [gens.generate(rng, type_, size) for size in range(65)]
+            assert max(len(render(sample)) for sample in samples) > len(
+                render(gens.minimal(type_))
+            )
+        assert render(gens.minimal(types[TYPE_CASES.index("Rose")])) == "Rose(0, [])"
+        assert render(gens.minimal(types[TYPE_CASES.index("Chain")])) == "Chain(None)"
+        assert render(gens.minimal(types[TYPE_CASES.index("Attempt")])) == (
+            'Attempt(Err(""))'
+        )
+
+    def test_a_collection_of_a_type_with_no_value_is_generated_empty(self):
+        _text, _program, checker = _load(
+            """\
+            type Loop = Loop(next: Loop)
+
+            @untested("probe")
+            func f(xs: List[Loop], o: Option[Loop], m: Map[Int, Loop]) -> Int
+                return 0
+            end func
+            """
+        )
+        func_type = checker.global_env.lookup("f")
+        assert isinstance(func_type, FuncType)
+        gens = Generators(checker.type_defs)
+        rng = random.Random(4)
+        for param_type in func_type.param_types:
+            assert gens.unsupported(param_type) is None
+            rendered = {
+                render(gens.generate(rng, param_type, size)) for size in range(65)
+            }
+            assert rendered == {render(gens.minimal(param_type))}
+
+    def test_a_field_with_no_generator_is_named(self):
+        _text, _program, checker = _load(
+            """\
+            type Fn = Fn(f: (Int) -> Int)
+            type Holder = Holder(fn_box: Fn)
+            type Handlers = Handlers(all: List[(Int) -> Int])
+
+            @untested("probe")
+            func f(x: Fn, y: Holder, z: Handlers) -> Int
+                return 0
+            end func
+            """
+        )
+        func_type = checker.global_env.lookup("f")
+        assert isinstance(func_type, FuncType)
+        gens = Generators(checker.type_defs)
+        reasons = [gens.unsupported_reason(t) for t in func_type.param_types]
+        assert all(reason is not None for reason in reasons)
+        assert [(str(r[0]), str(r[1])) for r in reasons if r is not None] == [
+            ("(Int) -> Int", "Fn"),
+            ("(Int) -> Int", "Fn"),
+            ("(Int) -> Int", "Handlers"),
+        ]
+
 
 def _depth(sample: Sample) -> int:
     if sample.kind != "ctor" or not sample.items:
@@ -1055,6 +1200,68 @@ class TestShrinking:
         result = check(source)["negs"]
         assert result.counterexample is not None
         assert result.counterexample.arguments == "Neg(Num(0))"
+
+    def test_a_generic_functions_counterexample_pastes_back_as_an_example(self):
+        """``Empty`` for ``size[T](t: Tree[T])`` is a valid example input."""
+        body = """\
+        type Tree[T] = Empty | Branch(left: Tree[T], value: T, right: Tree[T])
+
+        func size[T](t: Tree[T]) -> Int
+            ensures result > 0
+        {examples}
+            match t with
+                | Empty -> return 0
+                | Branch(l, _, r) -> return 1 + size(l) + size(r)
+            end match
+        end func
+        """
+        source = body.replace("{examples}", "    example Branch(Empty, 1, Empty) -> 1")
+        result = check(source)["size"]
+        assert result.status == "failed"
+        assert result.counterexample is not None
+        assert result.counterexample.arguments == "Empty"
+        pasted = body.replace(
+            "{examples}",
+            f"    example {result.counterexample.arguments} -> 0",
+        )
+        _load(pasted)  # raises on a type error
+
+    def test_adts_recursive_through_a_list_or_an_option_shrink(self):
+        source = """\
+        type Rose = Rose(value: Int, children: List[Rose])
+        type Chain = Chain(next: Option[Chain])
+
+        func rsize(r: Rose) -> Int
+            ensures result < 3
+            example Rose(1, []) -> 1
+            var total = 1
+            for c: Rose in r.children do
+                total = total + rsize(c)
+            end for
+            return total
+        end func
+
+        func clen(c: Chain) -> Int
+            ensures result < 3
+            example Chain(None) -> 1
+            match c.next with
+                | Some(n) -> return 1 + clen(n)
+                | None -> return 1
+            end match
+        end func
+        """
+        results = check(source)
+        assert results["rsize"].counterexample is not None
+        assert results["rsize"].counterexample.arguments in (
+            "Rose(0, [Rose(0, []), Rose(0, [])])",
+            "Rose(0, [Rose(0, [Rose(0, [])])])",
+        )
+        assert results["clen"].failure is not None
+        assert results["clen"].failure.kind == "ensures"
+        assert results["clen"].counterexample is not None
+        assert results["clen"].counterexample.arguments == (
+            "Chain(Some(Chain(Some(Chain(None)))))"
+        )
 
     def test_shrinking_stops_at_the_shrink_budget(self):
         result = check(ABS_BUG, max_shrink_calls=1, seed=1)["abs_val"]
@@ -1215,6 +1422,31 @@ class TestEligibility:
         assert results["lookup"].status == "skipped"
         assert results["lookup"].note is not None
         assert "MutableMap[String, Int] has no generator" in results["lookup"].note
+
+    def test_a_field_without_a_generator_is_named_in_the_note(self):
+        source = """\
+        type Fn = Fn(f: (Int) -> Int)
+        type Loop = Loop(next: Loop)
+
+        func fnf(f: Fn) -> Int
+            example Fn(fn(x: Int) -> x) -> 1
+            return 1
+        end func
+
+        func loops(xs: List[Loop]) -> Int
+            ensures result == 0
+            example [] -> 0
+            return length(xs)
+        end func
+        """
+        results = check(source)
+        assert results["fnf"].status == "skipped"
+        assert results["fnf"].note == (
+            "parameter f: type Fn needs (Int) -> Int, which has no generator"
+        )
+        # ``[]`` is the one value of List[Loop], and it is generated.
+        assert results["loops"].status == "passed"
+        assert results["loops"].trials_run == 100
 
     def test_a_bound_int_cannot_satisfy_is_skipped_with_a_note(self, results):
         assert results["shown"].status == "skipped"

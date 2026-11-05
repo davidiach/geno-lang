@@ -22,10 +22,15 @@ from .ast_nodes import (
     Program,
     RequiresClause,
 )
+from .capabilities import DEFAULT_ALLOWED_CAPABILITIES
 from .values import _UNBOUND, ConstructorValue
 
 if TYPE_CHECKING:
     from .panic_outcome import CallFailure
+
+# What the harness runners grant a program: the direct interpreter's default
+# (``geno test`` grants the same), for interpreted and compiled runs alike.
+HARNESS_CAPABILITIES = DEFAULT_ALLOWED_CAPABILITIES
 
 # =============================================================================
 # Result Types
@@ -472,8 +477,10 @@ def run_harness_from_source(source: str, check_examples: bool = True) -> Harness
     checker = TypeChecker()
     checker.check_program(program)
 
-    # Create interpreter
-    interp = Interpreter(check_examples=False)  # We'll check manually
+    # Create interpreter; examples are checked manually below. Its grants are
+    # explicit, and the compiled runner uses the same ones, so an effectful
+    # example behaves alike in both.
+    interp = Interpreter(check_examples=False, capabilities=HARNESS_CAPABILITIES)
 
     # Load definitions without executing main; the harness drives the calls.
     interp.run(program, execute_main=False)
@@ -548,10 +555,12 @@ def run_harness_from_compiled(source: str) -> HarnessResult:
     parser = Parser(tokens)
     program = parser.parse_program()
 
-    # Compile and execute
-    globals_dict = compile_and_exec(source, sandboxed=True, timeout=None)
+    # Compile and execute, with the interpreter runner's grants.
+    globals_dict = compile_and_exec(
+        source, sandboxed=True, timeout=None, capabilities=HARNESS_CAPABILITIES
+    )
 
-    evaluator = Interpreter(check_examples=False)
+    evaluator = Interpreter(check_examples=False, capabilities=HARNESS_CAPABILITIES)
     evaluator.run(program, execute_main=False)
 
     # Extract only top-level harnesses (impl methods aren't reachable via

@@ -584,7 +584,21 @@ def _geno_named_constructor(cls: Any, name: str) -> Any:
 
 def _geno_panic(message: str) -> None:
     """End the program with *message*: Geno code cannot recover from a panic."""
-    raise RuntimeError(message)
+    raise _geno_panic_error(message)
+
+
+def _geno_panic_error(message: str) -> Any:
+    """The exception a panic raises: a ``RuntimeError`` marked as a panic.
+
+    Provenance for classifiers (``geno.panic_outcome``): the compiled
+    runtime's resource limits are plain ``RuntimeError``s recognized by their
+    fixed messages, so a panic whose own text reads like one ("List size
+    exceeds limit") carries ``_geno_panic`` to stay a panic. Only ``panic``,
+    ``option_expect``, ``result_expect`` and compiler-emitted panics set it.
+    """
+    error: Any = RuntimeError(message)
+    error._geno_panic = True
+    return error
 
 
 def _propagate(val: Any) -> Any:
@@ -1070,7 +1084,7 @@ def unwrap(opt: Any) -> Any:
 
 def panic(message: str) -> None:
     """End the program with *message*; Geno code cannot recover from a panic."""
-    raise RuntimeError(message)
+    raise _geno_panic_error(message)
 
 
 def unwrap_or(opt: Any, default: Any) -> Any:
@@ -3864,7 +3878,7 @@ def result_unwrap(result: Any) -> Any:
 def result_expect(result: Any, message: str) -> Any:
     if isinstance(result, Ok):
         return result.value
-    raise RuntimeError(f"{message}: {_geno_format(result.error)}")
+    raise _geno_panic_error(f"{message}: {_geno_format(result.error)}")
 
 
 def result_is_ok(result):
@@ -3907,7 +3921,7 @@ def option_unwrap_or(option, default):
 def option_expect(option: Any, message: str) -> Any:
     if isinstance(option, Some):
         return option.value
-    raise RuntimeError(message)
+    raise _geno_panic_error(message)
 
 
 def option_is_some(option):

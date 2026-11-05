@@ -168,7 +168,7 @@ class PropertyConfig:
 
     @property
     def call_seconds(self) -> float:
-        """The deadline of one property call."""
+        """The wall-clock deadline of one property call: a safety stop."""
         if self.timeout is None:
             return self.call_max_seconds
         return min(self.call_max_seconds, self.timeout)
@@ -191,7 +191,7 @@ class PropertyFailure:
     # known) and the interpreter's display of the returned value.
     clause: str | None = None
     result: str | None = None
-    # For a limit: which one ("step limit", "timeout", ...).
+    # For a limit: which one ("step limit", "recursion depth limit", ...).
     limit: str | None = None
     # One line for a text report, e.g. "ensures result >= 0 failed (result
     # was -1)" or "hit the step limit (200,000 steps per property call)".
@@ -433,31 +433,79 @@ class Generators:
 
     def unsupported(self, type_: Type) -> Type | None:
         """The innermost part of *type_* that has no generator, if any."""
+        reason = self.unsupported_reason(type_)
+        return reason[0] if reason is not None else None
+
+    def unsupported_reason(self, type_: Type) -> tuple[Type, UserType | None] | None:
+        """Why *type_* has no generator: ``(missing part, user type needing it)``.
+
+        A part outside every user type that has no generator (a function
+        type, ``Async``, ``MutableMap``...) is reported with no owner. A
+        user type with no value the generator can build is reported with the
+        part one of its fields needs, or as itself when it has no finite
+        value at all (``type Loop = Loop(next: Loop)``). An empty collection
+        and ``None`` are always values, so ``List[Loop]`` is generated (as
+        ``[]``) and a type that recurses only through a container or an
+        ``Option`` (a rose tree) is generated.
+        """
+        missing = self._shape_missing(type_)
+        if missing is not None:
+            return missing, None
+        if self.min_depth(type_) < _INFINITY:
+            return None
+        return self._uninhabited_reason(type_)
+
+    def _shape_missing(self, type_: Type) -> Type | None:
+        """The part of *type_*, outside its user types, with no generator."""
         if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
             return None
         if isinstance(type_, (ListType, SetType, VecType, ArrayType)):
-            return self.unsupported(type_.element_type)
+            return self._shape_missing(type_.element_type)
         if isinstance(type_, MapType):
-            return self.unsupported(type_.key_type) or self.unsupported(
+            return self._shape_missing(type_.key_type) or self._shape_missing(
                 type_.value_type
             )
         if isinstance(type_, OptionType):
-            return self.unsupported(type_.value_type)
+            return self._shape_missing(type_.value_type)
         if isinstance(type_, ResultType):
-            return self.unsupported(type_.ok_type) or self.unsupported(type_.err_type)
+            return self._shape_missing(type_.ok_type) or self._shape_missing(
+                type_.err_type
+            )
         if isinstance(type_, TupleType):
             for element in type_.element_types:
-                missing = self.unsupported(element)
+                missing = self._shape_missing(element)
                 if missing is not None:
                     return missing
             return None
         if isinstance(type_, UserType):
-            if type_.name not in self._type_defs:
-                return type_
-            return type_ if self.min_depth(type_) == _INFINITY else None
+            return None if type_.name in self._type_defs else type_
         # Function types, Async, MutableMap, Any, Never, modules and type
         # variables have no generator.
         return type_
+
+    def _uninhabited_reason(self, root: Type) -> tuple[Type, UserType | None]:
+        """For a *root* with no buildable value: a field part with no generator
+        that some unbuildable user type needs, else the first such user type."""
+        first: UserType | None = None
+        seen: set[Type] = set()
+        pending: list[Type] = [root]
+        while pending:
+            current = pending.pop()
+            if current in seen or self.min_depth(current) < _INFINITY:
+                continue
+            seen.add(current)
+            if not isinstance(current, UserType):
+                pending.extend(reversed(_children(current)))
+                continue
+            first = first or current
+            for _name, fields in self._variants(current):
+                for field_type in fields:
+                    missing = self._shape_missing(field_type)
+                    if missing is not None:
+                        return missing, current
+            for _name, fields in reversed(self._variants(current)):
+                pending.extend(reversed(fields))
+        return (first or root), None
 
     def min_depth(self, type_: Type) -> float:
         """Constructor nesting the smallest value of *type_* needs (inf: none)."""
@@ -546,20 +594,20 @@ class Generators:
 
         if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
             return 0
-        if isinstance(type_, (ListType, SetType, VecType, ArrayType)):
-            # Empty is always possible, but elements must be generable.
-            return 0 if inner(type_.element_type) < _INFINITY else _INFINITY
-        if isinstance(type_, MapType):
-            key = inner(type_.key_type)
-            value = inner(type_.value_type)
-            return 0 if max(key, value) < _INFINITY else _INFINITY
+        if isinstance(type_, (ListType, SetType, VecType, ArrayType, MapType)):
+            # The empty collection is a value whatever its elements are
+            # (a rose tree's ``Rose(1, [])``); whether non-empty ones can be
+            # generated is decided when generating. A part with no generator
+            # at all (a function type) keeps the type unsupported.
+            return 0 if self._shape_missing(type_) is None else _INFINITY
         if isinstance(type_, OptionType):
-            return 0 if inner(type_.value_type) < _INFINITY else _INFINITY
+            # Likewise ``None`` (``Chain(None)``).
+            return 0 if self._shape_missing(type_) is None else _INFINITY
         if isinstance(type_, ResultType):
-            ok = inner(type_.ok_type)
-            err = inner(type_.err_type)
-            # Both sides must be generable, since either may be chosen.
-            return min(ok, err) if max(ok, err) < _INFINITY else _INFINITY
+            if self._shape_missing(type_) is not None:
+                return _INFINITY
+            # Either side builds a value; generation picks a buildable one.
+            return min(inner(type_.ok_type), inner(type_.err_type))
         if isinstance(type_, TupleType):
             return max((inner(element) for element in type_.element_types), default=0)
         if isinstance(type_, UserType):
@@ -606,7 +654,11 @@ class Generators:
             )
         if isinstance(type_, (ListType, SetType, VecType, ArrayType)):
             kind = _collection_kind(type_)
-            length = 0 if bounded else rng.randint(0, _collection_length(size))
+            length = (
+                0
+                if bounded or not self._buildable(type_.element_type)
+                else rng.randint(0, _collection_length(size))
+            )
             elements = [
                 self._generate(rng, type_.element_type, size // 2, depth, max_depth)
                 for _ in range(length)
@@ -615,7 +667,14 @@ class Generators:
                 return Sample(kind, type_, items=_dedupe(elements, _sample_key))
             return Sample(kind, type_, items=tuple(elements))
         if isinstance(type_, MapType):
-            length = 0 if bounded else rng.randint(0, _collection_length(size))
+            buildable = self._buildable(type_.key_type) and self._buildable(
+                type_.value_type
+            )
+            length = (
+                0
+                if bounded or not buildable
+                else rng.randint(0, _collection_length(size))
+            )
             entry_type = TupleType((type_.key_type, type_.value_type))
             entries = [
                 Sample(
@@ -634,15 +693,18 @@ class Generators:
             ]
             return Sample("map", type_, items=_dedupe(entries, _entry_key))
         if isinstance(type_, OptionType):
-            if bounded or rng.random() < 0.2:
+            if bounded or not self._buildable(type_.value_type) or rng.random() < 0.2:
                 return Sample("ctor", type_, name="None")
             inner = self._generate(rng, type_.value_type, size, depth, max_depth)
             return Sample("ctor", type_, name="Some", items=(inner,))
         if isinstance(type_, ResultType):
+            ok_buildable = self._buildable(type_.ok_type)
             if bounded:
                 ok = self.min_depth(type_.ok_type) <= self.min_depth(type_.err_type)
-            else:
+            elif ok_buildable and self._buildable(type_.err_type):
                 ok = rng.random() < 0.6
+            else:
+                ok = ok_buildable
             if ok:
                 inner = self._generate(rng, type_.ok_type, size, depth, max_depth)
                 return Sample("ctor", type_, name="Ok", items=(inner,))
@@ -661,6 +723,10 @@ class Generators:
                 ),
             )
         raise ValueError(f"No generator for {type_}")
+
+    def _buildable(self, type_: Type) -> bool:
+        """Whether the generator can build a value of *type_*."""
+        return self.min_depth(type_) < _INFINITY
 
     def _constructible_variants(
         self, type_: UserType, *, minimal_only: bool
@@ -802,6 +868,14 @@ class Generators:
             for item in sample.items:
                 if item.type_ == sample.type_:
                     yield item
+                elif item.kind in ("list", "set", "vec", "array") or isinstance(
+                    item.type_, OptionType
+                ):
+                    # A subtree held in a container or an Option (a rose
+                    # tree's children, ``Chain(Some(next))``).
+                    for nested in item.items:
+                        if nested.type_ == sample.type_:
+                            yield nested
         yield from self._shrink_fields(sample)
 
 
@@ -1094,15 +1168,24 @@ def _target(
         for param_type in func_type.param_types
     )
     for param, param_type in zip(definition.params, param_types):
-        missing_type = generators.unsupported(param_type)
-        if missing_type is not None:
-            target.note = _no_generator_note(param.name, param_type, missing_type)
+        reason = generators.unsupported_reason(param_type)
+        if reason is not None:
+            missing_type, owner = reason
+            target.note = _no_generator_note(
+                param.name, param_type, missing_type, owner
+            )
             return target
     target.param_types = param_types
     return target
 
 
-def _no_generator_note(param: str, param_type: Type, missing: Type) -> str:
+def _no_generator_note(
+    param: str, param_type: Type, missing: Type, owner: UserType | None = None
+) -> str:
+    if owner is not None:
+        return (
+            f"parameter {param}: type {owner} needs {missing}, which has no generator"
+        )
     if isinstance(missing, UserType):
         return f"parameter {param}: type {missing} has no value to generate"
     if isinstance(missing, MutableMapType):
@@ -1124,6 +1207,7 @@ OutcomeKind = Literal[
     "panic",
     "limit",
     "budget",
+    "deadline",
     "refused",
     "unrealizable",
 ]
@@ -1227,6 +1311,15 @@ class _FunctionCheck:
     def _safety_stopped(self) -> bool:
         return _clock() - self.started > self.config.safety_stop_seconds
 
+    def call_deadline(self) -> tuple[float, bool]:
+        """The next call's wall-clock deadline, and whether it is the
+        function's safety stop (what is left of it) rather than the per-call
+        one."""
+        left = self.config.safety_stop_seconds - (_clock() - self.started)
+        if left < self.config.call_seconds:
+            return max(left, 0.0), True
+        return self.config.call_seconds, False
+
     def run(self) -> PropertyResult:
         config = self.config
         gens = self.runner.generators
@@ -1268,6 +1361,13 @@ class _FunctionCheck:
                     break
                 if outcome.kind == "budget":
                     return self._budget_spent(trials_run, discarded)
+                if outcome.kind == "deadline":
+                    return self.result(
+                        "incomplete",
+                        trials_run=trials_run,
+                        discarded=discarded,
+                        note=f"stopped after {trials_run} trials by {outcome.message}",
+                    )
                 if outcome.kind in ("refused", "unrealizable"):
                     return self.result(
                         "skipped",
@@ -1342,6 +1442,8 @@ class _FunctionCheck:
                     steps_used += outcome.steps
                     if outcome.kind == "budget":
                         raise _Stop("shrinking stopped: shrink budget spent")
+                    if outcome.kind == "deadline":
+                        raise _Stop(f"shrinking stopped by {outcome.message}")
                     if outcome.is_failure and current_failure.same_failure(outcome):
                         current = candidate
                         current_failure = outcome
@@ -1441,12 +1543,15 @@ class PropertyRunner:
         call_steps = self.config.call_steps
         before = interp.steps
         values: list[Any] = []
+        seconds, safety_stop = check.call_deadline()
         try:
             with interp.step_allowance(min(call_steps, remaining)):
-                with interp._execution_deadline(self.config.call_seconds):
+                with interp._execution_deadline(seconds):
                     for arg in args:
                         values.append(self._realize(arg))
         except CALL_FAILURES as exc:
+            if isinstance(exc, SandboxTimeout):
+                return self._deadline(interp.steps - before, safety_stop)
             return _Outcome(
                 "unrealizable",
                 steps=interp.steps - before,
@@ -1459,11 +1564,16 @@ class PropertyRunner:
         allowance = min(call_steps, remaining - (interp.steps - before))
         if allowance <= 0:
             return _Outcome("budget", steps=interp.steps - before)
+        seconds, safety_stop = check.call_deadline()
         try:
             with interp.step_allowance(allowance):
-                with interp._execution_deadline(self.config.call_seconds):
+                with interp._execution_deadline(seconds):
                     interp._call_function(check.func, values)
         except CALL_FAILURES as exc:
+            if isinstance(exc, SandboxTimeout):
+                # Wall time is only a safety stop: the call had steps left,
+                # so how far it got depends on the machine, not the input.
+                return self._deadline(interp.steps - before, safety_stop)
             return self._classify(
                 exc,
                 check.target,
@@ -1471,6 +1581,22 @@ class PropertyRunner:
                 steps=interp.steps - before,
             )
         return _Outcome("pass", steps=interp.steps - before)
+
+    def _deadline(self, steps: int, safety_stop: bool) -> _Outcome:
+        """A call stopped by a wall-clock deadline before its steps ran out.
+
+        Wall time is only a safety stop: how far such a call got depends on
+        the machine, not on the input, so it is never a failure. Its message
+        says which stop it was (*safety_stop*: the function's own).
+        """
+        if safety_stop:
+            stop = "the wall-clock safety stop"
+        else:
+            stop = (
+                f"the per-call wall-clock safety stop ({self.config.call_seconds:g} "
+                "s): a call ran that long without using its step allowance"
+            )
+        return _Outcome("deadline", steps=steps, message=stop)
 
     def _realize(self, sample: Sample) -> Any:
         from .parser import parse_expression
@@ -1514,11 +1640,6 @@ class PropertyRunner:
                 # resolved path; leave it out so a report never depends on
                 # the checkout's location. A full allowance is call_steps.
                 message = f"Step limit exceeded ({self.config.call_steps} steps)"
-            elif isinstance(exc, SandboxTimeout):
-                message = (
-                    f"Execution timed out after {self.config.call_seconds:g} "
-                    "seconds (the property call deadline)"
-                )
             return _Outcome("limit", steps=steps, message=message, limit=failure.limit)
         if failure.kind == "refused":
             return _Outcome(
@@ -1556,8 +1677,6 @@ class PropertyRunner:
             limit = outcome.limit or "resource limit"
             if limit == "step limit":
                 detail = f" ({self.config.call_steps:,} steps per property call)"
-            elif limit == "timeout":
-                detail = f" ({self.config.call_seconds:g} s per property call)"
             else:
                 detail = ""
             return PropertyFailure(

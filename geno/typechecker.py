@@ -3589,7 +3589,11 @@ class TypeChecker(ExhaustivenessMixin):
             if example_subs is None:
                 return self._types_strictly_compatible(expected, actual)
             if self._has_type_vars(actual):
-                actual = self._freshen_type_vars(actual, "__example_")
+                # As for call arguments: rename rigid variables, keep inference
+                # placeholders, so ``example Leaf -> 0`` binds ``Tree[T]``.
+                actual = self._freshen_type_vars(
+                    actual, "__example_", self._placeholder_identity_mapping(actual)
+                )
             return self._types_compatible_with_subs(expected, actual, example_subs)
 
         def shown(expected: Type | None) -> Type | None:
@@ -4907,12 +4911,7 @@ class TypeChecker(ExhaustivenessMixin):
         # rejected with "expected Int, got Float", even under an explicit
         # `List[Float]` annotation, because the error was raised during
         # inference before the annotation was consulted.
-        elem_type = elem_types[0]
-        for t in elem_types[1:]:
-            if not self._types_compatible(elem_type, t) and self._types_compatible(
-                t, elem_type
-            ):
-                elem_type = t
+        elem_type = self._join_literal_types(elem_types)
 
         for i, t in enumerate(elem_types):
             if not self._types_compatible(elem_type, t):
@@ -4935,6 +4934,39 @@ class TypeChecker(ExhaustivenessMixin):
 
         return ListType(elem_type)
 
+    def _join_literal_types(self, types: list[Type]) -> Type:
+        """The one type every element (or key, or value) of a literal has.
+
+        The type every other element is compatible with wins, so Int widens
+        to Float in any order. An element whose type still has an inference
+        placeholder (``Leaf`` is ``Tree[_]``, ``None`` is ``Option[_]``,
+        ``Err("x")`` is ``Result[_, String]``) is compatible with anything
+        there, so the placeholders are then filled from the other elements,
+        as match arms are: ``[Leaf, Node(Leaf, "s", Leaf)]`` is a
+        ``List[Tree[String]]``, not a ``List[Tree[_]]`` that a
+        ``List[Tree[Int]]`` annotation would accept. Elements with rigid
+        type variables keep the old behaviour.
+        """
+        chosen = types[0]
+        for candidate in types[1:]:
+            if not self._types_compatible(chosen, candidate) and self._types_compatible(
+                candidate, chosen
+            ):
+                chosen = candidate
+        if not any(self._placeholder_identity_mapping(t) for t in types):
+            return chosen
+
+        def concrete_common(left: Type, right: Type) -> Type | None:
+            if self._has_type_vars(left) or self._has_type_vars(right):
+                return None
+            return self._common_arm_type(left, right)
+
+        for candidate in types:
+            filled = _fill_fresh_placeholders(chosen, candidate, concrete_common)
+            if filled is not None:
+                chosen = filled
+        return chosen
+
     def _check_map_literal(self, expr: MapLiteral, env: TypeEnv) -> Type:
         """Type check `{key: value, ...}`: one key type, one value type."""
         if not expr.entries:
@@ -4944,18 +4976,10 @@ class TypeChecker(ExhaustivenessMixin):
         if any(isinstance(t, NeverType) for t in key_types + value_types):
             return NeverType()
 
-        def widest(types: list[Type]) -> Type:
-            # As for list elements: widen Int to Float in any order.
-            chosen = types[0]
-            for candidate in types[1:]:
-                if not self._types_compatible(
-                    chosen, candidate
-                ) and self._types_compatible(candidate, chosen):
-                    chosen = candidate
-            return chosen
-
-        key_type = widest(key_types)
-        value_type = widest(value_types)
+        # As for list elements: widen Int to Float in any order, and fill
+        # inference placeholders from the other entries.
+        key_type = self._join_literal_types(key_types)
+        value_type = self._join_literal_types(value_types)
         seen_keys: set[object] = set()
         for entry, k_type, v_type in zip(expr.entries, key_types, value_types):
             if not self._types_compatible(key_type, k_type):
@@ -5537,7 +5561,11 @@ class TypeChecker(ExhaustivenessMixin):
                     arg_type = self._check_expression(ca.value, env)
                     has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                     if self._has_type_vars(arg_type):
-                        arg_type = self._freshen_type_vars(arg_type, f"__arg{i}_")
+                        arg_type = self._freshen_type_vars(
+                            arg_type,
+                            f"__arg{i}_",
+                            self._placeholder_identity_mapping(arg_type),
+                        )
                     if use_subs:
                         if not self._types_compatible_with_subs(
                             expected_type, arg_type, subs
@@ -5573,7 +5601,15 @@ class TypeChecker(ExhaustivenessMixin):
                 arg_type = self._check_expression(arg.value, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
-                    arg_type = self._freshen_type_vars(arg_type, f"__arg{i}_")
+                    # Rename the argument's rigid variables so they cannot
+                    # collide with the callee's; keep inference placeholders
+                    # (see _check_constructor_call), so ``g(Leaf, x)`` for a
+                    # generic ``g[T](t: Tree[T], x: T)`` binds ``T``.
+                    arg_type = self._freshen_type_vars(
+                        arg_type,
+                        f"__arg{i}_",
+                        self._placeholder_identity_mapping(arg_type),
+                    )
                 # A method call's receiver is not an argument the caller wrote.
                 label = (
                     f"Argument {i + 1}"

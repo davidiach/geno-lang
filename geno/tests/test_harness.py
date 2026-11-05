@@ -518,6 +518,71 @@ end func
         assert f"hit the {limit}" in result.violations[0].message
 
     @pytest.mark.parametrize(
+        "body",
+        [
+            'panic("List size exceeds limit (1 > 0)")',
+            'panic("Output limit exceeded (5)")',
+            'panic("Exponentiation result too large")',
+            'panic("Integer exceeds maximum size (9 bits)")',
+            'return option_expect(None, "Output limit exceeded (5)")',
+            'return result_expect(Err(1), "x: List size exceeds limit (1 > 0)")',
+        ],
+        ids=["collection", "output", "range", "integer", "option", "result"],
+    )
+    @pytest.mark.parametrize(
+        "runner",
+        [run_harness_from_source, run_harness_from_compiled],
+        ids=["source", "compiled"],
+    )
+    def test_a_panic_reading_like_a_limit_is_still_a_panic(self, runner, body):
+        """The compiled runtime's limits are recognized by their messages, but
+        a program's own panic carries its provenance, so it cannot pass for
+        one in either runner."""
+        examples = ["    example 1 panics\n"]
+        for words in ("exceeds", "too large"):
+            if words in body:
+                examples.append(f'    example 1 panics "{words}"\n')
+        source = (
+            "func forged(n: Int) -> Int\n"
+            + "".join(examples)
+            + f"    {body}\nend func\n"
+        )
+
+        result = runner(source)
+
+        assert result.failed == 0, [v.message for v in result.violations]
+        assert result.passed == result.total == len(examples)
+
+    @pytest.mark.parametrize(
+        "runner",
+        [run_harness_from_source, run_harness_from_compiled],
+        ids=["source", "compiled"],
+    )
+    def test_a_requires_that_propagates_panics_alike(self, runner):
+        """A `?` that propagates inside `requires` is a precondition panic in
+        both runners (compiled Python used to let `_PropagateReturn` escape)."""
+        source = """
+func prop(o: Option[Int]) -> Option[Int]
+    requires o? > 0
+    example Some(1) -> Some(1)
+    example None panics "requires clause cannot use '?'"
+    return Some(1)
+end func
+
+func post(o: Option[Int]) -> Option[Int]
+    ensures o? > 0
+    example Some(1) -> Some(1)
+    example None panics "ensures clause cannot use '?'"
+    return o
+end func
+"""
+        result = runner(source)
+
+        assert (result.total, result.passed) == (4, 4), [
+            v.message for v in result.violations
+        ]
+
+    @pytest.mark.parametrize(
         "runner",
         [run_harness_from_source, run_harness_from_compiled],
         ids=["source", "compiled"],

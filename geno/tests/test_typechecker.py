@@ -2768,6 +2768,206 @@ class TestNestedNullaryGenericConstructors:
         assert "__ctor_arg" not in message
 
 
+class TestLiteralElementsFillInferencePlaceholders:
+    """A literal's element type takes its placeholders from the other elements.
+
+    ``Leaf``, ``None``, ``Empty`` and ``Err("x")`` have a type with an
+    inference placeholder, which is compatible with anything; a literal that
+    started with one used to keep it, so ``[Leaf, Node(Leaf, "s", Leaf)]``
+    was a ``List[Tree[_]]`` that a ``List[Tree[Int]]`` annotation accepted
+    and that crashed at run time (``"s" + 1``).
+    """
+
+    TYPES = (
+        "type Tree[T] = Leaf | Node(left: Tree[T], value: T, right: Tree[T])\n"
+        "type Box[T] =\n    | Empty\n    | Full(value: T)\n\n"
+    )
+
+    def _main(self, *statements: str) -> str:
+        body = "".join(f"    {statement}\n" for statement in statements)
+        return self.TYPES + f"func main() -> Unit\n{body}    return ()\nend func\n"
+
+    @pytest.mark.parametrize(
+        ("statement", "declared", "inferred"),
+        [
+            (
+                'let d: List[Tree[Int]] = [Leaf, Node(Leaf, "s", Leaf)]',
+                "List[Tree[Int]]",
+                "List[Tree[String]]",
+            ),
+            (
+                'let d: List[Option[Int]] = [None, Some("s")]',
+                "List[Option[Int]]",
+                "List[Option[String]]",
+            ),
+            (
+                'let d: List[Box[Int]] = [Empty, Full("s")]',
+                "List[Box[Int]]",
+                "List[Box[String]]",
+            ),
+            (
+                'let d: List[Result[Int, Int]] = [Ok(1), Err("x")]',
+                "List[Result[Int, Int]]",
+                "List[Result[Int, String]]",
+            ),
+            (
+                'let d: List[List[Int]] = [[], ["s"]]',
+                "List[List[Int]]",
+                "List[List[String]]",
+            ),
+            (
+                'let d: Map[Int, Option[Int]] = {1: None, 2: Some("s")}',
+                "Map[Int, Option[Int]]",
+                "Map[Int, Option[String]]",
+            ),
+        ],
+        ids=["tree", "option", "box", "result", "list", "map"],
+    )
+    def test_a_later_element_fixes_the_type(self, statement, declared, inferred):
+        error = expect_type_error(self._main(statement))
+
+        message = str(error)
+        assert f"declared type {declared}" in message
+        assert f"value has type {inferred}" in message
+
+    def test_a_concrete_mismatch_after_a_placeholder_is_reported(self):
+        error = expect_type_error(self._main('let d = [None, Some("s"), Some(1)]'))
+
+        assert "List element type mismatch: expected Option[String]" in str(error)
+
+    @pytest.mark.parametrize(
+        "statements",
+        [
+            ("let d: List[Tree[Int]] = [Leaf, Node(Leaf, 1, Leaf)]",),
+            ("let d: List[Tree[Int]] = [Leaf, Leaf]",),
+            ("let d: List[Option[Float]] = [None, Some(1), Some(2.5)]",),
+            (
+                "let d = [Some(2.5), None, Some(1)]",
+                "let e: List[Option[Float]] = d",
+            ),
+            (
+                'let d = [Ok(1), Err("x")]',
+                "let e: List[Result[Int, String]] = d",
+            ),
+            ("let d: List[List[Int]] = [[], [1]]",),
+            ('let d: Map[String, Option[Int]] = {"a": None, "b": Some(1)}',),
+            ("let d: List[(Option[Int], Int)] = [(None, 1), (Some(2), 2)]",),
+        ],
+        ids=[
+            "tree",
+            "leaves",
+            "widen",
+            "widen-inferred",
+            "result-inferred",
+            "nested-empty",
+            "map",
+            "tuple",
+        ],
+    )
+    def test_well_typed_literals_are_accepted(self, statements):
+        check_program(self._main(*statements))
+
+    def test_a_generic_body_keeps_its_type_variable(self):
+        check_program(
+            "func options[T](x: T, y: T) -> List[Option[T]]\n"
+            "    example 1, 2 -> [None, Some(1), Some(2)]\n"
+            "    return [None, Some(x), Some(y)]\n"
+            "end func\n"
+        )
+
+
+class TestBareNullaryGenericConstructorsForGenericParameters:
+    """A bare ``Leaf`` passed where a generic function takes ``Tree[T]``.
+
+    The example input and the call argument used to rename ``Leaf``'s
+    inference placeholder into a rigid variable, so a property-check
+    counterexample ``Leaf`` for ``size[T](t: Tree[T])`` could not be pasted
+    back as ``example Leaf -> 0`` (proposal 0017).
+    """
+
+    TREE = "type Tree[T] = Leaf | Node(left: Tree[T], value: T, right: Tree[T])\n\n"
+    BOX = "type Box[T] =\n    | Empty\n    | Full(value: T)\n\n"
+
+    def test_example_input_for_a_generic_parameter(self):
+        check_program(
+            self.TREE + "func size[T](t: Tree[T]) -> Int\n"
+            "    example Leaf -> 0\n"
+            "    return 0\n"
+            "end func\n"
+        )
+
+    def test_example_input_for_a_generic_enum_parameter(self):
+        check_program(
+            self.BOX + "func m[T](b: Box[T]) -> Int\n"
+            "    example Empty -> 0\n"
+            "    example Full(1) -> 1\n"
+            "    match b with\n"
+            "        | Empty -> return 0\n"
+            "        | Full(_) -> return 1\n"
+            "    end match\n"
+            "end func\n"
+        )
+
+    def test_two_bare_constructors_bind_separate_parameters(self):
+        check_program(
+            self.TREE + "func two[A, B](x: Tree[A], y: Tree[B], a: A, b: B) -> Int\n"
+            '    example Leaf, Leaf, 1, "s" -> 0\n'
+            "    return 0\n"
+            "end func\n"
+        )
+
+    def test_call_argument_binds_the_parameter_from_a_later_argument(self):
+        check_program(
+            self.TREE + "func g[T](t: Tree[T], x: T) -> T\n"
+            "    example Node(Leaf, 1, Leaf), 2 -> 2\n"
+            "    return x\n"
+            "end func\n"
+            "\n"
+            "func main() -> Unit\n"
+            '    let ok: String = g(Leaf, "s")\n'
+            "    print(ok)\n"
+            "end func\n"
+        )
+
+    def test_named_call_argument(self):
+        check_program(
+            self.TREE + "func g3[T](t: Tree[T], x: T, y: T) -> T\n"
+            "    example Node(Leaf, 1, Leaf), 2, 3 -> 2\n"
+            "    return x\n"
+            "end func\n"
+            "\n"
+            "func main() -> Unit\n"
+            '    let ok: String = g3(t: Leaf, x: "s", y: "t")\n'
+            "    print(ok)\n"
+            "end func\n"
+        )
+
+    def test_result_type_is_still_checked(self):
+        error = expect_type_error(
+            self.TREE + "func g[T](t: Tree[T], x: T) -> T\n"
+            "    example Node(Leaf, 1, Leaf), 2 -> 2\n"
+            "    return x\n"
+            "end func\n"
+            "\n"
+            "func main() -> Unit\n"
+            '    let bad: Int = g(Leaf, "s")\n'
+            "    print(bad)\n"
+            "end func\n"
+        )
+        message = str(error)
+        assert "declared type Int" in message
+        assert "__fresh" not in message
+
+    def test_mistyped_argument_is_still_rejected(self):
+        error = expect_type_error(
+            self.TREE + "func g[T](t: Tree[T], x: T) -> T\n"
+            '    example Node(Leaf, 1, Leaf), "s" -> "s"\n'
+            "    return x\n"
+            "end func\n"
+        )
+        assert "Example input 2 type mismatch: expected Int, got String" in str(error)
+
+
 class TestNeverType:
     """panic(...) has type Never (bottom), assignable to any type."""
 

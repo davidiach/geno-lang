@@ -252,7 +252,9 @@ geno test --properties [--trials N] [--seed S] [--filter GLOB] [--json] PATH
 - Each call has a 200,000-step allowance; each function a 5,000,000-step
   trial budget and a separate 4,000,000-step shrink budget. A call that uses
   up its full allowance is a resource-limit failure; a function whose budget
-  runs out first is reported as `incomplete`, a warning.
+  runs out first is reported as `incomplete`, a warning. Wall time is only a
+  safety stop (per call `--timeout`, at most 5 s; per function 2 ×
+  `--timeout`): a call or function it stops is `incomplete`, never failed.
 - Only a property failure changes the exit status. `gave_up` (nearly every
   input was rejected by `requires`), `incomplete` and `skipped` (for example,
   a parameter type with no generator) are warnings.

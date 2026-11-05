@@ -217,12 +217,14 @@ def test_docs_that_state_a_domain_pass_their_property_checks():
         "### 20. Examples that expect a panic, and `requires` as the domain",
     )
     _wrong, *right = re.findall(r"```\n(.*?)```", section, re.S)
-    statuses: dict[str, str] = {}
+    prompting_statuses: dict[str, str] = {}
     for number, code in enumerate(right):
         results = _property_results(code, f"llm-prompting#20-{number}")
-        statuses.update({name: result.status for name, result in results.items()})
+        prompting_statuses.update(
+            {name: result.status for name, result in results.items()}
+        )
     # `usage` takes no arguments, so it is out of scope.
-    assert statuses == {"safe_div": "passed", "isqrt": "passed"}
+    assert prompting_statuses == {"safe_div": "passed", "isqrt": "passed"}
 
 
 def test_spec_property_check_sample_matches_the_engine():

@@ -49,9 +49,12 @@ package version stays 0.6.0, and the Draft
   follows `example`, with a reproduce command. Runs are deterministic: the
   default seed is 0, and `--seed S` and `--filter` reproduce a function's
   inputs from any directory. Work is counted in interpreter steps: 200,000
-  per call, 5,000,000 per function for trials and 4,000,000 for shrinking, with
-  a wall-clock safety stop. A call that uses up its full allowance is a
-  `limit` failure; a function whose budget runs out first is `incomplete`.
+  per call, 5,000,000 per function for trials and 4,000,000 for shrinking.
+  Wall time is only a safety stop, per call (`--timeout`, at most 5 s) and
+  per function (2 × `--timeout`), and a function it stops is `incomplete`,
+  never failed, so the same seed gives the same verdict on a busy machine.
+  A call that uses up its full allowance is a `limit` failure; a function
+  whose budget runs out first is `incomplete`.
   `gave_up`, `incomplete` and `skipped` are warnings, and only a failed
   property makes the run exit 1. `--json` gains a `properties` object. Single
   files, directories and projects are supported; in a project only its own
@@ -108,6 +111,32 @@ package version stays 0.6.0, and the Draft
   as a call argument and in a generic function's body. It is now a
   `Tree[Int]`, and mistyped values such as `Node(Leaf, "x", Node(Leaf, 1,
   Leaf))` are still rejected.
+- A bare nullary constructor of a generic ADT type-checks as an example input
+  or a call argument of a generic function. `example Leaf -> 0` for
+  `size[T](t: Tree[T])` and `g(Leaf, x)` for `g[T](t: Tree[T], x: T)` were
+  rejected ("expected Tree[T], got Tree[__fresh_T_1]").
+- `run_harness_from_compiled` grants the same capabilities as
+  `run_harness_from_source` (`print`, `clock`, `random`), and it treats a
+  compiled capability denial as a refusal rather than a panic. A panics
+  example of a function whose call is denied now fails in both runners, as it
+  does under `geno test`. Compiled `panic`, `option_expect` and
+  `result_expect` mark their exception as a panic, so a panic whose message
+  reads like a resource limit (`panic("List size exceeds limit (1 > 0)")`)
+  is a panic in the compiled harness too, not the collection size limit.
+- A `?` that propagates `None` or `Err` inside a `requires` or `ensures`
+  clause is a contract violation in compiled Python and JavaScript, as it is
+  in the interpreter ("Precondition failed for f: requires clause cannot use
+  '?' to propagate None/Err"). Compiled Python let its internal
+  `_PropagateReturn` escape the function (and a caller that used `?` then
+  returned the propagated value); compiled JavaScript returned from the
+  function silently.
+- A list or map literal whose first element has an open type completes it
+  from the other elements. `let d: List[Tree[Int]] = [Leaf, Node(Leaf, "s",
+  Leaf)]`, `let d: List[Option[Int]] = [None, Some("s")]` and `[Ok(1),
+  Err("x")]` under `List[Result[Int, Int]]` passed `geno check` and failed at
+  run time with a host error (`"s" + 1`); they are now type errors, and
+  `let d = [None, Some(1), Some(2.5)]` infers `List[Option[Float]]` instead
+  of asking for an annotation.
 
 ## [0.6.0] - 2026-10-25
 

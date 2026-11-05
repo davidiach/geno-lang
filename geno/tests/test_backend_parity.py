@@ -4512,3 +4512,90 @@ class TestPanicsExampleParity:
 
         assert not result.ok
         assert "expected a panic, but it returned 1" in result.diagnostics[0].message
+
+
+# A `?` that propagates inside a contract clause is a contract violation on
+# every backend (proposal 0017): compiled Python used to let the internal
+# `_PropagateReturn` escape the function, and compiled JavaScript caught it in
+# the function's (or a caller's) `?` handler and silently returned.
+_PROPAGATING_CONTRACT_PROGRAM = """
+func first_positive(o: Option[Int]) -> Option[Int]
+    requires o? > 0
+    example Some(1) -> Some(1)
+    let n = o?
+    return Some(n)
+end func
+
+func bounded(o: Option[Int]) -> Option[Int]
+    ensures o? < 10
+    example Some(1) -> Some(1)
+    return o
+end func
+
+func relay(o: Option[Int]) -> Option[Int]
+    example Some(2) -> Some(2)
+    let n = CALL?
+    return Some(n)
+end func
+
+func main() -> Unit
+    print(relay(Some(3)))
+    print(relay(None))
+    print("after")
+    return ()
+end func
+"""
+
+
+def _failing_backend_runs(source: str) -> dict[str, tuple[str, str, bool]]:
+    """``(stdout, error text, failed)`` of *source* on every backend."""
+    interpreted = run(source, config=RunConfig(timeout=10.0, capabilities={"print"}))
+    runs = {
+        "interpreter": (
+            cast(str, interpreted.output),
+            " ".join(d.message for d in interpreted.diagnostics),
+            not interpreted.ok,
+        )
+    }
+    py = run_python_code(
+        compile_to_python(source),
+        python_executable=sys.executable,
+        args=["--cap", "print"],
+    )
+    runs["python"] = (py.stdout, py.stderr, py.returncode != 0)
+    if HAS_NODE:
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+        js = run_node_code(js_code, args=["--cap", "print"])
+        runs["js"] = (js.stdout, js.stderr, js.returncode != 0)
+    return runs
+
+
+class TestPropagatingContractParity:
+    @pytest.mark.parametrize(
+        ("call", "message"),
+        [
+            (
+                "first_positive(o)",
+                "Precondition failed for first_positive: requires clause "
+                "cannot use '?' to propagate None/Err",
+            ),
+            (
+                "bounded(o)",
+                "Postcondition failed for bounded: ensures clause cannot use "
+                "'?' to propagate None/Err",
+            ),
+        ],
+    )
+    def test_a_propagating_clause_fails_the_call_on_every_backend(
+        self, call: str, message: str
+    ) -> None:
+        source = _PROPAGATING_CONTRACT_PROGRAM.replace("CALL", call)
+
+        runs = _failing_backend_runs(source)
+
+        for backend, (stdout, error, failed) in runs.items():
+            # The caller's own `?` must not swallow the violation and return.
+            assert stdout == "Some(value: 3)\n", backend
+            assert failed, backend
+            assert message in error, backend
