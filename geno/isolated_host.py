@@ -307,9 +307,7 @@ def isolated_run_policy_for(
     deadline: float | None = None
     if timeout is not None and math.isfinite(timeout) and timeout > 0:
         deadline = float(timeout)
-    case_insensitive = "env" in capabilities and isolated_env_case_insensitive(
-        os_name
-    )
+    case_insensitive = "env" in capabilities and isolated_env_case_insensitive(os_name)
     policy = IsolatedRunPolicy(
         capabilities=capabilities,
         env_allowed_names=frozenset(
