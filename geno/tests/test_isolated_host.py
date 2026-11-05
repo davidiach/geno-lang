@@ -7,6 +7,9 @@ only the runtime prelude's own worker branches need a real ``geno run``.
 
 from __future__ import annotations
 
+import io
+import os
+import sys
 import time
 from types import MappingProxyType
 from typing import Any
@@ -23,18 +26,23 @@ from geno.capabilities import (
 from geno.diagnostics import ErrorCode
 from geno.isolated_host import (
     ENV_NAME_TAG_LIMIT,
+    STDIN_CHUNK_BYTES,
     IsolatedEnv,
     IsolatedHostBinding,
     IsolatedRunClock,
     IsolatedRunPolicy,
     IsolatedRunPolicyError,
+    IsolatedStdin,
+    IsolatedStdinDecodeError,
     build_example_interpreter,
     build_host_table,
     checked_prepared_host_state,
+    duplicate_program_stdin,
     env_policy_denied_message,
     frontend_error_tags,
     isolated_env_snapshot,
     isolated_run_policy_for,
+    with_program_stdin,
 )
 from geno.lexer import Lexer
 from geno.parser import Parser
@@ -827,3 +835,524 @@ def test_env_binding_exposes_only_read_only_views() -> None:
     assert isinstance(env.program_args, tuple)
     with pytest.raises(AttributeError):
         env.extra = 1  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# stdin: the lazy, bounded reader of the program's input
+
+
+@pytest.fixture
+def stdin_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the lane rules grant ``stdin``, in this process only.
+
+    The real lane keeps ``stdin`` refused until proposal 0013's stdin gate
+    passes (``test_platform_matrix``); these units exercise the binding and
+    its wiring, and no worker ever sees the patch.
+    """
+    from geno import capabilities as capabilities_module
+
+    monkeypatch.setattr(
+        capabilities_module,
+        "ISOLATED_RUN_CAPABILITIES",
+        capabilities_module.ISOLATED_RUN_CAPABILITIES | {"stdin"},
+    )
+
+
+class _Input:
+    """Program input in a regular file: reads fill whole chunks until the end."""
+
+    def __init__(self, path: Any, data: bytes) -> None:
+        path.write_bytes(data)
+        self.path = path
+        self.fd = os.open(path, os.O_RDONLY)
+        assert self.fd >= 3
+
+    def position(self) -> int:
+        return os.lseek(self.fd, 0, os.SEEK_CUR)
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+@pytest.fixture
+def program_input(tmp_path: Any) -> Any:
+    opened: list[_Input] = []
+
+    def make(data: bytes) -> _Input:
+        source = _Input(tmp_path / f"input{len(opened)}", data)
+        opened.append(source)
+        return source
+
+    yield make
+    for source in opened:
+        source.close()
+
+
+def _no_limit(size: int) -> None:
+    pass
+
+
+def _limit(maximum: int) -> Any:
+    def check(size: int) -> None:
+        if size > maximum:
+            raise RuntimeError(f"String size exceeds limit ({size} > {maximum})")
+
+    return check
+
+
+def _whole_buffer_error(data: bytes) -> str:
+    with pytest.raises(UnicodeDecodeError) as excinfo:
+        data.decode("utf-8")
+    return str(excinfo.value)
+
+
+def test_stdin_chunks_are_bounded() -> None:
+    assert STDIN_CHUNK_BYTES == 8192
+
+
+@pytest.mark.parametrize(
+    "character", ["é", "€", "\U0001f600"], ids=["2-byte", "3-byte", "4-byte"]
+)
+def test_stdin_decodes_a_character_split_across_chunks(
+    program_input: Any, character: str
+) -> None:
+    # The character starts at byte 8191, the last byte of the first chunk.
+    text = "a" * (STDIN_CHUNK_BYTES - 1) + character + "tail"
+    source = program_input(text.encode("utf-8"))
+
+    assert IsolatedStdin(source.fd).read_text(_no_limit) == text
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"a" * 9000 + b"\xff" + b"b" * 10, id="invalid-byte-at-9000"),
+        pytest.param(
+            b"a" * (STDIN_CHUNK_BYTES - 1) + b"\xe2" + b"A" * 10,
+            id="lead-byte-ends-chunk-1",
+        ),
+        pytest.param(
+            b"a" * (STDIN_CHUNK_BYTES - 2) + b"\xf0\x90" + b"A",
+            id="partial-sequence-ends-chunk-1",
+        ),
+        pytest.param(b"a" * 20000 + b"\xe2\x82", id="truncated-at-eof"),
+        pytest.param(b"abc\xffdef", id="invalid-byte-at-3"),
+        pytest.param(b"\xed\xa0\x80", id="encoded-surrogate"),
+    ],
+)
+def test_stdin_invalid_utf8_matches_the_whole_buffer_text(
+    program_input: Any, data: bytes
+) -> None:
+    source = program_input(data)
+
+    with pytest.raises(IsolatedStdinDecodeError) as excinfo:
+        IsolatedStdin(source.fd).read_text(_no_limit)
+
+    assert str(excinfo.value) == _whole_buffer_error(data)
+    assert isinstance(excinfo.value, UnicodeError)
+
+
+@pytest.mark.parametrize("character", ["a", "é"])
+def test_stdin_over_limit_stops_within_one_chunk(
+    program_input: Any, character: str
+) -> None:
+    limit = 100
+    data = (character * (limit + 3 * STDIN_CHUNK_BYTES)).encode("utf-8")
+    source = program_input(data)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        IsolatedStdin(source.fd).read_text(_limit(limit))
+
+    message = str(excinfo.value)
+    prefix, _, rest = message.partition("String size exceeds limit (")
+    assert prefix == ""
+    size, _, suffix = rest.partition(f" > {limit})")
+    assert suffix == ""
+    # The size at detection, not the whole input's.
+    assert limit < int(size) <= limit + STDIN_CHUNK_BYTES
+    # And the reader stopped there: at most one chunk past the limit in bytes
+    # for this input, never the whole stream.
+    assert source.position() <= len(character.encode()) * limit + STDIN_CHUNK_BYTES
+    assert source.position() < len(data)
+
+
+def test_stdin_reads_after_the_end_return_nothing(program_input: Any) -> None:
+    source = program_input(b"once")
+    stdin = IsolatedStdin(source.fd)
+
+    assert stdin.read_text(_no_limit) == "once"
+    # No replay, even if more arrives after the end was seen.
+    with open(source.path, "ab") as more:
+        more.write(b" more")
+    assert stdin.read_text(_no_limit) == ""
+    assert stdin.read_chunk() == b""
+
+
+def test_stdin_reads_nothing_until_asked(stdin_lane: None) -> None:
+    read_end, write_end = os.pipe()
+    try:
+        os.write(write_end, b"untouched")
+        os.close(write_end)
+        policy = IsolatedRunPolicy(
+            capabilities=frozenset({"print", "stdin"}), stdin_fd=read_end
+        )
+
+        table = build_host_table(policy)
+        build_example_interpreter(policy, SandboxConfig(timeout=5.0), table)
+
+        assert type(table["stdin"]) is IsolatedStdin
+        assert os.read(read_end, 100) == b"untouched"
+    finally:
+        os.close(read_end)
+
+
+def test_stdin_without_a_handle_is_an_os_error() -> None:
+    with pytest.raises(OSError, match="stdin is not available"):
+        IsolatedStdin(None).read_text(_no_limit)
+
+
+@pytest.mark.parametrize("fd", [0, 1, 2, -1, True, "3", 3.0])
+def test_stdin_handle_cannot_be_a_control_pipe(fd: Any) -> None:
+    with pytest.raises(ValueError, match="descriptor >= 3"):
+        IsolatedStdin(fd)
+
+
+def test_stdin_binding_exposes_no_attributes() -> None:
+    stdin = IsolatedStdin(None)
+
+    with pytest.raises(AttributeError):
+        stdin.extra = 1  # type: ignore[attr-defined]
+
+
+def test_stdin_policy_round_trips_only_with_the_grant(stdin_lane: None) -> None:
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"print", "stdin"}), stdin_fd=7, deadline_seconds=3.0
+    )
+
+    assert IsolatedRunPolicy.from_config(policy.to_config()) == policy
+    with pytest.raises(IsolatedRunPolicyError, match="at least 3"):
+        IsolatedRunPolicy.from_config(policy.to_config() | {"stdin_fd": 2})
+    with pytest.raises(IsolatedRunPolicyError, match="integer or null"):
+        IsolatedRunPolicy.from_config(policy.to_config() | {"stdin_fd": "7"})
+    # Granted without a usable handle: reads then fail with Err.
+    unavailable = IsolatedRunPolicy(capabilities=frozenset({"stdin"}))
+    stdin = build_host_table(unavailable)["stdin"]
+    assert isinstance(stdin, IsolatedStdin)
+    with pytest.raises(OSError, match="stdin is not available"):
+        stdin.read_text(_no_limit)
+
+
+def test_the_real_lane_refuses_a_stdin_policy() -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"stdin"}), stdin_fd=7)
+
+    with pytest.raises(IsolatedRunPolicyError, match="'stdin' is not available"):
+        IsolatedRunPolicy.from_config(policy.to_config())
+    with pytest.raises(IsolatedRunPolicyError):
+        build_host_table(policy)
+
+
+def test_checked_host_state_accepts_the_stdin_binding_only_for_stdin(
+    stdin_lane: None,
+) -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"env", "stdin"}))
+    runtime = sorted(policy.capabilities)
+    stdin = IsolatedStdin(None)
+    env = IsolatedEnv((), {}, ())
+
+    table, _used = checked_prepared_host_state(
+        _prepared(
+            host_table={"stdin": stdin, "env": env}, runtime_capabilities=runtime
+        ),
+        policy,
+    )
+
+    assert table == {"stdin": stdin, "env": env}
+    for wrong in ({"stdin": env}, {"env": stdin}):
+        with pytest.raises(ValueError, match="wrong binding"):
+            checked_prepared_host_state(
+                _prepared(host_table=wrong, runtime_capabilities=runtime), policy
+            )
+
+
+class _Stream:
+    def __init__(self, fd: Any) -> None:
+        self._fd = fd
+
+    def fileno(self) -> Any:
+        if isinstance(self._fd, BaseException):
+            raise self._fd
+        return self._fd
+
+
+def test_program_stdin_is_duplicated_only_with_the_grant(
+    program_input: Any,
+) -> None:
+    source = program_input(b"input")
+    policy = IsolatedRunPolicy(capabilities=frozenset({"print", "regex"}))
+
+    assert with_program_stdin(policy, _Stream(source.fd)) is policy
+
+    granted = IsolatedRunPolicy(capabilities=frozenset({"print", "stdin"}))
+    with_handle = with_program_stdin(granted, _Stream(source.fd))
+    try:
+        assert with_handle.capabilities == granted.capabilities
+        fd = with_handle.stdin_fd
+        assert fd is not None and fd >= 3 and fd != source.fd
+        # Only pass_fds hands it to the worker.
+        assert os.get_inheritable(fd) is False
+        assert os.read(fd, 100) == b"input"
+    finally:
+        if with_handle.stdin_fd is not None:
+            os.close(with_handle.stdin_fd)
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [
+        None,
+        _Stream(io.UnsupportedOperation("no fileno")),
+        _Stream(OSError("closed")),
+        _Stream(ValueError("I/O operation on closed file")),
+        _Stream(-1),
+        _Stream(True),
+        object(),
+    ],
+)
+def test_unusable_program_stdin_gives_no_handle(
+    monkeypatch: pytest.MonkeyPatch, stream: Any
+) -> None:
+    monkeypatch.setattr(sys, "stdin", stream)
+    granted = IsolatedRunPolicy(capabilities=frozenset({"stdin"}))
+
+    assert duplicate_program_stdin() is None
+    assert with_program_stdin(granted).stdin_fd is None
+
+
+def test_program_stdin_never_lands_on_a_control_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A caller that closed its stdout and stderr gets 1 and 2 back from dup.
+    import geno.isolated_host as isolated_host
+
+    class _FakeOs:
+        name = "posix"
+
+        def __init__(self) -> None:
+            self.numbers = [1, 2, 9]
+            self.closed: list[int] = []
+
+        def dup(self, fd: int) -> int:
+            assert fd == 5
+            return self.numbers.pop(0)
+
+        def close(self, fd: int) -> None:
+            self.closed.append(fd)
+
+    fake = _FakeOs()
+    monkeypatch.setattr(isolated_host, "os", fake)
+
+    assert duplicate_program_stdin(_Stream(5)) == 9
+    assert fake.closed == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# stdin through the runtime prelude and the example interpreter
+
+
+def _standalone_stdin_read_all(
+    monkeypatch: pytest.MonkeyPatch, data: bytes, **injected: Any
+) -> Any:
+    """Standalone compiled ``stdin_read_all`` (no host table) on *data*."""
+    namespace = _prelude_namespace(_GENO_CAPS=frozenset({"stdin"}), **injected)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(data)))
+    return namespace["stdin_read_all"]()
+
+
+def test_missing_stdin_binding_is_a_second_gate() -> None:
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"stdin"}),
+        _GENO_HOST=MappingProxyType({"env": IsolatedEnv((), {}, ())}),
+    )
+
+    with pytest.raises(
+        namespace["_GenoHostUnavailable"], match="host access for 'stdin'"
+    ):
+        namespace["stdin_read_all"]()
+
+
+def test_prelude_stdin_checks_the_grant_before_reading(program_input: Any) -> None:
+    source = program_input(b"untouched")
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"print"}),
+        _GENO_HOST=MappingProxyType({"stdin": IsolatedStdin(source.fd)}),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        namespace["stdin_read_all"]()
+
+    assert excinfo.value._geno_capability_denied == "stdin"  # type: ignore[attr-defined]
+    assert source.position() == 0
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "héllo\nwörld\n".encode() * 1500,
+        b"",
+        b"a" * 9000 + b"\xff",
+        b"a" * (STDIN_CHUNK_BYTES - 1) + b"\xe2A",
+        b"abc\xe2\x82",
+    ],
+    ids=["text", "empty", "invalid-at-9000", "lead-ends-chunk-1", "truncated"],
+)
+def test_prelude_stdin_matches_standalone(
+    monkeypatch: pytest.MonkeyPatch, program_input: Any, data: bytes
+) -> None:
+    source = program_input(data)
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"stdin"}),
+        _GENO_HOST=MappingProxyType({"stdin": IsolatedStdin(source.fd)}),
+    )
+    expected = _standalone_stdin_read_all(monkeypatch, data)
+
+    result = namespace["stdin_read_all"]()
+
+    name = type(expected).__name__
+    assert name in {"Ok", "Err"}
+    assert type(result) is namespace[name]
+    field = "value" if name == "Ok" else "error"
+    assert getattr(result, field) == getattr(expected, field)
+    # A Geno value, never a host object.
+    assert type(getattr(result, field)) is str
+    # Then the end of input: Ok("").
+    again = namespace["stdin_read_all"]()
+    assert type(again) is namespace["Ok"]
+    assert again.value == ""
+
+
+def test_prelude_stdin_without_a_handle_is_an_err() -> None:
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"stdin"}),
+        _GENO_HOST=MappingProxyType({"stdin": IsolatedStdin(None)}),
+    )
+
+    result = namespace["stdin_read_all"]()
+
+    assert type(result) is namespace["Err"]
+    assert result.error == "stdin is not available"
+
+
+def test_prelude_stdin_keeps_the_collection_limit(program_input: Any) -> None:
+    limit = 100
+    source = program_input(b"a" * (limit + 3 * STDIN_CHUNK_BYTES))
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"stdin"}),
+        _GENO_HOST=MappingProxyType({"stdin": IsolatedStdin(source.fd)}),
+        _GENO_MAX_COLLECTION_SIZE=limit,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        namespace["stdin_read_all"]()
+
+    assert type(excinfo.value) is RuntimeError
+    assert str(excinfo.value) == (
+        f"String size exceeds limit ({STDIN_CHUNK_BYTES} > {limit})"
+    )
+
+
+EXAMPLE_STDIN_READER = """func read_input() -> String
+    example () -> "first"
+    match stdin_read_all() with
+        | Ok(text) -> return text
+        | Err(error) -> return "Err " + error
+    end match
+end func
+"""
+
+
+def _example_stdin(fd: int | None) -> tuple[Any, IsolatedStdin]:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"print", "stdin"}), stdin_fd=fd)
+    table = build_host_table(policy)
+    interpreter = build_example_interpreter(policy, SandboxConfig(timeout=5.0), table)
+    stdin = table["stdin"]
+    assert isinstance(stdin, IsolatedStdin)
+    return interpreter, stdin
+
+
+def test_examples_and_main_share_one_stdin_stream(
+    stdin_lane: None, program_input: Any
+) -> None:
+    source = program_input(b"first")
+    interpreter, stdin = _example_stdin(source.fd)
+    program = Parser(Lexer(EXAMPLE_STDIN_READER, "ex.geno").tokenize()).parse_program()
+
+    interpreter.run(program, execute_main=False)
+
+    # The example consumed the input; `main` reads the same binding.
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"stdin"}), _GENO_HOST=MappingProxyType({"stdin": stdin})
+    )
+    rest = namespace["stdin_read_all"]()
+    assert type(rest) is namespace["Ok"]
+    assert rest.value == ""
+
+
+@pytest.mark.parametrize(
+    "data", [b"a" * 9000 + b"\xff", b"abc\xe2\x82"], ids=["invalid", "truncated"]
+)
+def test_example_and_compiled_stdin_errors_are_identical(
+    stdin_lane: None, program_input: Any, data: bytes
+) -> None:
+    interpreter, _stdin = _example_stdin(program_input(data).fd)
+    compiled = _prelude_namespace(
+        _GENO_CAPS=frozenset({"stdin"}),
+        _GENO_HOST=MappingProxyType({"stdin": IsolatedStdin(program_input(data).fd)}),
+    )
+
+    example_result = interpreter.global_env.bindings["stdin_read_all"].func()
+    compiled_result = compiled["stdin_read_all"]()
+
+    assert example_result.constructor == "Err"
+    assert type(compiled_result) is compiled["Err"]
+    assert example_result.fields["error"] == compiled_result.error
+    assert compiled_result.error == (
+        f"stdin is not valid UTF-8: {_whole_buffer_error(data)}"
+    )
+
+
+def test_example_stdin_keeps_the_interpreters_limits(
+    stdin_lane: None, program_input: Any
+) -> None:
+    from geno.values import RuntimeLimitError
+
+    limit = 100
+    source = program_input(b"a" * (limit + 3 * STDIN_CHUNK_BYTES))
+    policy = IsolatedRunPolicy(capabilities=frozenset({"stdin"}), stdin_fd=source.fd)
+    table = build_host_table(policy)
+    interpreter = build_example_interpreter(
+        policy, SandboxConfig(timeout=5.0, max_collection_size=limit), table
+    )
+
+    with pytest.raises(RuntimeLimitError) as excinfo:
+        interpreter.global_env.bindings["stdin_read_all"].func()
+
+    assert excinfo.value.message == (
+        f"String size exceeds limit ({STDIN_CHUNK_BYTES} > {limit})"
+    )
+    unavailable, _stdin = _example_stdin(None)
+    result = unavailable.global_env.bindings["stdin_read_all"].func()
+    assert result.constructor == "Err"
+    assert result.fields["error"] == "stdin is not available"
+
+
+def test_example_interpreter_needs_the_stdin_binding(stdin_lane: None) -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"stdin"}))
+
+    with pytest.raises(ValueError, match="stdin grant has no host binding"):
+        build_example_interpreter(policy, SandboxConfig(timeout=5.0))
+    with pytest.raises(ValueError, match="stdin grant has no host binding"):
+        build_example_interpreter(
+            policy,
+            SandboxConfig(timeout=5.0),
+            {"stdin": IsolatedEnv((), {}, ())},  # type: ignore[dict-item]
+        )
