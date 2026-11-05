@@ -12,6 +12,10 @@ the caller's environment, examples and ``main`` share one snapshot, and issue
 #68's ``geno run --cap env,print main.geno -- hello world`` works while the
 run keeps its hard limits.
 
+Milestone 3: ``stdin`` is implemented (``test_isolated_run_stdin.py``) but
+stays refused on every platform until its platform gate passes; the pins
+here record that, and the builtin matrix runs its entry once it is granted.
+
 Runs here go through real ``geno run`` subprocesses unless a test needs to
 observe the parent in-process. Only a real worker applies its restricted
 builtins to the runtime prelude, so every gated builtin with a host binding
@@ -297,10 +301,15 @@ def test_parent_sends_the_grant_in_the_worker_config_and_args_in_the_request(
         return original_execute(self, request, policy)
 
     def spy_run_worker(
-        self: ProcessSandbox, cmd: Any, code: Any, config_overrides: Any = None
+        self: ProcessSandbox,
+        cmd: Any,
+        code: Any,
+        config_overrides: Any = None,
+        **kwargs: Any,
     ) -> Any:
         seen.setdefault("launches", []).append(config_overrides)
-        return original_run_worker(self, cmd, code, config_overrides)
+        seen.setdefault("pass_fds", []).append(kwargs.get("pass_fds", ()))
+        return original_run_worker(self, cmd, code, config_overrides, **kwargs)
 
     monkeypatch.setattr(ProcessSandbox, "execute_geno_request", spy_execute)
     monkeypatch.setattr(ProcessSandbox, "_run_worker", spy_run_worker)
@@ -323,6 +332,8 @@ def test_parent_sends_the_grant_in_the_worker_config_and_args_in_the_request(
     (overrides,) = seen["launches"]
     assert overrides["worker_mode"] == "geno_cli"
     assert overrides["run_policy"] == policy.to_config()
+    # Without `stdin` the worker inherits no program-input handle.
+    assert seen["pass_fds"] == [()]
     # The grant never travels in the request the worker parses later.
     assert "capabilities" not in seen["request"]
 
@@ -615,6 +626,62 @@ def test_platform_matrix() -> None:
     assert ISOLATED_RUN_CAPABILITIES <= KNOWN_CAPABILITIES
 
 
+def test_stdin_stays_refused_pending_its_platform_gate() -> None:
+    """Milestone 3 is implemented but not enabled (the proposal's stdin gate).
+
+    Proposal 0013 keeps isolated ``stdin`` refused until handle setup,
+    inheritance, timeout and interruption cleanup are validated on Linux,
+    macOS and Windows. Without the project lead's sign-off on a POSIX-only
+    deviation, it stays refused on every platform, before launch, with the
+    rollout message; nothing but this constant enables it.
+    """
+    assert "stdin" not in ISOLATED_RUN_CAPABILITIES
+    for os_name in ("posix", "nt"):
+        assert "stdin" not in isolated_run_capabilities(os_name)
+        assert isolated_run_refusal("stdin", os_name) == (
+            "--cap stdin is not yet available in the process-isolated run mode. "
+            "Use --unsafe --cap ... for trusted code, or --json --cap ... for "
+            "embedding API execution."
+        )
+
+
+def test_windows_refuses_stdin_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Simulated Windows: ``--cap stdin`` never reaches a worker."""
+    from geno import capabilities as capabilities_module
+    from geno.cli.run import run_file
+    from geno.sandbox import ProcessSandbox
+
+    launched: list[Any] = []
+    monkeypatch.setattr(
+        ProcessSandbox, "_run_worker", lambda *args, **kwargs: launched.append(args)
+    )
+    real_refusals = capabilities_module.isolated_run_refusals
+    monkeypatch.setattr(
+        "geno.cli.run.isolated_run_refusals",
+        lambda caps, os_name=None: real_refusals(caps, "nt"),
+    )
+    source = _write(
+        tmp_path, "main.geno", 'func main() -> Unit\n    print("ESCAPED")\nend func\n'
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_file(str(source), capabilities={"print", "stdin"})
+
+    assert excinfo.value.code == 1
+    assert launched == []
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    message = isolated_run_refusal("stdin", "nt")
+    assert message is not None
+    assert captured.err == f"Error: {message}\n"
+    # Windows stays refused even once POSIX is enabled.
+    assert "stdin" in ISOLATED_RUN_WINDOWS_UNAVAILABLE
+
+
 def test_windows_refusal_names_the_platform_once_a_capability_lands() -> None:
     # A Windows-unavailable capability that has not landed anywhere yet gets
     # the ordinary rollout message; once landed, the message names Windows.
@@ -770,6 +837,11 @@ end func
 # milestone adds its capability's builtins here.
 HOST_BINDING_CAPABILITIES = frozenset({"env", "stdin", "fs", "http"})
 
+# Host-binding capabilities whose isolated implementation exists. `stdin` is
+# implemented but stays refused until its platform gate passes; its entries
+# run once the lane grants it.
+IMPLEMENTED_HOST_CAPABILITIES = frozenset({"env", "stdin"})
+
 MATRIX_VALUE = "matrix value"
 
 BUILTIN_MATRIX: dict[str, tuple[list[str], str, list[str], str]] = {
@@ -795,31 +867,66 @@ end func
         f"{MATRIX_VALUE}\n",
     ),
     "cli_args": (["--cap", "env,print"], ARGS_PROGRAM, ["a b", "-v"], "a b,-v\n"),
+    "stdin_read_all": (
+        ["--cap", "print,stdin"],
+        """func main() -> Unit
+    match stdin_read_all() with
+        | Ok(text) -> print(text)
+        | Err(error) -> print("Err " + error)
+    end match
+end func
+""",
+        [],
+        f"{MATRIX_VALUE}\n",
+    ),
 }
+
+# The standard input each matrix entry is run with.
+MATRIX_STDIN = {"stdin_read_all": MATRIX_VALUE}
+
+
+def _matrix_capability(builtin: str) -> str:
+    from geno.builtin_registry import CAPABILITY_MAP
+
+    (capability,) = (
+        capability
+        for capability in HOST_BINDING_CAPABILITIES
+        if builtin in CAPABILITY_MAP[capability]
+    )
+    return capability
 
 
 def test_builtin_matrix_covers_every_landed_host_builtin() -> None:
     from geno.builtin_registry import CAPABILITY_MAP
 
-    landed = {
+    # Nothing is granted before its binding exists...
+    assert ISOLATED_RUN_CAPABILITIES & HOST_BINDING_CAPABILITIES <= (
+        IMPLEMENTED_HOST_CAPABILITIES
+    )
+    # ...and every implemented binding's builtins are in the matrix.
+    implemented = {
         builtin
-        for capability in ISOLATED_RUN_CAPABILITIES & HOST_BINDING_CAPABILITIES
+        for capability in IMPLEMENTED_HOST_CAPABILITIES
         for builtin in CAPABILITY_MAP[capability]
     }
 
-    assert set(BUILTIN_MATRIX) == landed
+    assert set(BUILTIN_MATRIX) == implemented
 
 
 @pytest.mark.parametrize("builtin", sorted(BUILTIN_MATRIX))
 def test_isolated_run_builtin_matrix(tmp_path: Path, builtin: str) -> None:
+    capability = _matrix_capability(builtin)
+    if capability not in isolated_run_capabilities():
+        pytest.skip(f"the isolated lane does not grant {capability!r} yet")
     flags, source, program_args, expected = BUILTIN_MATRIX[builtin]
     _write(tmp_path, "main.geno", source)
 
-    result = _geno(
-        *flags,
-        "main.geno",
-        "--",
-        *program_args,
+    result = subprocess.run(
+        [sys.executable, "-m", "geno", "run", *flags, "main.geno", "--"] + program_args,
+        input=MATRIX_STDIN.get(builtin, ""),
+        capture_output=True,
+        text=True,
+        timeout=60,
         cwd=tmp_path,
         env=_without_geno_vars(GENO_MATRIX_VALUE=MATRIX_VALUE),
     )
