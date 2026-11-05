@@ -26,12 +26,13 @@ these bindings, so all host access stays in this trusted, typed code.
 
 from __future__ import annotations
 
+import codecs
 import dataclasses
 import math
 import os
 import sys
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any

@@ -845,7 +845,11 @@ def run_file(
         # bind exception names this path cannot raise, duplicating imports the
         # worker pays for again in the child. So this branch stays above the
         # frontend import block and imports the sandbox alone.
-        from ..isolated_host import isolated_env_snapshot, isolated_run_policy_for
+        from ..isolated_host import (
+            isolated_env_snapshot,
+            isolated_run_policy_for,
+            with_program_stdin,
+        )
         from ..sandbox import (
             ProcessSandbox,
             ProcessSandboxConfig,
@@ -899,8 +903,12 @@ def run_file(
             _set_cli_args_env()
             try:
                 process_sandbox = ProcessSandbox(process_config)
+                # Only a `stdin` grant duplicates this process's standard
+                # input, for the worker alone to inherit; nothing reads it
+                # until the program asks, and execute_geno_request owns and
+                # closes this copy, so nothing may come between the two.
                 result, run_output, error = process_sandbox.execute_geno_request(
-                    request, run_policy
+                    request, with_program_stdin(run_policy)
                 )
             finally:
                 _restore_cli_args_env()

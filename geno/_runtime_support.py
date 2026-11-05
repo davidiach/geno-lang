@@ -5624,6 +5624,17 @@ def spawn_with_input(program, args, stdin):
 def stdin_read_all():
     """Read stdin to EOF as UTF-8. Non-UTF-8 input returns Err."""
     _require_cap("stdin", "stdin_read_all")
+    host = _geno_host_module("stdin")
+    if host is not None:
+        # Isolated `geno run`: trusted code reads the program's input lazily,
+        # chunk by chunk, against the collection limit.
+        try:
+            text = host.read_text(lambda size: _check_collection_kind("String", size))
+        except OSError as e:
+            return Err(str(e))
+        except UnicodeError as e:
+            return Err(f"stdin is not valid UTF-8: {e}")
+        return _check_collection_size(Ok(text))
     import sys as _sys
 
     try:
