@@ -1710,8 +1710,6 @@ def test_rejections_before_the_open_leave_the_file_unchanged(tmp_path: Any) -> N
     fs = _fs(tmp_path, max_file_size=100, max_total_write_bytes=100)
     read_only = _fs(tmp_path, writes_allowed=False)
 
-    with pytest.raises(UnicodeEncodeError):
-        fs.write_text("keep.txt", "bad \ud800", "fs_write_text")
     with pytest.raises(RuntimeError, match="filesystem writes are not allowed"):
         read_only.write_text("keep.txt", "x", "fs_write_text")
     with pytest.raises(TypeError):
@@ -1719,6 +1717,60 @@ def test_rejections_before_the_open_leave_the_file_unchanged(tmp_path: Any) -> N
 
     assert fs.remaining_write_bytes == 100
     assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "ORIGINAL"
+
+
+@pytest.mark.parametrize("linesep", ["\n", "\r\n"], ids=["posix", "windows"])
+def test_unencodable_write_truncates_as_text_mode_open_does(
+    tmp_path: Any, linesep: str
+) -> None:
+    # `--unsafe` and compiled Python open the destination in text mode before
+    # the encoding fails: the file is truncated (or created) empty and the
+    # error text names the position in the newline-translated text. The facade
+    # does the same, at no cost against the write limits.
+    content = "a\nb\ud800"
+    reference = tmp_path / "reference.txt"
+    reference.write_text("ORIGINAL", encoding="utf-8")
+    with pytest.raises(UnicodeEncodeError) as expected:
+        with open(reference, "w", encoding="utf-8", newline=linesep) as handle:
+            handle.write(content)
+    assert reference.read_bytes() == b""
+    (tmp_path / "keep.txt").write_text("ORIGINAL", encoding="utf-8")
+    fs = _fs(tmp_path, linesep=linesep, max_file_size=4, max_total_write_bytes=4)
+
+    with pytest.raises(UnicodeEncodeError) as existing:
+        fs.write_text("keep.txt", content, "fs_write_text")
+    with pytest.raises(UnicodeEncodeError) as created:
+        fs.write_text("new.txt", content, "fs_write_text")
+
+    assert str(existing.value) == str(created.value) == str(expected.value)
+    assert (tmp_path / "keep.txt").read_bytes() == b""
+    assert (tmp_path / "new.txt").read_bytes() == b""
+    assert fs.remaining_write_bytes == 4
+
+
+@pytest.mark.parametrize(
+    ("overrides", "flag"),
+    [
+        ({"max_file_size": 0}, "--max-file-size-bytes"),
+        ({"max_total_write_bytes": 0}, "--max-total-write-bytes"),
+    ],
+)
+def test_zero_limits_stop_an_unencodable_write_before_truncation(
+    tmp_path: Any, overrides: dict[str, Any], flag: str
+) -> None:
+    (tmp_path / "keep.txt").write_text("ORIGINAL", encoding="utf-8")
+    fs = _fs(tmp_path, **overrides)
+
+    with pytest.raises(IsolatedQuotaError) as excinfo:
+        fs.write_text("keep.txt", "bad \ud800", "fs_write_text")
+    with pytest.raises(IsolatedQuotaError):
+        fs.write_text("new.txt", "bad \ud800", "fs_write_text")
+
+    assert str(excinfo.value) == (
+        f"fs_write_text: file writes are disabled in this run ({flag} is 0)"
+    )
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "ORIGINAL"
+    assert not (tmp_path / "new.txt").exists()
 
 
 def test_fs_binding_exposes_no_attributes(tmp_path: Any) -> None:
@@ -1897,8 +1949,9 @@ def test_examples_and_main_share_one_write_budget(tmp_path: Any) -> None:
         ("x.txt", "12345"),
         ("../x.txt", "1"),
         ("missing/x.txt", "1"),
+        ("x.txt", "ab\ud800"),
     ],
-    ids=["per-file", "escape", "os-error"],
+    ids=["per-file", "escape", "os-error", "unencodable"],
 )
 def test_example_and_compiled_fs_errors_are_identical(
     tmp_path: Any, path: str, content: str

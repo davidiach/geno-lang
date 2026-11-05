@@ -928,16 +928,30 @@ class IsolatedFs(IsolatedHostBinding):
         newline translation), the disabled limits, the per-file limit, the
         remaining total, the reservation, and only then the open, which
         truncates. Every rejection before the open leaves the file unchanged;
-        quota rejections raise :class:`IsolatedQuotaError`, path rejections
-        ``RuntimeError`` and encoding errors ``ValueError``, all of which the
-        callers return as ``Err``. An ``OSError`` from the open or the write
-        does not refund the reservation.
+        quota rejections raise :class:`IsolatedQuotaError` and path
+        rejections ``RuntimeError``, which the callers return as ``Err``. An
+        ``OSError`` from the open or the write does not refund the
+        reservation.
+
+        Content that cannot be encoded as UTF-8 (a lone surrogate) behaves as
+        the text-mode ``open(path, "w")`` of ``--unsafe`` and compiled Python
+        does: it costs 0 bytes, the destination is still opened, so it is
+        truncated or created empty, and then the ``UnicodeEncodeError`` (a
+        ``ValueError`` the callers return as ``Err``) is raised with the same
+        text. Only a limit of 0 stops that truncation, as it stops an empty
+        write.
         """
         self.require_writable(fn_name)
         resolved = self._resolve(path, fn_name)
         if not isinstance(content, str):
             raise TypeError(f"{fn_name}: content must be String")
-        data = content.replace("\n", self._linesep).encode("utf-8")
+        try:
+            data = content.replace("\n", self._linesep).encode("utf-8")
+        except UnicodeEncodeError:
+            self._reserve(0, fn_name)
+            with open(resolved, "wb"):
+                pass
+            raise
         self._reserve(len(data), fn_name)
         with open(resolved, "wb") as handle:
             handle.write(data)

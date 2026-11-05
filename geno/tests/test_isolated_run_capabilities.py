@@ -526,7 +526,12 @@ end func
         _prepare_process_run(request, policy, spent)
 
     # The bound is the remainder, but the message keeps the run's --timeout.
-    assert str(excinfo.value) == "Execution timed out after 30.0 seconds"
+    # Where the deadline lands decides whether a location follows: inside
+    # sleep_ms there is none, at an interpreter step the node's is appended.
+    message = str(excinfo.value)
+    assert message == "Execution timed out after 30.0 seconds" or message.startswith(
+        f"Execution timed out after 30.0 seconds at {source}:"
+    ), message
 
     fresh = _prepare_process_run(request, policy, IsolatedRunClock(30.0))
     assert fresh["host_table"] == {}

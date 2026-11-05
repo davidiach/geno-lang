@@ -349,6 +349,20 @@ func main() -> Unit
         | Err(error) -> print("escape " + error)
     end match
     print("exists " + to_string(fs_exists("data.txt")))
+    let lone = from_char_code(55296)
+    match fs_write_text("data.txt", "ab" + lone) with
+        | Ok(_) -> print("surrogate wrote")
+        | Err(error) -> print("surrogate Err " + error)
+    end match
+    match fs_read_text("data.txt") with
+        | Ok(text) -> print("after [" + text + "]")
+        | Err(error) -> print("after Err " + error)
+    end match
+    match fs_write_text("out/lone.txt", lone) with
+        | Ok(_) -> print("surrogate wrote")
+        | Err(error) -> print("surrogate Err " + error)
+    end match
+    print("created " + to_string(fs_exists("out/lone.txt")))
 end func
 """
 
@@ -359,6 +373,9 @@ def test_isolated_lane_matches_unsafe_and_compiled_python(tmp_path: Path) -> Non
     All three run from the same directory, set up afresh each time, so host
     paths in error texts are identical; the compiled program reads the same
     variable from its own environment that the isolated lane allows by name.
+    A write whose content cannot be encoded (a lone surrogate) returns the
+    same ``Err`` everywhere and leaves the destination truncated, or created,
+    empty, as text-mode ``open`` does.
     """
     from geno.compiler import compile_to_python
 
@@ -402,6 +419,7 @@ def test_isolated_lane_matches_unsafe_and_compiled_python(tmp_path: Path) -> Non
         ],
     }
     results = {}
+    on_disk = {}
     for lane, argv in lanes.items():
         work = tmp_path / "work"
         if work.exists():
@@ -413,6 +431,10 @@ def test_isolated_lane_matches_unsafe_and_compiled_python(tmp_path: Path) -> Non
         results[lane] = subprocess.run(
             argv, capture_output=True, text=True, timeout=60, cwd=work, env=env
         )
+        on_disk[lane] = {
+            name: (work / name).read_bytes() if (work / name).exists() else None
+            for name in ("data.txt", "out/lone.txt")
+        }
 
     isolated = results["isolated"]
     assert isolated.returncode == 0, isolated.stderr
@@ -436,11 +458,21 @@ def test_isolated_lane_matches_unsafe_and_compiled_python(tmp_path: Path) -> Non
     assert lines[10] == "canon " + os.path.realpath(
         tmp_path / "work" / "data.txt"
     ).replace("\\", "/")
+    surrogate = (
+        "surrogate Err 'utf-8' codec can't encode character '\\ud800' in "
+        "position {}: surrogates not allowed"
+    )
     assert lines[11:] == [
         f"escape fs_read_text: {ESCAPES}",
         f"escape fs_write_text: {ESCAPES}",
         "exists true",
+        surrogate.format(2),
+        "after []",
+        surrogate.format(0),
+        "created true",
     ]
+    for lane, files in on_disk.items():
+        assert files == {"data.txt": b"", "out/lone.txt": b""}, lane
     assert outside.read_text(encoding="utf-8") == "secret"
 
 
