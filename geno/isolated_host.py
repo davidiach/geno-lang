@@ -26,8 +26,10 @@ these bindings, so all host access stays in this trusted, typed code.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
+import sys
 import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -301,7 +303,9 @@ def isolated_run_policy_for(
     *grant* is the ``--cap`` set, or ``None`` for the default grant, and
     *allow_env* the ``--allow-env`` names (exact; folded on Windows). Host
     policy is resolved only for the capability it configures: a grant without
-    ``fs`` or ``http`` never reads those capabilities' settings.
+    ``fs`` or ``http`` never reads those capabilities' settings. The program
+    input handle of a ``stdin`` grant is added just before launch, by
+    :func:`with_program_stdin`.
     """
     capabilities = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
     deadline: float | None = None
@@ -344,6 +348,60 @@ def isolated_env_snapshot(
         if key in by_key:
             snapshot[key] = by_key[key]
     return snapshot
+
+
+def duplicate_program_stdin(stream: Any = None) -> int | None:
+    """Duplicate the caller's standard input for one isolated run.
+
+    Returns a new descriptor numbered 3 or above, so it can never be confused
+    with the worker's own control pipes, or ``None`` when there is no usable
+    input: *stream* (default ``sys.stdin``) is missing, has no real file
+    descriptor, or cannot be duplicated, or the platform is Windows, whose
+    isolated lane refuses ``stdin`` before launch. Nothing is read. The
+    duplicate is not inheritable; the worker receives it through ``pass_fds``
+    alone, and :meth:`geno.sandbox.ProcessSandbox.execute_geno_request` closes
+    this process's copy when the run ends.
+    """
+    if os.name == "nt":
+        return None
+    source = sys.stdin if stream is None else stream
+    if source is None:
+        return None
+    try:
+        fd = source.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    if not isinstance(fd, int) or isinstance(fd, bool) or fd < 0:
+        return None
+    low: list[int] = []
+    try:
+        duplicate = os.dup(fd)
+        # A caller that closed its stdout or stderr gets 1 or 2 back first.
+        while duplicate < 3:
+            low.append(duplicate)
+            duplicate = os.dup(fd)
+    except OSError:
+        return None
+    finally:
+        for unused in low:
+            os.close(unused)
+    return duplicate
+
+
+def with_program_stdin(
+    policy: IsolatedRunPolicy, stream: Any = None
+) -> IsolatedRunPolicy:
+    """Return *policy* with the program's input handle, when ``stdin`` is granted.
+
+    Without the grant the policy is returned unchanged and nothing is
+    duplicated, so the worker inherits no program-input handle. With it, the
+    handle is :func:`duplicate_program_stdin` of *stream*, or ``None`` (reads
+    then fail with ``Err``) when there is no usable input. The caller hands
+    the result straight to ``execute_geno_request``, which owns the handle.
+    """
+    if "stdin" not in policy.capabilities:
+        return policy
+    return dataclasses.replace(policy, stdin_fd=duplicate_program_stdin(stream))
 
 
 class IsolatedRunClock:
@@ -450,8 +508,111 @@ class IsolatedEnv(IsolatedHostBinding):
         return self.value(name)
 
 
+# How many bytes one lazy read of the program's input takes at most.
+STDIN_CHUNK_BYTES = 8192
+
+
+class IsolatedStdinDecodeError(UnicodeError):
+    """The program's standard input is not valid UTF-8.
+
+    The message is CPython's own ``UnicodeDecodeError`` text for decoding the
+    whole input at once, with positions counted from the start of the
+    stream, so the ``Err`` a program sees matches standalone compiled output.
+    """
+
+
+def _stream_decode_error_message(error: UnicodeDecodeError, offset: int) -> str:
+    """CPython's text for *error*, with its positions moved by *offset* bytes."""
+    start = offset + error.start
+    end = offset + error.end
+    if end - start == 1:
+        byte = error.object[error.start]
+        return (
+            f"'{error.encoding}' codec can't decode byte 0x{byte:02x} in "
+            f"position {start}: {error.reason}"
+        )
+    return (
+        f"'{error.encoding}' codec can't decode bytes in position "
+        f"{start}-{end - 1}: {error.reason}"
+    )
+
+
+class IsolatedStdin(IsolatedHostBinding):
+    """The ``stdin`` grant's binding: a lazy, bounded reader of the program's input.
+
+    *fd* is the duplicate of the caller's standard input that the worker
+    inherited (``pass_fds``), or ``None`` when the caller had no usable input;
+    every read then fails with ``OSError``, which the builtins return as
+    ``Err``. Nothing is read until ``stdin_read_all`` asks. Examples and
+    ``main`` share one instance, so input an example consumed is gone for
+    ``main``: there is no rewind, cache or replay, and once the end of input
+    has been seen every later read returns nothing. A read blocks until data
+    or end of input arrives; the parent's hard kill at the run's deadline is
+    what bounds it, and the kernel releases the handle with the worker.
+    """
+
+    __slots__ = ("_eof", "_fd")
+
+    def __init__(self, fd: int | None) -> None:
+        if fd is not None and (
+            not isinstance(fd, int) or isinstance(fd, bool) or fd < 3
+        ):
+            raise ValueError("the program input handle must be a descriptor >= 3")
+        self._fd = fd
+        self._eof = False
+
+    def read_chunk(self, size: int = STDIN_CHUNK_BYTES) -> bytes:
+        """Read at most *size* bytes; ``b""`` at, and after, the end of input."""
+        if self._fd is None:
+            raise OSError("stdin is not available")
+        if self._eof:
+            return b""
+        data = os.read(self._fd, size)
+        if not data:
+            self._eof = True
+        return data
+
+    def read_text(self, check_size: Callable[[int], object]) -> str:
+        """Read to the end of input and decode it as strict UTF-8, chunk by chunk.
+
+        *check_size* receives the number of characters decoded so far after
+        each chunk and raises once that exceeds the caller's collection limit,
+        so at most one chunk (:data:`STDIN_CHUNK_BYTES`) past the limit is
+        ever decoded: the size it reports lies between the limit and the limit
+        plus one chunk. Only an incomplete character (at most three bytes) is
+        carried from one chunk to the next. Invalid UTF-8 raises
+        :class:`IsolatedStdinDecodeError`; ``OSError`` from the handle
+        propagates. After the end of input this returns ``""``.
+        """
+        parts: list[str] = []
+        decoded = 0
+        pending = b""
+        offset = 0  # the stream position of pending[0]
+        while True:
+            chunk = self.read_chunk()
+            final = not chunk
+            data = pending + chunk
+            try:
+                text, consumed = codecs.utf_8_decode(data, "strict", final)
+            except UnicodeDecodeError as error:
+                raise IsolatedStdinDecodeError(
+                    _stream_decode_error_message(error, offset)
+                ) from None
+            if text:
+                parts.append(text)
+                decoded += len(text)
+                check_size(decoded)
+            offset += consumed
+            pending = data[consumed:]
+            if final:
+                return "".join(parts)
+
+
 # The binding class each capability's host table entry must be.
-_BINDING_TYPES: dict[str, type[IsolatedHostBinding]] = {"env": IsolatedEnv}
+_BINDING_TYPES: dict[str, type[IsolatedHostBinding]] = {
+    "env": IsolatedEnv,
+    "stdin": IsolatedStdin,
+}
 
 
 def build_host_table(
@@ -466,7 +627,8 @@ def build_host_table(
     access: ``clock``, ``print``, ``random`` and ``regex`` need none. Trusted
     setup always receives the program arguments, but only the ``env``
     binding exposes them (to ``cli_args``). *env_snapshot* must hold only
-    allowed names, and only with ``env``.
+    allowed names, and only with ``env``. The ``stdin`` binding reads the
+    policy's inherited input handle; it reads nothing until asked.
     """
     policy.validate()
     table: dict[str, IsolatedHostBinding] = {}
@@ -479,6 +641,8 @@ def build_host_table(
         )
     elif env_snapshot is not None:
         raise ValueError("an environment snapshot requires the 'env' capability")
+    if "stdin" in policy.capabilities:
+        table["stdin"] = IsolatedStdin(policy.stdin_fd)
     return table
 
 

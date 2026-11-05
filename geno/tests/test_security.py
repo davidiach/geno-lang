@@ -2239,6 +2239,20 @@ class TestProcessSandbox:
             ({"fs_configured_roots": ["/"]}, "'fs' capability"),
             ({"max_total_write_bytes": 1}, "'fs' capability"),
             ({"env_allowed_names": ["HOME"]}, "'env' capability"),
+            ({"env_case_insensitive": True}, "'env' capability"),
+            (
+                {"capabilities": ["env", "print"], "env_allowed_names": ["A=B"]},
+                "must not contain '='",
+            ),
+            (
+                {
+                    "capabilities": ["env", "print"],
+                    "env_allowed_names": ["Path"],
+                    "env_case_insensitive": True,
+                },
+                # Folding is Windows-only, and the names arrive folded there.
+                "upper-case" if os.name == "nt" else "only on Windows",
+            ),
             ({"http_allow_private": True}, "'http' capability"),
             ({"stdin_fd": 3}, "'stdin' capability"),
             ({"grant_everything": True}, "unexpected grant_everything"),
@@ -2298,6 +2312,89 @@ class TestProcessSandbox:
         assert error is not None
         assert "Capability denied: 'print' requires the 'print' capability" in error
         assert sandbox.last_capability_denied == "print"
+
+    @pytest.mark.parametrize(
+        ("capabilities", "snapshot"),
+        [
+            # Only allowed names may cross, and only with `env`.
+            (["env", "print"], {"SECRET": "ESCAPED"}),
+            (["print"], {}),
+        ],
+    )
+    def test_geno_worker_rejects_an_environment_snapshot_it_did_not_allow(
+        self, tmp_path, capabilities, snapshot
+    ):
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        request = {
+            **self._geno_cli_request(tmp_path, config),
+            "env_snapshot": snapshot,
+        }
+        sandbox = ProcessSandbox(config)
+
+        result, output, error = sandbox.execute_geno_request(
+            request,
+            IsolatedRunPolicy(
+                capabilities=frozenset(capabilities),
+                env_allowed_names=(
+                    frozenset({"HOME"}) if "env" in capabilities else frozenset()
+                ),
+            ),
+        )
+
+        assert result is None
+        assert output == ""
+        assert error is not None
+        assert "invalid process-run environment snapshot" in error
+
+    @pytest.mark.parametrize(
+        ("capabilities", "bound"),
+        [
+            (["clock", "print", "random"], ""),
+            (["print", "regex"], ""),
+            (["env", "print"], "env"),
+        ],
+    )
+    def test_geno_worker_binds_host_access_only_for_granted_capabilities(
+        self, tmp_path, monkeypatch, capabilities, bound
+    ):
+        """In-worker probe: the host table holds only the granted bindings."""
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        injection = (
+            "globals_dict['_GENO_HOST'] = _sandbox_types.MappingProxyType(\n"
+            "            _geno_host_table\n"
+            "        )"
+        )
+        worker_script = ProcessSandbox._WORKER_SCRIPT
+        assert worker_script.count(injection) == 1
+        monkeypatch.setattr(
+            ProcessSandbox,
+            "_WORKER_SCRIPT",
+            worker_script.replace(
+                injection,
+                "_emit_worker_error('probe:' + ','.join(sorted(_geno_host_table)), "
+                "'probe')\n        sys.exit(1)",
+                1,
+            ),
+        )
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        sandbox = ProcessSandbox(config)
+
+        _result, output, error = sandbox.execute_geno_request(
+            self._geno_cli_request(tmp_path, config),
+            IsolatedRunPolicy(capabilities=frozenset(capabilities)),
+        )
+
+        assert output == ""
+        assert error == f"probe:{bound}"
 
     def test_geno_worker_validates_policy_before_reading_input(self):
         """Policy validation is trusted setup: before the Darwin baseline."""
