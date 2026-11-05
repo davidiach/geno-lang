@@ -156,26 +156,37 @@ Import resolution looks for `ModuleName.geno` in the same directory as the impor
 
 ## Capabilities
 
-Some builtins require explicit capabilities for security. `geno run --cap`
-must be paired with `--unsafe` for direct interpreter execution, or with
-`--json` for embedding API execution:
+Some builtins require explicit capabilities for security. Plain `geno run`
+grants `print`, `clock` and `random`. `--cap` grants exactly the capabilities
+it lists, for examples and `main`, and the program still runs in the
+process sandbox with its time, memory and process limits:
 
 ```bash
-# Print output
-geno run myfile.geno --unsafe --cap print
+# Print output and regular expressions
+geno run myfile.geno --cap print,regex
 
-# File I/O
-geno run myfile.geno --unsafe --cap fs
+# File I/O (and print)
+geno run myfile.geno --cap fs,print
 
-# HTTP requests
-geno run myfile.geno --unsafe --cap http
+# HTTP requests (Linux and macOS)
+geno run myfile.geno --cap http,print
 
-# Environment variables
-geno run myfile.geno --unsafe --cap env
+# Program arguments with cli_args()
+geno run myfile.geno --cap env,print -- input.csv
+
+# Environment variables: allow each name the program reads
+geno run myfile.geno --cap env,print --allow-env HOME
 
 # Multiple capabilities (comma-separated)
-geno run myfile.geno --unsafe --cap print,fs,env
+geno run myfile.geno --cap print,fs,env -- input.csv
 ```
+
+The sandbox never grants `process` or `serve`, and does not grant `stdin` (or
+`http` on Windows) yet. For trusted code only, `geno run --unsafe --cap ...`
+runs the program in the interpreter without process isolation, where they
+work. See the
+[Capability Reference](../reference/capabilities.md) for every capability and
+lane.
 
 ## What's Next?
 

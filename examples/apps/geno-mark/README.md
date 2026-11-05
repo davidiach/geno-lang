@@ -36,7 +36,7 @@ node mark.js --cap env,print
 node mark.js --cap env,print,fs -- readme.md --fragment
 ```
 
-`geno run --unsafe --cap print,env examples/apps/geno-mark` also works for quick local checks. It runs the direct interpreter, without the process isolation of the default `geno run` lane, which refuses `--cap`.
+`geno run --cap print,env examples/apps/geno-mark` also works for quick local checks, in the default process-isolated `geno run` lane; add `fs` and a path to convert a file: `geno run --cap env,fs,print examples/apps/geno-mark -- readme.md`.
 
 ## Module structure
 

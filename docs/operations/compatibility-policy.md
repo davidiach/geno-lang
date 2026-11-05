@@ -146,6 +146,56 @@ meets the five conditions above:
    `diagnostic-panic-example-arrow-form` checker case; and
 5. the release owner records it in release evidence when 0.7 is released.
 
+### 0.7 (draft): examples share the isolated run's grant and budgets
+
+Recorded for the unreleased 0.7 development line. In 0.6 the default
+process-isolated `geno run` lane checked examples in an interpreter of their
+own, always with `clock`, `print` and `random`, and only `main`'s output
+counted against `--max-output-length`. 0.7 lets that lane grant capabilities
+with `--cap` and gives examples exactly the run's grant, host restrictions and
+cumulative budgets:
+
+- **Output.** Output printed by examples is still never shown, but it now
+  counts against `--max-output-length`, which `main` then shares. A program
+  whose examples print close to the limit can stop with the output limit
+  before or during `main`, even without `--cap`.
+- **Deadline.** Examples run in the time left of `--timeout` rather than a
+  fresh allowance. The hard kill was already measured from the worker's
+  launch, so only the cooperative limit is earlier; timeout messages still
+  name `--timeout`.
+- **Grant.** With `--cap`, examples get exactly the list: `--cap env` denies
+  `print` in examples too. Without `--cap` they get the defaults, as before,
+  and an example may now call `sleep_ms` (E413 in 0.6).
+- **Process limits.** `--max-file-size-bytes` and the new
+  `--max-total-write-bytes` default by grant, and `--unsafe` and `--json`
+  refuse either flag when it is given at all, so an explicit
+  `--max-file-size-bytes 0` there, which 0.6 accepted and ignored, now exits
+  1.
+
+It meets the five conditions above:
+
+1. accepted [proposal 0013](../proposals/0013-isolated-run-capabilities.md)
+   records the motivation and the alternatives, and names this enforcement
+   change in its compatibility section;
+2. the impact is stated in `docs/spec/v0.7.md` sections 5.3.1 and 9.11.1 and
+   its "Changes from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration: skip examples in an
+   operational run, or raise the limit,
+
+   ```bash
+   geno run --no-check-examples --cap env,print main.geno -- hello
+   geno run --max-output-length 200000 main.geno
+   ```
+
+   and keep effectful work in thin wrappers whose pure helpers carry the
+   examples;
+4. no frozen case depends on example output or example timing, so
+   `conformance/v0.5` and `conformance/v0.6` are unchanged, and the
+   development corpus adds the `isolated-grant-regex` and
+   `isolated-grant-env-cli-args` cases, which the `cli-process` lane runs
+   with the case's declared `--cap`; and
+5. the release owner records it in release evidence when 0.7 is released.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

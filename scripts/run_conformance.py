@@ -571,14 +571,19 @@ def _run_cli(
 ) -> TargetOutcome:
     """Run the source through `geno run` as a child process.
 
-    Two lanes, because they grant capabilities differently and the contract
-    requires them to agree anyway. The default isolated lane refuses `--cap`
-    outright -- it spawns a worker that holds its own grants -- while `--unsafe`
-    runs the interpreter in this process and takes them on the command line.
+    Two lanes, because they run programs differently and the contract requires
+    them to agree anyway: the default lane compiles to Python and runs it in a
+    process-isolated worker, while `--unsafe` runs the interpreter in the CLI's
+    own process. Both receive exactly the case's declared capabilities as
+    `--cap` (proposal 0013 lets the isolated lane grant them; it keeps
+    refusing `process` and `serve`). A case that declares none passes no
+    `--cap`, so each lane keeps its own default grant: `clock`, `print` and
+    `random` in the isolated lane, ungated under `--unsafe`.
     """
     argv = [sys.executable, "-m", "geno", "run"]
     if unsafe:
-        argv += ["--unsafe", *_capability_args(case.capabilities)]
+        argv.append("--unsafe")
+    argv += _capability_args(case.capabilities)
     argv.append(str(case.path))
     # The interpreter and manifest source are both controlled by this runner.
     completed = subprocess.run(  # noqa: S603

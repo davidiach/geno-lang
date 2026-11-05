@@ -1,0 +1,24 @@
+// Proposal 0013: the default `geno run` lane grants `regex` with `--cap`,
+// and examples run with the same exact grant, so these examples call the
+// regex engine before `main` does.
+
+func first_number(text: String) -> Option[String]
+    example "order 42 shipped" -> Some("42")
+    example "no digits" -> None
+    return regex_match("[0-9]+", text)
+end func
+
+func vowels_hidden(text: String) -> String
+    example "geno" -> "g_n_"
+    return regex_replace(pattern: "[aeiou]", replacement: "_", text: text)
+end func
+
+func main() -> Unit
+    match first_number("room 101 and 202") with
+        | Some(n) -> print(n)
+        | None -> print("none")
+    end match
+    print(vowels_hidden("capabilities"))
+    print(length(regex_find_all("[0-9]+", "1 22 333")))
+    return ()
+end func

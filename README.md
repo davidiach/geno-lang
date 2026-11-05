@@ -147,7 +147,16 @@ More release-gated applications are listed in
 
 Geno separates pure computation from effects. Builtins that touch the
 filesystem, network, process execution, environment, clock, random values,
-output, or regex require explicit capabilities.
+output, or regex require explicit capabilities. Plain `geno run` grants
+`print`, `clock` and `random`; `--cap` grants exactly the capabilities it
+lists, and the program keeps its process isolation and limits:
+
+```bash
+geno run --cap env,fs,print report.geno -- data/input.csv
+```
+
+Only `process`, `serve` and (for now) `stdin` need `--unsafe`, which is for
+trusted code.
 
 The CLI and hosted runtime use sandboxed execution with process isolation. The
 in-process embedding API has cooperative limits, and generated JavaScript is

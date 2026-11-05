@@ -26,31 +26,94 @@ Capability gating behaves differently depending on how you run your program.
 ### Compiled mode (default `geno run`)
 
 In the default compiled mode, `geno run` compiles your program to Python and
-executes it inside a process sandbox. `print`, `clock`, `random`, and
-always-available builtins (pure computation) work. **All other gated builtins
-are denied**.
+executes it inside a process sandbox: a worker process with a hard wall-clock
+kill at `--timeout` and memory, CPU, file-size and process limits. Without
+`--cap`, `print`, `clock`, `random` and the always-available builtins (pure
+computation) work, and **all other gated builtins are denied**.
 
 ```bash
 # Compiled mode — print, clock, random, and pure builtins work
 geno run myfile.geno
 ```
 
-The default `geno run` mode is process-isolated and does not currently support
-host capability callbacks. Use `--unsafe --cap ...` only when you explicitly
-want direct interpreter execution with host callbacks:
+`--cap` grants **exactly** the capabilities you list, for examples and `main`
+alike, and the program stays in the process sandbox
+([proposal 0013](../proposals/0013-isolated-run-capabilities.md)). The list
+replaces the defaults rather than adding to them, so name `print` too if the
+program prints:
 
 ```bash
-# Explicit direct interpreter mode with fs and print granted
-geno run --unsafe --cap fs,print myfile.geno
+# Program arguments: cli_args() needs env
+geno run --cap env,print main.geno -- hello world
+
+# Files under the project, the working directory and the path argument
+geno run --cap fs,print report.geno -- data/input.csv
+
+# Regular expressions
+geno run --cap print,regex lint.geno
+
+# One environment variable, by exact name
+geno run --cap env,print --allow-env HOME main.geno
 ```
 
-Programs that read standard input (`stdin_read_all`) also need
-`--unsafe --cap stdin,...`. The isolated lane's lazy, size-bounded stdin
-reader (milestone 3 of
-[proposal 0013](../proposals/0013-isolated-run-capabilities.md)) is
-implemented, but `geno run --cap stdin` stays refused before launch on every
-platform until the proposal's stdin gate (handle setup, inheritance, timeout
-and interruption cleanup on Linux, macOS and Windows) passes.
+| Capability | Default lane | Notes |
+|---|---|---|
+| `print`, `clock`, `random`, `regex` | granted with `--cap` | `print`, `clock` and `random` also without `--cap` |
+| `env` | granted with `--cap` | `cli_args()` works with `env` alone; `env_get`/`env_get_or` read only names allowed with `--allow-env NAME` |
+| `fs` | granted with `--cap` | same roots and policy as `--unsafe` (below), plus write quotas |
+| `http` | granted with `--cap` on Linux and macOS | refused before launch on Windows for now |
+| `stdin` | refused before launch | implemented; waits for its platform gate (below) |
+| `process`, `serve` | refused before launch | use `--unsafe --cap ...` for trusted code |
+
+The lane's rules, which [spec v0.7 section 9.11.1](../spec/v0.7.md) states in
+full:
+
+- **Refusals happen before the program starts.** `geno run --cap process` and
+  `--cap serve` exit 1 with a message naming `--unsafe`: programs started by
+  `process` would run outside the sandbox, and a `serve` listener would outlive
+  the run's wall-clock limit. A capability the lane cannot grant yet, or not on
+  this platform, exits 1 with "not yet available in the process-isolated run
+  mode".
+- **Environment variables need an allowlist.** `--cap env` exposes no variable
+  by itself. Each `--allow-env NAME` (repeatable, exact name) lets
+  `env_get` and `env_get_or` read that one variable from your environment;
+  reading any other name fails with E412 ("not allowed by the host env
+  policy"), even if the variable is unset. Names are case-insensitive on
+  Windows, as the Windows environment is, and exact elsewhere. `--allow-env`
+  needs an explicit `--cap env` and applies only to this lane.
+- **Filesystem writes have quotas.** With `fs`, each `fs_write_text` may write
+  at most `--max-file-size-bytes` and the whole run at most
+  `--max-total-write-bytes`; both default to 64 MiB with `fs` (0 without it,
+  and 0 disables writes). Bytes are counted after newline translation
+  (`\r\n` on Windows), reserved before the file is opened and never refunded,
+  even for a rewrite. A quota rejection returns `Err` and leaves the file
+  unchanged. The `GENO_FS_*` variables below are read only when `fs` is
+  granted; `GENO_HTTP_ALLOW_PRIVATE` only when `http` is.
+- **Examples share the run.** Examples run before `main` with the same grant,
+  the same environment snapshot, filesystem quotas and HTTP policy, and the
+  same deadline and output budget: example output is not shown, but it counts
+  against `--max-output-length`. Their effects are real. Use
+  `--no-check-examples` to skip them in an operational run.
+- **Hints stay isolated.** A denial of a capability the lane can grant ends
+  with the isolated command to rerun:
+
+  ```text
+  Runtime Error: Capability denied: 'cli_args' requires the 'env' capability
+  Hint: grant it with --cap; the program stays process-isolated:
+    geno run --cap clock,env,print,random main.geno -- hello
+  ```
+
+  Only `process`, `serve` and the capabilities refused on this platform get
+  `--unsafe` advice.
+
+Programs that read standard input (`stdin_read_all`) still need
+`--unsafe --cap stdin,...` (trusted code only). The isolated lane's lazy,
+size-bounded stdin reader (milestone 3 of proposal 0013) is implemented, but
+`geno run --cap stdin` stays refused before launch on every platform until the
+proposal's stdin gate (handle setup, inheritance, timeout and interruption
+cleanup on Linux, macOS and Windows) passes. On Windows, programs that use
+`http` likewise need `--unsafe --cap http,...` until the HTTP gate has Windows
+evidence.
 
 ### Standalone compiled output (`geno compile`)
 
@@ -72,18 +135,20 @@ networking APIs and the same `http` capability, subject to browser CORS policy.
 
 ### Interpreter mode (`geno run --unsafe --cap`)
 
-With `--unsafe`, the program runs in the tree-walking interpreter without
-process isolation. When `--cap` is specified, **only the exact capabilities
-you list** are granted — there are no implicit defaults. Passing `--cap`
-without `--unsafe` or `--json` fails fast rather than silently changing the
-execution mode.
+With `--unsafe`, the program runs in the tree-walking interpreter in the CLI's
+own process, without process isolation or its hard limits: use it only for
+trusted code, and for the capabilities the default lane refuses (`process`,
+`serve`, `stdin`, and `http` on Windows). When `--cap` is specified,
+**only the exact capabilities you list** are granted — there are no implicit
+defaults. `--unsafe` reads the whole environment with `env`, has no write
+quotas, and streams output.
 
 ```bash
-# Only fs and print are granted — clock, random, http are denied
-geno run myfile.geno --unsafe --cap fs --cap print
+# Only process and print are granted — clock, random, http are denied
+geno run myfile.geno --unsafe --cap process --cap print
 
-# Grant multiple capabilities
-geno run myfile.geno --unsafe --cap print,fs,http
+# A server keeps running past any run deadline
+geno run myfile.geno --unsafe --cap serve,env
 ```
 
 If you omit `--cap` entirely with `--unsafe`, the trusted direct interpreter
@@ -94,6 +159,8 @@ keeps its legacy ungated behavior. Use `--cap` to restrict it.
 Uses the embedding API in the current process, with cooperative timeout checks.
 If you omit `--cap`, gated builtins are denied by default. Grant each required
 capability explicitly, for example `geno run myfile.geno --json --cap print`.
+JSON mode installs no host callbacks, so a granted `fs`, `http`, `stdin`,
+`process` or `serve` builtin fails with E413 ("Host callback not provided").
 Use the hosted server or a caller-managed worker process when JSON results are
 needed for untrusted code; JSON mode itself does not provide process isolation.
 
@@ -114,9 +181,10 @@ embedding deliberately sets `default_request_capabilities`.
 
 ### Host Resource Scope
 
-Granting `fs`, `http`, or `process` unlocks host resources. In direct
-interpreter mode and standalone Python output, built-in host callbacks apply
-the scoped policies below:
+Granting `fs`, `http`, or `process` unlocks host resources. In the default
+process-isolated `geno run` lane, direct interpreter mode and standalone
+Python output, built-in host callbacks apply the scoped policies below (the
+default lane refuses `process`):
 
 Generated Node output is a trusted-runtime deployment: `--cap` gates which
 APIs are wired, not an OS sandbox. Node `fs` builtins use host APIs directly
@@ -289,7 +357,9 @@ Error: Capability denied: 'fs_read_text' requires the 'fs' capability
 ```
 
 **Fix:** Add `--cap fs` to your command, or include `"fs"` in your
-`RunConfig.capabilities` set.
+`RunConfig.capabilities` set. `--cap` replaces the default grant, so list
+every capability the program uses: `geno run --cap fs,print myfile.geno`. In
+the default `geno run` lane the hint after the error prints the full command.
 
 ## Target Availability
 

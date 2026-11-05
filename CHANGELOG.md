@@ -68,106 +68,89 @@ package version stays 0.6.0, and the Draft
   read these instead of parsing the message. Also new for embedders and
   tools: `Interpreter.step_allowance(n)`, `geno.parser.parse_expression()` and
   `TypeChecker.check_project_graph(..., retain_module_checkers=True)`.
-- Capability grants in the default process-isolated `geno run` lane,
-  milestone 1 of accepted
-  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md):
-  `geno run --cap print,regex main.geno` runs with exactly the listed
-  capabilities and keeps the hard wall-clock kill and the memory, CPU,
-  file-size and process limits, instead of exiting with "--cap is not
-  supported". The lane grants `clock`, `env`, `fs`, `http` (not on Windows
-  yet), `print`, `random` and `regex` so far; without `--cap` the grant is
-  unchanged (`clock`, `print`, `random`). `process` and `serve` are refused
-  before the program starts with a message naming `--unsafe`, and `stdin` is
-  refused as "not yet available" until its milestone is enabled. Examples run
-  with the same
-  exact grant (`--cap regex` denies `print` in examples too, and `sleep_ms`
-  works in examples when `clock` is granted). A capability denial in the
-  default lane, in `main` or in an example, now suggests the isolated
-  `geno run --cap ...` command when the lane can grant the capability, and
-  `--unsafe` only when it cannot. The worker validates the grant from its
-  parent-set configuration before reading any input, and the private names
-  its runtime uses for host access (`_GENO_HOST`, `_GenoHostUnavailable`,
-  `_geno_host_module`, `_geno_environ`) are reserved runtime names on both
-  backends.
-- The `env` capability in the default process-isolated `geno run` lane,
-  milestone 2 of
-  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md), which
-  addresses [#68](https://github.com/davidiach/geno-lang/issues/68):
-  `geno run --cap env,print main.geno -- hello world` gives `cli_args()` the
-  program arguments and keeps every hard limit, where it used to need
-  `--unsafe`. `--cap env` alone exposes no environment variable: the new
-  repeatable `--allow-env NAME` lets `env_get`/`env_get_or` read one exact
-  name from the caller's environment (case-insensitive on Windows, as
-  `os.environ` is there), and only allowed variables the caller has are sent
-  to the worker. Reading any other name, even one the caller does not have,
-  fails with E412 "environment variable 'NAME' is not allowed by the host env
-  policy" and a hint naming `--allow-env`; the program never sees the
-  worker's own environment. Examples and `main` read the same snapshot.
-  `--allow-env` requires an explicit `--cap env` grant and is refused under
-  `--unsafe` and `--json`, whose environment behaviour is unchanged.
-- Milestone 3 of
-  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md), `stdin`
-  in the default process-isolated `geno run` lane, is implemented but not
-  enabled: `geno run --cap stdin ...` is still refused before launch ("not yet
-  available in the process-isolated run mode") on every platform. The
-  proposal keeps isolated `stdin` refused until its stdin gate (handle setup,
-  inheritance, timeout and interruption cleanup) has passed on Linux, macOS
-  and Windows. Only Linux and macOS can be validated so far, and enabling the
-  capability on POSIX alone would deviate from that gate, which needs the
-  project lead's sign-off; until then, programs that read standard input keep
-  using `geno run --unsafe --cap stdin,...` (trusted code only). In place for
-  that step: only a `stdin` grant makes the parent duplicate its standard
-  input for the worker alone to inherit, and nothing is read until
-  `stdin_read_all` asks. Trusted worker code then reads 8 KiB at a time
-  against the collection limit and decodes strict UTF-8 with the same `Err`
-  text as standalone compiled output. Examples and `main` share one stream and
-  one deadline, with no replay, and a worker refuses a `stdin` policy its own
-  lane rules do not grant.
-- The `fs` capability in the default process-isolated `geno run` lane,
-  milestone 4 of
-  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md):
-  `geno run --cap fs,print report.geno -- data/input.csv` reads and writes
-  files while keeping every hard limit, where it used to need `--unsafe`. The
-  seven `fs_*` builtins go through a narrow trusted facade in the worker with
-  exactly the `--unsafe --cap fs` roots (the working directory, the source's
-  directory, the project root and the directories of path arguments after
-  `--`, or `GENO_FS_ROOTS`), the same symlink and absolute-path rules
-  (`GENO_FS_ALLOW_ABSOLUTE`) and the same `GENO_FS_READ_ONLY` policy, all read
-  from the caller's environment only when `fs` is granted. A path argument
-  widens the roots without `env`, while `cli_args()` itself still needs `env`.
-  Writes also get two portable limits, 64 MiB per file
-  (`--max-file-size-bytes`, which also sets `RLIMIT_FSIZE` where available)
-  and 64 MiB per run across examples and `main` (new
-  `--max-total-write-bytes`). A write is counted in the UTF-8 bytes it emits
-  after newline translation, reserved before the file is opened, and never
-  refunded, even for a rewrite of the same path or a write that then fails;
-  a limit of 0 disables every write, including empty ones. Quota rejections
-  return `Err` naming the limit and leave the file unchanged, so a program can
-  recover; a read-only write and an `fs_exists` outside the roots still raise.
-  Without `fs` both limits stay 0, as before. The two limit flags now default
-  by grant and, like the other process sandbox limits, are refused under
-  `--unsafe` and `--json` even when set to 0.
-- The `http` capability in the default process-isolated `geno run` lane on
-  Linux and macOS, milestone 5 of
-  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md):
-  `geno run --cap http,print fetch.geno` makes requests while keeping every
-  hard limit, where it used to need `--unsafe`. `http_fetch`, `http_post` and
-  `http_request` go through the same validated client as
-  `--unsafe --cap http`, now run in trusted worker code: only `http` and
-  `https`; every connection and redirect hop resolves, validates and connects
-  only to public addresses; at most ten redirects, with caller headers
-  (`Authorization`, `Cookie`, ...) dropped across origins; proxy variables
-  never reroute a request; TLS certificates and hostnames are verified; and
-  response bodies count against the collection limit. Private and loopback
-  destinations need `GENO_HTTP_ALLOW_PRIVATE` in the caller's environment,
-  read only with an `http` grant and never through `--allow-env`. Each
-  connection attempt waits at most 30 seconds and at most the time the run
-  has left, examples and `main` alike, and the hard kill at `--timeout` still
-  ends any request that cannot return in time. The HTTP client modules are
-  loaded during the worker's trusted setup only with an `http` grant.
-  Windows refuses `--cap http` before launch ("not yet available in the
-  process-isolated run mode on Windows") until the proposal's HTTP gate has
-  Windows evidence; use `--unsafe --cap http,...` there for trusted code.
+- Capability grants in the default process-isolated `geno run` lane, from
+  accepted [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md)
+  ([spec v0.7](docs/spec/v0.7.md) section 9.11.1). `geno run --cap LIST`
+  runs with exactly the listed capabilities, for examples and `main`, and
+  keeps the hard wall-clock kill and the memory, CPU, file-size and process
+  limits, instead of exiting with "--cap is not supported in the default
+  process-isolated run mode". Without `--cap` the grant is unchanged
+  (`clock`, `print`, `random`). Refused grants exit 1 before the program
+  starts: `process` and `serve` with a message naming `--unsafe`, and a
+  capability that is not available yet, or not on this platform, as "not
+  yet available in the process-isolated run mode". The worker validates the
+  grant and host policy from its parent-set configuration before reading
+  any input, binds host access only for granted capabilities, and the
+  runtime's private names for that channel (`_GENO_HOST`,
+  `_GenoHostUnavailable`, `_geno_host_module`, `_geno_environ`) are
+  reserved runtime names on both backends. One milestone per capability:
+  - **`regex`** (milestone 1): `geno run --cap print,regex lint.geno`.
+    Examples get the same exact grant (`--cap regex` denies `print` in
+    examples too), and `sleep_ms` works in examples when `clock` is granted.
+  - **`env`** (milestone 2), which addresses
+    [#68](https://github.com/davidiach/geno-lang/issues/68):
+    `geno run --cap env,print main.geno -- hello world` gives `cli_args()`
+    the program arguments. `--cap env` alone exposes no environment
+    variable: the new repeatable `--allow-env NAME` lets
+    `env_get`/`env_get_or` read one exact name from the caller's environment
+    (case-insensitive on Windows, as `os.environ` is there), and only allowed
+    variables the caller has are sent to the worker. Reading any other name,
+    even one the caller does not have, fails with E412 "environment variable
+    'NAME' is not allowed by the host env policy" and a hint naming
+    `--allow-env`; the program never sees the worker's own environment.
+    Examples and `main` read the same snapshot. `--allow-env` requires an
+    explicit `--cap env` grant and is refused under `--unsafe` and `--json`,
+    whose environment behaviour is unchanged.
+  - **`stdin`** (milestone 3) is implemented but not enabled:
+    `geno run --cap stdin ...` is still refused before launch on every
+    platform. The proposal keeps it refused until its stdin gate (handle
+    setup, inheritance, timeout and interruption cleanup) has passed on
+    Linux, macOS and Windows; only Linux and macOS can be validated so far,
+    and enabling it on those alone would deviate from that gate, which needs
+    the project lead's sign-off. Until then, programs that read standard
+    input keep using `geno run --unsafe --cap stdin,...` (trusted code
+    only). In place for that step: only a `stdin` grant makes the parent
+    duplicate its standard input for the worker alone, and nothing is read
+    until `stdin_read_all` asks. Trusted worker code then reads 8 KiB at a
+    time against the collection limit and decodes strict UTF-8 with the same
+    `Err` text as standalone compiled output; an over-limit error reports
+    the characters decoded when the limit was detected (at most 8,192 over
+    it). Examples and `main` share one stream and one deadline, with no
+    replay.
+  - **`fs`** (milestone 4): `geno run --cap fs,print report.geno --
+    data/input.csv`. The seven `fs_*` builtins go through a narrow trusted
+    facade in the worker with exactly the roots of `--unsafe` (the working
+    directory, the source's directory, the project root and the directories
+    of path arguments after `--`, or `GENO_FS_ROOTS`), the same symlink and
+    absolute-path rules (`GENO_FS_ALLOW_ABSOLUTE`) and the same
+    `GENO_FS_READ_ONLY` policy, all read from the caller's environment only
+    when `fs` is granted. A path argument widens the roots without `env`,
+    while `cli_args()` itself still needs `env`. Writes get two portable
+    limits, 64 MiB per file (`--max-file-size-bytes`, which also sets
+    `RLIMIT_FSIZE` where available) and 64 MiB per run across examples and
+    `main` (new `--max-total-write-bytes`). A write is counted in the UTF-8
+    bytes it emits after newline translation, reserved before the file is
+    opened, and never refunded, even for a rewrite of the same path or a
+    write that then fails; a limit of 0 disables every write, including empty
+    ones. Quota rejections return `Err` naming the limit and leave the file
+    unchanged, so a program can recover; a read-only write and an
+    `fs_exists` outside the roots still raise. Without `fs` both limits stay
+    0, as before.
+  - **`http`** (milestone 5, Linux and macOS): `geno run --cap http,print
+    fetch.geno`. `http_fetch`, `http_post` and `http_request` go through the
+    same validated client as `--unsafe`, now run in trusted worker code: only
+    `http` and `https`; every connection and redirect hop resolves, validates
+    and connects only to public addresses; at most ten redirects, with caller
+    headers (`Authorization`, `Cookie`, ...) dropped across origins; proxy
+    variables never reroute a request; TLS certificates and hostnames are
+    verified; and response bodies count against the collection limit. Private
+    and loopback destinations need `GENO_HTTP_ALLOW_PRIVATE` in the caller's
+    environment, read only with an `http` grant and never through
+    `--allow-env`. Each connection attempt waits at most 30 seconds and at
+    most the time the run has left, examples and `main` alike, and the hard
+    kill at `--timeout` still ends any request that cannot return in time.
+    The HTTP client modules are loaded during the worker's trusted setup
+    only with an `http` grant.
 
 ### Changed (breaking)
 
@@ -188,16 +171,48 @@ package version stays 0.6.0, and the Draft
 
   A message that is not a string literal (`-> panic(reason)`) has no automatic
   fix: write the text literally, or drop it (`example 1, 0 panics`).
+- In the default process-isolated `geno run` lane, examples and `main` share
+  one output budget and one deadline (proposal 0013), with or without `--cap`.
+  Output printed by examples is still never shown, but it now counts against
+  `--max-output-length`, so a run whose examples print a lot reaches the limit
+  earlier; the example phase also runs under the time left of `--timeout`
+  rather than a fresh allowance. Timeout messages still name `--timeout`.
+  Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-examples-share-the-isolated-runs-grant-and-budgets).
+  To migrate, skip examples in an operational run or raise the limit:
+
+  ```bash
+  geno run --no-check-examples --cap env,print main.geno -- hello
+  geno run --max-output-length 200000 main.geno
+  ```
+- `--max-file-size-bytes` and the new `--max-total-write-bytes` default by
+  grant (0 without `fs`, 64 MiB with it) and, like the other process sandbox
+  limits, are refused under `--unsafe` and `--json` whenever they are given,
+  so an explicit `--max-file-size-bytes 0` there, which 0.6 accepted, now
+  exits 1. An empty `GENO_FS_ROOTS` stops an isolated run that grants `fs`
+  before launch (`Error: GENO_FS_ROOTS must contain at least one filesystem
+  root`); without `fs` the variable is not read.
 
 ### Changed
 
-- In the default process-isolated `geno run` lane, examples and `main` share
-  one output budget and one deadline (proposal 0013). Output printed by
-  examples is still never shown, but it now counts against
-  `--max-output-length`, so a run whose examples print a lot reaches the limit
-  earlier; the example phase also runs under the time left of `--timeout`
-  rather than a fresh allowance. Timeout messages still name `--timeout`. Use
-  `--no-check-examples` to skip examples in an operational run.
+- A capability denial in the default `geno run` lane, in `main` or in an
+  example, now ends with the isolated command when the lane can grant the
+  capability (`Hint: grant it with --cap; the program stays
+  process-isolated:` and `geno run --cap clock,env,print,random main.geno --
+  hello`) and an unlisted environment variable with an `--allow-env` hint.
+  Only `process`, `serve` and the capabilities refused on the platform still
+  get `--unsafe` advice. Hints are still derived only from the worker's
+  structured denial, so a forged denial text gets none. The README, guides,
+  capability, filesystem and execution-surface references, `SECURITY.md`,
+  the reference-app READMEs and the website now show `geno run --cap ...`,
+  keeping `--unsafe` for `process`, `serve`, `stdin` and trusted code.
+- Platform notes for the isolated lane: `http` is refused before launch on
+  Windows ("not yet available in the process-isolated run mode on Windows")
+  until proposal 0013's HTTP gate has Windows evidence, so Windows programs
+  that need it keep `--unsafe --cap http,...` (trusted code only); `stdin` is
+  refused on every platform (see Added); `env` names are case-insensitive on
+  Windows only; and the `fs` write quotas, which count `\r\n` as two bytes on
+  Windows, are the only file-size limit there.
 - The process sandbox worker's validator of compiled program code also
   rejects a runtime-internal name bound by a `def`, `class`, parameter,
   `global`, `except ... as` or match pattern, not only one referenced by name.

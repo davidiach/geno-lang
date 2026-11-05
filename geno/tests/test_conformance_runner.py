@@ -180,8 +180,49 @@ def test_the_repository_development_corpus_is_v07() -> None:
         "panic-example-passes",
         "panic-example-zero-arg",
         "panic-example-no-panic-fails",
+        "isolated-grant-regex",
+        "isolated-grant-env-cli-args",
+        "isolated-grant-is-exact",
     }
     assert all(load_manifest(p).status is None for p in retained_manifest_paths())
+
+
+_ISOLATED_GRANT_CASES = {
+    "isolated-grant-regex": {"print", "regex"},
+    "isolated-grant-env-cli-args": {"env", "print"},
+}
+
+
+@pytest.mark.parametrize("case_id", sorted(_ISOLATED_GRANT_CASES))
+def test_the_isolated_grant_cases_run_on_every_interpreter_lane(case_id: str) -> None:
+    """Proposal 0013's v0.7 cases agree across the four lanes that run examples."""
+    (path,) = development_manifest_paths()
+    manifest = load_manifest(path)
+    (case,) = [case for case in manifest.cases if case.id == case_id]
+
+    assert set(case.targets) == {"interpreter", "cli-process", "cli-direct", "cli-json"}
+    assert set(case.capabilities) == _ISOLATED_GRANT_CASES[case_id]
+    results = run_suite(manifest, case_ids=frozenset({case_id}), timeout=60.0)
+
+    assert {result.target for result in results} == {"checker", *case.targets}
+    assert all(result.status == "passed" for result in results), results
+
+
+def test_the_isolated_grant_is_exact_in_both_cli_lanes() -> None:
+    """`--cap regex` denies `print`: neither lane restores the default grant."""
+    (path,) = development_manifest_paths()
+    manifest = load_manifest(path)
+
+    results = run_suite(
+        manifest, case_ids=frozenset({"isolated-grant-is-exact"}), timeout=60.0
+    )
+
+    assert {result.target for result in results} == {
+        "checker",
+        "cli-process",
+        "cli-direct",
+    }
+    assert all(result.status == "passed" for result in results), results
 
 
 def test_all_retained_runs_the_development_corpus_last(
@@ -672,6 +713,89 @@ def test_the_json_lane_is_fail_closed_on_capabilities(
     results = run_suite(load_manifest(manifest), target="cli-json")
 
     assert [result.status for result in results] == [expected], results
+
+
+_REGEX_PROGRAM = (
+    "func main() -> Unit\n"
+    '    print(regex_replace(pattern: "o", replacement: "0", text: "geno"))\n'
+    "    return ()\n"
+    "end func\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "expected"),
+    [(["print"], "failed"), (["print", "regex"], "passed")],
+    ids=["ungranted", "granted"],
+)
+def test_the_process_lane_grants_the_declared_capabilities(
+    tmp_path: Path, capabilities: list[str], expected: str
+) -> None:
+    """`cli-process` passes the case's grant as `--cap` (proposal 0013).
+
+    Without it the isolated lane's default grant (`clock`, `print`, `random`)
+    would deny `regex`; with `print` alone the run must still be denied, which
+    shows the lane passes exactly the declared list rather than the defaults.
+    """
+    manifest = _corpus(
+        tmp_path / "-".join(capabilities),
+        program=_REGEX_PROGRAM,
+        targets=["cli-process"],
+        capabilities=capabilities,
+        expected_stdout="gen0\n",
+    )
+
+    results = run_suite(load_manifest(manifest), target="cli-process", timeout=60.0)
+
+    assert [result.status for result in results] == [expected], results
+
+
+@pytest.mark.parametrize(
+    ("unsafe", "capabilities", "expected"),
+    [
+        (False, ["regex", "print"], ["run", "--cap", "print,regex"]),
+        (True, ["print"], ["run", "--unsafe", "--cap", "print"]),
+        (False, [], ["run"]),
+    ],
+    ids=["process", "direct", "process-default"],
+)
+def test_the_cli_lanes_build_their_cap_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe: bool,
+    capabilities: list[str],
+    expected: list[str],
+) -> None:
+    """Both `geno run` lanes pass the declared grant the same way."""
+    import subprocess
+
+    from scripts import run_conformance
+
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_conformance.subprocess, "run", fake_run)
+    case = ConformanceCase(
+        id="case",
+        path=Path("case.geno"),
+        kind="run",
+        targets=("cli-process",),
+        capabilities=frozenset(capabilities),
+        expected_stdout="",
+        expected_exit_status=0,
+        expected_exit_class=None,
+        expected_stderr=None,
+        expected_stderr_contains=(),
+        expected_json_value=None,
+        expected_diagnostics=(),
+    )
+
+    run_conformance._run_cli(case, "", 1.0, unsafe=unsafe)
+
+    (argv,) = seen
+    assert argv[2:] == ["geno", *expected, "case.geno"]
 
 
 def test_a_cli_json_case_requires_an_expected_envelope_value(tmp_path: Path) -> None:

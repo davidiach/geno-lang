@@ -26,13 +26,19 @@ Error [E412]: Capability denied: 'print' requires the 'print' capability
 ```
 
 Your program is calling a builtin that requires a capability you haven't
-granted. In `geno run`, pair `--cap` with `--unsafe` to explicitly choose the
-direct interpreter capability mode:
+granted. Grant it with `--cap`; the default `geno run` lane keeps the program
+process-isolated, and the hint after the error prints the command to use:
 
 ```bash
 # Fix: grant the capabilities you need
-geno run myfile.geno --unsafe --cap print,fs,http
+geno run myfile.geno --cap print,fs,http
 ```
+
+`--cap` grants exactly its list, so `--cap fs` alone denies `print`: name
+every capability the program uses. Environment variables also need
+`--allow-env NAME` for each one the program reads. Only `process`, `serve`
+and `stdin` (and `http` on Windows) need `--unsafe --cap ...`, which drops
+process isolation and is for trusted code only.
 
 See [Capability Reference](capabilities.md) for the full table.
 

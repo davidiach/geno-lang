@@ -121,6 +121,8 @@ The JS backend emits standalone JavaScript that includes the runtime prelude. It
 
 | Entry point | Trust level | Intended use |
 |---|---|---|
+| `geno run` (default) | **Production CLI boundary** -- compiled Python in a supervised child process with a hard wall-clock kill and memory, CPU, file-size and process limits; `--cap` grants exactly its list, except `process` and `serve` | Running generated or untrusted programs from the command line |
+| `geno run --unsafe` | **Trusted** -- direct interpreter in the CLI process, cooperative timeout and step limit only | Trusted code that needs `process`, `serve` or `stdin` |
 | `geno.api.run()` | **Production embedding API** -- in-process interpreter with cooperative timeout and capability gating | Host-controlled embedding where the caller owns process isolation |
 | `geno run --json` | **In-process CLI** -- embedding API with cooperative timeout; capabilities must be granted explicitly | JSON results for trusted code or a caller-managed worker |
 | `geno.server` (`POST /run`) | **Production hosted boundary** -- delegates to `geno.api.run()` in a child process with hard wall-clock timeout | HTTP API for untrusted hosted execution |
@@ -130,9 +132,36 @@ The JS backend emits standalone JavaScript that includes the runtime prelude. It
 | REPL (`geno repl`) | **Local / trusted** -- 30 s UX timeout, no process isolation | Developer interactive use |
 | Benchmark runner | **Research-only** -- restricted namespace, not a security boundary | Local evaluation of LLM-generated Python |
 
-For untrusted code, use the hosted server boundary or wrap `geno.api.run()` in
-caller-managed process isolation. Do not rely on the in-process embedding API
-alone for killable wall-clock isolation.
+For untrusted code, use the default `geno run` lane, the hosted server
+boundary, or wrap `geno.api.run()` in caller-managed process isolation. Do not
+rely on the in-process embedding API alone for killable wall-clock isolation.
+
+### Capability grants in the default `geno run` lane
+
+The default lane's worker binds host access only for the capabilities it was
+granted, through trusted bindings that compiled program code cannot name
+([spec v0.7 section 9.11.1](../spec/v0.7.md#9111-capability-grants-in-the-isolated-geno-run-lane),
+[proposal 0013](../proposals/0013-isolated-run-capabilities.md)):
+
+- `clock`, `print`, `random`, `regex`, `env` and `fs` on every platform, and
+  `http` on Linux and macOS. `stdin` is implemented but refused before launch
+  until its platform gate passes; `process` and `serve` are always refused.
+  A refused grant exits 1 before any worker starts.
+- `env` sends the worker only the program arguments and the variables named
+  with `--allow-env NAME`; the worker's own environment is never visible.
+- `fs` uses the same root, symlink and read-only validators as `--unsafe`,
+  plus per-file and per-run write quotas (64 MiB each by default) that the
+  facade enforces on every platform and that also set `RLIMIT_FSIZE` where
+  available.
+- `http` uses the same validated client as `--unsafe`; each connection
+  attempt is bounded by the time the run has left, and the hard kill ends any
+  request that cannot finish.
+- Examples run with the same grant and bindings, inside the same deadline and
+  output budget as `main`.
+
+There is still no operating-system filesystem or network confinement: the
+worker runs as the invoking user, and a grant gives the program real access
+within these policies, with every resource limit still in force.
 
 Cross-backend numbers, copies, map ordering, lookup, and output are specified in
 [Portable Runtime Semantics](../reference/runtime-semantics.md).

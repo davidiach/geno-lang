@@ -79,3 +79,47 @@ kind = "diagnostic"
 # `example 1, 0 panics "division"`.
 targets = ["checker"]
 expected_diagnostics = ["E330"]
+
+# Proposal 0013 (Accepted): the default isolated `geno run` lane grants
+# capabilities with `--cap`, exactly the listed ones, for examples and `main`.
+# The `cli-process` lane passes the case's `capabilities` as `--cap`, like the
+# other CLI lanes. These cases use only capabilities the lane grants on every
+# platform; program arguments, the environment allowlist, stdin, fs and http
+# are covered by the pytest suite, since a manifest has no argument or
+# environment fields.
+
+[[cases]]
+id = "isolated-grant-regex"
+path = "programs/isolated_grant_regex.geno"
+kind = "run"
+targets = ["interpreter", "cli-process", "cli-direct", "cli-json"]
+capabilities = ["print", "regex"]
+expected_stdout = "101\nc_p_b_l_t__s\n3\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "isolated-grant-env-cli-args"
+path = "programs/isolated_grant_env_cli_args.geno"
+kind = "run"
+targets = ["interpreter", "cli-process", "cli-direct", "cli-json"]
+capabilities = ["env", "print"]
+expected_stdout = "[]\nno arguments\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "isolated-grant-is-exact"
+path = "programs/isolated_grant_regex.geno"
+kind = "run"
+# `--cap regex` is not added to the default grant: the examples call only the
+# regex engine and pass, and `main`'s first `print` is denied. The interpreter
+# and `--json` lanes report the denial as data, so only the two lanes that own
+# a stderr state it.
+targets = ["cli-process", "cli-direct"]
+capabilities = ["regex"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["Capability denied: 'print' requires the 'print' capability"]

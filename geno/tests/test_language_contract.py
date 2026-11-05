@@ -174,6 +174,75 @@ def test_the_draft_records_property_checks() -> None:
     )
 
 
+def _isolated_lane_section() -> str:
+    """Section 9.11.1 of the Draft spec (proposal 0013)."""
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+    start = text.index(
+        "\n### 9.11.1 Capability Grants in the Isolated `geno run` Lane\n"
+    )
+    return text[start : text.index("\n### 9.12 ", start)]
+
+
+def test_the_draft_records_isolated_run_capabilities() -> None:
+    """Proposal 0013 is in the Draft spec, its Changes list and spec.json."""
+    spec = _load_spec()
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+
+    assert any(
+        "proposal 0013" in addition
+        for addition in spec["development_line"]["additions"]
+    )
+    assert _isolated_lane_section()
+    assert any(
+        "9.11.1" in entry
+        and "](../proposals/0013-isolated-run-capabilities.md)" in entry
+        for entry in _draft_changes()
+    )
+    # Section 9.11's env list names every builtin the `env` grant unlocks.
+    builtins = text[text.index("\n### 9.11 Capability-Gated Builtins\n") :]
+    assert "\ncli_args()" in builtins[: builtins.index("\n### 9.11.1 ")]
+
+
+def _platform_rows() -> dict[str, tuple[str, str, str]]:
+    """The 9.11.1 platform table: capability -> (Linux, macOS, Windows)."""
+    section = _isolated_lane_section()
+    table = section[section.index("| Capability | Linux | macOS | Windows |") :]
+    rows: dict[str, tuple[str, str, str]] = {}
+    for line in table.splitlines()[2:]:
+        if not line.startswith("|"):
+            break
+        names, linux, macos, windows = (
+            cell.strip() for cell in line.strip("|").split("|")
+        )
+        for name in re.findall(r"`([a-z]+)`", names):
+            rows[name] = (linux, macos, windows)
+    return rows
+
+
+def test_the_draft_platform_table_matches_the_lane_rules() -> None:
+    """The spec's matrix cannot drift from `geno.capabilities` (proposal 0013)."""
+    from geno.capabilities import KNOWN_CAPABILITIES, isolated_run_capabilities
+
+    rows = _platform_rows()
+
+    assert set(rows) == set(KNOWN_CAPABILITIES)
+    for name, (linux, macos, windows) in rows.items():
+        posix = "granted" if name in isolated_run_capabilities("posix") else "refused"
+        nt = "granted" if name in isolated_run_capabilities("nt") else "refused"
+        assert (linux, macos, windows) == (posix, posix, nt), name
+
+
+def test_the_draft_names_every_reserved_host_name() -> None:
+    from geno.capabilities import ISOLATED_HOST_PRIVATE_NAMES
+
+    section = _isolated_lane_section()
+    paragraph = section[section.index("**Host bindings.**") :]
+    paragraph = paragraph[: paragraph.index("\n\n")]
+
+    named = set(re.findall(r"`(_[A-Za-z_]+)`", paragraph))
+    assert named >= ISOLATED_HOST_PRIVATE_NAMES
+
+
 def test_an_absent_development_line_is_valid() -> None:
     spec = _load_spec()
     del spec["development_line"]

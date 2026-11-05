@@ -285,10 +285,14 @@
       toggles.forEach(function (t) {
         t.setAttribute("aria-pressed", granted.has(t.dataset.cap) ? "true" : "false");
       });
-      var list = ["print", "fs", "env"].filter(function (c) {
+      // Sorted, as the CLI's own hint prints a grant.
+      var list = ["env", "fs", "print"].filter(function (c) {
         return granted.has(c);
       });
-      var cmd = list.length ? "$ geno run --unsafe --cap " + list.join(",") + " notes.geno" : "$ geno run notes.geno";
+      // With env, the isolated lane still hides every variable the run does
+      // not name, so the command allows the one the program reads.
+      var allowEnv = granted.has("env") ? " --allow-env USER" : "";
+      var cmd = list.length ? "$ geno run --cap " + list.join(",") + allowEnv + " notes.geno" : "$ geno run notes.geno";
       var denied = null;
       for (var i = 0; i < CAPS_CALLS.length; i++) {
         if (!granted.has(CAPS_CALLS[i].cap)) {
@@ -296,31 +300,25 @@
           break;
         }
       }
-      // The sandboxed default lane grants print, clock and random only.
+      // Without --cap the process-isolated default lane grants print, clock
+      // and random only; with it, exactly the list.
       if (!list.length) denied = CAPS_CALLS[0];
       var text = cmd + "\n";
       if (!denied) text += "ada has 3 notes";
-      else if (!list.length)
+      else {
+        var grant = (list.length ? list : ["clock", "print", "random"]).concat([denied.cap]).sort();
         text +=
-          "Runtime Error: Capability denied: 'fs_read_text' requires the 'fs' capability\n" +
-          "Hint: the default 'geno run' lane grants only clock, print, random and does not accept --cap.\n" +
-          "  To grant 'fs', rerun without process isolation (trusted code only):\n" +
-          "  geno run --unsafe --cap clock,fs,print,random notes.geno";
-      else
-        text +=
-          "Stack trace (most recent call last):\n  in main, notes.geno:1:1\n  at notes.geno:" +
-          denied.line +
-          ":" +
-          denied.col +
-          "\nRuntime Error: Capability denied: '" +
+          "Runtime Error: Capability denied: '" +
           denied.fn +
           "' requires the '" +
           denied.cap +
-          "' capability\n  " +
-          CAPS_SRC[denied.line - 1] +
-          "\n  " +
-          new Array(denied.col).join(" ") +
-          "^";
+          "' capability\n" +
+          "Hint: grant it with --cap; the program stays process-isolated:\n" +
+          "  geno run --cap " +
+          grant.join(",") +
+          allowEnv +
+          " notes.geno";
+      }
       out.innerHTML = H.highlight(text, "sh");
       var reached = true;
       code.querySelectorAll(".ln").forEach(function (ln) {
