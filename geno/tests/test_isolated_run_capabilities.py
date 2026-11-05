@@ -20,6 +20,7 @@ runs once through one (the builtin matrix).
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -39,6 +40,7 @@ from geno.capabilities import (
     isolated_run_refusal,
 )
 from geno.isolated_host import (
+    IsolatedEnv,
     IsolatedRunClock,
     IsolatedRunPolicy,
     isolated_run_policy_for,
@@ -621,3 +623,631 @@ def test_windows_refusal_names_the_platform_once_a_capability_lands() -> None:
         assert message is not None
         on_windows = " on Windows." in message
         assert on_windows == (capability in ISOLATED_RUN_CAPABILITIES)
+
+
+# ---------------------------------------------------------------------------
+# env: program arguments, the exact-name allowlist and issue #68
+
+ENV_POLICY_DENIED = "is not allowed by the host env policy"
+
+# Issue #68: a program whose entry point needs only its arguments.
+ARGS_PROGRAM = """func main() -> Unit
+    print(join(cli_args(), ","))
+end func
+"""
+
+
+def _without_geno_vars(**extra: str) -> dict[str, str]:
+    """The caller's environment for a child `geno run`, minus worker state."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"GENO_SANDBOX_CONFIG", "GENO_CLI_ARGS"}
+    }
+    env.update(extra)
+    return env
+
+
+def test_issue_68_cli_args_runs_isolated(tmp_path: Path) -> None:
+    _write(tmp_path, "main.geno", ARGS_PROGRAM)
+
+    result = _geno(
+        "--cap", "env,print", "main.geno", "--", "hello", "world", cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "hello,world\n"
+    assert result.stderr == ""
+
+
+def test_issue_68_run_goes_through_one_isolated_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from geno.cli import run as run_module
+    from geno.sandbox import ProcessSandbox
+
+    def parent_frontend(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the parent resolved the program itself")
+
+    launches: list[Any] = []
+    original_run_worker = ProcessSandbox._run_worker
+
+    def spy_run_worker(self: ProcessSandbox, *args: Any, **kwargs: Any) -> Any:
+        launches.append(args)
+        return original_run_worker(self, *args, **kwargs)
+
+    monkeypatch.setattr(run_module, "_resolve_run_program", parent_frontend)
+    monkeypatch.setattr(ProcessSandbox, "_run_worker", spy_run_worker)
+    source = _write(tmp_path, "main.geno", ARGS_PROGRAM)
+
+    status = run_module.run_file(
+        str(source), capabilities={"env", "print"}, program_args=["hello", "world"]
+    )
+
+    assert status is None
+    assert capsys.readouterr().out == "hello,world\n"
+    (launch,) = launches
+    config_overrides = launch[2]
+    assert config_overrides["worker_mode"] == "geno_cli"
+    assert config_overrides["run_policy"]["capabilities"] == ["env", "print"]
+
+
+def test_issue_68_grant_keeps_the_hard_timeout(tmp_path: Path) -> None:
+    source = """func main() -> Unit
+    print(join(cli_args(), ","))
+    var i = 0
+    while i >= 0 do
+        i = i + 1
+    end while
+end func
+"""
+    _write(tmp_path, "busy.geno", source)
+
+    started = time.monotonic()
+    result = _geno(
+        "--timeout",
+        "2",
+        "--cap",
+        "env,print",
+        "busy.geno",
+        "--",
+        "hello",
+        "world",
+        cwd=tmp_path,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 1
+    # Output printed before the kill is kept, then the limit is reported.
+    assert result.stdout == "hello,world\n"
+    assert result.stderr.strip().splitlines()[-1] == (
+        "Limit Error: Execution timed out after 2.0 seconds"
+    )
+    assert elapsed < 2.0 + 15.0
+
+
+def test_issue_68_grant_keeps_the_memory_limit(tmp_path: Path) -> None:
+    from geno.execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
+
+    # Doubling a string reaches gigabytes long before the collection limit.
+    source = """func main() -> Unit
+    print(join(cli_args(), ","))
+    var text = "x"
+    var i = 0
+    while i < 32 do
+        text = text + text
+        i = i + 1
+    end while
+    print(length(text))
+end func
+"""
+    _write(tmp_path, "big.geno", source)
+
+    result = _geno(
+        "--max-memory-bytes",
+        str(DEFAULT_PROCESS_MAX_MEMORY_BYTES),
+        "--max-collection-size",
+        str(8 * 1024**3),
+        "--cap",
+        "env,print",
+        "big.geno",
+        "--",
+        "hello",
+        "world",
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == "hello,world\n"
+    if sys.platform != "win32":
+        # Windows reports its Job Object limit in its own words.
+        assert "memory limit exceeded" in result.stderr
+
+
+# Every gated builtin whose isolated implementation reaches the host through
+# a binding runs once through a real worker: only there does the runtime
+# prelude execute under the worker's restricted builtins. Each later
+# milestone adds its capability's builtins here.
+HOST_BINDING_CAPABILITIES = frozenset({"env", "stdin", "fs", "http"})
+
+MATRIX_VALUE = "matrix value"
+
+BUILTIN_MATRIX: dict[str, tuple[list[str], str, list[str], str]] = {
+    "env_get": (
+        ["--cap", "env,print", "--allow-env", "GENO_MATRIX_VALUE"],
+        """func main() -> Unit
+    match env_get("GENO_MATRIX_VALUE") with
+        | Some(value) -> print(value)
+        | None -> print("unset")
+    end match
+end func
+""",
+        [],
+        f"{MATRIX_VALUE}\n",
+    ),
+    "env_get_or": (
+        ["--cap", "env,print", "--allow-env", "GENO_MATRIX_VALUE"],
+        """func main() -> Unit
+    print(env_get_or("GENO_MATRIX_VALUE", "fallback"))
+end func
+""",
+        [],
+        f"{MATRIX_VALUE}\n",
+    ),
+    "cli_args": (["--cap", "env,print"], ARGS_PROGRAM, ["a b", "-v"], "a b,-v\n"),
+}
+
+
+def test_builtin_matrix_covers_every_landed_host_builtin() -> None:
+    from geno.builtin_registry import CAPABILITY_MAP
+
+    landed = {
+        builtin
+        for capability in ISOLATED_RUN_CAPABILITIES & HOST_BINDING_CAPABILITIES
+        for builtin in CAPABILITY_MAP[capability]
+    }
+
+    assert set(BUILTIN_MATRIX) == landed
+
+
+@pytest.mark.parametrize("builtin", sorted(BUILTIN_MATRIX))
+def test_isolated_run_builtin_matrix(tmp_path: Path, builtin: str) -> None:
+    flags, source, program_args, expected = BUILTIN_MATRIX[builtin]
+    _write(tmp_path, "main.geno", source)
+
+    result = _geno(
+        *flags,
+        "main.geno",
+        "--",
+        *program_args,
+        cwd=tmp_path,
+        env=_without_geno_vars(GENO_MATRIX_VALUE=MATRIX_VALUE),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+    assert "not allowed" not in result.stderr
+    assert "Blocked:" not in result.stderr
+    assert result.stderr == ""
+
+
+def test_cli_args_needs_no_allowed_name_but_needs_env(tmp_path: Path) -> None:
+    _write(tmp_path, "main.geno", ARGS_PROGRAM)
+
+    granted = _geno("--cap", "env,print", "main.geno", cwd=tmp_path)
+    denied = _geno("--cap", "print", "main.geno", "--", "a", cwd=tmp_path)
+
+    assert granted.returncode == 0, granted.stderr
+    assert granted.stdout == "\n"
+    assert denied.returncode == 1
+    assert denied.stdout == ""
+    assert (
+        "Runtime Error: Capability denied: 'cli_args' requires the 'env' "
+        "capability\n" in denied.stderr
+    )
+    assert denied.stderr.endswith(
+        "Hint: grant it with --cap; the program stays process-isolated:\n"
+        "  geno run --cap env,print main.geno -- a\n"
+    )
+
+
+def test_cli_args_never_reads_the_internal_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # GENO_CLI_ARGS still reaches the worker's environment for other modes,
+    # but the isolated `cli_args` reads only the parent's request.
+    from geno.cli.run import run_file
+
+    monkeypatch.setenv("GENO_CLI_ARGS", json.dumps(["forged"]))
+    source = _write(tmp_path, "main.geno", ARGS_PROGRAM)
+
+    assert run_file(str(source), capabilities={"env", "print"}) is None
+    assert capsys.readouterr().out == "\n"
+
+
+ENV_PROGRAM = """func main() -> Unit
+    match env_get("HOME") with
+        | Some(home) -> print("HOME " + home)
+        | None -> print("HOME unset")
+    end match
+    print(env_get_or("GENO_SANDBOX_CONFIG", "config unset"))
+    print(env_get_or("GENO_CLI_ARGS", "args variable unset"))
+end func
+"""
+
+
+def test_allowed_names_read_the_callers_environment_not_the_workers(
+    tmp_path: Path,
+) -> None:
+    # The worker runs with a temporary HOME, its own sandbox configuration
+    # and GENO_CLI_ARGS; an allowed name reads only the caller's snapshot,
+    # taken before the parent set GENO_CLI_ARGS.
+    caller_home = str(tmp_path / "caller-home")
+    _write(tmp_path, "main.geno", ENV_PROGRAM)
+
+    result = _geno(
+        "--cap",
+        "env,print",
+        "--allow-env",
+        "HOME",
+        "--allow-env",
+        "GENO_SANDBOX_CONFIG",
+        "--allow-env",
+        "GENO_CLI_ARGS",
+        "main.geno",
+        "--",
+        "an argument",
+        cwd=tmp_path,
+        env=_without_geno_vars(HOME=caller_home),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (f"HOME {caller_home}\nconfig unset\nargs variable unset\n")
+
+
+@pytest.mark.parametrize(
+    ("call", "builtin"),
+    [
+        (
+            'match env_get("GENO_WP2_SECRET") with\n'
+            '        | Some(value) -> print("ESCAPED " + value)\n'
+            '        | None -> print("ESCAPED none")\n'
+            "    end match",
+            "env_get",
+        ),
+        ('print("ESCAPED " + env_get_or("GENO_WP2_SECRET", "default"))', "env_get_or"),
+        # The caller lacks this one: still a denial, never a fallback.
+        (
+            'print("ESCAPED " + env_get_or("GENO_WP2_NEVER_SET", "default"))',
+            "env_get_or",
+        ),
+    ],
+)
+def test_unlisted_names_are_an_env_policy_denial_with_an_allow_env_hint(
+    tmp_path: Path, call: str, builtin: str
+) -> None:
+    name = "GENO_WP2_NEVER_SET" if "NEVER_SET" in call else "GENO_WP2_SECRET"
+    _write(tmp_path, "main.geno", f"func main() -> Unit\n    {call}\nend func\n")
+
+    result = _geno(
+        "--cap",
+        "env,print",
+        "--allow-env",
+        "HOME",
+        "main.geno",
+        cwd=tmp_path,
+        env=_without_geno_vars(GENO_WP2_SECRET="top-secret-value"),
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "top-secret-value" not in result.stderr
+    assert (
+        f"Runtime Error: {builtin}: environment variable '{name}' "
+        f"{ENV_POLICY_DENIED}\n" in result.stderr
+    )
+    assert result.stderr.endswith(
+        f"Hint: '{name}' is not in this run's environment allowlist; allow it "
+        "with --allow-env (the program can then read its value):\n"
+        f"  geno run --cap env,print --allow-env HOME --allow-env {name} "
+        "main.geno\n"
+    )
+
+
+def test_allowed_but_missing_names_keep_their_behaviour(tmp_path: Path) -> None:
+    source = """func main() -> Unit
+    match env_get("GENO_WP2_NEVER_SET") with
+        | Some(value) -> print("set " + value)
+        | None -> print("none")
+    end match
+    print(env_get_or("GENO_WP2_NEVER_SET", "the default"))
+end func
+"""
+    _write(tmp_path, "main.geno", source)
+
+    result = _geno(
+        "--cap",
+        "env,print",
+        "--allow-env",
+        "GENO_WP2_NEVER_SET",
+        "main.geno",
+        cwd=tmp_path,
+        env=_without_geno_vars(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "none\nthe default\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows folds variable names")
+def test_posix_names_are_exact_and_case_sensitive(tmp_path: Path) -> None:
+    source = """func main() -> Unit
+    print(env_get_or("PATH", "unreachable"))
+end func
+"""
+    _write(tmp_path, "main.geno", source)
+
+    result = _geno(
+        "--cap", "env,print", "--allow-env", "Path", "main.geno", cwd=tmp_path
+    )
+
+    assert result.returncode == 1
+    assert f"env_get_or: environment variable 'PATH' {ENV_POLICY_DENIED}" in (
+        result.stderr
+    )
+
+
+def test_only_allowed_present_variables_cross_to_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from geno.cli.run import run_file
+    from geno.sandbox import ProcessSandbox
+
+    monkeypatch.setenv("GENO_WP2_SECRET", "secret-value-never-sent")
+    monkeypatch.setenv("GENO_WP2_ALLOWED", "allowed value")
+    monkeypatch.delenv("GENO_WP2_MISSING", raising=False)
+    seen: dict[str, Any] = {}
+    original_execute = ProcessSandbox.execute_geno_request
+    original_run_worker = ProcessSandbox._run_worker
+
+    def spy_execute(self: ProcessSandbox, request: Any, policy: Any = None) -> Any:
+        seen["request"] = request
+        seen["policy"] = policy
+        return original_execute(self, request, policy)
+
+    def spy_run_worker(self: ProcessSandbox, *args: Any, **kwargs: Any) -> Any:
+        _cmd, worker_input, config_overrides = args
+        seen["worker_input"] = worker_input
+        seen["config_overrides"] = config_overrides
+        seen["worker_env"] = self._create_restricted_env(config_overrides)
+        return original_run_worker(self, *args, **kwargs)
+
+    monkeypatch.setattr(ProcessSandbox, "execute_geno_request", spy_execute)
+    monkeypatch.setattr(ProcessSandbox, "_run_worker", spy_run_worker)
+    source = _write(
+        tmp_path,
+        "main.geno",
+        'func main() -> Unit\n    print(env_get_or("GENO_WP2_ALLOWED", "-"))\n'
+        "end func\n",
+    )
+
+    status = run_file(
+        str(source),
+        capabilities={"env", "print"},
+        allow_env=["GENO_WP2_ALLOWED", "GENO_WP2_MISSING"],
+        program_args=["x"],
+    )
+
+    assert status is None
+    assert capsys.readouterr().out == "allowed value\n"
+    assert seen["request"]["env_snapshot"] == {"GENO_WP2_ALLOWED": "allowed value"}
+    assert seen["request"]["program_args"] == ["x"]
+    assert seen["policy"].env_allowed_names == frozenset(
+        {"GENO_WP2_ALLOWED", "GENO_WP2_MISSING"}
+    )
+    assert seen["config_overrides"]["run_policy"]["env_allowed_names"] == [
+        "GENO_WP2_ALLOWED",
+        "GENO_WP2_MISSING",
+    ]
+    for blob in (
+        json.dumps(seen["request"]),
+        json.dumps(seen["config_overrides"]),
+        seen["worker_input"],
+        json.dumps(seen["worker_env"]),
+    ):
+        assert "secret-value-never-sent" not in blob
+        assert "GENO_WP2_SECRET" not in blob
+
+
+def test_no_snapshot_crosses_without_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from geno.cli.run import run_file
+    from geno.sandbox import ProcessSandbox
+
+    requests: list[Any] = []
+    original_execute = ProcessSandbox.execute_geno_request
+
+    def spy_execute(self: ProcessSandbox, request: Any, policy: Any = None) -> Any:
+        requests.append(request)
+        return original_execute(self, request, policy)
+
+    monkeypatch.setattr(ProcessSandbox, "execute_geno_request", spy_execute)
+    source = _write(
+        tmp_path, "main.geno", 'func main() -> Unit\n    print("hi")\nend func\n'
+    )
+
+    assert run_file(str(source), capabilities={"print"}) is None
+    assert run_file(str(source)) is None
+    assert capsys.readouterr().out == "hi\nhi\n"
+    for request in requests:
+        assert "env_snapshot" not in request
+
+
+EXAMPLE_ENV_PROGRAM = """func greeting() -> String
+    example () -> "hi from the caller"
+    return env_get_or("GENO_WP2_GREETING", "no greeting")
+end func
+
+func arg_count() -> Int
+    example () -> 2
+    return length(cli_args())
+end func
+
+func main() -> Unit
+    print(greeting())
+    print(arg_count())
+end func
+"""
+
+
+def test_examples_and_main_share_one_env_snapshot(tmp_path: Path) -> None:
+    _write(tmp_path, "main.geno", EXAMPLE_ENV_PROGRAM)
+    env = _without_geno_vars(GENO_WP2_GREETING="hi from the caller")
+
+    allowed = _geno(
+        "--cap",
+        "env,print",
+        "--allow-env",
+        "GENO_WP2_GREETING",
+        "main.geno",
+        "--",
+        "a",
+        "b",
+        cwd=tmp_path,
+        env=env,
+    )
+    denied = _geno(
+        "--cap", "env,print", "main.geno", "--", "a", "b", cwd=tmp_path, env=env
+    )
+
+    assert allowed.returncode == 0, allowed.stderr
+    assert allowed.stdout == "hi from the caller\n2\n"
+    # The example phase is interpreted: same denial, at the call site, with
+    # the same hint as a denial in `main`.
+    assert denied.returncode == 1
+    assert denied.stdout == ""
+    assert "hi from the caller" not in denied.stderr
+    assert (
+        "Runtime Error: env_get_or: environment variable 'GENO_WP2_GREETING' "
+        f"{ENV_POLICY_DENIED}\n" in denied.stderr
+    )
+    assert "main.geno:3:12" in denied.stderr
+    assert denied.stderr.endswith(
+        "  geno run --cap env,print --allow-env GENO_WP2_GREETING main.geno -- a b\n"
+    )
+
+
+def test_env_grant_with_a_print_example_hints_the_full_grant(tmp_path: Path) -> None:
+    # `--cap env` is exact: the example's `print` is denied, and the hint
+    # names the whole grant to use (proposal 0013's example).
+    source = """func loud(text: String) -> String
+    example "hi" -> "hi"
+    print(text)
+    return text
+end func
+
+func main() -> Unit
+    print(loud(join(cli_args(), ",")))
+end func
+"""
+    _write(tmp_path, "main.geno", source)
+
+    result = _geno("--cap", "env", "main.geno", "--", "hello", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "Capability denied: 'print' requires the 'print' capability" in (
+        result.stderr
+    )
+    assert result.stderr.endswith(
+        "Hint: grant it with --cap; the program stays process-isolated:\n"
+        "  geno run --cap env,print main.geno -- hello\n"
+    )
+
+
+def test_cli_args_parity_with_unsafe(tmp_path: Path) -> None:
+    _write(tmp_path, "main.geno", ARGS_PROGRAM)
+    args = ("main.geno", "--", "in put.txt", "-v")
+
+    isolated = _geno("--cap", "env,print", *args, cwd=tmp_path)
+    direct = _geno("--unsafe", "--cap", "env,print", *args, cwd=tmp_path)
+
+    assert isolated.returncode == direct.returncode == 0
+    assert isolated.stdout == direct.stdout == "in put.txt,-v\n"
+    assert isolated.stderr == direct.stderr == ""
+
+
+def test_env_scope_differs_from_unsafe_as_documented(tmp_path: Path) -> None:
+    # `--unsafe --cap env` exposes the caller's whole environment; the
+    # isolated lane exposes only the names it allows, with the same values.
+    caller_home = str(tmp_path / "caller-home")
+    source = """func main() -> Unit
+    match env_get("HOME") with
+        | Some(home) -> print(home)
+        | None -> print("HOME unset")
+    end match
+end func
+"""
+    _write(tmp_path, "main.geno", source)
+    env = _without_geno_vars(HOME=caller_home)
+
+    direct = _geno("--unsafe", "--cap", "env,print", "main.geno", cwd=tmp_path, env=env)
+    isolated = _geno("--cap", "env,print", "main.geno", cwd=tmp_path, env=env)
+    allowed = _geno(
+        "--cap",
+        "env,print",
+        "--allow-env",
+        "HOME",
+        "main.geno",
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert direct.returncode == 0, direct.stderr
+    assert direct.stdout == f"{caller_home}\n"
+    assert isolated.returncode == 1
+    assert f"env_get: environment variable 'HOME' {ENV_POLICY_DENIED}" in (
+        isolated.stderr
+    )
+    assert allowed.returncode == 0, allowed.stderr
+    assert allowed.stdout == direct.stdout
+
+
+def test_prepare_validates_the_environment_snapshot(tmp_path: Path) -> None:
+    from geno.cli.run import _prepare_process_run
+
+    source = _write(tmp_path, "main.geno", ARGS_PROGRAM)
+    request: dict[str, Any] = {
+        "filename": str(source),
+        "target": None,
+        "check_examples": False,
+        "timeout": 30.0,
+        "max_recursion_depth": 100,
+        "max_output_length": 1000,
+        "max_collection_size": 10_000,
+        "max_integer_bits": 33_219,
+        "program_args": ["a"],
+    }
+    env_policy = IsolatedRunPolicy(
+        capabilities=frozenset({"env", "print"}),
+        env_allowed_names=frozenset({"HOME"}),
+    )
+
+    prepared = _prepare_process_run(
+        {**request, "env_snapshot": {"HOME": "/home/caller"}}, env_policy
+    )
+    env = prepared["host_table"]["env"]
+    assert isinstance(env, IsolatedEnv)
+    assert env.program_args == ("a",)
+    assert dict(env.environ) == {"HOME": "/home/caller"}
+
+    for snapshot, policy in (
+        # Only allowed names may cross.
+        ({"SECRET": "x"}, env_policy),
+        ({"HOME": 3}, env_policy),
+        (["HOME"], env_policy),
+        # And no snapshot at all without `env`.
+        ({}, IsolatedRunPolicy.default()),
+    ):
+        with pytest.raises(ValueError, match="environment snapshot"):
+            _prepare_process_run({**request, "env_snapshot": snapshot}, policy)
