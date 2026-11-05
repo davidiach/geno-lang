@@ -1833,7 +1833,17 @@ class ProcessSandbox:
         cmd: list[str],
         code: str,
         config_overrides: dict[str, Any] | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> tuple[int, str, str, bool]:
+        """Run one supervised worker and return its exit status and output.
+
+        *pass_fds* are extra descriptors the worker inherits, at the same
+        numbers (POSIX only): an isolated run's program input handle when
+        ``stdin`` is granted, and nothing otherwise. Every other descriptor
+        but the three control pipes is closed in the worker.
+        """
+        if pass_fds and os.name != "posix":
+            raise SandboxError("Inherited worker handles are supported on POSIX only")
         job_handle: Any | None = None
         stdout_thread: threading.Thread | None = None
         stderr_thread: threading.Thread | None = None
@@ -1857,6 +1867,7 @@ class ProcessSandbox:
             errors="replace",
             env=self._create_restricted_env(config_overrides),
             start_new_session=os.name == "posix",
+            pass_fds=pass_fds,
         )
 
         try:
@@ -2130,29 +2141,47 @@ class ProcessSandbox:
         *policy* is the run's trusted grant and host policy (proposal 0013);
         ``None`` means the default grant. It travels in the parent-set worker
         configuration, which the worker validates before reading the request.
+
+        A ``stdin`` grant's ``policy.stdin_fd`` is a duplicate of the caller's
+        standard input made for this run (``isolated_host.with_program_stdin``).
+        The worker inherits it at the same number, and this method owns the
+        parent's copy: it is closed when the run ends, however it ends.
         """
         from .isolated_host import IsolatedRunPolicy
 
-        if not self.config.compiled_runtime_prelude:
-            raise SandboxError(
-                "Geno worker mode requires compiled_runtime_prelude=True"
-            )
-        if policy is None:
-            policy = IsolatedRunPolicy.default()
-        policy.validate()
+        pass_fds: tuple[int, ...] = ()
+        if policy is not None and policy.stdin_fd is not None:
+            pass_fds = (policy.stdin_fd,)
         try:
-            payload = json.dumps(request, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise SandboxError("Geno worker request is not JSON serializable") from exc
-        return self._execute_worker_payload(
-            payload,
-            {
-                "worker_mode": "geno_cli",
-                "prelude_blob_sha256": None,
-                "trusted_prelude_line_count": 0,
-                "run_policy": policy.to_config(),
-            },
-        )
+            if not self.config.compiled_runtime_prelude:
+                raise SandboxError(
+                    "Geno worker mode requires compiled_runtime_prelude=True"
+                )
+            if policy is None:
+                policy = IsolatedRunPolicy.default()
+            policy.validate()
+            try:
+                payload = json.dumps(request, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise SandboxError(
+                    "Geno worker request is not JSON serializable"
+                ) from exc
+            return self._execute_worker_payload(
+                payload,
+                {
+                    "worker_mode": "geno_cli",
+                    "prelude_blob_sha256": None,
+                    "trusted_prelude_line_count": 0,
+                    "run_policy": policy.to_config(),
+                },
+                pass_fds=pass_fds,
+            )
+        finally:
+            for fd in pass_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def execute_python_benchmark(
         self, request: dict[str, Any]
@@ -2180,8 +2209,12 @@ class ProcessSandbox:
         self,
         payload: str,
         config_overrides: dict[str, Any] | None,
+        pass_fds: tuple[int, ...] = (),
     ) -> tuple[Any, str, str | None]:
-        """Run and parse a framed worker payload under hard resource limits."""
+        """Run and parse a framed worker payload under hard resource limits.
+
+        *pass_fds* reach :meth:`_run_worker` unchanged (see there).
+        """
         self.last_capability_denied = None
         self.last_env_policy_denied = None
         # Keep the command line tiny on Windows. The trusted worker and payload
@@ -2192,7 +2225,7 @@ class ProcessSandbox:
 
         try:
             returncode, stdout, stderr, stderr_truncated = self._run_worker(
-                cmd, worker_input, config_overrides
+                cmd, worker_input, config_overrides, pass_fds=pass_fds
             )
 
             # Result JSON is written to stderr so program output cannot spoof it.

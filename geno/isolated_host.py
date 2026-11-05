@@ -740,6 +740,36 @@ def _install_example_env_callbacks(interpreter: Interpreter, env: IsolatedEnv) -
     bind("cli_args", BuiltinFunction("cli_args", _cli_args, 0, []))
 
 
+def _install_example_stdin_callbacks(
+    interpreter: Interpreter, stdin: IsolatedStdin
+) -> None:
+    """Back the example interpreter's ``stdin_read_all`` with *stdin*.
+
+    ``main`` reads through the same binding instance, so both phases consume
+    one stream and get the same ``Err`` texts. The size check is the
+    interpreter's collection limit, applied chunk by chunk.
+    """
+    from .values import BuiltinFunction, ConstructorValue
+
+    def _check_size(size: int) -> None:
+        interpreter._check_collection_size("String", size, None)
+
+    def _stdin_read_all() -> Any:
+        try:
+            text = stdin.read_text(_check_size)
+        except IsolatedStdinDecodeError as error:
+            return ConstructorValue(
+                "Err", {"error": f"stdin is not valid UTF-8: {error}"}
+            )
+        except OSError as error:
+            return ConstructorValue("Err", {"error": str(error)})
+        return ConstructorValue("Ok", {"value": text})
+
+    interpreter.global_env.bind(
+        "stdin_read_all", BuiltinFunction("stdin_read_all", _stdin_read_all, 0, [])
+    )
+
+
 def build_example_interpreter(
     policy: IsolatedRunPolicy,
     sandbox_config: SandboxConfig,
@@ -772,6 +802,11 @@ def build_example_interpreter(
         if not isinstance(env, IsolatedEnv):
             raise ValueError("the env grant has no host binding")
         _install_example_env_callbacks(interpreter, env)
+    if "stdin" in policy.capabilities:
+        stdin = table.get("stdin")
+        if not isinstance(stdin, IsolatedStdin):
+            raise ValueError("the stdin grant has no host binding")
+        _install_example_stdin_callbacks(interpreter, stdin)
     return interpreter
 
 
