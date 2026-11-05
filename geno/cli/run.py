@@ -305,15 +305,32 @@ def _read_process_run_envelope(
     )
 
 
+# `_explicit_fs_roots_for_run` reads GENO_FS_ROOTS itself unless told otherwise.
+_ROOTS_FROM_ENVIRON: Any = object()
+
+
 def _explicit_fs_roots_for_run(
     filename: str,
     project_root,
     program_args: list[str] | None,
+    *,
+    configured_roots: Any = _ROOTS_FROM_ENVIRON,
 ) -> list[str]:
-    """Honor configured roots, otherwise grant the CLI's explicit input scope."""
-    configured_roots = os.environ.get("GENO_FS_ROOTS")
+    """Honor configured roots, otherwise grant the CLI's explicit input scope.
+
+    ``--unsafe`` reads the configured roots from ``GENO_FS_ROOTS`` here. The
+    isolated worker passes *configured_roots* instead: the parent's split of
+    that variable from the trusted run policy, or ``None`` when it was unset.
+    """
+    if configured_roots is _ROOTS_FROM_ENVIRON:
+        raw_roots = os.environ.get("GENO_FS_ROOTS")
+        configured_roots = (
+            None
+            if raw_roots is None
+            else [root for root in raw_roots.split(os.pathsep) if root]
+        )
     if configured_roots is not None:
-        roots = [root for root in configured_roots.split(os.pathsep) if root]
+        roots = list(configured_roots)
         if not roots:
             raise RuntimeError(
                 "GENO_FS_ROOTS must contain at least one filesystem root"
@@ -386,6 +403,8 @@ def _prepare_process_run(
     request: dict[str, Any],
     policy: IsolatedRunPolicy | None = None,
     clock: IsolatedRunClock | None = None,
+    *,
+    max_file_size_bytes: int = 0,
 ) -> dict[str, Any]:
     """Compile a validated default-run request inside the sandbox worker.
 
@@ -393,6 +412,9 @@ def _prepare_process_run(
     configuration (the default grant when omitted) and *clock* the run's one
     deadline. Examples run with exactly that grant, under that deadline, and
     the output they use is returned so ``main`` cannot get a fresh allowance.
+    *max_file_size_bytes* is the per-file write limit from that configuration
+    (the worker's ``RLIMIT_FSIZE``), which an ``fs`` grant's facade enforces
+    on every platform.
     """
     from ..isolated_host import (
         IsolatedRunClock,
@@ -407,6 +429,12 @@ def _prepare_process_run(
         raise TypeError("invalid process-run policy")
     if clock is None:
         clock = IsolatedRunClock(policy.deadline_seconds)
+    if (
+        not isinstance(max_file_size_bytes, int)
+        or isinstance(max_file_size_bytes, bool)
+        or max_file_size_bytes < 0
+    ):
+        raise TypeError("invalid process-run file size limit")
 
     expected_keys = {
         "filename",
@@ -469,8 +497,25 @@ def _prepare_process_run(
     parsed_modules = resolved_run.parsed_modules
     _typecheck_run_graph(dependency_graph, resolved_run.check_targets)
 
+    # The fs roots are computed here, in trusted setup, exactly as --unsafe
+    # computes them, but from the parent's GENO_FS_ROOTS in the policy. The
+    # program arguments count even when `cli_args` itself is not granted.
+    fs_roots = (
+        _explicit_fs_roots_for_run(
+            filename,
+            resolved_run.project_root,
+            program_args,
+            configured_roots=policy.fs_configured_roots,
+        )
+        if "fs" in policy.capabilities
+        else None
+    )
     host_table = build_host_table(
-        policy, program_args=program_args, env_snapshot=env_snapshot
+        policy,
+        program_args=program_args,
+        env_snapshot=env_snapshot,
+        fs_roots=fs_roots,
+        max_file_size_bytes=max_file_size_bytes,
     )
     example_output_length = 0
     if check_examples and _program_has_example_clauses(program, parsed_modules):

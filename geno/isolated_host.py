@@ -874,6 +874,8 @@ def build_host_table(
     *,
     program_args: Sequence[str] = (),
     env_snapshot: Mapping[str, str] | None = None,
+    fs_roots: Sequence[str] | None = None,
+    max_file_size_bytes: int = 0,
 ) -> dict[str, IsolatedHostBinding]:
     """Return the private host table for a validated policy.
 
@@ -883,6 +885,12 @@ def build_host_table(
     binding exposes them (to ``cli_args``). *env_snapshot* must hold only
     allowed names, and only with ``env``. The ``stdin`` binding reads the
     policy's inherited input handle; it reads nothing until asked.
+
+    With ``fs``, *fs_roots* are the run's filesystem roots (trusted setup
+    computes them as ``--unsafe`` does) and *max_file_size_bytes* the
+    per-file write limit from the parent-set worker configuration; the
+    policy supplies the read-only and absolute-path rules and the run's total
+    write budget. Roots without ``fs`` are refused.
     """
     policy.validate()
     table: dict[str, IsolatedHostBinding] = {}
@@ -897,6 +905,18 @@ def build_host_table(
         raise ValueError("an environment snapshot requires the 'env' capability")
     if "stdin" in policy.capabilities:
         table["stdin"] = IsolatedStdin(policy.stdin_fd)
+    if "fs" in policy.capabilities:
+        if fs_roots is None:
+            raise ValueError("the 'fs' capability needs its filesystem roots")
+        table["fs"] = IsolatedFs(
+            fs_roots,
+            allow_absolute=policy.fs_allow_absolute,
+            writes_allowed=not policy.fs_read_only,
+            max_file_size=max_file_size_bytes,
+            max_total_write_bytes=policy.max_total_write_bytes,
+        )
+    elif fs_roots is not None:
+        raise ValueError("filesystem roots require the 'fs' capability")
     return table
 
 
@@ -1024,6 +1044,89 @@ def _install_example_stdin_callbacks(
     )
 
 
+def _install_example_fs_callbacks(interpreter: Interpreter, fs: IsolatedFs) -> None:
+    """Back the example interpreter's filesystem builtins with *fs*.
+
+    ``main`` uses the same binding instance, so both phases share one set of
+    roots and one write budget, and get the same results: quota rejections
+    are ``Err`` with the same text in both. Everything else mirrors
+    ``_serve.install_fs_callbacks`` (``--unsafe``): the interpreter's
+    collection limits, its ``FileMetadata`` values and its error categories.
+    """
+    from ._serve import (
+        _checked_callback_result,
+        _metadata_value_from_parts,
+        _read_limited_text_stream,
+    )
+    from .values import BuiltinFunction, ConstructorValue
+
+    def _err(error: BaseException) -> Any:
+        return ConstructorValue("Err", {"error": str(error)})
+
+    def _ok(value: Any) -> Any:
+        return _checked_callback_result(
+            interpreter, ConstructorValue("Ok", {"value": value})
+        )
+
+    def _fs_read_text(path: Any) -> Any:
+        try:
+            with fs.open_text_reader(path, "fs_read_text") as reader:
+                text = _read_limited_text_stream(interpreter, reader, "fs_read_text")
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        return _ok(text)
+
+    def _fs_write_text(path: Any, content: Any) -> Any:
+        fs.require_writable("fs_write_text")
+        try:
+            fs.write_text(path, content, "fs_write_text")
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        return ConstructorValue("Ok", {"value": None})
+
+    def _fs_list_dir(path: Any) -> Any:
+        try:
+            entries = fs.list_dir(path, "fs_list_dir")
+        except (OSError, RuntimeError) as error:
+            return _err(error)
+        return _ok(entries)
+
+    def _fs_exists(path: Any) -> bool:
+        return fs.exists(path, "fs_exists")
+
+    def _metadata(path: Any, fn_name: str, follow: bool) -> Any:
+        try:
+            kind, size, mtime_ns = fs.metadata(path, fn_name, follow=follow)
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        return _ok(_metadata_value_from_parts(kind, size, mtime_ns, fn_name))
+
+    def _fs_metadata(path: Any) -> Any:
+        return _metadata(path, "fs_metadata", True)
+
+    def _fs_symlink_metadata(path: Any) -> Any:
+        return _metadata(path, "fs_symlink_metadata", False)
+
+    def _fs_canonicalize(path: Any) -> Any:
+        try:
+            resolved = fs.canonicalize(path, "fs_canonicalize")
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        return _ok(resolved.replace("\\", "/"))
+
+    bind = interpreter.global_env.bind
+    for name, function, params in (
+        ("fs_read_text", _fs_read_text, ["path"]),
+        ("fs_write_text", _fs_write_text, ["path", "content"]),
+        ("fs_list_dir", _fs_list_dir, ["path"]),
+        ("fs_exists", _fs_exists, ["path"]),
+        ("fs_metadata", _fs_metadata, ["path"]),
+        ("fs_symlink_metadata", _fs_symlink_metadata, ["path"]),
+        ("fs_canonicalize", _fs_canonicalize, ["path"]),
+    ):
+        bind(name, BuiltinFunction(name, function, len(params), params))
+
+
 def build_example_interpreter(
     policy: IsolatedRunPolicy,
     sandbox_config: SandboxConfig,
@@ -1061,6 +1164,11 @@ def build_example_interpreter(
         if not isinstance(stdin, IsolatedStdin):
             raise ValueError("the stdin grant has no host binding")
         _install_example_stdin_callbacks(interpreter, stdin)
+    if "fs" in policy.capabilities:
+        fs = table.get("fs")
+        if not isinstance(fs, IsolatedFs):
+            raise ValueError("the fs grant has no host binding")
+        _install_example_fs_callbacks(interpreter, fs)
     return interpreter
 
 
