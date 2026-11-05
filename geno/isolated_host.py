@@ -710,7 +710,7 @@ class IsolatedFs(IsolatedHostBinding):
     *max_total_write_bytes* for every write of the run, examples and ``main``
     together (they share this instance). A write is counted in the UTF-8 bytes
     it emits after newline translation to *linesep* (``os.linesep``: text-mode
-    ``fs_write_text`` writes ``\r\n`` for each ``\n`` on Windows), reserved
+    ``fs_write_text`` writes CRLF for each LF on Windows), reserved
     from the total before the destination is opened, and never refunded, even
     when the write then fails or rewrites the same path. A limit of 0 disables
     every write, including empty ones and truncation.
