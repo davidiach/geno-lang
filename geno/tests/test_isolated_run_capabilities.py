@@ -20,6 +20,11 @@ Milestone 4: ``fs`` goes through the trusted facade with the ``--unsafe``
 roots and portable write limits (``test_isolated_run_fs.py``); the builtin
 matrix runs each of its seven builtins once.
 
+Milestone 5: ``http`` goes through ``--unsafe``'s validated client in trusted
+worker code (``test_isolated_run_http.py``), on POSIX only: Windows refuses
+it before launch. The builtin matrix runs its three builtins against a local
+server.
+
 Runs here go through real ``geno run`` subprocesses unless a test needs to
 observe the parent in-process. Only a real worker applies its restricted
 builtins to the runtime prelude, so every gated builtin with a host binding
@@ -28,6 +33,7 @@ runs once through one (the builtin matrix).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -609,13 +615,13 @@ end func
 def test_platform_matrix() -> None:
     """Pin which capabilities the isolated lane grants on each platform."""
     assert (
-        frozenset({"clock", "env", "fs", "print", "random", "regex"})
+        frozenset({"clock", "env", "fs", "http", "print", "random", "regex"})
         == ISOLATED_RUN_CAPABILITIES
     )
     assert frozenset({"process", "serve"}) == ISOLATED_RUN_REFUSED_CAPABILITIES
     assert frozenset({"stdin", "http"}) == ISOLATED_RUN_WINDOWS_UNAVAILABLE
     assert isolated_run_capabilities("posix") == frozenset(
-        {"clock", "env", "fs", "print", "random", "regex"}
+        {"clock", "env", "fs", "http", "print", "random", "regex"}
     )
     assert isolated_run_capabilities("nt") == frozenset(
         {"clock", "env", "fs", "print", "random", "regex"}
@@ -684,6 +690,51 @@ def test_windows_refuses_stdin_before_launch(
     assert captured.err == f"Error: {message}\n"
     # Windows stays refused even once POSIX is enabled.
     assert "stdin" in ISOLATED_RUN_WINDOWS_UNAVAILABLE
+
+
+def test_windows_refuses_http_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Simulated Windows: ``--cap http`` never reaches a worker.
+
+    The proposal's HTTP gate has no Windows evidence yet, so the lane keeps
+    ``http`` refused there, with the Windows wording, while POSIX grants it.
+    """
+    from geno import capabilities as capabilities_module
+    from geno.cli.run import run_file
+    from geno.sandbox import ProcessSandbox
+
+    launched: list[Any] = []
+    monkeypatch.setattr(
+        ProcessSandbox, "_run_worker", lambda *args, **kwargs: launched.append(args)
+    )
+    real_refusals = capabilities_module.isolated_run_refusals
+    monkeypatch.setattr(
+        "geno.cli.run.isolated_run_refusals",
+        lambda caps, os_name=None: real_refusals(caps, "nt"),
+    )
+    source = _write(
+        tmp_path, "main.geno", 'func main() -> Unit\n    print("ESCAPED")\nend func\n'
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_file(str(source), capabilities={"http", "print"})
+
+    assert excinfo.value.code == 1
+    assert launched == []
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "Error: --cap http is not yet available in the process-isolated run mode "
+        "on Windows. Use --unsafe --cap ... for trusted code, or --json --cap ... "
+        "for embedding API execution.\n"
+    )
+    assert isolated_run_refusal("http", "posix") is None
+    # A worker on Windows refuses an http policy too, whatever its parent sent.
+    with pytest.raises(ValueError, match="'http' is not available"):
+        IsolatedRunPolicy(capabilities=frozenset({"http", "print"})).validate("nt")
 
 
 def test_windows_refusal_names_the_platform_once_a_capability_lands() -> None:
@@ -844,7 +895,7 @@ HOST_BINDING_CAPABILITIES = frozenset({"env", "stdin", "fs", "http"})
 # Host-binding capabilities whose isolated implementation exists. `stdin` is
 # implemented but stays refused until its platform gate passes; its entries
 # run once the lane grants it.
-IMPLEMENTED_HOST_CAPABILITIES = frozenset({"env", "fs", "stdin"})
+IMPLEMENTED_HOST_CAPABILITIES = frozenset({"env", "fs", "http", "stdin"})
 
 MATRIX_VALUE = "matrix value"
 
@@ -971,6 +1022,43 @@ BUILTIN_MATRIX.update(
     }
 )
 
+# The HTTP builtins: each runs once through the worker's binding against a
+# local server (`@URL@` in the source), with the parent's private-network
+# opt-in, so no worker branch may import `urllib`, name `bytes` or call
+# `getattr` on a private name.
+_HTTP_MATRIX_FLAGS = ["--cap", "http,print"]
+
+BUILTIN_MATRIX.update(
+    {
+        "http_fetch": (
+            _HTTP_MATRIX_FLAGS,
+            _fs_matrix_program(_fs_matrix_match('http_fetch("@URL@/fetch")', "value")),
+            [],
+            "GET /fetch \n",
+        ),
+        "http_post": (
+            _HTTP_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match('http_post("@URL@/post", "{}")', "value")
+            ),
+            [],
+            "POST /post {}\n",
+        ),
+        "http_request": (
+            _HTTP_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'http_request(method: "PUT", url: "@URL@/request", '
+                    'headers: [("X-Matrix", "1")], body: "sent")',
+                    'to_string(value.status) + " " + value.body',
+                )
+            ),
+            [],
+            "200 PUT /request sent\n",
+        ),
+    }
+)
+
 # The standard input each matrix entry is run with.
 MATRIX_STDIN = {"stdin_read_all": MATRIX_VALUE}
 
@@ -1016,20 +1104,29 @@ def test_isolated_run_builtin_matrix(tmp_path: Path, builtin: str) -> None:
     if capability not in isolated_run_capabilities():
         pytest.skip(f"the isolated lane does not grant {capability!r} yet")
     flags, source, program_args, expected = BUILTIN_MATRIX[builtin]
-    _write(tmp_path, "main.geno", source)
     for name, text in MATRIX_FILES.items():
         (tmp_path / name).parent.mkdir(exist_ok=True)
         _write(tmp_path, name, text)
+    env = _without_geno_vars(GENO_MATRIX_VALUE=MATRIX_VALUE)
 
-    result = subprocess.run(
-        [sys.executable, "-m", "geno", "run", *flags, "main.geno", "--"] + program_args,
-        input=MATRIX_STDIN.get(builtin, ""),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=tmp_path,
-        env=_without_geno_vars(GENO_MATRIX_VALUE=MATRIX_VALUE),
-    )
+    with contextlib.ExitStack() as stack:
+        if capability == "http":
+            from geno.tests.test_isolated_run_http import echo, local_server
+
+            server = stack.enter_context(local_server(echo))
+            source = source.replace("@URL@", server.base)
+            env["GENO_HTTP_ALLOW_PRIVATE"] = "1"
+        _write(tmp_path, "main.geno", source)
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "run", *flags, "main.geno", "--"]
+            + program_args,
+            input=MATRIX_STDIN.get(builtin, ""),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            env=env,
+        )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == expected
