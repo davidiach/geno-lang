@@ -4,12 +4,23 @@ Milestone 1: the default lane accepts ``--cap`` for the capabilities it
 implements (``clock``, ``print``, ``random``, ``regex``), refuses ``process``,
 ``serve`` and every capability whose milestone has not landed before a worker
 starts, and gives examples exactly the run's grant, one deadline and one
-output budget. Runs here go through real ``geno run`` subprocesses unless a
-test needs to observe the parent in-process.
+output budget.
+
+Milestone 2: ``env`` gives ``cli_args()`` the program arguments without
+exposing any variable; ``--allow-env NAME`` permits individual variables from
+the caller's environment, examples and ``main`` share one snapshot, and issue
+#68's ``geno run --cap env,print main.geno -- hello world`` works while the
+run keeps its hard limits.
+
+Runs here go through real ``geno run`` subprocesses unless a test needs to
+observe the parent in-process. Only a real worker applies its restricted
+builtins to the runtime prelude, so every gated builtin with a host binding
+runs once through one (the builtin matrix).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -29,6 +40,7 @@ from geno.capabilities import (
     isolated_run_refusal,
 )
 from geno.isolated_host import (
+    IsolatedEnv,
     IsolatedRunClock,
     IsolatedRunPolicy,
     isolated_run_policy_for,
