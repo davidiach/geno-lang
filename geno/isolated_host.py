@@ -15,8 +15,9 @@ that needs host access, so a missing binding is a second gate, independent of
 the per-builtin capability check.
 
 The parent imports this module as well as the worker, so module scope imports
-only the standard library and :mod:`geno.capabilities`. The interpreter and
-the runtime values are imported inside the functions that need them.
+only the standard library, :mod:`geno.capabilities` and :mod:`geno._serve`
+(whose validators the parent already loads for ``--unsafe``). The interpreter
+and the runtime values are imported inside the functions that need them.
 
 Everything here runs with real builtins, in the parent and in the worker
 alike: the worker imported it through the real import system during trusted
@@ -35,10 +36,17 @@ import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
+from ._serve import (
+    _resolve_fs_roots,
+    _resolve_scoped_lstat_path,
+    _resolve_scoped_path,
+    file_kind_name,
+)
 from .capabilities import (
     DEFAULT_ALLOWED_CAPABILITIES,
+    ISOLATED_RUN_FS_WRITE_LIMIT_BYTES,
     KNOWN_CAPABILITIES,
     isolated_env_name_error,
     isolated_run_capabilities,
@@ -181,6 +189,12 @@ class IsolatedRunPolicy:
             raise IsolatedRunPolicyError(
                 "filesystem policy settings require the 'fs' capability"
             )
+        if self.fs_configured_roots is not None and not self.fs_configured_roots:
+            raise IsolatedRunPolicyError(
+                "fs_configured_roots must name at least one filesystem root"
+            )
+        if not _policy_int(self.max_total_write_bytes):
+            raise IsolatedRunPolicyError("max_total_write_bytes must be an integer")
         if self.max_total_write_bytes < 0:
             raise IsolatedRunPolicyError("max_total_write_bytes must not be negative")
         if "http" not in granted and self.http_allow_private:
@@ -292,11 +306,49 @@ def env_name_key(name: str, case_insensitive: bool) -> str:
     return name.upper() if case_insensitive else name
 
 
+def _env_truthy(value: str | None) -> bool:
+    """The host-policy truthy rule of ``_serve._env_truthy``, for one value."""
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def isolated_fs_host_policy(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[bool, tuple[str, ...] | None, bool]:
+    """Resolve the caller's filesystem policy variables for an ``fs`` grant.
+
+    Returns ``(read_only, configured_roots, allow_absolute)`` from
+    ``GENO_FS_READ_ONLY``, ``GENO_FS_ROOTS`` (split on ``os.pathsep``;
+    ``None`` when unset) and ``GENO_FS_ALLOW_ABSOLUTE``, read from *environ*
+    (default ``os.environ``) exactly as ``geno run --unsafe --cap fs`` reads
+    them: absolute paths inside the roots are allowed unless either roots
+    variable is set, and then only when ``GENO_FS_ALLOW_ABSOLUTE`` is truthy.
+    A set but empty ``GENO_FS_ROOTS`` raises :class:`IsolatedRunPolicyError`.
+    The parent calls this only when ``fs`` is granted.
+    """
+    source: Mapping[str, str] = os.environ if environ is None else environ
+    read_only = _env_truthy(source.get("GENO_FS_READ_ONLY"))
+    raw_roots = source.get("GENO_FS_ROOTS")
+    roots: tuple[str, ...] | None = None
+    if raw_roots is not None:
+        roots = tuple(root for root in raw_roots.split(os.pathsep) if root)
+        if not roots:
+            raise IsolatedRunPolicyError(
+                "GENO_FS_ROOTS must contain at least one filesystem root"
+            )
+    if raw_roots is None and "GENO_FS_ALLOW_ABSOLUTE" not in source:
+        allow_absolute = True
+    else:
+        allow_absolute = _env_truthy(source.get("GENO_FS_ALLOW_ABSOLUTE"))
+    return read_only, roots, allow_absolute
+
+
 def isolated_run_policy_for(
     grant: Collection[str] | None,
     *,
     timeout: float | None,
     allow_env: Collection[str] = (),
+    max_total_write_bytes: int | None = None,
+    environ: Mapping[str, str] | None = None,
     os_name: str | None = None,
 ) -> IsolatedRunPolicy:
     """Build and validate the policy the parent sends for one isolated run.
@@ -304,15 +356,31 @@ def isolated_run_policy_for(
     *grant* is the ``--cap`` set, or ``None`` for the default grant, and
     *allow_env* the ``--allow-env`` names (exact; folded on Windows). Host
     policy is resolved only for the capability it configures: a grant without
-    ``fs`` or ``http`` never reads those capabilities' settings. The program
-    input handle of a ``stdin`` grant is added just before launch, by
-    :func:`with_program_stdin`.
+    ``fs`` or ``http`` never reads those capabilities' settings from
+    *environ* (default ``os.environ``). With ``fs``,
+    *max_total_write_bytes* is the ``--max-total-write-bytes`` value, or
+    ``None`` for the lane default; without ``fs`` it is ignored and the
+    policy keeps 0. The program input handle of a ``stdin`` grant is added
+    just before launch, by :func:`with_program_stdin`.
     """
     capabilities = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
     deadline: float | None = None
     if timeout is not None and math.isfinite(timeout) and timeout > 0:
         deadline = float(timeout)
     case_insensitive = "env" in capabilities and isolated_env_case_insensitive(os_name)
+    fs_fields: dict[str, Any] = {}
+    if "fs" in capabilities:
+        read_only, roots, allow_absolute = isolated_fs_host_policy(environ)
+        fs_fields = {
+            "fs_read_only": read_only,
+            "fs_configured_roots": roots,
+            "fs_allow_absolute": allow_absolute,
+            "max_total_write_bytes": (
+                ISOLATED_RUN_FS_WRITE_LIMIT_BYTES
+                if max_total_write_bytes is None
+                else max_total_write_bytes
+            ),
+        }
     policy = IsolatedRunPolicy(
         capabilities=capabilities,
         env_allowed_names=frozenset(
@@ -320,6 +388,7 @@ def isolated_run_policy_for(
         ),
         env_case_insensitive=case_insensitive,
         deadline_seconds=deadline,
+        **fs_fields,
     )
     policy.validate(os_name)
     return policy
@@ -609,9 +678,193 @@ class IsolatedStdin(IsolatedHostBinding):
                 return "".join(parts)
 
 
+class IsolatedQuotaError(RuntimeError):
+    """``fs_write_text`` hit an isolated write limit, or one set to 0.
+
+    The runtime prelude and the example interpreter return it as ``Err``: a
+    program can handle the rejection and carry on, and a later, smaller write
+    may still fit. It is raised before the destination is opened, so the file
+    is unchanged.
+    """
+
+
+def _limit_value(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+class IsolatedFs(IsolatedHostBinding):
+    """The ``fs`` grant's binding: a narrow facade over the host filesystem.
+
+    Every operation first resolves its path with the validators
+    ``geno run --unsafe --cap fs`` uses (``_serve._resolve_scoped_path`` and
+    ``_serve._resolve_scoped_lstat_path``): the same roots, symlink and
+    absolute-path rules, and the same error texts. Results are plain values (a
+    text reader for ``fs_read_text``, names, booleans, a classified
+    ``(kind, size, mtime_ns)`` triple, a path); no stat result, raw ``os``
+    access or write handle ever reaches the runtime prelude.
+
+    Writes pass the trusted read-only policy and two portable byte limits:
+    *max_file_size* for one write's whole resulting file and
+    *max_total_write_bytes* for every write of the run, examples and ``main``
+    together (they share this instance). A write is counted in the UTF-8 bytes
+    it emits after newline translation to *linesep* (``os.linesep``: text-mode
+    ``fs_write_text`` writes ``\r\n`` for each ``\n`` on Windows), reserved
+    from the total before the destination is opened, and never refunded, even
+    when the write then fails or rewrites the same path. A limit of 0 disables
+    every write, including empty ones and truncation.
+    """
+
+    __slots__ = (
+        "_allow_absolute",
+        "_linesep",
+        "_max_file_size",
+        "_max_total",
+        "_remaining",
+        "_roots",
+        "_writes_allowed",
+    )
+
+    def __init__(
+        self,
+        roots: Sequence[str],
+        *,
+        allow_absolute: bool,
+        writes_allowed: bool,
+        max_file_size: int,
+        max_total_write_bytes: int,
+        linesep: str = os.linesep,
+    ) -> None:
+        if isinstance(roots, str) or not roots:
+            raise ValueError("the filesystem facade needs at least one root")
+        if any(not isinstance(root, str) or not root for root in roots):
+            raise ValueError("filesystem roots must be non-empty strings")
+        if linesep not in ("\n", "\r\n"):
+            raise ValueError("linesep must be '\\n' or '\\r\\n'")
+        self._roots = _resolve_fs_roots(list(roots))
+        self._allow_absolute = bool(allow_absolute)
+        self._writes_allowed = bool(writes_allowed)
+        self._max_file_size = _limit_value(max_file_size, "max_file_size")
+        self._max_total = _limit_value(max_total_write_bytes, "max_total_write_bytes")
+        self._remaining = self._max_total
+        self._linesep = linesep
+
+    @property
+    def remaining_write_bytes(self) -> int:
+        """Bytes the run may still write (examples and ``main`` together)."""
+        return self._remaining
+
+    def _resolve(self, path: Any, fn_name: str) -> str:
+        return _resolve_scoped_path(
+            path, fn_name, self._roots, allow_absolute_paths=self._allow_absolute
+        )
+
+    def open_text_reader(self, path: Any, fn_name: str) -> IO[str]:
+        """Open a file inside the roots for reading as UTF-8 text.
+
+        The caller reads it with its own bounded reader and closes it.
+        """
+        return open(self._resolve(path, fn_name), encoding="utf-8")
+
+    def list_dir(self, path: Any, fn_name: str) -> list[str]:
+        """The sorted entry names of a directory inside the roots."""
+        return sorted(os.listdir(self._resolve(path, fn_name)))
+
+    def exists(self, path: Any, fn_name: str) -> bool:
+        """Whether a path inside the roots exists (an escape raises)."""
+        return os.path.exists(self._resolve(path, fn_name))
+
+    def metadata(
+        self, path: Any, fn_name: str, *, follow: bool
+    ) -> tuple[str, int, int]:
+        """Return ``(kind, size, mtime_ns)`` for a path inside the roots.
+
+        *kind* is ``"file"``, ``"directory"``, ``"symlink"`` or ``"other"``,
+        classified here. With *follow* the final symbolic link is followed
+        (``fs_metadata``); without it the link itself is described
+        (``fs_symlink_metadata``), after its parent components are resolved
+        inside the roots.
+        """
+        if follow:
+            result = os.stat(self._resolve(path, fn_name))
+        else:
+            result = os.lstat(
+                _resolve_scoped_lstat_path(
+                    path,
+                    fn_name,
+                    self._roots,
+                    allow_absolute_paths=self._allow_absolute,
+                )
+            )
+        return file_kind_name(result.st_mode), result.st_size, result.st_mtime_ns
+
+    def canonicalize(self, path: Any, fn_name: str) -> str:
+        """The resolved path of an existing path inside the roots."""
+        resolved = self._resolve(path, fn_name)
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(f"{fn_name}: path does not exist: {path}")
+        return resolved
+
+    def require_writable(self, fn_name: str) -> None:
+        """Raise unless the trusted policy allows writes (``GENO_FS_READ_ONLY``).
+
+        Callers check this before :meth:`write_text`, outside their ``Err``
+        conversion: a read-only run's write is an error, as in every lane.
+        """
+        if not self._writes_allowed:
+            raise RuntimeError(f"{fn_name}: filesystem writes are not allowed")
+
+    def _reserve(self, size: int, fn_name: str) -> None:
+        if self._max_file_size == 0:
+            raise IsolatedQuotaError(
+                f"{fn_name}: file writes are disabled in this run "
+                "(--max-file-size-bytes is 0)"
+            )
+        if self._max_total == 0:
+            raise IsolatedQuotaError(
+                f"{fn_name}: file writes are disabled in this run "
+                "(--max-total-write-bytes is 0)"
+            )
+        if size > self._max_file_size:
+            raise IsolatedQuotaError(
+                f"{fn_name}: writing {size} bytes exceeds the per-file limit of "
+                f"{self._max_file_size} bytes (--max-file-size-bytes)"
+            )
+        if size > self._remaining:
+            raise IsolatedQuotaError(
+                f"{fn_name}: writing {size} bytes exceeds the remaining total write "
+                f"budget ({self._remaining} of {self._max_total} bytes left; "
+                "--max-total-write-bytes)"
+            )
+        self._remaining -= size
+
+    def write_text(self, path: Any, content: Any, fn_name: str) -> None:
+        """Replace a file inside the roots with *content*, within both limits.
+
+        In order: the read-only policy, the path, the encoding (UTF-8 after
+        newline translation), the disabled limits, the per-file limit, the
+        remaining total, the reservation, and only then the open, which
+        truncates. Every rejection before the open leaves the file unchanged;
+        quota rejections raise :class:`IsolatedQuotaError`, path rejections
+        ``RuntimeError`` and encoding errors ``ValueError``, all of which the
+        callers return as ``Err``. An ``OSError`` from the open or the write
+        does not refund the reservation.
+        """
+        self.require_writable(fn_name)
+        resolved = self._resolve(path, fn_name)
+        if not isinstance(content, str):
+            raise TypeError(f"{fn_name}: content must be String")
+        data = content.replace("\n", self._linesep).encode("utf-8")
+        self._reserve(len(data), fn_name)
+        with open(resolved, "wb") as handle:
+            handle.write(data)
+
+
 # The binding class each capability's host table entry must be.
 _BINDING_TYPES: dict[str, type[IsolatedHostBinding]] = {
     "env": IsolatedEnv,
+    "fs": IsolatedFs,
     "stdin": IsolatedStdin,
 }
 

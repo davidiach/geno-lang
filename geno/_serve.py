@@ -418,6 +418,61 @@ def _validate_process_argv(
     return [resolved, *argv[1:]], None
 
 
+def file_kind_name(mode: int) -> str:
+    """Classify a stat mode as ``"file"``, ``"directory"``, ``"symlink"`` or ``"other"``.
+
+    The isolated ``geno run`` facade (``geno.isolated_host.IsolatedFs``) uses
+    this too, so the worker's runtime prelude receives an already-classified
+    kind and never needs the ``stat`` module itself.
+    """
+    import stat
+
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    return "other"
+
+
+_FILE_KIND_CONSTRUCTORS = {
+    "file": "FileKindFile",
+    "directory": "FileKindDirectory",
+    "symlink": "FileKindSymlink",
+    "other": "FileKindOther",
+}
+
+
+def _metadata_value_from_parts(
+    kind: str, size: int, mtime_ns: int, fn_name: str
+) -> Any:
+    """Build the interpreter's ``FileMetadata`` from a classified stat result.
+
+    *kind* is a :func:`file_kind_name` result. Sizes and times outside
+    JavaScript's safe integer range are rejected, as on every backend.
+    """
+    from .values import ConstructorValue
+
+    kind_name = _FILE_KIND_CONSTRUCTORS[kind]
+    modified_ms = mtime_ns // 1_000_000
+    max_safe_int = 2**53 - 1
+    if not (-max_safe_int <= size <= max_safe_int):
+        raise RuntimeError(f"{fn_name} size exceeds JavaScript safe integer range")
+    if not (-max_safe_int <= modified_ms <= max_safe_int):
+        raise RuntimeError(
+            f"{fn_name} modified_ms exceeds JavaScript safe integer range"
+        )
+    return ConstructorValue(
+        "FileMetadata",
+        {
+            "kind": ConstructorValue(kind_name, {}),
+            "size": size,
+            "modified_ms": modified_ms,
+        },
+    )
+
+
 def install_fs_callbacks(
     interpreter,
     *,
@@ -484,33 +539,11 @@ def install_fs_callbacks(
         return os.path.exists(path)
 
     def _metadata_value(stat_result: Any, fn_name: str) -> Any:
-        import stat
-
-        mode = stat_result.st_mode
-        if stat.S_ISREG(mode):
-            kind_name = "FileKindFile"
-        elif stat.S_ISDIR(mode):
-            kind_name = "FileKindDirectory"
-        elif stat.S_ISLNK(mode):
-            kind_name = "FileKindSymlink"
-        else:
-            kind_name = "FileKindOther"
-        size = stat_result.st_size
-        modified_ms = stat_result.st_mtime_ns // 1_000_000
-        max_safe_int = 2**53 - 1
-        if not (-max_safe_int <= size <= max_safe_int):
-            raise RuntimeError(f"{fn_name} size exceeds JavaScript safe integer range")
-        if not (-max_safe_int <= modified_ms <= max_safe_int):
-            raise RuntimeError(
-                f"{fn_name} modified_ms exceeds JavaScript safe integer range"
-            )
-        return ConstructorValue(
-            "FileMetadata",
-            {
-                "kind": ConstructorValue(kind_name, {}),
-                "size": size,
-                "modified_ms": modified_ms,
-            },
+        return _metadata_value_from_parts(
+            file_kind_name(stat_result.st_mode),
+            stat_result.st_size,
+            stat_result.st_mtime_ns,
+            fn_name,
         )
 
     def _fs_metadata(path: Any) -> Any:

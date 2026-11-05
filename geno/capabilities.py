@@ -28,7 +28,14 @@ DEFAULT_ALLOWED_CAPABILITIES = frozenset({"print", "clock", "random"})
 # Capabilities the isolated lane can grant today. Each milestone of proposal
 # 0013 adds its capability here once its implementation and gates land; any
 # other capability is refused before the worker starts.
-ISOLATED_RUN_CAPABILITIES = frozenset({"clock", "env", "print", "random", "regex"})
+ISOLATED_RUN_CAPABILITIES = frozenset(
+    {"clock", "env", "fs", "print", "random", "regex"}
+)
+
+# The lane default of both isolated write limits when ``fs`` is granted: the
+# per-file limit (``--max-file-size-bytes``) and the run's total
+# (``--max-total-write-bytes``). Both default to 0 without ``fs``.
+ISOLATED_RUN_FS_WRITE_LIMIT_BYTES = 64 * 1024 * 1024
 
 # Never granted in the isolated lane: they need ``--unsafe``.
 ISOLATED_RUN_REFUSED_CAPABILITIES = frozenset({"process", "serve"})
