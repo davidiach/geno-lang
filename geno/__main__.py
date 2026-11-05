@@ -22,6 +22,7 @@ from typing import Any, cast
 
 from .capabilities import (
     CapabilityParseError,
+    isolated_env_name_error,
     isolated_run_cap_help,
     normalize_capability_values,
 )
@@ -128,6 +129,13 @@ def _non_negative_int_arg(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be a non-negative integer")
     return parsed
+
+
+def _allow_env_name_arg(value: str) -> str:
+    problem = isolated_env_name_error(value)
+    if problem is not None:
+        raise argparse.ArgumentTypeError(problem)
+    return value
 
 
 def _property_trials_arg(value: str) -> int:
@@ -253,6 +261,19 @@ def build_parser() -> argparse.ArgumentParser:
         dest="capabilities",
         metavar="CAPABILITY",
         help=isolated_run_cap_help(),
+    )
+    run_parser.add_argument(
+        "--allow-env",
+        action="append",
+        dest="allow_env",
+        metavar="NAME",
+        type=_allow_env_name_arg,
+        help=(
+            "Let an isolated run granted --cap env read environment variable "
+            "NAME with env_get/env_get_or (exact name, repeatable; default: "
+            "none). cli_args() needs no allowed name. Default process-isolated "
+            "mode only."
+        ),
     )
     run_parser.add_argument(
         "--json",
@@ -697,6 +718,7 @@ def dispatch_args(
             target=getattr(args, "target", None),
             json_output=args.json_output,
             program_args=program_args,
+            allow_env=args.allow_env,
         )
         # `_command` resolves lazily, so the return type is not visible here.
         return cast("int | None", run_status)

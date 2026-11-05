@@ -1287,6 +1287,9 @@ class ProcessSandbox:
         # Capability named by the worker's authenticated denial tag on the
         # most recent run, if that run failed on a capability check.
         self.last_capability_denied: str | None = None
+        # Variable named by the worker's environment-policy tag on the most
+        # recent run, if an isolated `env` grant refused an unlisted name.
+        self.last_env_policy_denied: str | None = None
 
     @classmethod
     def _read_stream_bounded(
@@ -2180,6 +2183,7 @@ class ProcessSandbox:
     ) -> tuple[Any, str, str | None]:
         """Run and parse a framed worker payload under hard resource limits."""
         self.last_capability_denied = None
+        self.last_env_policy_denied = None
         # Keep the command line tiny on Windows. The trusted worker and payload
         # are framed separately on stdin; no untrusted text is persisted.
         worker_script = self._create_worker_script()
@@ -2230,6 +2234,16 @@ class ProcessSandbox:
                     # A frontend failure carries the tag only when an example
                     # hit the interpreter's denial stub (proposal 0013).
                     self.last_capability_denied = denied_cap
+                denied_env = parsed.get("env_name")
+                if (
+                    not success
+                    and parsed.get("error_type")
+                    in {"env_policy_denied", "geno_frontend"}
+                    and isinstance(denied_env, str)
+                ):
+                    # Set only by the trusted env binding of an isolated run,
+                    # in `main` or in an example (proposal 0013).
+                    self.last_env_policy_denied = denied_env
                 worker_traceback = parsed.get("traceback")
                 if not success and worker_traceback:
                     logger.error(
@@ -3412,6 +3426,12 @@ def main():
         if type(e) is RuntimeError and isinstance(denied_cap, str):
             payload["error_type"] = "capability_denied"
             payload["capability"] = denied_cap
+        # Likewise only the isolated run's trusted env binding tags a name
+        # outside the --allow-env allowlist.
+        denied_env = getattr(e, "_geno_env_policy_denied", None)
+        if type(e) is RuntimeError and isinstance(denied_env, str):
+            payload["error_type"] = "env_policy_denied"
+            payload["env_name"] = denied_env[:256]
         # Opt-in debug escape hatch: when the parent enables it, carry the
         # worker traceback so a compiler-bug report from the process-isolated
         # path is diagnosable. Off by default (never leaks internals).

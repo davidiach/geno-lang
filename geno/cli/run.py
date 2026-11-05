@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import sys
 from collections.abc import Collection
@@ -30,6 +31,7 @@ from .._serve import (
 from ..capabilities import (
     DEFAULT_ALLOWED_CAPABILITIES,
     KNOWN_CAPABILITIES,
+    isolated_env_name_error,
     isolated_run_capabilities,
     isolated_run_refusals,
 )
@@ -416,7 +418,7 @@ def _prepare_process_run(
         "max_collection_size",
         "max_integer_bits",
     }
-    optional_keys = {"render_result", "program_args"}
+    optional_keys = {"render_result", "program_args", "env_snapshot"}
     if set(request) - optional_keys != expected_keys:
         raise ValueError("invalid process-run request fields")
 
@@ -425,6 +427,7 @@ def _prepare_process_run(
     check_examples = request["check_examples"]
     render_result = request.get("render_result", False)
     program_args = request.get("program_args", [])
+    env_snapshot = request.get("env_snapshot")
     if not isinstance(filename, str) or not filename or "\x00" in filename:
         raise ValueError("invalid process-run filename")
     if target is not None and not isinstance(target, str):
@@ -437,6 +440,18 @@ def _prepare_process_run(
         not isinstance(arg, str) for arg in program_args
     ):
         raise ValueError("invalid process-run program arguments")
+    # The snapshot holds only the caller's allowed, present variables, and
+    # crosses only with an `env` grant; the trusted policy decides both.
+    if env_snapshot is not None:
+        if "env" not in policy.capabilities:
+            raise ValueError("invalid process-run environment snapshot")
+        if not isinstance(env_snapshot, dict) or any(
+            not isinstance(key, str)
+            or not isinstance(value, str)
+            or key not in policy.env_allowed_names
+            for key, value in env_snapshot.items()
+        ):
+            raise ValueError("invalid process-run environment snapshot")
 
     from ..ast_nodes import FunctionDef
     from ..compiler import (
@@ -454,7 +469,9 @@ def _prepare_process_run(
     parsed_modules = resolved_run.parsed_modules
     _typecheck_run_graph(dependency_graph, resolved_run.check_targets)
 
-    host_table = build_host_table(policy)
+    host_table = build_host_table(
+        policy, program_args=program_args, env_snapshot=env_snapshot
+    )
     example_output_length = 0
     if check_examples and _program_has_example_clauses(program, parsed_modules):
         # The displayed timeout stays the run's --timeout; the time already
@@ -467,7 +484,7 @@ def _prepare_process_run(
             max_collection_size=request["max_collection_size"],
             max_integer_bits=request["max_integer_bits"],
         )
-        interpreter = build_example_interpreter(policy, example_config)
+        interpreter = build_example_interpreter(policy, example_config, host_table)
         remaining = clock.remaining()
         with interpreter._execution_deadline(
             None if remaining is None else max(remaining, 0.001)
@@ -510,12 +527,20 @@ def _prepare_process_run(
     }
 
 
+# A variable name the environment-policy hint may echo. The name is chosen by
+# the program, so anything but a short plain identifier gets no hint at all
+# rather than a terminal or shell injection.
+_ENV_HINT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+
+
 def _default_lane_capability_hint(
     capability: str | None,
     filename: str,
     program_args: list[str] | None = None,
     *,
     grant: Collection[str] | None = None,
+    allow_env: Collection[str] = (),
+    env_name: str | None = None,
     os_name: str | None = None,
 ) -> str | None:
     """Explain how to grant a capability the default process lane denied.
@@ -528,20 +553,41 @@ def _default_lane_capability_hint(
     ``grant`` is the run's grant (``None`` for the default one); the hinted
     command grants it plus the missing capability, because ``--cap`` is exact.
     A capability the isolated lane supports keeps the program isolated.
+
+    ``env_name`` comes from the worker's environment-policy tag
+    (``ProcessSandbox.last_env_policy_denied``): ``env`` was granted but the
+    variable is not in the ``--allow-env`` allowlist, so the hint names that
+    option instead of ``--cap env``. ``allow_env`` holds the names the run
+    already allowed, repeated so that the hinted command is complete. A hint
+    never includes a variable's value.
     """
-    if capability is None or capability not in KNOWN_CAPABILITIES:
-        return None
     granted = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
-    if capability in granted:
-        return None
-    caps = ",".join(sorted(granted | {capability}))
     target = shlex.quote(filename)
     if program_args:
         target += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
+    env_flags = "".join(
+        f" --allow-env {shlex.quote(name)}" for name in dict.fromkeys(allow_env)
+    )
+    if capability is None:
+        if (
+            env_name is None
+            or "env" not in granted
+            or _ENV_HINT_NAME.fullmatch(env_name) is None
+        ):
+            return None
+        return (
+            f"Hint: '{env_name}' is not in this run's environment allowlist; "
+            "allow it with --allow-env (the program can then read its value):\n"
+            f"  geno run --cap {','.join(sorted(granted))}{env_flags} "
+            f"--allow-env {env_name} {target}"
+        )
+    if capability not in KNOWN_CAPABILITIES or capability in granted:
+        return None
+    caps = ",".join(sorted(granted | {capability}))
     if capability in isolated_run_capabilities(os_name):
         return (
             "Hint: grant it with --cap; the program stays process-isolated:\n"
-            f"  geno run --cap {caps} {target}"
+            f"  geno run --cap {caps}{env_flags} {target}"
         )
     return (
         f"Hint: the process-isolated 'geno run' lane cannot grant '{capability}'.\n"
@@ -645,12 +691,16 @@ def run_file(
     target: str | None = None,
     json_output: bool = False,
     program_args: list[str] | None = None,
+    allow_env: Collection[str] | None = None,
 ) -> int | None:
     """Run a Geno source file.
 
     By default, compiles to Python and runs in ProcessSandbox for hard timeouts.
     Use --unsafe to run with the direct interpreter (no process isolation).
     Use --json to get structured JSON output via the embedding API.
+
+    ``allow_env`` holds the ``--allow-env`` names: the environment variables
+    an isolated run granted ``env`` may read. Only that lane accepts them.
 
     Returns the process exit status a declared ``Int`` ``main`` asks for, or
     ``None`` when there is nothing to say and the process should exit 0. A
@@ -683,6 +733,31 @@ def run_file(
         if refusals:
             for message in refusals:
                 print(f"Error: {message}", file=sys.stderr)
+            sys.exit(1)
+
+    # `--allow-env` names variables an isolated `env` grant may read. It never
+    # grants `env` itself, and the other lanes do not take it: failing here
+    # beats ignoring a policy the user thinks is in force.
+    allowed_env = tuple(dict.fromkeys(allow_env or ()))
+    if allowed_env:
+        if run_mode != "process":
+            print(
+                "Error: --allow-env only applies to the default process-isolated "
+                "run mode.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        for name in allowed_env:
+            problem = isolated_env_name_error(name)
+            if problem is not None:
+                print(f"Error: --allow-env {name!r} {problem}", file=sys.stderr)
+                sys.exit(1)
+        if capabilities is None or "env" not in capabilities:
+            print(
+                "Error: --allow-env requires an explicit --cap env grant in the "
+                "process-isolated run mode",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     process_only_overrides = []
@@ -770,7 +845,7 @@ def run_file(
         # bind exception names this path cannot raise, duplicating imports the
         # worker pays for again in the child. So this branch stays above the
         # frontend import block and imports the sandbox alone.
-        from ..isolated_host import isolated_run_policy_for
+        from ..isolated_host import isolated_env_snapshot, isolated_run_policy_for
         from ..sandbox import (
             ProcessSandbox,
             ProcessSandboxConfig,
@@ -780,7 +855,16 @@ def run_file(
             TimeoutError,
         )
 
-        run_policy = isolated_run_policy_for(capabilities, timeout=timeout)
+        run_policy = isolated_run_policy_for(
+            capabilities, timeout=timeout, allow_env=allowed_env
+        )
+        # Only the allowed variables the caller actually has cross to the
+        # worker, read before GENO_CLI_ARGS is set below, and only with `env`.
+        env_snapshot = (
+            isolated_env_snapshot(allowed_env)
+            if "env" in run_policy.capabilities
+            else None
+        )
         try:
             request = {
                 "filename": filename,
@@ -796,6 +880,8 @@ def run_file(
                 # the program-visible `cli_args` binding is gated (by `env`).
                 "program_args": list(program_args or []),
             }
+            if env_snapshot is not None:
+                request["env_snapshot"] = env_snapshot
             process_config = ProcessSandboxConfig(
                 timeout=timeout,
                 max_memory_bytes=max_memory_bytes,
@@ -839,6 +925,8 @@ def run_file(
                     filename,
                     program_args,
                     grant=run_policy.capabilities,
+                    allow_env=allowed_env,
+                    env_name=process_sandbox.last_env_policy_denied,
                 )
                 if hint:
                     print(hint, file=sys.stderr)

@@ -5651,6 +5651,13 @@ def stdin_read_all():
 def env_get(name: str):
     """Return the value of an environment variable, or None if unset."""
     _require_cap("env", "env_get")
+    host = _geno_host_module("env")
+    if host is not None:
+        # Isolated `geno run`: only allowed names, from the caller's snapshot.
+        found = host.lookup("env_get", name)
+        if found is None:
+            return None_
+        return _check_collection_size(Some(found))
     import os
 
     value = os.environ.get(name)
@@ -5662,6 +5669,13 @@ def env_get(name: str):
 def env_get_or(name: str, default: str) -> str:
     """Return the value of an environment variable, or a default if unset."""
     _require_cap("env", "env_get_or")
+    host = _geno_host_module("env")
+    if host is not None:
+        # Isolated `geno run`: only allowed names, from the caller's snapshot.
+        found = host.lookup("env_get_or", name)
+        chosen = default if found is None else found
+        _check_string_result_size("env_get_or", len(chosen))
+        return chosen
     import os
 
     result = os.environ.get(name, default)
@@ -5672,6 +5686,10 @@ def env_get_or(name: str, default: str) -> str:
 def cli_args():
     """Return command-line arguments passed after '--' to the program."""
     _require_cap("env", "cli_args")
+    host = _geno_host_module("env")
+    if host is not None:
+        # Isolated `geno run`: the parent's request supplies the arguments.
+        return _check_collection_size(list(host.program_args))
     import json as _json
     import os
     import sys

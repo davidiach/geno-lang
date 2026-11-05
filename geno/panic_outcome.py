@@ -159,14 +159,20 @@ def compiled_limit(message: str) -> str | None:
 
 
 def is_compiled_capability_denial(exc: BaseException) -> bool:
-    """Whether compiled Python's ``_require_cap`` raised *exc*.
+    """Whether compiled Python's ``_require_cap`` raised *exc*, or the
+    isolated ``geno run`` lane's env binding refused a variable.
 
-    Only that runtime helper sets ``_geno_capability_denied`` (the process
-    sandbox reads the same field), so a program cannot forge a denial by
-    panicking with the same text.
+    Only that runtime helper sets ``_geno_capability_denied``, and only the
+    trusted env binding sets ``_geno_env_policy_denied`` (the process sandbox
+    reads the same fields), so a program cannot forge a denial by panicking
+    with the same text. Both are refusals, as their interpreted E412 forms
+    are.
     """
+    if type(exc) is not RuntimeError:
+        return False
     denied = getattr(exc, "_geno_capability_denied", None)
-    return type(exc) is RuntimeError and isinstance(denied, str)
+    env_denied = getattr(exc, "_geno_env_policy_denied", None)
+    return isinstance(denied, str) or isinstance(env_denied, str)
 
 
 def is_compiled_panic(exc: BaseException) -> bool:

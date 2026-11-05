@@ -50,6 +50,21 @@ _ISOLATED_RUN_REFUSAL_REASONS = {
 }
 
 
+def isolated_env_name_error(name: object) -> str | None:
+    """Return why *name* cannot be an ``--allow-env`` entry, or ``None``.
+
+    Names are exact (no wildcard or prefix grants). They must be non-empty
+    and free of ``=`` and NUL, which no environment variable name can hold.
+    """
+    if not isinstance(name, str) or not name:
+        return "must be a non-empty environment variable name"
+    if "=" in name:
+        return "must not contain '='"
+    if "\x00" in name:
+        return "must not contain a NUL character"
+    return None
+
+
 def isolated_run_capabilities(os_name: str | None = None) -> frozenset[str]:
     """Return the capabilities the isolated ``geno run`` lane grants on *os_name*.
 

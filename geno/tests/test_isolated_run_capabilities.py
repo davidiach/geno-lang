@@ -581,14 +581,17 @@ end func
 
 def test_platform_matrix() -> None:
     """Pin which capabilities the isolated lane grants on each platform."""
-    assert frozenset({"clock", "print", "random", "regex"}) == ISOLATED_RUN_CAPABILITIES
+    assert (
+        frozenset({"clock", "env", "print", "random", "regex"})
+        == ISOLATED_RUN_CAPABILITIES
+    )
     assert frozenset({"process", "serve"}) == ISOLATED_RUN_REFUSED_CAPABILITIES
     assert frozenset({"stdin", "http"}) == ISOLATED_RUN_WINDOWS_UNAVAILABLE
     assert isolated_run_capabilities("posix") == frozenset(
-        {"clock", "print", "random", "regex"}
+        {"clock", "env", "print", "random", "regex"}
     )
     assert isolated_run_capabilities("nt") == frozenset(
-        {"clock", "print", "random", "regex"}
+        {"clock", "env", "print", "random", "regex"}
     )
     assert isolated_run_capabilities() == isolated_run_capabilities(os.name)
     for os_name in ("posix", "nt"):

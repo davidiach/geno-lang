@@ -17,25 +17,39 @@ the per-builtin capability check.
 The parent imports this module as well as the worker, so module scope imports
 only the standard library and :mod:`geno.capabilities`. The interpreter and
 the runtime values are imported inside the functions that need them.
+
+Everything here runs with real builtins, in the parent and in the worker
+alike: the worker imported it through the real import system during trusted
+setup. The runtime prelude's worker branches only call the narrow methods of
+these bindings, so all host access stays in this trusted, typed code.
 """
 
 from __future__ import annotations
 
 import math
+import os
 import time
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from .capabilities import (
     DEFAULT_ALLOWED_CAPABILITIES,
     KNOWN_CAPABILITIES,
+    isolated_env_name_error,
     isolated_run_capabilities,
 )
 
 if TYPE_CHECKING:
     from .interpreter import Interpreter
     from .sandbox import SandboxConfig
+
+
+# The longest variable name an environment-policy tag carries to the parent.
+# The name is program-chosen; the parent offers a hint only for a short,
+# plain identifier anyway.
+ENV_NAME_TAG_LIMIT = 256
 
 
 class IsolatedRunPolicyError(ValueError):
@@ -141,9 +155,19 @@ class IsolatedRunPolicy:
                 "environment policy settings require the 'env' capability"
             )
         for name in self.env_allowed_names:
-            if "=" in name:
+            problem = isolated_env_name_error(name)
+            if problem is not None:
+                raise IsolatedRunPolicyError(f"env_allowed_names entries {problem}")
+        if self.env_case_insensitive:
+            # Only Windows folds names, as its os.environ does; the parent
+            # sends the allowlist already folded.
+            if not isolated_env_case_insensitive(os_name):
                 raise IsolatedRunPolicyError(
-                    "env_allowed_names entries must not contain '='"
+                    "env_case_insensitive applies only on Windows"
+                )
+            if any(name != name.upper() for name in self.env_allowed_names):
+                raise IsolatedRunPolicyError(
+                    "a case-insensitive env_allowed_names must be upper-case"
                 )
         if "fs" not in granted and (
             self.fs_read_only
@@ -251,15 +275,31 @@ class IsolatedRunPolicy:
         return policy
 
 
+def isolated_env_case_insensitive(os_name: str | None = None) -> bool:
+    """Whether environment variable names are case-insensitive on *os_name*.
+
+    Windows folds them (its ``os.environ`` upper-cases every key); POSIX
+    names are exact. *os_name* defaults to this host's ``os.name``.
+    """
+    return (os.name if os_name is None else os_name) == "nt"
+
+
+def env_name_key(name: str, case_insensitive: bool) -> str:
+    """The key *name* is allowed, snapshotted and looked up under."""
+    return name.upper() if case_insensitive else name
+
+
 def isolated_run_policy_for(
     grant: Collection[str] | None,
     *,
     timeout: float | None,
+    allow_env: Collection[str] = (),
     os_name: str | None = None,
 ) -> IsolatedRunPolicy:
     """Build and validate the policy the parent sends for one isolated run.
 
-    *grant* is the ``--cap`` set, or ``None`` for the default grant. Host
+    *grant* is the ``--cap`` set, or ``None`` for the default grant, and
+    *allow_env* the ``--allow-env`` names (exact; folded on Windows). Host
     policy is resolved only for the capability it configures: a grant without
     ``fs`` or ``http`` never reads those capabilities' settings.
     """
@@ -267,9 +307,45 @@ def isolated_run_policy_for(
     deadline: float | None = None
     if timeout is not None and math.isfinite(timeout) and timeout > 0:
         deadline = float(timeout)
-    policy = IsolatedRunPolicy(capabilities=capabilities, deadline_seconds=deadline)
+    case_insensitive = "env" in capabilities and isolated_env_case_insensitive(
+        os_name
+    )
+    policy = IsolatedRunPolicy(
+        capabilities=capabilities,
+        env_allowed_names=frozenset(
+            env_name_key(name, case_insensitive) for name in allow_env
+        ),
+        env_case_insensitive=case_insensitive,
+        deadline_seconds=deadline,
+    )
     policy.validate(os_name)
     return policy
+
+
+def isolated_env_snapshot(
+    allow_env: Collection[str],
+    *,
+    environ: Mapping[str, str] | None = None,
+    os_name: str | None = None,
+) -> dict[str, str]:
+    """Snapshot the caller's values of the allowed variables that are set.
+
+    The parent calls this before it sets its own ``GENO_CLI_ARGS``, and only
+    when ``env`` is granted; nothing else from its environment crosses to the
+    worker. On Windows names are case-insensitive, as ``os.environ`` is
+    there, and the snapshot is keyed by the upper-cased name.
+    """
+    source: Mapping[str, str] = os.environ if environ is None else environ
+    names = sorted(set(allow_env))
+    if not isolated_env_case_insensitive(os_name):
+        return {name: source[name] for name in names if name in source}
+    by_key = {env_name_key(key, True): value for key, value in source.items()}
+    snapshot: dict[str, str] = {}
+    for name in names:
+        key = env_name_key(name, True)
+        if key in by_key:
+            snapshot[key] = by_key[key]
+    return snapshot
 
 
 class IsolatedRunClock:
@@ -304,15 +380,108 @@ class IsolatedHostBinding:
     __slots__ = ()
 
 
-def build_host_table(policy: IsolatedRunPolicy) -> dict[str, IsolatedHostBinding]:
+def env_policy_denied_message(builtin_name: str, name: str) -> str:
+    """The denial for a variable outside the allowlist (the embedding API's)."""
+    return (
+        f"{builtin_name}: environment variable {name!r} is not allowed by the "
+        "host env policy"
+    )
+
+
+class IsolatedEnv(IsolatedHostBinding):
+    """The ``env`` grant's binding: allowlist, snapshot and program arguments.
+
+    ``cli_args`` reads :attr:`program_args`, which needs no allowed name.
+    ``env_get`` and ``env_get_or`` go through :meth:`lookup`: a name outside
+    the allowlist is an environment-policy denial even when the caller does
+    not have the variable, and an allowed name reads only the parent's
+    snapshot, never the worker's own environment (its temporary ``HOME``, its
+    sandbox configuration). With *case_insensitive* (Windows) every name is
+    folded with ``str.upper``, as ``os.environ`` folds keys there.
+    """
+
+    __slots__ = ("_allowed", "_case_insensitive", "environ", "program_args")
+
+    def __init__(
+        self,
+        allowed: Collection[str],
+        snapshot: Mapping[str, str],
+        program_args: Sequence[str],
+        *,
+        case_insensitive: bool = False,
+    ) -> None:
+        self._case_insensitive = case_insensitive
+        self._allowed = frozenset(
+            env_name_key(name, case_insensitive) for name in allowed
+        )
+        values: dict[str, str] = {}
+        for name, value in snapshot.items():
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise TypeError("the environment snapshot must map str to str")
+            key = env_name_key(name, case_insensitive)
+            if key not in self._allowed:
+                raise ValueError("the environment snapshot holds an unlisted name")
+            values[key] = value
+        if any(not isinstance(arg, str) for arg in program_args):
+            raise TypeError("program arguments must be strings")
+        # Read-only views: the prelude reads them, Geno code never sees them.
+        self.environ: Mapping[str, str] = MappingProxyType(values)
+        self.program_args: tuple[str, ...] = tuple(program_args)
+
+    def allows(self, name: str) -> bool:
+        """Whether the allowlist permits *name* (folded on Windows)."""
+        return env_name_key(name, self._case_insensitive) in self._allowed
+
+    def value(self, name: str) -> str | None:
+        """The snapshot value of an allowed *name*, or ``None`` when unset."""
+        return self.environ.get(env_name_key(name, self._case_insensitive))
+
+    def lookup(self, builtin_name: str, name: str) -> str | None:
+        """Return an allowed variable's value, or ``None`` when it is unset.
+
+        Raises the tagged environment-policy denial for any other name. The
+        compiled runtime calls this; the worker reads the tag (never the
+        message) to offer the ``--allow-env`` hint.
+        """
+        if not isinstance(name, str):
+            raise TypeError(f"{builtin_name}: name must be a string")
+        if not self.allows(name):
+            error: Any = RuntimeError(env_policy_denied_message(builtin_name, name))
+            error._geno_env_policy_denied = name
+            raise error
+        return self.value(name)
+
+
+# The binding class each capability's host table entry must be.
+_BINDING_TYPES: dict[str, type[IsolatedHostBinding]] = {"env": IsolatedEnv}
+
+
+def build_host_table(
+    policy: IsolatedRunPolicy,
+    *,
+    program_args: Sequence[str] = (),
+    env_snapshot: Mapping[str, str] | None = None,
+) -> dict[str, IsolatedHostBinding]:
     """Return the private host table for a validated policy.
 
     The table holds a binding only for a granted capability that needs host
-    access. ``clock``, ``print``, ``random`` and ``regex`` need none, so the
-    table is empty for every grant the lane supports so far.
+    access: ``clock``, ``print``, ``random`` and ``regex`` need none. Trusted
+    setup always receives the program arguments, but only the ``env``
+    binding exposes them (to ``cli_args``). *env_snapshot* must hold only
+    allowed names, and only with ``env``.
     """
     policy.validate()
-    return {}
+    table: dict[str, IsolatedHostBinding] = {}
+    if "env" in policy.capabilities:
+        table["env"] = IsolatedEnv(
+            policy.env_allowed_names,
+            env_snapshot or {},
+            program_args,
+            case_insensitive=policy.env_case_insensitive,
+        )
+    elif env_snapshot is not None:
+        raise ValueError("an environment snapshot requires the 'env' capability")
+    return table
 
 
 def checked_prepared_host_state(
@@ -333,6 +502,9 @@ def checked_prepared_host_state(
             raise ValueError("host table names a capability that was not granted")
         if not isinstance(binding, IsolatedHostBinding):
             raise ValueError("host table holds an object that is not a host binding")
+        expected = _BINDING_TYPES.get(capability)
+        if expected is None or type(binding) is not expected:
+            raise ValueError(f"host table holds the wrong binding for {capability!r}")
     example_output_length = prepared.get("example_output_length")
     if (
         not isinstance(example_output_length, int)
@@ -348,17 +520,81 @@ def checked_prepared_host_state(
     return dict(host_table), example_output_length
 
 
+def _install_example_env_callbacks(interpreter: Interpreter, env: IsolatedEnv) -> None:
+    """Back the example interpreter's env builtins with *env*.
+
+    The same binding instance serves ``main``, so both phases share one
+    allowlist, snapshot and argument list. Messages and limits match the
+    interpreter's own env builtins; a name outside the allowlist is an E412
+    environment-policy denial carrying the same tag as the compiled one.
+    """
+    from . import builtins as _builtins
+    from .diagnostics import ErrorCode
+    from .values import BuiltinFunction, ConstructorValue, GenoRuntimeError
+
+    cap = _builtins._InterpreterCap(interpreter.sandbox_config.max_collection_size)
+
+    def _allowed_value(builtin_name: str, name: Any) -> str | None:
+        if not isinstance(name, str):
+            raise GenoRuntimeError(f"{builtin_name}: name must be a string")
+        if not env.allows(name):
+            error: Any = GenoRuntimeError(
+                env_policy_denied_message(builtin_name, name),
+                error_code=ErrorCode.RUNTIME_CAPABILITY_DENIED,
+            )
+            error._geno_env_policy_denied = name
+            raise error
+        return env.value(name)
+
+    def _env_get(name: Any) -> Any:
+        value = _allowed_value("env_get", name)
+        if value is None:
+            return ConstructorValue("None", {})
+        _builtins._check_result_string_size("env_get", len(value), cap)
+        return ConstructorValue("Some", {"value": value})
+
+    def _env_get_or(name: Any, default: Any) -> str:
+        value = _allowed_value("env_get_or", name)
+        if not isinstance(default, str):
+            raise GenoRuntimeError("env_get_or: default must be a string")
+        result = default if value is None else value
+        _builtins._check_result_string_size("env_get_or", len(result), cap)
+        return result
+
+    def _cli_args() -> list[str]:
+        limit = _builtins._effective_max_collection_size(cap)
+        args = list(env.program_args)
+        _builtins._check_collection_size("List", len(args), limit)
+        for arg in args:
+            _builtins._check_collection_size("String", len(arg), limit)
+        return args
+
+    bind = interpreter.global_env.bind
+    bind("env_get", BuiltinFunction("env_get", _env_get, 1, ["name"]))
+    bind(
+        "env_get_or",
+        BuiltinFunction("env_get_or", _env_get_or, 2, ["name", "default"]),
+    )
+    bind("cli_args", BuiltinFunction("cli_args", _cli_args, 0, []))
+
+
 def build_example_interpreter(
-    policy: IsolatedRunPolicy, sandbox_config: SandboxConfig
+    policy: IsolatedRunPolicy,
+    sandbox_config: SandboxConfig,
+    host_table: Mapping[str, IsolatedHostBinding] | None = None,
 ) -> Interpreter:
     """Build the interpreter that checks examples before ``main`` runs.
 
     The run's exact grant goes to the constructor: it is the only place a
     gated builtin keeps its real implementation, because a later
     ``apply_capabilities`` only narrows. Omitted defaults are never restored.
+    Host access comes from the same *host_table* bindings ``main`` uses; a
+    granted capability without its binding fails closed rather than reach the
+    worker's own host.
     """
     from .interpreter import Interpreter
 
+    table = host_table or {}
     interpreter = Interpreter(
         check_examples=True,
         sandbox_config=sandbox_config,
@@ -369,14 +605,20 @@ def build_example_interpreter(
         from ._serve import install_clock_callbacks
 
         install_clock_callbacks(interpreter)
+    if "env" in policy.capabilities:
+        env = table.get("env")
+        if not isinstance(env, IsolatedEnv):
+            raise ValueError("the env grant has no host binding")
+        _install_example_env_callbacks(interpreter, env)
     return interpreter
 
 
 def frontend_error_tags(error: BaseException) -> dict[str, str]:
     """Structured denial tags for a failure in the worker's frontend phase.
 
-    Only an interpreter runtime error carrying the tag its denial stub sets
-    qualifies, so a program that panics with the same text gets no tag. The
+    Only an interpreter runtime error carrying a tag trusted code set
+    qualifies (the denial stub's capability, or the env binding's variable
+    name), so a program that panics with the same text gets no tag. The
     parent bases its rerun hint on these tags, never on error text.
     """
     from .values import GenoRuntimeError
@@ -386,4 +628,7 @@ def frontend_error_tags(error: BaseException) -> dict[str, str]:
     capability = getattr(error, "_geno_capability_denied", None)
     if isinstance(capability, str) and capability in KNOWN_CAPABILITIES:
         return {"capability": capability}
+    env_name = getattr(error, "_geno_env_policy_denied", None)
+    if isinstance(env_name, str):
+        return {"env_name": env_name[:ENV_NAME_TAG_LIMIT]}
     return {}
