@@ -16,6 +16,10 @@ Milestone 3: ``stdin`` is implemented (``test_isolated_run_stdin.py``) but
 stays refused on every platform until its platform gate passes; the pins
 here record that, and the builtin matrix runs its entry once it is granted.
 
+Milestone 4: ``fs`` goes through the trusted facade with the ``--unsafe``
+roots and portable write limits (``test_isolated_run_fs.py``); the builtin
+matrix runs each of its seven builtins once.
+
 Runs here go through real ``geno run`` subprocesses unless a test needs to
 observe the parent in-process. Only a real worker applies its restricted
 builtins to the runtime prelude, so every gated builtin with a host binding
@@ -605,16 +609,16 @@ end func
 def test_platform_matrix() -> None:
     """Pin which capabilities the isolated lane grants on each platform."""
     assert (
-        frozenset({"clock", "env", "print", "random", "regex"})
+        frozenset({"clock", "env", "fs", "print", "random", "regex"})
         == ISOLATED_RUN_CAPABILITIES
     )
     assert frozenset({"process", "serve"}) == ISOLATED_RUN_REFUSED_CAPABILITIES
     assert frozenset({"stdin", "http"}) == ISOLATED_RUN_WINDOWS_UNAVAILABLE
     assert isolated_run_capabilities("posix") == frozenset(
-        {"clock", "env", "print", "random", "regex"}
+        {"clock", "env", "fs", "print", "random", "regex"}
     )
     assert isolated_run_capabilities("nt") == frozenset(
-        {"clock", "env", "print", "random", "regex"}
+        {"clock", "env", "fs", "print", "random", "regex"}
     )
     assert isolated_run_capabilities() == isolated_run_capabilities(os.name)
     for os_name in ("posix", "nt"):
@@ -840,7 +844,7 @@ HOST_BINDING_CAPABILITIES = frozenset({"env", "stdin", "fs", "http"})
 # Host-binding capabilities whose isolated implementation exists. `stdin` is
 # implemented but stays refused until its platform gate passes; its entries
 # run once the lane grants it.
-IMPLEMENTED_HOST_CAPABILITIES = frozenset({"env", "stdin"})
+IMPLEMENTED_HOST_CAPABILITIES = frozenset({"env", "fs", "stdin"})
 
 MATRIX_VALUE = "matrix value"
 
@@ -881,8 +885,101 @@ end func
     ),
 }
 
+# The filesystem builtins: each runs once through the worker's facade, so no
+# worker branch may import `os` or `stat`, call `open` or name `bytes`.
+_FS_MATRIX_FLAGS = ["--cap", "fs,print"]
+
+
+def _fs_matrix_program(body: str) -> str:
+    return f"func main() -> Unit\n{body}end func\n"
+
+
+def _fs_matrix_match(call: str, ok: str) -> str:
+    return (
+        f"    match {call} with\n"
+        f"        | Ok(value) -> print({ok})\n"
+        '        | Err(error) -> print("Err " + error)\n'
+        "    end match\n"
+    )
+
+
+BUILTIN_MATRIX.update(
+    {
+        "fs_read_text": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(_fs_matrix_match('fs_read_text("data.txt")', "value")),
+            [],
+            f"{MATRIX_VALUE}\n",
+        ),
+        "fs_write_text": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'fs_write_text("out.txt", "written")',
+                    'fs_read_text("out.txt").unwrap()',
+                )
+            ),
+            [],
+            "written\n",
+        ),
+        "fs_list_dir": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match('fs_list_dir("listed")', 'join(value, ",")')
+            ),
+            [],
+            "a.txt,b.txt\n",
+        ),
+        "fs_exists": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                '    print(to_string(fs_exists("data.txt")))\n'
+                '    print(to_string(fs_exists("absent.txt")))\n'
+            ),
+            [],
+            "true\nfalse\n",
+        ),
+        "fs_metadata": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'fs_metadata("data.txt")', '"size " + to_string(value.size)'
+                )
+            ),
+            [],
+            f"size {len(MATRIX_VALUE)}\n",
+        ),
+        "fs_symlink_metadata": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'fs_symlink_metadata("data.txt")',
+                    '"size " + to_string(value.size)',
+                )
+            ),
+            [],
+            f"size {len(MATRIX_VALUE)}\n",
+        ),
+        "fs_canonicalize": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match('fs_canonicalize("data.txt")', "path_filename(value)")
+            ),
+            [],
+            "data.txt\n",
+        ),
+    }
+)
+
 # The standard input each matrix entry is run with.
 MATRIX_STDIN = {"stdin_read_all": MATRIX_VALUE}
+
+# Files every matrix run starts with, next to main.geno.
+MATRIX_FILES = {
+    "data.txt": MATRIX_VALUE,
+    "listed/a.txt": "a",
+    "listed/b.txt": "b",
+}
 
 
 def _matrix_capability(builtin: str) -> str:
@@ -920,6 +1017,9 @@ def test_isolated_run_builtin_matrix(tmp_path: Path, builtin: str) -> None:
         pytest.skip(f"the isolated lane does not grant {capability!r} yet")
     flags, source, program_args, expected = BUILTIN_MATRIX[builtin]
     _write(tmp_path, "main.geno", source)
+    for name, text in MATRIX_FILES.items():
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        _write(tmp_path, name, text)
 
     result = subprocess.run(
         [sys.executable, "-m", "geno", "run", *flags, "main.geno", "--"] + program_args,

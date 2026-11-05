@@ -28,7 +28,9 @@ from geno.isolated_host import (
     ENV_NAME_TAG_LIMIT,
     STDIN_CHUNK_BYTES,
     IsolatedEnv,
+    IsolatedFs,
     IsolatedHostBinding,
+    IsolatedQuotaError,
     IsolatedRunClock,
     IsolatedRunPolicy,
     IsolatedRunPolicyError,
@@ -41,6 +43,7 @@ from geno.isolated_host import (
     env_policy_denied_message,
     frontend_error_tags,
     isolated_env_snapshot,
+    isolated_fs_host_policy,
     isolated_run_policy_for,
     with_program_stdin,
 )
@@ -1360,4 +1363,592 @@ def test_example_interpreter_needs_the_stdin_binding(stdin_lane: None) -> None:
             policy,
             SandboxConfig(timeout=5.0),
             {"stdin": IsolatedEnv((), {}, ())},  # type: ignore[dict-item]
+        )
+
+
+# ---------------------------------------------------------------------------
+# fs: host policy, the facade and its write limits
+
+FS_LIMIT = 64 * 1024 * 1024
+
+
+def _fs(root: Any, **overrides: Any) -> IsolatedFs:
+    settings: dict[str, Any] = {
+        "allow_absolute": True,
+        "writes_allowed": True,
+        "max_file_size": FS_LIMIT,
+        "max_total_write_bytes": FS_LIMIT,
+        **overrides,
+    }
+    return IsolatedFs([str(root)], **settings)
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, (False, None, True)),
+        ({"GENO_FS_READ_ONLY": "1"}, (True, None, True)),
+        ({"GENO_FS_READ_ONLY": " Yes "}, (True, None, True)),
+        ({"GENO_FS_READ_ONLY": "0"}, (False, None, True)),
+        # Either roots variable switches absolute paths to the explicit rule.
+        ({"GENO_FS_ALLOW_ABSOLUTE": "0"}, (False, None, False)),
+        ({"GENO_FS_ALLOW_ABSOLUTE": "true"}, (False, None, True)),
+        ({"GENO_FS_ROOTS": "/a"}, (False, ("/a",), False)),
+        (
+            {"GENO_FS_ROOTS": f"/a{os.pathsep}{os.pathsep}/b"},
+            (False, ("/a", "/b"), False),
+        ),
+        (
+            {"GENO_FS_ROOTS": "/a", "GENO_FS_ALLOW_ABSOLUTE": "on"},
+            (False, ("/a",), True),
+        ),
+    ],
+)
+def test_fs_host_policy_reads_the_variables_as_unsafe_does(
+    environ: dict[str, str], expected: tuple[Any, ...]
+) -> None:
+    assert isolated_fs_host_policy(environ) == expected
+
+
+@pytest.mark.parametrize("roots", ["", os.pathsep, os.pathsep * 2])
+def test_fs_host_policy_refuses_empty_roots(roots: str) -> None:
+    with pytest.raises(IsolatedRunPolicyError, match="at least one filesystem root"):
+        isolated_fs_host_policy({"GENO_FS_ROOTS": roots})
+
+
+def test_fs_policy_defaults_its_total_and_round_trips() -> None:
+    environ = {"GENO_FS_ROOTS": "/data", "GENO_FS_READ_ONLY": "1"}
+
+    policy = isolated_run_policy_for({"fs", "print"}, timeout=5.0, environ=environ)
+    explicit = isolated_run_policy_for(
+        {"fs", "print"}, timeout=5.0, environ={}, max_total_write_bytes=7
+    )
+
+    assert policy.fs_read_only is True
+    assert policy.fs_configured_roots == ("/data",)
+    assert policy.fs_allow_absolute is False
+    assert policy.max_total_write_bytes == FS_LIMIT
+    assert explicit.max_total_write_bytes == 7
+    assert explicit.fs_configured_roots is None
+    assert explicit.fs_allow_absolute is True
+    for item in (policy, explicit):
+        assert IsolatedRunPolicy.from_config(item.to_config()) == item
+
+
+def test_policy_without_fs_never_reads_fs_settings() -> None:
+    # An explicit total never grants fs; the policy stays neutral.
+    environ = {"GENO_FS_ROOTS": "", "GENO_FS_READ_ONLY": "1"}
+
+    policy = isolated_run_policy_for(
+        {"print"}, timeout=5.0, environ=environ, max_total_write_bytes=9
+    )
+
+    assert policy.to_config() == {
+        **IsolatedRunPolicy(capabilities=frozenset({"print"})).to_config(),
+        "deadline_seconds": 5.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "detail"),
+    [
+        ({"fs_configured_roots": []}, "at least one filesystem root"),
+        ({"max_total_write_bytes": -1}, "must not be negative"),
+    ],
+)
+def test_fs_policy_rejects_impossible_settings(
+    overrides: dict[str, Any], detail: str
+) -> None:
+    with pytest.raises(IsolatedRunPolicyError, match=detail):
+        IsolatedRunPolicy.from_config(
+            _config(capabilities=["fs", "print"], **overrides)
+        )
+
+
+def test_fs_grant_binds_one_facade(tmp_path: Any) -> None:
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"fs", "print"}),
+        fs_read_only=True,
+        fs_allow_absolute=True,
+        max_total_write_bytes=10,
+    )
+
+    table = build_host_table(policy, fs_roots=[str(tmp_path)], max_file_size_bytes=5)
+
+    assert set(table) == {"fs"}
+    fs = table["fs"]
+    assert type(fs) is IsolatedFs
+    assert fs.remaining_write_bytes == 10
+    with pytest.raises(RuntimeError, match="filesystem writes are not allowed"):
+        fs.require_writable("fs_write_text")
+    with pytest.raises(ValueError, match="needs its filesystem roots"):
+        build_host_table(policy)
+    with pytest.raises(ValueError, match="require the 'fs' capability"):
+        build_host_table(IsolatedRunPolicy.default(), fs_roots=[str(tmp_path)])
+    runtime = sorted(policy.capabilities)
+    checked, _used = checked_prepared_host_state(
+        _prepared(host_table={"fs": fs}, runtime_capabilities=runtime), policy
+    )
+    assert checked == {"fs": fs}
+    with pytest.raises(ValueError, match="wrong binding"):
+        checked_prepared_host_state(
+            _prepared(
+                host_table={"fs": IsolatedEnv((), {}, ())},
+                runtime_capabilities=runtime,
+            ),
+            policy,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"max_file_size": -1},
+        {"max_file_size": True},
+        {"max_total_write_bytes": 1.5},
+        {"linesep": "\r"},
+    ],
+)
+def test_fs_facade_rejects_bad_limits(tmp_path: Any, overrides: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        _fs(tmp_path, **overrides)
+
+
+@pytest.mark.parametrize("roots", [[], "", [""], [3]])
+def test_fs_facade_needs_roots(roots: Any) -> None:
+    with pytest.raises(ValueError):
+        IsolatedFs(
+            roots,
+            allow_absolute=True,
+            writes_allowed=True,
+            max_file_size=1,
+            max_total_write_bytes=1,
+        )
+
+
+def test_fs_facade_uses_the_unsafe_validators(tmp_path: Any) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "inside.txt").write_text("inside", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
+    fs = _fs(root)
+    relative_only = _fs(root, allow_absolute=False)
+
+    with fs.open_text_reader("inside.txt", "fs_read_text") as reader:
+        assert reader.read() == "inside"
+    assert fs.list_dir(".", "fs_list_dir") == ["inside.txt"]
+    assert fs.exists("inside.txt", "fs_exists") is True
+    assert fs.exists("missing.txt", "fs_exists") is False
+    assert fs.canonicalize("inside.txt", "fs_canonicalize") == os.path.realpath(
+        root / "inside.txt"
+    )
+    absolute = str(root / "inside.txt")
+    assert fs.exists(absolute, "fs_exists") is True
+    for call in (
+        lambda: fs.open_text_reader("../outside.txt", "fs_read_text"),
+        lambda: fs.list_dir("..", "fs_list_dir"),
+        lambda: fs.exists("../outside.txt", "fs_exists"),
+        lambda: fs.metadata("../outside.txt", "fs_metadata", follow=True),
+        lambda: fs.metadata("../outside.txt", "fs_metadata", follow=False),
+        lambda: fs.canonicalize(str(tmp_path / "outside.txt"), "fs_canonicalize"),
+        lambda: fs.write_text("../outside.txt", "x", "fs_write_text"),
+    ):
+        with pytest.raises(
+            RuntimeError, match="path escapes configured filesystem roots"
+        ):
+            call()
+    with pytest.raises(RuntimeError, match="fs_exists: absolute paths are not allowed"):
+        relative_only.exists(absolute, "fs_exists")
+    with pytest.raises(RuntimeError, match="path must be String"):
+        fs.exists(3, "fs_exists")
+    with pytest.raises(
+        FileNotFoundError, match=r"fs_canonicalize: path does not exist: missing\.txt"
+    ):
+        fs.canonicalize("missing.txt", "fs_canonicalize")
+    assert (tmp_path / "outside.txt").read_text(encoding="utf-8") == "outside"
+
+
+def test_fs_metadata_is_classified_in_trusted_code(tmp_path: Any) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target.txt"
+    target.write_bytes(b"geno")
+    os.utime(target, ns=(1_700_000_000_123_000_000, 1_700_000_000_123_000_000))
+    fs = _fs(root)
+
+    assert fs.metadata("target.txt", "fs_metadata", follow=True) == (
+        "file",
+        4,
+        1_700_000_000_123_000_000,
+    )
+    kind, _size, _mtime = fs.metadata(".", "fs_metadata", follow=True)
+    assert kind == "directory"
+    try:
+        (root / "link.txt").symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not available in this environment")
+    assert fs.metadata("link.txt", "fs_metadata", follow=True)[0] == "file"
+    assert fs.metadata("link.txt", "fs_symlink_metadata", follow=False)[0] == "symlink"
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(root / "pipe")
+        assert fs.metadata("pipe", "fs_metadata", follow=True)[0] == "other"
+
+
+def test_fs_write_text_counts_emitted_bytes(tmp_path: Any) -> None:
+    fs = _fs(tmp_path, max_file_size=10, max_total_write_bytes=20)
+
+    fs.write_text("a.txt", "héllo\n", "fs_write_text")
+
+    assert (tmp_path / "a.txt").read_bytes() == "héllo\n".encode()
+    assert fs.remaining_write_bytes == 20 - 7
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["plain", "one\ntwo\n", "crlf\r\nalready\r\n", "mixed\nand\r\nbare\r", "\n" * 5],
+    ids=["no-newline", "lf", "crlf", "mixed", "newlines-only"],
+)
+def test_windows_newline_accounting(tmp_path: Any, content: str) -> None:
+    # Text-mode writes on Windows turn every "\n" into "\r\n", also inside an
+    # existing "\r\n"; the facade counts and writes exactly those bytes.
+    reference = tmp_path / "reference.txt"
+    with open(reference, "w", encoding="utf-8", newline="\r\n") as handle:
+        handle.write(content)
+    expected = reference.read_bytes()
+    fs = _fs(tmp_path, linesep="\r\n", max_file_size=100, max_total_write_bytes=100)
+
+    fs.write_text("out.txt", content, "fs_write_text")
+
+    assert (tmp_path / "out.txt").read_bytes() == expected
+    assert fs.remaining_write_bytes == 100 - len(expected)
+    if "\n" in content:
+        # One byte under the translated size fails, although the LF text fits.
+        assert len(content.encode()) < len(expected)
+        tight = _fs(tmp_path, linesep="\r\n", max_file_size=len(expected) - 1)
+        with pytest.raises(IsolatedQuotaError, match="per-file limit"):
+            tight.write_text("tight.txt", content, "fs_write_text")
+        assert not (tmp_path / "tight.txt").exists()
+
+
+def test_fs_write_limits_at_the_boundary(tmp_path: Any) -> None:
+    fs = _fs(tmp_path, max_file_size=4, max_total_write_bytes=6)
+    (tmp_path / "keep.txt").write_text("ORIGINAL", encoding="utf-8")
+
+    fs.write_text("a.txt", "1234", "fs_write_text")
+    with pytest.raises(IsolatedQuotaError) as per_file:
+        fs.write_text("keep.txt", "12345", "fs_write_text")
+    fs.write_text("b.txt", "12", "fs_write_text")
+    with pytest.raises(IsolatedQuotaError) as total:
+        fs.write_text("keep.txt", "1", "fs_write_text")
+
+    assert str(per_file.value) == (
+        "fs_write_text: writing 5 bytes exceeds the per-file limit of 4 bytes "
+        "(--max-file-size-bytes)"
+    )
+    assert str(total.value) == (
+        "fs_write_text: writing 1 bytes exceeds the remaining total write budget "
+        "(0 of 6 bytes left; --max-total-write-bytes)"
+    )
+    assert fs.remaining_write_bytes == 0
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "ORIGINAL"
+    # An exhausted total still allows an empty write; only a 0 limit forbids it.
+    fs.write_text("empty.txt", "", "fs_write_text")
+    assert (tmp_path / "empty.txt").read_bytes() == b""
+
+
+@pytest.mark.parametrize(
+    ("overrides", "flag"),
+    [
+        ({"max_file_size": 0}, "--max-file-size-bytes"),
+        ({"max_total_write_bytes": 0}, "--max-total-write-bytes"),
+    ],
+)
+def test_zero_limits_reject_empty_writes_and_truncation(
+    tmp_path: Any, overrides: dict[str, Any], flag: str
+) -> None:
+    (tmp_path / "keep.txt").write_text("ORIGINAL", encoding="utf-8")
+    fs = _fs(tmp_path, **overrides)
+
+    with pytest.raises(IsolatedQuotaError) as excinfo:
+        fs.write_text("keep.txt", "", "fs_write_text")
+
+    assert str(excinfo.value) == (
+        f"fs_write_text: file writes are disabled in this run ({flag} is 0)"
+    )
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "ORIGINAL"
+
+
+def test_rewrites_and_failed_writes_keep_their_reservation(tmp_path: Any) -> None:
+    fs = _fs(tmp_path, max_file_size=10, max_total_write_bytes=10)
+
+    fs.write_text("same.txt", "123", "fs_write_text")
+    fs.write_text("same.txt", "123", "fs_write_text")
+    with pytest.raises(OSError):
+        fs.write_text("missing/dir/x.txt", "12", "fs_write_text")
+    assert fs.remaining_write_bytes == 2
+    with pytest.raises(IsolatedQuotaError, match=r"\(2 of 10 bytes left"):
+        fs.write_text("other.txt", "123", "fs_write_text")
+    # A rejection consumed nothing: a smaller write still fits.
+    fs.write_text("other.txt", "12", "fs_write_text")
+    assert fs.remaining_write_bytes == 0
+
+
+def test_rejections_before_the_open_leave_the_file_unchanged(tmp_path: Any) -> None:
+    (tmp_path / "keep.txt").write_text("ORIGINAL", encoding="utf-8")
+    fs = _fs(tmp_path, max_file_size=100, max_total_write_bytes=100)
+    read_only = _fs(tmp_path, writes_allowed=False)
+
+    with pytest.raises(UnicodeEncodeError):
+        fs.write_text("keep.txt", "bad \ud800", "fs_write_text")
+    with pytest.raises(RuntimeError, match="filesystem writes are not allowed"):
+        read_only.write_text("keep.txt", "x", "fs_write_text")
+    with pytest.raises(TypeError):
+        fs.write_text("keep.txt", 3, "fs_write_text")
+
+    assert fs.remaining_write_bytes == 100
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "ORIGINAL"
+
+
+def test_fs_binding_exposes_no_attributes(tmp_path: Any) -> None:
+    fs = _fs(tmp_path)
+
+    assert not hasattr(fs, "__dict__")
+    with pytest.raises(AttributeError):
+        fs.roots = ["/"]  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# fs through the runtime prelude and the example interpreter
+
+FS_BUILTIN_CALLS = {
+    "fs_read_text": ("a.txt",),
+    "fs_write_text": ("b.txt", "text"),
+    "fs_list_dir": (".",),
+    "fs_exists": ("a.txt",),
+    "fs_metadata": ("a.txt",),
+    "fs_symlink_metadata": ("a.txt",),
+    "fs_canonicalize": ("a.txt",),
+}
+
+
+def test_fs_builtin_calls_cover_the_capability() -> None:
+    from geno.builtin_registry import CAPABILITY_MAP
+
+    assert set(FS_BUILTIN_CALLS) == set(CAPABILITY_MAP["fs"])
+
+
+@pytest.mark.parametrize("builtin", sorted(FS_BUILTIN_CALLS))
+def test_missing_fs_binding_is_a_second_gate(builtin: str) -> None:
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"fs"}),
+        _GENO_HOST=MappingProxyType({"env": IsolatedEnv((), {}, ())}),
+    )
+
+    with pytest.raises(namespace["_GenoHostUnavailable"], match="host access for 'fs'"):
+        namespace[builtin](*FS_BUILTIN_CALLS[builtin])
+
+
+@pytest.mark.parametrize("builtin", sorted(FS_BUILTIN_CALLS))
+def test_prelude_fs_builtins_check_the_grant_first(tmp_path: Any, builtin: str) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    fs = _fs(tmp_path)
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"print"}), _GENO_HOST=MappingProxyType({"fs": fs})
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        namespace[builtin](*FS_BUILTIN_CALLS[builtin])
+
+    assert excinfo.value._geno_capability_denied == "fs"  # type: ignore[attr-defined]
+    assert not (tmp_path / "b.txt").exists()
+    assert fs.remaining_write_bytes == FS_LIMIT
+
+
+def test_prelude_fs_builtins_use_the_facade_and_return_geno_values(
+    tmp_path: Any,
+) -> None:
+    (tmp_path / "a.txt").write_text("geno", encoding="utf-8")
+    fs = _fs(tmp_path, max_file_size=10, max_total_write_bytes=10)
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"fs"}), _GENO_HOST=MappingProxyType({"fs": fs})
+    )
+    ok, err = namespace["Ok"], namespace["Err"]
+
+    read = namespace["fs_read_text"]("a.txt")
+    wrote = namespace["fs_write_text"]("b.txt", "text")
+    listed = namespace["fs_list_dir"](".")
+    metadata = namespace["fs_metadata"]("a.txt")
+    link = namespace["fs_symlink_metadata"]("a.txt")
+    canonical = namespace["fs_canonicalize"]("a.txt")
+    exists = namespace["fs_exists"]("a.txt")
+    quota = namespace["fs_write_text"]("c.txt", "too long text")
+    escape = namespace["fs_read_text"]("../a.txt")
+
+    assert type(read) is ok and read.value == "geno"
+    assert type(wrote) is ok and wrote.value is None
+    assert type(listed) is ok and listed.value == ["a.txt", "b.txt"]
+    assert type(listed.value) is list
+    for item in (metadata, link):
+        assert type(item) is ok
+        assert type(item.value) is namespace["FileMetadata"]
+        assert type(item.value.kind) is namespace["FileKindFile"]
+        assert item.value.size == 4
+        assert type(item.value.modified_ms) is int
+    assert type(canonical) is ok and type(canonical.value) is str
+    assert canonical.value == os.path.realpath(tmp_path / "a.txt").replace("\\", "/")
+    assert exists is True
+    assert type(quota) is err
+    assert quota.error == (
+        "fs_write_text: writing 13 bytes exceeds the per-file limit of 10 bytes "
+        "(--max-file-size-bytes)"
+    )
+    assert type(escape) is err
+    assert escape.error == "fs_read_text: path escapes configured filesystem roots"
+    with pytest.raises(RuntimeError, match="fs_exists: path escapes"):
+        namespace["fs_exists"]("../a.txt")
+
+
+def test_prelude_read_only_write_raises(tmp_path: Any) -> None:
+    (tmp_path / "keep.txt").write_text("ORIGINAL", encoding="utf-8")
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"fs"}),
+        _GENO_HOST=MappingProxyType({"fs": _fs(tmp_path, writes_allowed=False)}),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        namespace["fs_write_text"]("keep.txt", "CHANGED")
+
+    assert type(excinfo.value) is RuntimeError
+    assert str(excinfo.value) == "fs_write_text: filesystem writes are not allowed"
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "ORIGINAL"
+
+
+def test_prelude_fs_read_keeps_the_collection_limit(tmp_path: Any) -> None:
+    (tmp_path / "big.txt").write_text("a" * 50, encoding="utf-8")
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"fs"}),
+        _GENO_HOST=MappingProxyType({"fs": _fs(tmp_path)}),
+        _GENO_MAX_COLLECTION_SIZE=10,
+    )
+
+    with pytest.raises(RuntimeError, match="String size exceeds limit"):
+        namespace["fs_read_text"]("big.txt")
+
+
+EXAMPLE_FS_WRITER = """func save(text: String) -> String
+    example "abc" -> "saved"
+    match fs_write_text("example.txt", text) with
+        | Ok(_) -> return "saved"
+        | Err(error) -> return error
+    end match
+end func
+"""
+
+
+def _example_fs(tmp_path: Any, **policy: Any) -> tuple[Any, IsolatedFs]:
+    run_policy = IsolatedRunPolicy(
+        capabilities=frozenset({"fs", "print"}),
+        fs_allow_absolute=True,
+        **policy,
+    )
+    table = build_host_table(
+        run_policy, fs_roots=[str(tmp_path)], max_file_size_bytes=4
+    )
+    interpreter = build_example_interpreter(
+        run_policy, SandboxConfig(timeout=5.0), table
+    )
+    fs = table["fs"]
+    assert isinstance(fs, IsolatedFs)
+    return interpreter, fs
+
+
+def test_examples_and_main_share_one_write_budget(tmp_path: Any) -> None:
+    interpreter, fs = _example_fs(tmp_path, max_total_write_bytes=5)
+    program = Parser(Lexer(EXAMPLE_FS_WRITER, "ex.geno").tokenize()).parse_program()
+
+    interpreter.run(program, execute_main=False)
+
+    # The example's write happened and was counted against the run's total.
+    assert (tmp_path / "example.txt").read_text(encoding="utf-8") == "abc"
+    assert fs.remaining_write_bytes == 2
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"fs"}), _GENO_HOST=MappingProxyType({"fs": fs})
+    )
+    result = namespace["fs_write_text"]("main.txt", "abc")
+    assert type(result) is namespace["Err"]
+    assert "(2 of 5 bytes left" in result.error
+
+
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        ("x.txt", "12345"),
+        ("../x.txt", "1"),
+        ("missing/x.txt", "1"),
+    ],
+    ids=["per-file", "escape", "os-error"],
+)
+def test_example_and_compiled_fs_errors_are_identical(
+    tmp_path: Any, path: str, content: str
+) -> None:
+    interpreter, _fs_binding = _example_fs(tmp_path, max_total_write_bytes=10)
+    _other, compiled_fs = _example_fs(tmp_path, max_total_write_bytes=10)
+    compiled = _prelude_namespace(
+        _GENO_CAPS=frozenset({"fs"}), _GENO_HOST=MappingProxyType({"fs": compiled_fs})
+    )
+
+    example_result = interpreter.global_env.bindings["fs_write_text"].func(
+        path, content
+    )
+    compiled_result = compiled["fs_write_text"](path, content)
+
+    assert example_result.constructor == "Err"
+    assert type(compiled_result) is compiled["Err"]
+    assert example_result.fields["error"] == compiled_result.error
+
+
+def test_example_fs_callbacks_return_interpreter_values(tmp_path: Any) -> None:
+    (tmp_path / "a.txt").write_text("geno", encoding="utf-8")
+    interpreter, _fs_binding = _example_fs(tmp_path, max_total_write_bytes=10)
+    call = {
+        name: interpreter.global_env.bindings[name].func for name in FS_BUILTIN_CALLS
+    }
+
+    assert call["fs_read_text"]("a.txt").fields["value"] == "geno"
+    assert call["fs_list_dir"](".").fields["value"] == ["a.txt"]
+    assert call["fs_exists"]("a.txt") is True
+    metadata = call["fs_metadata"]("a.txt").fields["value"]
+    assert metadata.constructor == "FileMetadata"
+    assert metadata.fields["kind"].constructor == "FileKindFile"
+    assert metadata.fields["size"] == 4
+    link = call["fs_symlink_metadata"]("a.txt").fields["value"]
+    assert link.fields["kind"].constructor == "FileKindFile"
+    canonical = call["fs_canonicalize"]("a.txt").fields["value"]
+    assert canonical == os.path.realpath(tmp_path / "a.txt").replace("\\", "/")
+    assert call["fs_canonicalize"]("missing").constructor == "Err"
+    assert call["fs_read_text"]("../a.txt").fields["error"] == (
+        "fs_read_text: path escapes configured filesystem roots"
+    )
+    with pytest.raises(RuntimeError, match="fs_exists: path escapes"):
+        call["fs_exists"]("../a.txt")
+
+
+def test_example_read_only_write_raises(tmp_path: Any) -> None:
+    interpreter, _fs_binding = _example_fs(tmp_path, fs_read_only=True)
+
+    with pytest.raises(RuntimeError, match="filesystem writes are not allowed"):
+        interpreter.global_env.bindings["fs_write_text"].func("x.txt", "x")
+    assert not (tmp_path / "x.txt").exists()
+
+
+def test_example_interpreter_needs_the_fs_binding() -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"fs"}))
+
+    with pytest.raises(ValueError, match="fs grant has no host binding"):
+        build_example_interpreter(policy, SandboxConfig(timeout=5.0))
+    with pytest.raises(ValueError, match="fs grant has no host binding"):
+        build_example_interpreter(
+            policy,
+            SandboxConfig(timeout=5.0),
+            {"fs": IsolatedEnv((), {}, ())},  # type: ignore[dict-item]
         )

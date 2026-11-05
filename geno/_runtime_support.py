@@ -5170,6 +5170,20 @@ def _run_limited_process(argv, *, input_text=None):
 def fs_read_text(path: str) -> Any:
     """Read a text file, returning Result[String, String]."""
     _require_cap("fs", "fs_read_text")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the trusted facade checks the path and opens
+        # the file; this bounded reader reads it.
+        try:
+            with host.open_text_reader(path, "fs_read_text") as f:
+                result = _read_limited_text_stream(
+                    f, "fs_read_text", limit_error_type=_GenoOutputLimitError
+                )
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        return Ok(result)
     try:
         path = _resolve_fs_path(path, "fs_read_text")
         with open(path, encoding="utf-8") as f:
@@ -5186,6 +5200,16 @@ def fs_read_text(path: str) -> Any:
 def fs_write_text(path: str, content: str) -> Any:
     """Write text to a file, returning Result[Unit, String]."""
     _require_cap("fs", "fs_write_text")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: read-only mode raises; the facade then checks
+        # the path and both write limits before it opens the file.
+        host.require_writable("fs_write_text")
+        try:
+            host.write_text(path, content, "fs_write_text")
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        return Ok(None)
     if not _fs_writes_allowed():
         raise RuntimeError("fs_write_text: filesystem writes are not allowed")
     try:
@@ -5200,6 +5224,14 @@ def fs_write_text(path: str, content: str) -> Any:
 def fs_list_dir(path: str):
     """List directory entries, returning Result[List[String], String]."""
     _require_cap("fs", "fs_list_dir")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade lists a directory inside the roots.
+        try:
+            entries = host.list_dir(path, "fs_list_dir")
+        except (OSError, RuntimeError) as e:
+            return Err(str(e))
+        return _check_collection_size(Ok(entries))
     import os
 
     try:
@@ -5213,6 +5245,10 @@ def fs_list_dir(path: str):
 def fs_exists(path: str) -> bool:
     """Check if a path exists."""
     _require_cap("fs", "fs_exists")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: a path outside the roots raises, as standalone.
+        return bool(host.exists(path, "fs_exists"))
     import os.path
 
     path = _resolve_fs_path(path, "fs_exists")
@@ -5240,9 +5276,37 @@ def _file_metadata_from_stat(stat_result: Any, fn_name: str) -> FileMetadata:
     return FileMetadata(kind, size, modified_ms)
 
 
+def _file_metadata_from_parts(
+    kind_name: str, size: int, mtime_ns: int, fn_name: str
+) -> FileMetadata:
+    """``FileMetadata`` from the isolated facade's classified stat triple."""
+    kind: Constructor
+    if kind_name == "file":
+        kind = FileKindFile()
+    elif kind_name == "directory":
+        kind = FileKindDirectory()
+    elif kind_name == "symlink":
+        kind = FileKindSymlink()
+    else:
+        kind = FileKindOther()
+    size = _require_safe_js_int(size, f"{fn_name} size")
+    modified_ms = _require_safe_js_int(mtime_ns // 1_000_000, f"{fn_name} modified_ms")
+    return FileMetadata(kind, size, modified_ms)
+
+
 def fs_metadata(path: str) -> Any:
     """Return metadata for a path, following the final symbolic link."""
     _require_cap("fs", "fs_metadata")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade stats and classifies the path.
+        try:
+            kind_name, size, mtime_ns = host.metadata(path, "fs_metadata", follow=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        return _check_collection_size(
+            Ok(_file_metadata_from_parts(kind_name, size, mtime_ns, "fs_metadata"))
+        )
     import os as _os
 
     try:
@@ -5258,6 +5322,22 @@ def fs_metadata(path: str) -> Any:
 def fs_symlink_metadata(path: str) -> Any:
     """Return metadata without following the final symbolic link."""
     _require_cap("fs", "fs_symlink_metadata")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade describes the link itself.
+        try:
+            kind_name, size, mtime_ns = host.metadata(
+                path, "fs_symlink_metadata", follow=False
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        return _check_collection_size(
+            Ok(
+                _file_metadata_from_parts(
+                    kind_name, size, mtime_ns, "fs_symlink_metadata"
+                )
+            )
+        )
     import os as _os
 
     try:
@@ -5273,6 +5353,16 @@ def fs_symlink_metadata(path: str) -> Any:
 def fs_canonicalize(path: str) -> Any:
     """Return the absolute, symlink-resolved path using portable separators."""
     _require_cap("fs", "fs_canonicalize")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade resolves an existing path.
+        try:
+            resolved = host.canonicalize(path, "fs_canonicalize")
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        canonical = resolved.replace("\\", "/")
+        _check_string_result_size("fs_canonicalize", len(canonical))
+        return _check_collection_size(Ok(canonical))
     import os as _os
 
     try:
