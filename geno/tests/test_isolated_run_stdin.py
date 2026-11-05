@@ -82,6 +82,26 @@ def _geno_command(*args: str) -> list[str]:
     return [sys.executable, "-m", "geno", "run", *args]
 
 
+def _spawn(*args: str, cwd: Path) -> subprocess.Popen[bytes]:
+    """Start ``geno run`` with an input pipe the test keeps open."""
+    return subprocess.Popen(
+        _geno_command(*args),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+    )
+
+
+def _finish(process: subprocess.Popen[bytes]) -> None:
+    for pipe in (process.stdin, process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+
+
 def _run(
     *args: str, cwd: Path, input: bytes = b"", timeout: float = 60
 ) -> subprocess.CompletedProcess[bytes]:
@@ -340,19 +360,15 @@ def test_never_ending_input_is_killed_at_the_deadline(tmp_path: Path) -> None:
     _write(tmp_path, READ_ONCE)
 
     started = time.monotonic()
-    process = subprocess.Popen(
-        _geno_command("--timeout", "2", "--cap", "print,stdin", "main.geno"),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=tmp_path,
+    process = _spawn(
+        "--timeout", "2", "--cap", "print,stdin", "main.geno", cwd=tmp_path
     )
     assert process.stdin is not None
+    assert process.stdout is not None and process.stderr is not None
     try:
         # Never closed, so the input never ends (communicate() would close it).
         process.wait(timeout=60)
         elapsed = time.monotonic() - started
-        assert process.stdout is not None and process.stderr is not None
         stdout = process.stdout.read()
         stderr = process.stderr.read()
         assert process.returncode == 1
@@ -366,22 +382,15 @@ def test_never_ending_input_is_killed_at_the_deadline(tmp_path: Path) -> None:
         with pytest.raises(BrokenPipeError):
             os.write(process.stdin.fileno(), b"x")
     finally:
-        process.stdin.close()
-        if process.poll() is None:
-            process.kill()
-            process.wait()
+        _finish(process)
 
 
 @needs_stdin
 @posix_only
 def test_slow_input_within_the_deadline_succeeds(tmp_path: Path) -> None:
     _write(tmp_path, READ_ONCE)
-    process = subprocess.Popen(
-        _geno_command("--timeout", "30", "--cap", "print,stdin", "main.geno"),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=tmp_path,
+    process = _spawn(
+        "--timeout", "30", "--cap", "print,stdin", "main.geno", cwd=tmp_path
     )
     assert process.stdin is not None
 
@@ -398,13 +407,13 @@ def test_slow_input_within_the_deadline_succeeds(tmp_path: Path) -> None:
     writer.start()
     try:
         process.wait(timeout=60)
+        writer.join()
+        assert process.stdout is not None and process.stderr is not None
+        stdout = process.stdout.read()
+        stderr = process.stderr.read()
     finally:
         writer.join()
-    assert process.stdout is not None and process.stderr is not None
-    stdout = process.stdout.read()
-    stderr = process.stderr.read()
-    process.stdout.close()
-    process.stderr.close()
+        _finish(process)
 
     assert process.returncode == 0, stderr
     assert stdout.decode() == "got [slow ïnput]\n"
@@ -526,7 +535,6 @@ SLEEPY_EXAMPLE = """func settle() -> Int
 end func
 
 func main() -> Unit
-    print(f"settled {settle()}")
     match stdin_read_all() with
         | Ok(text) -> print("got " + text)
         | Err(error) -> print("Err " + error)
@@ -542,24 +550,16 @@ def test_an_example_sleep_and_a_read_share_the_runs_deadline(tmp_path: Path) -> 
     _write(tmp_path, SLEEPY_EXAMPLE)
 
     started = time.monotonic()
-    process = subprocess.Popen(
-        _geno_command("--timeout", "4", "--cap", "clock,print,stdin", "main.geno"),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=tmp_path,
+    process = _spawn(
+        "--timeout", "4", "--cap", "clock,print,stdin", "main.geno", cwd=tmp_path
     )
-    assert process.stdin is not None
     try:
         process.wait(timeout=60)
         elapsed = time.monotonic() - started
         assert process.stderr is not None
         stderr = process.stderr.read().decode()
     finally:
-        process.stdin.close()
-        if process.poll() is None:
-            process.kill()
-            process.wait()
+        _finish(process)
 
     assert process.returncode == 1
     assert stderr.strip().splitlines()[-1] == TIMEOUT_TAIL.format(timeout=4.0)
