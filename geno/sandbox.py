@@ -3621,6 +3621,17 @@ if __name__ == "__main__":
         ):
             env["GENO_CLI_ARGS"] = os.environ["GENO_CLI_ARGS"]
 
+        # An isolated run's `http` grant carries the caller's TLS trust
+        # variables in its run policy (proposal 0013), so OpenSSL in the
+        # worker trusts what it trusts in the `--unsafe` CLI process. Without
+        # `http` the policy holds none and nothing is added.
+        if (config_overrides or {}).get("worker_mode") == "geno_cli":
+            from .isolated_host import isolated_worker_environment
+
+            env.update(
+                isolated_worker_environment((config_overrides or {}).get("run_policy"))
+            )
+
         return env
 
 

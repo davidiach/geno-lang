@@ -539,6 +539,11 @@ _JS_LOCAL_RESERVED_NAMES = (
     | _JS_EMITTED_LOCAL_HELPER_NAMES
     | _JS_HOST_INTRINSIC_NAMES
     | js_backend_builtin_helper_names()
+    # The isolated `geno run` worker's private host channel (proposal 0013).
+    # The JS prelude has no such names, but reserving them here too (for
+    # locals as well as top-level definitions and references) means
+    # `geno check --target js` never accepts a program `geno run` rejects.
+    | ISOLATED_HOST_PRIVATE_NAMES
 )
 
 _JS_PRELUDE_BINDING_RE = _re.compile(
@@ -557,10 +562,6 @@ JS_RESERVED_PRELUDE_NAMES = (
     )
     | _JS_LOCAL_RESERVED_NAMES
     | _JS_FIXED_GLOBAL_NAMES
-    # The isolated `geno run` worker's private host channel (proposal 0013).
-    # The JS prelude has no such names, but reserving them here too means
-    # `geno check --target js` never accepts a program `geno run` rejects.
-    | ISOLATED_HOST_PRIVATE_NAMES
 )
 JS_DIRECT_REFERENCE_RESERVED_NAMES = (
     JS_RESERVED_PRELUDE_NAMES - _JS_HOST_INTRINSIC_NAMES

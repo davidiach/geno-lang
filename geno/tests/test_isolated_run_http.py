@@ -828,6 +828,139 @@ def test_tls_certificates_are_verified(
     assert server.hits == []
 
 
+@dataclass(frozen=True)
+class TrustedTls:
+    """A server context whose certificate a client can be told to trust."""
+
+    context: ssl.SSLContext
+    cert: Path
+    hashed_dir: Path
+
+
+@pytest.fixture(scope="module")
+def trusted_tls(tmp_path_factory: pytest.TempPathFactory) -> TrustedTls:
+    """A self-signed certificate valid for 127.0.0.1, plus a hashed CA directory."""
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl is not available to make a self-signed certificate")
+    assert openssl is not None
+    directory = tmp_path_factory.mktemp("trusted-tls")
+    cert, key = directory / "cert.pem", directory / "key.pem"
+    made = subprocess.run(
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=127.0.0.1",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if made.returncode != 0:
+        pytest.skip(f"openssl could not make a certificate: {made.stderr}")
+    hashed = subprocess.run(
+        [openssl, "x509", "-hash", "-noout", "-in", str(cert)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if hashed.returncode != 0:
+        pytest.skip(f"openssl could not hash the certificate: {hashed.stderr}")
+    hashed_dir = directory / "hashed"
+    hashed_dir.mkdir()
+    shutil.copyfile(cert, hashed_dir / f"{hashed.stdout.strip()}.0")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert), str(key))
+    return TrustedTls(context, cert, hashed_dir)
+
+
+@pytest.mark.parametrize("variable", ["SSL_CERT_FILE", "SSL_CERT_DIR"])
+def test_caller_tls_trust_is_used_as_under_unsafe(
+    tmp_path: Path, trusted_tls: TrustedTls, variable: str
+) -> None:
+    """An ``http`` grant carries the caller's ``SSL_CERT_*`` to the worker.
+
+    A certificate trusted only through the variable verifies in both lanes,
+    for ``http_fetch`` and ``http_request``; without the variable it fails in
+    both, so the success is the variable's doing.
+    """
+    trust = str(
+        trusted_tls.cert if variable == "SSL_CERT_FILE" else trusted_tls.hashed_dir
+    )
+    with local_server(echo, tls=trusted_tls.context) as server:
+        _program(tmp_path, _fetch(server.url("/a")) + _request("GET", server.url("/b")))
+        runs = {}
+        for label, extra in (("trusted", {variable: trust}), ("untrusted", {})):
+            base = {
+                key: value
+                for key, value in _env(**PRIVATE).items()
+                if key not in {"SSL_CERT_FILE", "SSL_CERT_DIR"}
+            }
+            env = {**base, **extra}
+            runs[label] = (
+                _geno("--cap", "http,print", "main.geno", cwd=tmp_path, env=env),
+                _geno(
+                    "--unsafe",
+                    "--cap",
+                    "http,print",
+                    "main.geno",
+                    cwd=tmp_path,
+                    env=env,
+                ),
+            )
+
+    isolated, unsafe = runs["trusted"]
+    assert isolated.returncode == 0, isolated.stderr
+    assert isolated.stdout == "GET /a \n200 GET /b \n"
+    assert (unsafe.stdout, unsafe.returncode) == (isolated.stdout, 0)
+    isolated, unsafe = runs["untrusted"]
+    assert isolated.returncode == 0, isolated.stderr
+    lines = isolated.stdout.splitlines()
+    assert len(lines) == 2
+    assert all("certificate verify failed" in line for line in lines)
+    assert unsafe.stdout == isolated.stdout
+
+
+def test_tls_trust_variables_reach_the_worker_only_with_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from geno.isolated_host import isolated_run_policy_for
+    from geno.sandbox import ProcessSandbox
+
+    monkeypatch.setenv("SSL_CERT_FILE", "/trust/ca.pem")
+    monkeypatch.setenv("SSL_CERT_DIR", "/trust/certs")
+    sandbox = ProcessSandbox()
+
+    def worker_env(grant: set[str]) -> dict[str, str]:
+        policy = isolated_run_policy_for(grant, timeout=5.0)
+        return sandbox._create_restricted_env(
+            {"worker_mode": "geno_cli", "run_policy": policy.to_config()}
+        )
+
+    with_http = worker_env({"http", "print"})
+    without = worker_env({"env", "fs", "print", "regex"})
+    plain = sandbox._create_restricted_env()
+
+    assert with_http["SSL_CERT_FILE"] == "/trust/ca.pem"
+    assert with_http["SSL_CERT_DIR"] == "/trust/certs"
+    for env in (without, plain):
+        assert "SSL_CERT_FILE" not in env
+        assert "SSL_CERT_DIR" not in env
+
+
 # ---------------------------------------------------------------------------
 # Bounds: response size and the run's deadline
 

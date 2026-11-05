@@ -1492,6 +1492,95 @@ def test_cli_args_parity_with_unsafe(tmp_path: Path) -> None:
     assert isolated.stderr == direct.stderr == ""
 
 
+# regex, program arguments and an allowed variable: builtins whose semantics
+# match on every backend, so the isolated lane must agree with compiled
+# Python and compiled JavaScript as well as with `--unsafe`.
+BACKEND_PARITY_PROGRAM = """func first_number(text: String) -> Option[String]
+    example "order 42 shipped" -> Some("42")
+    example "no digits" -> None
+    return regex_match("[0-9]+", text)
+end func
+
+func main() -> Unit
+    let args = cli_args()
+    print(length(args))
+    print(join(args, "|"))
+    match first_number(join(args, " ")) with
+        | Some(n) -> print("number " + n)
+        | None -> print("no number")
+    end match
+    print(regex_replace(pattern: "[aeiou]", replacement: "_", text: args[0]))
+    match env_get("GENO_PARITY_NAME") with
+        | Some(value) -> print("env " + value)
+        | None -> print("env unset")
+    end match
+    print(env_get_or("GENO_PARITY_MISSING", "fallback"))
+end func
+"""
+
+
+def test_regex_env_and_cli_args_match_every_backend(tmp_path: Path) -> None:
+    """Isolated `--cap` output equals `--unsafe --cap`, compiled Python and Node."""
+    import shutil
+
+    from geno.compiler import compile_to_python
+    from geno.js_compiler import compile_to_js
+
+    _write(tmp_path, "main.geno", BACKEND_PARITY_PROGRAM)
+    (tmp_path / "main.py").write_text(
+        compile_to_python(BACKEND_PARITY_PROGRAM), encoding="utf-8"
+    )
+    (tmp_path / "main.js").write_text(
+        compile_to_js(BACKEND_PARITY_PROGRAM), encoding="utf-8"
+    )
+    caps = ("--cap", "env,print,regex")
+    program_args = ("--", "capabilities", "run 7", "-v")
+    env = _without_geno_vars(GENO_PARITY_NAME="v1")
+    env.pop("GENO_PARITY_MISSING", None)
+    allow = ("--allow-env", "GENO_PARITY_NAME", "--allow-env", "GENO_PARITY_MISSING")
+    lanes: dict[str, list[str]] = {
+        "isolated": [
+            sys.executable,
+            "-m",
+            "geno",
+            "run",
+            *caps,
+            *allow,
+            "main.geno",
+            *program_args,
+        ],
+        "unsafe": [
+            sys.executable,
+            "-m",
+            "geno",
+            "run",
+            "--unsafe",
+            *caps,
+            "main.geno",
+            *program_args,
+        ],
+        "python": [sys.executable, "main.py", *caps, *program_args],
+    }
+    node = shutil.which("node")
+    if node is not None:
+        lanes["js"] = [node, "main.js", *caps, *program_args]
+
+    results = {
+        lane: subprocess.run(
+            argv, capture_output=True, text=True, timeout=60, cwd=tmp_path, env=env
+        )
+        for lane, argv in lanes.items()
+    }
+
+    expected = "3\ncapabilities|run 7|-v\nnumber 7\nc_p_b_l_t__s\nenv v1\nfallback\n"
+    for lane, result in results.items():
+        assert (result.stdout, result.stderr, result.returncode) == (
+            expected,
+            "",
+            0,
+        ), lane
+
+
 def test_env_scope_differs_from_unsafe_as_documented(tmp_path: Path) -> None:
     # `--unsafe --cap env` exposes the caller's whole environment; the
     # isolated lane exposes only the names it allows, with the same values.

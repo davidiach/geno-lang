@@ -83,6 +83,8 @@ def test_default_policy_round_trips() -> None:
         "fs_allow_absolute": False,
         "max_total_write_bytes": 0,
         "http_allow_private": False,
+        "http_ca_file": None,
+        "http_ca_dir": None,
         "stdin_fd": None,
         "deadline_seconds": None,
     }
@@ -167,6 +169,9 @@ def test_from_config_rejects_extra_and_missing_keys() -> None:
         {"max_total_write_bytes": False},
         {"max_total_write_bytes": 1.0},
         {"http_allow_private": 1},
+        {"capabilities": ["http"], "http_ca_file": 1},
+        {"capabilities": ["http"], "http_ca_dir": ["/etc/certs"]},
+        {"capabilities": ["http"], "http_ca_file": "a\x00b"},
         {"stdin_fd": "3"},
         {"stdin_fd": True},
         {"deadline_seconds": "30"},
@@ -193,6 +198,9 @@ def test_from_config_rejects_wrong_types_and_values(
         ({"fs_allow_absolute": True}, "fs"),
         ({"max_total_write_bytes": 1}, "fs"),
         ({"http_allow_private": True}, "http"),
+        ({"http_ca_file": "/etc/ca.pem"}, "http"),
+        ({"http_ca_file": ""}, "http"),
+        ({"http_ca_dir": "/etc/certs"}, "http"),
         ({"stdin_fd": 3}, "stdin"),
     ],
 )
@@ -1993,6 +2001,54 @@ def test_http_policy_reads_the_private_opt_in_only_with_http() -> None:
         environ={},
     )
     assert allowed.http_allow_private is False
+
+
+@needs_http_lane
+def test_http_policy_carries_the_callers_tls_trust_only_with_http() -> None:
+    from geno.isolated_host import isolated_worker_environment
+
+    trust = {"SSL_CERT_FILE": "/trust/ca.pem", "SSL_CERT_DIR": "/trust/certs"}
+
+    granted = isolated_run_policy_for({"http", "print"}, timeout=5.0, environ=trust)
+    file_only = isolated_run_policy_for(
+        {"http"}, timeout=5.0, environ={"SSL_CERT_FILE": ""}
+    )
+    without = isolated_run_policy_for(
+        {"env", "fs", "print"}, timeout=5.0, environ=trust
+    )
+    allowed = isolated_run_policy_for(
+        {"env", "print"}, timeout=5.0, allow_env=("SSL_CERT_FILE",), environ=trust
+    )
+
+    assert (granted.http_ca_file, granted.http_ca_dir) == (
+        "/trust/ca.pem",
+        "/trust/certs",
+    )
+    assert IsolatedRunPolicy.from_config(granted.to_config()) == granted
+    assert isolated_worker_environment(granted.to_config()) == trust
+    # A set but empty variable is carried as it is, as OpenSSL would see it.
+    assert (file_only.http_ca_file, file_only.http_ca_dir) == ("", None)
+    assert isolated_worker_environment(file_only.to_config()) == {"SSL_CERT_FILE": ""}
+    for policy in (without, allowed):
+        assert (policy.http_ca_file, policy.http_ca_dir) == (None, None)
+        assert isolated_worker_environment(policy.to_config()) == {}
+
+
+def test_worker_environment_reads_only_an_http_policy() -> None:
+    from geno.isolated_host import isolated_worker_environment
+
+    smuggled = _config(http_ca_file="/trust/ca.pem")
+
+    # The worker rejects this policy; the parent never adds the variable.
+    assert isolated_worker_environment(smuggled) == {}
+    assert isolated_worker_environment(None) == {}
+    assert isolated_worker_environment("http") == {}
+    assert (
+        isolated_worker_environment(
+            {"capabilities": ["http"], "http_ca_file": 3, "http_ca_dir": "a\x00b"}
+        )
+        == {}
+    )
 
 
 def test_http_policy_follows_the_platform_rules() -> None:

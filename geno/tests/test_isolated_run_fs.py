@@ -295,6 +295,156 @@ def test_metadata_of_every_kind_and_canonicalize_match_unsafe(tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
+# Parity with compiled Python (backend parity for the prelude's worker branches)
+
+# One program over the env and fs builtins whose isolated-worker prelude
+# branches must match the standalone compiled branches: program arguments, an
+# allowed variable, a defaulted unset one, every fs read/write/list/metadata/
+# canonicalize shape and a path that escapes the roots.
+COMPILED_PARITY_PROGRAM = """@untested("filesystem fixture")
+func show(label: String, result: Result[FileMetadata, String]) -> String
+    match result with
+        | Ok(m) -> return label + " size " + to_string(m.size)
+        | Err(error) -> return label + " Err " + error
+    end match
+end func
+
+func main() -> Unit
+    let args = cli_args()
+    print("args " + join(args, ","))
+    match env_get("GENO_PARITY_NAME") with
+        | Some(value) -> print("env " + value)
+        | None -> print("env unset")
+    end match
+    print("default " + env_get_or("GENO_PARITY_MISSING", "fallback"))
+    match fs_write_text("out/" + args[0], "fresh") with
+        | Ok(_) -> print("wrote")
+        | Err(error) -> print("write Err " + error)
+    end match
+    match fs_read_text("out/" + args[0]) with
+        | Ok(text) -> print("read " + text)
+        | Err(error) -> print("read Err " + error)
+    end match
+    match fs_read_text("missing.txt") with
+        | Ok(text) -> print("read " + text)
+        | Err(error) -> print("missing Err " + error)
+    end match
+    match fs_list_dir("out") with
+        | Ok(names) -> print("list " + join(names, ","))
+        | Err(error) -> print("list Err " + error)
+    end match
+    print(show("file", fs_metadata("data.txt")))
+    print(show("file-l", fs_symlink_metadata("data.txt")))
+    print(show("missing", fs_metadata("missing.txt")))
+    match fs_canonicalize("sub/../data.txt") with
+        | Ok(path) -> print("canon " + path)
+        | Err(error) -> print("canon Err " + error)
+    end match
+    match fs_read_text("../outside.txt") with
+        | Ok(text) -> print("ESCAPED " + text)
+        | Err(error) -> print("escape " + error)
+    end match
+    match fs_write_text("../outside.txt", "CHANGED") with
+        | Ok(_) -> print("ESCAPED write")
+        | Err(error) -> print("escape " + error)
+    end match
+    print("exists " + to_string(fs_exists("data.txt")))
+end func
+"""
+
+
+def test_isolated_lane_matches_unsafe_and_compiled_python(tmp_path: Path) -> None:
+    """`geno run --cap`, `geno run --unsafe --cap` and the compiled program agree.
+
+    All three run from the same directory, set up afresh each time, so host
+    paths in error texts are identical; the compiled program reads the same
+    variable from its own environment that the isolated lane allows by name.
+    """
+    from geno.compiler import compile_to_python
+
+    outside = _write(tmp_path, "outside.txt", "secret")
+    compiled = tmp_path / "main.py"
+    compiled.write_text(compile_to_python(COMPILED_PARITY_PROGRAM), encoding="utf-8")
+    env = _env(GENO_PARITY_NAME="v1")
+    program_args = ("--", "new.txt", "-v")
+    lanes = {
+        "isolated": [
+            sys.executable,
+            "-m",
+            "geno",
+            "run",
+            "--cap",
+            "env,fs,print",
+            "--allow-env",
+            "GENO_PARITY_NAME",
+            "--allow-env",
+            "GENO_PARITY_MISSING",
+            "main.geno",
+            *program_args,
+        ],
+        "unsafe": [
+            sys.executable,
+            "-m",
+            "geno",
+            "run",
+            "--unsafe",
+            "--cap",
+            "env,fs,print",
+            "main.geno",
+            *program_args,
+        ],
+        "compiled": [
+            sys.executable,
+            str(compiled),
+            "--cap",
+            "env,fs,print",
+            *program_args,
+        ],
+    }
+    results = {}
+    for lane, argv in lanes.items():
+        work = tmp_path / "work"
+        if work.exists():
+            _remove_tree(work)
+        _write(work, "out/old.txt", "old")
+        _write(work, "data.txt", "geno")
+        (work / "sub").mkdir()
+        _write(work, "main.geno", COMPILED_PARITY_PROGRAM)
+        results[lane] = subprocess.run(
+            argv, capture_output=True, text=True, timeout=60, cwd=work, env=env
+        )
+
+    isolated = results["isolated"]
+    assert isolated.returncode == 0, isolated.stderr
+    for lane, result in results.items():
+        assert (result.stdout, result.stderr, result.returncode) == (
+            isolated.stdout,
+            "",
+            0,
+        ), lane
+    lines = isolated.stdout.splitlines()
+    assert lines[:5] == [
+        "args new.txt,-v",
+        "env v1",
+        "default fallback",
+        "wrote",
+        "read fresh",
+    ]
+    assert lines[5].startswith("missing Err ")
+    assert lines[6:9] == ["list new.txt,old.txt", "file size 4", "file-l size 4"]
+    assert lines[9].startswith("missing Err ")
+    assert lines[10] == "canon " + os.path.realpath(
+        tmp_path / "work" / "data.txt"
+    ).replace("\\", "/")
+    assert lines[11:] == [
+        f"escape fs_read_text: {ESCAPES}",
+        f"escape fs_write_text: {ESCAPES}",
+        "exists true",
+    ]
+    assert outside.read_text(encoding="utf-8") == "secret"
+
+
+# ---------------------------------------------------------------------------
 # Escapes and absolute paths
 
 ESCAPE_PROGRAM = """func main() -> Unit

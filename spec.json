@@ -511,7 +511,7 @@
   },
 
   "capabilities": {
-    "description": "Builtins in this capability map are gated behind named capabilities. Direct embedding and CLI execution leave gating disabled when capabilities are omitted; explicit capability sets restrict access. Hosted `/run` requests default omitted capabilities to the server's configured allowed set.",
+    "description": "Builtins in this capability map are gated behind named capabilities. Every execution surface enforces the gates: each one grants a fixed set when capabilities are omitted (`surfaces` says which) and exactly the listed set when they are given; a list is never added to the omitted-capabilities set. `isolated_run` states what the default process-isolated `geno run` lane can grant (proposal 0013).",
     "map": {
       "print": ["print"],
       "clock": ["datetime_now", "datetime_format", "datetime_parse", "datetime_elapsed", "clock_now", "clock_format", "clock_parse", "clock_elapsed", "sleep_ms"],
@@ -525,9 +525,17 @@
       "serve": ["http_listen", "http_route", "http_respond"]
     },
     "surfaces": {
-      "embedding_api": "RunConfig(capabilities=None) leaves capability gating disabled",
-      "cli": "Omitting --cap leaves capability gating disabled",
-      "hosted_server": "Omitting capabilities in /run requests defaults to the server's allowed capability set"
+      "embedding_api": "RunConfig(capabilities=None) grants no gated builtins (fail-closed); an explicit set grants exactly that set",
+      "cli": "Default `geno run` (process-isolated lane): `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise, for examples and `main`; a capability the lane cannot grant (`isolated_run.refused`, `isolated_run.unavailable`, and `isolated_run.unavailable_on_windows` on Windows) is refused before launch. `geno run --unsafe`: `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise. `geno run --json`: no gated builtins without --cap, and exactly the --cap list otherwise",
+      "compiled_programs": "Standalone compiled Python and JavaScript grant no gated builtins without --cap, and exactly the --cap list otherwise",
+      "hosted_server": "Omitting capabilities in a /run request grants the server's default request set (empty unless the embedding configures `default_request_capabilities`, which must be a subset of the allowed set); a request may list only allowed capabilities"
+    },
+    "isolated_run": {
+      "default_grant": ["clock", "print", "random"],
+      "grantable": ["clock", "env", "fs", "http", "print", "random", "regex"],
+      "refused": ["process", "serve"],
+      "unavailable": ["stdin"],
+      "unavailable_on_windows": ["http"]
     }
   }
 }

@@ -301,6 +301,103 @@ def test_isolated_host_channel_cannot_be_defined(
         compile_fn(source, typecheck=False)
 
 
+# Each source binds the name locally without referencing it, so only the
+# local-name reservation (not the direct-reference check) can reject it.
+_LOCAL_BINDING_FORMS = {
+    "function parameter": (
+        "func f({name}: Int) -> Int\n"
+        "    example 1 -> 2\n"
+        "    return 2\n"
+        "end func\n"
+        "func main() -> Unit\n"
+        "    print(f(1))\n"
+        "end func\n"
+    ),
+    "lambda parameter": (
+        "func main() -> Unit\n"
+        "    let f = fn({name}: Int) -> 1\n"
+        "    print(f(2))\n"
+        "end func\n"
+    ),
+    "for-loop binding": (
+        "func main() -> Unit\n"
+        "    for {name} in [1] do\n"
+        '        print("a")\n'
+        "    end for\n"
+        "end func\n"
+    ),
+    "pattern binding": (
+        "func main() -> Unit\n"
+        "    let x: Option[Int] = Some(7)\n"
+        "    match x with\n"
+        '        | Some({name}) -> print("c")\n'
+        '        | None -> print("d")\n'
+        "    end match\n"
+        "end func\n"
+    ),
+    "local binding": (
+        'func main() -> Unit\n    let {name} = 3\n    print("e")\nend func\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_LOCAL_BINDING_FORMS))
+@pytest.mark.parametrize("name", _ISOLATED_HOST_NAMES)
+@pytest.mark.parametrize(
+    ("compile_fn", "error_type"),
+    [(compile_to_python, CompileError), (compile_to_js, JSCompileError)],
+)
+def test_isolated_host_channel_cannot_be_bound_locally(
+    compile_fn, error_type, name: str, form: str
+) -> None:
+    """Every binding form is refused at compile time, before any worker launch.
+
+    The isolated worker rejects all bindings of the host-channel names, so a
+    compiler that accepted a local one would let `geno check` pass a program
+    the default `geno run` lane then fails at run time.
+    """
+    source = _LOCAL_BINDING_FORMS[form].format(name=name)
+    with pytest.raises(
+        error_type,
+        match=f"'{name}' is a reserved runtime name and cannot be used as a {form}",
+    ):
+        compile_fn(source, typecheck=False)
+
+
+def test_isolated_host_channel_is_locally_reserved_on_both_backends() -> None:
+    from geno.compiler import _PYTHON_LOCAL_RESERVED_NAMES
+    from geno.js_compiler import _JS_LOCAL_RESERVED_NAMES
+
+    assert ISOLATED_HOST_PRIVATE_NAMES <= _PYTHON_LOCAL_RESERVED_NAMES
+    assert ISOLATED_HOST_PRIVATE_NAMES <= _JS_LOCAL_RESERVED_NAMES
+
+
+def test_isolated_run_refuses_a_lambda_parameter_naming_the_host_channel(
+    tmp_path: Path,
+) -> None:
+    """The refusal is the compile error, not the worker's run-time rejection."""
+    source = tmp_path / "probe.geno"
+    source.write_text(
+        _LOCAL_BINDING_FORMS["lambda parameter"].format(name="_GENO_HOST"),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "geno", "run", str(source)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert (
+        "'_GENO_HOST' is a reserved runtime name and cannot be used as a "
+        "lambda parameter name"
+    ) in result.stderr
+    assert "Access to compiler runtime internal" not in result.stderr
+
+
 def test_isolated_host_channel_is_bound_by_the_python_prelude() -> None:
     """The reserved constant and the prelude's own bindings cannot drift."""
     from geno.compiler import RESERVED_PRELUDE_NAMES

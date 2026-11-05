@@ -193,7 +193,8 @@ It meets the five conditions above:
    `conformance/v0.5` and `conformance/v0.6` are unchanged, and the
    development corpus adds the `isolated-grant-regex` and
    `isolated-grant-env-cli-args` cases, which the `cli-process` lane runs
-   with the case's declared `--cap`; and
+   with the case's declared `--cap` and the compiled Python and JavaScript
+   lanes run with the same grant; and
 5. the release owner records it in release evidence when 0.7 is released.
 
 ## Frozen Conformance Corpus

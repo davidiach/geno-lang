@@ -89,6 +89,10 @@ full:
   even for a rewrite. A quota rejection returns `Err` and leaves the file
   unchanged. The `GENO_FS_*` variables below are read only when `fs` is
   granted; `GENO_HTTP_ALLOW_PRIVATE` only when `http` is.
+- **TLS trust follows yours.** With `http`, the worker verifies certificates
+  against the same trust store as `--unsafe`: your `SSL_CERT_FILE` and
+  `SSL_CERT_DIR`, when set (for example a corporate CA bundle), are passed to
+  the worker's TLS library and to nothing else. The program cannot read them.
 - **Examples share the run.** Examples run before `main` with the same grant,
   the same environment snapshot, filesystem quotas and HTTP policy, and the
   same deadline and output budget: example output is not shown, but it counts
@@ -151,8 +155,9 @@ geno run myfile.geno --unsafe --cap process --cap print
 geno run myfile.geno --unsafe --cap serve,env
 ```
 
-If you omit `--cap` entirely with `--unsafe`, the trusted direct interpreter
-keeps its legacy ungated behavior. Use `--cap` to restrict it.
+If you omit `--cap` with `--unsafe`, the interpreter grants the same defaults
+as the default lane: `clock`, `print` and `random`. No lane leaves capability
+gating disabled.
 
 ### JSON mode (`geno run --json`)
 

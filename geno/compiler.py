@@ -113,6 +113,7 @@ from .builtin_registry import (
     python_backend_builtin_helper_names,
     python_backend_builtin_name_map,
 )
+from .capabilities import ISOLATED_HOST_PRIVATE_NAMES
 from .entrypoint import (
     EntrypointResultKind,
     _awaits_directly,
@@ -312,6 +313,10 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
     | _PYTHON_EMITTED_LOCAL_HELPER_NAMES
     | _PYTHON_EMITTED_HOST_INTRINSIC_NAMES
     | python_backend_builtin_helper_names()
+    # The isolated `geno run` worker's private host channel (proposal 0013).
+    # The worker rejects every binding of these names, so parameters, loop
+    # variables and pattern bindings are refused here, before launch.
+    | ISOLATED_HOST_PRIVATE_NAMES
 )
 
 

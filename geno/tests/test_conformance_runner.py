@@ -193,23 +193,42 @@ _ISOLATED_GRANT_CASES = {
 }
 
 
+_COMPILED_LANES = {"python", "js", "js-esm"}
+
+
+def _assert_lanes_passed(results) -> None:
+    """Every lane passed; only the Node lanes may skip, and only without Node."""
+    for result in results:
+        if result.target in {"js", "js-esm"} and shutil.which("node") is None:
+            assert result.status in {"passed", "skipped"}, result
+        else:
+            assert result.status == "passed", result
+
+
 @pytest.mark.parametrize("case_id", sorted(_ISOLATED_GRANT_CASES))
-def test_the_isolated_grant_cases_run_on_every_interpreter_lane(case_id: str) -> None:
-    """Proposal 0013's v0.7 cases agree across the four lanes that run examples."""
+def test_the_isolated_grant_cases_run_on_every_lane(case_id: str) -> None:
+    """Proposal 0013's v0.7 cases agree across the four lanes that run examples
+    and the compiled Python and JavaScript backends (backend parity)."""
     (path,) = development_manifest_paths()
     manifest = load_manifest(path)
     (case,) = [case for case in manifest.cases if case.id == case_id]
 
-    assert set(case.targets) == {"interpreter", "cli-process", "cli-direct", "cli-json"}
+    assert set(case.targets) == {
+        "interpreter",
+        "cli-process",
+        "cli-direct",
+        "cli-json",
+        *_COMPILED_LANES,
+    }
     assert set(case.capabilities) == _ISOLATED_GRANT_CASES[case_id]
     results = run_suite(manifest, case_ids=frozenset({case_id}), timeout=60.0)
 
     assert {result.target for result in results} == {"checker", *case.targets}
-    assert all(result.status == "passed" for result in results), results
+    _assert_lanes_passed(results)
 
 
-def test_the_isolated_grant_is_exact_in_both_cli_lanes() -> None:
-    """`--cap regex` denies `print`: neither lane restores the default grant."""
+def test_the_isolated_grant_is_exact_in_every_lane_with_a_stderr() -> None:
+    """`--cap regex` denies `print`: no lane restores the default grant."""
     (path,) = development_manifest_paths()
     manifest = load_manifest(path)
 
@@ -221,8 +240,9 @@ def test_the_isolated_grant_is_exact_in_both_cli_lanes() -> None:
         "checker",
         "cli-process",
         "cli-direct",
+        *_COMPILED_LANES,
     }
-    assert all(result.status == "passed" for result in results), results
+    _assert_lanes_passed(results)
 
 
 def test_all_retained_runs_the_development_corpus_last(

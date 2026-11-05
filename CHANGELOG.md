@@ -83,7 +83,8 @@ package version stays 0.6.0, and the Draft
   any input, binds host access only for granted capabilities, and the
   runtime's private names for that channel (`_GENO_HOST`,
   `_GenoHostUnavailable`, `_geno_host_module`, `_geno_environ`) are
-  reserved runtime names on both backends. One milestone per capability:
+  reserved runtime names on both backends, for top-level definitions,
+  references and local bindings alike. One milestone per capability:
   - **`regex`** (milestone 1): `geno run --cap print,regex lint.geno`.
     Examples get the same exact grant (`--cap regex` denies `print` in
     examples too), and `sleep_ms` works in examples when `clock` is granted.
@@ -143,7 +144,9 @@ package version stays 0.6.0, and the Draft
     and connects only to public addresses; at most ten redirects, with caller
     headers (`Authorization`, `Cookie`, ...) dropped across origins; proxy
     variables never reroute a request; TLS certificates and hostnames are
-    verified; and response bodies count against the collection limit. Private
+    verified against the caller's trust store (`SSL_CERT_FILE` and
+    `SSL_CERT_DIR` reach the worker's TLS library only with an `http`
+    grant); and response bodies count against the collection limit. Private
     and loopback destinations need `GENO_HTTP_ALLOW_PRIVATE` in the caller's
     environment, read only with an `http` grant and never through
     `--allow-env`. Each connection attempt waits at most 30 seconds and at

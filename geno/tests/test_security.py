@@ -2254,6 +2254,8 @@ class TestProcessSandbox:
                 "upper-case" if os.name == "nt" else "only on Windows",
             ),
             ({"http_allow_private": True}, "'http' capability"),
+            ({"http_ca_file": "/etc/ca.pem"}, "'http' capability"),
+            ({"http_ca_dir": "/etc/certs"}, "'http' capability"),
             ({"stdin_fd": 3}, "'stdin' capability"),
             ({"grant_everything": True}, "unexpected grant_everything"),
             (None, "the policy is missing"),

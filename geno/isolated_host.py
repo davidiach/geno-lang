@@ -83,9 +83,19 @@ _POLICY_KEYS = frozenset(
         "fs_allow_absolute",
         "max_total_write_bytes",
         "http_allow_private",
+        "http_ca_file",
+        "http_ca_dir",
         "stdin_fd",
         "deadline_seconds",
     }
+)
+
+# The caller's TLS trust variables an ``http`` grant carries to the worker,
+# by policy field. OpenSSL reads them in the worker exactly as it does in the
+# ``--unsafe`` CLI process, so both lanes verify against the same trust store.
+_HTTP_TLS_TRUST_VARIABLES = (
+    ("http_ca_file", "SSL_CERT_FILE"),
+    ("http_ca_dir", "SSL_CERT_DIR"),
 )
 
 
@@ -110,6 +120,16 @@ def _policy_names(raw: Mapping[str, Any], key: str) -> frozenset[str]:
     if len(set(names)) != len(names):
         raise IsolatedRunPolicyError(f"{key} must not repeat a name")
     return frozenset(names)
+
+
+def _policy_optional_value(raw: Mapping[str, Any], key: str) -> str | None:
+    """An environment value or ``None``: any NUL-free string, empty included."""
+    value = raw[key]
+    if value is None:
+        return None
+    if not isinstance(value, str) or "\x00" in value:
+        raise IsolatedRunPolicyError(f"{key} must be a string without NUL or null")
+    return value
 
 
 def _policy_roots(raw: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -142,6 +162,8 @@ class IsolatedRunPolicy:
     fs_allow_absolute: bool = False
     max_total_write_bytes: int = 0
     http_allow_private: bool = False
+    http_ca_file: str | None = None
+    http_ca_dir: str | None = None
     stdin_fd: int | None = None
     deadline_seconds: float | None = None
 
@@ -205,6 +227,18 @@ class IsolatedRunPolicy:
             raise IsolatedRunPolicyError(
                 "http_allow_private requires the 'http' capability"
             )
+        for field_name, _variable in _HTTP_TLS_TRUST_VARIABLES:
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if "http" not in granted:
+                raise IsolatedRunPolicyError(
+                    "TLS trust settings require the 'http' capability"
+                )
+            if not isinstance(value, str) or "\x00" in value:
+                raise IsolatedRunPolicyError(
+                    f"{field_name} must be a string without NUL or null"
+                )
         if self.stdin_fd is not None:
             if "stdin" not in granted:
                 raise IsolatedRunPolicyError("stdin_fd requires the 'stdin' capability")
@@ -232,6 +266,8 @@ class IsolatedRunPolicy:
             "fs_allow_absolute": self.fs_allow_absolute,
             "max_total_write_bytes": self.max_total_write_bytes,
             "http_allow_private": self.http_allow_private,
+            "http_ca_file": self.http_ca_file,
+            "http_ca_dir": self.http_ca_dir,
             "stdin_fd": self.stdin_fd,
             "deadline_seconds": self.deadline_seconds,
         }
@@ -289,6 +325,8 @@ class IsolatedRunPolicy:
             fs_allow_absolute=_policy_bool(raw, "fs_allow_absolute"),
             max_total_write_bytes=max_total_write_bytes,
             http_allow_private=_policy_bool(raw, "http_allow_private"),
+            http_ca_file=_policy_optional_value(raw, "http_ca_file"),
+            http_ca_dir=_policy_optional_value(raw, "http_ca_dir"),
             stdin_fd=stdin_fd,
             deadline_seconds=deadline_seconds,
         )
@@ -366,8 +404,11 @@ def isolated_run_policy_for(
     ``None`` for the lane default; without ``fs`` it is ignored and the
     policy keeps 0. With ``http``, ``GENO_HTTP_ALLOW_PRIVATE`` decides
     private-network access, whatever the program's own environment
-    allowlist holds. The program input handle of a ``stdin`` grant is added
-    just before launch, by :func:`with_program_stdin`.
+    allowlist holds, and the caller's ``SSL_CERT_FILE`` and ``SSL_CERT_DIR``
+    (when set) become the worker's, so TLS trusts what ``--unsafe`` trusts
+    (:func:`isolated_worker_environment`). The program input handle of a
+    ``stdin`` grant is added just before launch, by
+    :func:`with_program_stdin`.
     """
     capabilities = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
     deadline: float | None = None
@@ -391,7 +432,11 @@ def isolated_run_policy_for(
     if "http" in capabilities:
         source: Mapping[str, str] = os.environ if environ is None else environ
         http_fields = {
-            "http_allow_private": _env_truthy(source.get("GENO_HTTP_ALLOW_PRIVATE"))
+            "http_allow_private": _env_truthy(source.get("GENO_HTTP_ALLOW_PRIVATE")),
+            **{
+                field_name: source.get(variable)
+                for field_name, variable in _HTTP_TLS_TRUST_VARIABLES
+            },
         }
     policy = IsolatedRunPolicy(
         capabilities=capabilities,
@@ -405,6 +450,30 @@ def isolated_run_policy_for(
     )
     policy.validate(os_name)
     return policy
+
+
+def isolated_worker_environment(run_policy: object) -> dict[str, str]:
+    """The worker process variables an isolated run's policy sets.
+
+    *run_policy* is the parent-set ``run_policy`` worker configuration
+    (:meth:`IsolatedRunPolicy.to_config`). Only an ``http`` grant sets any:
+    the caller's TLS trust variables (``SSL_CERT_FILE``, ``SSL_CERT_DIR``),
+    which OpenSSL reads in the worker as it does in the ``--unsafe`` CLI
+    process. The program never reads the worker's environment, and the worker
+    rejects these policy fields without ``http``; this reads them tolerantly,
+    leaving validation to the worker, so a malformed policy still reaches it.
+    """
+    if not isinstance(run_policy, dict):
+        return {}
+    capabilities = run_policy.get("capabilities")
+    if not isinstance(capabilities, list) or "http" not in capabilities:
+        return {}
+    environment: dict[str, str] = {}
+    for field_name, variable in _HTTP_TLS_TRUST_VARIABLES:
+        value = run_policy.get(field_name)
+        if isinstance(value, str) and "\x00" not in value:
+            environment[variable] = value
+    return environment
 
 
 def isolated_env_snapshot(

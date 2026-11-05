@@ -577,8 +577,8 @@ def _run_cli(
     own process. Both receive exactly the case's declared capabilities as
     `--cap` (proposal 0013 lets the isolated lane grant them; it keeps
     refusing `process` and `serve`). A case that declares none passes no
-    `--cap`, so each lane keeps its own default grant: `clock`, `print` and
-    `random` in the isolated lane, ungated under `--unsafe`.
+    `--cap`, so each lane keeps its default grant: `clock`, `print` and
+    `random`, in both lanes.
     """
     argv = [sys.executable, "-m", "geno", "run"]
     if unsafe:
