@@ -150,15 +150,15 @@ meets the five conditions above:
 
 Recorded for the unreleased 0.7 development line. In 0.6 the default
 process-isolated `geno run` lane checked examples in an interpreter of their
-own, always with `clock`, `print` and `random`, and only `main`'s output
-counted against `--max-output-length`. 0.7 lets that lane grant capabilities
-with `--cap` and gives examples exactly the run's grant, host restrictions and
-cumulative budgets:
+own, always with `clock`, `print` and `random`, and with an output allowance
+of their own the size of `--max-output-length`, separate from `main`'s. 0.7
+lets that lane grant capabilities with `--cap` and gives examples exactly the
+run's grant, host restrictions and cumulative budgets:
 
 - **Output.** Output printed by examples is still never shown, but it now
-  counts against `--max-output-length`, which `main` then shares. A program
-  whose examples print close to the limit can stop with the output limit
-  before or during `main`, even without `--cap`.
+  counts against the one `--max-output-length` budget that `main` then
+  shares. A program whose examples print close to the limit can stop with the
+  output limit before or during `main`, even without `--cap`.
 - **Deadline.** Examples run in the time left of `--timeout` rather than a
   fresh allowance. The hard kill was already measured from the worker's
   launch, so only the cooperative limit is earlier; timeout messages still

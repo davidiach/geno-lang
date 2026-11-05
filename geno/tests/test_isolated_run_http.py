@@ -770,6 +770,7 @@ def self_signed_tls(tmp_path_factory: pytest.TempPathFactory) -> ssl.SSLContext:
     openssl = shutil.which("openssl")
     if openssl is None:
         pytest.skip("openssl is not available to make a self-signed certificate")
+    assert openssl is not None
     directory = tmp_path_factory.mktemp("tls")
     cert, key = directory / "cert.pem", directory / "key.pem"
     made = subprocess.run(

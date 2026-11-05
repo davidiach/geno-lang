@@ -2270,7 +2270,7 @@ class TestProcessSandbox:
             timeout=15.0, strict=False, compiled_runtime_prelude=True
         )
         request = self._geno_cli_request(tmp_path, config)
-        overrides = {
+        overrides: dict[str, Any] = {
             "worker_mode": "geno_cli",
             "prelude_blob_sha256": None,
             "trusted_prelude_line_count": 0,

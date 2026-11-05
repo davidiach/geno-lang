@@ -126,10 +126,16 @@ def isolated_run_cap_help() -> str:
     """Return the ``geno run --cap`` help text, derived from the lane rules."""
     supported = ", ".join(sorted(ISOLATED_RUN_CAPABILITIES))
     others = ", ".join(sorted(KNOWN_CAPABILITIES - ISOLATED_RUN_CAPABILITIES))
+    not_on_windows = sorted(
+        ISOLATED_RUN_CAPABILITIES & ISOLATED_RUN_WINDOWS_UNAVAILABLE
+    )
+    windows_note = (
+        f" ({', '.join(not_on_windows)} not yet on Windows)" if not_on_windows else ""
+    )
     return (
         "Grant a capability (e.g. --cap print or --cap print,regex). "
         "Repeatable and comma-separable; the grant is exactly this list. "
-        f"The default process-isolated mode grants {supported}; "
+        f"The default process-isolated mode grants {supported}{windows_note}; "
         f"{others} need --unsafe (trusted code only). --json also accepts --cap."
         " With env, environment variables stay hidden unless named with"
         " --allow-env."

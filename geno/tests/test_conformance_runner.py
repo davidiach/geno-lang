@@ -288,7 +288,7 @@ def _only_in_one_corpus() -> str:
         {case.id for case in load_manifest(path).cases}
         for path in retained_manifest_paths()
     ]
-    exclusive = set().union(*id_sets) - set.intersection(*id_sets)
+    exclusive = set().union(*id_sets) - id_sets[0].intersection(*id_sets[1:])
     assert exclusive, "expected at least one corpus-specific case"
     return sorted(exclusive)[0]
 

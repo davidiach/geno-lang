@@ -174,7 +174,8 @@ package version stays 0.6.0, and the Draft
 - In the default process-isolated `geno run` lane, examples and `main` share
   one output budget and one deadline (proposal 0013), with or without `--cap`.
   Output printed by examples is still never shown, but it now counts against
-  `--max-output-length`, so a run whose examples print a lot reaches the limit
+  the same `--max-output-length` budget as `main`'s output instead of an
+  allowance of its own, so a run whose examples print a lot reaches the limit
   earlier; the example phase also runs under the time left of `--timeout`
   rather than a fresh allowance. Timeout messages still name `--timeout`.
   Recorded in the

@@ -2322,6 +2322,7 @@ class TestGenoHelp:
         """Proposal 0013: --cap help comes from the lane's own rules."""
         from geno.capabilities import (
             ISOLATED_RUN_CAPABILITIES,
+            ISOLATED_RUN_WINDOWS_UNAVAILABLE,
             isolated_run_cap_help,
         )
 
@@ -2341,6 +2342,13 @@ class TestGenoHelp:
         help_text = normalized(result.stdout)
         assert normalized(isolated_run_cap_help()) in help_text
         assert ", ".join(sorted(ISOLATED_RUN_CAPABILITIES)) in isolated_run_cap_help()
+        # The lane refuses http before launch on Windows (proposal 0013's
+        # HTTP gate), so the help must not claim it everywhere.
+        not_on_windows = ", ".join(
+            sorted(ISOLATED_RUN_CAPABILITIES & ISOLATED_RUN_WINDOWS_UNAVAILABLE)
+        )
+        assert "http" in not_on_windows
+        assert f"({not_on_windows} not yet on Windows)" in help_text
         assert "Requires --unsafe or --json" not in help_text
         assert "--allow-env NAME" in help_text
 

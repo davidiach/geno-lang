@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -637,7 +638,7 @@ def test_process_sandbox_reports_only_the_env_bindings_tag(tmp_path: Path) -> No
         'func main() -> Unit\n    print(env_get_or("SECRET", "none"))\nend func\n',
         encoding="utf-8",
     )
-    request = {
+    request: dict[str, Any] = {
         "filename": str(source),
         "target": None,
         "check_examples": False,
