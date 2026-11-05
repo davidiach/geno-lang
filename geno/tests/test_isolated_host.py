@@ -22,6 +22,8 @@ from geno.capabilities import (
 )
 from geno.diagnostics import ErrorCode
 from geno.isolated_host import (
+    ENV_NAME_TAG_LIMIT,
+    IsolatedEnv,
     IsolatedHostBinding,
     IsolatedRunClock,
     IsolatedRunPolicy,
@@ -29,7 +31,9 @@ from geno.isolated_host import (
     build_example_interpreter,
     build_host_table,
     checked_prepared_host_state,
+    env_policy_denied_message,
     frontend_error_tags,
+    isolated_env_snapshot,
     isolated_run_policy_for,
 )
 from geno.lexer import Lexer
@@ -220,8 +224,46 @@ def test_clock_counts_down_from_its_start() -> None:
         frozenset(),
     ],
 )
-def test_no_supported_grant_binds_host_access_yet(grant: frozenset[str]) -> None:
-    assert build_host_table(IsolatedRunPolicy(capabilities=grant)) == {}
+def test_grants_without_host_capabilities_bind_nothing(grant: frozenset[str]) -> None:
+    # Trusted setup always gets the program arguments; without `env` no
+    # binding exposes them.
+    policy = IsolatedRunPolicy(capabilities=grant)
+
+    assert build_host_table(policy, program_args=["a"]) == {}
+
+
+def test_env_grant_binds_the_allowlist_snapshot_and_arguments() -> None:
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"env", "print"}),
+        env_allowed_names=frozenset({"HOME", "LANG"}),
+    )
+
+    table = build_host_table(
+        policy, program_args=["a b", "-v"], env_snapshot={"HOME": "/home/caller"}
+    )
+
+    assert set(table) == {"env"}
+    env = table["env"]
+    assert type(env) is IsolatedEnv
+    assert env.program_args == ("a b", "-v")
+    assert dict(env.environ) == {"HOME": "/home/caller"}
+    assert env.lookup("env_get", "HOME") == "/home/caller"
+    assert env.lookup("env_get", "LANG") is None
+
+
+def test_host_table_rejects_a_snapshot_it_cannot_bind() -> None:
+    env_policy = IsolatedRunPolicy(
+        capabilities=frozenset({"env"}), env_allowed_names=frozenset({"HOME"})
+    )
+
+    with pytest.raises(ValueError, match="requires the 'env' capability"):
+        build_host_table(IsolatedRunPolicy.default(), env_snapshot={})
+    with pytest.raises(ValueError, match="unlisted name"):
+        build_host_table(env_policy, env_snapshot={"SECRET": "x"})
+    with pytest.raises(TypeError):
+        build_host_table(env_policy, env_snapshot={"HOME": 3})  # type: ignore[dict-item]
+    with pytest.raises(TypeError):
+        build_host_table(env_policy, program_args=["ok", 3])  # type: ignore[list-item]
 
 
 def test_build_host_table_rejects_an_invalid_policy() -> None:
@@ -251,6 +293,28 @@ def test_checked_host_state_accepts_the_prepared_state() -> None:
 
     assert table == {}
     assert used == 7
+
+
+def test_checked_host_state_accepts_only_each_capabilitys_own_binding() -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"env", "print"}))
+    env = IsolatedEnv((), {}, ())
+    runtime = sorted(policy.capabilities)
+
+    table, _used = checked_prepared_host_state(
+        _prepared(host_table={"env": env}, runtime_capabilities=runtime), policy
+    )
+
+    assert table == {"env": env}
+    with pytest.raises(ValueError, match="wrong binding"):
+        checked_prepared_host_state(
+            _prepared(host_table={"env": _Binding()}, runtime_capabilities=runtime),
+            policy,
+        )
+    with pytest.raises(ValueError, match="wrong binding"):
+        checked_prepared_host_state(
+            _prepared(host_table={"print": env}, runtime_capabilities=runtime),
+            policy,
+        )
 
 
 @pytest.mark.parametrize(
@@ -328,6 +392,104 @@ end func
 
     with pytest.raises(GenoRuntimeError, match="requires the 'clock' capability"):
         _run_example_program(source, {"print"})
+
+
+def test_example_interpreter_never_reads_the_workers_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The worker's own environment (temporary HOME, sandbox configuration)
+    # must not leak into examples: they read the run's snapshot only.
+    monkeypatch.setenv("HOME", "/worker/home")
+    monkeypatch.setenv("GENO_SANDBOX_CONFIG", "{}")
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"env"}),
+        env_allowed_names=frozenset({"HOME", "GENO_SANDBOX_CONFIG"}),
+    )
+    table = build_host_table(
+        policy, program_args=["x", "y"], env_snapshot={"HOME": "/home/caller"}
+    )
+    source = """func home() -> String
+    example () -> "/home/caller"
+    return env_get_or("HOME", "none")
+end func
+
+func config() -> Option[String]
+    example () -> None
+    return env_get("GENO_SANDBOX_CONFIG")
+end func
+
+func args() -> List[String]
+    example () -> ["x", "y"]
+    return cli_args()
+end func
+"""
+    program = Parser(Lexer(source, "ex.geno").tokenize()).parse_program()
+
+    interpreter = build_example_interpreter(policy, SandboxConfig(timeout=5.0), table)
+    interpreter.run(program, execute_main=False)
+
+    with pytest.raises(ValueError, match="env grant has no host binding"):
+        build_example_interpreter(policy, SandboxConfig(timeout=5.0))
+
+
+def test_example_env_denial_is_a_located_tagged_e412() -> None:
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"env"}), env_allowed_names=frozenset({"HOME"})
+    )
+    table = build_host_table(policy, env_snapshot={})
+    program = Parser(
+        Lexer(
+            """func secret() -> String
+    example () -> "x"
+    return env_get_or("SECRET", "x")
+end func
+""",
+            "ex.geno",
+        ).tokenize()
+    ).parse_program()
+    interpreter = build_example_interpreter(policy, SandboxConfig(timeout=5.0), table)
+
+    with pytest.raises(GenoRuntimeError) as excinfo:
+        interpreter.run(program, execute_main=False)
+
+    error = excinfo.value
+    assert error.message == env_policy_denied_message("env_get_or", "SECRET")
+    assert error.error_code is ErrorCode.RUNTIME_CAPABILITY_DENIED
+    assert error.location is not None
+    assert (error.location.line, error.location.column) == (3, 12)
+    assert error._geno_env_policy_denied == "SECRET"  # type: ignore[attr-defined]
+    assert frontend_error_tags(error) == {"env_name": "SECRET"}
+
+
+def test_example_env_callbacks_keep_the_builtins_limits() -> None:
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"env"}), env_allowed_names=frozenset({"BIG"})
+    )
+    table = build_host_table(
+        policy, program_args=["a" * 50], env_snapshot={"BIG": "b" * 50}
+    )
+    config = SandboxConfig(timeout=5.0, max_collection_size=10)
+    for call in ('env_get("BIG")', 'Some(env_get_or("BIG", ""))'):
+        program = Parser(
+            Lexer(
+                f"func big() -> Option[String]\n    return {call}\nend func\n",
+                "ex.geno",
+            ).tokenize()
+        ).parse_program()
+        interpreter = build_example_interpreter(policy, config, table)
+        interpreter.run(program, execute_main=False)
+        with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
+            interpreter.call_function(interpreter.global_env.lookup("big"), [])
+    program = Parser(
+        Lexer(
+            "func args() -> List[String]\n    return cli_args()\nend func\n",
+            "ex.geno",
+        ).tokenize()
+    ).parse_program()
+    interpreter = build_example_interpreter(policy, config, table)
+    interpreter.run(program, execute_main=False)
+    with pytest.raises(GenoRuntimeError, match="String size exceeds limit"):
+        interpreter.call_function(interpreter.global_env.lookup("args"), [])
 
 
 def test_example_interpreter_records_example_output() -> None:
@@ -421,6 +583,16 @@ end func
     unknown: Any = GenoRuntimeError("x")
     unknown._geno_capability_denied = "everything"
     assert frontend_error_tags(unknown) == {}
+    tagged_env_python_error: Any = RuntimeError("x")
+    tagged_env_python_error._geno_env_policy_denied = "SECRET"
+    assert frontend_error_tags(tagged_env_python_error) == {}
+
+
+def test_env_name_tag_is_truncated() -> None:
+    error: Any = GenoRuntimeError("x")
+    error._geno_env_policy_denied = "N" * (ENV_NAME_TAG_LIMIT + 10)
+
+    assert frontend_error_tags(error) == {"env_name": "N" * ENV_NAME_TAG_LIMIT}
 
 
 # ---------------------------------------------------------------------------
@@ -479,3 +651,179 @@ def test_bound_host_object_is_returned_to_trusted_prelude_code() -> None:
 
     assert namespace["_geno_host_module"]("env") is binding
     assert namespace["_geno_environ"]() == {"HOME": "/home/caller"}
+
+
+def test_missing_env_binding_is_a_second_gate_for_every_env_builtin() -> None:
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"env"}), _GENO_HOST=MappingProxyType({})
+    )
+    unavailable = namespace["_GenoHostUnavailable"]
+
+    for call in (
+        lambda: namespace["env_get"]("HOME"),
+        lambda: namespace["env_get_or"]("HOME", "x"),
+        lambda: namespace["cli_args"](),
+    ):
+        with pytest.raises(unavailable, match="host access for 'env'"):
+            call()
+
+
+def test_prelude_env_builtins_use_the_binding_and_return_geno_values() -> None:
+    env = IsolatedEnv({"HOME", "UNSET"}, {"HOME": "/home/caller"}, ["a b", "-v"])
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"env"}), _GENO_HOST=MappingProxyType({"env": env})
+    )
+
+    home = namespace["env_get"]("HOME")
+    assert type(home) is namespace["Some"]
+    assert home.value == "/home/caller"
+    assert namespace["env_get"]("UNSET") is namespace["None_"]
+    assert namespace["env_get_or"]("UNSET", "fallback") == "fallback"
+    assert namespace["env_get_or"]("HOME", "fallback") == "/home/caller"
+    args = namespace["cli_args"]()
+    assert type(args) is list
+    assert args == ["a b", "-v"]
+    for call in (
+        lambda: namespace["env_get"]("SECRET"),
+        lambda: namespace["env_get_or"]("SECRET", "fallback"),
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            call()
+        assert type(excinfo.value) is RuntimeError
+        assert excinfo.value._geno_env_policy_denied == "SECRET"  # type: ignore[attr-defined]
+
+
+def test_prelude_env_builtins_still_check_the_grant_first() -> None:
+    env = IsolatedEnv({"HOME"}, {"HOME": "/home/caller"}, ["a"])
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"print"}), _GENO_HOST=MappingProxyType({"env": env})
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        namespace["cli_args"]()
+
+    assert excinfo.value._geno_capability_denied == "env"  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# env: allowlist, snapshot and the Windows case rule
+
+
+def test_env_policy_names_are_exact_on_posix() -> None:
+    policy = isolated_run_policy_for(
+        {"env", "print"}, timeout=5.0, allow_env=["HOME", "Path"], os_name="posix"
+    )
+
+    assert policy.env_allowed_names == frozenset({"HOME", "Path"})
+    assert policy.env_case_insensitive is False
+    assert IsolatedRunPolicy.from_config(policy.to_config(), "posix") == policy
+
+
+def test_env_policy_names_are_folded_on_windows() -> None:
+    policy = isolated_run_policy_for(
+        {"env", "print"}, timeout=5.0, allow_env=["Path", "home"], os_name="nt"
+    )
+
+    assert policy.env_allowed_names == frozenset({"PATH", "HOME"})
+    assert policy.env_case_insensitive is True
+    assert IsolatedRunPolicy.from_config(policy.to_config(), "nt") == policy
+    # Folding is Windows-only, and the parent sends the names folded.
+    with pytest.raises(IsolatedRunPolicyError, match="only on Windows"):
+        IsolatedRunPolicy.from_config(policy.to_config(), "posix")
+    with pytest.raises(IsolatedRunPolicyError, match="upper-case"):
+        IsolatedRunPolicy.from_config(
+            {**policy.to_config(), "env_allowed_names": ["Path"]}, "nt"
+        )
+
+
+def test_env_policy_without_env_folds_nothing() -> None:
+    policy = isolated_run_policy_for({"print"}, timeout=5.0, os_name="nt")
+
+    assert policy.env_case_insensitive is False
+    with pytest.raises(IsolatedRunPolicyError, match="'env' capability"):
+        isolated_run_policy_for({"print"}, timeout=5.0, allow_env=["HOME"])
+
+
+@pytest.mark.parametrize("name", ["", "A=B", "A\x00B"])
+def test_env_policy_rejects_invalid_names(name: str) -> None:
+    with pytest.raises(IsolatedRunPolicyError, match="env_allowed_names"):
+        isolated_run_policy_for({"env"}, timeout=5.0, allow_env=[name])
+
+
+def test_snapshot_holds_only_allowed_present_variables_on_posix() -> None:
+    environ = {"HOME": "/home/caller", "SECRET": "s", "Path": "/odd"}
+
+    snapshot = isolated_env_snapshot(
+        ["HOME", "MISSING", "PATH"], environ=environ, os_name="posix"
+    )
+
+    assert snapshot == {"HOME": "/home/caller"}
+
+
+def test_windows_case_rule_end_to_end() -> None:
+    # `--allow-env Path` under a simulated Windows parent and worker permits
+    # PATH, Path and path, as Windows' own os.environ would.
+    environ = {"Path": "C:\\bin", "SECRET": "s"}
+    policy = isolated_run_policy_for(
+        {"env"}, timeout=5.0, allow_env=["Path"], os_name="nt"
+    )
+
+    snapshot = isolated_env_snapshot(["Path"], environ=environ, os_name="nt")
+    env = IsolatedEnv(
+        policy.env_allowed_names,
+        snapshot,
+        (),
+        case_insensitive=policy.env_case_insensitive,
+    )
+
+    assert snapshot == {"PATH": "C:\\bin"}
+    for name in ("PATH", "Path", "path"):
+        assert env.lookup("env_get", name) == "C:\\bin"
+    with pytest.raises(RuntimeError) as excinfo:
+        env.lookup("env_get", "secret")
+    # The denial names the variable exactly as the program wrote it.
+    assert excinfo.value._geno_env_policy_denied == "secret"  # type: ignore[attr-defined]
+
+
+def test_posix_case_rule_is_exact() -> None:
+    policy = isolated_run_policy_for(
+        {"env"}, timeout=5.0, allow_env=["Path"], os_name="posix"
+    )
+    environ = {"PATH": "/usr/bin", "Path": "/odd"}
+    env = IsolatedEnv(
+        policy.env_allowed_names,
+        isolated_env_snapshot(["Path"], environ=environ, os_name="posix"),
+        (),
+        case_insensitive=policy.env_case_insensitive,
+    )
+
+    assert env.lookup("env_get", "Path") == "/odd"
+    with pytest.raises(RuntimeError, match="'PATH' is not allowed"):
+        env.lookup("env_get", "PATH")
+
+
+def test_env_lookup_denies_unlisted_names_even_when_unset() -> None:
+    env = IsolatedEnv({"HOME"}, {}, ())
+
+    assert env.lookup("env_get", "HOME") is None
+    with pytest.raises(RuntimeError) as excinfo:
+        env.lookup("env_get_or", "NEVER_SET_ANYWHERE")
+    error = excinfo.value
+    assert type(error) is RuntimeError
+    assert str(error) == env_policy_denied_message("env_get_or", "NEVER_SET_ANYWHERE")
+    assert str(error) == (
+        "env_get_or: environment variable 'NEVER_SET_ANYWHERE' is not allowed "
+        "by the host env policy"
+    )
+    with pytest.raises(TypeError, match="name must be a string"):
+        env.lookup("env_get", 3)  # type: ignore[arg-type]
+
+
+def test_env_binding_exposes_only_read_only_views() -> None:
+    env = IsolatedEnv({"HOME"}, {"HOME": "/home/caller"}, ["a"])
+
+    with pytest.raises(TypeError):
+        env.environ["HOME"] = "changed"  # type: ignore[index]
+    assert isinstance(env.program_args, tuple)
+    with pytest.raises(AttributeError):
+        env.extra = 1  # type: ignore[attr-defined]

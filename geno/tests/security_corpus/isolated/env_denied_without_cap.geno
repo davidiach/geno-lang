@@ -1,0 +1,11 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print
+# STDERR: Capability denied: 'cli_args' requires the 'env' capability
+# An isolated run granted print alone reaches neither the program arguments
+# nor any environment variable, and the denial hint keeps the program
+# process-isolated.
+func main() -> Unit
+    print("ESCAPED " + join(cli_args(), ","))
+    print("ESCAPED " + env_get_or("HOME", "none"))
+end func

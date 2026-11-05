@@ -554,6 +554,20 @@ class TestClassifier:
         monkeypatch.setattr(panic_outcome, "_refusal_satisfies_panics", lambda: True)
         assert classify_compiled_failure(denial) == CallFailure("panic", message)
 
+    def test_an_isolated_env_policy_denial_is_a_refusal(self) -> None:
+        """The isolated lane's env binding tags its denial (proposal 0013);
+        that tag, not the text, makes it a refusal."""
+        from geno.isolated_host import IsolatedEnv
+
+        with pytest.raises(RuntimeError) as raised:
+            IsolatedEnv({"HOME"}, {}, ()).lookup("env_get", "SECRET")
+        message = str(raised.value)
+        assert classify_compiled_failure(raised.value) == CallFailure(
+            "refused", message
+        )
+        forged = classify_compiled_failure(RuntimeError(message))
+        assert forged is not None and forged.kind == "panic"
+
     def test_matching_ignores_case(self) -> None:
         assert panic_message_matches(
             "Division by zero: cannot compute 1 / 0", "DIVISION"

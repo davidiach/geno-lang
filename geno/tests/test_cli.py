@@ -685,6 +685,128 @@ end func main
             finally:
                 os.unlink(f.name)
 
+    @pytest.mark.parametrize(
+        ("flags", "message"),
+        [
+            # --allow-env never grants env, so the grant must name it.
+            (
+                ["--cap", "print"],
+                "Error: --allow-env requires an explicit --cap env grant in the "
+                "process-isolated run mode\n",
+            ),
+            (
+                [],
+                "Error: --allow-env requires an explicit --cap env grant in the "
+                "process-isolated run mode\n",
+            ),
+            # Only the isolated lane takes an environment allowlist.
+            (
+                ["--unsafe", "--cap", "env,print"],
+                "Error: --allow-env only applies to the default process-isolated "
+                "run mode.\n",
+            ),
+            (
+                ["--json", "--cap", "env,print"],
+                "Error: --allow-env only applies to the default process-isolated "
+                "run mode.\n",
+            ),
+        ],
+        ids=["without-cap-env", "without-cap", "unsafe", "json"],
+    )
+    def test_allow_env_is_refused_before_launch(self, tmp_path, flags, message):
+        """Proposal 0013: invalid --allow-env combinations fail fast."""
+        app = tmp_path / "main.geno"
+        app.write_text(
+            'func main() -> Unit\n    print("ESCAPED")\nend func\n', encoding="utf-8"
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                *flags,
+                "--allow-env",
+                "HOME",
+                str(app),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == message
+
+    @pytest.mark.parametrize("name", ["", "A=B"])
+    def test_allow_env_rejects_invalid_names(self, tmp_path, name):
+        app = tmp_path / "main.geno"
+        app.write_text("func main() -> Unit\n    return ()\nend func\n")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                "--cap",
+                "env",
+                "--allow-env",
+                name,
+                str(app),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 2
+        assert "argument --allow-env:" in result.stderr
+
+    def test_allow_env_rejects_invalid_names_from_the_api(self, tmp_path, capsys):
+        from geno.cli.run import run_file
+
+        app = tmp_path / "main.geno"
+        app.write_text("func main() -> Unit\n    return ()\nend func\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            run_file(str(app), capabilities={"env"}, allow_env=["A\x00B"])
+
+        assert excinfo.value.code == 1
+        assert capsys.readouterr().err == (
+            "Error: --allow-env 'A\\x00B' must not contain a NUL character\n"
+        )
+
+    def test_allow_env_is_repeatable_and_reaches_run_file(self, monkeypatch):
+        import geno.__main__ as cli_main
+
+        calls = []
+        parser = cli_main.build_parser()
+        args, extra = parser.parse_known_args(
+            [
+                "run",
+                "--cap",
+                "env",
+                "--allow-env",
+                "HOME",
+                "--allow-env",
+                "LANG",
+                "App.geno",
+            ]
+        )
+        monkeypatch.setattr(
+            cli_main, "run_file", lambda *a, **kw: calls.append((a, kw))
+        )
+
+        cli_main.dispatch_args(parser, args, extra)
+
+        assert calls[0][1]["allow_env"] == ["HOME", "LANG"]
+        no_allow, no_extra = parser.parse_known_args(["run", "App.geno"])
+        cli_main.dispatch_args(parser, no_allow, no_extra)
+        assert calls[1][1]["allow_env"] is None
+
     def test_unsafe_cap_enforces_capabilities(self):
         """Explicit --unsafe keeps capability-gated interpreter behavior."""
         with _closed_temp_geno() as f:
@@ -2196,6 +2318,7 @@ class TestGenoHelp:
         assert normalized(isolated_run_cap_help()) in help_text
         assert ", ".join(sorted(ISOLATED_RUN_CAPABILITIES)) in isolated_run_cap_help()
         assert "Requires --unsafe or --json" not in help_text
+        assert "--allow-env NAME" in help_text
 
     def test_run_help_lists_resource_limit_flags(self):
         result = subprocess.run(

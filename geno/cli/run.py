@@ -866,7 +866,7 @@ def run_file(
             else None
         )
         try:
-            request = {
+            request: dict[str, Any] = {
                 "filename": filename,
                 "target": target,
                 "check_examples": check_examples,

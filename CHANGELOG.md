@@ -74,11 +74,11 @@ package version stays 0.6.0, and the Draft
   `geno run --cap print,regex main.geno` runs with exactly the listed
   capabilities and keeps the hard wall-clock kill and the memory, CPU,
   file-size and process limits, instead of exiting with "--cap is not
-  supported". The lane grants `clock`, `print`, `random` and `regex` so far;
-  without `--cap` the grant is unchanged (`clock`, `print`, `random`).
+  supported". The lane grants `clock`, `env`, `print`, `random` and `regex`
+  so far; without `--cap` the grant is unchanged (`clock`, `print`, `random`).
   `process` and `serve` are refused before the program starts with a message
-  naming `--unsafe`, and `env`, `stdin`, `fs` and `http` are refused as "not
-  yet available" until their milestones land. Examples run with the same
+  naming `--unsafe`, and `stdin`, `fs` and `http` are refused as "not yet
+  available" until their milestones land. Examples run with the same
   exact grant (`--cap regex` denies `print` in examples too, and `sleep_ms`
   works in examples when `clock` is granted). A capability denial in the
   default lane, in `main` or in an example, now suggests the isolated
@@ -88,6 +88,22 @@ package version stays 0.6.0, and the Draft
   its runtime uses for host access (`_GENO_HOST`, `_GenoHostUnavailable`,
   `_geno_host_module`, `_geno_environ`) are reserved runtime names on both
   backends.
+- The `env` capability in the default process-isolated `geno run` lane,
+  milestone 2 of
+  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md), which
+  addresses [#68](https://github.com/davidiach/geno-lang/issues/68):
+  `geno run --cap env,print main.geno -- hello world` gives `cli_args()` the
+  program arguments and keeps every hard limit, where it used to need
+  `--unsafe`. `--cap env` alone exposes no environment variable: the new
+  repeatable `--allow-env NAME` lets `env_get`/`env_get_or` read one exact
+  name from the caller's environment (case-insensitive on Windows, as
+  `os.environ` is there), and only allowed variables the caller has are sent
+  to the worker. Reading any other name, even one the caller does not have,
+  fails with E412 "environment variable 'NAME' is not allowed by the host env
+  policy" and a hint naming `--allow-env`; the program never sees the
+  worker's own environment. Examples and `main` read the same snapshot.
+  `--allow-env` requires an explicit `--cap env` grant and is refused under
+  `--unsafe` and `--json`, whose environment behaviour is unchanged.
 
 ### Changed (breaking)
 

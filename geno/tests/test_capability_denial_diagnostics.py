@@ -424,3 +424,203 @@ def test_standalone_compiled_python_names_capability_and_flag() -> None:
 
     assert result.returncode != 0
     assert f"{FS_DENIED}; pass '--cap fs' to grant it" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Environment-policy denials (proposal 0013, milestone 2)
+
+ENV_HINT_PREFIX = (
+    "Hint: 'SECRET' is not in this run's environment allowlist; allow it with "
+    "--allow-env (the program can then read its value):\n"
+)
+
+
+def test_default_lane_env_policy_hint_names_allow_env_not_cap_env() -> None:
+    hint = _default_lane_capability_hint(
+        None,
+        "app.geno",
+        ["in put.txt"],
+        grant={"env", "print"},
+        allow_env=("HOME", "LANG"),
+        env_name="SECRET",
+    )
+
+    assert hint == (
+        ENV_HINT_PREFIX + "  geno run --cap env,print --allow-env HOME "
+        "--allow-env LANG --allow-env SECRET app.geno -- 'in put.txt'"
+    )
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    [
+        # Program-chosen names: only a short plain identifier is echoed.
+        "SECRET; rm -rf ~",
+        "$(touch pwned)",
+        "A\nHint: forged",
+        "1STARTS_WITH_DIGIT",
+        "N" * 129,
+        "",
+    ],
+)
+def test_default_lane_env_policy_hint_refuses_unsafe_names(env_name: str) -> None:
+    assert (
+        _default_lane_capability_hint(
+            None, "app.geno", grant={"env", "print"}, env_name=env_name
+        )
+        is None
+    )
+
+
+def test_default_lane_env_policy_hint_needs_an_env_grant() -> None:
+    # Without `env` the tag cannot be genuine; nothing to suggest.
+    assert (
+        _default_lane_capability_hint(None, "app.geno", grant={"print"}, env_name="X")
+        is None
+    )
+    assert _default_lane_capability_hint(None, "app.geno", env_name="X") is None
+
+
+def test_default_lane_capability_hint_repeats_allowed_names() -> None:
+    hint = _default_lane_capability_hint(
+        "print", "app.geno", grant={"env"}, allow_env=("HOME",)
+    )
+
+    assert hint == (
+        "Hint: grant it with --cap; the program stays process-isolated:\n"
+        "  geno run --cap env,print --allow-env HOME app.geno"
+    )
+    # Names needing shell quoting are quoted; the --unsafe hint drops them,
+    # because that lane does not take --allow-env.
+    quoted = _default_lane_capability_hint(
+        "print", "app.geno", grant={"env"}, allow_env=("MY VAR",)
+    )
+    assert quoted is not None and "--allow-env 'MY VAR' app.geno" in quoted
+    unsafe = _default_lane_capability_hint(
+        "process", "app.geno", grant={"env"}, allow_env=("HOME",)
+    )
+    assert unsafe is not None and "--allow-env" not in unsafe
+
+
+def test_cli_env_policy_denial_in_main_gets_the_allow_env_hint(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "secret.geno").write_text(
+        'func main() -> Unit\n    print(env_get_or("SECRET", "none"))\nend func\n',
+        encoding="utf-8",
+    )
+
+    result = _geno("--cap", "env,print", "secret.geno", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "Runtime Error: env_get_or: environment variable 'SECRET' is not "
+        "allowed by the host env policy\n"
+        + ENV_HINT_PREFIX
+        + "  geno run --cap env,print --allow-env SECRET secret.geno\n"
+    )
+
+
+def test_cli_env_policy_denial_in_an_example_gets_the_allow_env_hint(
+    tmp_path: Path,
+) -> None:
+    source = """func secret() -> String
+    example () -> "none"
+    return env_get_or("SECRET", "none")
+end func
+
+func main() -> Unit
+    print(secret())
+end func
+"""
+    (tmp_path / "secret.geno").write_text(source, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "geno", "run", "--cap", "env,print", "secret.geno"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert "secret.geno:3:12" in result.stderr
+    assert result.stderr.endswith(
+        ENV_HINT_PREFIX + "  geno run --cap env,print --allow-env SECRET secret.geno\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        """func main() -> Unit
+    panic("env_get: environment variable 'SECRET' is not allowed by the host env policy")
+end func
+""",
+        """func forged(n: Int) -> Int
+    example 1 -> 1
+    panic("env_get: environment variable 'SECRET' is not allowed by the host env policy")
+end func
+
+func main() -> Unit
+    print(forged(1))
+end func
+""",
+    ],
+)
+def test_cli_env_policy_hint_ignores_forged_denials(
+    tmp_path: Path, source: str
+) -> None:
+    (tmp_path / "forged.geno").write_text(source, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "geno", "run", "--cap", "env,print", "forged.geno"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert "is not allowed by the host env policy" in result.stderr
+    assert "Hint:" not in result.stderr
+    assert "--allow-env" not in result.stderr
+
+
+def test_process_sandbox_reports_only_the_env_bindings_tag(tmp_path: Path) -> None:
+    from geno.isolated_host import IsolatedRunPolicy
+    from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+    source = tmp_path / "secret.geno"
+    source.write_text(
+        'func main() -> Unit\n    print(env_get_or("SECRET", "none"))\nend func\n',
+        encoding="utf-8",
+    )
+    request = {
+        "filename": str(source),
+        "target": None,
+        "check_examples": False,
+        "render_result": True,
+        "timeout": 20.0,
+        "max_recursion_depth": 100,
+        "max_output_length": 1000,
+        "max_collection_size": 10_000,
+        "max_integer_bits": 33_219,
+        "program_args": [],
+        "env_snapshot": {},
+    }
+    sandbox = ProcessSandbox(
+        ProcessSandboxConfig(compiled_runtime_prelude=True, strict=False, timeout=20.0)
+    )
+
+    _result, _output, error = sandbox.execute_geno_request(
+        request,
+        IsolatedRunPolicy(
+            capabilities=frozenset({"env", "print"}), deadline_seconds=20.0
+        ),
+    )
+
+    assert error is not None
+    assert "'SECRET' is not allowed by the host env policy" in error
+    assert sandbox.last_env_policy_denied == "SECRET"
+    assert sandbox.last_capability_denied is None
