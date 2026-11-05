@@ -32,8 +32,10 @@ from typing import Any
 
 import pytest
 
-# Imported before any test patches subprocess.Popen: the class annotates
-# its methods with it.
+# Imported at collection: the sandbox annotates its methods with
+# subprocess.Popen, which tests patch, and the CLI's error printer binds
+# sys.stderr as a default argument, which capsys replaces per test.
+import geno.cli.run
 import geno.sandbox  # noqa: F401
 from geno.capabilities import isolated_run_capabilities
 
@@ -211,8 +213,16 @@ def test_worker_refuses_a_stdin_policy_its_lane_does_not_grant(
     its copy.
     """
     from geno import capabilities as capabilities_module
-    from geno.cli.run import run_file
+    from geno.cli import run as run_module
 
+    # The printer's default stream is the sys.stderr of its import; print to
+    # the one capsys installed for this test.
+    print_runtime_error = run_module._print_runtime_error
+    monkeypatch.setattr(
+        run_module,
+        "_print_runtime_error",
+        lambda error: print_runtime_error(error, file=sys.stderr),
+    )
     monkeypatch.setattr(
         capabilities_module,
         "ISOLATED_RUN_CAPABILITIES",
@@ -227,7 +237,7 @@ def test_worker_refuses_a_stdin_policy_its_lane_does_not_grant(
         source = _write(tmp_path, READ_ONCE)
 
         with pytest.raises(SystemExit) as excinfo:
-            run_file(str(source), capabilities={"print", "stdin"})
+            run_module.run_file(str(source), capabilities={"print", "stdin"})
 
         assert excinfo.value.code == 1
         captured = capsys.readouterr()
