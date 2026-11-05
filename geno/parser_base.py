@@ -201,6 +201,12 @@ class ParserBase:
         # "Needs a return type" errors, with the annotation that stands in for
         # the missing type, to receive a fix once the program is parsed.
         self._missing_return_types: list[tuple[ParseError, InferredType]] = []
+        # How many loop variables the parser has made up for tuple patterns
+        # (`for (a, b) in ...`), shared with the parsers of f-string
+        # interpolations so each name is unique in the file. Counting rather
+        # than naming by position keeps the names, and so the program, the
+        # same when formatting moves the code.
+        self._synthetic_names = [0]
 
     def _current(self) -> Token:
         """Get the current token."""

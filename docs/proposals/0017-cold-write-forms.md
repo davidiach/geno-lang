@@ -3,9 +3,13 @@
 - Status: Draft
 - Authors: David Iach (direction), Claude Code (drafting and implementation)
 - Created: 2026-11-04
-- Discussion: none yet
+- Discussion: https://github.com/davidiach/geno-lang/pull/232 (opened
+  2026-11-04; under `docs/proposals/README.md` it stays open for review until
+  at least 2026-11-11)
 - Supersedes: None
-- Review: None yet; awaiting the project lead's decision under `GOVERNANCE.md`
+- Review: None yet. Automated review (Codex) and CI ran on #232; neither is an
+  independent review or an acceptance. The project lead records the decision
+  under `GOVERNANCE.md`.
 
 ## Summary
 
@@ -126,10 +130,12 @@ already implements, so no backend changes:
   two tokens, recognized only when written with nothing between them. The
   target may contain names, literals, field and index accesses and operators,
   never a call, so reading it twice is unobservable.
-- `for (p) in xs do body end for` parses as a loop over a name no program can
-  write (`_geno_item_<line>_<column>`) whose body is
-  `match item with | (p) -> body end match`. A comprehension's element and
-  condition become match expressions on the same name.
+- `for (p) in xs do body end for` parses as a loop over a name the parser
+  makes up (`_geno_item_<n>`, numbered in the order such loops appear in the
+  file) whose body is `match item with | (p) -> body end match`. A
+  comprehension's element and condition become match expressions on the same
+  name. The numbering, not the source position, keeps the name and so the
+  program the same when the formatter moves the code.
 - The lexer copies a string literal inside an interpolation unchanged and
   records each interpolation's span; the parser reads the expression from
   where it is written in the source.

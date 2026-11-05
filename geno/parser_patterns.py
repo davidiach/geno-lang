@@ -115,7 +115,8 @@ class PatternParserMixin(ParserBase):
             var_type: TypeAnnotation = InferredType(location=location)
             if self._match(TokenType.COLON):
                 var_type = self._parse_type()
-            name = f"_geno_item_{location.line}_{location.column}"
+            self._synthetic_names[0] += 1
+            name = f"_geno_item_{self._synthetic_names[0]}"
             return name, var_type, pattern
         if start.type is TokenType.IDENTIFIER and self._peek(1).type is TokenType.COMMA:
             self._reject_unparenthesized_loop_names()

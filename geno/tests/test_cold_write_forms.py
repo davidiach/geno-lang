@@ -270,6 +270,57 @@ print(total)
             "50\n",
         )
 
+    @pytest.mark.parametrize(
+        ("source", "formatted"),
+        [
+            (
+                "func main() -> Unit\n for (a,b) in [(1,2)] do\n print(a+b)\n"
+                " end for\nend func\n",
+                "func main() -> Unit\n    for (a, b) in [(1, 2)] do\n"
+                "        print(a + b)\n    end for\nend func\n",
+            ),
+            (
+                "func main() -> Unit\n let xs = [a+b for (a,b) in [(1,2)] if a>0]\n"
+                " print(xs)\nend func\n",
+                "func main() -> Unit\n    let xs = [a + b for (a, b) in [(1, 2)] if a > 0]\n"
+                "    print(xs)\nend func\n",
+            ),
+            (
+                "func main() -> Unit\n        for (k,  (a, _))  in [(1, (2, 3))] do\n"
+                "                        print(k + a)\n        end for\nend func\n",
+                "func main() -> Unit\n    for (k, (a, _)) in [(1, (2, 3))] do\n"
+                "        print(k + a)\n    end for\nend func\n",
+            ),
+        ],
+    )
+    def test_formatting_keeps_the_program(self, source: str, formatted: str) -> None:
+        assert geno.check(source).ok
+        assert format_source(source) == formatted
+        assert format_source(formatted) == formatted
+        assert geno.check(formatted).ok
+
+    def test_names_stay_unique_inside_fstring_interpolations(self) -> None:
+        _assert_parity(
+            _main(
+                """
+for (a, b) in [(1, 2)] do
+    print(f"{[x + y for (x, y) in [(a, b), (b, a)]]} {a}")
+end for
+"""
+            ),
+            "[3, 3] 1\n",
+        )
+        program = geno.parse(
+            _main(
+                'for (a, b) in [(1, 2)] do\n    print(f"{[x for (x, y) in [(a, b)]]}")\nend for'
+            )
+        )
+        loop = program.definitions[0].body[0]
+        comprehension = (
+            loop.body[0].arms[0].body[0].expression.arguments[0].value.parts[0]
+        )
+        assert loop.variable != comprehension.variable
+
     def test_pythons_unparenthesized_names_get_parentheses(self) -> None:
         source = _main("for i, x in [5, 6].enumerate() do\n    print(i * x)\nend for")
         (error,) = _errors(source)
