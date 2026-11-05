@@ -458,6 +458,83 @@ end func
         assert result.failed == 0
 
 
+class TestPanicsExamples:
+    """`example ... panics` in both harness runners (proposal 0017)."""
+
+    SOURCE = """
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    example 3, 1 panics
+    return a / b
+end func
+
+func fail(n: Int) -> Int
+    example 0 panics "NOT IMPLEMENTED"
+    example 1 panics "something else"
+    panic("not implemented")
+end func
+"""
+
+    @pytest.mark.parametrize(
+        "runner",
+        [run_harness_from_source, run_harness_from_compiled],
+        ids=["source", "compiled"],
+    )
+    def test_pass_and_fail(self, runner):
+        result = runner(self.SOURCE)
+
+        assert (result.total, result.passed, result.failed) == (5, 3, 2)
+        returned, wrong_message = sorted(
+            (v.message for v in result.violations), key=lambda m: "containing" in m
+        )
+        assert "expected a panic, but it returned 3" in returned
+        assert 'expected a panic containing "something else"' in wrong_message
+        assert "but it panicked with: not implemented" in wrong_message
+
+    @pytest.mark.parametrize(
+        ("body", "limit"),
+        [
+            ("return 2 ** 100000", "integer size limit"),
+            ("return 1 << 100000", "integer size limit"),
+            ("return 1 >> 100000", "integer size limit"),
+            ("let x = 2 ** 16000\n    return x * x * x", "integer size limit"),
+        ],
+        ids=["pow", "lshift", "rshift", "multiply"],
+    )
+    @pytest.mark.parametrize(
+        "runner",
+        [run_harness_from_source, run_harness_from_compiled],
+        ids=["source", "compiled"],
+    )
+    def test_limits_are_not_panics(self, runner, body, limit):
+        source = (
+            f"func blow_up(n: Int) -> Int\n    example 0 panics\n    {body}\nend func\n"
+        )
+
+        result = runner(source)
+
+        assert (result.passed, result.failed) == (0, 1)
+        assert f"hit the {limit}" in result.violations[0].message
+
+    @pytest.mark.parametrize(
+        "runner",
+        [run_harness_from_source, run_harness_from_compiled],
+        ids=["source", "compiled"],
+    )
+    def test_a_panicking_input_is_not_a_pass(self, runner):
+        source = """
+func first(xs: List[Int]) -> Int
+    example [head([])] panics
+    return xs[0]
+end func
+"""
+        result = runner(source)
+
+        assert result.failed == 1
+        assert "Runtime error" in result.violations[0].message
+
+
 class TestHarnessRunner:
     """Test harness execution."""
 

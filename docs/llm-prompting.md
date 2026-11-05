@@ -433,7 +433,8 @@ end func
 
 The rule of thumb: a function that returns `Result` validates its own input, so
 it takes no `requires`. A helper that assumes valid input takes the `requires`
-and is never called with anything else.
+and is never called with anything else. To state that the helper rejects an
+input, write a panics example, `example (0) panics` (section 20).
 
 ### 19. Multi-file projects still need `import`
 
@@ -462,6 +463,67 @@ end func
 A plain `import Lib` puts the module's functions in scope unqualified, so
 `double(4)` works. The qualified form `Lib.double(4)` is also valid and is worth
 preferring when two modules define the same name.
+
+### 20. Examples that expect a panic, and `requires` as the domain
+
+*0.7 development line ([spec v0.7](spec/v0.7.md), section 5.3.1).* An example
+can state that a call panics. Write `panics` after the inputs, with no arrow,
+optionally followed by a string the panic's message must contain (compared
+ignoring case). Models trained on Rust's `#[should_panic]` or pytest's
+`raises` tend to write a panic as the expected value instead; that is an error.
+
+Wrong -- a panic is not a value an example can expect (E330):
+```
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 -> panic("division")
+    example 1, 0 -> panics
+    return a / b
+end func
+```
+
+Correct:
+```
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func
+
+func usage() -> String
+    example () panics "not implemented"
+    panic("not implemented")
+end func
+```
+
+`geno check --fix` rewrites every arrow form (`-> panics`, `-> panics "m"`,
+`-> panic`, `-> panic("m")`) to the `panics` form. A zero-argument function
+writes `example () panics`, never `example panics`.
+
+`requires` states the function's domain: the inputs it is written for. Put a
+`requires` on every precondition the body assumes, instead of leaving it to
+callers, and document an input outside the domain with a panics example. Leave
+out the message there: the text of a failed `requires` is not a stable
+contract, while the text of the function's own `panic` is.
+```
+func isqrt(n: Int) -> Int
+    requires n >= 0
+    example 10 -> 3
+    example 0 -> 0
+    example -1 panics
+    var r = 0
+    while (r + 1) * (r + 1) <= n do
+        r = r + 1
+    end while
+    return r
+end func
+```
+
+A panics example passes on `panic(...)` or any runtime error, including a
+failed `requires` or `ensures`. It fails when the call returns, panics with a
+message that does not contain the text, or runs out of a resource limit (an
+infinite loop hitting the step limit or the timeout, or a collection, integer
+or output limit): a limit is not a panic.
 
 ## Prompting Patterns
 

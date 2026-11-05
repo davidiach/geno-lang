@@ -110,6 +110,42 @@ followed by a new `if` statement, it is now rejected with E201, reported at
 the `end`, with a fix that writes `end if`. `geno fmt` never produced the
 two-line form. `conformance/v0.6` adds the `diagnostic-bare-end` case.
 
+### 0.7 (draft): an example's expected value cannot be a `panic(...)` call
+
+Recorded for the unreleased 0.7 development line. 0.6 accepted
+`example 1, 0 -> panic("division")`: `panic` returns `Never`, which every type
+accepts, so the program passed `geno check` and compiled and ran with
+`geno compile`, `geno build` and `geno run --no-check-examples`, none of which
+evaluate examples. The example itself could never pass, because its expected
+value panics before the call is made. 0.7 adds panic examples
+(`example 1, 0 panics "division"`), and from then on every way of writing a
+panic as an expected value (`-> panic(...)`, `-> panic`, `-> panics`,
+`-> panics "m"`) is rejected with E330 and a fix that writes the new form. It
+meets the five conditions above:
+
+1. [proposal 0017](../proposals/0017-panic-examples-and-property-checks.md)
+   (Draft; it must be accepted before 0.7 is released) records the motivation
+   and the alternatives, including a warning instead of an error, which it
+   rejects;
+2. the impact is stated in `docs/spec/v0.7.md` section 5.3.1 and its "Changes
+   from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration example:
+
+   ```geno
+   // before
+   example 1, 0 -> panic("division")
+   // after
+   example 1, 0 panics "division"
+   ```
+
+   `geno check --fix` performs it. `-> panic(e)` with a message that is not a
+   string literal has no automatic fix: write the message text literally, or
+   drop it (`example 1, 0 panics`);
+4. no frozen case uses the form, so `conformance/v0.5` and `conformance/v0.6`
+   are unchanged, and the new expectation is the development corpus's
+   `diagnostic-panic-example-arrow-form` checker case; and
+5. the release owner records it in release evidence when 0.7 is released.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It
@@ -137,6 +173,22 @@ Release qualification runs both the current corpus and at least the immediately
 preceding minor corpus. Cases may be corrected only when the original fixture
 was internally inconsistent; such corrections require a proposal and a changelog
 entry.
+
+### Development Corpus
+
+While the next minor is being developed, its cases live in a development
+corpus: `conformance/v0.7/manifest.toml`, opened by
+[proposal 0017](../proposals/0017-panic-examples-and-property-checks.md) for
+the Draft [`docs/spec/v0.7.md`](../spec/v0.7.md). It is marked
+`status = "development"`, holds only cases new in that line, and is **not
+frozen**: its cases may change with the draft until the minor is released.
+`scripts/run_conformance.py --all-retained` runs it after the retained
+corpora, so release and scheduled evidence keep it green, but it adds no
+compatibility promise. The runner refuses a corpus newer than `spec.json`'s
+`language_series` that is not marked, a marked corpus that is not newer, and
+more than one development corpus. When the minor is promoted, the promotion
+proposal carries the previous corpus's cases forward, drops the mark, and the
+corpus is frozen like the others.
 
 ## What Users Can Rely On
 

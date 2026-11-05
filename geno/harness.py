@@ -12,7 +12,7 @@ Ported from Stitch's harness system, adapted for Geno.
 import dataclasses
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
 
 from .ast_nodes import (
     EnsuresClause,
@@ -23,6 +23,9 @@ from .ast_nodes import (
     RequiresClause,
 )
 from .values import _UNBOUND, ConstructorValue
+
+if TYPE_CHECKING:
+    from .panic_outcome import CallFailure
 
 # =============================================================================
 # Result Types
@@ -256,15 +259,28 @@ class HarnessRunner:
         *,
         eval_example_input: Callable[[ExampleClause], Any] | None = None,
         eval_example_output: Callable[[ExampleClause], Any] | None = None,
+        classify_failure: Callable[[BaseException], "CallFailure | None"] | None = None,
+        format_value: Callable[[Any], str] = repr,
     ):
         """
         Args:
             get_function: Callable that takes a function name and returns
                          the function implementation, or None if not found.
+            classify_failure: How a panics example reads the exception its
+                call raised (``geno.panic_outcome``); the interpreter's
+                classifier by default, the compiled runtime's for compiled
+                functions.
+            format_value: Renders a value a panics example's call returned.
         """
         self.get_function = get_function
         self.eval_example_input = eval_example_input
         self.eval_example_output = eval_example_output
+        if classify_failure is None:
+            from .panic_outcome import classify_call_failure
+
+            classify_failure = classify_call_failure
+        self.classify_failure = classify_failure
+        self.format_value = format_value
 
     def run_harnesses(self, harnesses: List[FunctionHarness]) -> HarnessResult:
         """Run all harnesses and collect results."""
@@ -305,9 +321,14 @@ class HarnessRunner:
         self, harness: FunctionHarness, func: Callable, example: ExampleClause
     ) -> SpecViolation | None:
         """Run a single example test."""
+        from .panic_outcome import check_panics_example
+
+        calling_panics_example = False
         try:
             inputs = self._eval_example_input(example)
-            expected = self._eval_example_output(example)
+            expected = (
+                None if example.expects_panic else self._eval_example_output(example)
+            )
             args = example_call_args(
                 inputs,
                 param_count=len(harness.param_names),
@@ -319,7 +340,16 @@ class HarnessRunner:
             )
 
             # Call the function
+            calling_panics_example = example.expects_panic
             actual = func(*args)
+            if calling_panics_example:
+                return self._panics_violation(
+                    harness,
+                    example,
+                    check_panics_example(
+                        None, example.panic_message, returned=self.format_value(actual)
+                    ),
+                )
 
             # Compare results
             if not self._values_equal(actual, expected):
@@ -335,12 +365,34 @@ class HarnessRunner:
             return None
 
         except Exception as e:
+            # Only the call of a panics example can satisfy it: an input that
+            # panics is a broken example.
+            failure = self.classify_failure(e) if calling_panics_example else None
+            if failure is not None:
+                return self._panics_violation(
+                    harness,
+                    example,
+                    check_panics_example(failure, example.panic_message),
+                )
             return SpecViolation(
                 kind="example",
                 function=harness.name,
                 message=f"Runtime error: {e}",
                 inputs={"args": str(example.input_expr)},
             )
+
+    @staticmethod
+    def _panics_violation(
+        harness: FunctionHarness, example: ExampleClause, reason: str | None
+    ) -> SpecViolation | None:
+        if reason is None:
+            return None
+        return SpecViolation(
+            kind="example",
+            function=harness.name,
+            message=f"Example failed: {reason}",
+            inputs={"args": str(example.input_expr)},
+        )
 
     def _eval_example_input(self, example: ExampleClause) -> Any:
         """Evaluate the input expression of an example."""
@@ -460,14 +512,17 @@ def run_harness_from_source(source: str, check_examples: bool = True) -> Harness
             return None
         return lambda *args, _c=closure: interp._call_function(_c, list(args))
 
+    def eval_output(example: ExampleClause) -> Any:
+        assert example.output_expr is not None  # a panics example has none
+        return interp.eval_expr(example.output_expr, interp.global_env)
+
     runner = HarnessRunner(
         get_func,
         eval_example_input=lambda example: interp.eval_expr(
             example.input_expr, interp.global_env
         ),
-        eval_example_output=lambda example: interp.eval_expr(
-            example.output_expr, interp.global_env
-        ),
+        eval_example_output=eval_output,
+        format_value=interp._format_value,
     )
     return runner.run_harnesses(harnesses)
 
@@ -514,15 +569,19 @@ def run_harness_from_compiled(source: str) -> HarnessResult:
         )
 
     def eval_compiled_output(example: ExampleClause) -> Any:
+        assert example.output_expr is not None  # a panics example has none
         return _coerce_value_for_compiled_harness(
             evaluator.eval_expr(example.output_expr, evaluator.global_env),
             globals_dict,
         )
 
+    from .panic_outcome import classify_compiled_failure
+
     runner = HarnessRunner(
         get_func,
         eval_example_input=eval_compiled_input,
         eval_example_output=eval_compiled_output,
+        classify_failure=classify_compiled_failure,
     )
     return runner.run_harnesses(harnesses)
 

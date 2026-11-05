@@ -15,6 +15,7 @@ from .ast_nodes import (
     ExampleClause,
     Expression,
     FunctionDef,
+    Identifier,
     ImplDef,
     ImportStatement,
     InferredType,
@@ -31,7 +32,7 @@ from .ast_nodes import (
     TypeAnnotation,
     constant_initializer_error,
 )
-from .diagnostics import ErrorCode
+from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix
 from .parser_base import (
     ParseError,
     ParseErrors,
@@ -558,13 +559,11 @@ class Parser(
         # `example () -> output`: a nullary function has no input to write, and
         # examples are mandatory, so accept the bare arrow as well.
         inputs: list[Expression] = []
+        first_input = self.pos
         if not self._check(TokenType.ARROW):
             inputs.append(self._parse_expression())
             while self._match(TokenType.COMMA):
                 inputs.append(self._parse_expression())
-
-        self._expect(TokenType.ARROW)
-        output_expr = self._parse_expression()
 
         # If there's only one input, use it directly; otherwise wrap in tuple
         if len(inputs) == 1:
@@ -572,8 +571,186 @@ class Parser(
         else:
             input_expr = TupleExpr(location=location, elements=inputs)
 
+        if inputs and self._at_panics_word():
+            return self._parse_panics_tail(location, input_expr)
+        if self._is_single_word(inputs, first_input, "panics") and (
+            self._ends_zero_input_panics()
+        ):
+            return self._recover_zero_input_panics(location)
+
+        arrow = self._expect(TokenType.ARROW)
+        inputs_end = self._code_end_before(arrow, self.tokens[self.pos - 2])
+        expectation = self._current()
+        first_output = self.pos
+        output_expr = self._parse_expression()
+        last = self.tokens[self.pos - 1]
+        message: str | None = None
+        following = self._current()
+        if (
+            self._is_single_word([output_expr], first_output, "panics")
+            and following.type is TokenType.STRING
+            and following.location.line == last.location.line
+        ):
+            # `-> panics "m"`: a value example cannot carry a message, so the
+            # string belongs to the expectation (and the checker reports
+            # E330 with a fix to the `panics` form), not to the body.
+            last = self._advance()
+            message = last.value
+
         return ExampleClause(
-            location=location, input_expr=input_expr, output_expr=output_expr
+            location=location,
+            input_expr=input_expr,
+            output_expr=output_expr,
+            panic_message=message,
+            arrow_location=arrow.location,
+            expectation_location=expectation.location,
+            end_location=last.location,
+            inputs_end_location=inputs_end,
+        )
+
+    def _is_single_word(
+        self, expressions: list[Expression], start: int, word: str
+    ) -> bool:
+        """``expressions`` is the identifier ``word`` alone, one token from ``start``."""
+        return (
+            len(expressions) == 1
+            and isinstance(expressions[0], Identifier)
+            and expressions[0].name == word
+            and self.pos == start + 1
+        )
+
+    def _code_end_before(self, token: Token, previous: Token) -> SourceLocation | None:
+        """Just after the code before ``token`` on its line.
+
+        ``None`` when ``previous`` (the token before it) is on an earlier line,
+        or the source text is unknown.
+        """
+        location = token.location
+        if (
+            self._source_lines is None
+            or previous.location.line != location.line
+            or not 0 < location.line <= len(self._source_lines)
+        ):
+            return None
+        before = self._source_lines[location.line - 1][: location.column - 1]
+        before = before.rstrip()
+        if not before:
+            return None
+        return SourceLocation(location.line, len(before) + 1, location.filename)
+
+    def _ends_zero_input_panics(self) -> bool:
+        """After an input ``panics``: the end of the line, or a message string.
+
+        That is `example panics` or `example panics "m"`, a zero-argument
+        panics example missing its `()` (0.6 reported "Expected '->'" here).
+        """
+        current = self._current()
+        previous = self.tokens[self.pos - 1]
+        if current.type is TokenType.ARROW:
+            return False  # `example panics` / `-> 1` on the next line
+        return (
+            current.type is TokenType.EOF
+            or current.location.line > previous.location.line
+            or current.type is TokenType.STRING
+        )
+
+    def _recover_zero_input_panics(self, location: SourceLocation) -> ExampleClause:
+        """Report `example panics` (E201, fix: `example () panics`) and go on."""
+        panics = self.tokens[self.pos - 1]
+        self._record_error(
+            ParseError(
+                "A zero-argument panics example is written `example () panics`",
+                panics.location,
+                ErrorCode.PARSE_EXPECTED_TOKEN,
+                (insert_fix("Write 'example () panics'", [(panics.location, "() ")]),),
+            )
+        )
+        return self._finish_panics_example(
+            location, TupleExpr(location=panics.location, elements=[]), panics
+        )
+
+    def _at_panics_word(self) -> bool:
+        """The current token is the contextual word ``panics`` after inputs.
+
+        ``panics`` stays an ordinary identifier: it means "expects a panic"
+        only directly after an example's inputs, with no arrow, on the line of
+        the last input token. Anywhere else 0.6 reported "Expected '->'".
+        """
+        current = self._current()
+        return (
+            current.type is TokenType.IDENTIFIER
+            and current.value == "panics"
+            and current.location.line == self.tokens[self.pos - 1].location.line
+        )
+
+    def _parse_panics_tail(
+        self, location: SourceLocation, input_expr: Expression
+    ) -> ExampleClause:
+        """Parse ``panics`` and its optional same-line message string."""
+        return self._finish_panics_example(location, input_expr, self._advance())
+
+    def _finish_panics_example(
+        self, location: SourceLocation, input_expr: Expression, panics: Token
+    ) -> ExampleClause:
+        """Parse the optional message after the (consumed) word ``panics``."""
+        last = panics
+        message: str | None = None
+        following = self._current()
+        same_line = following.location.line == last.location.line
+        if same_line and following.type is TokenType.STRING:
+            last = self._advance()
+            message = last.value
+            following = self._current()
+            same_line = following.location.line == last.location.line
+        if same_line and following.type is not TokenType.EOF:
+            # Without this, `example 1 panics f"x"` would quietly parse the
+            # f-string as the function's first statement.
+            raise ParseError(
+                "Expected a message string or the end of the line after 'panics'",
+                following.location,
+                ErrorCode.PARSE_EXPECTED_TOKEN,
+            )
+        if message == "":
+            self._record_error(self._empty_panic_message(panics, last))
+            message = None
+        return ExampleClause(
+            location=location,
+            input_expr=input_expr,
+            output_expr=None,
+            panic_message=message,
+            expectation_location=panics.location,
+            end_location=last.location,
+        )
+
+    def _empty_panic_message(self, panics: Token, message: Token) -> ParseError:
+        """E202 for `panics ""`, with a fix that deletes the string.
+
+        The string is the last code on its line (anything after it is E201),
+        so it ends where the line's code does.
+        """
+        start = panics.location
+        line_end = self._line_end(message.location.line)
+        fixes: tuple[Fix, ...] = ()
+        if line_end is not None and line_end.line == start.line:
+            fixes = (
+                Fix(
+                    "Remove the empty message",
+                    (
+                        TextEdit(
+                            start.line,
+                            start.column + len("panics"),
+                            line_end.line,
+                            line_end.column,
+                            "",
+                        ),
+                    ),
+                ),
+            )
+        return ParseError(
+            "An empty panics message matches every panic; omit it",
+            message.location,
+            ErrorCode.PARSE_INVALID_SYNTAX,
+            fixes,
         )
 
 
@@ -602,3 +779,33 @@ def parse(source: str, filename: str = "<stdin>") -> Program:
     tokens = lexer.tokenize()
     parser = Parser(tokens, source)
     return parser.parse_program()
+
+
+def parse_expression(source: str, filename: str = "<expression>") -> Expression:
+    """
+    Parse one Geno expression, such as an example's inputs.
+
+    Args:
+        source: The expression's source text
+        filename: Filename for error messages
+
+    Returns:
+        The expression's AST
+
+    Raises:
+        ParseError: If the text is not exactly one expression
+    """
+    from .lexer import Lexer
+
+    tokens = Lexer(source, filename).tokenize()
+    parser = Parser(tokens, source)
+    expression = parser._parse_expression()
+    while parser._match(TokenType.NEWLINE):
+        pass
+    if not parser._check(TokenType.EOF):
+        token = parser._current()
+        raise ParseError(
+            f"Expected the end of the expression, got {token_type_to_str(token.type)}",
+            token.location,
+        )
+    return expression

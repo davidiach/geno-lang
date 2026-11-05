@@ -70,6 +70,11 @@ class ErrorCode(Enum):
     TYPE_UNKNOWN_BOUND = "E322"  # Type parameter bound names no bound or trait
     TYPE_UNSATISFIED_BOUND = "E323"  # Type argument misses a parameter's bound
 
+    # Specification clause errors (33x)
+    # An example's expected value is written as a panic (`-> panic(...)`)
+    # instead of the 0.7 draft `panics` form (proposal 0017).
+    TYPE_EXAMPLE_PANIC_FORM = "E330"
+
     # Warnings (W3xx): reported with Severity.WARNING once a program passes
     # the type checker; the program is still accepted.
     WARN_REDECLARED_VAR = "W300"  # let/var redeclares a mutable var in scope

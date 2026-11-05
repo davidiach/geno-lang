@@ -15,6 +15,7 @@ from scripts.run_conformance import (
     ConformanceCase,
     ManifestError,
     _envelope_mismatches,
+    development_manifest_paths,
     load_manifest,
     main,
     retained_manifest_paths,
@@ -89,6 +90,129 @@ def test_retained_corpora_reject_a_cross_major_gap(tmp_path: Path) -> None:
             spec_path=spec_path,
             conformance_root=corpus_root,
         )
+
+
+def _write_manifest(root: Path, series: str, status: str | None = None) -> Path:
+    path = root / f"v{series}" / "manifest.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        f'language_version = "{series}"\n'
+        + (f'status = "{status}"\n' if status is not None else ""),
+        encoding="utf-8",
+    )
+    return path.resolve()
+
+
+def test_no_development_corpus_is_the_default(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    corpus_root = tmp_path / "conformance"
+    _write_manifest(corpus_root, "0.5")
+    _write_manifest(corpus_root, "0.6")
+    _write_contract(spec_path, "0.6")
+
+    assert (
+        development_manifest_paths(spec_path=spec_path, conformance_root=corpus_root)
+        == ()
+    )
+
+
+def test_a_marked_newer_corpus_is_the_development_corpus(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    corpus_root = tmp_path / "conformance"
+    _write_manifest(corpus_root, "0.5")
+    _write_manifest(corpus_root, "0.6")
+    development = _write_manifest(corpus_root, "0.7", "development")
+    _write_contract(spec_path, "0.6")
+
+    assert development_manifest_paths(
+        spec_path=spec_path, conformance_root=corpus_root
+    ) == (development,)
+    # The retained corpora are what they were.
+    assert retained_manifest_paths(
+        spec_path=spec_path, conformance_root=corpus_root
+    ) == (
+        (corpus_root / "v0.5" / "manifest.toml").resolve(),
+        (corpus_root / "v0.6" / "manifest.toml").resolve(),
+    )
+
+
+def test_an_unmarked_newer_corpus_is_refused(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    corpus_root = tmp_path / "conformance"
+    _write_manifest(corpus_root, "0.6")
+    _write_manifest(corpus_root, "0.7")
+    _write_contract(spec_path, "0.6")
+
+    with pytest.raises(ManifestError, match="must be marked"):
+        development_manifest_paths(spec_path=spec_path, conformance_root=corpus_root)
+
+
+def test_a_marked_corpus_that_is_not_newer_is_refused(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    corpus_root = tmp_path / "conformance"
+    _write_manifest(corpus_root, "0.5")
+    _write_manifest(corpus_root, "0.6", "development")
+    _write_contract(spec_path, "0.6")
+
+    with pytest.raises(ManifestError, match="only a corpus newer"):
+        development_manifest_paths(spec_path=spec_path, conformance_root=corpus_root)
+
+
+def test_two_development_corpora_are_refused(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    corpus_root = tmp_path / "conformance"
+    _write_manifest(corpus_root, "0.6")
+    _write_manifest(corpus_root, "0.7", "development")
+    _write_manifest(corpus_root, "0.8", "development")
+    _write_contract(spec_path, "0.6")
+
+    with pytest.raises(ManifestError, match="at most one development corpus"):
+        development_manifest_paths(spec_path=spec_path, conformance_root=corpus_root)
+
+
+def test_the_repository_development_corpus_is_v07() -> None:
+    (path,) = development_manifest_paths()
+    manifest = load_manifest(path)
+
+    assert manifest.language_version == "0.7"
+    assert manifest.status == "development"
+    assert {case.id for case in manifest.cases} >= {
+        "panic-example-passes",
+        "panic-example-zero-arg",
+        "panic-example-no-panic-fails",
+    }
+    assert all(load_manifest(p).status is None for p in retained_manifest_paths())
+
+
+def test_all_retained_runs_the_development_corpus_last(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--all-retained", "--target", "checker"]) == 0
+    headings = [
+        line for line in capsys.readouterr().out.splitlines() if "conformance:" in line
+    ]
+    assert headings[-1].startswith("Geno 0.7 conformance:")
+    assert headings[-1].endswith("development cases")
+    assert all(heading.endswith("frozen cases") for heading in headings[:-1])
+
+
+def test_a_manifest_status_other_than_development_is_refused(tmp_path: Path) -> None:
+    manifest = _corpus(
+        tmp_path,
+        program=_PRINTING_PROGRAM,
+        targets=["interpreter"],
+        capabilities=["print"],
+        expected_stdout="ok\n",
+    )
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'description = "t"', 'description = "t"\nstatus = "frozen"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestError, match="status must be"):
+        load_manifest(manifest)
 
 
 def test_v04_checker_and_diagnostic_contracts_pass() -> None:

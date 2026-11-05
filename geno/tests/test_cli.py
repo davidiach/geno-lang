@@ -1947,6 +1947,78 @@ class TestGenoTestJson:
         assert data["failed"] == 1
         assert "Step limit exceeded" in data["files"][0]["violations"][0]["message"]
 
+    # A function whose `ensures` is false for negative inputs: plain `geno
+    # test` must report it exactly as before property checks existed.
+    _ABS_BUG = (
+        "func abs_val(n: Int) -> Int\n"
+        "    ensures result >= 0\n"
+        "    example 3 -> 3\n"
+        "    if n >= 0 then\n"
+        "        return n\n"
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+    )
+
+    def test_plain_geno_test_output_is_unchanged_by_property_checks(self, tmp_path):
+        import re
+
+        (tmp_path / "abs.geno").write_text(self._ABS_BUG)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "abs.geno"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert re.fullmatch(
+            r"  PASS  abs\.geno \(1/1\)( \d+ms| \d+\.\d\ds)?\n"
+            r"\n"
+            r"1 passed, 0 failed, in \d+\.\d\ds\n",
+            result.stdout,
+        ), result.stdout
+
+    def test_plain_geno_test_json_is_unchanged_by_property_checks(self, tmp_path):
+        import json
+
+        (tmp_path / "abs.geno").write_text(self._ABS_BUG)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "--json", "abs.geno"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert isinstance(data["files"][0].pop("elapsed_ms"), float)
+        assert data == {
+            "files": [
+                {
+                    "path": "abs.geno",
+                    "total": 1,
+                    "passed": 1,
+                    "failed": 0,
+                    "untested": [],
+                    "violations": [],
+                }
+            ],
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errors": 0,
+            "untested": 0,
+            "success": True,
+        }
+        # Byte layout: the same `indent=2` dump, with no trailing keys.
+        assert result.stdout.endswith('  "success": true\n}\n')
+
 
 class TestGenoHelp:
     """Test help and version commands."""
@@ -1988,6 +2060,25 @@ class TestGenoHelp:
         assert "interpreter" in result.stdout
         assert "--timeout" in result.stdout
         assert "--max-steps" in result.stdout
+
+    def test_test_help_lists_the_property_flags(self):
+        """Proposal 0017: `--properties`, `--trials N` and `--seed S`."""
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0
+        help_text = " ".join(result.stdout.split())
+        assert "Typecheck availability" in help_text
+        assert "--properties" in help_text
+        assert "--trials N" in help_text
+        assert "--seed S" in help_text
+        assert "experimental" in help_text
+        assert "default: 100" in help_text
+        assert "1-10000" in help_text
 
     def test_run_help_lists_resource_limit_flags(self):
         result = subprocess.run(

@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .ast_nodes import Parameter, SpecBlock, Statement
 from .diagnostics import runtime_error_code_for_message
@@ -41,13 +41,32 @@ class GenoRuntimeError(Exception):
             super().__init__(f"Runtime Error: {message}")
 
 
+ContractClause = Literal["requires", "ensures"]
+# Why a contract clause failed: it evaluated to false, or it used ``?`` and
+# propagated a None/Err instead of producing a Bool.
+ContractFailureReason = Literal["false", "propagate"]
+
+
 class ContractViolationError(GenoRuntimeError):
     """Uncatchable contract violation from requires/ensures clauses.
 
-    ``call_depth`` is the interpreter call depth the violation was raised at,
-    when the raiser knows it. Example verification uses it to tell a
-    precondition that rejected the example's own input (depth 1) from one a
-    nested call tripped, which are different authoring mistakes.
+    The structured fields say what failed, so tools never parse the message
+    (proposal 0017); a rewrite of the message text must keep them:
+
+    - ``clause``: ``"requires"`` or ``"ensures"``;
+    - ``reason``: ``"false"`` (the clause evaluated to false) or
+      ``"propagate"`` (it used ``?`` and propagated None/Err);
+    - ``clause_index``: the clause's index in ``specs.requires`` or
+      ``specs.ensures``;
+    - ``call_depth``: the interpreter call depth the violation was raised at,
+      where 1 is the call a tool made with an empty call stack. Example
+      verification uses it to tell a precondition that rejected the example's
+      own input (depth 1) from one a nested call tripped, which are different
+      authoring mistakes;
+    - ``result_display``: for an ``ensures`` clause, the interpreter's display
+      of the value the function returned.
+
+    Each is ``None`` when the raiser does not know it.
     """
 
     def __init__(
@@ -56,9 +75,58 @@ class ContractViolationError(GenoRuntimeError):
         location: SourceLocation | None = None,
         error_code: Any | None = None,
         call_depth: int | None = None,
+        *,
+        clause: ContractClause | None = None,
+        reason: ContractFailureReason | None = None,
+        clause_index: int | None = None,
+        result_display: str | None = None,
     ) -> None:
         super().__init__(message, location, error_code)
         self.call_depth = call_depth
+        self.clause: ContractClause | None = clause
+        self.reason: ContractFailureReason | None = reason
+        self.clause_index = clause_index
+        self.result_display = result_display
+
+    def with_message(
+        self, message: str, location: SourceLocation | None
+    ) -> ContractViolationError:
+        """The same violation, explained by *message* at *location*."""
+        return ContractViolationError(
+            message,
+            location,
+            call_depth=self.call_depth,
+            clause=self.clause,
+            reason=self.reason,
+            clause_index=self.clause_index,
+            result_display=self.result_display,
+        )
+
+
+RuntimeLimitKind = Literal["collection size", "integer size", "numeric range", "output"]
+
+
+class RuntimeLimitError(GenoRuntimeError):
+    """A runtime resource limit was exceeded: not a panic of the program.
+
+    Raised where the interpreter and the builtins enforce a limit set by the
+    host's ``SandboxConfig`` (``max_collection_size``, ``max_integer_bits``,
+    ``max_output_length``), and for a numeric result outside the host's range.
+    The message and error code are those of the ``GenoRuntimeError`` it
+    replaces; the type is what lets a ``panics`` example (proposal 0017) tell a
+    limit from a panic without reading the message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        location: SourceLocation | None = None,
+        error_code: Any | None = None,
+        *,
+        limit: RuntimeLimitKind,
+    ) -> None:
+        super().__init__(message, location, error_code)
+        self.limit: RuntimeLimitKind = limit
 
 
 # Backward-compatible alias — existing code can still import RuntimeError

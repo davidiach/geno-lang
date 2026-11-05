@@ -38,6 +38,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
+    ExampleClause,
     Expression,
     ExpressionStatement,
     FieldAccess,
@@ -97,7 +98,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .constructor_args import constructor_argument_order
-from .diagnostics import ErrorCode, Fix, insert_fix, replace_fix
+from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
@@ -579,6 +580,41 @@ def _rename_fixes(
     if location is None or not confident:
         return hint, ()
     return hint, (replace_fix(location, name, best),)
+
+
+def _shifted(location: SourceLocation, columns: int) -> SourceLocation:
+    """``location`` moved right by ``columns`` on its line."""
+    return SourceLocation(location.line, location.column + columns, location.filename)
+
+
+def _literal_panic_message(call: FunctionCall) -> StringLiteral | None:
+    """The string literal in `panic("m")` (or `panic(message: "m")`), if any."""
+    if len(call.arguments) != 1:
+        return None
+    argument = call.arguments[0]
+    if argument.name not in (None, "message"):
+        return None
+    return argument.value if isinstance(argument.value, StringLiteral) else None
+
+
+def _geno_string(text: str) -> str:
+    """``text`` written as a Geno string literal, for a diagnostic message."""
+    import json
+
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _example_inputs_text(example: ExampleClause, zero_input: bool) -> str:
+    """An example's inputs as written in a diagnostic: ``1, 0``, ``()``."""
+    from .doc_generator import _render_expr
+
+    inputs = example.input_expr
+    if zero_input:
+        return "()"
+    if isinstance(inputs, TupleExpr) and inputs.location == example.location:
+        # Several inputs, which the parser wraps in an implicit tuple.
+        return ", ".join(_render_expr(element) for element in inputs.elements)
+    return str(_render_expr(inputs))
 
 
 def _likely_typo(name: str, best: str, candidates: set[str]) -> bool:
@@ -1665,12 +1701,18 @@ class TypeChecker(ExhaustivenessMixin):
                 raise self.errors[0]
             raise TypeErrors(self.errors)
 
-    def check_project_graph(self, dep_graph) -> dict[str, Program]:
+    def check_project_graph(
+        self, dep_graph, *, retain_module_checkers: bool = False
+    ) -> dict[str, Program]:
         """Typecheck all modules in a DependencyGraph in topological order.
 
         Returns a dict of module_name -> parsed program AST, all typechecked.
         Type info carries across module boundaries: only exported symbols
         (or all symbols if no exports) from earlier modules are available.
+
+        With *retain_module_checkers* (or ``binding_types``), each module's
+        checker is kept in ``module_checkers``, so a tool can read that
+        module's resolved types afterwards (property checks, proposal 0017).
         """
         checked: dict[str, Program] = {}
         module_summaries: dict[str, _ModuleImportSummary] = {}
@@ -1682,6 +1724,7 @@ class TypeChecker(ExhaustivenessMixin):
             mod_checker = TypeChecker(target_profile=self._target_profile)
             if self.binding_types is not None:
                 mod_checker.binding_types = []
+            if self.binding_types is not None or retain_module_checkers:
                 self.module_checkers[mod_name] = mod_checker
             modules = module_summaries or None
             mod_checker.check_program(
@@ -3626,13 +3669,19 @@ class TypeChecker(ExhaustivenessMixin):
                             ex.input_expr.location,
                         )
 
-            # Check output expression type
-            output_type = self._check_expression(ex.output_expr, self.global_env)
-            if not example_compatible(return_type, output_type):  # type: ignore[arg-type]
-                self._error(
-                    f"Example output type mismatch: expected {shown(return_type)}, got {output_type}",
-                    ex.output_expr.location,
-                )
+            # Check output expression type. A panics example states no value:
+            # only its inputs are checked, and a type parameter they leave
+            # unbound stays a variable, which every bound accepts. An
+            # expected value written as a panic is E330, reported before the
+            # expression is checked, so `-> panics` is never offered E301's
+            # "Did you mean 'panic'?" fix.
+            if ex.output_expr is not None and not self._report_example_panic_form(ex):
+                output_type = self._check_expression(ex.output_expr, self.global_env)
+                if not example_compatible(return_type, output_type):  # type: ignore[arg-type]
+                    self._error(
+                        f"Example output type mismatch: expected {shown(return_type)}, got {output_type}",
+                        ex.output_expr.location,
+                    )
             generic = self._generic_signature(defn, None)
             if generic is not None and example_subs is not None:
                 self._check_instance_bounds(
@@ -3640,6 +3689,92 @@ class TypeChecker(ExhaustivenessMixin):
                     self._generic_instance(generic, example_subs).type_args,
                     ex.location,
                 )
+
+    def _report_example_panic_form(self, ex: ExampleClause) -> bool:
+        """E330: an example whose expected value is written as a panic.
+
+        `-> panics` (when no `panics` is in scope), `-> panics "m"`, and
+        `-> panic` or `-> panic(...)` naming the builtin are all spellings of
+        the 0.7 draft `panics` form (proposal 0017). The fix rewrites them to
+        it; a `panic(...)` whose message is not a string literal gets none.
+        Returns whether the example was reported.
+        """
+        output = ex.output_expr
+        builtin_panic = self._identifier_resolves_to_builtin("panic", self.global_env)
+        # The fix replaces the text from the end of the inputs up to `upto`
+        # with " panics..." and applies `extra`; None when there is no fix.
+        rewrite: tuple[str, SourceLocation, tuple[TextEdit, ...]] | None = None
+        message: str | None = None
+        unquoted = False  # `panic(e)`: the message is not a literal
+        if isinstance(output, Identifier) and output.name == "panics":
+            if (
+                ex.panic_message is None
+                and self.global_env.lookup("panics") is not None
+            ):
+                return False
+            message = ex.panic_message
+            rewrite = ("", output.location, ())
+        elif isinstance(output, Identifier) and output.name == "panic":
+            if not builtin_panic:
+                return False
+            rewrite = ("panics", _shifted(output.location, len("panic")), ())
+        elif (
+            isinstance(output, FunctionCall)
+            and isinstance(output.function, Identifier)
+            and output.function.name == "panic"
+        ):
+            if not builtin_panic:
+                return False
+            literal = _literal_panic_message(output)
+            unquoted = literal is None
+            if literal is not None:
+                message = literal.value
+                close = ex.end_location  # the call's `)`
+                if close is not None:
+                    delete_close = TextEdit(
+                        close.line, close.column, close.line, close.column + 1, ""
+                    )
+                    rewrite = ("panics ", literal.location, (delete_close,))
+        else:
+            return False
+
+        zero_input = (
+            isinstance(ex.input_expr, TupleExpr)
+            and not ex.input_expr.elements
+            and ex.input_expr.location == ex.location
+        )
+        form = "panics" if message is None else f"panics {_geno_string(message)}"
+        written = f"example {_example_inputs_text(ex, zero_input)} {form}"
+        if unquoted:
+            written += ", optionally followed by the message as a string literal"
+        fixes: tuple[Fix, ...] = ()
+        start = ex.inputs_end_location
+        if rewrite is not None and start is not None:
+            text, upto, extra = rewrite
+            lead = " () " if zero_input else " "
+            title = f"() {form}" if zero_input else form
+            fixes = (
+                Fix(
+                    f"Write '{title}'",
+                    (
+                        TextEdit(
+                            start.line,
+                            start.column,
+                            upto.line,
+                            upto.column,
+                            lead + text,
+                        ),
+                        *extra,
+                    ),
+                ),
+            )
+        self._error(
+            f"An example that expects a panic is written without an arrow: {written}",
+            ex.arrow_location or ex.location,
+            ErrorCode.TYPE_EXAMPLE_PANIC_FORM,
+            fixes,
+        )
+        return True
 
     def _check_statement(self, stmt: Statement, env: TypeEnv) -> None:
         """Type check a statement."""
@@ -6560,7 +6695,18 @@ class TypeChecker(ExhaustivenessMixin):
                 arg_type = self._check_expression(arg, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
-                    arg_type = self._freshen_type_vars(arg_type, f"__ctor_arg{i}_")
+                    # Rename the argument's own type variables so they cannot
+                    # collide with the constructor's parameters. Inference
+                    # placeholders (a nullary constructor's or an empty
+                    # literal's ``__fresh_`` variables) are already unique, and
+                    # renaming them would turn them into rigid variables:
+                    # ``Node(Leaf, 1, Leaf)`` for an invariant ``Tree[T]``
+                    # must let ``Leaf``'s placeholder unify with ``T``.
+                    arg_type = self._freshen_type_vars(
+                        arg_type,
+                        f"__ctor_arg{i}_",
+                        self._placeholder_identity_mapping(arg_type),
+                    )
 
                 if self._has_type_vars(field_type):
                     if not self._types_compatible_with_subs(
@@ -6598,7 +6744,11 @@ class TypeChecker(ExhaustivenessMixin):
             # ``_check_list_literal``.
             def _bind_or_fresh(param: str) -> Type:
                 bound = type_param_bindings.get(param)
-                return bound if bound is not None else self._fresh_type_var(param)
+                if bound is None:
+                    return self._fresh_type_var(param)
+                # A parameter bound to a placeholder that a later argument
+                # resolved (``T = __fresh_T_1 = Int``) reports the resolution.
+                return self._apply_substitutions(bound, type_param_bindings)
 
             # Special handling for built-in Option type
             if type_name == "Option":
@@ -7385,6 +7535,26 @@ class TypeChecker(ExhaustivenessMixin):
         return TypeVar(f"__fresh_{hint}_{self._fresh_tv_counter}")
 
     @staticmethod
+    def _placeholder_identity_mapping(t: Type) -> dict[str, TypeVar]:
+        """Map each inference placeholder in *t* to itself.
+
+        Seeding ``_freshen_type_vars`` with it renames only the type's rigid
+        variables and keeps its placeholders unifiable.
+        """
+        mapping: dict[str, TypeVar] = {}
+        pending = [t]
+        while pending:
+            part = pending.pop()
+            if isinstance(part, TypeVar):
+                if _is_fresh_placeholder(part):
+                    mapping[part.name] = part
+                continue
+            parts = type_children(part)
+            if parts is not None:
+                pending.extend(parts[0])
+        return mapping
+
+    @staticmethod
     def _freshen_type_vars(
         t: Type, prefix: str, mapping: dict[str, TypeVar] | None = None
     ) -> Type:
@@ -7460,6 +7630,14 @@ class TypeChecker(ExhaustivenessMixin):
                 return False
             subs.clear()
             subs.update(trial_subs)
+            return True
+
+        if _is_fresh_placeholder(expected) and expected == actual:
+            # An unbound inference placeholder unifies with itself. The
+            # reverse half of an invariant check meets this once the forward
+            # half bound a parameter to the placeholder (``Tree[T]`` against
+            # ``Leaf``'s ``Tree[__fresh_T_1]``); binding it to itself would
+            # fail the occurs check below.
             return True
 
         if isinstance(expected, TypeVar):

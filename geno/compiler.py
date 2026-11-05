@@ -8,6 +8,7 @@ Compiles Geno source code to Python.
 import ast
 import builtins as _python_builtins
 import hashlib
+import json
 import keyword
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -50,6 +51,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
+    ExampleClause,
     Expression,
     ExpressionStatement,
     FieldAccess,
@@ -1336,6 +1338,20 @@ class Compiler(BaseCompiler, ASTVisitor):
         # explicit closing punctuation.
         self._dedent()
 
+    def _example_docstring(self, example: ExampleClause) -> str:
+        """One example as a docstring line: ``<in> -> <out>`` or ``<in> panics``.
+
+        A panics example's message is quoted with ``json.dumps``, which
+        escapes every quote, so a message holding ``\"\"\"`` cannot end the
+        docstring.
+        """
+        inputs = self._compile_expr(example.input_expr)
+        if example.output_expr is not None:
+            return f"{inputs} -> {self._compile_expr(example.output_expr)}"
+        if example.panic_message is None:
+            return f"{inputs} panics"
+        return f"{inputs} panics {json.dumps(example.panic_message)}"
+
     def _compile_function_def(self, defn: FunctionDef) -> None:
         """Compile a function definition to Python."""
         self._writeln()
@@ -1367,9 +1383,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             for ens in defn.specs.ensures:
                 self._writeln(f"Ensures: {self._compile_expr(ens.condition)}")
             for ex in defn.specs.examples:
-                self._writeln(
-                    f"Example: {self._compile_expr(ex.input_expr)} -> {self._compile_expr(ex.output_expr)}"
-                )
+                self._writeln(f"Example: {self._example_docstring(ex)}")
             self._writeln('"""')
 
         for p in defn.params:

@@ -2659,6 +2659,115 @@ class TestUserTypeInvariance:
         assert "mismatch" in err_str
 
 
+class TestNestedNullaryGenericConstructors:
+    """A nullary constructor of a generic ADT as another constructor's argument.
+
+    ``Tree[T]`` stores ``T`` in a field, so it is invariant. ``Leaf`` is a
+    ``Tree`` of an inference placeholder, which used to be renamed into a
+    rigid variable and then compared with itself, so ``Node(Leaf, 1, Leaf)``
+    failed in every position (proposal 0017, prerequisite for pasteable
+    property-check counterexamples).
+    """
+
+    TREE = (
+        "type Tree[T] = Leaf | Node(left: Tree[T], value: T, right: Tree[T])\n"
+        "\n"
+        "func size(t: Tree[Int]) -> Int\n"
+        "{examples}"
+        "    match t with\n"
+        "        | Leaf -> return 0\n"
+        "        | Node(l, _, r) -> return 1 + size(l) + size(r)\n"
+        "    end match\n"
+        "end func\n"
+    )
+
+    def _tree(self, examples: str = "    example Leaf -> 0\n", tail: str = "") -> str:
+        return self.TREE.format(examples=examples) + tail
+
+    def test_example_input(self):
+        check_program(self._tree("    example Node(Leaf, 1, Leaf) -> 1\n"))
+
+    def test_nested_example_input(self):
+        check_program(
+            self._tree("    example Node(Node(Leaf, 2, Leaf), 1, Leaf) -> 2\n")
+        )
+
+    def test_annotated_let(self):
+        check_program(
+            self._tree(
+                tail=(
+                    "func build() -> Int\n"
+                    "    example () -> 2\n"
+                    "    let t: Tree[Int] = Node(Leaf, 1, Node(Leaf, 2, Leaf))\n"
+                    "    return size(t)\n"
+                    "end func\n"
+                )
+            )
+        )
+
+    def test_call_argument(self):
+        check_program(
+            self._tree(
+                tail=(
+                    "func build() -> Int\n"
+                    "    example () -> 1\n"
+                    "    return size(Node(Leaf, 1, Leaf))\n"
+                    "end func\n"
+                )
+            )
+        )
+
+    def test_generic_function_body(self):
+        check_program(
+            "type Tree[T] = Leaf | Node(left: Tree[T], value: T, right: Tree[T])\n"
+            "\n"
+            "func single[T](x: T) -> Tree[T]\n"
+            "    example 1 -> Node(Leaf, 1, Leaf)\n"
+            "    return Node(Leaf, x, Leaf)\n"
+            "end func\n"
+        )
+
+    def test_mistyped_value_is_still_rejected(self):
+        error = expect_type_error(
+            self._tree('    example Node(Leaf, "x", Node(Leaf, 1, Leaf)) -> 2\n')
+        )
+        message = str(error)
+        assert "Constructor argument 3 type mismatch" in message
+        assert "expected Tree[String], got Tree[Int]" in message
+
+    def test_wrong_element_type_for_annotation_is_rejected(self):
+        error = expect_type_error(
+            self._tree(
+                tail=(
+                    "func build() -> Int\n"
+                    "    example () -> 1\n"
+                    '    let t: Tree[Int] = Node(Leaf, "x", Leaf)\n'
+                    "    return size(t)\n"
+                    "end func\n"
+                )
+            )
+        )
+        assert "declared type Tree[Int]" in str(error)
+
+    def test_placeholders_do_not_leak_into_the_constructed_type(self):
+        """``T`` bound to ``Leaf``'s placeholder and then to Int reports Int."""
+        error = expect_type_error(
+            self._tree(
+                tail=(
+                    "func build() -> Int\n"
+                    "    example () -> 1\n"
+                    "    let t: Tree[Bool] = Node(Leaf, 1, Leaf)\n"
+                    "    return 1\n"
+                    "end func\n"
+                )
+            )
+        )
+        message = str(error)
+        assert "Tree[Int]" in message
+        assert "__fresh" not in message
+        assert "__ctor_arg" not in message
+
+
 class TestNeverType:
     """panic(...) has type Never (bottom), assignable to any type."""
 

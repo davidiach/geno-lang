@@ -4446,3 +4446,69 @@ class TestBackendParityProperties:
             py_out=py_out,
             js_out=js_out,
         )
+
+
+_PANICS_EXAMPLE_PROGRAM = """
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func
+
+func checked_root(n: Int) -> Int
+    requires n >= 0
+    example 9 -> 3
+    example -4 panics "precondition"
+    var root = 0
+    while (root + 1) * (root + 1) <= n do
+        root = root + 1
+    end while
+    return root
+end func
+
+func usage() -> String
+    example () panics "not implemented"
+    panic("not implemented")
+end func
+
+func panics(n: Int) -> Int
+    example 1 -> 2
+    return n * 2
+end func
+
+func main() -> Unit
+    print(safe_div(9, 2))
+    print(checked_root(17))
+    print(panics(21))
+    return ()
+end func
+"""
+
+
+class TestPanicsExampleParity:
+    """A program with panics examples (proposal 0017) runs `main` identically.
+
+    The interpreter checks the examples before `main`; compiled Python and
+    JavaScript never evaluate examples, so the observable contract is the same
+    output on all three.
+    """
+
+    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+    def test_same_output_on_every_backend(self) -> None:
+        _assert_expected_backend_outputs(
+            label="panics examples",
+            context="",
+            expected="4\n4\n42\n",
+            interp_out=_interpreter_output(_PANICS_EXAMPLE_PROGRAM),
+            py_out=_compiled_python_output(_PANICS_EXAMPLE_PROGRAM),
+            js_out=_compiled_js_output(_PANICS_EXAMPLE_PROGRAM),
+        )
+
+    def test_the_interpreter_checks_them(self) -> None:
+        failing = _PANICS_EXAMPLE_PROGRAM.replace(
+            'example 1, 0 panics "division"', "example 1, 1 panics"
+        )
+        result = run(failing, config=RunConfig(capabilities={"print"}))
+
+        assert not result.ok
+        assert "expected a panic, but it returned 1" in result.diagnostics[0].message

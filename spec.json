@@ -7,6 +7,16 @@
   "status": "normative-pre-1.0",
   "human_spec": "docs/spec/v0.6.md",
   "compatibility_policy": "docs/operations/compatibility-policy.md",
+  "development_line": {
+    "series": "0.7",
+    "status": "draft",
+    "human_spec": "docs/spec/v0.7.md",
+    "conformance": "conformance/v0.7/manifest.toml",
+    "additions": [
+      "Panic examples (proposal 0017): `example <inputs> panics` and `example <inputs> panics \"message\"` state that the call must panic; `example () panics` for a zero-argument function. A resource limit or a host refusal does not satisfy one. `panics` stays an identifier.",
+      "E330 (proposal 0017): an example whose expected value is written as a panic (`-> panics`, `-> panics \"m\"`, `-> panic`, `-> panic(\"m\")`) is an error with a fix that writes the `panics` form; `example panics` and `panics \"\"` are E201 and E202 with fixes. `-> panic(...)`, which 0.6 accepted although such an example could never pass, is a recorded 0.7 breaking change."
+    ]
+  },
 
   "keywords": [
     "and", "assert", "async", "await", "break", "catch", "continue",
@@ -100,7 +110,7 @@
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
       "E204", "E205", "E300", "E301", "E302", "E303", "E304", "E305", "E306",
-      "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E400", "E401",
+      "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E330", "E400", "E401",
       "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409",
       "E410", "E411", "E412", "E413", "E414", "E499", "E500", "E501", "E502",
       "E503", "E504", "E505", "W300"

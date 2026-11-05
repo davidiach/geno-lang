@@ -172,11 +172,25 @@ func factorial(n: Int) -> Int
     ensures result >= 1
     example 5 -> 120
     example 0 -> 1
+    example -1 panics
 
     if n <= 1 then return 1 end if
     return n * factorial(n - 1)
 end func
 ```
+
+`requires` states the function's domain: a call outside it fails before the
+body runs. `ensures` states what every result satisfies, and `result` names
+the returned value. Both are checked on every call, including the examples'.
+
+`example -1 panics` states that a call ends in a panic; it is new in the 0.7
+development line ([spec v0.7](../spec/v0.7.md), section 5.3.1). There is no
+arrow, because a panic is not a value: `example -1 -> panic("...")` is
+rejected (E330) with a fix that writes the `panics` form. A message after
+`panics` must be part of the panic's message, compared ignoring case:
+`example 1, 0 panics "division"`. A zero-argument function writes
+`example () panics`. Running out of a resource limit, such as an infinite loop
+hitting the step limit, is not a panic and fails the example.
 
 ### Generic Functions
 
@@ -466,6 +480,7 @@ panics when `i` is out of range.
 ```geno
 func half(n: Int) -> Int
     example 4 -> 2
+    example 3 panics "even number"
     if n % 2 != 0 then
         panic("half expects an even number")
     end if
@@ -477,6 +492,11 @@ end func
 zero, an index out of range, a failed `requires`). Geno code cannot catch a
 panic. Use `r.unwrap()` or `r.expect("why")` when an `Err` can only mean a bug.
 Geno 0.6 removed `throw`, `try` and `catch`.
+
+A panics example (`example 3 panics "even number"`, see
+[Contracts](#contracts)) documents and checks the panic. Match the text of the
+function's own `panic` message: runtime error messages differ between the
+interpreter and the compiled backends, and are not a stable contract.
 
 ### Async/Await
 

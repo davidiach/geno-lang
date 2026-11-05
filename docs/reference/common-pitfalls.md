@@ -250,3 +250,44 @@ binding is a `var`, in the same block or an enclosing one. The warning describes
 which case applies. It also checks lambdas in default parameter values. The
 program still passes; use assignment to update a `var` without redeclaring it,
 or rename the variable if you meant to have two.
+
+## 12. Expecting a Panic After an Arrow
+
+```
+// Error [E330]: An example that expects a panic is written without an arrow:
+// example 1, 0 panics "division"
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 -> panic("division")
+    return a / b
+end func
+```
+
+```
+// Fix: write `panics` after the inputs, with no arrow
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func
+```
+
+A panic is not a value, so an example cannot expect one after `->`. The panics
+example form is new in the 0.7 development line
+([spec v0.7](../spec/v0.7.md), section 5.3.1). Geno 0.6 accepted
+`-> panic("division")`, although the example could never pass: its expected
+value panicked before the call was made. `-> panics`, `-> panics "m"`,
+`-> panic` and `-> panic("m")` are all E330, and `geno check --fix` rewrites
+each to the `panics` form. A zero-argument function writes
+`example () panics`; `example panics` is E201, with a fix that adds the `()`.
+
+The text after `panics` is optional. When given, it must appear in the panic's
+message, ignoring case. Prefer the text of the function's own `panic` call, or
+leave it out: runtime error messages, such as a failed `requires`, differ
+between backends and may change between releases. An empty message
+(`panics ""`) matches everything and is rejected (E202).
+
+A panics example fails when the call returns, panics with another message, or
+runs out of a resource limit (steps, time, recursion depth, memory, collection
+or integer size, output). A limit is not a panic, so `example 0 panics` cannot
+hide an infinite loop.

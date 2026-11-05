@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This section opens the 0.7 development line. Nothing in it is released: the
+package version stays 0.6.0, and the Draft
+[`docs/spec/v0.7.md`](docs/spec/v0.7.md) specifies the additions.
+
+### Added
+
+- Panic examples, from Draft
+  [proposal 0017](docs/proposals/0017-panic-examples-and-property-checks.md):
+  `example 1, 0 panics "division"` states that a call must panic, optionally
+  with a substring of the panic's message (compared ignoring case), and
+  `example () panics` covers a zero-argument function. `panics` is a
+  contextual word, so it stays a legal name everywhere else. A panics example
+  passes on `panic(...)` or any runtime error, including a failed `requires`
+  or `ensures`; exhausting a resource limit (steps, time, recursion, memory,
+  collection size, integer size, output) or a host refusal (E412, E413, E500)
+  does not satisfy one and is reported by name. `geno run`, `geno test`, the
+  harness runners, the embedding API's `check_examples` and the hosted server
+  all check them; compiled Python documents them in docstrings and the
+  documentation generator renders them.
+- E330 (`TYPE_EXAMPLE_PANIC_FORM`): an example whose expected value is written
+  as a panic (`-> panics`, `-> panics "m"`, `-> panic`, `-> panic("m")`) is an
+  error with a machine-applicable fix that writes the `panics` form, which
+  `geno check --fix`, `geno.fix()` and the language server's quick fix apply.
+  `-> panics` stays legal when the program defines its own `panics`, and so
+  do `-> panic(...)` forms that call the program's own `panic`. A zero-argument
+  `example panics` is E201 with a fix that adds `()`, and an empty message,
+  `panics ""`, is E202 with a fix that deletes it.
+- `docs/spec/v0.7.md`, the Draft contract of the 0.7 development line, forked
+  from v0.6, and `conformance/v0.7`, a development corpus marked
+  `status = "development"` that `scripts/run_conformance.py --all-retained`
+  runs after the retained v0.5 and v0.6 corpora. `spec.json` records the draft
+  in a new `development_line` object, which `scripts/validate_spec.py` checks.
+
+### Changed (breaking)
+
+- An example's expected value can no longer be a call of the builtin `panic`
+  (E330). 0.6 accepted `example 1, 0 -> panic("division")`, because `panic`
+  returns `Never`, although the example could never pass: its expected value
+  panics before the call is made. Such a program still compiled and ran with
+  `geno compile`, `geno build` and `geno run --no-check-examples`; it no longer
+  checks. `geno check --fix` migrates it. Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-an-examples-expected-value-cannot-be-a-panic-call).
+
+  ```geno
+  // before (0.6)
+  example 1, 0 -> panic("division")
+  // after (0.7 draft)
+  example 1, 0 panics "division"
+  ```
+
+  A message that is not a string literal (`-> panic(reason)`) has no automatic
+  fix: write the text literally, or drop it (`example 1, 0 panics`).
+
+### Changed
+
+- Runtime errors raised where the interpreter and the builtins enforce a
+  `SandboxConfig` limit (`max_collection_size`, `max_integer_bits`,
+  `max_output_length`) are now `geno.values.RuntimeLimitError`, a subclass of
+  `GenoRuntimeError`, so a limit is told from a panic by type. Their messages
+  and error codes are unchanged.
+
 ## [0.6.0] - 2026-10-25
 
 ### Changed

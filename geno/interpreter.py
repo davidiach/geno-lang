@@ -30,6 +30,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
+    ExampleClause,
     Expression,
     ExpressionStatement,
     FieldAccess,
@@ -94,6 +95,7 @@ from .diagnostics import ErrorCode
 from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
 from .float_promotion import float_shape
 from .harness import example_call_args, example_numbers_match
+from .panic_outcome import evaluate_panics_call
 from .sandbox import (
     RecursionLimitError,
     SandboxConfig,
@@ -123,6 +125,7 @@ from .values import (
     PropagateException,
     ReturnException,
     RuntimeError,
+    RuntimeLimitError,
     SetValue,
     VecValue,
 )
@@ -382,20 +385,19 @@ def _explain_rejection_example(
     evaluated to false" reads as a broken example rather than as the design
     conflict it is, which costs a repair loop to work out.
 
-    The replacement keeps the "Precondition failed for X:" prefix the
-    contract checks raise with: ``geno test`` classifies a violation as a
-    ``requires`` failure from that prefix, so dropping it would trade the
-    explanation for a report that no longer says which clause was violated.
+    The violation is recognized by its structured fields (``clause``,
+    ``reason``, ``call_depth``), never by its message (proposal 0017). The
+    replacement keeps the "Precondition failed for X:" prefix the contract
+    checks raise with, so the report still reads as a precondition failure;
+    the caller re-raises it with ``violation.with_message`` so the fields,
+    which ``geno test`` classifies by, carry over.
 
     Returns the replacement message, or ``None`` to leave *violation*
     untouched — this only claims the case it can actually explain.
     """
-    expected_message = (
-        f"Precondition failed for {name}: requires clause evaluated to false"
-    )
-    if violation.message != expected_message:
-        # A different precondition failure — a nested call's, or the '?'
-        # propagation variant — is not this conflict.
+    if violation.clause != "requires" or violation.reason != "false":
+        # A postcondition failure, or the '?' propagation variant of a
+        # precondition, is not this conflict.
         return None
     if violation.call_depth != 1:
         # Depth 1 is the call this example made. Deeper means the body ran and
@@ -1280,7 +1282,10 @@ class Interpreter:
                 raise RuntimeError("flat_map: function must return a list")
             expected = len(result) + len(mapped)
             if expected > limit:
-                raise RuntimeError(f"List size exceeds limit ({expected} > {limit})")
+                raise RuntimeLimitError(
+                    f"List size exceeds limit ({expected} > {limit})",
+                    limit="collection size",
+                )
             result.extend(mapped)
         return result
 
@@ -1295,8 +1300,9 @@ class Interpreter:
             if isinstance(acc, (str, list)):
                 if len(acc) > limit:
                     kind = "String" if isinstance(acc, str) else "List"
-                    raise RuntimeError(
-                        f"{kind} size exceeds limit ({len(acc)} > {limit})"
+                    raise RuntimeLimitError(
+                        f"{kind} size exceeds limit ({len(acc)} > {limit})",
+                        limit="collection size",
                     )
         return acc
 
@@ -1462,8 +1468,9 @@ class Interpreter:
         # Check output limit
         self._output_length += len(output)
         if self._output_length > self.sandbox_config.max_output_length:
-            raise RuntimeError(
-                f"Output limit exceeded ({self.sandbox_config.max_output_length} characters)"
+            raise RuntimeLimitError(
+                f"Output limit exceeded ({self.sandbox_config.max_output_length} characters)",
+                limit="output",
             )
 
         self.output_buffer.append(output)
@@ -1809,6 +1816,32 @@ class Interpreter:
         finally:
             self._deadline = previous_deadline
 
+    @contextmanager
+    def step_allowance(self, steps: int) -> Generator[None, None, None]:
+        """Run with a budget of *steps* interpreter steps of its own.
+
+        The step counter starts at 0 and both ``max_steps`` and the cached
+        ``_step_limit`` become *steps*, so a step-limit error reports this
+        allowance ("Step limit exceeded (200000 steps)"), not an absolute
+        count. On exit the previous limits come back and the counter becomes
+        the previous count plus the steps used, so ``self.steps`` read before
+        and after gives the steps the block used. Property checks give every
+        generated call one (proposal 0017).
+        """
+        saved_steps = self.steps
+        saved_max_steps = self.max_steps
+        saved_step_limit = self._step_limit
+        self.steps = 0
+        self.max_steps = steps
+        self._step_limit = steps
+        try:
+            yield
+        finally:
+            used = self.steps
+            self.steps = saved_steps + used
+            self.max_steps = saved_max_steps
+            self._step_limit = saved_step_limit
+
     def _check_timeout(self, location: SourceLocation | None = None) -> None:
         """Raise when cooperative execution exceeds the configured deadline."""
         if self._deadline is None:
@@ -1855,29 +1888,30 @@ class Interpreter:
                         func.env if isinstance(func, Closure) else self.global_env
                     )
                     input_val = self.eval_expr(example.input_expr, example_env)
+                    call_args = example_call_args(
+                        input_val,
+                        param_count=len(func_def.params),
+                        required_count=sum(
+                            1
+                            for param in func_def.params
+                            if param.default_value is None
+                        ),
+                    )
+                    if example.output_expr is None:
+                        self._verify_panics_example(name, func, call_args, example)
+                        continue
                     expected = self.eval_expr(example.output_expr, example_env)
 
                     # Call function with input
                     try:
-                        actual = self._call_function(
-                            func,
-                            example_call_args(
-                                input_val,
-                                param_count=len(func_def.params),
-                                required_count=sum(
-                                    1
-                                    for param in func_def.params
-                                    if param.default_value is None
-                                ),
-                            ),
-                        )
+                        actual = self._call_function(func, call_args)
                     except ContractViolationError as violation:
                         explained = _explain_rejection_example(
                             name, expected, violation
                         )
                         if explained is None:
                             raise
-                        raise ContractViolationError(
+                        raise violation.with_message(
                             explained, example.location
                         ) from None
 
@@ -1897,6 +1931,32 @@ class Interpreter:
                         "Unexpected return in example expression",
                         example.location,
                     )
+
+    def _verify_panics_example(
+        self,
+        name: str,
+        func: Any,
+        call_args: list[Any],
+        example: ExampleClause,
+    ) -> None:
+        """Check ``example <inputs> panics "m"``: the call must panic.
+
+        A limit or a host refusal is not a panic: it propagates unchanged, so
+        ``geno run`` still reports it with its own code (E501-E503, E499,
+        E412). A call that returns, or panics with another message, is E409.
+        """
+        reason = evaluate_panics_call(
+            lambda: self._call_function(func, call_args),
+            example.panic_message,
+            render=self._format_value,
+            reraise_unsatisfying=True,
+        )
+        if reason is not None:
+            raise RuntimeError(
+                f"Example verification failed for {name}: {reason}",
+                example.location,
+                ErrorCode.RUNTIME_EXAMPLE_FAILED,
+            )
 
     def _values_equal(
         self,
@@ -2149,9 +2209,10 @@ class Interpreter:
                 part = self._builtin_stringify_value(value)
             size += len(part)
             if size > limit:
-                raise RuntimeError(
+                raise RuntimeLimitError(
                     f"String size exceeds limit ({size} > {limit})",
                     expr.location,
+                    limit="collection size",
                 )
             if part:
                 parts.append(part)
@@ -2261,8 +2322,15 @@ class Interpreter:
                 expr.location,
             )
         except OverflowError as e:
-            message = "Exponentiation result too large" if operator == "**" else str(e)
-            raise RuntimeError(message, expr.location)
+            if operator == "**":
+                # A Float power outside the host's range: JavaScript gives
+                # Infinity here, so it is a limit of the host, not a panic.
+                raise RuntimeLimitError(
+                    "Exponentiation result too large",
+                    expr.location,
+                    limit="numeric range",
+                )
+            raise RuntimeError(str(e), expr.location)
         except (TypeError, ValueError) as e:
             raise RuntimeError(str(e), expr.location)
 
@@ -2274,9 +2342,10 @@ class Interpreter:
                 expr.location,
             )
         if isinstance(result, int) and result.bit_length() > max_bits:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"Integer exceeds maximum size ({result.bit_length()} bits)",
                 expr.location,
+                limit="integer size",
             )
 
         return result
@@ -2616,18 +2685,20 @@ class Interpreter:
         """Raise when a known collection size exceeds the sandbox limit."""
         limit = self.sandbox_config.max_collection_size
         if size > limit:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({size} > {limit})",
                 location,
+                limit="collection size",
             )
 
     def _check_integer_bits(self, value: int, location: SourceLocation | None) -> None:
         """Raise when an integer value exceeds the sandbox bit-length limit."""
         limit = self.sandbox_config.max_integer_bits
         if value.bit_length() > limit:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"Integer exceeds maximum size ({value.bit_length()} bits)",
                 location,
+                limit="integer size",
             )
 
     def _call_function(
@@ -2808,7 +2879,7 @@ class Interpreter:
     def _check_requires(self, func: Closure, env: Environment) -> None:
         """Check all requires (precondition) clauses."""
         assert func.specs is not None
-        for req in func.specs.requires:
+        for index, req in enumerate(func.specs.requires):
             try:
                 condition = self.eval_expr(req.condition, env)
             except PropagateException:
@@ -2816,6 +2887,10 @@ class Interpreter:
                     f"Precondition failed for {func.name or 'function'}: "
                     f"requires clause cannot use '?' to propagate None/Err",
                     req.condition.location,
+                    call_depth=len(self._call_stack),
+                    clause="requires",
+                    reason="propagate",
+                    clause_index=index,
                 ) from None
             if not condition:
                 raise ContractViolationError(
@@ -2823,6 +2898,9 @@ class Interpreter:
                     f"requires clause evaluated to false",
                     req.condition.location,
                     call_depth=len(self._call_stack),
+                    clause="requires",
+                    reason="false",
+                    clause_index=index,
                 )
 
     def _check_ensures(self, func: Closure, env: Environment, result: Any) -> None:
@@ -2832,7 +2910,7 @@ class Interpreter:
         ensures_env = env.child()
         ensures_env.bind("result", result)
 
-        for ens in func.specs.ensures:
+        for index, ens in enumerate(func.specs.ensures):
             try:
                 condition = self.eval_expr(ens.condition, ensures_env)
             except PropagateException:
@@ -2840,12 +2918,23 @@ class Interpreter:
                     f"Postcondition failed for {func.name or 'function'}: "
                     f"ensures clause cannot use '?' to propagate None/Err",
                     ens.condition.location,
+                    call_depth=len(self._call_stack),
+                    clause="ensures",
+                    reason="propagate",
+                    clause_index=index,
+                    result_display=self._format_value(result),
                 ) from None
             if not condition:
+                shown = self._format_value(result)
                 raise ContractViolationError(
                     f"Postcondition failed for {func.name or 'function'}: "
-                    f"ensures clause evaluated to false (result was {self._format_value(result)})",
+                    f"ensures clause evaluated to false (result was {shown})",
                     ens.condition.location,
+                    call_depth=len(self._call_stack),
+                    clause="ensures",
+                    reason="false",
+                    clause_index=index,
+                    result_display=shown,
                 )
 
     def _eval_index_access(self, expr: IndexAccess, env: Environment) -> Any:
@@ -3625,9 +3714,10 @@ def _binop_add(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
             kind = "String" if isinstance(a, str) else "List"
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,
+                limit="collection size",
             )
     return a + b
 
@@ -3643,18 +3733,20 @@ def _binop_mul(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
             kind = "String" if isinstance(a, str) else "List"
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,
+                limit="collection size",
             )
     elif isinstance(b, (str, list)) and isinstance(a, int):
         expected = len(b) * max(a, 0)
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
             kind = "String" if isinstance(b, str) else "List"
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,
+                limit="collection size",
             )
     return a * b
 
@@ -3702,9 +3794,10 @@ def _binop_pow(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
             # Estimate result bits: roughly |a|.bit_length() * b
             est_bits = max(a.bit_length(), 1) * b
             if est_bits > interp.sandbox_config.max_integer_bits:
-                raise RuntimeError(
+                raise RuntimeLimitError(
                     f"Exponentiation result too large (estimated {est_bits} bits)",
                     expr.location,
+                    limit="integer size",
                 )
     return a**b
 
@@ -3725,9 +3818,10 @@ def _check_shift_amount(
         if b < 0:
             raise RuntimeError("Negative shift count", expr.location)
         if b > interp.sandbox_config.max_integer_bits:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{direction} shift amount too large ({b} bits)",
                 expr.location,
+                limit="integer size",
             )
 
 

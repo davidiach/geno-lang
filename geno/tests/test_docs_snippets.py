@@ -122,3 +122,55 @@ def test_tour_list_snippet_typechecks_and_runs():
     program = Parser(Lexer(code, source).tokenize()).parse_program()
     TypeChecker().check_program(program)
     interpret(code, source, check_examples=True)
+
+
+def _section(path: str, heading: str) -> str:
+    text = (ROOT / path).read_text(encoding="utf-8")
+    start = text.index(f"{heading}\n")
+    following = re.search(r"^#{2,3} ", text[start + len(heading) :], re.M)
+    end = start + len(heading) + following.start() if following else len(text)
+    return text[start:end]
+
+
+@pytest.mark.parametrize("heading", ["### Contracts", "### Panics"])
+def test_tour_panics_examples_pass(heading):
+    """The tour's panics examples (0.7 draft, proposal 0017) hold when run."""
+    path = "docs/guide/language-tour.md"
+    code = _geno_snippet_after_heading(path, heading, 1)
+    assert " panics" in code
+    source = f"{path}#{heading}"
+    interpret(f"{code}\n\nfunc main() -> Unit\nend func\n", source, check_examples=True)
+
+
+def test_llm_prompting_panics_section_shows_the_right_and_wrong_forms():
+    import geno
+
+    section = _section(
+        "docs/llm-prompting.md",
+        "### 20. Examples that expect a panic, and `requires` as the domain",
+    )
+    wrong, *right = re.findall(r"```\n(.*?)```", section, re.S)
+    main = "\nfunc main() -> Unit\nend func\n"
+
+    result = geno.check(wrong + main)
+    assert [d.code.value for d in result.diagnostics] == ["E330", "E330"]
+    fixed = geno.fix(wrong + main)
+    assert fixed.check.ok, [d.message for d in fixed.check.diagnostics]
+
+    assert len(right) == 2
+    for code in right:
+        assert " panics" in code
+        result = geno.run(code + main)
+        assert result.ok, [d.message for d in result.diagnostics]
+
+
+def test_common_pitfalls_panics_fix_is_the_one_geno_applies():
+    import geno
+
+    section = _section(
+        "docs/reference/common-pitfalls.md", "## 12. Expecting a Panic After an Arrow"
+    )
+    wrong, right = re.findall(r"```\n(.*?)```", section, re.S)[:2]
+    # Both start with comment lines: two before the program, one before the fix.
+    assert geno.fix(wrong).source.split("\n")[2:] == right.split("\n")[1:]
+    assert geno.run(right + "\nfunc main() -> Unit\nend func\n").ok

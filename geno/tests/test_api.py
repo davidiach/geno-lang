@@ -277,6 +277,47 @@ class TestRunErrors:
         assert result.diagnostics
         assert "immutable variable: b" in result.diagnostics[0].message
 
+    def test_check_examples_runs_panics_examples(self):
+        """`example ... panics` (proposal 0017) through the embedding API."""
+        source = """
+        func safe_div(a: Int, b: Int) -> Int
+            example 6, 3 -> 2
+            example 1, 0 panics "division"
+            return a / b
+        end func
+
+        func main() -> Int
+            return safe_div(6, 3)
+        end func
+        """
+        assert run(source).value == 2
+
+        failing = source.replace('panics "division"', 'panics "overflow"')
+        result = run(failing)
+        assert result.ok is False
+        (diagnostic,) = result.diagnostics
+        assert diagnostic.code is ErrorCode.RUNTIME_EXAMPLE_FAILED
+        assert 'expected a panic containing "overflow"' in diagnostic.message
+        assert run(failing, RunConfig(check_examples=False)).value == 2
+
+    def test_panics_example_limits_keep_their_codes(self):
+        source = """
+        func spin(n: Int) -> Int
+            example 0 panics
+            var x = n
+            while true do
+                x = x + 1
+            end while
+            return x
+        end func
+
+        func main() -> Int
+            return 0
+        end func
+        """
+        result = run(source, RunConfig(max_steps=200))
+        assert [d.code for d in result.diagnostics] == [ErrorCode.SANDBOX_STEP_LIMIT]
+
     def test_runtime_error(self):
         source = """
         func main() -> Int

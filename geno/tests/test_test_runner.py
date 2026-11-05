@@ -530,6 +530,48 @@ end func
         assert len(violations) == 1
         assert violations[0].kind == "example"
 
+    def test_user_panic_with_the_contract_prefix_stays_example(self, tmp_path):
+        """The kind comes from ``ContractViolationError.clause``, not the
+        message (proposal 0017), so even a panic that starts with a contract
+        prefix is an ordinary example failure."""
+        f = tmp_path / "prefixed.geno"
+        f.write_text(
+            """
+func prefixed(x: Int) -> Int
+    example 1 -> 1
+    panic("Precondition failed for prefixed: requires clause evaluated to false")
+end func
+
+func main() -> Int
+    return 0
+end func
+"""
+        )
+        result = run_test_suite([f])
+        violations = _first_harness_result(result).violations
+        assert [v.kind for v in violations] == ["example"]
+
+    def test_contract_failures_are_classified_by_clause(self, tmp_path):
+        f = tmp_path / "contracts.geno"
+        f.write_text(
+            """
+func pos(x: Int) -> Int
+    requires x > 0
+    example 0 -> 0
+    return x
+end func
+
+func neg(x: Int) -> Int
+    ensures result < 0
+    example 1 -> 1
+    return x
+end func
+"""
+        )
+        result = run_test_suite([f])
+        kinds = {v.function: v.kind for v in _first_harness_result(result).violations}
+        assert kinds == {"pos": "requires", "neg": "ensures"}
+
 
 class TestProjectTestSuite:
     """Tests for run_project_test_suite (multi-module via ProjectGraph)."""
@@ -832,9 +874,10 @@ class TestRejectionExampleExplanation:
         assert "requires clause evaluated to false" not in message
 
     def test_violation_is_still_classified_as_a_requires_failure(self, tmp_path):
-        """The explanation keeps the 'Precondition failed for X:' prefix that
-        ``_classify_runtime_failure`` reads, so the report still separates a
-        contract violation from a plain wrong-answer example."""
+        """The explanation is re-raised with the violation's structured fields
+        (``with_message``), which ``_classify_runtime_failure`` reads, so the
+        report still separates a contract violation from a plain wrong-answer
+        example."""
         f = tmp_path / "roman.geno"
         f.write_text(self._ROMAN)
 
@@ -857,3 +900,141 @@ class TestRejectionExampleExplanation:
         violation = harness_result.violations[0]
         assert violation.kind == "requires"
         assert "requires clause evaluated to false" in violation.message
+
+
+class TestPropertyChecks:
+    """``geno test --properties`` in the runner (proposal 0017).
+
+    Property results ride alongside the example results: they never change
+    the example counts, a failed property fails the suite, and the JSON
+    payload of a run without them is unchanged.
+    """
+
+    _ABS_BUG = (
+        "func abs_val(n: Int) -> Int\n"
+        "    ensures result >= 0\n"
+        "    example 3 -> 3\n"
+        "    if n >= 0 then\n"
+        "        return n\n"
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+    )
+
+    def test_to_dict_without_properties_is_unchanged(self, tmp_path):
+        f = tmp_path / "abs.geno"
+        f.write_text(self._ABS_BUG)
+
+        result = run_test_suite([f])
+
+        assert result.property_config is None
+        assert result.file_results[0].properties is None
+        assert result.property_report() is None
+        data = result.to_dict()
+        assert list(data) == [
+            "files",
+            "total",
+            "passed",
+            "failed",
+            "errors",
+            "untested",
+            "success",
+        ]
+        assert list(data["files"][0]) == [
+            "path",
+            "total",
+            "passed",
+            "failed",
+            "untested",
+            "violations",
+            "elapsed_ms",
+        ]
+        assert data["success"] is True
+
+    def test_a_property_failure_fails_the_suite_but_not_the_counts(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        f = tmp_path / "abs.geno"
+        f.write_text(self._ABS_BUG)
+
+        plain = run_test_suite([f])
+        result = run_test_suite([f], properties=PropertyConfig())
+
+        assert (result.total, result.passed, result.failed) == (1, 1, 0)
+        assert result.property_failures == 1
+        assert result.success is False
+        # The examples ran exactly as they do without property checks.
+        assert result.file_results[0].harness_result == (
+            plain.file_results[0].harness_result
+        )
+        data = result.to_dict()
+        assert data["success"] is False
+        assert data["properties"]["failed"] == 1
+        (entry,) = data["properties"]["functions"]
+        assert entry["path"] == str(f)
+        assert entry["counterexample"]["arguments"] == "-1"
+
+    def test_the_suite_filter_selects_the_properties(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        f = tmp_path / "two.geno"
+        f.write_text(
+            self._ABS_BUG + "\nfunc double(n: Int) -> Int\n"
+            "    example 2 -> 4\n"
+            "    return n * 2\n"
+            "end func\n"
+        )
+
+        result = run_test_suite(
+            [f],
+            filter_pattern="double",
+            properties=PropertyConfig(filter_pattern="abs_val"),
+        )
+
+        assert result.property_config is not None
+        assert result.property_config.filter_pattern == "double"
+        assert [r.function for r in result.property_results] == ["double"]
+        assert result.success is True
+
+    def test_project_mode_checks_only_the_projects_own_modules(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App"]\n\n'
+            '[dependencies.alpha]\ngit = "https://example.com/alpha.git"\n'
+        )
+        alpha = tmp_path / "geno_modules" / "alpha" / "Alpha.geno"
+        alpha.parent.mkdir(parents=True)
+        # A dependency's bug is not the project's to fix: its examples run,
+        # its properties are not checked.
+        alpha.write_text(self._ABS_BUG)
+        (tmp_path / "App.geno").write_text(
+            "import Alpha\n"
+            "import List\n"
+            "\n"
+            "func uses(n: Int) -> Int\n"
+            "    example 1 -> 1\n"
+            "    return n\n"
+            "end func\n"
+        )
+
+        result = run_project_test_suite(tmp_path, properties=PropertyConfig())
+
+        tested = {Path(fr.path).name for fr in result.file_results}
+        assert {"Alpha.geno", "List.geno", "App.geno"} <= tested
+        assert [r.function for r in result.property_results] == ["uses"]
+        assert result.success is True
+
+    def test_a_project_error_still_reports_the_property_settings(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        (tmp_path / "geno.toml").write_text('entrypoint = "App"\nfiles = ["App"]\n')
+        (tmp_path / "App.geno").write_text(
+            "func f(n: Int) -> Int\n    return n\nend func\n"
+        )
+
+        result = run_project_test_suite(tmp_path, properties=PropertyConfig(seed=5))
+
+        assert result.errors == 1
+        assert result.to_dict()["properties"]["seed"] == 5
+        assert result.property_results == []

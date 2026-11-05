@@ -1121,6 +1121,34 @@ class TestPostRun:
         assert status == 200, body
         assert json.loads(body)["ok"] is True
 
+    def test_check_examples_runs_panics_examples(self, client):
+        """`check_examples` covers `example ... panics` (proposal 0017)."""
+        _skip_if_worker_processes_unavailable()
+        passing = (
+            "func safe_div(a: Int, b: Int) -> Int\n"
+            '    example 1, 0 panics "division"\n'
+            "    return a / b\nend func\n\n"
+            "func main() -> Int\n    return safe_div(6, 3)\nend func\n"
+        )
+
+        status, body = client.post("/run", {"source": passing, "check_examples": True})
+        data = json.loads(body)
+
+        assert status == 200, body
+        assert data["ok"] is True
+        assert data["value"] == 2
+
+        failing = passing.replace(
+            'example 1, 0 panics "division"', "example 1, 1 panics"
+        )
+        status, body = client.post("/run", {"source": failing, "check_examples": True})
+        data = json.loads(body)
+
+        assert data["ok"] is False, body
+        (diagnostic,) = data["diagnostics"]
+        assert diagnostic["code"] == "E409"
+        assert "expected a panic, but it returned 1" in diagnostic["message"]
+
     def test_syntax_error(self, client):
         _skip_if_worker_processes_unavailable()
 

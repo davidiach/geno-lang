@@ -296,6 +296,26 @@ func double(x: Int) -> Int
         is_valid, _error = validate_prefix(source)
         assert is_valid == True
 
+    @pytest.mark.parametrize(
+        "example",
+        [
+            'example 1, 0 panics "x"',
+            "example 1, 0 panics",
+            "example () panics",
+            'example () panics "not implemented"',
+            "example 1, 0 pan",  # a prefix of the word
+        ],
+    )
+    def test_panics_example_clause(self, example):
+        """Panic examples (0.7 draft): `panics` is an identifier, no keyword."""
+        source = f"func div(a: Int, b: Int) -> Int\n    {example}\n"
+        is_valid, error = validate_prefix(source)
+        assert is_valid, error
+        assert get_unclosed_blocks(source) == ["func"]
+        is_valid, error = validate_prefix(source + "    return a / b\nend func\n")
+        assert is_valid, error
+        assert "panics" not in allowed_next_for_prefix(source).keywords
+
     def test_requires_clause(self):
         """Requires clauses parsed."""
         source = """

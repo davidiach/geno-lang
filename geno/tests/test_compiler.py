@@ -4,6 +4,7 @@ Tests for the Geno Compiler
 """
 
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -1523,6 +1524,30 @@ class TestCompilerSpecs:
         assert "Requires:" in python_code
         assert "Ensures:" in python_code
         assert "Example:" in python_code
+
+    def test_panics_example_docstring(self):
+        """A panics example is documented; a `\"\"\"` message cannot end the docstring."""
+        message = 'say """ twice'
+        source = (
+            "func checked(n: Int) -> Int\n"
+            "    example 1 -> 1\n"
+            '    example 0 panics "say \\"\\"\\" twice"\n'
+            "    example 2 panics\n"
+            "    if n == 0 then\n"
+            '        panic("zero")\n'
+            "    end if\n"
+            "    return n\n"
+            "end func\n\n"
+            "func main() -> Int\n"
+            "    return checked(3)\n"
+            "end func\n"
+        )
+        python_code = compile_to_python(source)
+
+        assert f"Example: 0 panics {json.dumps(message)}" in python_code
+        assert "Example: 2 panics\n" in python_code
+        # The module still parses and runs: the docstring stayed closed.
+        assert compile_and_run(source) == 3
 
     def test_requires_runtime_check(self):
         """Verify requires clauses generate runtime checks."""

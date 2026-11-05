@@ -7,13 +7,14 @@ own example verification, and aggregates results.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Mapping
 
-from .ast_nodes import FunctionDef, TestBlock
+from .ast_nodes import ExampleClause, FunctionDef, TestBlock
 from .diagnostics import format_labeled_error
 from .execution_limits import (
     DEFAULT_TEST_MAX_STEPS,
@@ -30,7 +31,13 @@ from .project_resolution import describe_project_resolution_error
 from .sandbox import SandboxConfig
 
 if TYPE_CHECKING:
+    from .ast_nodes import Program
     from .interpreter import Interpreter
+
+    # Imported only for annotations: ``geno test`` without ``--properties``
+    # never loads the property-check engine (proposal 0017).
+    from .property_check import PropertyConfig, PropertyReport, PropertyResult
+    from .typechecker import TypeChecker
 
 logger = logging.getLogger(__name__)
 
@@ -82,20 +89,21 @@ def _test_error_detail(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _classify_runtime_failure(message: str) -> str:
-    """Map a ``GenoRuntimeError`` message back to the spec kind it violated.
+def _classify_runtime_failure(exc: BaseException) -> str:
+    """Map a failure back to the spec kind it violated.
 
-    The interpreter's ``_check_requires`` / ``_check_ensures`` helpers
-    raise ``RuntimeError`` with stable prefixes.  We recognise those so
-    the test report can show ``requires`` / ``ensures`` violations
-    separately from generic runtime errors — F-0021 in #662, which
-    otherwise labelled every runtime failure as a plain ``example``
-    failure.
+    The interpreter's ``_check_requires`` / ``_check_ensures`` helpers raise
+    ``ContractViolationError`` with a structured ``clause`` field, so the
+    test report can show ``requires`` / ``ensures`` violations separately
+    from generic runtime errors — F-0021 in #662, which otherwise labelled
+    every runtime failure as a plain ``example`` failure. The field, not the
+    message, decides (proposal 0017): a user ``panic`` whose text mentions a
+    precondition stays an ``example`` failure.
     """
-    if message.startswith("Precondition failed"):
-        return "requires"
-    if message.startswith("Postcondition failed"):
-        return "ensures"
+    from .values import ContractViolationError
+
+    if isinstance(exc, ContractViolationError) and exc.clause is not None:
+        return exc.clause
     return "example"
 
 
@@ -187,6 +195,20 @@ def _run_examples(
         for example in harness.examples:
             result.total += 1
             try:
+                if example.output_expr is None:
+                    reason = _panics_example_reason(interp, harness, func, example)
+                    if reason is None:
+                        result.passed += 1
+                    else:
+                        result.failed += 1
+                        result.violations.append(
+                            SpecViolation(
+                                kind="example",
+                                function=harness.name,
+                                message=reason,
+                            )
+                        )
+                    continue
                 with interp._execution_deadline(interp.sandbox_config.timeout):
                     input_val = interp.eval_expr(example.input_expr, interp.global_env)
                     expected = interp.eval_expr(example.output_expr, interp.global_env)
@@ -216,7 +238,7 @@ def _run_examples(
                         )
                         if explained is None:
                             raise
-                        raise ContractViolationError(
+                        raise violation.with_message(
                             explained, example.location
                         ) from None
 
@@ -237,32 +259,106 @@ def _run_examples(
                         )
                     )
             except Exception as e:
-                runtime_message = getattr(e, "message", str(e))
                 result.failed += 1
                 result.violations.append(
                     SpecViolation(
-                        kind=_classify_runtime_failure(runtime_message),
+                        kind=_classify_runtime_failure(e),
                         function=harness.name,
                         message=f"Runtime error: {_test_error_detail(e)}",
                     )
                 )
 
 
+def _panics_example_reason(
+    interp: Interpreter,
+    harness: FunctionHarness,
+    func: object,
+    example: ExampleClause,
+) -> str | None:
+    """Run ``example <inputs> panics "m"``; ``None`` when it passes.
+
+    The inputs are evaluated first, and an error there propagates to the
+    caller's handler: an input that panics is a broken example, not one the
+    function satisfied. Every way the call itself can fail to satisfy the
+    example (it returned, panicked with another message, hit a resource
+    limit, or was refused by the host) comes back as the reason.
+    """
+    from .panic_outcome import evaluate_panics_call
+
+    timeout = interp.sandbox_config.timeout
+    with interp._execution_deadline(timeout):
+        input_val = interp.eval_expr(example.input_expr, interp.global_env)
+    call_args = example_call_args(
+        input_val,
+        param_count=len(harness.param_names),
+        required_count=sum(
+            1 for param in getattr(func, "params", []) if param.default_value is None
+        ),
+    )
+
+    def call() -> object:
+        with interp._execution_deadline(timeout):
+            return interp._call_function(func, call_args)
+
+    return evaluate_panics_call(
+        call, example.panic_message, render=interp._format_value
+    )
+
+
 @dataclass
 class FileTestResult:
-    """Result of testing a single file."""
+    """Result of testing a single file.
+
+    ``properties`` holds the file's property-check results in source order
+    when the suite ran with property checks (``geno test --properties``), and
+    is ``None`` otherwise. ``elapsed_ms`` covers the examples and test blocks
+    only.
+    """
 
     path: str
     harness_result: HarnessResult | None = None
     error: str | None = None
     elapsed_ms: float = 0.0
+    properties: list[PropertyResult] | None = None
 
 
 @dataclass
 class SuiteResult:
-    """Aggregated result across all files."""
+    """Aggregated result across all files.
+
+    ``property_config`` is set when the suite ran property checks. Property
+    results are kept out of ``total``, ``passed`` and ``failed`` (those count
+    examples and test blocks), but a failed property makes ``success`` false.
+    """
 
     file_results: List[FileTestResult] = field(default_factory=list)
+    property_config: PropertyConfig | None = None
+
+    @property
+    def property_results(self) -> list[PropertyResult]:
+        """Every file's property results, in file order then source order."""
+        return [
+            result
+            for fr in self.file_results
+            if fr.properties is not None
+            for result in fr.properties
+        ]
+
+    @property
+    def property_failures(self) -> int:
+        return sum(1 for result in self.property_results if result.status == "failed")
+
+    def property_report(self) -> PropertyReport | None:
+        """The property results with their seed and trial count, if any ran."""
+        if self.property_config is None:
+            return None
+        from .property_check import PropertyReport
+
+        return PropertyReport(
+            seed=self.property_config.seed,
+            trials=self.property_config.trials,
+            results=self.property_results,
+        )
 
     @property
     def total(self) -> int:
@@ -302,9 +398,14 @@ class SuiteResult:
 
     @property
     def success(self) -> bool:
-        return self.failed == 0 and self.errors == 0
+        return self.failed == 0 and self.errors == 0 and self.property_failures == 0
 
     def to_dict(self) -> dict:
+        """The ``geno test --json`` payload.
+
+        The ``properties`` key appears only when the suite ran property
+        checks, so the payload of a plain run is unchanged.
+        """
         files = []
         for fr in self.file_results:
             entry: dict = {"path": fr.path}
@@ -332,7 +433,7 @@ class SuiteResult:
                 ]
             entry["elapsed_ms"] = round(fr.elapsed_ms, 2)
             files.append(entry)
-        return {
+        payload: dict = {
             "files": files,
             "total": self.total,
             "passed": self.passed,
@@ -341,6 +442,10 @@ class SuiteResult:
             "untested": self.untested,
             "success": self.success,
         }
+        report = self.property_report()
+        if report is not None:
+            payload["properties"] = report.to_dict()
+        return payload
 
 
 def discover_files(target: Path) -> List[Path]:
@@ -352,14 +457,65 @@ def discover_files(target: Path) -> List[Path]:
     return sorted(target.rglob("*.geno"))
 
 
+def _suite_property_config(
+    properties: PropertyConfig | None, filter_pattern: str | None
+) -> PropertyConfig | None:
+    """*properties* selecting functions with the suite's own ``--filter``.
+
+    Examples, test blocks and property checks always select by the same
+    pattern, so ``--filter f`` narrows all three alike.
+    """
+    if properties is None:
+        return None
+    return dataclasses.replace(properties, filter_pattern=filter_pattern)
+
+
+def _check_properties(
+    program: Program,
+    checker: TypeChecker,
+    *,
+    module: str,
+    path: str,
+    config: PropertyConfig,
+    sandbox_config: SandboxConfig,
+    modules: Mapping[str, Program] | None,
+    source: str | None,
+) -> list[PropertyResult]:
+    """Property-check one module after its examples and test blocks ran.
+
+    *module* is the logical module name (the project module, or the file's
+    module name outside a project), never a path, so a seed reproduces from
+    any working directory. The checks run in an interpreter of their own, so
+    they never use the step budget or output the examples ran on.
+    """
+    from .property_check import check_module_properties
+
+    return check_module_properties(
+        program,
+        checker,
+        module=module,
+        path=path,
+        config=config,
+        sandbox_config=sandbox_config,
+        modules=modules,
+        source=source,
+    )
+
+
 def run_test_suite(
     files: List[Path],
     filter_pattern: str | None = None,
     target: str | None = None,
     sandbox_config: SandboxConfig | None = None,
+    properties: PropertyConfig | None = None,
 ) -> SuiteResult:
-    """Run tests on a list of files and return aggregated results."""
-    suite = SuiteResult()
+    """Run tests on a list of files and return aggregated results.
+
+    With *properties*, each file's eligible functions are also property
+    checked after its examples and test blocks (``geno test --properties``).
+    """
+    property_config = _suite_property_config(properties, filter_pattern)
+    suite = SuiteResult(property_config=property_config)
     sandbox_config = sandbox_config or default_test_sandbox_config()
 
     for filepath in files:
@@ -368,6 +524,7 @@ def run_test_suite(
             filter_pattern,
             target=target,
             sandbox_config=sandbox_config,
+            properties=property_config,
         )
         suite.file_results.append(result)
 
@@ -379,6 +536,7 @@ def run_project_test_suite(
     filter_pattern: str | None = None,
     target: str | None = None,
     sandbox_config: SandboxConfig | None = None,
+    properties: PropertyConfig | None = None,
 ) -> SuiteResult:
     """Run tests using ProjectGraph.
 
@@ -386,12 +544,18 @@ def run_project_test_suite(
     Each module is tested in its own interpreter with its declared imports,
     so private bindings and identically named helpers retain module scope.
     Examples from ALL modules (not just the entrypoint) are tested.
+
+    With *properties*, each of the project's own modules is also property
+    checked, with that module's checker, after its examples and test blocks.
+    Standard-library and dependency-package modules are not: their examples
+    run, but their properties are not the project's to fix.
     """
     from .dependency_graph import DependencyGraphError
     from .interpreter import Interpreter
     from .project_graph import ProjectGraphError
     from .project_resolution import ProjectResolutionError, resolve_project_context
     from .sandbox import SandboxError
+    from .stdlib_scope import is_stdlib_program
     from .target_profile import TargetProfile, resolve_manifest_targets
     from .target_validation import (
         TargetValidationError,
@@ -401,9 +565,10 @@ def run_project_test_suite(
     from .values import GenoRuntimeError
 
     sandbox_config = sandbox_config or default_test_sandbox_config()
+    property_config = _suite_property_config(properties, filter_pattern)
 
     def _project_error_result(message: str) -> SuiteResult:
-        suite = SuiteResult()
+        suite = SuiteResult(property_config=property_config)
         suite.file_results.append(FileTestResult(path=str(project_path), error=message))
         return suite
 
@@ -434,14 +599,19 @@ def run_project_test_suite(
     )
     check_targets: list[str | None] = list(target_names) if target_names else [None]
 
-    # Type check all modules for each declared target
+    # Type check all modules for each declared target. Property checks read
+    # each module's resolved types from the last target's module checkers.
+    module_checkers: dict[str, TypeChecker] = {}
     try:
         for target_name in check_targets:
             target_profile = (
                 TargetProfile.load(target_name) if target_name is not None else None
             )
             checker = TypeChecker(target_profile=target_profile)
-            checker.check_project_graph(dg)
+            checker.check_project_graph(
+                dg, retain_module_checkers=property_config is not None
+            )
+            module_checkers = checker.module_checkers
             if target_profile is None:
                 # A target-less suite is still run by the default `geno run`,
                 # which lowers through the Python backend. Validate that here so
@@ -481,7 +651,7 @@ def run_project_test_suite(
     # Load all contexts before testing, as before: exhaustion during a test
     # should fail subsequent tests rather than turn module loading into a
     # project error that discards the results already collected.
-    suite = SuiteResult()
+    suite = SuiteResult(property_config=property_config)
     for mod_name, program, interp in all_programs:
         resolved_file = dg.file_map.get(mod_name)
         file_path = str(resolved_file.path) if resolved_file else mod_name
@@ -524,9 +694,30 @@ def run_project_test_suite(
         suite_steps = interp.steps
         suite_output_length = interp._output_length
         mod_elapsed_ms = (time.monotonic() - mod_start) * 1000
+        property_results: list[PropertyResult] | None = None
+        module_checker = module_checkers.get(mod_name)
+        if (
+            property_config is not None
+            and module_checker is not None
+            and not (resolved_file is not None and resolved_file.is_dependency)
+            and not is_stdlib_program(program)
+        ):
+            property_results = _check_properties(
+                program,
+                module_checker,
+                module=mod_name,
+                path=file_path,
+                config=property_config,
+                sandbox_config=sandbox_config,
+                modules=parsed_modules,
+                source=dg.original_sources.get(mod_name),
+            )
         suite.file_results.append(
             FileTestResult(
-                path=file_path, harness_result=result, elapsed_ms=mod_elapsed_ms
+                path=file_path,
+                harness_result=result,
+                elapsed_ms=mod_elapsed_ms,
+                properties=property_results,
             )
         )
 
@@ -538,8 +729,14 @@ def _test_file(
     filter_pattern: str | None = None,
     target: str | None = None,
     sandbox_config: SandboxConfig | None = None,
+    properties: PropertyConfig | None = None,
 ) -> FileTestResult:
-    """Run tests for a single file using the interpreter's example verification."""
+    """Run tests for a single file using the interpreter's example verification.
+
+    With *properties* (whose filter is already the suite's), the file's
+    eligible functions are property checked after its examples and test
+    blocks, including a file that has neither.
+    """
     import time
 
     from .interpreter import Interpreter
@@ -622,32 +819,42 @@ def _test_file(
             if isinstance(defn, FunctionDef) and defn.untested_reason is not None
         ]
 
-        total_examples = sum(len(h.examples) for h in harnesses)
-        if total_examples == 0 and len(test_blocks) == 0:
-            hr = HarnessResult()
-            hr.untested = untested_funcs
-            return FileTestResult(
-                path=str(filepath),
-                harness_result=hr,
-                elapsed_ms=(time.monotonic() - file_start) * 1000,
-            )
-
-        # Load into interpreter (don't auto-verify — we verify per-function)
-        interp = Interpreter(check_examples=False, sandbox_config=sandbox_config)
-        # Match project-mode tests: register definitions without running main().
-        interp.run(program, modules=parsed_modules, execute_main=False)
-
-        # Run examples per function, then test blocks, using the interpreter
         result = HarnessResult()
-        _run_examples_and_tests(interp, harnesses, test_blocks, result)
+        total_examples = sum(len(h.examples) for h in harnesses)
+        # A file with no examples and no test blocks is not loaded at all.
+        if total_examples > 0 or len(test_blocks) > 0:
+            # Load into interpreter (don't auto-verify — we verify per-function)
+            interp = Interpreter(check_examples=False, sandbox_config=sandbox_config)
+            # Match project-mode tests: register definitions without running main().
+            interp.run(program, modules=parsed_modules, execute_main=False)
+
+            # Run examples per function, then test blocks, using the interpreter
+            _run_examples_and_tests(interp, harnesses, test_blocks, result)
 
         # Report @untested functions
         result.untested = untested_funcs
+        elapsed_ms = (time.monotonic() - file_start) * 1000
+
+        property_results: list[PropertyResult] | None = None
+        if properties is not None:
+            # Also for a file with nothing above to run: its functions still
+            # have contracts (or, without any, must not panic).
+            property_results = _check_properties(
+                program,
+                checker,
+                module=context.module_name,
+                path=str(filepath),
+                config=properties,
+                sandbox_config=sandbox_config,
+                modules=parsed_modules,
+                source=source,
+            )
 
         return FileTestResult(
             path=str(filepath),
             harness_result=result,
-            elapsed_ms=(time.monotonic() - file_start) * 1000,
+            elapsed_ms=elapsed_ms,
+            properties=property_results,
         )
 
     except (LexerError, ParseError, ParseErrors) as e:

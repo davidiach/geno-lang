@@ -43,6 +43,9 @@ selfhost parser does not yet implement:
   destructuring is also outside the current selfhost parser subset.
 - Generic functions (`func first_or[T](xs: List[T], fallback: T) -> T`), from
   the 0.6 draft specification.
+- Panic examples (`example 1, 0 panics "division"`, `example () panics`), from
+  the 0.7 draft specification (proposal 0017). The selfhost parser still
+  requires `->` in every example, and no selfhost file uses the form.
 
 These are parser/interpreter gaps, so the keyword and builtin parity checks do
 not detect them. Canonical frontend and backend tests cover the new forms.

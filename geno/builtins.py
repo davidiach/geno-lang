@@ -21,6 +21,7 @@ from .values import (
     ConstructorValue,
     MutableMapValue,
     RuntimeError,
+    RuntimeLimitError,
     SetValue,
     VecValue,
 )
@@ -84,7 +85,9 @@ def _effective_max_collection_size(max_collection_size: int) -> int:
 
 def _check_collection_size(kind: str, size: int, limit: int) -> None:
     if size > limit:
-        raise RuntimeError(f"{kind} size exceeds limit ({size} > {limit})")
+        raise RuntimeLimitError(
+            f"{kind} size exceeds limit ({size} > {limit})", limit="collection size"
+        )
 
 
 def _check_result_string_size(
@@ -93,8 +96,8 @@ def _check_result_string_size(
     limit = _effective_max_collection_size(max_collection_size)
     try:
         _check_collection_size("String", size, limit)
-    except RuntimeError as exc:
-        raise RuntimeError(f"{func_name}: {exc}") from exc
+    except RuntimeLimitError as exc:
+        raise RuntimeLimitError(f"{func_name}: {exc}", limit=exc.limit) from exc
 
 
 def _require_safe_js_int(value: int, context: str) -> int:
@@ -206,7 +209,9 @@ def builtin_concat(
     expected = len(lst1) + len(lst2)
     limit = _effective_max_collection_size(max_collection_size)
     if expected > limit:
-        raise RuntimeError(f"List size exceeds limit ({expected} > {limit})")
+        raise RuntimeLimitError(
+            f"List size exceeds limit ({expected} > {limit})", limit="collection size"
+        )
     return lst1 + lst2
 
 
@@ -381,7 +386,9 @@ def builtin_range(
     size = abs((end - start + step - (1 if step > 0 else -1)) // step)
     limit = _effective_max_collection_size(max_collection_size)
     if size > limit:
-        raise RuntimeError(f"List size exceeds limit ({size} > {limit})")
+        raise RuntimeLimitError(
+            f"List size exceeds limit ({size} > {limit})", limit="collection size"
+        )
     return list(range(start, end, step))
 
 
@@ -741,7 +748,9 @@ def builtin_array_new(
         raise RuntimeError(f"array_new size must be non-negative, got {size}")
     limit = _effective_max_collection_size(max_collection_size)
     if size > limit:
-        raise RuntimeError(f"Array size exceeds limit ({size} > {limit})")
+        raise RuntimeLimitError(
+            f"Array size exceeds limit ({size} > {limit})", limit="collection size"
+        )
     return ArrayValue([copy_value(default) for _ in range(size)])
 
 
@@ -751,7 +760,9 @@ def builtin_array_from_list(
     _require_list("array_from_list", lst)
     limit = _effective_max_collection_size(max_collection_size)
     if len(lst) > limit:
-        raise RuntimeError(f"Array size exceeds limit ({len(lst)} > {limit})")
+        raise RuntimeLimitError(
+            f"Array size exceeds limit ({len(lst)} > {limit})", limit="collection size"
+        )
     return ArrayValue([copy_value(item) for item in lst])
 
 
@@ -977,9 +988,10 @@ class _StringifyWriter:
     def append(self, text: str) -> None:
         next_size = self.size + len(text)
         if next_size > self.limit:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{self.func_name}: String size exceeds limit "
-                f"({next_size} > {self.limit})"
+                f"({next_size} > {self.limit})",
+                limit="collection size",
             )
         self.size = next_size
         self.parts.append(text)
@@ -1294,7 +1306,9 @@ def builtin_set_from_list(
     data = {copy_value(item) for item in lst}
     limit = _effective_max_collection_size(max_collection_size)
     if len(data) > limit:
-        raise RuntimeError(f"Set size exceeds limit ({len(data)} > {limit})")
+        raise RuntimeLimitError(
+            f"Set size exceeds limit ({len(data)} > {limit})", limit="collection size"
+        )
     object.__setattr__(s, "_data", data)
     return s
 
@@ -1353,7 +1367,9 @@ def builtin_set_union(
     data = a._data | b._data
     limit = _effective_max_collection_size(max_collection_size)
     if len(data) > limit:
-        raise RuntimeError(f"Set size exceeds limit ({len(data)} > {limit})")
+        raise RuntimeLimitError(
+            f"Set size exceeds limit ({len(data)} > {limit})", limit="collection size"
+        )
     result = SetValue()
     object.__setattr__(result, "_data", data)
     return result
@@ -2915,9 +2931,10 @@ def builtin_string_repeat(
         raise RuntimeError("string_repeat: count must be non-negative")
     limit = _effective_max_collection_size(max_collection_size)
     if len(text) * count > limit:
-        raise RuntimeError(
+        raise RuntimeLimitError(
             "string_repeat: result would exceed collection size limit "
-            f"({len(text) * count} > {limit})"
+            f"({len(text) * count} > {limit})",
+            limit="collection size",
         )
     return text * count
 

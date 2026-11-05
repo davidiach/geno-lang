@@ -1,0 +1,81 @@
+schema_version = 2
+language_version = "0.7"
+status = "development"
+description = "Geno 0.7 development-line cases (Draft; not frozen)"
+
+# The development corpus of the unreleased 0.7 line, opened by proposal 0017
+# (`docs/proposals/0017-panic-examples-and-property-checks.md`) and specified
+# by the Draft `docs/spec/v0.7.md`. It holds only cases new in 0.7: the v0.6
+# corpus keeps running unchanged as the preceding minor, and
+# `scripts/run_conformance.py --all-retained` runs this corpus after the
+# retained ones. Unlike them it is not frozen, and `status = "development"`
+# says so. When 0.7 is promoted, the promotion proposal carries the v0.6 cases
+# forward, drops `status`, and moves `spec.json`'s `language_series`.
+#
+# Panic examples are evaluated only where examples run: the interpreter lanes
+# (`interpreter`, `cli-process`, `cli-direct`, `cli-json`) check them before
+# `main`. Compiled Python and JavaScript never evaluate examples, so on those
+# lanes a program with panics examples must simply compile and run `main`
+# identically.
+
+[[cases]]
+id = "panic-example-passes"
+path = "programs/panic_example_passes.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "2\n3\npanics\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "panic-example-zero-arg"
+path = "programs/panic_example_zero_arg.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "2 panics\nno panics\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "panic-example-no-panic-fails"
+path = "programs/panic_example_no_panic_fails.geno"
+kind = "run"
+# Only the process lanes that own a stderr and run examples before `main`. The
+# `interpreter` lane returns its diagnostics as data and `cli-json` reports
+# them inside the envelope; compiled backends never run examples.
+targets = ["cli-process", "cli-direct"]
+capabilities = ["print"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["expected a panic"]
+
+[[cases]]
+id = "diagnostic-panic-example-arrow-form"
+path = "programs/diagnostic_panic_example_arrow_form.geno"
+kind = "diagnostic"
+# 0.6 accepted `-> panic("m")` (`panic` returns `Never`) although the example
+# could never pass; the 0.7 draft rejects it with E330, a recorded breaking
+# change (docs/operations/compatibility-policy.md), whose fix writes
+# `example 1, 0 panics "division"`.
+targets = ["checker"]
+expected_diagnostics = ["E330"]

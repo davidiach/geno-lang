@@ -16,6 +16,7 @@
 - [Portable Runtime Semantics](reference/runtime-semantics.md) -- cross-backend numbers, copies, maps, and output
 - [LLM Prompting Guide](llm-prompting.md) -- system prompts and common LLM mistakes
 - [Language Specification (v0.6)](spec/v0.6.md) -- normative pre-1.0 syntax and semantics for the 0.6 series; [v0.5](spec/v0.5.md) is the normative contract for the 0.5 series and [v0.4](spec/v0.4.md) the frozen one for 0.4
+- [Language Specification (v0.7, Draft)](spec/v0.7.md) -- working draft of the unreleased 0.7 development line (panic examples so far); not normative, and v0.6 stays the contract for 0.6 releases
 - [Supported Targets](SUPPORTED_TARGETS.md) -- compilation targets and builtin availability
 - [Benchmark Results](benchmark/results.md) -- published Geno-vs-Python results or current publication status
 

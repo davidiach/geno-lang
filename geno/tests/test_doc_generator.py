@@ -187,3 +187,26 @@ def test_signatures_render_tuple_types_as_written():
     swap = program.definitions[0]
     assert _render_type(swap.params[0].param_type) == "(A, B)"
     assert _render_type(swap.return_type) == "(B, A)"
+
+
+def test_panics_examples_are_rendered():
+    """`example 1, 0 panics "division"` (proposal 0017), HTML-escaped."""
+    source = """
+/// Divides.
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division <by> zero"
+    example 2, 0 panics
+    return a / b
+end func
+"""
+
+    module = parse_module(source, "Main.geno")
+    html = generate_html([module])
+
+    assert '<div class="example">(6, 3) &rarr; 2</div>' in html
+    assert (
+        '<div class="example">(1, 0) panics &quot;division &lt;by&gt; zero&quot;</div>'
+        in html
+    )
+    assert '<div class="example">(2, 0) panics</div>' in html
