@@ -383,7 +383,9 @@ class TestLimits:
         assert result.failure is not None
         assert result.failure.kind == "limit"
         assert result.failure.limit == "step limit"
-        assert "Step limit exceeded (200000 steps)" in result.failure.message
+        # No " at <file>:<line>:<col>" suffix: the reported message never
+        # depends on where the module's file is.
+        assert result.failure.message == "Step limit exceeded (200000 steps)"
         assert result.failure.summary == (
             "hit the step limit (200,000 steps per property call)"
         )

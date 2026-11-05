@@ -90,9 +90,10 @@ package version stays 0.6.0, and the Draft
 
 - Runtime errors raised where the interpreter and the builtins enforce a
   `SandboxConfig` limit (`max_collection_size`, `max_integer_bits`,
-  `max_output_length`) are now `geno.values.RuntimeLimitError`, a subclass of
-  `GenoRuntimeError`, so a limit is told from a panic by type. Their messages
-  and error codes are unchanged.
+  `max_output_length`), and the interpreter's error for a `Float` power
+  outside the host's range, are now `geno.values.RuntimeLimitError`, a
+  subclass of `GenoRuntimeError`, so a limit is told from a panic by type.
+  Their messages and error codes are unchanged.
 - `geno test` reads whether a failure was a `requires` or an `ensures` from
   the violation's `clause` field, not its message. A program's own
   `panic("Precondition failed ...")` is therefore reported as an `example`

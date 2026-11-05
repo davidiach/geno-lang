@@ -201,8 +201,9 @@ generated inputs too. It calls each function that has no effects but mutation
 on a hundred generated inputs, discarding the ones its `requires` rejects. A
 call fails the check when an `ensures` breaks, when the function panics
 without a panics example saying it may, or when it runs out of a resource
-limit. A failing input is shrunk to a small counterexample. Without `requires n <= 18`, `factorial`
-passes plain `geno test`, but the property check reports:
+limit. A failing input is shrunk to a small counterexample. Without
+`requires n <= 18`, `factorial` passes plain `geno test`, but the property
+check reports:
 
 ```text
 Properties (seed 0, 100 trials per function)

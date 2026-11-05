@@ -1508,7 +1508,13 @@ class PropertyRunner:
                 # phase budget was nearly spent; running out says nothing.
                 return _Outcome("budget", steps=steps)
             message = failure.message
-            if isinstance(exc, SandboxTimeout):
+            if isinstance(exc, StepLimitExceeded):
+                # The interpreter's message ends with the location the
+                # allowance ran out at, whose filename is the module's
+                # resolved path; leave it out so a report never depends on
+                # the checkout's location. A full allowance is call_steps.
+                message = f"Step limit exceeded ({self.config.call_steps} steps)"
+            elif isinstance(exc, SandboxTimeout):
                 message = (
                     f"Execution timed out after {self.config.call_seconds:g} "
                     "seconds (the property call deadline)"

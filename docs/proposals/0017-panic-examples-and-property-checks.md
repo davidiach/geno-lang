@@ -568,14 +568,14 @@ attempts regenerate at the same size.
 | `Map[K, V]`, `Set[T]` | as `List`, keys deduplicated | `{k: v}`, `{}`, `set_from_list([..])` |
 | `Vec[T]`, `Array[T]` | as `List` | `vec_from_list([..])`, `array_from_list([..])` |
 | User ADTs, generic or recursive | uniform over variants while depth `< 1 + s // 16`; at the depth bound, only variants of minimal construction depth (a fixpoint over the type definitions) | `Leaf`, `Node(Leaf, 1, Leaf)` (positional) |
+| `TypeVar` with satisfiable bounds | as `Int` | |
 
 At the depth bound every structural choice is the smallest one (added while
 implementing package 3): an `Option` is `None`, a collection is empty, a
 `Result` takes the side of smaller construction depth, and an ADT takes a
 minimal variant. Otherwise `type A = A1(next: Option[A])` would keep choosing
-`Some` with probability 0.8 below the bound, and termination would only be
-almost sure. Each structural choice table is a list in definition order.
-| `TypeVar` with satisfiable bounds | as `Int` | |
+`Some` with probability 0.8 at and past the bound, and termination would only
+be almost sure. Each structural choice table is a list in definition order.
 
 No generator (the function is skipped): function types, `Async[T]`,
 `MutableMap` (there is no one-expression literal to print), `Any`, `Never`,
@@ -675,7 +675,11 @@ this helper.
 
 A limit failure caused by the per-call deadline is reported as "Execution timed
 out after 1 seconds (the property call deadline)" rather than the
-interpreter's message, which names the sandbox's own `timeout`.
+interpreter's message, which names the sandbox's own `timeout`. A step-limit
+failure is reported as "Step limit exceeded (200000 steps)", without the
+interpreter's " at <file>:<line>:<column>" suffix, whose filename is the
+module's resolved path (corrected during integration: the JSON message
+otherwise depended on where the checkout is).
 
 #### 5.4 Budgets
 
