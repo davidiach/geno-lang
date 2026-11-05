@@ -566,3 +566,18 @@ def test_an_example_sleep_and_a_read_share_the_runs_deadline(tmp_path: Path) -> 
     # The example's 3 s and the blocked read share one 4 s deadline; a reset
     # at `main` or at the read would run until about 7 s after launch.
     assert elapsed < 6.5
+
+    # Control: the same program, given input, really sleeps in its example.
+    started = time.monotonic()
+    control = _run(
+        "--timeout",
+        "30",
+        "--cap",
+        "clock,print,stdin",
+        "main.geno",
+        cwd=tmp_path,
+        input=b"done",
+    )
+    assert control.returncode == 0, control.stderr
+    assert control.stdout == b"got done\n"
+    assert time.monotonic() - started >= 3.0
