@@ -393,12 +393,18 @@ def test_slow_input_within_the_deadline_succeeds(tmp_path: Path) -> None:
             time.sleep(0.5)
         process.stdin.close()
 
+    # The writer alone ends the input (communicate() would close it at once).
     writer = threading.Thread(target=feed)
     writer.start()
     try:
-        stdout, stderr = process.communicate(timeout=60)
+        process.wait(timeout=60)
     finally:
         writer.join()
+    assert process.stdout is not None and process.stderr is not None
+    stdout = process.stdout.read()
+    stderr = process.stderr.read()
+    process.stdout.close()
+    process.stderr.close()
 
     assert process.returncode == 0, stderr
     assert stdout.decode() == "got [slow ïnput]\n"
