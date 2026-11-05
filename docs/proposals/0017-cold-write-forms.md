@@ -130,12 +130,12 @@ already implements, so no backend changes:
   two tokens, recognized only when written with nothing between them. The
   target may contain names, literals, field and index accesses and operators,
   never a call, so reading it twice is unobservable.
-- `for (p) in xs do body end for` parses as a loop over a name the parser
-  makes up (`_geno_item_<n>`, numbered in the order such loops appear in the
-  file) whose body is `match item with | (p) -> body end match`. A
-  comprehension's element and condition become match expressions on the same
-  name. The numbering, not the source position, keeps the name and so the
-  program the same when the formatter moves the code.
+- `for (p) in xs do body end for` parses as a loop over a fresh synthetic
+  name (`_geno_item_<id>`) whose body is
+  `match item with | (p) -> body end match`. A comprehension's element and
+  condition become match expressions on the same name. IDs follow parse order,
+  remain stable under formatting, and skip user identifiers, including those
+  inside f-string interpolations. Interpolation sub-parsers share the allocator.
 - The lexer copies a string literal inside an interpolation unchanged and
   records each interpolation's span; the parser reads the expression from
   where it is written in the source.

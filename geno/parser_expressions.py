@@ -463,10 +463,12 @@ class ExpressionParserMixin(ParserBase):
         from .parser import Parser
 
         sub_parser = Parser(tokens)
+        # Interpolations share the enclosing program's synthetic namespace.
+        sub_parser._synthetic_names = self._synthetic_names
+        sub_parser._loop_binding_reserved = self._loop_binding_reserved
         # Nesting counts across f-string levels, so deeply nested f-strings
         # meet the same limit as any other deeply nested expression.
         sub_parser._nesting_depth = self._nesting_depth
-        sub_parser._synthetic_names = self._synthetic_names
         try:
             expr = sub_parser._parse_expression()
         except ParseError as e:

@@ -97,7 +97,7 @@ class PatternParserMixin(ParserBase):
 
         Either a name (``x``, ``x: Int``) or a tuple of names that unpacks
         each element (``(i, x)``, ``(k, (a, b))``). For a tuple, the loop
-        binds a name no program can write, and the returned pattern unpacks
+        binds a fresh synthetic name, and the returned pattern unpacks
         it: ``for (i, x) in xs`` is ``for item in xs`` whose body starts
         with ``match item with | (i, x) -> ...``.
         """
@@ -115,9 +115,11 @@ class PatternParserMixin(ParserBase):
             var_type: TypeAnnotation = InferredType(location=location)
             if self._match(TokenType.COLON):
                 var_type = self._parse_type()
-            self._synthetic_names[0] += 1
-            name = f"_geno_item_{self._synthetic_names[0]}"
-            return name, var_type, pattern
+            while True:
+                self._synthetic_names[0] += 1
+                name = f"_geno_item_{self._synthetic_names[0]}"
+                if name not in self._loop_binding_reserved:
+                    return name, var_type, pattern
         if start.type is TokenType.IDENTIFIER and self._peek(1).type is TokenType.COMMA:
             self._reject_unparenthesized_loop_names()
         variable_token = self._expect(TokenType.IDENTIFIER, "Expected variable name")

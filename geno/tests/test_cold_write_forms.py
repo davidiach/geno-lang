@@ -204,6 +204,54 @@ print(add_all([1, 2]))
 
 
 class TestTupleLoopPatterns:
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            (" for (a,b) in [(1,2)] do\n print(a+b)\n end for\n", "3\n"),
+            ("    for   (a,b) in [(1,2)] do\n        print(a+b)\n    end for\n", "3\n"),
+            (" let xs=[a+b for (a,b) in [(1,2)] if a>0]\n print(xs)\n", "[3]\n"),
+            (
+                " for (a,b) in [(1,2)] do\n"
+                " for (c,(d,_)) in [(3,(4,5))] do\n"
+                " print(a+b+c+d)\n end for\n end for\n",
+                "10\n",
+            ),
+            (
+                " print([[a+c for (c,d) in [(3,4)]] for (a,b) in [(1,2)]])\n",
+                "[[4]]\n",
+            ),
+            (
+                ' print(f"{[a for (a,b) in [(1,2)]]} {[c for (c,d) in [(3,4)]]}")\n',
+                "[1] [3]\n",
+            ),
+        ],
+    )
+    def test_formatter_preserves_tuple_bindings(self, body: str, expected: str) -> None:
+        source = "func main() -> Unit\n" + body + "end func\n"
+        _assert_parity(source, expected)
+        formatted = format_source(source)
+        assert formatted != source
+        assert format_source(formatted) == formatted
+        _assert_parity(formatted, expected)
+
+    @pytest.mark.parametrize("name", ["_geno_item_0", "_geno_item_1", "_geno_item_3_9"])
+    def test_generated_bindings_do_not_shadow_user_names(self, name: str) -> None:
+        source = _main(
+            f"let {name} = 10\n"
+            f"for (a,b) in [(1,2)] do\n    print({name})\nend for\n"
+            f'print(f"{{[f"{{{name}}}" for (c,d) in [(3,4)]]}}")'
+        )
+        _assert_parity(source, '10\n["10"]\n')
+        _assert_parity(format_source(source), '10\n["10"]\n')
+
+    def test_generated_bindings_reserve_names_inside_fstrings(self) -> None:
+        source = _main(
+            'print(f"{[[_geno_item_1 + a for (a,b) in [(1,2)]] '
+            'for (_geno_item_1,c) in [(10,20)]]}")'
+        )
+        _assert_parity(source, "[[11]]\n")
+        _assert_parity(format_source(source), "[[11]]\n")
+
     def test_for_loops_unpack_each_element(self) -> None:
         _assert_parity(
             _main(

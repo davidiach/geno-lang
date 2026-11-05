@@ -8,6 +8,7 @@ and the ParseError/ParseErrors exception classes.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, TypeVar
 
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
@@ -195,18 +196,23 @@ class ParserBase:
         self.errors: list[ParseError] = []
         self._panic_mode = False
         self._nesting_depth = 0
+        # Tuple bindings need names stable under formatting and distinct from
+        # user identifiers. F-string text includes nested interpolation names.
+        self._synthetic_names = [0]
+        self._loop_binding_reserved: set[str] = {
+            token.value for token in tokens if token.type is TokenType.IDENTIFIER
+        }
+        for token in tokens:
+            if token.type is TokenType.FSTRING:
+                self._loop_binding_reserved.update(
+                    re.findall(r"\b_geno_item_\d+\b", token.value[0])
+                )
         # Inside a trait or impl, the type a method's untyped `self` has:
         # `Self` in a trait, the implementing type in an impl.
         self._self_type: str | None = None
         # "Needs a return type" errors, with the annotation that stands in for
         # the missing type, to receive a fix once the program is parsed.
         self._missing_return_types: list[tuple[ParseError, InferredType]] = []
-        # How many loop variables the parser has made up for tuple patterns
-        # (`for (a, b) in ...`), shared with the parsers of f-string
-        # interpolations so each name is unique in the file. Counting rather
-        # than naming by position keeps the names, and so the program, the
-        # same when formatting moves the code.
-        self._synthetic_names = [0]
 
     def _current(self) -> Token:
         """Get the current token."""
