@@ -104,6 +104,24 @@ package version stays 0.6.0, and the Draft
   worker's own environment. Examples and `main` read the same snapshot.
   `--allow-env` requires an explicit `--cap env` grant and is refused under
   `--unsafe` and `--json`, whose environment behaviour is unchanged.
+- Milestone 3 of
+  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md), `stdin`
+  in the default process-isolated `geno run` lane, is implemented but not
+  enabled: `geno run --cap stdin ...` is still refused before launch ("not yet
+  available in the process-isolated run mode") on every platform. The
+  proposal keeps isolated `stdin` refused until its stdin gate (handle setup,
+  inheritance, timeout and interruption cleanup) has passed on Linux, macOS
+  and Windows. Only Linux and macOS can be validated so far, and enabling the
+  capability on POSIX alone would deviate from that gate, which needs the
+  project lead's sign-off; until then, programs that read standard input keep
+  using `geno run --unsafe --cap stdin,...` (trusted code only). In place for
+  that step: only a `stdin` grant makes the parent duplicate its standard
+  input for the worker alone to inherit, and nothing is read until
+  `stdin_read_all` asks. Trusted worker code then reads 8 KiB at a time
+  against the collection limit and decodes strict UTF-8 with the same `Err`
+  text as standalone compiled output. Examples and `main` share one stream and
+  one deadline, with no replay, and a worker refuses a `stdin` policy its own
+  lane rules do not grant.
 
 ### Changed (breaking)
 

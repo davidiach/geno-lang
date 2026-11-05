@@ -44,6 +44,14 @@ want direct interpreter execution with host callbacks:
 geno run --unsafe --cap fs,print myfile.geno
 ```
 
+Programs that read standard input (`stdin_read_all`) also need
+`--unsafe --cap stdin,...`. The isolated lane's lazy, size-bounded stdin
+reader (milestone 3 of
+[proposal 0013](../proposals/0013-isolated-run-capabilities.md)) is
+implemented, but `geno run --cap stdin` stays refused before launch on every
+platform until the proposal's stdin gate (handle setup, inheritance, timeout
+and interruption cleanup on Linux, macOS and Windows) passes.
+
 ### Standalone compiled output (`geno compile`)
 
 When you compile to a standalone Python file, the compiled output parses
