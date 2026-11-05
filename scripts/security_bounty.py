@@ -308,7 +308,18 @@ def _run_isolated_corpus(verbose: bool) -> tuple[int, int]:
     passed = 0
     failed = 0
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    env = {**os.environ, "PYTHONPATH": repo_root}
+    # Entries run under the default host policy: the caller's own fs or http
+    # settings must not weaken one.
+    host_policy = {
+        "GENO_FS_ALLOW_ABSOLUTE",
+        "GENO_FS_READ_ONLY",
+        "GENO_FS_ROOTS",
+        "GENO_HTTP_ALLOW_PRIVATE",
+    }
+    env = {
+        **{key: value for key, value in os.environ.items() if key not in host_policy},
+        "PYTHONPATH": repo_root,
+    }
 
     for name in sorted(os.listdir(ISOLATED_CORPUS_DIR)):
         if not name.endswith(".geno"):

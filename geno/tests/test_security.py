@@ -2357,6 +2357,7 @@ class TestProcessSandbox:
             (["clock", "print", "random"], ""),
             (["print", "regex"], ""),
             (["env", "print"], "env"),
+            (["http", "print"], "http"),
         ],
     )
     def test_geno_worker_binds_host_access_only_for_granted_capabilities(
@@ -2395,6 +2396,60 @@ class TestProcessSandbox:
 
         assert output == ""
         assert error == f"probe:{bound}"
+
+    def test_geno_worker_preloads_http_support_only_for_a_validated_grant(self):
+        """The http client modules join the trusted baseline, and only with http."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        validate = script.index("_IsolatedRunPolicy.from_config(")
+        preload = script.index("_preload_isolated_support(_run_policy.capabilities)")
+        assert script.index("_preload_process_run_support()") < validate < preload
+        assert preload < script.index("memory_ceiling = (")
+        assert preload < script.index("code = sys.stdin.read()")
+        assert script.count("_preload_isolated_support(") == 1
+
+    @pytest.mark.parametrize(
+        ("capabilities", "loaded"),
+        [
+            (["clock", "print", "random"], ""),
+            (["env", "fs", "print"], ""),
+            (["http", "print"], "http.client,socket,ssl,urllib.request"),
+        ],
+    )
+    def test_geno_worker_loads_http_modules_only_with_the_grant(
+        self, tmp_path, monkeypatch, capabilities, loaded
+    ):
+        """In-worker probe of the modules loaded before the Darwin baseline."""
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        anchor = '    memory_limit = config.get("max_memory_bytes", 0)\n'
+        worker_script = ProcessSandbox._WORKER_SCRIPT
+        assert worker_script.count(anchor) == 1
+        probe = (
+            "    _emit_worker_error('probe:' + ','.join(sorted(_m for _m in "
+            "('http.client', 'socket', 'ssl', 'urllib.request') "
+            "if _m in sys.modules)), 'probe')\n"
+            "    sys.exit(1)\n"
+        )
+        monkeypatch.setattr(
+            ProcessSandbox,
+            "_WORKER_SCRIPT",
+            worker_script.replace(anchor, probe + anchor),
+        )
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        sandbox = ProcessSandbox(config)
+
+        _result, output, error = sandbox.execute_geno_request(
+            self._geno_cli_request(tmp_path, config),
+            IsolatedRunPolicy(capabilities=frozenset(capabilities)),
+        )
+
+        assert output == ""
+        assert error == f"probe:{loaded}"
 
     def test_geno_worker_validates_policy_before_reading_input(self):
         """Policy validation is trusted setup: before the Darwin baseline."""

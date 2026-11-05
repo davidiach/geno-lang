@@ -53,6 +53,7 @@ from geno.isolated_host import (
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.sandbox import SandboxConfig
+from geno.sandbox import TimeoutError as SandboxTimeout
 from geno.values import BuiltinFunction, GenoRuntimeError
 
 NOT_YET_ISOLATED = sorted(
@@ -1999,7 +2000,9 @@ def test_http_policy_follows_the_platform_rules() -> None:
 def test_http_grant_binds_one_client_bounded_by_the_run_clock() -> None:
     clock = IsolatedRunClock(10.0, started_at=time.monotonic() - 8.0)
     policy = IsolatedRunPolicy(
-        capabilities=frozenset({"http", "print"}), http_allow_private=True
+        capabilities=frozenset({"http", "print"}),
+        http_allow_private=True,
+        deadline_seconds=10.0,
     )
 
     table = build_host_table(policy, clock=clock)
@@ -2168,7 +2171,7 @@ def test_prelude_http_keeps_the_size_limit() -> None:
     namespace = _prelude_namespace(
         _GENO_CAPS=frozenset({"http"}),
         _GENO_HOST=MappingProxyType({"http": http_binding}),
-        _MAX_COLLECTION_SIZE=10,
+        _GENO_MAX_COLLECTION_SIZE=10,
     )
 
     with local_server(
@@ -2219,12 +2222,17 @@ def test_example_http_waits_at_most_the_interpreters_deadline() -> None:
     interpreter = _example_http(private=True, timeout=30.0)
     fetch = interpreter.global_env.bindings["http_fetch"].func
 
+    results: list[Any] = []
     with local_server(stall) as server:
         started = time.monotonic()
-        with interpreter._execution_deadline(0.5):
-            result = fetch(server.url("/stall"))
+        # The deadline has passed by the time the block ends, so the
+        # interpreter reports its own timeout there; the request returned.
+        with pytest.raises(SandboxTimeout, match=r"after 30\.0 seconds"):
+            with interpreter._execution_deadline(0.5):
+                results.append(fetch(server.url("/stall")))
         elapsed = time.monotonic() - started
 
+    (result,) = results
     assert result.constructor == "Err"
     assert "timed out" in result.fields["error"]
     assert elapsed < 5.0, elapsed

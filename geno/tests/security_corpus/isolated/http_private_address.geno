@@ -1,0 +1,17 @@
+# EXPECT: E414
+# LANE: isolated
+# RUN: --cap http,print
+# STDERR: confined: http_fetch: non-public network targets are not allowed
+# With the http grant but without the caller's GENO_HTTP_ALLOW_PRIVATE, the
+# trusted client refuses loopback, link-local metadata and private addresses
+# before connecting; a program cannot opt in by itself.
+func main() -> Unit
+    match http_request(method: "GET", url: "http://127.0.0.1:9/", headers: [], body: "") with
+        | Ok(response) -> print("ESCAPED " + response.body)
+        | Err(_) -> ()
+    end match
+    match http_fetch("http://169.254.169.254/latest/meta-data/") with
+        | Ok(body) -> print("ESCAPED " + body)
+        | Err(error) -> panic("confined: " + error)
+    end match
+end func

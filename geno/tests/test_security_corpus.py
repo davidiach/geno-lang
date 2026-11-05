@@ -127,6 +127,17 @@ ISOLATED_CATEGORY_MARKERS = {
     "E414": ("Runtime Error:",),
 }
 
+# Host policy the caller's environment could set for a run. Entries run under
+# the default policy, so a developer's own settings cannot weaken one.
+ISOLATED_HOST_POLICY_VARIABLES = frozenset(
+    {
+        "GENO_FS_ALLOW_ABSOLUTE",
+        "GENO_FS_READ_ONLY",
+        "GENO_FS_ROOTS",
+        "GENO_HTTP_ALLOW_PRIVATE",
+    }
+)
+
 
 def _collect_isolated_corpus_files():
     return [
@@ -182,6 +193,11 @@ def test_isolated_security_corpus(filepath, tmp_path):
         text=True,
         timeout=60,
         cwd=tmp_path,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key not in ISOLATED_HOST_POLICY_VARIABLES
+        },
     )
 
     assert result.returncode == 1, result.stdout + result.stderr

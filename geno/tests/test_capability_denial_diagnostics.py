@@ -428,6 +428,27 @@ def test_default_lane_hint_sends_refused_capabilities_to_unsafe(
     )
 
 
+def test_default_lane_hint_for_http_follows_the_platform_matrix() -> None:
+    # Milestone 5: POSIX grants http in the isolated lane; Windows still
+    # refuses it, so its hint keeps leaving process isolation.
+    posix = _default_lane_capability_hint(
+        "http", "fetch.geno", grant={"print"}, os_name="posix"
+    )
+    windows = _default_lane_capability_hint(
+        "http", "fetch.geno", grant={"print"}, os_name="nt"
+    )
+
+    assert posix == (
+        "Hint: grant it with --cap; the program stays process-isolated:\n"
+        "  geno run --cap http,print fetch.geno"
+    )
+    assert windows == (
+        "Hint: the process-isolated 'geno run' lane cannot grant 'http'.\n"
+        "  To grant it, rerun without process isolation (trusted code only):\n"
+        "  geno run --unsafe --cap http,print fetch.geno"
+    )
+
+
 def test_default_lane_hint_quotes_filename() -> None:
     hint = _default_lane_capability_hint("regex", "my notes.geno")
     assert hint is not None

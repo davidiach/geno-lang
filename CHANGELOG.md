@@ -74,11 +74,12 @@ package version stays 0.6.0, and the Draft
   `geno run --cap print,regex main.geno` runs with exactly the listed
   capabilities and keeps the hard wall-clock kill and the memory, CPU,
   file-size and process limits, instead of exiting with "--cap is not
-  supported". The lane grants `clock`, `env`, `fs`, `print`, `random` and
-  `regex` so far; without `--cap` the grant is unchanged (`clock`, `print`,
-  `random`). `process` and `serve` are refused before the program starts with
-  a message naming `--unsafe`, and `stdin` and `http` are refused as "not yet
-  available" until their milestones land. Examples run with the same
+  supported". The lane grants `clock`, `env`, `fs`, `http` (not on Windows
+  yet), `print`, `random` and `regex` so far; without `--cap` the grant is
+  unchanged (`clock`, `print`, `random`). `process` and `serve` are refused
+  before the program starts with a message naming `--unsafe`, and `stdin` is
+  refused as "not yet available" until its milestone is enabled. Examples run
+  with the same
   exact grant (`--cap regex` denies `print` in examples too, and `sleep_ms`
   works in examples when `clock` is granted). A capability denial in the
   default lane, in `main` or in an example, now suggests the isolated
@@ -146,6 +147,27 @@ package version stays 0.6.0, and the Draft
   Without `fs` both limits stay 0, as before. The two limit flags now default
   by grant and, like the other process sandbox limits, are refused under
   `--unsafe` and `--json` even when set to 0.
+- The `http` capability in the default process-isolated `geno run` lane on
+  Linux and macOS, milestone 5 of
+  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md):
+  `geno run --cap http,print fetch.geno` makes requests while keeping every
+  hard limit, where it used to need `--unsafe`. `http_fetch`, `http_post` and
+  `http_request` go through the same validated client as
+  `--unsafe --cap http`, now run in trusted worker code: only `http` and
+  `https`; every connection and redirect hop resolves, validates and connects
+  only to public addresses; at most ten redirects, with caller headers
+  (`Authorization`, `Cookie`, ...) dropped across origins; proxy variables
+  never reroute a request; TLS certificates and hostnames are verified; and
+  response bodies count against the collection limit. Private and loopback
+  destinations need `GENO_HTTP_ALLOW_PRIVATE` in the caller's environment,
+  read only with an `http` grant and never through `--allow-env`. Each
+  connection attempt waits at most 30 seconds and at most the time the run
+  has left, examples and `main` alike, and the hard kill at `--timeout` still
+  ends any request that cannot return in time. The HTTP client modules are
+  loaded during the worker's trusted setup only with an `http` grant.
+  Windows refuses `--cap http` before launch ("not yet available in the
+  process-isolated run mode on Windows") until the proposal's HTTP gate has
+  Windows evidence; use `--unsafe --cap http,...` there for trusted code.
 
 ### Changed (breaking)
 
