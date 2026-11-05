@@ -26,10 +26,12 @@ from geno.capabilities import (
 from geno.diagnostics import ErrorCode
 from geno.isolated_host import (
     ENV_NAME_TAG_LIMIT,
+    ISOLATED_HTTP_SUPPORT_MODULES,
     STDIN_CHUNK_BYTES,
     IsolatedEnv,
     IsolatedFs,
     IsolatedHostBinding,
+    IsolatedHttp,
     IsolatedQuotaError,
     IsolatedRunClock,
     IsolatedRunPolicy,
@@ -45,6 +47,7 @@ from geno.isolated_host import (
     isolated_env_snapshot,
     isolated_fs_host_policy,
     isolated_run_policy_for,
+    preload_isolated_capability_support,
     with_program_stdin,
 )
 from geno.lexer import Lexer
@@ -1951,4 +1954,290 @@ def test_example_interpreter_needs_the_fs_binding() -> None:
             policy,
             SandboxConfig(timeout=5.0),
             {"fs": IsolatedEnv((), {}, ())},  # type: ignore[dict-item]
+        )
+
+
+# ---------------------------------------------------------------------------
+# http: trusted policy, the binding and its preload
+
+
+def test_http_policy_reads_the_private_opt_in_only_with_http() -> None:
+    opted_in = {"GENO_HTTP_ALLOW_PRIVATE": "yes"}
+
+    granted = isolated_run_policy_for({"http", "print"}, timeout=5.0, environ=opted_in)
+    without = isolated_run_policy_for({"print"}, timeout=5.0, environ=opted_in)
+    unset = isolated_run_policy_for({"http"}, timeout=5.0, environ={})
+    off = isolated_run_policy_for(
+        {"http"}, timeout=5.0, environ={"GENO_HTTP_ALLOW_PRIVATE": "0"}
+    )
+
+    assert granted.http_allow_private is True
+    assert without.http_allow_private is False
+    assert unset.http_allow_private is False
+    assert off.http_allow_private is False
+    assert IsolatedRunPolicy.from_config(granted.to_config()) == granted
+    # Allowing the variable for program reads never sets the policy.
+    allowed = isolated_run_policy_for(
+        {"env", "http"},
+        timeout=5.0,
+        allow_env=("GENO_HTTP_ALLOW_PRIVATE",),
+        environ={},
+    )
+    assert allowed.http_allow_private is False
+
+
+def test_http_policy_follows_the_platform_rules() -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"http"}))
+
+    policy.validate("posix")
+    with pytest.raises(IsolatedRunPolicyError, match="'http' is not available"):
+        policy.validate("nt")
+    with pytest.raises(IsolatedRunPolicyError, match="'http' is not available"):
+        IsolatedRunPolicy.from_config(policy.to_config(), "nt")
+
+
+def test_http_grant_binds_one_client_bounded_by_the_run_clock() -> None:
+    clock = IsolatedRunClock(10.0, started_at=time.monotonic() - 8.0)
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"http", "print"}), http_allow_private=True
+    )
+
+    table = build_host_table(policy, clock=clock)
+
+    assert set(table) == {"http"}
+    http_binding = table["http"]
+    assert type(http_binding) is IsolatedHttp
+    assert http_binding.allow_private is True
+    assert 0 < http_binding.timeout_seconds() <= 2.0
+    # Without a clock the binding gets one started now, for the deadline.
+    fresh = build_host_table(policy)["http"]
+    assert isinstance(fresh, IsolatedHttp)
+    assert 9.0 < fresh.timeout_seconds() <= 10.0
+    assert build_host_table(IsolatedRunPolicy(capabilities=frozenset({"print"}))) == {}
+
+
+def test_http_binding_checks_its_arguments_and_exposes_no_attributes() -> None:
+    with pytest.raises(TypeError):
+        IsolatedHttp(allow_private=1, remaining=lambda: 1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        IsolatedHttp(allow_private=False, remaining=1.0)  # type: ignore[arg-type]
+    http_binding = IsolatedHttp(allow_private=False, remaining=lambda: 1.0)
+
+    assert not hasattr(http_binding, "__dict__")
+    with pytest.raises(AttributeError):
+        http_binding.allow_private = True  # type: ignore[misc]
+    with pytest.raises(TypeError, match="request body must be bytes"):
+        http_binding.open_body("POST", "http://example.test/", "text", "http_post")  # type: ignore[arg-type]
+
+
+def test_checked_host_state_accepts_the_http_binding_only_for_http() -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"http", "print"}))
+    runtime = sorted(policy.capabilities)
+    http_binding = IsolatedHttp(allow_private=False, remaining=lambda: None)
+
+    table, _used = checked_prepared_host_state(
+        _prepared(host_table={"http": http_binding}, runtime_capabilities=runtime),
+        policy,
+    )
+
+    assert table == {"http": http_binding}
+    with pytest.raises(ValueError, match="wrong binding"):
+        checked_prepared_host_state(
+            _prepared(host_table={"print": http_binding}, runtime_capabilities=runtime),
+            policy,
+        )
+    with pytest.raises(ValueError, match="not granted"):
+        checked_prepared_host_state(
+            _prepared(host_table={"http": http_binding}), IsolatedRunPolicy.default()
+        )
+
+
+def test_http_support_is_preloaded_only_with_the_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    imported: list[str] = []
+    monkeypatch.setattr(importlib, "import_module", imported.append)
+
+    assert preload_isolated_capability_support({"clock", "print", "random"}) == ()
+    assert preload_isolated_capability_support({"env", "fs", "regex"}) == ()
+    assert imported == []
+    loaded = preload_isolated_capability_support({"http", "print"})
+
+    assert loaded == ISOLATED_HTTP_SUPPORT_MODULES
+    assert imported == list(ISOLATED_HTTP_SUPPORT_MODULES)
+    # Everything the client imports lazily, so nothing loads after the baseline.
+    assert {"socket", "ssl", "http.client", "urllib.request"} <= set(imported)
+
+
+# ---------------------------------------------------------------------------
+# http through the runtime prelude and the example interpreter
+
+HTTP_BUILTIN_CALLS = {
+    "http_fetch": ("{url}/fetch",),
+    "http_post": ("{url}/post", "{{}}"),
+    "http_request": ("GET", "{url}/request", [("X-Test", "1")], ""),
+}
+
+
+def _http_call(builtin: str, base: str) -> tuple[Any, ...]:
+    return tuple(
+        arg.format(url=base) if isinstance(arg, str) else arg
+        for arg in HTTP_BUILTIN_CALLS[builtin]
+    )
+
+
+def test_http_builtin_calls_cover_the_capability() -> None:
+    from geno.builtin_registry import CAPABILITY_MAP
+
+    assert set(HTTP_BUILTIN_CALLS) == set(CAPABILITY_MAP["http"])
+
+
+@pytest.mark.parametrize("builtin", sorted(HTTP_BUILTIN_CALLS))
+def test_missing_http_binding_is_a_second_gate(builtin: str) -> None:
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"http"}),
+        _GENO_HOST=MappingProxyType({"env": IsolatedEnv((), {}, ())}),
+    )
+
+    with pytest.raises(
+        namespace["_GenoHostUnavailable"], match="host access for 'http'"
+    ):
+        namespace[builtin](*_http_call(builtin, "http://127.0.0.1:9"))
+
+
+@pytest.mark.parametrize("builtin", sorted(HTTP_BUILTIN_CALLS))
+def test_prelude_http_builtins_check_the_grant_first(builtin: str) -> None:
+    from geno.tests.test_isolated_run_http import echo, local_server
+
+    http_binding = IsolatedHttp(allow_private=True, remaining=lambda: 5.0)
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"print"}),
+        _GENO_HOST=MappingProxyType({"http": http_binding}),
+    )
+
+    with local_server(echo) as server:
+        with pytest.raises(RuntimeError) as excinfo:
+            namespace[builtin](*_http_call(builtin, server.base))
+
+    assert excinfo.value._geno_capability_denied == "http"  # type: ignore[attr-defined]
+    assert server.hits == []
+
+
+def test_prelude_http_builtins_use_the_binding_and_return_geno_values() -> None:
+    from geno.tests.test_isolated_run_http import echo, local_server
+
+    http_binding = IsolatedHttp(allow_private=True, remaining=lambda: 5.0)
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"http"}),
+        _GENO_HOST=MappingProxyType({"http": http_binding}),
+    )
+    ok, err = namespace["Ok"], namespace["Err"]
+
+    with local_server(echo) as server:
+        fetched = namespace["http_fetch"](*_http_call("http_fetch", server.base))
+        posted = namespace["http_post"](*_http_call("http_post", server.base))
+        requested = namespace["http_request"](*_http_call("http_request", server.base))
+        refused = namespace["http_fetch"]("file:///etc/passwd")
+
+    assert type(fetched) is ok and fetched.value == "GET /fetch "
+    assert type(posted) is ok and posted.value == "POST /post {}"
+    assert type(requested) is ok
+    response = requested.value
+    assert type(response) is namespace["HttpResponse"]
+    assert type(response.status) is int and response.status == 200
+    assert response.body == "GET /request "
+    assert type(response.headers) is list
+    assert all(
+        type(pair) is tuple and all(type(part) is str for part in pair)
+        for pair in response.headers
+    )
+    assert ("X-Echo", "yes") in response.headers
+    assert type(refused) is err
+    assert (
+        refused.error == "http_fetch: scheme 'file' is not allowed, only http and https"
+    )
+    assert server.hits[2].headers["x-test"] == "1"
+
+
+def test_prelude_http_keeps_the_size_limit() -> None:
+    from geno.tests.test_isolated_run_http import local_server, reply
+
+    http_binding = IsolatedHttp(allow_private=True, remaining=lambda: 5.0)
+    namespace = _prelude_namespace(
+        _GENO_CAPS=frozenset({"http"}),
+        _GENO_HOST=MappingProxyType({"http": http_binding}),
+        _MAX_COLLECTION_SIZE=10,
+    )
+
+    with local_server(
+        lambda handler, hit, server: reply(handler, 200, b"x" * 50)
+    ) as server:
+        with pytest.raises(RuntimeError, match="String size exceeds limit"):
+            namespace["http_fetch"](server.url("/big"))
+
+
+def _example_http(private: bool, timeout: float = 5.0) -> Any:
+    policy = IsolatedRunPolicy(
+        capabilities=frozenset({"http", "print"}), http_allow_private=private
+    )
+    table = build_host_table(policy, clock=IsolatedRunClock(timeout))
+    return build_example_interpreter(policy, SandboxConfig(timeout=timeout), table)
+
+
+def test_example_http_callbacks_use_the_trusted_policy() -> None:
+    from geno.tests.test_isolated_run_http import echo, local_server
+
+    allowed = _example_http(private=True)
+    refused = _example_http(private=False)
+
+    with local_server(echo) as server:
+        url = server.url("/x")
+        ok = allowed.global_env.bindings["http_fetch"].func(url)
+        err = refused.global_env.bindings["http_fetch"].func(url)
+        compiled = _prelude_namespace(
+            _GENO_CAPS=frozenset({"http"}),
+            _GENO_HOST=MappingProxyType(
+                {"http": IsolatedHttp(allow_private=False, remaining=lambda: 5.0)}
+            ),
+        )["http_fetch"](url)
+
+    assert ok.constructor == "Ok" and ok.fields["value"] == "GET /x "
+    assert err.constructor == "Err"
+    # The example and compiled paths give the same Err.
+    assert err.fields["error"] == compiled.error
+    assert err.fields["error"] == (
+        "http_fetch: non-public network targets are not allowed"
+    )
+    assert [hit.path for hit in server.hits] == ["/x"]
+
+
+def test_example_http_waits_at_most_the_interpreters_deadline() -> None:
+    from geno.tests.test_isolated_run_http import local_server, stall
+
+    interpreter = _example_http(private=True, timeout=30.0)
+    fetch = interpreter.global_env.bindings["http_fetch"].func
+
+    with local_server(stall) as server:
+        started = time.monotonic()
+        with interpreter._execution_deadline(0.5):
+            result = fetch(server.url("/stall"))
+        elapsed = time.monotonic() - started
+
+    assert result.constructor == "Err"
+    assert "timed out" in result.fields["error"]
+    assert elapsed < 5.0, elapsed
+
+
+def test_example_interpreter_needs_the_http_binding() -> None:
+    policy = IsolatedRunPolicy(capabilities=frozenset({"http"}))
+
+    with pytest.raises(ValueError, match="http grant has no host binding"):
+        build_example_interpreter(policy, SandboxConfig(timeout=5.0))
+    with pytest.raises(ValueError, match="http grant has no host binding"):
+        build_example_interpreter(
+            policy,
+            SandboxConfig(timeout=5.0),
+            {"http": IsolatedEnv((), {}, ())},  # type: ignore[dict-item]
         )
