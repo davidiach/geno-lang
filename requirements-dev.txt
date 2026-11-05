@@ -7,6 +7,8 @@
 # Testing
 pytest>=8.4.2,<10
 pytest-cov>=7.0,<8
+# 7.17.1 leaves empty data files for subprocesses that exit abruptly.
+coverage[toml]>=7.10.7,!=7.17.1,<8
 pytest-timeout>=2.4.0,<3
 
 # Linting and formatting
