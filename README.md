@@ -155,8 +155,8 @@ lists, and the program keeps its process isolation and limits:
 geno run --cap env,fs,print report.geno -- data/input.csv
 ```
 
-Only `process`, `serve` and (for now) `stdin` need `--unsafe`, which is for
-trusted code.
+Only `process`, `serve` and, for now, `stdin` (and `http` on Windows) need
+`--unsafe`, which is for trusted code.
 
 The CLI and hosted runtime use sandboxed execution with process isolation. The
 in-process embedding API has cooperative limits, and generated JavaScript is
