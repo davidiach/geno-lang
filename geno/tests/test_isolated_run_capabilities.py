@@ -282,9 +282,20 @@ def test_process_and_serve_refusals_name_unsafe(capability: str) -> None:
     assert message.endswith("Use --unsafe --cap ... for trusted code.")
 
 
-@pytest.mark.parametrize("capability", NOT_YET_ISOLATED)
-def test_not_yet_available_refusal_names_the_alternatives(capability: str) -> None:
-    assert isolated_run_refusal(capability) == (
+# Not granted on any platform yet. A capability that has landed but is still
+# refused on one platform gets a message naming that platform instead
+# (test_windows_refusal_names_the_platform_once_a_capability_lands).
+NOT_LANDED_ANYWHERE = sorted(
+    KNOWN_CAPABILITIES - ISOLATED_RUN_CAPABILITIES - ISOLATED_RUN_REFUSED_CAPABILITIES
+)
+
+
+@pytest.mark.parametrize("os_name", ["posix", "nt"])
+@pytest.mark.parametrize("capability", NOT_LANDED_ANYWHERE)
+def test_not_yet_available_refusal_names_the_alternatives(
+    capability: str, os_name: str
+) -> None:
+    assert isolated_run_refusal(capability, os_name) == (
         f"--cap {capability} is not yet available in the process-isolated run "
         "mode. Use --unsafe --cap ... for trusted code, or --json --cap ... for "
         "embedding API execution."

@@ -1961,7 +1961,15 @@ def test_example_interpreter_needs_the_fs_binding() -> None:
 # ---------------------------------------------------------------------------
 # http: trusted policy, the binding and its preload
 
+# Units that build an http policy for this host's own platform. Windows
+# refuses http in the isolated lane (its HTTP gate has no evidence there yet).
+needs_http_lane = pytest.mark.skipif(
+    "http" not in isolated_run_capabilities(),
+    reason="the isolated lane does not grant http on this platform",
+)
 
+
+@needs_http_lane
 def test_http_policy_reads_the_private_opt_in_only_with_http() -> None:
     opted_in = {"GENO_HTTP_ALLOW_PRIVATE": "yes"}
 
@@ -1997,6 +2005,7 @@ def test_http_policy_follows_the_platform_rules() -> None:
         IsolatedRunPolicy.from_config(policy.to_config(), "nt")
 
 
+@needs_http_lane
 def test_http_grant_binds_one_client_bounded_by_the_run_clock() -> None:
     clock = IsolatedRunClock(10.0, started_at=time.monotonic() - 8.0)
     policy = IsolatedRunPolicy(
@@ -2033,6 +2042,7 @@ def test_http_binding_checks_its_arguments_and_exposes_no_attributes() -> None:
         http_binding.open_body("POST", "http://example.test/", "text", "http_post")  # type: ignore[arg-type]
 
 
+@needs_http_lane
 def test_checked_host_state_accepts_the_http_binding_only_for_http() -> None:
     policy = IsolatedRunPolicy(capabilities=frozenset({"http", "print"}))
     runtime = sorted(policy.capabilities)
@@ -2189,6 +2199,7 @@ def _example_http(private: bool, timeout: float = 5.0) -> Any:
     return build_example_interpreter(policy, SandboxConfig(timeout=timeout), table)
 
 
+@needs_http_lane
 def test_example_http_callbacks_use_the_trusted_policy() -> None:
     from geno.tests.test_isolated_run_http import echo, local_server
 
@@ -2216,6 +2227,7 @@ def test_example_http_callbacks_use_the_trusted_policy() -> None:
     assert [hit.path for hit in server.hits] == ["/x"]
 
 
+@needs_http_lane
 def test_example_http_waits_at_most_the_interpreters_deadline() -> None:
     from geno.tests.test_isolated_run_http import local_server, stall
 
@@ -2238,6 +2250,7 @@ def test_example_http_waits_at_most_the_interpreters_deadline() -> None:
     assert elapsed < 5.0, elapsed
 
 
+@needs_http_lane
 def test_example_interpreter_needs_the_http_binding() -> None:
     policy = IsolatedRunPolicy(capabilities=frozenset({"http"}))
 
