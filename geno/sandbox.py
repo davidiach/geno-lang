@@ -2586,7 +2586,9 @@ def main():
         ):
             sys.exit(1)
 
-        # File size limit (prevent file creation)
+        # File size limit (prevent file creation). In an isolated `geno run`
+        # it is the resolved per-file write limit: 0 without an fs grant, the
+        # fs facade's limit with one (an OS backstop for the same number).
         file_limit = config.get("max_file_size_bytes", 0)
         if not _try_setrlimit(
             resource.RLIMIT_FSIZE, file_limit, file_limit, "RLIMIT_FSIZE"
@@ -2770,6 +2772,9 @@ def main():
                 _IsolatedRunClock(
                     _run_policy.deadline_seconds, started_at=_worker_started_at
                 ),
+                # The per-file write limit is RLIMIT_FSIZE's, set above; an
+                # fs grant's facade enforces it on every platform.
+                max_file_size_bytes=config.get("max_file_size_bytes", 0),
             )
         except MemoryError:
             raise

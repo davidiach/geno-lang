@@ -30,6 +30,7 @@ from .._serve import (
 )
 from ..capabilities import (
     DEFAULT_ALLOWED_CAPABILITIES,
+    ISOLATED_RUN_FS_WRITE_LIMIT_BYTES,
     KNOWN_CAPABILITIES,
     isolated_env_name_error,
     isolated_run_capabilities,
@@ -730,13 +731,14 @@ def run_file(
     max_integer_bits: int = 33_219,
     max_memory_bytes: int | None = DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     max_cpu_time: float | None = None,
-    max_file_size_bytes: int = 0,
+    max_file_size_bytes: int | None = None,
     max_processes: int = 1,
     capabilities: set[str] | None = None,
     target: str | None = None,
     json_output: bool = False,
     program_args: list[str] | None = None,
     allow_env: Collection[str] | None = None,
+    max_total_write_bytes: int | None = None,
 ) -> int | None:
     """Run a Geno source file.
 
@@ -746,6 +748,10 @@ def run_file(
 
     ``allow_env`` holds the ``--allow-env`` names: the environment variables
     an isolated run granted ``env`` may read. Only that lane accepts them.
+
+    ``max_file_size_bytes`` and ``max_total_write_bytes`` are the isolated
+    lane's per-file and total write limits; ``None`` means the lane default:
+    0 without an ``fs`` grant, 64 MiB with one. Only that lane accepts them.
 
     Returns the process exit status a declared ``Int`` ``main`` asks for, or
     ``None`` when there is nothing to say and the process should exit 0. A
@@ -810,8 +816,10 @@ def run_file(
         process_only_overrides.append("--max-memory-bytes")
     if max_cpu_time is not None:
         process_only_overrides.append("--max-cpu-time")
-    if max_file_size_bytes != 0:
+    if max_file_size_bytes is not None:
         process_only_overrides.append("--max-file-size-bytes")
+    if max_total_write_bytes is not None:
+        process_only_overrides.append("--max-total-write-bytes")
     if max_processes != 1:
         process_only_overrides.append("--max-processes")
     if run_mode != "process" and process_only_overrides:
@@ -891,6 +899,7 @@ def run_file(
         # worker pays for again in the child. So this branch stays above the
         # frontend import block and imports the sandbox alone.
         from ..isolated_host import (
+            IsolatedRunPolicyError,
             isolated_env_snapshot,
             isolated_run_policy_for,
             with_program_stdin,
@@ -904,9 +913,35 @@ def run_file(
             TimeoutError,
         )
 
-        run_policy = isolated_run_policy_for(
-            capabilities, timeout=timeout, allow_env=allowed_env
+        # Both write limits default by grant: nothing can be written without
+        # `fs`, and 64 MiB per file and per run with it. An explicit value
+        # never grants `fs` or lifts read-only mode.
+        fs_granted = capabilities is not None and "fs" in capabilities
+        for flag, value in (
+            ("--max-file-size-bytes", max_file_size_bytes),
+            ("--max-total-write-bytes", max_total_write_bytes),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                print(f"Error: {flag} must be a non-negative integer", file=sys.stderr)
+                sys.exit(1)
+        file_size_limit = (
+            max_file_size_bytes
+            if max_file_size_bytes is not None
+            else (ISOLATED_RUN_FS_WRITE_LIMIT_BYTES if fs_granted else 0)
         )
+        try:
+            # Host policy (GENO_FS_*) is read here only for an `fs` grant.
+            run_policy = isolated_run_policy_for(
+                capabilities,
+                timeout=timeout,
+                allow_env=allowed_env,
+                max_total_write_bytes=max_total_write_bytes,
+            )
+        except IsolatedRunPolicyError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         # Only the allowed variables the caller actually has cross to the
         # worker, read before GENO_CLI_ARGS is set below, and only with `env`.
         env_snapshot = (
@@ -935,7 +970,7 @@ def run_file(
                 timeout=timeout,
                 max_memory_bytes=max_memory_bytes,
                 max_cpu_time=max_cpu_time,
-                max_file_size_bytes=max_file_size_bytes,
+                max_file_size_bytes=file_size_limit,
                 max_processes=max_processes,
                 max_recursion_depth=max_recursion_depth,
                 max_output_length=max_output_length,

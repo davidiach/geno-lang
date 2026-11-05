@@ -241,8 +241,22 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-file-size-bytes",
         type=_non_negative_int_arg,
-        default=0,
-        help="Process sandbox file-size limit in bytes (default: 0)",
+        default=None,
+        help=(
+            "Process sandbox per-file write limit in bytes, enforced by the "
+            "isolated fs facade and RLIMIT_FSIZE where available; 0 disables "
+            "file writes (default: 0, or 64 MiB with --cap fs)"
+        ),
+    )
+    run_parser.add_argument(
+        "--max-total-write-bytes",
+        type=_non_negative_int_arg,
+        default=None,
+        help=(
+            "Process sandbox limit on the bytes fs_write_text may write in one "
+            "run, examples and main together; 0 disables file writes "
+            "(default: 0, or 64 MiB with --cap fs)"
+        ),
     )
     run_parser.add_argument(
         "--max-processes",
@@ -713,6 +727,7 @@ def dispatch_args(
             ),
             max_cpu_time=args.max_cpu_time,
             max_file_size_bytes=args.max_file_size_bytes,
+            max_total_write_bytes=args.max_total_write_bytes,
             max_processes=args.max_processes,
             capabilities=caps,
             target=getattr(args, "target", None),
