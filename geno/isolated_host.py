@@ -39,9 +39,13 @@ from types import MappingProxyType
 from typing import IO, TYPE_CHECKING, Any
 
 from ._serve import (
+    HTTP_REQUEST_TIMEOUT_SECONDS,
+    _http_request_data,
     _resolve_fs_roots,
     _resolve_scoped_lstat_path,
     _resolve_scoped_path,
+    _send_http_request,
+    _validate_http_target,
     file_kind_name,
 )
 from .capabilities import (
@@ -360,7 +364,9 @@ def isolated_run_policy_for(
     *environ* (default ``os.environ``). With ``fs``,
     *max_total_write_bytes* is the ``--max-total-write-bytes`` value, or
     ``None`` for the lane default; without ``fs`` it is ignored and the
-    policy keeps 0. The program input handle of a ``stdin`` grant is added
+    policy keeps 0. With ``http``, ``GENO_HTTP_ALLOW_PRIVATE`` decides
+    private-network access, whatever the program's own environment
+    allowlist holds. The program input handle of a ``stdin`` grant is added
     just before launch, by :func:`with_program_stdin`.
     """
     capabilities = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
@@ -381,6 +387,12 @@ def isolated_run_policy_for(
                 else max_total_write_bytes
             ),
         }
+    http_fields: dict[str, Any] = {}
+    if "http" in capabilities:
+        source: Mapping[str, str] = os.environ if environ is None else environ
+        http_fields = {
+            "http_allow_private": _env_truthy(source.get("GENO_HTTP_ALLOW_PRIVATE"))
+        }
     policy = IsolatedRunPolicy(
         capabilities=capabilities,
         env_allowed_names=frozenset(
@@ -389,6 +401,7 @@ def isolated_run_policy_for(
         env_case_insensitive=case_insensitive,
         deadline_seconds=deadline,
         **fs_fields,
+        **http_fields,
     )
     policy.validate(os_name)
     return policy
@@ -861,10 +874,135 @@ class IsolatedFs(IsolatedHostBinding):
             handle.write(data)
 
 
+# The shortest timeout an HTTP connection attempt gets once the run's
+# deadline has (nearly) passed: it fails at once instead of blocking, and the
+# parent's hard kill ends the run anyway.
+HTTP_MIN_TIMEOUT_SECONDS = 0.001
+
+# The client modules ``_serve``'s validated HTTP client imports lazily, and
+# the hostname codec it needs: preloaded with an ``http`` grant only, before
+# the worker freezes its Darwin address-space baseline.
+ISOLATED_HTTP_SUPPORT_MODULES = (
+    "socket",
+    "ssl",
+    "http.client",
+    "urllib.error",
+    "urllib.parse",
+    "urllib.request",
+    "urllib.response",
+    "encodings.idna",
+)
+
+
+def preload_isolated_capability_support(
+    capabilities: Collection[str],
+) -> tuple[str, ...]:
+    """Import the trusted support modules a grant needs; return their names.
+
+    The isolated worker calls this during trusted setup, before it freezes
+    the Darwin address-space baseline and before it reads any untrusted
+    input, so those modules never count against the program's memory budget.
+    Only ``http`` needs any: a run without it loads no client module.
+    """
+    import importlib
+
+    modules = ISOLATED_HTTP_SUPPORT_MODULES if "http" in capabilities else ()
+    for module_name in modules:
+        importlib.import_module(module_name)
+    return modules
+
+
+class IsolatedHttp(IsolatedHostBinding):
+    """The ``http`` grant's binding: the validated client, bounded by the deadline.
+
+    Requests go through the client ``geno run --unsafe --cap http`` uses
+    (``_serve._validate_http_target`` and ``_serve._send_http_request``): only
+    ``http`` and ``https``, destinations resolved, validated and pinned for
+    every connection and redirect hop, at most ten redirects with caller
+    headers dropped across origins, ``ProxyHandler({})`` so that no proxy
+    variable reroutes a request, and TLS certificate and hostname checks.
+    Non-public destinations are refused unless *allow_private* (the parent's
+    ``GENO_HTTP_ALLOW_PRIVATE``, never a variable the program can name).
+
+    Each connection attempt waits at most :data:`HTTP_REQUEST_TIMEOUT_SECONDS`
+    and at most the time *remaining* (the run clock) reports, read afresh for
+    every hop, so no hop or phase resets the run's deadline; DNS and blocked
+    reads past it are ended by the parent's hard kill. The response handle
+    goes back to the runtime prelude, which reads it with its own bounded
+    reader and closes it; it never reaches Geno code.
+    """
+
+    __slots__ = ("_allow_private", "_remaining")
+
+    def __init__(
+        self, *, allow_private: bool, remaining: Callable[[], float | None]
+    ) -> None:
+        if not isinstance(allow_private, bool):
+            raise TypeError("allow_private must be a boolean")
+        if not callable(remaining):
+            raise TypeError("remaining must be callable")
+        self._allow_private = allow_private
+        self._remaining = remaining
+
+    @property
+    def allow_private(self) -> bool:
+        """Whether the trusted policy allows non-public destinations."""
+        return self._allow_private
+
+    def timeout_seconds(self) -> float:
+        """The longest the next connection attempt may take."""
+        remaining = self._remaining()
+        if remaining is None:
+            return HTTP_REQUEST_TIMEOUT_SECONDS
+        return min(
+            HTTP_REQUEST_TIMEOUT_SECONDS, max(remaining, HTTP_MIN_TIMEOUT_SECONDS)
+        )
+
+    def _send(
+        self, method: str, url: str, headers: Any, data: bytes | None, fn_name: str
+    ) -> Any:
+        return _send_http_request(
+            method,
+            url,
+            headers,
+            data,
+            fn_name,
+            allow_private_networks=self._allow_private,
+            timeout=self.timeout_seconds,
+        )
+
+    def open_body(self, method: str, url: str, data: bytes | None, fn_name: str) -> Any:
+        """Send ``http_fetch``'s or ``http_post``'s request; return the response.
+
+        *data* is the UTF-8 request body, sent as ``application/json``, or
+        ``None``. Scheme, destination, redirect and transport failures raise
+        ``RuntimeError``, ``OSError`` or ``ValueError`` with the ``--unsafe``
+        messages; a response with an error status is still returned.
+        """
+        if data is not None and not isinstance(data, bytes):
+            raise TypeError(f"{fn_name}: the request body must be bytes")
+        _validate_http_target(url, fn_name, allow_private_networks=self._allow_private)
+        headers = [] if data is None else [("Content-Type", "application/json")]
+        return self._send(method, url, headers, data, fn_name)
+
+    def open_request(
+        self, method: str, url: str, headers: Any, body: str | None, fn_name: str
+    ) -> Any:
+        """Send ``http_request``'s request; return the response.
+
+        As ``--unsafe``: the method is upper-cased, an empty ``GET`` or
+        ``HEAD`` body sends none, and *headers* are ``(name, value)`` pairs.
+        """
+        _validate_http_target(url, fn_name, allow_private_networks=self._allow_private)
+        normalized_method, data = _http_request_data(method, body)
+        return self._send(normalized_method, url, headers, data, fn_name)
+
+
 # The binding class each capability's host table entry must be.
 _BINDING_TYPES: dict[str, type[IsolatedHostBinding]] = {
     "env": IsolatedEnv,
     "fs": IsolatedFs,
+    "http": IsolatedHttp,
     "stdin": IsolatedStdin,
 }
 
@@ -876,6 +1014,7 @@ def build_host_table(
     env_snapshot: Mapping[str, str] | None = None,
     fs_roots: Sequence[str] | None = None,
     max_file_size_bytes: int = 0,
+    clock: IsolatedRunClock | None = None,
 ) -> dict[str, IsolatedHostBinding]:
     """Return the private host table for a validated policy.
 
@@ -891,6 +1030,10 @@ def build_host_table(
     per-file write limit from the parent-set worker configuration; the
     policy supplies the read-only and absolute-path rules and the run's total
     write budget. Roots without ``fs`` are refused.
+
+    With ``http``, *clock* is the run's one deadline (a clock started now
+    when omitted), which bounds every connection attempt, and the policy
+    decides private-network access.
     """
     policy.validate()
     table: dict[str, IsolatedHostBinding] = {}
@@ -917,6 +1060,11 @@ def build_host_table(
         )
     elif fs_roots is not None:
         raise ValueError("filesystem roots require the 'fs' capability")
+    if "http" in policy.capabilities:
+        run_clock = clock or IsolatedRunClock(policy.deadline_seconds)
+        table["http"] = IsolatedHttp(
+            allow_private=policy.http_allow_private, remaining=run_clock.remaining
+        )
     return table
 
 
@@ -1127,6 +1275,31 @@ def _install_example_fs_callbacks(interpreter: Interpreter, fs: IsolatedFs) -> N
         bind(name, BuiltinFunction(name, function, len(params), params))
 
 
+def _install_example_http_callbacks(
+    interpreter: Interpreter, http: IsolatedHttp
+) -> None:
+    """Back the example interpreter's HTTP builtins with *http*'s policy.
+
+    They are ``_serve.install_http_callbacks`` (``--unsafe``'s), over the same
+    validated client ``main`` uses through *http*, with the trusted
+    private-network policy and a timeout bounded by both the run's clock and
+    the interpreter's own deadline, so the example phase gets no fresh
+    allowance either.
+    """
+    from ._serve import install_http_callbacks
+
+    def _timeout() -> float:
+        bound = http.timeout_seconds()
+        deadline = interpreter._deadline
+        if deadline is not None:
+            bound = min(bound, deadline - time.perf_counter())
+        return max(bound, HTTP_MIN_TIMEOUT_SECONDS)
+
+    install_http_callbacks(
+        interpreter, allow_private_networks=http.allow_private, timeout=_timeout
+    )
+
+
 def build_example_interpreter(
     policy: IsolatedRunPolicy,
     sandbox_config: SandboxConfig,
@@ -1169,6 +1342,11 @@ def build_example_interpreter(
         if not isinstance(fs, IsolatedFs):
             raise ValueError("the fs grant has no host binding")
         _install_example_fs_callbacks(interpreter, fs)
+    if "http" in policy.capabilities:
+        http = table.get("http")
+        if not isinstance(http, IsolatedHttp):
+            raise ValueError("the http grant has no host binding")
+        _install_example_http_callbacks(interpreter, http)
     return interpreter
 
 

@@ -611,6 +611,42 @@ def test_quotas_differ_from_unsafe_as_documented(tmp_path: Path) -> None:
     assert plain_unsafe.stdout == "ok a.txt\n"
 
 
+def test_fs_grant_keeps_the_hard_limits(tmp_path: Path) -> None:
+    # The grant changes what the program may touch, never how it is bounded:
+    # reads stay under the collection limit and the hard kill still fires.
+    _write(tmp_path, "big.txt", "a" * 50)
+    _write(
+        tmp_path,
+        "read.geno",
+        'func main() -> Unit\n    print(fs_read_text("big.txt").unwrap())\nend func\n',
+    )
+    _write(
+        tmp_path,
+        "spin.geno",
+        "func main() -> Unit\n"
+        '    print(to_string(fs_exists("big.txt")))\n'
+        "    var n = 0\n"
+        "    while true do\n"
+        "        n = n + 1\n"
+        "    end while\n"
+        "end func\n",
+    )
+
+    read = _geno(
+        "--cap", "fs,print", "--max-collection-size", "10", "read.geno", cwd=tmp_path
+    )
+    spin = _geno(
+        "--cap", "fs,print", "--timeout", "2", "spin.geno", cwd=tmp_path, timeout=30
+    )
+
+    assert read.returncode == 1
+    assert "String size exceeds limit" in read.stderr
+    assert read.stdout == ""
+    assert spin.returncode == 1
+    assert "Limit Error:" in spin.stderr
+    assert "timed out" in spin.stderr
+
+
 # ---------------------------------------------------------------------------
 # Examples share the facade, its roots and its budget
 

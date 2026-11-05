@@ -2460,6 +2460,7 @@ def main():
                 IsolatedRunPolicy as _IsolatedRunPolicy,
                 checked_prepared_host_state as _checked_prepared_host_state,
                 frontend_error_tags as _frontend_error_tags,
+                preload_isolated_capability_support as _preload_isolated_support,
             )
             _preload_process_run_support()
     except BaseException as exc:
@@ -2487,6 +2488,17 @@ def main():
             _emit_worker_error(
                 "startup_error: invalid isolated run policy: "
                 + _truncate_worker_text(str(exc), max_result_error),
+                "startup_error",
+            )
+            sys.exit(1)
+        # Only a validated grant's support joins the trusted baseline: the
+        # HTTP client modules load here with `http` and never without it.
+        try:
+            _preload_isolated_support(_run_policy.capabilities)
+        except BaseException as exc:
+            _emit_worker_error(
+                "startup_error: failed to load trusted worker support: "
+                + type(exc).__name__,
                 "startup_error",
             )
             sys.exit(1)

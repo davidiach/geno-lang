@@ -29,7 +29,7 @@ DEFAULT_ALLOWED_CAPABILITIES = frozenset({"print", "clock", "random"})
 # 0013 adds its capability here once its implementation and gates land; any
 # other capability is refused before the worker starts.
 ISOLATED_RUN_CAPABILITIES = frozenset(
-    {"clock", "env", "fs", "print", "random", "regex"}
+    {"clock", "env", "fs", "http", "print", "random", "regex"}
 )
 
 # The lane default of both isolated write limits when ``fs`` is granted: the

@@ -5514,6 +5514,20 @@ def _http_body(method: str, url: str, body: Any, fn_name: str) -> Any:
     Every received status is a response. Scheme, transport, redirect-policy
     and network-policy failures are ``Err``; exceeding the output limit is not.
     """
+    host = _geno_host_module("http")
+    if host is not None:
+        # Isolated `geno run`: the trusted client validates, pins and sends.
+        try:
+            with host.open_body(method, url, body, fn_name) as resp:
+                result = _read_limited_utf8_stream(
+                    resp, fn_name, limit_error_type=_GenoOutputLimitError
+                )
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return Err(str(e))
+        _check_string_result_size(fn_name, len(result))
+        return Ok(result)
     from urllib.error import HTTPError
     from urllib.request import Request
 
@@ -5553,6 +5567,21 @@ def http_post(url: str, body: str) -> Any:
 def http_request(method: str, url: str, headers, body):
     """Make an HTTP request, returning Result[HttpResponse, String]."""
     _require_cap("http", "http_request")
+    host = _geno_host_module("http")
+    if host is not None:
+        # Isolated `geno run`: the trusted client validates, pins and sends.
+        try:
+            with host.open_request(method, url, headers, body, "http_request") as resp:
+                resp_headers = [(k, v) for k, v in resp.getheaders()]
+                body_text = _read_limited_utf8_stream(
+                    resp, "http_request", limit_error_type=_GenoOutputLimitError
+                )
+                response = HttpResponse(resp.status, body_text, resp_headers)
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return Err(str(e))
+        return _check_collection_size(Ok(response))
     from urllib.error import HTTPError, URLError
     from urllib.request import Request
 

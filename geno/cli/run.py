@@ -517,6 +517,7 @@ def _prepare_process_run(
         env_snapshot=env_snapshot,
         fs_roots=fs_roots,
         max_file_size_bytes=max_file_size_bytes,
+        clock=clock,
     )
     example_output_length = 0
     if check_examples and _program_has_example_clauses(program, parsed_modules):
@@ -932,7 +933,9 @@ def run_file(
             else (ISOLATED_RUN_FS_WRITE_LIMIT_BYTES if fs_granted else 0)
         )
         try:
-            # Host policy (GENO_FS_*) is read here only for an `fs` grant.
+            # Host policy is read here only for the capability it configures:
+            # GENO_FS_* for an `fs` grant, GENO_HTTP_ALLOW_PRIVATE for `http`
+            # (never through the program's own --allow-env names).
             run_policy = isolated_run_policy_for(
                 capabilities,
                 timeout=timeout,
