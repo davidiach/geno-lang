@@ -159,6 +159,29 @@ Tier 5 is the target package-public policy. The current implementation supports
 `export`, `test` blocks, and `@untested`, but does not yet enforce the stricter
 "exported functions must have examples" rule.
 
+### Property checks across the tiers (0.7 development line)
+
+`geno test --properties` (Experimental; [spec v0.7](../spec/v0.7.md) section
+5.4, [proposal 0017](../proposals/0017-panic-examples-and-property-checks.md))
+adds a check that needs no extra code: each eligible function is called on
+generated inputs and judged against its own `requires`, `ensures` and panics
+examples. Eligibility follows the tiers:
+
+| Tier | Property-checked? |
+|------|-------------------|
+| 1 | Yes, when it has at least one parameter |
+| 2 | Yes, when it has no effects but mutation, whether it has examples or is covered by a `test` block |
+| 3 | No: an effect other than mutation, or `@untested`, excludes it |
+| 4 | No: `main`, `async` and the app lifecycle hooks are excluded |
+| 5 | Yes, in the project's own modules; dependency and standard-library modules are not checked |
+
+The check is opt-in, so it changes no tier's requirement: plain `geno test`
+reports and exits as before. What it adds is pressure on the contracts. A
+Tier 1 or Tier 2 function needs a `requires` for every precondition its body
+assumes, and a panics example for every panic it means to raise; otherwise
+the generated input that violates the assumption is reported as a failure,
+with a shrunk counterexample.
+
 ## Migration Path
 
 ### Current behavior (v0.3.x)
@@ -193,6 +216,46 @@ Tier 5 is the target package-public policy. The current implementation supports
 8. **Strictness flag**: `geno check --strict` requires Tier 5 rules everywhere
 
 ## Syntax Details
+
+### Panics examples (0.7 development line)
+
+```geno
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func safe_div
+```
+
+- `example <inputs> panics` states that the call must panic; an optional
+  string must be part of the panic's message, compared ignoring case. A
+  zero-argument function writes `example () panics`.
+- A panics example counts as an example: a Tier 1 function whose only
+  examples are panics examples meets the "at least one `example`" rule.
+- A resource limit (steps, time, recursion depth, collection, integer or
+  output size) or a host refusal (E412, E413, E500) does not satisfy it.
+- `geno test --properties` treats a function with a panics example as
+  panicking on purpose: its other panics are not failures, but an `ensures`
+  violation still is.
+
+### Property checks
+
+```text
+geno test --properties [--trials N] [--seed S] [--filter GLOB] [--json] PATH
+```
+
+- Opt-in and Experimental. Runs after a file's examples and test blocks, in
+  an interpreter of its own with no capabilities.
+- `--trials` sets the generated inputs per function (1 to 10,000, default
+  100), and `--seed` the seed (default 0, printed with every failure). Either
+  one without `--properties` is a usage error.
+- Each call has a 200,000-step allowance; each function a 5,000,000-step
+  trial budget and a separate 4,000,000-step shrink budget. A call that uses
+  up its full allowance is a resource-limit failure; a function whose budget
+  runs out first is reported as `incomplete`, a warning.
+- Only a property failure changes the exit status. `gave_up` (nearly every
+  input was rejected by `requires`), `incomplete` and `skipped` (for example,
+  a parameter type with no generator) are warnings.
 
 ### Test blocks
 

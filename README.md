@@ -53,6 +53,11 @@ $ geno run score.geno
 - `example` clauses are executable specifications.
 - `requires` states a checked precondition.
 - Explicit `end` tokens make generated block boundaries unambiguous.
+- On the 0.7 development line, `example 1, 0 panics "division"` states that a
+  call must panic, and `geno test --properties` (experimental) checks
+  `requires`/`ensures` on generated inputs and prints a failing input, shrunk,
+  in the form that follows `example` ([spec v0.7](docs/spec/v0.7.md) sections
+  5.3.1 and 5.4).
 
 ## Quickstart
 

@@ -2,6 +2,7 @@
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -9,6 +10,9 @@ from geno.interpreter import interpret
 from geno.lexer import Lexer
 from geno.parser import ParseError, Parser
 from geno.typechecker import TypeChecker
+
+if TYPE_CHECKING:
+    from geno.property_check import PropertyResult
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -174,3 +178,62 @@ def test_common_pitfalls_panics_fix_is_the_one_geno_applies():
     # Both start with comment lines: two before the program, one before the fix.
     assert geno.fix(wrong).source.split("\n")[2:] == right.split("\n")[1:]
     assert geno.run(right + "\nfunc main() -> Unit\nend func\n").ok
+
+
+def _property_results(
+    code: str, source: str, module: str = "snippet"
+) -> "dict[str, PropertyResult]":
+    """`geno test --properties` results (default settings) by function name.
+
+    *module* is the logical module name, which keys each function's inputs:
+    the file stem for a single file.
+    """
+    from geno.property_check import check_module_properties
+
+    program = Parser(Lexer(code, source).tokenize(), code).parse_program()
+    checker = TypeChecker()
+    checker.check_program(program)
+    results = check_module_properties(
+        program, checker, module=module, path=source, source=code
+    )
+    return {result.function: result for result in results}
+
+
+def test_docs_that_state_a_domain_pass_their_property_checks():
+    """The contracts the docs teach as domains survive `geno test --properties`.
+
+    Without its upper bound, the tour's `factorial` runs out of the integer
+    size limit and the guide's `isqrt` out of the step limit.
+    """
+    tour = _geno_snippet_after_heading("docs/guide/language-tour.md", "### Contracts")
+    statuses = {
+        name: result.status
+        for name, result in _property_results(tour, "tour#contracts").items()
+    }
+    assert statuses == {"factorial": "passed"}
+
+    section = _section(
+        "docs/llm-prompting.md",
+        "### 20. Examples that expect a panic, and `requires` as the domain",
+    )
+    _wrong, *right = re.findall(r"```\n(.*?)```", section, re.S)
+    statuses: dict[str, str] = {}
+    for number, code in enumerate(right):
+        results = _property_results(code, f"llm-prompting#20-{number}")
+        statuses.update({name: result.status for name, result in results.items()})
+    # `usage` takes no arguments, so it is out of scope.
+    assert statuses == {"safe_div": "passed", "isqrt": "passed"}
+
+
+def test_spec_property_check_sample_matches_the_engine():
+    path = "docs/spec/v0.7.md"
+    heading = "### 5.4 Property Checks"
+    code = _geno_snippet_after_heading(path, heading)
+    # The sample is `geno test --properties abs.geno`: module `abs`.
+    result = _property_results(code, "abs.geno", module="abs")["abs_val"]
+
+    section = _section(path, heading)
+    assert result.failure is not None and result.counterexample is not None
+    assert f"        {result.failure.summary}\n" in section
+    assert f"        counterexample: {result.counterexample.arguments}\n" in section
+    assert f'"trials_run": {result.trials_run},' in section

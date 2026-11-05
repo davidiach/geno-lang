@@ -14,7 +14,8 @@
     "conformance": "conformance/v0.7/manifest.toml",
     "additions": [
       "Panic examples (proposal 0017): `example <inputs> panics` and `example <inputs> panics \"message\"` state that the call must panic; `example () panics` for a zero-argument function. A resource limit or a host refusal does not satisfy one. `panics` stays an identifier.",
-      "E330 (proposal 0017): an example whose expected value is written as a panic (`-> panics`, `-> panics \"m\"`, `-> panic`, `-> panic(\"m\")`) is an error with a fix that writes the `panics` form; `example panics` and `panics \"\"` are E201 and E202 with fixes. `-> panic(...)`, which 0.6 accepted although such an example could never pass, is a recorded 0.7 breaking change."
+      "E330 (proposal 0017): an example whose expected value is written as a panic (`-> panics`, `-> panics \"m\"`, `-> panic`, `-> panic(\"m\")`) is an error with a fix that writes the `panics` form; `example panics` and `panics \"\"` are E201 and E202 with fixes. `-> panic(...)`, which 0.6 accepted although such an example could never pass, is a recorded 0.7 breaking change.",
+      "Property checks (proposal 0017, Experimental): `geno test --properties [--trials N] [--seed S]` calls each eligible function on generated inputs, discards inputs its own `requires` rejects, and fails on an `ensures` violation, a panic (unless the function has a panics example) or a resource limit, printing a shrunk counterexample as `example` inputs. Runs are deterministic for a seed (default 0); budgets are counted in interpreter steps (200,000 per call); plain `geno test` is unchanged. A failed contract carries structured `clause`, `reason`, `clause_index`, `call_depth` and `result_display` fields."
     ]
   },
 

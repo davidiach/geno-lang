@@ -39,6 +39,32 @@ package version stays 0.6.0, and the Draft
   `status = "development"` that `scripts/run_conformance.py --all-retained`
   runs after the retained v0.5 and v0.6 corpora. `spec.json` records the draft
   in a new `development_line` object, which `scripts/validate_spec.py` checks.
+- `geno test --properties` (Experimental), from the same proposal
+  ([spec v0.7](docs/spec/v0.7.md) section 5.4). It calls every function that
+  has no effects but mutation on generated arguments (100 per function, or
+  `--trials N` up to 10,000) and judges each call by the function's own
+  contracts. An input its `requires` rejects is discarded. An `ensures`
+  violation, a panic (unless the function has a panics example) or a resource
+  limit fails it. A failing input is shrunk and printed in the form that
+  follows `example`, with a reproduce command. Runs are deterministic: the
+  default seed is 0, and `--seed S` and `--filter` reproduce a function's
+  inputs from any directory. Work is counted in interpreter steps: 200,000
+  per call, 5,000,000 per function for trials and 4,000,000 for shrinking, with
+  a wall-clock safety stop. A call that uses up its full allowance is a
+  `limit` failure; a function whose budget runs out first is `incomplete`.
+  `gave_up`, `incomplete` and `skipped` are warnings, and only a failed
+  property makes the run exit 1. `--json` gains a `properties` object. Single
+  files, directories and projects are supported; in a project only its own
+  modules are checked. Trials run in an interpreter of their own with no
+  capabilities. Plain `geno test`, its JSON and its exit status are
+  unchanged, and the property engine is imported only with `--properties`.
+- `geno.values.ContractViolationError` carries structured fields: `clause`
+  (`"requires"` or `"ensures"`), `reason` (`"false"` or `"propagate"`),
+  `clause_index`, `call_depth` (now set on every violation) and
+  `result_display`. Property checks, `geno test` and example verification
+  read these instead of parsing the message. Also new for embedders and
+  tools: `Interpreter.step_allowance(n)`, `geno.parser.parse_expression()` and
+  `TypeChecker.check_project_graph(..., retain_module_checkers=True)`.
 
 ### Changed (breaking)
 
@@ -67,6 +93,20 @@ package version stays 0.6.0, and the Draft
   `max_output_length`) are now `geno.values.RuntimeLimitError`, a subclass of
   `GenoRuntimeError`, so a limit is told from a panic by type. Their messages
   and error codes are unchanged.
+- `geno test` reads whether a failure was a `requires` or an `ensures` from
+  the violation's `clause` field, not its message. A program's own
+  `panic("Precondition failed ...")` is therefore reported as an `example`
+  failure, not a `requires` failure.
+
+### Fixed
+
+- A nullary constructor of a generic ADT nested in another constructor call
+  type-checks. With `type Tree[T] = Leaf | Node(left: Tree[T], value: T,
+  right: Tree[T])`, `Node(Leaf, 1, Leaf)` was rejected ("expected Tree[T], got
+  Tree[__ctor_arg0___fresh_T_2]") as an example input, in an annotated `let`,
+  as a call argument and in a generic function's body. It is now a
+  `Tree[Int]`, and mistyped values such as `Node(Leaf, "x", Node(Leaf, 1,
+  Leaf))` are still rejected.
 
 ## [0.6.0] - 2026-10-25
 

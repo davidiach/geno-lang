@@ -154,7 +154,10 @@ class TestEnsuresFailures:
 
         assert result.status == "passed"
         assert result.trials_run == 100
-        assert elapsed < 1.0
+        # Locally this takes well under a second; the budget leaves room for
+        # coverage instrumentation and slow hosted runners while still
+        # catching a pathological slowdown.
+        assert elapsed < 10.0
 
     def test_clause_text_drops_the_keyword_and_a_trailing_comment(self):
         source = """\
@@ -371,7 +374,10 @@ class TestPanicsExamples:
 
 class TestLimits:
     def test_the_failure_names_the_per_call_allowance(self):
-        result = check(SPIN)["spin"]
+        # A generous wall-clock allowance keeps the step limit the binding one
+        # on slow runners (coverage instrumentation makes 200,000 steps take
+        # longer than the default per-call deadline).
+        result = check(SPIN, call_max_seconds=120.0, timeout=120.0)["spin"]
 
         assert result.status == "failed"
         assert result.failure is not None
@@ -1052,6 +1058,50 @@ class TestShrinking:
         result = check(ABS_BUG, max_shrink_calls=1, seed=1)["abs_val"]
         assert result.status == "failed"
         assert result.counterexample is not None
+
+    def test_integer_candidates_come_in_increasing_magnitude(self):
+        # 0, the small fractions value/2**k first, then value - value/2**k
+        # from value/2 up, then one step toward 0 (999 is value - value/512).
+        assert list(property_check._shrink_int(1000)) == [
+            0, 1, 3, 7, 15, 31, 62, 125, 250,
+            500, 750, 875, 938, 969, 985, 993, 997, 999,
+        ]  # fmt: skip
+        assert list(property_check._shrink_int(-9))[:3] == [0, -1, -2]
+        assert list(property_check._shrink_int(1)) == [0]
+        assert list(property_check._shrink_int(0)) == []
+
+    def test_a_limit_found_at_the_largest_int_shrinks_near_its_threshold(self):
+        # Only the generated extreme 2**53 - 1 reaches the loop, and every
+        # failing candidate costs a full call allowance. Halving one step at a
+        # time spent the shrink budget about 20 halvings in, near 2**33; the
+        # small candidates first reach the threshold within the same budget
+        # ratio as the defaults (20 failing calls).
+        source = """\
+        func slow_above(n: Int) -> Int
+            example 0 -> 0
+            var i = 0
+            if n > 1000000 then
+                while true do
+                    i = i + 1
+                end while
+            end if
+            return i
+        end func
+        """
+        result = _first_seed(
+            source,
+            "slow_above",
+            lambda r: (
+                r.counterexample is not None
+                and r.counterexample.original == str(MAX_SAFE_INT)
+            ),
+            call_max_steps=20_000,
+            shrink_step_budget=400_000,
+        )
+
+        assert result.failure is not None and result.failure.kind == "limit"
+        assert result.counterexample is not None
+        assert 1_000_000 < int(result.counterexample.arguments) < 2_000_002
 
     def test_render_arguments(self):
         int_sample = Sample("int", Type(), 3)

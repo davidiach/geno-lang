@@ -169,6 +169,7 @@ let msg2: String = greet("Bob", "Hi")         // "Hi, Bob"
 ```geno
 func factorial(n: Int) -> Int
     requires n >= 0
+    requires n <= 18
     ensures result >= 1
     example 5 -> 120
     example 0 -> 1
@@ -180,8 +181,10 @@ end func
 ```
 
 `requires` states the function's domain: a call outside it fails before the
-body runs. `ensures` states what every result satisfies, and `result` names
-the returned value. Both are checked on every call, including the examples'.
+body runs. Here the domain is 0 to 18, because `18!` is the largest factorial
+an `Int` holds on every backend. `ensures` states what every result satisfies,
+and `result` names the returned value. Both are checked on every call,
+including the examples'.
 
 `example -1 panics` states that a call ends in a panic; it is new in the 0.7
 development line ([spec v0.7](../spec/v0.7.md), section 5.3.1). There is no
@@ -191,6 +194,27 @@ rejected (E330) with a fix that writes the `panics` form. A message after
 `example 1, 0 panics "division"`. A zero-argument function writes
 `example () panics`. Running out of a resource limit, such as an infinite loop
 hitting the step limit, is not a panic and fails the example.
+
+Examples check the contracts on the inputs you wrote. `geno test --properties`
+(experimental, also new in the 0.7 line; spec v0.7 section 5.4) checks them on
+generated inputs too. It calls each function that has no effects but mutation
+on a hundred generated inputs, discarding the ones its `requires` rejects. A
+call fails the check when an `ensures` breaks, when the function panics
+without a panics example saying it may, or when it runs out of a resource
+limit. A failing input is shrunk to a small counterexample. Without `requires n <= 18`, `factorial`
+passes plain `geno test`, but the property check reports:
+
+```text
+Properties (seed 0, 100 trials per function)
+  FAIL  factorial  factorial.geno:1
+        hit the integer size limit
+        counterexample: 3249  (shrunk from 9007199254740991 in 5 steps)
+        reproduce: geno test --properties --seed 0 --filter factorial factorial.geno
+```
+
+The fix is one of three: correct the body; add the `requires` that states the
+domain, as here; or add a panics example that says the panic is intended. The
+seed is fixed (0 unless you pass `--seed`), so a run reproduces exactly.
 
 ### Generic Functions
 

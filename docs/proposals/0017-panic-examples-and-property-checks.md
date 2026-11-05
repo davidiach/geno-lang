@@ -35,17 +35,20 @@ counterexample, and prints it as an `example` line:
 
 ```text
 $ geno test --properties abs.geno
-  PASS  abs.geno (1/1)
+  PASS  abs.geno (1/1) 15ms
 
 Properties (seed 0, 100 trials per function)
   FAIL  abs_val  abs.geno:1
         ensures result >= 0 failed (result was -1)
-        counterexample: -1  (shrunk from -37 in 5 steps)
+        counterexample: -1
         reproduce: geno test --properties --seed 0 --filter abs_val abs.geno
 
-1 passed, 0 failed, in 0.03s
+1 passed, 0 failed, in 0.04s
 Properties: 0 passed, 1 failed
 ```
+
+(Seed 0 generates `-1` on the third trial, so nothing is shrunk. A larger
+first failure is printed as `counterexample: -1  (shrunk from -37 in 1 step)`.)
 
 `panics` is a contextual word: it means "expects a panic" only directly after an
 example's inputs, and stays an ordinary identifier everywhere else. Plain
@@ -699,8 +702,10 @@ per-call caps.)
 - **Per function, shrink phase:** a separate `PROPERTY_SHRINK_STEP_BUDGET =
   4_000_000` steps and at most 500 candidate calls, so a failing trial always
   leaves room to shrink. A looping counterexample costs one per-call allowance
-  per looping candidate, so about 20 looping candidates fit; greedy halving
-  toward 0 needs about `log2(n)` of them.
+  per looping candidate, so about 20 looping candidates fit. Trying the
+  smallest `Int` candidates first (5.5) means that, when every input above a
+  threshold loops, the first looping candidate accepted is already less than
+  twice the threshold, even from `2^53 - 1`.
 - **Safety stop:** `2 × --timeout` of wall time per function (10 s by default),
   across both phases.
 
@@ -752,7 +757,7 @@ not failures. A looping counterexample shrinks like any other: for
 
 | Sample | Candidates, in order |
 | --- | --- |
-| `Int n` | `0`, then `n - n // 2^k` toward 0 for k = 1, 2, ..., then `n ∓ 1` |
+| `Int n` | `0`, then `n // 2^k` for k = K, ..., 2 (the smallest first), then `n - n // 2^k` for k = 1, 2, ... (from `n / 2` up), then `n ∓ 1`: increasing magnitude |
 | `Float x` | `0.0`, `trunc(x)`, `x / 2`, `x` rounded to fewer decimals |
 | `String` | `""`, drop the first or last half, drop one character, replace a character with `a` |
 | `List`, `Vec`, `Array`, `Set`, `Map` | empty, drop the first or last half, drop one element, shrink one element |
@@ -760,6 +765,21 @@ not failures. A looping counterexample shrinks like any other: for
 | ADT value | a minimal-depth variant, a recursive field of the same type (`Node(l, v, r)` to `l` or `r`), then its fields |
 | `Option` | `None`, then the inner value |
 | `Result` | the inner value |
+
+The `Int` row was corrected while implementing package 5. As first designed,
+the candidates after `0` started at `n / 2`, so each accepted candidate at most
+halved the input. That is enough from the sizes the trials grow through
+(`|n| ≤ 2048`), but a function that is slow only for large inputs is first
+caught at the generated extreme `2^53 - 1`, and every failing candidate costs a
+full call allowance. Halving one step at a time then spent the 4,000,000-step
+shrink budget about 20 halvings in. The language tour's `factorial` (only
+`requires n >= 0`) was reported as `134217728` after 6.7 s; a linear `isqrt`
+as `17179869184`. Trying the small fractions first costs little, because
+they pass cheaply. When every input from some threshold up fails, the first
+candidate that fails is less than twice the threshold. The same two functions
+now shrink to `3249` (the first `n` whose factorial exceeds the integer-size
+limit, in 3.0 s) and `243793920` (just above the step-limit threshold). The
+other shrink results in the test suite are unchanged.
 
 #### 5.6 Results
 
@@ -811,7 +831,7 @@ envelope too. Every field is always present, `null` when it does not apply:
       "function": "abs_val",
       "line": 1,
       "status": "failed",
-      "trials_run": 4,
+      "trials_run": 3,
       "discarded": 0,
       "failure": {
         "kind": "ensures",
@@ -820,7 +840,7 @@ envelope too. Every field is always present, `null` when it does not apply:
         "result": "-1",
         "limit": null
       },
-      "counterexample": {"arguments": "-1", "original": "-37", "shrink_steps": 5},
+      "counterexample": {"arguments": "-1", "original": "-1", "shrink_steps": 0},
       "note": null
     }
   ]

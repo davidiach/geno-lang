@@ -877,11 +877,31 @@ def _toward_zero(value: int, divisor: int) -> int:
 
 
 def _shrink_int(value: int) -> Iterator[int]:
-    """0, then value minus value/2**k toward 0 (k = 1, 2, ...), then one step."""
+    """Candidates in increasing magnitude, then one step toward 0.
+
+    0; then value/2**k for k = K, ..., 2 (the smallest first); then value
+    minus value/2**k (k = 1, 2, ...), from value/2 up to value; then value
+    one closer to 0. Trying the small fractions first matters when a failing
+    call is expensive: a limit failure found at ``MAX_SAFE_INT`` costs a full
+    call allowance for every failing candidate, so halving one step at a time
+    would spend the shrink budget about 20 halvings in, far from the
+    threshold. Here the small candidates pass cheaply, and when every input
+    from some threshold up fails, the first candidate that fails is less
+    than twice that threshold.
+    """
     if value == 0:
         return
     offered = {value}
     candidates = [0]
+    fractions: list[int] = []
+    divisor = 4
+    while True:
+        fraction = _toward_zero(value, divisor)
+        if fraction == 0:
+            break
+        fractions.append(fraction)
+        divisor *= 2
+    candidates.extend(reversed(fractions))
     divisor = 2
     while True:
         step = _toward_zero(value, divisor)

@@ -504,10 +504,13 @@ writes `example () panics`, never `example panics`.
 `requires` on every precondition the body assumes, instead of leaving it to
 callers, and document an input outside the domain with a panics example. Leave
 out the message there: the text of a failed `requires` is not a stable
-contract, while the text of the function's own `panic` is.
+contract, while the text of the function's own `panic` is. The domain also
+excludes inputs the body cannot finish in reasonable time: this `isqrt` counts
+up to the root, so it bounds `n`.
 ```
 func isqrt(n: Int) -> Int
     requires n >= 0
+    requires n <= 1000000
     example 10 -> 3
     example 0 -> 0
     example -1 panics
@@ -524,6 +527,18 @@ failed `requires` or `ensures`. It fails when the call returns, panics with a
 message that does not contain the text, or runs out of a resource limit (an
 infinite loop hitting the step limit or the timeout, or a collection, integer
 or output limit): a limit is not a panic.
+
+`geno test --properties` (experimental; spec v0.7 section 5.4) relies on these
+clauses. It calls each function that has no effects but mutation on generated
+inputs and discards the inputs its `requires` rejects. It fails the function
+when an `ensures` breaks, when the function panics without a panics example,
+or when a call runs out of a resource limit. The failing input is shrunk and
+printed in the form that follows `example` (`counterexample: -1`), with the
+seed that reproduces it. Without `requires n <= 1000000`, `isqrt` fails it: a
+generated `n` near `2^53` runs out of the step limit. So write every
+precondition the body assumes as a `requires`, and a panics example for every
+panic the function means to raise. Fix a reported counterexample by correcting
+the body, adding the missing `requires`, or adding the panics example.
 
 ## Prompting Patterns
 

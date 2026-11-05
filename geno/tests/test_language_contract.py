@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -136,6 +137,41 @@ def test_the_draft_spec_says_it_is_not_normative() -> None:
     assert opening[0] == "# Geno Language Specification v0.7"
     assert "Draft contract for the unreleased 0.7 development line" in text
     assert "v0.6 remains normative for the 0.6 series" in text
+
+
+def _draft_changes() -> list[str]:
+    """The bullet entries of the Draft spec's 'Changes from 0.6' list."""
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+    start = text.index("Changes from 0.6 so far:")
+    end = text.index("\nEverything else is unchanged", start)
+    return re.split(r"\n- ", text[start:end])[1:]
+
+
+def test_every_draft_change_links_its_proposal() -> None:
+    """Each 0.7 change cites the proposal that made it, and the link resolves."""
+    entries = _draft_changes()
+
+    assert entries
+    for entry in entries:
+        links = re.findall(r"\]\(\.\./proposals/(\d{4}-[a-z0-9-]+\.md)\)", entry)
+        assert links, f"no proposal link in: {entry[:80]}"
+        for link in links:
+            assert (ROOT / "docs/proposals" / link).is_file(), link
+
+
+def test_the_draft_records_property_checks() -> None:
+    """Property checks (proposal 0017) are in the Draft spec and spec.json."""
+    spec = _load_spec()
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+
+    assert any(
+        "--properties" in addition for addition in spec["development_line"]["additions"]
+    )
+    assert "\n### 5.4 Property Checks\n" in text
+    assert any(
+        "Section 5.4" in entry and "0017-panic-examples-and-property-checks" in entry
+        for entry in _draft_changes()
+    )
 
 
 def test_an_absent_development_line_is_valid() -> None:
