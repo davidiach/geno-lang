@@ -20,7 +20,6 @@ runs once through one (the builtin matrix).
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -40,7 +39,6 @@ from geno.capabilities import (
     isolated_run_refusal,
 )
 from geno.isolated_host import (
-    IsolatedEnv,
     IsolatedRunClock,
     IsolatedRunPolicy,
     isolated_run_policy_for,
