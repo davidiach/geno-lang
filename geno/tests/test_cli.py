@@ -948,6 +948,8 @@ class TestGenoRunResourceLimits:
                 "1.5",
                 "--max-file-size-bytes",
                 "222",
+                "--max-total-write-bytes",
+                "333",
                 "--max-processes",
                 "3",
                 str(app),
@@ -965,7 +967,29 @@ class TestGenoRunResourceLimits:
         assert kwargs["max_memory_bytes"] is None
         assert kwargs["max_cpu_time"] == 1.5
         assert kwargs["max_file_size_bytes"] == 222
+        assert kwargs["max_total_write_bytes"] == 333
         assert kwargs["max_processes"] == 3
+
+    def test_run_write_limit_flags_default_to_the_lane_default(
+        self, tmp_path, monkeypatch
+    ):
+        # `None` lets the isolated lane choose: 0 without fs, 64 MiB with it.
+        import geno.__main__ as cli_main
+        from geno.__main__ import main
+
+        app = tmp_path / "App.geno"
+        app.write_text("func main() -> Int\n    return 1\nend func\n")
+        calls = []
+        monkeypatch.setattr(
+            cli_main, "run_file", lambda *args, **kwargs: calls.append(kwargs)
+        )
+        monkeypatch.setattr(sys, "argv", ["geno", "run", "--cap", "fs", str(app)])
+
+        main()
+
+        (kwargs,) = calls
+        assert kwargs["max_file_size_bytes"] is None
+        assert kwargs["max_total_write_bytes"] is None
 
     def test_run_phase_helpers_are_testable(self, tmp_path):
         import json
@@ -2334,6 +2358,7 @@ class TestGenoHelp:
         assert "--max-memory-bytes" in result.stdout
         assert "--max-cpu-time" in result.stdout
         assert "--max-file-size-bytes" in result.stdout
+        assert "--max-total-write-bytes" in result.stdout
         assert "--max-processes" in result.stdout
 
     def test_version(self):

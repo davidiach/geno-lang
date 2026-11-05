@@ -74,10 +74,10 @@ package version stays 0.6.0, and the Draft
   `geno run --cap print,regex main.geno` runs with exactly the listed
   capabilities and keeps the hard wall-clock kill and the memory, CPU,
   file-size and process limits, instead of exiting with "--cap is not
-  supported". The lane grants `clock`, `env`, `print`, `random` and `regex`
-  so far; without `--cap` the grant is unchanged (`clock`, `print`, `random`).
-  `process` and `serve` are refused before the program starts with a message
-  naming `--unsafe`, and `stdin`, `fs` and `http` are refused as "not yet
+  supported". The lane grants `clock`, `env`, `fs`, `print`, `random` and
+  `regex` so far; without `--cap` the grant is unchanged (`clock`, `print`,
+  `random`). `process` and `serve` are refused before the program starts with
+  a message naming `--unsafe`, and `stdin` and `http` are refused as "not yet
   available" until their milestones land. Examples run with the same
   exact grant (`--cap regex` denies `print` in examples too, and `sleep_ms`
   works in examples when `clock` is granted). A capability denial in the
@@ -122,6 +122,30 @@ package version stays 0.6.0, and the Draft
   text as standalone compiled output. Examples and `main` share one stream and
   one deadline, with no replay, and a worker refuses a `stdin` policy its own
   lane rules do not grant.
+- The `fs` capability in the default process-isolated `geno run` lane,
+  milestone 4 of
+  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md):
+  `geno run --cap fs,print report.geno -- data/input.csv` reads and writes
+  files while keeping every hard limit, where it used to need `--unsafe`. The
+  seven `fs_*` builtins go through a narrow trusted facade in the worker with
+  exactly the `--unsafe --cap fs` roots (the working directory, the source's
+  directory, the project root and the directories of path arguments after
+  `--`, or `GENO_FS_ROOTS`), the same symlink and absolute-path rules
+  (`GENO_FS_ALLOW_ABSOLUTE`) and the same `GENO_FS_READ_ONLY` policy, all read
+  from the caller's environment only when `fs` is granted. A path argument
+  widens the roots without `env`, while `cli_args()` itself still needs `env`.
+  Writes also get two portable limits, 64 MiB per file
+  (`--max-file-size-bytes`, which also sets `RLIMIT_FSIZE` where available)
+  and 64 MiB per run across examples and `main` (new
+  `--max-total-write-bytes`). A write is counted in the UTF-8 bytes it emits
+  after newline translation, reserved before the file is opened, and never
+  refunded, even for a rewrite of the same path or a write that then fails;
+  a limit of 0 disables every write, including empty ones. Quota rejections
+  return `Err` naming the limit and leave the file unchanged, so a program can
+  recover; a read-only write and an `fs_exists` outside the roots still raise.
+  Without `fs` both limits stay 0, as before. The two limit flags now default
+  by grant and, like the other process sandbox limits, are refused under
+  `--unsafe` and `--json` even when set to 0.
 
 ### Changed (breaking)
 
