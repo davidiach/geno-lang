@@ -68,6 +68,26 @@ package version stays 0.6.0, and the Draft
   read these instead of parsing the message. Also new for embedders and
   tools: `Interpreter.step_allowance(n)`, `geno.parser.parse_expression()` and
   `TypeChecker.check_project_graph(..., retain_module_checkers=True)`.
+- Capability grants in the default process-isolated `geno run` lane,
+  milestone 1 of accepted
+  [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md):
+  `geno run --cap print,regex main.geno` runs with exactly the listed
+  capabilities and keeps the hard wall-clock kill and the memory, CPU,
+  file-size and process limits, instead of exiting with "--cap is not
+  supported". The lane grants `clock`, `print`, `random` and `regex` so far;
+  without `--cap` the grant is unchanged (`clock`, `print`, `random`).
+  `process` and `serve` are refused before the program starts with a message
+  naming `--unsafe`, and `env`, `stdin`, `fs` and `http` are refused as "not
+  yet available" until their milestones land. Examples run with the same
+  exact grant (`--cap regex` denies `print` in examples too, and `sleep_ms`
+  works in examples when `clock` is granted). A capability denial in the
+  default lane, in `main` or in an example, now suggests the isolated
+  `geno run --cap ...` command when the lane can grant the capability, and
+  `--unsafe` only when it cannot. The worker validates the grant from its
+  parent-set configuration before reading any input, and the private names
+  its runtime uses for host access (`_GENO_HOST`, `_GenoHostUnavailable`,
+  `_geno_host_module`, `_geno_environ`) are reserved runtime names on both
+  backends.
 
 ### Changed (breaking)
 
@@ -91,6 +111,16 @@ package version stays 0.6.0, and the Draft
 
 ### Changed
 
+- In the default process-isolated `geno run` lane, examples and `main` share
+  one output budget and one deadline (proposal 0013). Output printed by
+  examples is still never shown, but it now counts against
+  `--max-output-length`, so a run whose examples print a lot reaches the limit
+  earlier; the example phase also runs under the time left of `--timeout`
+  rather than a fresh allowance. Timeout messages still name `--timeout`. Use
+  `--no-check-examples` to skip examples in an operational run.
+- The process sandbox worker's validator of compiled program code also
+  rejects a runtime-internal name bound by a `def`, `class`, parameter,
+  `global`, `except ... as` or match pattern, not only one referenced by name.
 - Runtime errors raised where the interpreter and the builtins enforce a
   `SandboxConfig` limit (`max_collection_size`, `max_integer_bits`,
   `max_output_length`), and the interpreter's error for a `Float` power

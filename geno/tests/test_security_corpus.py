@@ -4,10 +4,19 @@ Security Regression Corpus Tests
 
 Parametrized tests that run each .geno file in the security_corpus/ directory
 and verify the expected error code from the ``# EXPECT: Exxx`` header.
+
+Entries under ``security_corpus/isolated/`` run through a real process-isolated
+``geno run`` instead (proposal 0013). Besides ``# EXPECT`` they carry
+``# LANE: isolated``, ``# RUN:`` (extra ``geno run`` arguments) and
+``# STDERR:`` (a substring the failure must report); stdout must never contain
+``ESCAPED``.
 """
 
 import os
 import re
+import shlex
+import subprocess
+import sys
 
 import pytest
 
@@ -108,3 +117,75 @@ def test_security_corpus(filepath):
         f"Expected error code {expected_code_str} but got: "
         f"{[d.code.value for d in result.diagnostics]}"
     )
+
+
+ISOLATED_CORPUS_DIR = os.path.join(CORPUS_DIR, "isolated")
+
+# The text a failure of each expected category must contain on stderr.
+ISOLATED_CATEGORY_MARKERS = {
+    "E412": ("Capability denied", "host env policy", "process-isolated run mode"),
+    "E414": ("Runtime Error:",),
+}
+
+
+def _collect_isolated_corpus_files():
+    return [
+        os.path.join(ISOLATED_CORPUS_DIR, name)
+        for name in sorted(os.listdir(ISOLATED_CORPUS_DIR))
+        if name.endswith(".geno")
+    ]
+
+
+def _parse_isolated_headers(filepath):
+    """Return the ``# KEY: value`` headers of an isolated-lane entry."""
+    headers = {}
+    with open(filepath, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"#\s*(EXPECT|LANE|RUN|STDERR):\s*(.*?)\s*$", line)
+            if m:
+                headers[m.group(1)] = m.group(2)
+    return headers
+
+
+ISOLATED_CORPUS_FILES = _collect_isolated_corpus_files()
+
+
+@pytest.mark.parametrize(
+    "filepath",
+    ISOLATED_CORPUS_FILES,
+    ids=[os.path.basename(f) for f in ISOLATED_CORPUS_FILES],
+)
+def test_isolated_security_corpus(filepath, tmp_path):
+    """Run an isolated-lane corpus entry through a real ``geno run``."""
+    headers = _parse_isolated_headers(filepath)
+    for key in ("EXPECT", "LANE", "RUN", "STDERR"):
+        assert key in headers, f"No # {key}: header in {filepath}"
+    assert headers["LANE"] == "isolated"
+    markers = ISOLATED_CATEGORY_MARKERS.get(headers["EXPECT"])
+    assert markers is not None, f"Unsupported code {headers['EXPECT']}"
+
+    with open(filepath, encoding="utf-8") as f:
+        lines = f.readlines()
+    source = "".join(line for line in lines if not line.lstrip().startswith("#"))
+    (tmp_path / "main.geno").write_text(source, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "geno",
+            "run",
+            *shlex.split(headers["RUN"]),
+            "main.geno",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "ESCAPED" not in result.stdout
+    assert headers["STDERR"] in result.stderr
+    assert any(marker in result.stderr for marker in markers), result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr

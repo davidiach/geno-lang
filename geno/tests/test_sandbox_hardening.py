@@ -623,6 +623,17 @@ class TestPreludeBlobFraming:
             "_GENO_CAPS = {'clock'}\n__result__ = clock_now()\n",
             "_GENO_CAPS_FROM_ARGV = True\n__result__ = clock_now()\n",
             "__result__ = _bounded_regex_replace('a', 'b', 'a')\n",
+            # The isolated run's private host channel (proposal 0013).
+            "__result__ = _GENO_HOST\n",
+            "_GENO_HOST = {'fs': object()}\n__result__ = 1\n",
+            "__result__ = _geno_host_module('env')\n",
+            "def _geno_host_module(name):\n    return name\n__result__ = 1\n",
+            "class _GenoHostUnavailable:\n    pass\n__result__ = 1\n",
+            "def probe(_GENO_HOST=None):\n    return 1\n__result__ = probe()\n",
+            "def probe():\n    global _geno_environ\n    return 1\n__result__ = probe()\n",
+            "try:\n    pass\nexcept Exception as _GENO_CAPS:\n    pass\n__result__ = 1\n",
+            "__result__ = _geno_environ()\n",
+            "__result__ = _GenoHostUnavailable\n",
         ],
     )
     def test_compiler_tail_cannot_modify_or_bypass_capability_authority(self, tail):

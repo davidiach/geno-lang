@@ -1,0 +1,10 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print,serve
+# STDERR: --cap serve is not available in the process-isolated run mode
+# The isolated lane refuses serve before launch: a listener would outlive the
+# run's wall-clock limit. Nothing runs, not even the first print.
+func main() -> Unit
+    print("ESCAPED")
+    return http_listen(port: 8080)
+end func

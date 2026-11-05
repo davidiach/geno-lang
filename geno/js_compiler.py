@@ -113,6 +113,7 @@ from .builtin_registry import (
     js_backend_builtin_helper_names,
     js_backend_builtin_name_map,
 )
+from .capabilities import ISOLATED_HOST_PRIVATE_NAMES
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .js_runtime_prelude import JS_RUNTIME_PRELUDE
 from .manifest import validate_module_name
@@ -556,6 +557,10 @@ JS_RESERVED_PRELUDE_NAMES = (
     )
     | _JS_LOCAL_RESERVED_NAMES
     | _JS_FIXED_GLOBAL_NAMES
+    # The isolated `geno run` worker's private host channel (proposal 0013).
+    # The JS prelude has no such names, but reserving them here too means
+    # `geno check --target js` never accepts a program `geno run` rejects.
+    | ISOLATED_HOST_PRIVATE_NAMES
 )
 JS_DIRECT_REFERENCE_RESERVED_NAMES = (
     JS_RESERVED_PRELUDE_NAMES - _JS_HOST_INTRINSIC_NAMES

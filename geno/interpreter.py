@@ -252,6 +252,11 @@ _EXPECTED_BUILTIN_ERRORS = (
     OSError,
 )
 
+# Trusted provenance tags a denial error carries for the isolated `geno run`
+# lane's rerun hints (proposal 0013): the missing capability, or the variable
+# an environment policy refused. Only trusted host code ever sets them.
+_HOST_DENIAL_TAGS = ("_geno_capability_denied", "_geno_env_policy_denied")
+
 
 class _ModuleNamespace:
     """A module namespace bound in the importing module's lexical environment."""
@@ -507,6 +512,9 @@ class Interpreter:
         # Output capture for sandboxed execution
         self.output_buffer: list[str] = []
         self._output_length = 0
+        # Output the last example check printed before it was discarded. The
+        # isolated `geno run` lane charges it to `main` (one budget per run).
+        self.example_output_length = 0
         self._deadline: float | None = None
         self._interrupted = False
 
@@ -539,16 +547,20 @@ class Interpreter:
         allowed_gated = allowed_gated_builtins(capabilities)
 
         def _make_denied_stub(builtin_name: str):
-            message = capability_denied_message(
-                builtin_name, capability_for_source_builtin(builtin_name)
-            )
+            capability = capability_for_source_builtin(builtin_name)
+            message = capability_denied_message(builtin_name, capability)
 
             def denied(*args):
                 # No location here: _call_function attaches the call site.
-                raise RuntimeError(
+                error: Any = RuntimeError(
                     message,
                     error_code=ErrorCode.RUNTIME_CAPABILITY_DENIED,
                 )
+                if capability is not None:
+                    # Provenance for the isolated `geno run` hint: only this
+                    # stub sets it, so a panic with the same text gets none.
+                    error._geno_capability_denied = capability
+                raise error
 
             return denied
 
@@ -1638,6 +1650,7 @@ class Interpreter:
                     # Example output is never program output, even when
                     # verification fails and callers report what was
                     # printed so far (#130).
+                    self.example_output_length = self._output_length
                     self.output_buffer.clear()
                     self._output_length = 0
 
@@ -2842,11 +2855,19 @@ class Interpreter:
                     # Denial stubs and host policy wrappers do not know the
                     # call site; report the call instead of letting the trace
                     # fall back to the enclosing function's definition.
-                    raise RuntimeError(
+                    located: Any = RuntimeError(
                         e.message,
                         location,
                         error_code=e.error_code,
-                    ) from None
+                    )
+                    # Keep the trusted denial tags the isolated `geno run`
+                    # hint reads (proposal 0013); the new error must carry
+                    # the same provenance as the one it replaces.
+                    for tag in _HOST_DENIAL_TAGS:
+                        tag_value = getattr(e, tag, None)
+                        if isinstance(tag_value, str):
+                            setattr(located, tag, tag_value)
+                    raise located from None
                 raise
             except _EXPECTED_BUILTIN_ERRORS as e:
                 # Ordinary user-facing error from a builtin (bad argument,

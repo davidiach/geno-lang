@@ -560,8 +560,8 @@ end func main
             finally:
                 os.unlink(f.name)
 
-    def test_cap_without_explicit_mode_fails_fast(self):
-        """--cap must not silently downgrade process isolation."""
+    def test_cap_in_default_mode_runs_process_isolated(self):
+        """Proposal 0013: a supported --cap grant runs in the isolated lane."""
         with _closed_temp_geno() as f:
             f.write("""
 func main() -> Unit
@@ -584,12 +584,104 @@ end func main
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=30,
                 )
-                assert result.returncode != 0
+                assert result.returncode == 0, result.stderr
+                assert result.stdout == "hello from cap test\n"
+                assert result.stderr == ""
+            finally:
+                os.unlink(f.name)
+
+    @pytest.mark.parametrize(
+        ("capability", "reason"),
+        [
+            ("process", "programs it starts would run outside the sandbox"),
+            (
+                "serve",
+                "a listener would outlive the run's wall-clock limit and "
+                "buffered output",
+            ),
+        ],
+    )
+    def test_cap_process_and_serve_fail_fast_naming_unsafe(self, capability, reason):
+        """--cap must not silently downgrade process isolation."""
+        with _closed_temp_geno() as f:
+            f.write("""
+func main() -> Unit
+    print("ESCAPED")
+    return ()
+end func main
+""")
+            f.flush()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "geno",
+                        "run",
+                        "--cap",
+                        f"print,{capability}",
+                        f.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert result.returncode == 1
                 assert result.stdout == ""
-                assert "--cap is not supported" in result.stderr
-                assert "--unsafe --cap" in result.stderr
+                assert result.stderr == (
+                    f"Error: --cap {capability} is not available in the "
+                    f"process-isolated run mode: {reason}. Use --unsafe --cap "
+                    "... for trusted code.\n"
+                )
+            finally:
+                os.unlink(f.name)
+
+    def test_cap_refusals_are_reported_together_and_sorted(self):
+        with _closed_temp_geno() as f:
+            f.write("func main() -> Unit\n    return ()\nend func main\n")
+            f.flush()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "geno",
+                        "run",
+                        "--cap",
+                        "serve",
+                        "--cap",
+                        "process,print",
+                        f.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert result.returncode == 1
+                lines = result.stderr.splitlines()
+                assert [line.split(" is ")[0] for line in lines] == [
+                    "Error: --cap process",
+                    "Error: --cap serve",
+                ]
+            finally:
+                os.unlink(f.name)
+
+    def test_unknown_cap_is_rejected_by_the_parser(self):
+        with _closed_temp_geno() as f:
+            f.write("func main() -> Unit\n    return ()\nend func main\n")
+            f.flush()
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "geno", "run", "--cap", "regx", f.name],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert result.returncode == 2
+                assert "Unknown capability 'regx'" in result.stderr
+                assert "Did you mean 'regex'?" in result.stderr
             finally:
                 os.unlink(f.name)
 
@@ -2079,6 +2171,31 @@ class TestGenoHelp:
         assert "experimental" in help_text
         assert "default: 100" in help_text
         assert "1-10000" in help_text
+
+    def test_run_help_lists_the_isolated_lane_capabilities(self):
+        """Proposal 0013: --cap help comes from the lane's own rules."""
+        from geno.capabilities import (
+            ISOLATED_RUN_CAPABILITIES,
+            isolated_run_cap_help,
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "run", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0
+
+        def normalized(text: str) -> str:
+            # argparse may wrap at a hyphen, leaving "process- isolated".
+            return " ".join(text.split()).replace("- ", "-")
+
+        help_text = normalized(result.stdout)
+        assert normalized(isolated_run_cap_help()) in help_text
+        assert ", ".join(sorted(ISOLATED_RUN_CAPABILITIES)) in isolated_run_cap_help()
+        assert "Requires --unsafe or --json" not in help_text
 
     def test_run_help_lists_resource_limit_flags(self):
         result = subprocess.run(

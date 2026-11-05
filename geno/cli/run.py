@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import shlex
 import sys
+from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .._serve import (
     install_clock_callbacks as _install_clock_callbacks,
@@ -26,7 +27,12 @@ from .._serve import (
 from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
-from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES, KNOWN_CAPABILITIES
+from ..capabilities import (
+    DEFAULT_ALLOWED_CAPABILITIES,
+    KNOWN_CAPABILITIES,
+    isolated_run_capabilities,
+    isolated_run_refusals,
+)
 from ..execution_limits import (
     DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
@@ -44,6 +50,9 @@ from ._util import (
     _print_runtime_error,
     report_deep_nesting_error,
 )
+
+if TYPE_CHECKING:
+    from ..isolated_host import IsolatedRunClock, IsolatedRunPolicy
 
 RunMode = Literal["json", "unsafe", "process"]
 
@@ -340,6 +349,7 @@ _PROCESS_RUN_SUPPORT_MODULES = (
     "geno.dependency_graph",
     "geno.diagnostics",
     "geno.interpreter",
+    "geno.isolated_host",
     "geno.lexer",
     "geno.manifest",
     "geno.module_resolver",
@@ -370,8 +380,32 @@ def _preload_process_run_support() -> None:
         importlib.import_module(module_name)
 
 
-def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
-    """Compile a validated default-run request inside the sandbox worker."""
+def _prepare_process_run(
+    request: dict[str, Any],
+    policy: IsolatedRunPolicy | None = None,
+    clock: IsolatedRunClock | None = None,
+) -> dict[str, Any]:
+    """Compile a validated default-run request inside the sandbox worker.
+
+    *policy* is the trusted grant the worker validated from its parent-set
+    configuration (the default grant when omitted) and *clock* the run's one
+    deadline. Examples run with exactly that grant, under that deadline, and
+    the output they use is returned so ``main`` cannot get a fresh allowance.
+    """
+    from ..isolated_host import (
+        IsolatedRunClock,
+        IsolatedRunPolicy,
+        build_example_interpreter,
+        build_host_table,
+    )
+
+    if policy is None:
+        policy = IsolatedRunPolicy.default()
+    if not isinstance(policy, IsolatedRunPolicy):
+        raise TypeError("invalid process-run policy")
+    if clock is None:
+        clock = IsolatedRunClock(policy.deadline_seconds)
+
     expected_keys = {
         "filename",
         "target",
@@ -382,13 +416,15 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         "max_collection_size",
         "max_integer_bits",
     }
-    if set(request) - {"render_result"} != expected_keys:
+    optional_keys = {"render_result", "program_args"}
+    if set(request) - optional_keys != expected_keys:
         raise ValueError("invalid process-run request fields")
 
     filename = request["filename"]
     target = request["target"]
     check_examples = request["check_examples"]
     render_result = request.get("render_result", False)
+    program_args = request.get("program_args", [])
     if not isinstance(filename, str) or not filename or "\x00" in filename:
         raise ValueError("invalid process-run filename")
     if target is not None and not isinstance(target, str):
@@ -397,6 +433,10 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid process-run example setting")
     if not isinstance(render_result, bool):
         raise ValueError("invalid process-run result rendering setting")
+    if not isinstance(program_args, list) or any(
+        not isinstance(arg, str) for arg in program_args
+    ):
+        raise ValueError("invalid process-run program arguments")
 
     from ..ast_nodes import FunctionDef
     from ..compiler import (
@@ -414,10 +454,12 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     parsed_modules = resolved_run.parsed_modules
     _typecheck_run_graph(dependency_graph, resolved_run.check_targets)
 
+    host_table = build_host_table(policy)
+    example_output_length = 0
     if check_examples and _program_has_example_clauses(program, parsed_modules):
-        from ..api import _apply_capabilities as _apply_example_capabilities
-        from ..interpreter import Interpreter
-
+        # The displayed timeout stays the run's --timeout; the time already
+        # spent is charged through the outer deadline below, which the
+        # interpreter's own deadline nests inside (it takes the minimum).
         example_config = SandboxConfig(
             timeout=request["timeout"],
             max_recursion_depth=request["max_recursion_depth"],
@@ -425,15 +467,15 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
             max_collection_size=request["max_collection_size"],
             max_integer_bits=request["max_integer_bits"],
         )
-        interpreter = Interpreter(
-            check_examples=True,
-            sandbox_config=example_config,
-        )
-        _apply_example_capabilities(
-            interpreter,
-            set(DEFAULT_ALLOWED_CAPABILITIES),
-        )
-        interpreter.run(program, modules=parsed_modules, execute_main=False)
+        interpreter = build_example_interpreter(policy, example_config)
+        remaining = clock.remaining()
+        with interpreter._execution_deadline(
+            None if remaining is None else max(remaining, 0.001)
+        ):
+            interpreter.run(program, modules=parsed_modules, execute_main=False)
+        # Example output is never shown, but it is counted: the run has one
+        # output budget across examples and `main`.
+        example_output_length = interpreter.example_output_length
 
     compiler = Compiler()
     if parsed_modules:
@@ -461,8 +503,10 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "python_code": python_code,
-        "runtime_capabilities": sorted(DEFAULT_ALLOWED_CAPABILITIES),
+        "runtime_capabilities": sorted(policy.capabilities),
         "trusted_prelude_line_count": trusted_prelude_line_count,
+        "host_table": host_table,
+        "example_output_length": example_output_length,
     }
 
 
@@ -470,30 +514,39 @@ def _default_lane_capability_hint(
     capability: str | None,
     filename: str,
     program_args: list[str] | None = None,
+    *,
+    grant: Collection[str] | None = None,
+    os_name: str | None = None,
 ) -> str | None:
     """Explain how to grant a capability the default process lane denied.
 
-    The default lane rejects ``--cap``, so the runtime's denial alone is not
-    actionable there. ``capability`` must come from the worker's structured
-    denial tag (``ProcessSandbox.last_capability_denied``), never from the
-    error text: a program can panic with any message, and this hint recommends
-    leaving process isolation.
+    ``capability`` must come from the worker's structured denial tag
+    (``ProcessSandbox.last_capability_denied``), never from the error text: a
+    program can panic with any message, and the hint for a capability the
+    isolated lane cannot grant recommends leaving process isolation.
+
+    ``grant`` is the run's grant (``None`` for the default one); the hinted
+    command grants it plus the missing capability, because ``--cap`` is exact.
+    A capability the isolated lane supports keeps the program isolated.
     """
     if capability is None or capability not in KNOWN_CAPABILITIES:
         return None
-    if capability in DEFAULT_ALLOWED_CAPABILITIES:
+    granted = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
+    if capability in granted:
         return None
-    caps = ",".join(sorted(DEFAULT_ALLOWED_CAPABILITIES | {capability}))
-    defaults = ", ".join(sorted(DEFAULT_ALLOWED_CAPABILITIES))
-    command = f"geno run --unsafe --cap {caps} {shlex.quote(filename)}"
+    caps = ",".join(sorted(granted | {capability}))
+    target = shlex.quote(filename)
     if program_args:
-        command += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
+        target += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
+    if capability in isolated_run_capabilities(os_name):
+        return (
+            "Hint: grant it with --cap; the program stays process-isolated:\n"
+            f"  geno run --cap {caps} {target}"
+        )
     return (
-        f"Hint: the default 'geno run' lane grants only {defaults} and does "
-        "not accept --cap.\n"
-        f"  To grant '{capability}', rerun without process isolation "
-        "(trusted code only):\n"
-        f"  {command}"
+        f"Hint: the process-isolated 'geno run' lane cannot grant '{capability}'.\n"
+        "  To grant it, rerun without process isolation (trusted code only):\n"
+        f"  geno run --unsafe --cap {caps} {target}"
     )
 
 
@@ -622,18 +675,15 @@ def run_file(
         else:
             os.environ["GENO_CLI_ARGS"] = previous_cli_args
 
-    # --cap is currently supported by the interpreter/embedding paths only.
-    # Require the user to choose that execution mode explicitly so capability
-    # grants cannot silently downgrade process isolation.
+    # The isolated lane grants exactly --cap (proposal 0013), but only the
+    # capabilities it implements. Anything else fails here, before a worker
+    # starts, so a grant can never silently downgrade process isolation.
     if run_mode == "process" and capabilities is not None:
-        print(
-            "Error: --cap is not supported in the default process-isolated "
-            "run mode. Use --unsafe --cap ... to run with capability callbacks "
-            "in the direct interpreter, or use --json --cap ... for embedding "
-            "API execution.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        refusals = isolated_run_refusals(capabilities)
+        if refusals:
+            for message in refusals:
+                print(f"Error: {message}", file=sys.stderr)
+            sys.exit(1)
 
     process_only_overrides = []
     if max_memory_bytes not in (DEFAULT_PROCESS_MAX_MEMORY_BYTES,):
@@ -720,6 +770,7 @@ def run_file(
         # bind exception names this path cannot raise, duplicating imports the
         # worker pays for again in the child. So this branch stays above the
         # frontend import block and imports the sandbox alone.
+        from ..isolated_host import isolated_run_policy_for
         from ..sandbox import (
             ProcessSandbox,
             ProcessSandboxConfig,
@@ -729,6 +780,7 @@ def run_file(
             TimeoutError,
         )
 
+        run_policy = isolated_run_policy_for(capabilities, timeout=timeout)
         try:
             request = {
                 "filename": filename,
@@ -740,6 +792,9 @@ def run_file(
                 "max_output_length": max_output_length,
                 "max_collection_size": max_collection_size,
                 "max_integer_bits": max_integer_bits,
+                # Trusted setup always receives the program arguments; only
+                # the program-visible `cli_args` binding is gated (by `env`).
+                "program_args": list(program_args or []),
             }
             process_config = ProcessSandboxConfig(
                 timeout=timeout,
@@ -759,7 +814,7 @@ def run_file(
             try:
                 process_sandbox = ProcessSandbox(process_config)
                 result, run_output, error = process_sandbox.execute_geno_request(
-                    request
+                    request, run_policy
                 )
             finally:
                 _restore_cli_args_env()
@@ -777,13 +832,16 @@ def run_file(
                     )
                 else:
                     _print_runtime_error(RuntimeError(error))
-                    hint = _default_lane_capability_hint(
-                        process_sandbox.last_capability_denied,
-                        filename,
-                        program_args,
-                    )
-                    if hint:
-                        print(hint, file=sys.stderr)
+                # A denial in an example (frontend phase) is as actionable as
+                # one in `main`; both come with the worker's structured tag.
+                hint = _default_lane_capability_hint(
+                    process_sandbox.last_capability_denied,
+                    filename,
+                    program_args,
+                    grant=run_policy.capabilities,
+                )
+                if hint:
+                    print(hint, file=sys.stderr)
                 sys.exit(1)
             # Captured output is printed before the status is returned, so a
             # nonzero exit never costs the program its output.

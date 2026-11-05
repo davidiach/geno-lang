@@ -3759,7 +3759,15 @@ if __name__ == "__main__":
 
 @pytest.mark.parametrize(
     "expression",
-    ["_GENO_CAPS", '_bounded_regex_replace("a", "b", "a")'],
+    [
+        "_GENO_CAPS",
+        '_bounded_regex_replace("a", "b", "a")',
+        # The isolated run's private host channel (proposal 0013).
+        "_GENO_HOST",
+        '_geno_host_module("env")',
+        "_geno_environ()",
+        "_GenoHostUnavailable",
+    ],
 )
 def test_python_compiler_rejects_direct_runtime_internal_reference_without_typecheck(
     expression,

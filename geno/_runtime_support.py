@@ -4546,6 +4546,40 @@ def _require_cap(cap_name: str, builtin_name: str) -> None:
         raise error
 
 
+# Host access in the process-isolated ``geno run`` worker (proposal 0013). The
+# worker injects a read-only table holding one trusted binding per granted
+# capability that needs the host; generated program code cannot name it.
+# Standalone output and other sandboxes have no table and keep their own host
+# access, byte for byte. A gated builtin checks ``_require_cap`` first, then
+# looks up its binding outside any ``try``: a missing binding is a second,
+# independent gate that never turns into an ``Err``.
+_GENO_HOST: Any
+try:
+    _GENO_HOST = _GENO_HOST
+except NameError:
+    _GENO_HOST = None
+
+
+class _GenoHostUnavailable(RuntimeError):
+    """Internal: the isolated worker bound no host access for this capability."""
+
+
+def _geno_host_module(name: str) -> Any:
+    """Return the isolated worker's binding for *name*; None when standalone."""
+    if _GENO_HOST is None:
+        return None
+    binding = _GENO_HOST.get(name)
+    if binding is None:
+        raise _GenoHostUnavailable(f"host access for '{name}' is not bound in this run")
+    return binding
+
+
+def _geno_environ() -> Any:
+    """The isolated run's filtered environment snapshot; None when standalone."""
+    host = _geno_host_module("env")
+    return None if host is None else host.environ
+
+
 def _minimal_process_env():
     import os
 

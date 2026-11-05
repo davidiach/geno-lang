@@ -4,7 +4,9 @@ Sandbox Escape Bounty Runner
 ==============================
 
 Runs adversarial Python snippets through the Geno sandbox to verify
-that no escape is possible.  Also re-runs every .geno corpus file.
+that no escape is possible.  Also re-runs every .geno corpus file, and the
+isolated-lane entries (``security_corpus/isolated/``) through a real
+process-isolated ``geno run``.
 
 Exit code 0  → all attacks blocked
 Exit code 1  → at least one escape succeeded
@@ -16,7 +18,10 @@ Usage:
 import argparse
 import os
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
 
 # Ensure the project root is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -288,6 +293,87 @@ def _run_corpus(verbose: bool) -> tuple[int, int]:
     return passed, failed
 
 
+ISOLATED_CORPUS_DIR = os.path.join(CORPUS_DIR, "isolated")
+
+# The text a failure of each expected category must contain on stderr, as in
+# geno/tests/test_security_corpus.py.
+ISOLATED_CATEGORY_MARKERS = {
+    "E412": ("Capability denied", "host env policy", "process-isolated run mode"),
+    "E414": ("Runtime Error:",),
+}
+
+
+def _run_isolated_corpus(verbose: bool) -> tuple[int, int]:
+    """Run the isolated-lane corpus through ``geno run``.  Returns (passed, failed)."""
+    passed = 0
+    failed = 0
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    env = {**os.environ, "PYTHONPATH": repo_root}
+
+    for name in sorted(os.listdir(ISOLATED_CORPUS_DIR)):
+        if not name.endswith(".geno"):
+            continue
+        filepath = os.path.join(ISOLATED_CORPUS_DIR, name)
+        headers: dict[str, str] = {}
+        with open(filepath, encoding="utf-8") as f:
+            lines = f.readlines()
+        for line in lines:
+            m = re.match(r"#\s*(EXPECT|LANE|RUN|STDERR):\s*(.*?)\s*$", line)
+            if m:
+                headers[m.group(1)] = m.group(2)
+        markers = ISOLATED_CATEGORY_MARKERS.get(headers.get("EXPECT", ""))
+        if (
+            headers.get("LANE") != "isolated"
+            or markers is None
+            or "RUN" not in headers
+            or "STDERR" not in headers
+        ):
+            failed += 1
+            if verbose:
+                print(f"  [FAIL] {name}: missing or invalid isolated headers")
+            continue
+        source = "".join(line for line in lines if not line.lstrip().startswith("#"))
+
+        with tempfile.TemporaryDirectory() as workdir:
+            with open(os.path.join(workdir, "main.geno"), "w", encoding="utf-8") as f:
+                f.write(source)
+            result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                [
+                    sys.executable,
+                    "-m",
+                    "geno",
+                    "run",
+                    *shlex.split(headers["RUN"]),
+                    "main.geno",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=workdir,
+                env=env,
+            )
+
+        ok = (
+            result.returncode == 1
+            and "ESCAPED" not in result.stdout
+            and headers["STDERR"] in result.stderr
+            and any(marker in result.stderr for marker in markers)
+        )
+        if ok:
+            passed += 1
+            if verbose:
+                print(f"  [OK] {name}: got {headers['EXPECT']}")
+        else:
+            failed += 1
+            if verbose:
+                print(
+                    f"  [FAIL] {name}: exit {result.returncode}, "
+                    f"stderr {result.stderr.strip()[-120:]!r}"
+                )
+
+    return passed, failed
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sandbox Escape Bounty Runner")
     parser.add_argument(
@@ -332,6 +418,15 @@ def main():
     total_escapes += corpus_failed
     status = "PASS" if corpus_failed == 0 else "FAIL"
     print(f"  [{status}] {corpus_passed} blocked, {corpus_failed} escaped")
+
+    # --- Isolated-lane corpus (real `geno run`) ---
+    print("\nIsolated geno run Corpus")
+    print("-" * 24)
+    isolated_passed, isolated_failed = _run_isolated_corpus(verbose)
+    total_blocked += isolated_passed
+    total_escapes += isolated_failed
+    status = "PASS" if isolated_failed == 0 else "FAIL"
+    print(f"  [{status}] {isolated_passed} blocked, {isolated_failed} escaped")
 
     # --- Summary ---
     print(f"\n{'=' * 60}")

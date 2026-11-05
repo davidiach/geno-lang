@@ -20,7 +20,11 @@ import math
 import os
 from typing import Any, cast
 
-from .capabilities import CapabilityParseError, normalize_capability_values
+from .capabilities import (
+    CapabilityParseError,
+    isolated_run_cap_help,
+    normalize_capability_values,
+)
 from .cli._util import (
     _check_python_version,
 )
@@ -248,10 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="capabilities",
         metavar="CAPABILITY",
-        help=(
-            "Grant a capability (e.g. --cap print or --cap fs,print). "
-            "Repeatable and comma-separable. Requires --unsafe or --json."
-        ),
+        help=isolated_run_cap_help(),
     )
     run_parser.add_argument(
         "--json",
