@@ -1042,9 +1042,14 @@ def test_stdin_policy_round_trips_only_with_the_grant(stdin_lane: None) -> None:
         stdin.read_text(_no_limit)
 
 
-def test_the_real_lane_refuses_a_stdin_policy() -> None:
+def test_a_stdin_policy_follows_the_real_lane_rules() -> None:
+    # The validator, not its caller, decides: the lane keeps stdin refused
+    # until its platform gate passes (pinned by test_platform_matrix).
     policy = IsolatedRunPolicy(capabilities=frozenset({"stdin"}), stdin_fd=7)
 
+    if "stdin" in isolated_run_capabilities():
+        assert IsolatedRunPolicy.from_config(policy.to_config()) == policy
+        return
     with pytest.raises(IsolatedRunPolicyError, match="'stdin' is not available"):
         IsolatedRunPolicy.from_config(policy.to_config())
     with pytest.raises(IsolatedRunPolicyError):

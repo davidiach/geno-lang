@@ -219,6 +219,46 @@ def test_no_program_input_handle_without_the_grant(
 
 
 @posix_only
+def test_a_worker_inherits_only_the_handles_it_is_passed() -> None:
+    """``pass_fds`` is the only way a handle reaches a worker."""
+    from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+    sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=30.0, strict=False))
+    read_end, write_end = os.pipe()
+    try:
+        os.write(write_end, b"handed over")
+        os.close(write_end)
+        probe = (
+            "import os\n"
+            "try:\n"
+            f"    print(os.read({read_end}, 100).decode())\n"
+            "except OSError as error:\n"
+            "    print('closed', error.errno)\n"
+        )
+        command = [sys.executable, "-c", probe]
+
+        _status, without, _stderr, _cut = sandbox._run_worker(command, "")
+        _status, passed, _stderr, _cut = sandbox._run_worker(
+            command, "", pass_fds=(read_end,)
+        )
+
+        assert without.strip().startswith("closed ")
+        assert passed.strip() == "handed over"
+    finally:
+        os.close(read_end)
+
+
+@pytest.mark.skipif(os.name == "posix", reason="non-POSIX workers only")
+def test_handles_are_never_passed_to_a_non_posix_worker() -> None:
+    from geno.sandbox import ProcessSandbox, ProcessSandboxConfig, SandboxError
+
+    sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=30.0, strict=False))
+
+    with pytest.raises(SandboxError, match="POSIX only"):
+        sandbox._run_worker([sys.executable, "-c", "pass"], "", pass_fds=(3,))
+
+
+@posix_only
 @pytest.mark.skipif(STDIN_ENABLED, reason="the worker grants stdin")
 def test_worker_refuses_a_stdin_policy_its_lane_does_not_grant(
     tmp_path: Path,
