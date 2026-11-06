@@ -1610,7 +1610,7 @@ class _GenoContractViolation extends Error {
     constructor(message) {
         super(message);
         this.name = "_GenoContractViolation";
-        // Structured fields (proposal 0018), set by _genoContractViolation.
+        // Structured fields (proposal 0018), set by the contract-failure factory.
         this.clause = null;
         this.reason = null;
         this.clauseIndex = null;
