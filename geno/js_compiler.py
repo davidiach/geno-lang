@@ -417,6 +417,8 @@ _JS_EMITTED_LOCAL_HELPER_NAMES = frozenset(
         "_GENO_MAP",
         "_GENO_STRING",
         "_GenoContractViolation",
+        "_genoContractViolation",
+        "_genoFloatDisplay",
         "_compareGenoValues",
         "_compareOrderedValues",
         "_jsonFloatToString",
@@ -1278,6 +1280,7 @@ class JSCompiler(BaseCompiler):
 
             # Compile definitions
             self._current_module = mod_name
+            self._display_module = None if mod_name == entrypoint else mod_name
             for defn in program.definitions:
                 if isinstance(defn, TypeDef):
                     self._compile_type_def(defn)
@@ -1288,6 +1291,7 @@ class JSCompiler(BaseCompiler):
                     self._compile_impl_def(defn)
                 # TestBlock is skipped
             self._current_module = None
+            self._display_module = None
 
             attrs = ", ".join(f"{n}: {self._mangle_name(n)}" for n in runtime_exports)
             self._writeln(f"return {{{attrs}}};" if attrs else "return {};")
@@ -1738,8 +1742,34 @@ class JSCompiler(BaseCompiler):
             self._writeln(f"{async_prefix}function {func_name}({params}) {{")
         self._indent()
 
+        # Contract failures name the function, its parameters and the call's
+        # argument values (proposal 0018); the values are rendered only once
+        # a clause has failed.
+        display_name = self._function_display_name(defn)
+        param_names = [p.name for p in defn.params]
+        param_refs = [self._mangle_name(p.name) for p in defn.params]
+        float_params = [
+            self._is_float_typed(p._resolved_type, p.param_type) for p in defn.params
+        ]
+
+        has_ensures = any(
+            not isinstance(ens.condition, BooleanLiteral) or not ens.condition.value
+            for ens in defn.specs.ensures
+        )
+        # A top-level `let n = ...` reassigns parameter `n` itself, and the
+        # ensures clauses see the reassigned value by design. Only such a
+        # function keeps the call's arguments, so its failure still reports
+        # the call; any other function renders its parameters at failure
+        # time and pays nothing.
+        call_refs = param_refs
+        snapshot: str | None = None
+        if has_ensures and self._direct_binding_names(defn.body) & set(param_names):
+            snapshot = self._fresh_temp()
+            self._writeln(f"const {snapshot} = [{', '.join(param_refs)}];")
+            call_refs = [f"{snapshot}[{index}]" for index in range(len(param_refs))]
+
         # Requires checks
-        for req in defn.specs.requires:
+        for index, req in enumerate(defn.specs.requires):
             if isinstance(req.condition, BooleanLiteral):
                 if req.condition.value:
                     continue
@@ -1748,25 +1778,28 @@ class JSCompiler(BaseCompiler):
                 )
             with self._block_scope(p.name for p in defn.params):
                 cond = self._compile_expr(req.condition)
+            described = (
+                display_name,
+                req.source_text,
+                param_names,
+                self._contract_values(param_refs, float_params),
+            )
             cond = self._contract_condition(
                 req.condition,
                 cond,
-                f"Precondition failed for {defn.name}: requires clause cannot "
-                "use '?' to propagate None/Err",
+                self._contract_violation_call(
+                    "requires", "propagate", index, *described
+                ),
             )
             self._writeln(f"if (!({cond})) {{")
             self._indent()
             self._writeln(
-                f'throw new _GenoContractViolation("Precondition failed for {defn.name}: '
-                f'requires clause evaluated to false");'
+                "throw "
+                + self._contract_violation_call("requires", "false", index, *described)
+                + ";"
             )
             self._dedent()
             self._writeln("}")
-
-        has_ensures = any(
-            not isinstance(ens.condition, BooleanLiteral) or not ens.condition.value
-            for ens in defn.specs.ensures
-        )
 
         body_helper = self._fresh_temp() if has_ensures else ""
         if has_ensures:
@@ -1795,7 +1828,20 @@ class JSCompiler(BaseCompiler):
             await_body = "await " if is_async_execution_form(defn) else ""
             result_name = self._fresh_temp()
             self._writeln(f"const {result_name} = {await_body}{body_helper}();")
-            for ens in defn.specs.ensures:
+            float_result = self._is_float_typed(
+                defn.__dict__.get("_resolved_return_type"), defn.return_type
+            )
+            outcome = {
+                "result": (
+                    f"_genoFloatDisplay({result_name})" if float_result else result_name
+                ),
+                "checked": (
+                    self._contract_values(param_refs, float_params)
+                    if snapshot is not None
+                    else None
+                ),
+            }
+            for index, ens in enumerate(defn.specs.ensures):
                 if isinstance(ens.condition, BooleanLiteral):
                     if ens.condition.value:
                         continue
@@ -1807,19 +1853,27 @@ class JSCompiler(BaseCompiler):
                 with self._block_scope([*(p.name for p in defn.params), "result"]):
                     self._js_block_scopes[-1].overrides["result"] = result_name
                     cond = self._compile_expr(ens.condition)
+                described = (
+                    display_name,
+                    ens.source_text,
+                    param_names,
+                    self._contract_values(call_refs, float_params),
+                )
                 cond = self._contract_condition(
                     ens.condition,
                     cond,
-                    f"Postcondition failed for {defn.name}: ensures clause "
-                    "cannot use '?' to propagate None/Err",
+                    self._contract_violation_call(
+                        "ensures", "propagate", index, *described, **outcome
+                    ),
                 )
                 self._writeln(f"if (!({cond})) {{")
                 self._indent()
                 self._writeln(
-                    f"throw new _GenoContractViolation("
-                    f"`Postcondition failed for {defn.name}: "
-                    f"ensures clause evaluated to false "
-                    f"(result was ${{_formatValue({result_name})}})`);"
+                    "throw "
+                    + self._contract_violation_call(
+                        "ensures", "false", index, *described, **outcome
+                    )
+                    + ";"
                 )
                 self._dedent()
                 self._writeln("}")
@@ -1829,15 +1883,15 @@ class JSCompiler(BaseCompiler):
         self._writeln("};" if self._emit_function_assignments else "}")
 
     def _contract_condition(
-        self, condition: Expression, compiled: str, message: str
+        self, condition: Expression, compiled: str, violation: str
     ) -> str:
         """Evaluate a contract clause that uses ``?``; return what to test.
 
         A ``?`` that propagates inside a ``requires`` or ``ensures`` clause
         would otherwise be caught by the function's own ``?`` handler (or a
         caller's) and silently return; like the interpreter, it is a
-        contract violation (*message*). A clause without a ``?`` of its own
-        is tested as compiled.
+        contract violation (*violation*, the expression that builds it). A
+        clause without a ``?`` of its own is tested as compiled.
         """
         if not self._contains_propagate(condition):
             return compiled
@@ -1850,14 +1904,72 @@ class JSCompiler(BaseCompiler):
         self._dedent()
         self._writeln(f"}} catch ({caught}) {{")
         self._indent()
-        self._writeln(
-            f"if ({caught} instanceof _PropagateReturn) "
-            f"throw new _GenoContractViolation({_json.dumps(message)});"
-        )
+        self._writeln(f"if ({caught} instanceof _PropagateReturn) throw {violation};")
         self._writeln(f"throw {caught};")
         self._dedent()
         self._writeln("}")
         return value
+
+    def _is_float_typed(self, checked_type: Type | None, annotation: object) -> bool:
+        """Whether a parameter or return value is statically a Float here.
+
+        JavaScript numbers do not tell an Int from a Float, so a contract
+        failure marks Float values for the renderer (``2.0``, not ``2``).
+        The checked type is used when the checker recorded one (an impl
+        method's rewritten definition has only its annotation).
+        """
+        if checked_type is not None:
+            return isinstance(self._static_type(checked_type), FloatType)
+        return (
+            isinstance(annotation, SimpleType)
+            and annotation.name == "Float"
+            and not annotation.type_params
+        )
+
+    @staticmethod
+    def _contract_values(refs: list[str], float_flags: list[bool]) -> str:
+        """A JS array of the values *refs*, Float ones marked for display."""
+        shown = (
+            f"_genoFloatDisplay({ref})" if is_float else ref
+            for ref, is_float in zip(refs, float_flags)
+        )
+        return f"[{', '.join(shown)}]"
+
+    def _contract_violation_call(
+        self,
+        clause: str,
+        reason: str,
+        index: int,
+        function: str,
+        clause_text: str | None,
+        names: list[str],
+        values: str,
+        *,
+        result: str | None = None,
+        checked: str | None = None,
+    ) -> str:
+        """The prelude call that builds a contract violation (proposal 0018).
+
+        Every text is an escaped JS string literal, never template text, so
+        a clause containing `${`, backticks, quotes or backslashes is safe.
+        The call returns the error; the ``throw`` stays in the Geno
+        function's own frame.
+        """
+        literal = self._js_string_literal
+        parts = [
+            literal(clause),
+            literal(reason),
+            str(index),
+            literal(function),
+            "null" if clause_text is None else literal(clause_text),
+            "[" + ", ".join(literal(name) for name in names) + "]",
+            values,
+        ]
+        if result is not None:
+            parts += ["true", result]
+        if checked is not None:
+            parts.append(checked)
+        return f"_genoContractViolation({', '.join(parts)})"
 
     def _compile_specializations(self, defn: FunctionDef) -> None:
         """Emit each planned Float-dependent copy of a generic function."""
@@ -3852,7 +3964,7 @@ def compile_to_js(
     lexer = Lexer(source, filename)
     tokens = lexer.tokenize()
 
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     profile = target_profile or TargetProfile.load("node-cli")
@@ -4141,7 +4253,7 @@ def compile_to_html(
 
     lexer = Lexer(source, filename)
     tokens = lexer.tokenize()
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     if typecheck:

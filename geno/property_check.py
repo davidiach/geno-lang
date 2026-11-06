@@ -1256,16 +1256,20 @@ def trial_size(index: int, trials: int) -> int:
 def ensures_clause_text(
     source: str | None, definition: FunctionDef, index: int
 ) -> str | None:
-    """The source of ``ensures`` clause *index*, to the end of its line.
+    """The source of ``ensures`` clause *index*.
 
-    The clause's own location is its ``ensures`` keyword (an expression's
-    location can be an inner operand), so the text is the rest of that line
-    after the keyword, without a trailing comment.
+    The parser records the whole clause, across lines and without comments
+    (``EnsuresClause.source_text``, proposal 0018); that is used when set.
+    Otherwise the clause's own location is its ``ensures`` keyword (an
+    expression's location can be an inner operand), so the text is the rest
+    of that line after the keyword, without a trailing comment.
     """
-    if source is None:
-        return None
     clauses = definition.specs.ensures
     if not 0 <= index < len(clauses):
+        return None
+    if clauses[index].source_text:
+        return clauses[index].source_text
+    if source is None:
         return None
     location = clauses[index].location
     lines = source.split("\n")

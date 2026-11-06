@@ -64,7 +64,15 @@ class ContractViolationError(GenoRuntimeError):
       own input (depth 1) from one a nested call tripped, which are different
       authoring mistakes;
     - ``result_display``: for an ``ensures`` clause, the interpreter's display
-      of the value the function returned.
+      of the value the function returned (bounded, proposal 0018);
+    - ``function``: the failing function's display name (``f``,
+      ``Type.method``, ``Module.f``);
+    - ``clause_text``: the clause's source text, as the parser captured it;
+    - ``arguments``: the call's arguments as ``(name, rendered value)``
+      pairs, each value bounded;
+    - ``checked_values``: for an ``ensures`` clause, the parameters the body
+      rebound to a value that renders differently from the argument, as the
+      clause saw them (empty otherwise).
 
     Each is ``None`` when the raiser does not know it.
     """
@@ -80,6 +88,10 @@ class ContractViolationError(GenoRuntimeError):
         reason: ContractFailureReason | None = None,
         clause_index: int | None = None,
         result_display: str | None = None,
+        function: str | None = None,
+        clause_text: str | None = None,
+        arguments: tuple[tuple[str, str], ...] | None = None,
+        checked_values: tuple[tuple[str, str], ...] = (),
     ) -> None:
         super().__init__(message, location, error_code)
         self.call_depth = call_depth
@@ -87,6 +99,10 @@ class ContractViolationError(GenoRuntimeError):
         self.reason: ContractFailureReason | None = reason
         self.clause_index = clause_index
         self.result_display = result_display
+        self.function = function
+        self.clause_text = clause_text
+        self.arguments = arguments
+        self.checked_values = checked_values
 
     def with_message(
         self, message: str, location: SourceLocation | None
@@ -100,6 +116,10 @@ class ContractViolationError(GenoRuntimeError):
             reason=self.reason,
             clause_index=self.clause_index,
             result_display=self.result_display,
+            function=self.function,
+            clause_text=self.clause_text,
+            arguments=self.arguments,
+            checked_values=self.checked_values,
         )
 
 
@@ -175,6 +195,11 @@ class Closure:
     name: str | None = None
     specs: SpecBlock | None = None  # requires/ensures clauses
     is_async: bool = False
+    # The name runtime reports show (proposal 0018): the function's name, or
+    # ``Type.method`` for an impl method and ``Module.function`` for a
+    # function of an imported module. Set when the definition creates the
+    # closure; ``None`` for a lambda.
+    display_name: str | None = None
 
     def __repr__(self) -> str:
         return f"<function {self.name or 'anonymous'}>"

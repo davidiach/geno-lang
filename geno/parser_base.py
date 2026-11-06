@@ -8,9 +8,11 @@ and the ParseError/ParseErrors exception classes.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, TypeVar
 
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
+from .runtime_report import CLAUSE_TEXT_LIMIT, truncate_display
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
 if TYPE_CHECKING:
@@ -23,6 +25,59 @@ if TYPE_CHECKING:
         Statement,
         TypeAnnotation,
     )
+
+
+# A whitespace run that contains a line break.
+_LINE_BREAK_RUN = re.compile(r"\s*\n\s*")
+
+
+def contract_clause_text(raw: str) -> str | None:
+    """The text a contract failure quotes for a clause written as *raw*.
+
+    *raw* runs from the end of the ``requires``/``ensures`` keyword to the
+    first token after the condition (proposal 0018, section 6). Comments
+    outside string literals are removed (a removed comment counts as a line
+    break, so ``a/* c */b`` keeps its two tokens apart), every whitespace run
+    that contains a line break becomes one space, the result is trimmed, and
+    a text longer than ``CLAUSE_TEXT_LIMIT`` code points is cut with
+    ``...``. ``None`` when nothing is left.
+    """
+    parts: list[str] = []
+    index = 0
+    length = len(raw)
+    while index < length:
+        if raw.startswith('"""', index):
+            end = raw.find('"""', index + 3)
+            end = length if end == -1 else end + 3
+            parts.append(raw[index:end])
+            index = end
+        elif raw[index] == '"':
+            end = index + 1
+            while end < length and raw[end] not in '"\n':
+                end += 2 if raw[end] == "\\" else 1
+            end = min(end + 1, length)
+            parts.append(raw[index:end])
+            index = end
+        elif raw.startswith("//", index):
+            end = raw.find("\n", index)
+            index = length if end == -1 else end
+            parts.append("\n")
+        elif raw.startswith("/*", index):
+            end = raw.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+            parts.append("\n")
+        else:
+            # Plain code up to the next possible string or comment start;
+            # a lone '/' (division) is taken one character at a time.
+            end = index + 1
+            while end < length and raw[end] not in '"/':
+                end += 1
+            parts.append(raw[index:end])
+            index = end
+    text = _LINE_BREAK_RUN.sub(" ", "".join(parts)).strip()
+    if not text:
+        return None
+    return truncate_display(text, CLAUSE_TEXT_LIMIT)
 
 
 class ParseError(Exception):
@@ -345,6 +400,32 @@ class ParserBase:
                 ),
             ),
         )
+
+    def _contract_clause_source(self, keyword: Token) -> str | None:
+        """The quoted text of the clause whose keyword is *keyword*.
+
+        Called right after the condition is parsed, so the current token is
+        the first one after it. ``None`` when the source text is unknown.
+        """
+        lines = self._source_lines
+        if lines is None:
+            return None
+        start = keyword.location
+        end = self._current().location
+        start_line, start_column = start.line, start.column + len(str(keyword.value))
+        if not 0 < start_line <= end.line <= len(lines):
+            return None
+        if start_line == end.line:
+            raw = lines[start_line - 1][start_column - 1 : end.column - 1]
+        else:
+            raw = "\n".join(
+                [
+                    lines[start_line - 1][start_column - 1 :],
+                    *lines[start_line : end.line - 1],
+                    lines[end.line - 1][: end.column - 1],
+                ]
+            )
+        return contract_clause_text(raw)
 
     def _line_end(self, line: int) -> SourceLocation | None:
         """Where the code on ``line`` ends, before any trailing comment."""

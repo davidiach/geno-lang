@@ -358,6 +358,120 @@ def _geno_format(
     return str(value)
 
 
+# The longest rendering of one value in a contract failure, in code points
+# (geno/runtime_report.py ARGUMENT_DISPLAY_LIMIT; a test pins the copies).
+_GENO_ARGUMENT_DISPLAY_LIMIT = 64
+
+
+class _GenoDisplayLimitReached(Exception):
+    """Internal: the bounded renderer has more than its limit."""
+
+
+def _geno_format_bounded(value: Any, limit: int) -> str:
+    """The diagnostic rendering of *value*, truncated to *limit* code points.
+
+    Strings are quoted at every depth. Equal to rendering the whole value and
+    keeping its first ``limit - 3`` code points plus ``...`` when longer, but
+    the walk stops once more than *limit* code points are written. Function
+    values render as ``<function>`` (proposal 0018, section 6), as on the
+    interpreter and in JavaScript.
+    """
+    parts: list[str] = []
+    size = [0]
+
+    def emit(text: str) -> None:
+        parts.append(text)
+        size[0] += len(text)
+        if size[0] > limit:
+            raise _GenoDisplayLimitReached
+
+    def items(opening: str, values: Any, closing: str, seen: tuple[Any, ...]) -> None:
+        emit(opening)
+        for index, item in enumerate(values):
+            if index:
+                emit(", ")
+            walk(item, seen)
+        emit(closing)
+
+    def entries(
+        opening: str, mapping: Any, closing: str, seen: tuple[Any, ...]
+    ) -> None:
+        emit(opening)
+        for index, (key, item) in enumerate(mapping.items()):
+            if index:
+                emit(", ")
+            walk(key, seen)
+            emit(": ")
+            walk(item, seen)
+        emit(closing)
+
+    def walk(item: Any, seen: tuple[Any, ...]) -> None:
+        containers = (
+            list,
+            dict,
+            tuple,
+            _GenoArray,
+            _GenoMutableMap,
+            _GenoVec,
+            _GenoSet,
+        )
+        if isinstance(item, containers):
+            if _geno_seen_contains(seen, item):
+                emit(_geno_format(item, (item,), _top_level=False))
+                return
+            seen = seen + (item,)
+        if item is None:
+            emit("()")
+        elif isinstance(item, bool):
+            emit("true" if item else "false")
+        elif isinstance(item, str):
+            # Escaping is per character: the escaped head is the head of the
+            # full rendering, so never escape more than can be shown.
+            head = item[: limit + 1]
+            quoted = _geno_quote_string(head)
+            emit(quoted if len(head) == len(item) else quoted[:-1])
+            if len(head) != len(item):
+                raise _GenoDisplayLimitReached
+        elif isinstance(item, Constructor):
+            fields = _dataclasses_fields(item)
+            name = "None" if isinstance(item, _None) else type(item).__name__
+            if not fields:
+                emit(name)
+                return
+            emit(name + "(")
+            for index, field in enumerate(fields):
+                emit((", " if index else "") + field.name + ": ")
+                walk(_object_getattribute(item, field.name), seen)
+            emit(")")
+        elif isinstance(item, _GenoArray):
+            items("Array([", item._elements, "])", seen)
+        elif isinstance(item, _GenoMutableMap):
+            entries("MutableMap({", item._data, "})", seen)
+        elif isinstance(item, _GenoVec):
+            items("Vec([", item._elements, "])", seen)
+        elif isinstance(item, _GenoSet):
+            items("Set({", sorted(item._data, key=_geno_sort_key), "})", seen)
+        elif isinstance(item, list):
+            items("[", item, "]", seen)
+        elif isinstance(item, tuple):
+            items("(", item, ",)" if len(item) == 1 else ")", seen)
+        elif isinstance(item, dict):
+            entries("{", item, "}", seen)
+        elif callable(item):
+            emit("<function>")
+        else:
+            emit(str(item))
+
+    try:
+        walk(value, ())
+    except _GenoDisplayLimitReached:
+        pass
+    text = "".join(parts)
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)] + "..."
+
+
 # =============================================================================
 # Constructor Base
 # =============================================================================
@@ -568,7 +682,108 @@ class _PropagateReturn(Exception):
 
 
 class _GenoContractViolation(RuntimeError):
-    """Internal: uncatchable requires/ensures failure."""
+    """Internal: uncatchable requires/ensures failure.
+
+    Built by ``_geno_contract_violation``; carries the structured fields of
+    the interpreter's ``ContractViolationError`` (proposal 0018).
+    ``call_depth`` is ``None`` on compiled backends.
+    """
+
+    clause: Any = None
+    reason: Any = None
+    clause_index: Any = None
+    function: Any = None
+    clause_text: Any = None
+    arguments: Any = None
+    result_display: Any = None
+    checked_values: Any = ()
+    call_depth: Any = None
+
+
+def _geno_contract_message(
+    clause: str,
+    reason: str,
+    function: str,
+    clause_text: Any,
+    clause_index: int,
+    arguments: Any,
+    result: Any,
+    checked_values: Any,
+) -> str:
+    """Copy of geno/runtime_report.py ``contract_message`` (a test pins it)."""
+    label = "Precondition failed" if clause == "requires" else "Postcondition failed"
+    shown_arguments = ", ".join(name + ": " + value for name, value in arguments)
+    shown_clause = clause_text if clause_text else "clause #" + str(clause_index + 1)
+    message = label + ": " + function + "(" + shown_arguments + ") "
+    message += clause + " " + shown_clause
+    notes = []
+    if reason == "propagate":
+        notes.append("'?' propagated None/Err")
+    if result is not None:
+        notes.append("result was " + result)
+    if checked_values:
+        rebound = ", ".join(name + " was " + value for name, value in checked_values)
+        notes.append(rebound + " when checked")
+    if notes:
+        message += " (" + "; ".join(notes) + ")"
+    return message
+
+
+def _geno_contract_violation(
+    clause: str,
+    reason: str,
+    clause_index: int,
+    function: str,
+    clause_text: Any,
+    names: Any,
+    values: Any,
+    result: Any = _GENO_MISSING,
+    checked: Any = None,
+) -> Any:
+    """The exception a failed contract clause raises (the caller raises it).
+
+    *values* are the call's arguments; *checked*, when given, are the
+    parameters' values at an ``ensures`` check in a function whose body
+    rebound a parameter, and those that differ are reported too. *result*
+    is the returned value, for ``ensures``.
+    """
+    limit = _GENO_ARGUMENT_DISPLAY_LIMIT
+    arguments = tuple(
+        (name, _geno_format_bounded(value, limit)) for name, value in zip(names, values)
+    )
+    checked_values: Any = ()
+    if checked is not None:
+        shown = tuple(
+            (name, _geno_format_bounded(value, limit))
+            for name, value in zip(names, checked)
+        )
+        checked_values = tuple(
+            pair for pair, argument in zip(shown, arguments) if pair != argument
+        )
+    result_display = (
+        None if result is _GENO_MISSING else _geno_format_bounded(result, limit)
+    )
+    error: Any = _GenoContractViolation(
+        _geno_contract_message(
+            clause,
+            reason,
+            function,
+            clause_text,
+            clause_index,
+            arguments,
+            result_display,
+            checked_values,
+        )
+    )
+    error.clause = clause
+    error.reason = reason
+    error.clause_index = clause_index
+    error.function = function
+    error.clause_text = clause_text
+    error.arguments = arguments
+    error.result_display = result_display
+    error.checked_values = checked_values
+    return error
 
 
 def _geno_named_constructor(cls: Any, name: str) -> Any:

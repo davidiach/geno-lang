@@ -436,7 +436,7 @@ class REPL:
             # Try parsing as a program (definitions)
             lexer = Lexer(source, "<repl>")
             tokens = lexer.tokenize()
-            parser = Parser(tokens)
+            parser = Parser(tokens, source)
 
             # Check if it looks like a definition
             if tokens and tokens[0].type.name in _DEFINITION_STARTERS:
@@ -556,7 +556,7 @@ class REPL:
 
             lexer = Lexer(source, filename)
             tokens = lexer.tokenize()
-            parser = Parser(tokens)
+            parser = Parser(tokens, source)
             program = parser.parse_program()
 
             self.type_checker.check_program(program)

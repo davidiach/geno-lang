@@ -305,6 +305,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_PropagateReturn",
             # contracts and panics
             "_GenoContractViolation",
+            "_geno_contract_violation",
             "_GENO_MISSING",
             "_geno_panic",
             "_geno_named_constructor",
@@ -1047,6 +1048,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._validate_renamed_identifiers(program, CompileError)
 
             self.output.write(f"\n\n# === Module: {mod_name} ===\n")
+            self._display_module = None if mod_name == entrypoint else mod_name
             factory_name = f"_geno_module_{self._mangle_name(mod_name)}"
             self._writeln(f"def {factory_name}():")
             self._indent()
@@ -1086,6 +1088,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._dedent()
             self._writeln(f"{module_bindings[mod_name]} = {factory_name}()")
             self._active_module_bindings = {}
+            self._display_module = None
 
         for mod_name in dep_graph.sorted_modules:
             for impl_name in module_impl_exports[mod_name]:
@@ -1401,8 +1404,30 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln(f"{param_name} = {default_value}")
             self._dedent()
 
+        # Contract failures name the function, its parameters and the call's
+        # argument values (proposal 0018); the values are rendered only once
+        # a clause has failed.
+        display_name = self._function_display_name(defn)
+        param_names = tuple(p.name for p in defn.params)
+        param_values = _python_tuple(self._mangle_name(p.name) for p in defn.params)
+
+        # If we have ensures clauses, we need to wrap the body
+        has_ensures = any(
+            not isinstance(ens.condition, BooleanLiteral) or not ens.condition.value
+            for ens in defn.specs.ensures
+        )
+        # A top-level `let n = ...` rebinds parameter `n` itself (the body
+        # helper declares the parameters nonlocal), and the ensures clauses
+        # see the rebound value by design. Only such a function keeps the
+        # call's arguments, so its failure still reports the call; any other
+        # function renders its parameters at failure time and pays nothing.
+        call_arguments = param_values
+        if has_ensures and self._direct_binding_names(defn.body) & set(param_names):
+            call_arguments = self._fresh_temp()
+            self._writeln(f"{call_arguments} = {param_values}")
+
         # Generate requires checks at function entry
-        for req in defn.specs.requires:
+        for index, req in enumerate(defn.specs.requires):
             if isinstance(req.condition, BooleanLiteral):
                 if req.condition.value:
                     continue
@@ -1413,24 +1438,22 @@ class Compiler(BaseCompiler, ASTVisitor):
                 {p.name: self._mangle_name(p.name) for p in defn.params}
             ):
                 cond = self._compile_expr(req.condition)
+            described = (display_name, req.source_text, param_names, param_values)
             cond = self._contract_condition(
                 req.condition,
                 cond,
-                f"Precondition failed for {defn.name}: requires clause cannot "
-                "use '?' to propagate None/Err",
+                self._contract_violation_call(
+                    "requires", "propagate", index, *described
+                ),
             )
             self._writeln(f"if not ({cond}):")
             self._indent()
             self._writeln(
-                f'raise _GenoContractViolation("Precondition failed for {defn.name}: requires clause evaluated to false")'
+                "raise "
+                + self._contract_violation_call("requires", "false", index, *described)
             )
             self._dedent()
 
-        # If we have ensures clauses, we need to wrap the body
-        has_ensures = any(
-            not isinstance(ens.condition, BooleanLiteral) or not ens.condition.value
-            for ens in defn.specs.ensures
-        )
         body_helper = self._fresh_temp() if has_ensures else ""
 
         if has_ensures:
@@ -1484,7 +1507,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             if self._expected_runtime_type_is_float(defn.return_type):
                 self._writeln(f"{result_name} = _promote_int_to_float({result_name})")
             # Check ensures clauses
-            for ens in defn.specs.ensures:
+            for index, ens in enumerate(defn.specs.ensures):
                 if isinstance(ens.condition, BooleanLiteral):
                     if ens.condition.value:
                         continue
@@ -1499,16 +1522,25 @@ class Compiler(BaseCompiler, ASTVisitor):
                 contract_bindings["result"] = result_name
                 with self._with_name_overrides(contract_bindings):
                     cond = self._compile_expr(ens.condition)
+                described = (display_name, ens.source_text, param_names, call_arguments)
+                outcome = {
+                    "result": result_name,
+                    "checked": param_values if call_arguments != param_values else None,
+                }
                 cond = self._contract_condition(
                     ens.condition,
                     cond,
-                    f"Postcondition failed for {defn.name}: ensures clause "
-                    "cannot use '?' to propagate None/Err",
+                    self._contract_violation_call(
+                        "ensures", "propagate", index, *described, **outcome
+                    ),
                 )
                 self._writeln(f"if not ({cond}):")
                 self._indent()
                 self._writeln(
-                    f'raise _GenoContractViolation(f"Postcondition failed for {defn.name}: ensures clause evaluated to false (result was {{{result_name}}})")'
+                    "raise "
+                    + self._contract_violation_call(
+                        "ensures", "false", index, *described, **outcome
+                    )
                 )
                 self._dedent()
             self._writeln(f"return {result_name}")
@@ -1516,14 +1548,15 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._dedent()
 
     def _contract_condition(
-        self, condition: Expression, compiled: str, message: str
+        self, condition: Expression, compiled: str, violation: str
     ) -> str:
         """Evaluate a contract clause that uses ``?``; return what to test.
 
         A ``?`` that propagates inside a ``requires`` or ``ensures`` clause
         would otherwise escape the function as ``_PropagateReturn``; like the
-        interpreter, it is a contract violation (*message*). A clause
-        without a ``?`` of its own is tested as compiled.
+        interpreter, it is a contract violation (*violation*, the expression
+        that builds it). A clause without a ``?`` of its own is tested as
+        compiled.
         """
         if not self._contains_propagate(condition):
             return compiled
@@ -1534,9 +1567,44 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._dedent()
         self._writeln("except _PropagateReturn:")
         self._indent()
-        self._writeln(f"raise _GenoContractViolation({json.dumps(message)}) from None")
+        self._writeln(f"raise {violation} from None")
         self._dedent()
         return value
+
+    @staticmethod
+    def _contract_violation_call(
+        clause: str,
+        reason: str,
+        index: int,
+        function: str,
+        clause_text: str | None,
+        names: tuple[str, ...],
+        values: str,
+        *,
+        result: str | None = None,
+        checked: str | None = None,
+    ) -> str:
+        """The prelude call that builds a contract violation (proposal 0018).
+
+        Every text is an escaped Python literal (``repr``), never f-string
+        text, so a clause containing braces, quotes or backslashes is safe.
+        The call returns the exception; the ``raise`` stays in the Geno
+        function's own frame.
+        """
+        parts = [
+            repr(clause),
+            repr(reason),
+            str(index),
+            repr(function),
+            repr(clause_text),
+            repr(names),
+            values,
+        ]
+        if result is not None:
+            parts.append(result)
+        if checked is not None:
+            parts.append(f"checked={checked}")
+        return f"_geno_contract_violation({', '.join(parts)})"
 
     # =========================================================================
     # Statements
@@ -3326,7 +3394,7 @@ def compile_to_python(
     lexer = Lexer(source, filename)
     tokens = lexer.tokenize()
 
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     # Type check by default (matches CLI behavior)
@@ -3590,6 +3658,14 @@ _STANDALONE_DEEP_RUNNER = f"""\
             raise value
         return value
 """
+
+
+def _python_tuple(items: Iterable[str]) -> str:
+    """A Python tuple display of the expressions *items*."""
+    parts = list(items)
+    if len(parts) == 1:
+        return f"({parts[0]},)"
+    return f"({', '.join(parts)})"
 
 
 def _compiled_main_guard(

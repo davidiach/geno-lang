@@ -772,9 +772,17 @@ class AssertStatement(Statement):
 
 @dataclass
 class RequiresClause(ASTNode):
-    """Precondition: requires P"""
+    """Precondition: requires P
+
+    ``source_text`` is the clause's condition as written (comments removed,
+    line breaks collapsed, capped; see ``parser_base.contract_clause_text``),
+    captured at parse time for runtime contract-failure messages (proposal
+    0018). It takes no part in equality, so ``geno fmt``'s round-trip check
+    stays blind to spacing.
+    """
 
     condition: Expression
+    source_text: str | None = field(default=None, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_requires_clause(self)
@@ -782,9 +790,13 @@ class RequiresClause(ASTNode):
 
 @dataclass
 class EnsuresClause(ASTNode):
-    """Postcondition: ensures Q"""
+    """Postcondition: ensures Q
+
+    ``source_text`` is as for ``RequiresClause``.
+    """
 
     condition: Expression
+    source_text: str | None = field(default=None, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_ensures_clause(self)

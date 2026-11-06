@@ -765,7 +765,7 @@ def _test_file(
 
         source = context.source
         tokens = Lexer(source, context.filename).tokenize()
-        program = Parser(tokens).parse_program()
+        program = Parser(tokens, source).parse_program()
         parsed_modules = context.parsed_modules or None
         target_names: list[str] = (
             [target]

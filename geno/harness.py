@@ -470,7 +470,7 @@ def run_harness_from_source(source: str, check_examples: bool = True) -> Harness
     # Parse
     lexer = Lexer(source)
     tokens = lexer.tokenize()
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     # Type check
@@ -552,7 +552,7 @@ def run_harness_from_compiled(source: str) -> HarnessResult:
     # Parse for harness extraction
     lexer = Lexer(source)
     tokens = lexer.tokenize()
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     # Compile and execute, with the interpreter runner's grants.

@@ -30,6 +30,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
+    EnsuresClause,
     ExampleClause,
     Expression,
     ExpressionStatement,
@@ -62,6 +63,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     PlaceholderExpr,
     Program,
     PropagateExpr,
+    RequiresClause,
     RestPattern,
     ReturnStatement,
     SimpleType,
@@ -96,6 +98,7 @@ from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_r
 from .float_promotion import float_shape
 from .harness import example_call_args, example_numbers_match
 from .panic_outcome import evaluate_panics_call
+from .runtime_report import ARGUMENT_DISPLAY_LIMIT, contract_message
 from .sandbox import (
     RecursionLimitError,
     SandboxConfig,
@@ -118,6 +121,8 @@ from .values import (
     Closure,
     ConstructorValue,
     ContinueException,
+    ContractClause,
+    ContractFailureReason,
     ContractViolationError,
     Environment,
     GenoRuntimeError,
@@ -170,6 +175,9 @@ def _raised_recursion_limit(needed: int) -> Generator[None, None, None]:
 
 # Sentinel for unfilled argument slots (not None — that's Geno's Unit value)
 _UNFILLED = object()
+
+# A requires failure has no result (None is Geno's Unit, a valid result).
+_NO_RESULT = object()
 
 # These builtins mutate a validated reference container in place. Their own
 # implementations enforce top-level growth; the interpreter only needs to
@@ -392,8 +400,9 @@ def _explain_rejection_example(
 
     The violation is recognized by its structured fields (``clause``,
     ``reason``, ``call_depth``), never by its message (proposal 0017). The
-    replacement keeps the "Precondition failed for X:" prefix the contract
-    checks raise with, so the report still reads as a precondition failure;
+    replacement starts with the violation's own message
+    (``Precondition failed: f(...) requires ...``, proposal 0018), so the
+    report still reads as a precondition failure;
     the caller re-raises it with ``violation.with_message`` so the fields,
     which ``geno test`` classifies by, carry over.
 
@@ -413,8 +422,10 @@ def _explain_rejection_example(
     if expected.constructor not in _REJECTION_CONSTRUCTORS:
         return None
 
+    # The violation's own message names the function, its arguments and the
+    # clause (proposal 0018): ``Precondition failed: f(a: 0) requires a > 0``.
     return (
-        f"Precondition failed for {name}: this example expects "
+        f"{violation.message}: this example expects "
         f"{expected.constructor}, but a requires clause "
         f"rejected the input before the body ran, so the example "
         f"can never reach it. Either drop the requires clause and validate in "
@@ -1612,6 +1623,7 @@ class Interpreter:
                         name=defn.name,
                         specs=defn.specs,
                         is_async=defn.is_async,
+                        display_name=defn.name,
                     )
                     self.global_env.bind(defn.name, closure)
                     self._function_closures[defn.name] = closure
@@ -1627,6 +1639,7 @@ class Interpreter:
                             env=self.global_env,
                             name=method.name,
                             specs=method.specs,
+                            display_name=f"{defn.target_type}.{method.name}",
                         )
                     self.trait_impls[(defn.trait_name, defn.target_type)] = (
                         method_closures
@@ -1749,6 +1762,7 @@ class Interpreter:
                     name=defn.name,
                     specs=defn.specs,
                     is_async=defn.is_async,
+                    display_name=f"{name}.{defn.name}",
                 )
                 module_env.bind(defn.name, closure)
                 if has_exports and not defn.exported:
@@ -1768,6 +1782,7 @@ class Interpreter:
                         env=module_env,
                         name=method.name,
                         specs=method.specs,
+                        display_name=f"{defn.target_type}.{method.name}",
                     )
                 self.trait_impls[(defn.trait_name, defn.target_type)] = method_closures
                 for method in defn.methods:
@@ -2798,7 +2813,7 @@ class Interpreter:
                     # spec-free functions skip the check call entirely.
                     specs = func.specs
                     if specs is not None and specs.requires:
-                        self._check_requires(func, call_env)
+                        self._check_requires(func, call_env, args)
 
                     # Execute body
                     try:
@@ -2818,7 +2833,7 @@ class Interpreter:
                     # clause list — _check_ensures allocates an environment
                     # even when there is nothing to check.
                     if specs is not None and specs.ensures:
-                        self._check_ensures(func, call_env, result)
+                        self._check_ensures(func, call_env, result, args)
 
                     self._check_collection_limits([result], location)
                     self._check_timeout(location)
@@ -2897,34 +2912,24 @@ class Interpreter:
                 f"Cannot call non-function: {type(func).__name__}", location
             )
 
-    def _check_requires(self, func: Closure, env: Environment) -> None:
+    def _check_requires(self, func: Closure, env: Environment, args: list[Any]) -> None:
         """Check all requires (precondition) clauses."""
         assert func.specs is not None
         for index, req in enumerate(func.specs.requires):
             try:
                 condition = self.eval_expr(req.condition, env)
             except PropagateException:
-                raise ContractViolationError(
-                    f"Precondition failed for {func.name or 'function'}: "
-                    f"requires clause cannot use '?' to propagate None/Err",
-                    req.condition.location,
-                    call_depth=len(self._call_stack),
-                    clause="requires",
-                    reason="propagate",
-                    clause_index=index,
+                raise self._contract_violation(
+                    func, "requires", "propagate", index, req, args
                 ) from None
             if not condition:
-                raise ContractViolationError(
-                    f"Precondition failed for {func.name or 'function'}: "
-                    f"requires clause evaluated to false",
-                    req.condition.location,
-                    call_depth=len(self._call_stack),
-                    clause="requires",
-                    reason="false",
-                    clause_index=index,
+                raise self._contract_violation(
+                    func, "requires", "false", index, req, args
                 )
 
-    def _check_ensures(self, func: Closure, env: Environment, result: Any) -> None:
+    def _check_ensures(
+        self, func: Closure, env: Environment, result: Any, args: list[Any]
+    ) -> None:
         """Check all ensures (postcondition) clauses."""
         assert func.specs is not None
         # Create environment with 'result' bound to the return value
@@ -2935,28 +2940,73 @@ class Interpreter:
             try:
                 condition = self.eval_expr(ens.condition, ensures_env)
             except PropagateException:
-                raise ContractViolationError(
-                    f"Postcondition failed for {func.name or 'function'}: "
-                    f"ensures clause cannot use '?' to propagate None/Err",
-                    ens.condition.location,
-                    call_depth=len(self._call_stack),
-                    clause="ensures",
-                    reason="propagate",
-                    clause_index=index,
-                    result_display=self._format_value(result),
+                raise self._contract_violation(
+                    func, "ensures", "propagate", index, ens, args, env, result
                 ) from None
             if not condition:
-                shown = self._format_value(result)
-                raise ContractViolationError(
-                    f"Postcondition failed for {func.name or 'function'}: "
-                    f"ensures clause evaluated to false (result was {shown})",
-                    ens.condition.location,
-                    call_depth=len(self._call_stack),
-                    clause="ensures",
-                    reason="false",
-                    clause_index=index,
-                    result_display=shown,
+                raise self._contract_violation(
+                    func, "ensures", "false", index, ens, args, env, result
                 )
+
+    def _contract_violation(
+        self,
+        func: Closure,
+        clause: ContractClause,
+        reason: ContractFailureReason,
+        index: int,
+        spec: RequiresClause | EnsuresClause,
+        args: list[Any],
+        env: Environment | None = None,
+        result: Any = _NO_RESULT,
+    ) -> ContractViolationError:
+        """The violation for a failed clause (proposal 0018, section 6).
+
+        Runs only once a clause has failed. The arguments shown are the
+        call's (*args*, after defaults and Float widening); for ``ensures``
+        a parameter the body rebound in *env* to a value that renders
+        differently is reported as a checked value too.
+        """
+        limit = ARGUMENT_DISPLAY_LIMIT
+        names = [param.name for param in func.params]
+        arguments = tuple(
+            (name, _builtins.format_value_bounded(value, limit))
+            for name, value in zip(names, args)
+        )
+        checked: list[tuple[str, str]] = []
+        if env is not None:
+            for name, argument in arguments:
+                shown = _builtins.format_value_bounded(env.lookup(name), limit)
+                if shown != argument:
+                    checked.append((name, shown))
+        result_display = (
+            None
+            if result is _NO_RESULT
+            else _builtins.format_value_bounded(result, limit)
+        )
+        function = func.display_name or func.name or "function"
+        message = contract_message(
+            clause=clause,
+            reason=reason,
+            function=function,
+            clause_text=spec.source_text,
+            clause_index=index,
+            arguments=arguments,
+            result=result_display,
+            checked_values=checked,
+        )
+        return ContractViolationError(
+            message,
+            spec.condition.location,
+            call_depth=len(self._call_stack),
+            clause=clause,
+            reason=reason,
+            clause_index=index,
+            result_display=result_display,
+            function=function,
+            clause_text=spec.source_text,
+            arguments=arguments,
+            checked_values=tuple(checked),
+        )
 
     def _eval_index_access(self, expr: IndexAccess, env: Environment) -> Any:
         """Evaluate index access."""
@@ -3136,7 +3186,7 @@ class Interpreter:
         for param, arg in zip(func.params, value.args):
             call_env.bind(param.name, arg)
         if func.specs:
-            self._check_requires(func, call_env)
+            self._check_requires(func, call_env, value.args)
         if self.call_depth >= self.max_recursion_depth:
             # See _call_function for why this is a RecursionLimitError.
             raise RecursionLimitError(
@@ -3158,7 +3208,7 @@ class Interpreter:
             except ContinueException:
                 raise RuntimeError("'continue' outside of loop", location)
             if func.specs:
-                self._check_ensures(func, call_env, result)
+                self._check_ensures(func, call_env, result, value.args)
             self._check_collection_limits([result], location)
             return result
         finally:
@@ -3976,7 +4026,7 @@ def interpret(
     tokens = lexer.tokenize()
 
     # Parse
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     # Type check

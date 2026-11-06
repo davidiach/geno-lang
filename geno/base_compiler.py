@@ -151,6 +151,11 @@ class BaseCompiler(ABC):
         self._reserved_temp_names: set[str] = set()
         self._shadowed_runtime_names: frozenset[str] = frozenset()
         self._module_constant_names: set[str] = set()
+        # Runtime reports name functions as written (proposal 0018): a
+        # function of a non-entry module is `Module.function`, and an impl
+        # method `Type.method`. See _function_display_name.
+        self._display_module: str | None = None
+        self._display_name_override: str | None = None
         self._definition_index = DefinitionIndex(
             type_defs=self.type_defs,
             type_aliases=self.type_aliases,
@@ -1052,7 +1057,25 @@ class BaseCompiler(ABC):
                 closing_name=None,
                 effects=method.effects,
             )
-            self._compile_function_def(mangled_def)
+            self._display_name_override = f"{defn.target_type}.{method.name}"
+            try:
+                self._compile_function_def(mangled_def)
+            finally:
+                self._display_name_override = None
+
+    def _function_display_name(self, defn: FunctionDef) -> str:
+        """The name runtime reports give *defn* (proposal 0018, section 2).
+
+        Matches the interpreter's ``Closure.display_name``: the name as
+        written, ``Type.method`` for an impl method, and ``Module.function``
+        for a function of a module other than the entry module. Host-name
+        mangling is never shown.
+        """
+        if self._display_name_override is not None:
+            return self._display_name_override
+        if self._display_module is not None:
+            return f"{self._display_module}.{defn.name}"
+        return defn.name
 
     def _record_impl_def_location(self, defn: ImplDef) -> None:
         """Record the impl block's source location.  No-op by default

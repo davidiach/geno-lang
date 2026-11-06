@@ -6,6 +6,7 @@ Pure built-in function implementations for the Geno interpreter.
 These functions have no dependency on interpreter state.
 """
 
+import heapq
 import math
 import os
 import random
@@ -13,6 +14,7 @@ import re
 import time
 from typing import Any, Callable
 
+from .runtime_report import truncate_display
 from .value_copy import copy_value
 from .values import (
     ArrayValue,
@@ -957,6 +959,147 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+class _DisplayLimitReached(Exception):
+    """The bounded renderer has more than its limit: stop walking the value."""
+
+
+class _BoundedDisplayWriter:
+    __slots__ = ("limit", "parts", "size")
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.size = 0
+        self.parts: list[str] = []
+
+    def append(self, text: str) -> None:
+        self.parts.append(text)
+        self.size += len(text)
+        if self.size > self.limit:
+            raise _DisplayLimitReached
+
+
+def format_value_bounded(value: Any, limit: int) -> str:
+    """``format_value(value)``, truncated to *limit* code points, at bounded cost.
+
+    The result is exactly what truncating the full rendering would give (its
+    first ``limit - 3`` code points and ``...`` when it is longer than
+    *limit*), but the walk stops as soon as more than *limit* code points
+    are written, so the cost depends on the limit and not on the value's
+    size. Contract failures render argument and result values with it
+    (proposal 0018); property checks raise and discard many of them.
+
+    One deliberate difference from ``format_value``: a function value
+    renders as ``<function>``, which is what the compiled backends can show
+    too.
+    """
+    writer = _BoundedDisplayWriter(limit)
+    try:
+        _write_display_value(value, writer, frozenset())
+    except _DisplayLimitReached:
+        pass
+    return truncate_display("".join(writer.parts), limit)
+
+
+def _write_display_value(
+    value: Any, writer: _BoundedDisplayWriter, seen: frozenset[int]
+) -> None:
+    """Write ``format_value(value)`` piece by piece (see format_value_bounded)."""
+    append = writer.append
+    if isinstance(
+        value, (list, dict, tuple, ArrayValue, MutableMapValue, SetValue, VecValue)
+    ):
+        if id(value) in seen:
+            if isinstance(value, ArrayValue):
+                append("Array([...])")
+            elif isinstance(value, MutableMapValue):
+                append("MutableMap({...})")
+            elif isinstance(value, SetValue):
+                append("Set({...})")
+            elif isinstance(value, VecValue):
+                append("Vec([...])")
+            else:
+                append("[...]" if isinstance(value, list) else "{...}")
+            return
+        seen = seen | {id(value)}
+
+    if isinstance(value, SetValue):
+        data = value._data
+        # Enough elements for any limit: each renders to at least one code
+        # point. heapq.nsmallest is documented equal to sorted(...)[:n].
+        wanted = writer.limit + 1
+        ordered = (
+            sorted(data, key=_geno_sort_key)
+            if len(data) <= wanted
+            else heapq.nsmallest(wanted, data, key=_geno_sort_key)
+        )
+        _write_display_items("Set({", ordered, "})", writer, seen)
+    elif isinstance(value, ArrayValue):
+        _write_display_items("Array([", value._elements, "])", writer, seen)
+    elif isinstance(value, MutableMapValue):
+        _write_display_entries("MutableMap({", value._data, "})", writer, seen)
+    elif isinstance(value, VecValue):
+        _write_display_items("Vec([", value._elements, "])", writer, seen)
+    elif isinstance(value, list):
+        _write_display_items("[", value, "]", writer, seen)
+    elif isinstance(value, tuple):
+        _write_display_items("(", value, ",)" if len(value) == 1 else ")", writer, seen)
+    elif isinstance(value, dict):
+        _write_display_entries("{", value, "}", writer, seen)
+    elif isinstance(value, ConstructorValue):
+        if not value.fields:
+            append(str(value.constructor))
+            return
+        append(f"{value.constructor}(")
+        for index, (key, field_value) in enumerate(value.fields.items()):
+            append(f"{', ' if index else ''}{key}: ")
+            _write_display_value(field_value, writer, seen)
+        append(")")
+    elif isinstance(value, (Closure, BuiltinFunction)) or callable(value):
+        append("<function>")
+    elif isinstance(value, str):
+        # Escaping is per character, so the escaped head of the string is the
+        # head of its full rendering; never escape more than can be shown.
+        head = value[: writer.limit + 1]
+        quoted = _format_string_literal(head)
+        append(quoted if len(head) == len(value) else quoted[:-1])
+        if len(head) != len(value):
+            raise _DisplayLimitReached
+    else:
+        append(format_value(value))
+
+
+def _write_display_items(
+    opening: str,
+    items: Any,
+    closing: str,
+    writer: _BoundedDisplayWriter,
+    seen: frozenset[int],
+) -> None:
+    writer.append(opening)
+    for index, item in enumerate(items):
+        if index:
+            writer.append(", ")
+        _write_display_value(item, writer, seen)
+    writer.append(closing)
+
+
+def _write_display_entries(
+    opening: str,
+    entries: Any,
+    closing: str,
+    writer: _BoundedDisplayWriter,
+    seen: frozenset[int],
+) -> None:
+    writer.append(opening)
+    for index, (key, item) in enumerate(entries.items()):
+        if index:
+            writer.append(", ")
+        _write_display_value(key, writer, seen)
+        writer.append(": ")
+        _write_display_value(item, writer, seen)
+    writer.append(closing)
 
 
 def stringify_value(value: Any, _seen: set[int] | None = None) -> str:

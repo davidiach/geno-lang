@@ -538,16 +538,24 @@ class Parser(
     def _parse_requires_clause(self) -> RequiresClause:
         """Parse: requires condition"""
         location = self._current().location
-        self._expect(TokenType.REQUIRES)
+        keyword = self._expect(TokenType.REQUIRES)
         condition = self._parse_expression()
-        return RequiresClause(location=location, condition=condition)
+        return RequiresClause(
+            location=location,
+            condition=condition,
+            source_text=self._contract_clause_source(keyword),
+        )
 
     def _parse_ensures_clause(self) -> EnsuresClause:
         """Parse: ensures condition"""
         location = self._current().location
-        self._expect(TokenType.ENSURES)
+        keyword = self._expect(TokenType.ENSURES)
         condition = self._parse_expression()
-        return EnsuresClause(location=location, condition=condition)
+        return EnsuresClause(
+            location=location,
+            condition=condition,
+            source_text=self._contract_clause_source(keyword),
+        )
 
     def _parse_example_clause(self) -> ExampleClause:
         """Parse: example input -> output or example input1, input2, ... -> output"""

@@ -1610,6 +1610,15 @@ class _GenoContractViolation extends Error {
     constructor(message) {
         super(message);
         this.name = "_GenoContractViolation";
+        // Structured fields (proposal 0018), set by _genoContractViolation.
+        this.clause = null;
+        this.reason = null;
+        this.clauseIndex = null;
+        this.function = null;
+        this.clauseText = null;
+        this.arguments = null;
+        this.resultDisplay = null;
+        this.checkedValues = [];
     }
 }
 function _propagate(val) {
@@ -1635,6 +1644,160 @@ function panic(message) {
 function unwrap_or(opt, def) {
     if (isConstructor(opt) && opt._tag === 'Some') return opt.value;
     return def;
+}
+
+// =============================================================================
+// Contract Failures
+// =============================================================================
+
+// The longest rendering of one value in a contract failure, in code points
+// (geno/runtime_report.py ARGUMENT_DISPLAY_LIMIT; a test pins the copies).
+const _GENO_ARGUMENT_DISPLAY_LIMIT = 64;
+
+// A Float-typed value: JavaScript numbers do not say whether 2 is an Int or
+// a Float, so the compiler marks Float arguments and results it reports.
+class _GenoFloatDisplay {
+    constructor(value) { this.value = value; }
+}
+function _genoFloatDisplay(value) { return new _GenoFloatDisplay(value); }
+
+class _GenoDisplayLimitReached {}
+
+// The diagnostic rendering of `value` (strings quoted at every depth),
+// truncated to `limit` code points: equal to rendering it whole and keeping
+// its first `limit - 3` code points plus "...", but the walk stops once more
+// than `limit` code points are written. Function values render as
+// "<function>", as on the interpreter and compiled Python.
+function _formatValueBounded(value, limit) {
+    const parts = [];
+    let size = 0;
+    const emit = (text) => {
+        parts.push(text);
+        size += _stringLength(text);
+        if (size > limit) throw new _GenoDisplayLimitReached();
+    };
+    const items = (opening, values, closing, seen) => {
+        emit(opening);
+        let index = 0;
+        for (const item of values) {
+            if (index++) emit(", ");
+            walk(item, seen);
+        }
+        emit(closing);
+    };
+    const entries = (opening, pairs, closing, seen) => {
+        emit(opening);
+        let index = 0;
+        for (const [key, item] of pairs) {
+            if (index++) emit(", ");
+            walk(key, seen);
+            emit(": ");
+            walk(item, seen);
+        }
+        emit(closing);
+    };
+    const walk = (item, seen) => {
+        if (item instanceof _GenoFloatDisplay) { emit(_formatFloat(item.value)); return; }
+        if (item !== null && typeof item === "object") {
+            if (seen.has(item)) {
+                if (item instanceof GenoArray) emit("Array([...])");
+                else if (item instanceof GenoMutableMap) emit("MutableMap({...})");
+                else if (item instanceof GenoVec) emit("Vec([...])");
+                else if (item instanceof GenoSet) emit("Set({...})");
+                else if (Array.isArray(item)) emit("[...]");
+                else emit("{...}");
+                return;
+            }
+            seen = new _GENO_SET(seen);
+            seen.add(item);
+        }
+        if (item === null || item === undefined) emit("()");
+        else if (typeof item === "boolean") emit(_GENO_STRING(item));
+        else if (typeof item === "string") {
+            // Escaping is per code point: the escaped head is the head of the
+            // full rendering, so never escape more than can be shown.
+            const chars = _stringCodePoints(item);
+            if (chars.length <= limit + 1) emit(_reprString(item));
+            else {
+                const quoted = _reprString(chars.slice(0, limit + 1).join(""));
+                emit(quoted.slice(0, -1));
+                throw new _GenoDisplayLimitReached();
+            }
+        } else if (typeof item === "number") {
+            emit(_GENO_NUMBER.isFinite(item) ? _GENO_STRING(item) : _formatFloat(item));
+        } else if (typeof item === "function") emit("<function>");
+        else if (item instanceof GenoArray) items("Array([", item._elements, "])", seen);
+        else if (Array.isArray(item)) items("[", item, "]", seen);
+        else if (item instanceof _GENO_MAP) entries("{", item.entries(), "}", seen);
+        else if (item instanceof GenoMutableMap) entries("MutableMap({", item._data.entries(), "})", seen);
+        else if (item instanceof GenoSet) {
+            items("Set({", [...item._data.values()].sort(_compareGenoValues), "})", seen);
+        } else if (item instanceof GenoVec) items("Vec([", item._elements, "])", seen);
+        else if (isConstructor(item)) {
+            const formatter = _constructorFormatter(item);
+            if (typeof formatter === "function") { emit(formatter(item, undefined, false)); return; }
+            const fields = Object.keys(item).filter(k => k !== "_tag");
+            if (fields.length === 0) { emit(item._tag); return; }
+            emit(item._tag + "(");
+            fields.forEach((key, index) => {
+                emit((index ? ", " : "") + key + ": ");
+                walk(item[key], seen);
+            });
+            emit(")");
+        } else emit(_GENO_STRING(item));
+    };
+    try {
+        walk(value, new _GENO_SET());
+    } catch (e) {
+        if (!(e instanceof _GenoDisplayLimitReached)) throw e;
+    }
+    const text = parts.join("");
+    const chars = _stringCodePoints(text);
+    if (chars.length <= limit) return text;
+    return chars.slice(0, _GENO_MATH.max(limit - 3, 0)).join("") + "...";
+}
+
+// Copy of geno/runtime_report.py contract_message (a test pins it).
+function _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args, result, checked) {
+    const label = clause === "requires" ? "Precondition failed" : "Postcondition failed";
+    const shownArgs = args.map(([name, value]) => name + ": " + value).join(", ");
+    const shownClause = clauseText ? clauseText : "clause #" + _GENO_STRING(clauseIndex + 1);
+    let message = label + ": " + fn + "(" + shownArgs + ") " + clause + " " + shownClause;
+    const notes = [];
+    if (reason === "propagate") notes.push("'?' propagated None/Err");
+    if (result !== null) notes.push("result was " + result);
+    if (checked.length) {
+        notes.push(checked.map(([name, value]) => name + " was " + value).join(", ") + " when checked");
+    }
+    if (notes.length) message += " (" + notes.join("; ") + ")";
+    return message;
+}
+
+// The error a failed contract clause throws (the caller throws it). `values`
+// are the call's arguments; `checked`, when given, are the parameters' values
+// at an ensures check in a function whose body rebound a parameter.
+function _genoContractViolation(clause, reason, clauseIndex, fn, clauseText, names, values, hasResult = false, result = undefined, checked = null) {
+    const limit = _GENO_ARGUMENT_DISPLAY_LIMIT;
+    const args = names.map((name, index) => [name, _formatValueBounded(values[index], limit)]);
+    let checkedValues = [];
+    if (checked !== null) {
+        checkedValues = names
+            .map((name, index) => [name, _formatValueBounded(checked[index], limit)])
+            .filter((pair, index) => pair[1] !== args[index][1]);
+    }
+    const resultDisplay = hasResult ? _formatValueBounded(result, limit) : null;
+    const error = new _GenoContractViolation(
+        _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args, resultDisplay, checkedValues)
+    );
+    error.clause = clause;
+    error.reason = reason;
+    error.clauseIndex = clauseIndex;
+    error.function = fn;
+    error.clauseText = clauseText;
+    error.arguments = args;
+    error.resultDisplay = resultDisplay;
+    error.checkedValues = checkedValues;
+    return error;
 }
 
 // =============================================================================
