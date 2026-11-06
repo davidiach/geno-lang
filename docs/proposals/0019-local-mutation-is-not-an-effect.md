@@ -366,14 +366,25 @@ uses U's whole body at once: it is flow-insensitive and keyed by name.
   - **P1.** The root of a write statement's target.
   - **P2.** The target of an index read `n[i]`. The element's value may go
     anywhere.
-  - **P3.** A borrowed argument of a builtin call, matched by position or by
-    the manifest parameter name (section 4).
+  - **P3.** A borrowed argument of a builtin call, matched by the manifest
+    parameter name (section 4) or by position. A positional argument that
+    follows a named one fills the first free slot, so the analysis does not
+    match it and counts it as an escape.
   - **P4.** The container operand of `in` or `not in`.
   - **P5.** The iterable of a `for` statement or a list comprehension.
-  - **P6.** A return position: the operand of `return`, the result
-    expression of an expression-bodied lambda, or, recursively, an element of
-    a tuple or list literal or an argument of a constructor call that is
-    itself in a return position.
+  - **P6.** A return position: the operand of a `return` that ends the unit,
+    the result expression of an expression-bodied lambda, or, recursively, an
+    element of a tuple or list literal, an argument of a constructor call, or
+    a branch value of an `if` or `match` expression that is itself in a
+    return position. The parser stores each branch value of an `if` or
+    `match` expression as a `return` statement in that arm. Such a statement
+    does not end the unit: its value goes wherever the expression goes, so it
+    takes the expression's position. `let b = if c then a else d end if` is
+    therefore an escape of `a`.
+
+  In each permitted position only a bare name is permitted. Any other
+  operand, such as `array_length(if c then a else d end if)`, is visited as
+  an escape.
 
   Any other occurrence is an **escape**. Escapes include:
   - an argument to a user function or to a builtin parameter that is not
@@ -412,11 +423,15 @@ Why the test has this shape:
 
 The analysis is a separate pure-AST module, described in the Implementation
 Plan. For each unit it returns the set of owned names. It handles every
-`Statement` and `Expression` class in `geno/ast_nodes.py` explicitly, and a
-test enumerates the classes so that a new node type cannot be skipped
-silently. It runs once per unit per checker run, after the unit's statements
-are checked, so that `_resolved_builtin_name` is set. The checker caches the
-result by unit node. The cost is linear in the size of the unit.
+`Statement`, `Expression` and `Pattern` class in `geno/ast_nodes.py`
+explicitly, and a test enumerates the classes so that a new node type cannot
+be skipped silently. A node of any other class fails closed: the whole unit
+owns nothing. It runs once per unit per checker run, after the unit's
+statements are checked, so that `_resolved_builtin_name` is set. A call
+counts as resolved only while its callee is still the identifier the checker
+resolved, so a call that a later overload re-targets is not fresh. The
+checker caches the result by unit node. The cost is linear in the size of the
+unit.
 
 ### 4. Builtin metadata
 
@@ -434,17 +449,27 @@ next to `BUILTIN_MANIFEST`, and derived in `geno/builtin_registry.py`:
   - `array_get`, `array_set`, `array_length`, `array_to_list`, `array_fill`,
     `array_copy`;
   - every `vec_*`, `set_*` and `mutable_map_*` receiver;
-  - both operands of `set_union` and `set_intersection`.
+  - both operands of `set_union` and `set_intersection`;
+  - the `list` parameter of `length`. Its signature says `List[T]`, but the
+    checker also accepts an `Array` there (spec section 9.3), so `length(a)`
+    and `a.length()` only read the size of an owned array. On the other
+    collections the checker rewrites `length` to that collection's own size
+    builtin.
 
   A parameter of type `T` is never borrowed. `append(xs, a)` and
   `vec_push(v, a)` store `a`, so they are escapes for `a`, though not for `v`.
 
-`builtin_registry.py` derives `BORROWED_ARGUMENT_POSITIONS: dict[str,
-frozenset[int]]` from the parameter names. `geno/tests/test_builtin_metadata.py`
-checks three things:
+`builtin_registry.py` derives the source-keyed views the analysis reads:
+`FRESH_COLLECTION_BUILTINS`, `BORROWED_ARGUMENT_NAMES: dict[str,
+frozenset[str]]` and `BORROWED_ARGUMENT_POSITIONS: dict[str, frozenset[int]]`
+(positions in the source-level parameter list). The manifest helpers refuse an
+unknown builtin or parameter name at import time.
+`geno/tests/test_builtin_metadata.py` checks three things:
 
 - every fresh builtin returns a reference collection;
-- every borrowed parameter has a reference-collection type;
+- every borrowed parameter has a reference-collection type. The one exception
+  is `length(list)`, and a test type-checks `length(list: array_new(n, 0))`
+  to confirm the checker accepts an `Array` there;
 - every reference-collection-typed parameter of every builtin is listed as
   borrowed.
 
@@ -888,8 +913,14 @@ it open. The adversarial tests in Package 3 pin the boundary.
     backend refuses a local binding named after a runtime builtin ("'array_new'
     is a reserved runtime name"), while the interpreter and compiled Python
     accept it;
-  - method spellings and named arguments of borrowing builtins;
-  - a completeness test over every `Statement` and `Expression` subclass.
+  - method spellings and named arguments of borrowing builtins, including
+    `length(a)` and `a.length()` on an owned array;
+  - `if` and `match` expression branch values, which escape unless the
+    expression itself is returned;
+  - a completeness test over every `Statement`, `Expression` and `Pattern`
+    subclass, a fail-closed test with an unknown node class, and a walk of
+    every unit in `examples/`, `geno/std/` and `selfhost/` that must reach no
+    unknown node and report only names declared by a `var` (O0, O1).
 - **Builtin metadata** (`test_builtin_metadata.py`): the three checks in
   section 4. `scripts/validate_builtin_parity.py` and `scripts/validate_spec.py`
   stay green.
@@ -1117,11 +1148,15 @@ previous one.
 
 1. **Builtin ownership metadata and the ownership analysis.**
    - Add `FRESH_COLLECTION_BUILTINS` and `BORROWED_COLLECTION_PARAMS` to
-     `geno/builtin_manifest.py`, and derive `BORROWED_ARGUMENT_POSITIONS` in
+     `geno/builtin_manifest.py`, and derive `FRESH_COLLECTION_BUILTINS`,
+     `BORROWED_ARGUMENT_NAMES` and `BORROWED_ARGUMENT_POSITIONS` in
      `geno/builtin_registry.py`.
    - Add `geno/mutation_ownership.py`, a pure-AST module with `owned_names(body,
-     params) -> frozenset[str]` implementing section 3. It reads
-     `_resolved_builtin_name` and has an explicit case for every AST class.
+     params) -> frozenset[str]` implementing section 3, plus
+     `function_owned_names(defn)`, `lambda_owned_names(expr)` and
+     `is_fresh_expression(expr)` for the checker. It reads
+     `_resolved_builtin_name` and has an explicit case for every statement,
+     expression and pattern class.
    - Tests: `geno/tests/test_mutation_ownership.py` (new) and
      `geno/tests/test_builtin_metadata.py`.
    - No checker behaviour changes in this package.
