@@ -3953,12 +3953,18 @@ class TestReviewFixes:
         with pytest.raises(Exception, match=r"expects.*type parameter"):
             run_geno(source)
 
-    # PR #59: String literal inside f-string expression
-    def test_fstring_rejects_string_literal_in_expr(self):
-        from geno.lexer import Lexer, LexerError
+    # PR #59 rejected a string literal inside an f-string expression; it is
+    # accepted since proposal 0026.
+    def test_fstring_accepts_string_literal_in_expr(self):
+        from geno.ast_nodes import StringLiteral
+        from geno.lexer import Lexer
+        from geno.parser import Parser
 
-        with pytest.raises(LexerError, match=r"String literals.*not allowed"):
-            Lexer('f"val is {"hi"}"', "<test>").tokenize()
+        tokens = Lexer('f"val is {"hi"}"', "<test>").tokenize()
+        expr = Parser(tokens)._parse_expression()
+        assert expr.parts[0] == "val is "
+        assert isinstance(expr.parts[1], StringLiteral)
+        assert expr.parts[1].value == "hi"
 
     # PR #65: Regex pattern length limit
     def test_regex_pattern_length_limit(self):

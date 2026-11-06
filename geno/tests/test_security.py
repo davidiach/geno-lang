@@ -1820,14 +1820,10 @@ class TestProcessSandbox:
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
         sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
-        leader_killed = False
+        leader_signals: list[int] = []
 
         class FakeProcess:
             pid = 123
-
-            def kill(self):
-                nonlocal leader_killed
-                leader_killed = True
 
         def denied_group(_pid, _signal):
             raise PermissionError(errno.EPERM, "group denied")
@@ -1838,6 +1834,7 @@ class TestProcessSandbox:
         monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", denied_group)
 
         def missing_leader(_pid, _signal):
+            leader_signals.append(_signal)
             raise ProcessLookupError(errno.ESRCH, "leader already reaped")
 
         monkeypatch.setattr(sandbox_module.os, "kill", missing_leader)
@@ -1848,7 +1845,150 @@ class TestProcessSandbox:
                 leader_exit_observed=leader_exit_observed,
             )
 
-        assert leader_killed is True
+        assert leader_signals == ([0, 9] if leader_exit_observed else [9])
+
+    @staticmethod
+    def _darwin_zombie_group(monkeypatch, *, exit_observable):
+        """Simulate Darwin with a group whose leader exited during the kill.
+
+        ``exit_observable(call)`` answers each exit-observer check (call 0 is
+        the timeout callback's own check, before it kills the group).
+        """
+        import geno.sandbox as sandbox_module
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
+        observer_calls = 0
+
+        def observable(_process, _observer=None):
+            nonlocal observer_calls
+            answer = exit_observable(observer_calls)
+            observer_calls += 1
+            return answer
+
+        def zombie_only_group(_pid, _signal):
+            raise PermissionError(errno.EPERM, "zombie-only process group")
+
+        def signalable_zombie(pid, sig):
+            assert pid == 123
+
+        class FakeProcess:
+            pid = 123
+            returncode: int | None = None
+
+            def poll(self) -> int:
+                self.returncode = 0
+                return self.returncode
+
+            def kill(self) -> None:
+                # POSIX Popen.kill() polls first and can reap an exited child.
+                self.poll()
+
+            def wait(self) -> int:
+                return self.poll()
+
+        monkeypatch.setattr(sandbox_module.os, "name", "posix")
+        monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setitem(sandbox_module.signal.__dict__, "SIGKILL", 9)
+        monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", zombie_only_group)
+        monkeypatch.setattr(sandbox_module.os, "kill", signalable_zombie)
+        monkeypatch.setattr(sandbox, "_posix_worker_exit_observable", observable)
+        monkeypatch.setattr(sandbox_module.time, "sleep", lambda _seconds: None)
+        return sandbox, cast(subprocess.Popen[str], FakeProcess())
+
+    def test_timeout_accepts_a_leader_that_exits_during_the_group_kill(
+        self, monkeypatch
+    ):
+        """A worker that exits at its own deadline must not fail Darwin cleanup.
+
+        The leader was alive at the timeout's check and exited before the
+        group kill, which Darwin then answers with EPERM. Once the exit is
+        observable the timeout completes through the zombie probe instead of
+        reporting a supervision failure.
+        """
+        import threading
+
+        sandbox, process = self._darwin_zombie_group(
+            monkeypatch, exit_observable=lambda call: call >= 1
+        )
+        timed_out = threading.Event()
+        termination_errors: list[SandboxError] = []
+
+        sandbox._terminate_worker_on_timeout(
+            process,
+            threading.Lock(),
+            threading.Event(),
+            threading.Event(),
+            timed_out,
+            termination_errors,
+        )
+
+        assert termination_errors == []
+        assert timed_out.is_set() is True
+
+    def test_timeout_preserves_unreaped_leader_through_group_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry must retain PID/PGID ownership until the waiter reaps."""
+        import threading
+
+        sandbox, process = self._darwin_zombie_group(
+            monkeypatch, exit_observable=lambda call: call >= 1
+        )
+        lifecycle_lock = threading.Lock()
+        exit_observed = threading.Event()
+        finished = threading.Event()
+        termination_errors: list[SandboxError] = []
+
+        sandbox._terminate_worker_on_timeout(
+            process,
+            lifecycle_lock,
+            exit_observed,
+            finished,
+            threading.Event(),
+            termination_errors,
+        )
+
+        assert termination_errors == []
+        assert process.returncode is None, "group cleanup must not reap the leader"
+
+        class ExitObserver:
+            def control(
+                self, _changes: object, _count: int, _timeout: object
+            ) -> list[object]:
+                assert process.returncode is None
+                return [object()]
+
+        monkeypatch.setattr(sandbox, "_waitid_supervision_available", lambda: False)
+        returncode = sandbox._wait_for_worker_tree(
+            process, lifecycle_lock, exit_observed, finished, ExitObserver()
+        )
+
+        assert returncode == process.returncode == 0
+        assert finished.is_set()
+
+    def test_timeout_group_error_stays_fatal_without_an_observed_exit(
+        self, monkeypatch
+    ):
+        """Darwin EPERM with no observable leader exit still fails closed."""
+        import threading
+
+        sandbox, process = self._darwin_zombie_group(
+            monkeypatch, exit_observable=lambda _call: False
+        )
+        termination_errors: list[SandboxError] = []
+
+        sandbox._terminate_worker_on_timeout(
+            process,
+            threading.Lock(),
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+            termination_errors,
+        )
+
+        assert len(termination_errors) == 1
+        assert "process group" in str(termination_errors[0])
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
     def test_late_timeout_callback_does_not_kill_exited_worker(self, monkeypatch):

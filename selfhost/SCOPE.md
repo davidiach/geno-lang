@@ -43,6 +43,9 @@ selfhost parser does not yet implement:
   destructuring is also outside the current selfhost parser subset.
 - Generic functions (`func first_or[T](xs: List[T], fallback: T) -> T`), from
   the 0.6 draft specification.
+- The forms of accepted proposal 0026: compound assignment (`x += 1`), tuple
+  patterns in `for` loops and comprehensions, string literals inside f-string
+  interpolations, and a trait or impl method receiver written `self` alone.
 
 These are parser/interpreter gaps, so the keyword and builtin parity checks do
 not detect them. Canonical frontend and backend tests cover the new forms.

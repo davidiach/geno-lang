@@ -7,6 +7,19 @@
   "status": "normative-pre-1.0",
   "human_spec": "docs/spec/v0.6.md",
   "compatibility_policy": "docs/operations/compatibility-policy.md",
+  "development_line": {
+    "series": "0.7",
+    "status": "draft",
+    "human_spec": "docs/spec/v0.7.md",
+    "conformance": "conformance/v0.7/manifest.toml",
+    "additions": [
+      "Compound assignment (proposal 0026, Accepted): target op= value for + - * / % is target = target op value. The assignable variable, field or index target may not contain a call; the operator and = must be adjacent.",
+      "Tuple loop and comprehension patterns (proposal 0026, Accepted): for (i, x) in xs.enumerate() do and [k for (k, v) in pairs if v > 1] unpack matching tuples, with nesting, optional type annotations and _ wildcards. Hidden bindings do not capture user names. A tuple-pattern comprehension rejects await in its element or filter outside nested lambdas; a tuple-pattern for loop supports await.",
+      "String literals in f-string interpolations (proposal 0026, Accepted): expressions may contain strings, including braces, quotes, comment markers and nested f-strings. Braces outside literals remain rejected; literal/interpolation nesting is bounded at 50 levels. Diagnostics use the original expression location.",
+      "Untyped method receivers (proposal 0026, Accepted): the first self parameter in a trait or impl may omit its type, meaning Self or the implementing type respectively. Other parameters still require types.",
+      "Diagnostic fixes (proposal 0026, Accepted): a match without with, braced record types and updates, Rust struct literals, unparenthesized tuple loops, assignments to let bindings, foreign conversion names, and a missing return type inferred from return values. Rewrites preserve comments or are withheld when they cannot; geno.fix and geno check --fix apply the fixes."
+    ]
+  },
 
   "keywords": [
     "and", "assert", "async", "await", "break", "catch", "continue",

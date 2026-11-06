@@ -21,9 +21,11 @@ var total = 0
 ```
 
 `let` bindings are immutable; use `var` when you need mutation. Update a `var`
-by assigning to it (`total = total + 1`). Writing `var total = ...` again
-rebinds it in the same block, or declares a separate variable in a nested
-block. `geno check` warns about either redeclaration (W300).
+by assigning to it (`total = total + 1`), or with a compound assignment
+(`total += 1`; also `-=`, `*=`, `/=` and `%=`, on fields and indices too).
+Writing `var total = ...` again rebinds it in the same block, or declares a
+separate variable in a nested block. `geno check` warns about either
+redeclaration (W300).
 
 ### Module Constants
 
@@ -401,6 +403,9 @@ impl Describable for Circle
 end impl
 ```
 
+A method's receiver can be written `self` alone: in a trait it is `self: Self`,
+and in `impl Describable for Circle` it is `self: Circle`.
+
 ## Error Handling
 
 Geno has one error model. A failure the caller should handle is a value of
@@ -500,6 +505,8 @@ end func
 let name: String = "Alice"
 let age: Int = 30
 let msg: String = f"Hello {name}, you are {age} years old"
+let counts = {"geno": 2}
+let line = f"geno: {counts.get("geno", 0)}"   // string literals work inside
 ```
 
 ## Collections
@@ -551,6 +558,15 @@ end func
 Here `acc` and `s` are `Int` because `fold` was given a list of `Int` and
 `initial: 0`. A lambda with nothing to learn its parameter types from, such as
 `let f = fn(x) -> x + 1`, needs them written: `fn(x: Int) -> x + 1`.
+
+A loop or comprehension over tuples can unpack each one:
+
+```geno
+func label_all(words: List[String]) -> List[String]
+    example ["a", "b"] -> ["0: a", "1: b"]
+    return [f"{i}: {w}" for (i, w) in words.enumerate()]
+end func
+```
 
 ### List Comprehensions
 

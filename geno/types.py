@@ -400,6 +400,9 @@ class TypeEnv:
     # Where each local of this scope is bound, kept only for tools that ask
     # the checker for ``binding_uses``.
     binding_locations: dict[str, SourceLocation] | None = None
+    # Where each immutable local of this scope was declared by a `let`
+    # statement, for the fix that changes it to `var`.
+    let_locations: dict[str, SourceLocation] = field(default_factory=dict)
 
     def lookup(self, name: str) -> Type | None:
         """Look up a name in the environment."""
@@ -420,6 +423,7 @@ class TypeEnv:
     def bind(self, name: str, type_: Type, mutable: bool = False) -> None:
         """Bind a name to a type."""
         self.bindings[name] = type_
+        self.let_locations.pop(name, None)
         if mutable:
             self.mutable_vars.add(name)
         else:

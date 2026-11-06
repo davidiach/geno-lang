@@ -434,7 +434,7 @@ def _python_lambda(source: str, tokens: list[Token]) -> tuple[str, int] | None:
 
 def _fat_arrow(source: str, tokens: list[Token]) -> tuple[str, int] | None:
     """Write the first match arm's ``->`` as ``=>``."""
-    starts = {}
+    starts: dict[int, Token] = {}
     for token in tokens:
         starts.setdefault(token.location.line, token)
     found = _first(
@@ -499,6 +499,16 @@ def _no_return_type(source: str, tokens: list[Token]) -> tuple[str, int] | None:
         stop = _offset(source, arrow.location.line, len(line) + 1)
         return source[:start] + source[stop:], arrow.location.line
     return None
+
+
+def _var_as_let(source: str, tokens: list[Token]) -> tuple[str, int] | None:
+    """Declare the first ``var`` with ``let``, as JavaScript declares a
+    variable it reassigns."""
+    found = _first(tokens, lambda _i, t: t.type is TokenType.VAR)
+    if found is None:
+        return None
+    _index, token = found
+    return _replace(source, token, len("var"), "let"), token.location.line
 
 
 def _no_examples(source: str, tokens: list[Token]) -> tuple[str, int] | None:
@@ -570,6 +580,13 @@ MISTAKES: tuple[Mistake, ...] = (
     Mistake("misspelled function", "a slip", "lenght(xs)", _typo_in_call),
     Mistake("misspelled variable", "a slip", "nusm[0]", _typo_in_variable),
     Mistake("misspelled type", "a slip", "Strign", _typo_in_type),
+    Mistake(
+        "no with",
+        "Rust, Python",
+        "match x",
+        _drop_clause_keyword(TokenType.WITH, "with"),
+    ),
+    Mistake("let for a variable", "JavaScript", "let total = 0", _var_as_let),
     Mistake("no return type", "Python", "func f(x: Int)", _no_return_type),
     Mistake("no examples", "every language", "(no example clause)", _no_examples),
 )

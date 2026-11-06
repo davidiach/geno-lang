@@ -1642,9 +1642,12 @@ class ProcessSandbox:
                     return
             # Killing the leader is not equivalent to killing the group, but it
             # guarantees a failed group kill cannot leave the synchronous wait
-            # blocked forever. Surface the infrastructure failure either way.
+            # blocked forever. Keep it unreaped while the lifecycle lock protects
+            # PID/PGID ownership: Popen.kill() polls and can reap an exited child
+            # before the timeout path retries group cleanup. Only the waiter may
+            # reap it. Surface the infrastructure failure either way.
             try:
-                process.kill()
+                os.kill(process.pid, signal.__dict__["SIGKILL"])
             except ProcessLookupError:
                 pass
             except OSError as leader_error:
@@ -1752,6 +1755,30 @@ class ProcessSandbox:
             raise termination_error
         return returncode
 
+    def _posix_leader_exit_observed_after_failed_kill(
+        self, process: subprocess.Popen[str], observer: Any | None
+    ) -> bool:
+        """Whether the leader's exit is observable right after a failed group kill.
+
+        Checked a few times over at most a tenth of a second: a group kill
+        that failed because the leader just exited means the exit event is
+        already, or about to be, queued. A broken observer counts as not
+        observed, so the original failure stands.
+        """
+        for attempt in range(5):
+            try:
+                if observer is None:
+                    observed = self._posix_worker_exit_observable(process)
+                else:
+                    observed = self._posix_worker_exit_observable(process, observer)
+            except SandboxError:
+                return False
+            if observed:
+                return True
+            if attempt < 4:
+                time.sleep(0.02)
+        return False
+
     def _terminate_worker_on_timeout(
         self,
         process: subprocess.Popen[str],
@@ -1805,7 +1832,23 @@ class ProcessSandbox:
             timed_out.set()
             try:
                 if os.name == "posix":
-                    self._kill_posix_process_group(process)
+                    try:
+                        self._kill_posix_process_group(process)
+                    except SandboxError:
+                        # The leader can exit between the check above and the
+                        # group kill, most often when the worker gives up on
+                        # its cooperative deadline at the same moment. Darwin
+                        # then reports EPERM for a group holding only its
+                        # zombie. Accept that only once the exit is observed
+                        # now, through the same zombie probe; every other
+                        # failure stands.
+                        if not self._posix_leader_exit_observed_after_failed_kill(
+                            process, posix_exit_observer
+                        ):
+                            raise
+                        self._kill_posix_process_group(
+                            process, leader_exit_observed=True
+                        )
                 else:
                     process.kill()
             except ProcessLookupError:

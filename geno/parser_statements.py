@@ -7,27 +7,36 @@ Contains StatementParserMixin with all statement parsing methods.
 
 from __future__ import annotations
 
+import copy
+
 from .ast_nodes import (
     AssignStatement,
+    BinaryOp,
+    BooleanLiteral,
     BreakStatement,
     ContinueStatement,
     Expression,
     ExpressionStatement,
     FieldAccess,
     FieldAssignStatement,
+    FloatLiteral,
     ForStatement,
+    Identifier,
     IfStatement,
     IndexAccess,
     IndexAssignStatement,
     InferredType,
+    IntegerLiteral,
     LetStatement,
     MatchArm,
     MatchStatement,
     ReturnStatement,
     Statement,
+    StringLiteral,
     TupleDestructureStatement,
     TupleExpr,
     TypeAnnotation,
+    UnaryOp,
     VarStatement,
     WhileStatement,
 )
@@ -178,9 +187,15 @@ class StatementParserMixin(ParserBase):
         return AssignStatement(location=location, target=name, value=value)
 
     def _parse_compound_assign_or_expr(self) -> Statement:
-        """Parse index/field assignment (arr[i] = v, obj.f = v) or expression statement."""
+        """Parse an assignment to an index or field (``arr[i] = v``,
+        ``obj.f = v``), a compound assignment (``x += v``), or an expression
+        statement."""
         location = self._current().location
         expr = self._parse_expression()
+
+        operator = self._compound_assign_operator()
+        if operator is not None:
+            return self._parse_compound_assignment(location, expr, operator)
 
         if self._match(TokenType.ASSIGN):
             value = self._parse_expression()
@@ -202,6 +217,55 @@ class StatementParserMixin(ParserBase):
                 )
 
         return ExpressionStatement(location=location, expression=expr)
+
+    def _parse_compound_assignment(
+        self, location: SourceLocation, target: Expression, operator: str
+    ) -> Statement:
+        """Parse the rest of ``target op= value`` as ``target = target op value``.
+
+        The target is read twice, so it may not call a function: a call could
+        have an effect, or return a different value the second time.
+        """
+        operator_location = self._current().location
+        self._advance()  # the operator
+        self._advance()  # `=`
+        if not isinstance(target, Identifier | IndexAccess | FieldAccess):
+            raise ParseError(
+                f"Invalid assignment target for '{operator}=': only variables, "
+                "fields (x.field), and indices (x[i]) can be assigned to",
+                operator_location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+            )
+        if not _repeatable(target):
+            raise ParseError(
+                f"The target of '{operator}=' is read and then written, so it "
+                "cannot call a function; bind the call's result with 'let' "
+                "first, or write the assignment out in full",
+                operator_location,
+                ErrorCode.PARSE_INVALID_SYNTAX,
+            )
+        read = copy.deepcopy(target)
+        # Lets the checker word an error about reading the target in terms of
+        # the compound assignment the program wrote.
+        read._compound_operator = operator  # type: ignore[union-attr]
+        value = BinaryOp(
+            location=target.location,
+            operator=operator,
+            left=read,
+            right=self._parse_expression(),
+        )
+        if isinstance(target, Identifier):
+            return AssignStatement(location=location, target=target.name, value=value)
+        if isinstance(target, IndexAccess):
+            return IndexAssignStatement(
+                location=location, target=target.target, index=target.index, value=value
+            )
+        return FieldAssignStatement(
+            location=location,
+            target=target.target,
+            field_name=target.field_name,
+            value=value,
+        )
 
     def _parse_if_statement(self, consume_end: bool = True) -> IfStatement:
         """Parse: if cond then ... [else ...] end if [label]"""
@@ -262,19 +326,20 @@ class StatementParserMixin(ParserBase):
         )
 
     def _parse_for_statement(self) -> ForStatement:
-        """Parse: for x: Type in items do ... end for [label]"""
+        """Parse: for x: Type in items do ... end for [label]
+
+        ``for (a, b) in pairs`` unpacks each element (``_parse_loop_binding``).
+        """
         location = self._current().location
         self._expect(TokenType.FOR)
-        variable_token = self._expect(TokenType.IDENTIFIER)
-        variable = variable_token.value
-        var_type: TypeAnnotation = InferredType(location=variable_token.location)
-        if self._match(TokenType.COLON):
-            var_type = self._parse_type()
+        variable, var_type, pattern = self._parse_loop_binding()
         self._expect(TokenType.IN)
         iterable = self._parse_expression()
         self._expect(TokenType.DO)
         body = self._parse_statement_list()
         self._expect_end(TokenType.FOR)
+        if pattern is not None:
+            body = self._unpack_loop_body(variable, pattern, body)
 
         label = None
         if self._check(TokenType.STRING):
@@ -357,8 +422,37 @@ class StatementParserMixin(ParserBase):
         self._expect(TokenType.CONTINUE)
         return ContinueStatement(location=location)
 
-    def _parse_expression_statement(self) -> ExpressionStatement:
-        """Parse expression as statement."""
+    def _parse_expression_statement(self) -> Statement:
+        """Parse an expression statement, or a compound assignment ``x += v``."""
         location = self._current().location
         expr = self._parse_expression()
+        operator = self._compound_assign_operator()
+        if operator is not None:
+            return self._parse_compound_assignment(location, expr, operator)
         return ExpressionStatement(location=location, expression=expr)
+
+
+# Expressions a compound assignment's target may contain: reading them twice
+# gives the same value and has no effect.
+_REPEATABLE_LEAVES = (
+    Identifier,
+    IntegerLiteral,
+    FloatLiteral,
+    StringLiteral,
+    BooleanLiteral,
+)
+
+
+def _repeatable(expr: Expression) -> bool:
+    """Whether ``expr`` can be evaluated twice with the same result."""
+    if isinstance(expr, _REPEATABLE_LEAVES):
+        return True
+    if isinstance(expr, FieldAccess):
+        return _repeatable(expr.target)
+    if isinstance(expr, IndexAccess):
+        return _repeatable(expr.target) and _repeatable(expr.index)
+    if isinstance(expr, BinaryOp):
+        return _repeatable(expr.left) and _repeatable(expr.right)
+    if isinstance(expr, UnaryOp):
+        return _repeatable(expr.operand)
+    return False

@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Target: **Geno 0.7**. The cold-write forms below are accepted proposal 0026;
+the 0.6 specification and frozen conformance corpora remain unchanged.
+
+### Added
+
+- Forms models write from other languages' habits, from accepted
+  [proposal 0026](docs/proposals/0026-cold-write-forms.md); every previously
+  accepted program keeps its meaning:
+  - Compound assignment: `total += x`, also `-=`, `*=`, `/=` and `%=`, on a
+    variable, field or index. The target may not call a function.
+  - Tuple patterns in loops and comprehensions:
+    `for (i, word) in words.enumerate() do`, `[k for (k, v) in m.entries()]`.
+  - String literals inside f-string interpolations, including ones that hold
+    braces, quotes or another f-string: `f"{m.get("the", 0)}"`.
+  - A trait or impl method's receiver written `self` alone.
+- Fixes that `geno check --fix` applies: `match x` or `match x:` without
+  `with`; a TypeScript record type `type P = { x: Int }`; a record update in
+  braces (`{ p with x = 1 }`, `{ ...p, x: 1 }`); a Rust struct literal
+  (`Point { x: 1, y }`); Python's `for i, x in pairs`; an assignment to a
+  `let` binding (declare it with `var`); conversion names such as
+  `int_to_string`, `string_of_int`, `parseInt` and `parseFloat`; and a missing
+  return type, written as the type the function's `return` values have.
+- `trait Name[T]` is one error explaining that traits take no type parameters.
+  Indexing a `MutableMap` or `Vec`, or assigning by index to a `Map`, says how
+  to read or update it instead.
+- Seeded-mistake results add `match x` without `with` and a JavaScript `let`
+  for a reassigned variable, and now repair the missing return type: 828 of
+  907 mutants repaired, none misrepaired.
+
+### Fixed
+
+- Type errors inside an f-string interpolation are reported at the line and
+  column where the expression is written, not at line 1.
+- A tuple pattern matched against a value that is not a tuple is one error:
+  the names it binds no longer add "Undefined variable" errors, one of which
+  carried a rename fix to an unrelated variable.
+
 ## [0.6.0] - 2026-10-25
 
 ### Changed
