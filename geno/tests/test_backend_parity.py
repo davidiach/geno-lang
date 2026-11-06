@@ -4577,13 +4577,13 @@ class TestPropagatingContractParity:
         [
             (
                 "first_positive(o)",
-                "Precondition failed for first_positive: requires clause "
-                "cannot use '?' to propagate None/Err",
+                "Precondition failed: first_positive(o: None) requires o? > 0 "
+                "('?' propagated None/Err)",
             ),
             (
                 "bounded(o)",
-                "Postcondition failed for bounded: ensures clause cannot use "
-                "'?' to propagate None/Err",
+                "Postcondition failed: bounded(o: None) ensures o? < 10 "
+                "('?' propagated None/Err; result was None)",
             ),
         ],
     )
