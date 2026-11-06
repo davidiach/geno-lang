@@ -52,7 +52,10 @@ Everything a caller can observe still contributes `mutation`. That covers
 writes to a binding captured from an enclosing scope (charged to the lambda
 that writes it), writes through a parameter's reference collection, writes
 below a reference-typed field or element, and writes to a collection that has
-been stored, passed or captured elsewhere.
+been stored, passed or captured elsewhere. The reference checker still does
+not charge mutating builtins such as `vec_push` on any receiver, as in 0.6.
+The spec keeps that as a non-normative known limitation, and closing it
+needs the project lead's decision (Unresolved Question 1).
 
 Effects stay a static property. No backend changes, no syntax changes, no
 diagnostic code changes, and declared `with mutation` annotations stay legal.
@@ -85,6 +88,22 @@ effect leaks into every signature that contains one, and from there into every
 higher-order use of it. Callers gain nothing from that, because none of them
 can observe the state.
 
+The rule covers scalar and record accumulators, value-typed working copies
+(`var q = p; q.x = ...`), and one-dimensional collections the function
+allocates (histograms, sieves, 1-D dynamic-programming tables, a local `Vec`
+or `MutableMap` used as a worklist or memo). It deliberately does not cover
+several shapes that models also write, and those keep `mutation`:
+
+- two-dimensional tables `var g = array_new(h, array_new(w, 0)); g[i][j] = v`.
+  The rows alias each other and the argument row on every backend, so the
+  write really is visible through other storage;
+- rolling buffers (`prev = cur; cur = array_new(n, 0)`), because `prev = cur`
+  copies the reference;
+- an accumulator updated through a user higher-order function
+  (`each(xs, fn(x: Int) do total = total + x end fn)`), because the lambda
+  writes a captured variable;
+- a fresh collection passed to a helper function and then written.
+
 The probes also showed that 0.6 does not do what spec section 3.5 says. These
 are the only sources of `mutation` (`_infer_stmt_effects` in
 `geno/typechecker.py`):
@@ -103,9 +122,11 @@ Builtin effects come only from capabilities (`CAPABILITY_TO_EFFECT` in
 `push_param(v: Vec[Int])` calling `vec_push(v, 1)` is pure in 0.6 although
 its caller sees the push. Section 3.5 says "mutating ... an `Array`, `Vec`,
 `Set`, or `MutableMap` contributes `mutation`", which is true only for index
-assignment. This proposal corrects that text. It does not change what the
-builtins carry; see "Mutating builtins" in the Reference Design and
-Unresolved Question 1.
+assignment. This proposal keeps that rule normative, narrowed to collections
+reachable from outside the writer, and records the checker's builtin gap as a
+non-normative known limitation. It does not change what the builtins carry in
+the checker; see "Mutating builtins" in the Reference Design and Unresolved
+Question 1.
 
 ## Guide-Level Design
 
@@ -199,11 +220,14 @@ is one of the following:
   through a `var` copied from it;
 - it writes a variable captured from an enclosing function (in a lambda);
 - it writes below a reference-typed field or element (`b.cells[0] = v`,
-  `grid[i][j] = v`);
-- it calls a function or a local closure that carries `mutation`;
+  `grid[i][j] = v`), which includes every two-dimensional table built with
+  `array_new(h, array_new(w, 0))`;
+- it calls a function or a local closure that carries `mutation`, including a
+  lambda that updates an accumulator it captured;
 - it lets a collection it allocated escape (stores it in a list, record or
   tuple that is not returned, passes it to a user function, captures it in a
-  lambda, or copies it into a second binding) and then writes the collection.
+  lambda, or copies it into a second binding, as a rolling buffer
+  `prev = cur` does) and then writes the collection.
 
 ## Reference Design
 
@@ -217,13 +241,19 @@ is one of the following:
   parameters or is declared in U outside any nested lambda. Declarations are
   `let`, `var`, `var (a, b)`, a `for` variable, a pattern variable and a
   comprehension variable.
-  - The checker decides this from its own scope chain. At a statement inside a
-    lambda, the binding scope is found below the lambda's capture environment
-    (unit-local) or at or above it (captured). This is the same walk that
-    `_record_captured_binding` does today. In a top-level function every local
-    binding is unit-local, because module scope has no mutable bindings
-    (module-level `var` is a parse error and module constants are literals,
-    spec 4.7).
+  - The checker decides this from its own scope chain, while it type-checks
+    the write statement (section 2, "Write classification"). At a statement
+    inside a lambda, the binding scope is found below the lambda's capture
+    environment (unit-local) or at or above it (captured). This is the same
+    walk that `_record_captured_binding` does today. In a top-level function
+    every local binding is unit-local, because module scope has no mutable
+    bindings (module-level `var` is a parse error and module constants are
+    literals, spec 4.7).
+  - A binding whose scope cannot be resolved (no binding scope, a
+    module-scope binding, or a statement whose check stopped at an error
+    before classification) is treated as captured. Unknown never masks.
+    `_record_captured_binding` returns early with "not captured" when the
+    binding scope is `None`; the locality helper must not reuse that default.
 - **Reference type.** `Array`, `Vec`, `Set` and `MutableMap` (spec 3.2.1).
   Every other type a write path can pass through has value semantics: records
   and other constructor values, `List`, `Map` and tuples. A container whose
@@ -270,10 +300,29 @@ Each applies to the unit U that contains the statement.
   write such as `r[i].f = e` is masked when `r` is owned and `r[i]` is a value.
   A field write such as `q.items[0].x = e` is masked when every hop is a value
   (record, `List`, `Map`).
+- **Write classification.** The facts L2 and L3 need do not depend on effects,
+  so they are computed once, by the statement checks that already have them,
+  and stored on the statement node. `_check_assign_statement`,
+  `_check_index_assign_statement` and `_check_field_assign_statement`
+  already compute the target type and the root name, and they already call
+  `_record_captured_binding` on the root. They record three things: the root's
+  locality (unit-local, captured or unresolved); whether `c0` has a reference
+  type; and whether every later container `c1 ... ck` has a value type. The
+  container types are read from the `_resolved_type` of each prefix node
+  that the target check just set. A missing type counts as a reference.
+  `_infer_stmt_effects` reads only this classification and never type-checks
+  a target. A statement with no classification is charged. That covers a
+  check that returned early on an error, and a body whose effects are
+  inferred without being checked. Ordering holds in every pass: pass 3 checks
+  every body before `_stabilize_function_effects`, the final pass checks a
+  body before `validate_effects`, and `_check_lambda_body` checks a lambda's
+  statements before it infers the lambda's effects. Re-checking the same
+  node overwrites the classification with the same value.
 - **L4. Calls.** Calls are unchanged. A call contributes the effects of the
   callee's function type, whether the callee is a top-level function, a
   module or trait function, a parameter or a local closure. No builtin carries
-  `mutation`, which is also unchanged.
+  `mutation` in the reference checker, which is also unchanged; this is the
+  known limitation of section 5, not the language rule.
 - **L5. Lambdas.** Unchanged: evaluating a lambda expression contributes
   nothing to the unit that creates it. The lambda's own function type gets the
   effects of its body under L1–L5, with the lambda as the unit. So a lambda
@@ -298,6 +347,13 @@ Each applies to the unit U that contains the statement.
 A name `n` is **owned** in unit U when all of the following hold. The test
 uses U's whole body at once: it is flow-insensitive and keyed by name.
 
+- **O0.** U contains at least one declaration `var n = e` (or `var n: T = e`)
+  with `e` a fresh expression, outside any nested lambda. Without O0, O1–O5
+  would hold vacuously for a name U never declares, such as a binding a
+  lambda captures or a module constant. L3's unit-local requirement would
+  still keep such a write charged, but `owned_names` is a standalone API and
+  must not report those names (Unresolved Question 1 plans to reuse it for
+  builtin receivers).
 - **O1.** `n` is not a parameter of U.
 - **O2.** Every declaration of `n` in U, in any block, is `var n = e` or
   `var n: T = e` with `e` a fresh expression. A `let n`, a destructure, or a
@@ -402,7 +458,25 @@ Decision 2 of the design brief says that mutating builtins applied to a fresh
 local are masked, and that mutation of parameters and other non-fresh values
 "keeps `mutation`". In 0.6 no builtin carries `mutation` on any receiver, so
 the first half holds trivially. The second half would be a new charge, not a
-kept one. **This proposal does not start charging builtins.** The reasons:
+kept one. **This proposal does not start charging builtins in the reference
+checker.** That reinterprets a fixed decision of the brief, so it needs the
+project lead's explicit sign-off before the typechecker package (Package 2)
+lands. Unresolved Question 1 asks for it.
+
+The language rule and the implementation are kept apart:
+
+- **Normative (spec 3.5).** Writing a reference collection that is reachable
+  from outside the writing function or lambda is a `mutation`, whether by
+  index assignment or by a mutating builtin. That is the rule 0.6's text
+  already states, and 0.7 keeps it.
+- **Known limitation (non-normative).** The reference checker does not yet
+  charge mutating builtins on any receiver. A program that relies on this
+  is outside the rule, and a later change that charges builtins is a
+  conformance fix to the checker, not a language change. A pinned test
+  records the current behaviour, so closing the gap shows up as a deliberate
+  test change.
+
+The reasons for not charging builtins in this proposal:
 
 - **It would reject programs 0.6 accepts.** Every unannotated function that
   calls a mutator on a parameter would gain `mutation`. That includes the 23
@@ -417,48 +491,96 @@ kept one. **This proposal does not start charging builtins.** The reasons:
   unless its receiver is an owned name. The change would be confined to L4
   and the manifest.
 
-Section 3.5 of the spec is corrected to say what the checker does: index and
-field writes and assignments are the mutation the checker sees. Mutating
-builtins carry no effect in 0.7, which is a known gap (Unresolved Question 1).
+Section 3.5 of the spec keeps the normative rule and adds the known
+limitation as a non-normative note (section 8).
 
 ### 6. Soundness
 
 **Claim.** Assume every mutation of storage that existed before a call is
-charged. Then no write masked by L1–L3 is observable by the caller, or by a
-later call of the same closure value.
+charged, which the normative rule requires and the reference checker does not
+yet do for builtins. Then no write masked by L1–L3 is observable by the
+caller, or by a later call of the same closure value.
 
 **Argument.** A masked write changes one of three things. The first is a cell
-of U's own activation. The second is value-typed content held in such a cell,
-which is U's own snapshot because transfers copy values (spec 3.2.1; pinned
-on all three backends by `test_deep_review_backends.py`). The third is the
-top-level slots of a collection held by an owned name.
+of U's own activation. The second is value-typed content held in such a cell.
+The third is the top-level slots of a collection held by an owned name.
 
 - **Cells.** U's cells are created per activation. Only closures created in U
   can share them. Writes by those closures are charged at the closure (L2, and
   L3 with a captured root). A closure leaves U only by being returned, which
   happens after U's own writes are complete, or by being stored into storage
   that existed before the call.
-- **Owned collections.** By O2 and O3, every value the name holds comes from
-  an allocating builtin, so no other storage refers to it. By O4 and O5, the
-  reference leaves the name only by being returned or lent to a builtin that
-  does not keep it. Until U returns, the object is reachable only through U's
-  own cells. Writes into its elements' reference-typed contents are charged by
-  L3. After U returns, the caller holds a new object.
+- **Value content in a cell.** This content is not always private to U.
+  Binding, assignment, destructuring and storing into a collection snapshot a
+  constructor value (spec 3.2.1; `test_deep_review_backends.py` pins those
+  transfers, and builtin storage, on all three backends). **Argument passing
+  does not.** A callee that builds a closure over a parameter aliases the
+  object in the caller's `var`, and a later in-place field or index write
+  through that `var` is visible through the closure. The interpreter,
+  compiled Python and compiled JavaScript agree:
+
+  ```geno
+  type P = P(x: Int)
+
+  @untested("returns a closure")
+  func keep(q: P) -> () -> Int
+      return fn() -> q.x
+  end func
+
+  func main() -> Unit with io
+      var s = P(x: 1)
+      let peek = keep(s)
+      s.x = 7
+      print(peek())
+  end func
+  ```
+
+  This prints `7` on every backend. The `List` form (`var ys = [p]; let g =
+  keep_list(ys); ys[0].x = 5; g()`) returns `5`. Both contradict spec 3.2.1
+  ("Binding an existing constructor value creates a snapshot"). That is a
+  pre-existing runtime deviation that this proposal does not fix, because
+  the brief fixes effects as a static property with no runtime change
+  (Unresolved Question 7). The masking stays sound despite it: a callee's
+  closure reaches storage the caller can see only by being stored there, and
+  storing needs either a charged write (a lambda assigning captured storage,
+  or a write through a non-owned reference, both `mutation`) or an uncharged
+  builtin. Inside U the alias changes only what U itself computes, which is
+  not an effect. If U returns the closure, U's writes are complete.
+- **Owned collections.** By O0, O2 and O3, every value the name holds comes
+  from an allocating builtin, so no other storage refers to it. By O4 and O5,
+  the reference leaves the name only by being returned or lent to a builtin
+  that does not keep it. Until U returns, the object is reachable only
+  through U's own cells. Writes into its elements' reference-typed contents
+  are charged by L3. After U returns, the caller holds a new object.
 - **Concurrency and panics.** Async interleaving needs one of the same escapes
   to reach U's cells, and so does recursion. A panic ends the program's
   observable state (there is no catch).
 
-**Boundary.** The assumption fails for mutating builtins, which 0.6 leaves
-uncharged everywhere (section 5). Masking does not widen that gap for owned
-collections, because O5 counts any non-borrowing use as an escape. For
-variable cells there is a residual case. An uncharged builtin can store a
-closure that captures one of U's cells into caller-reachable storage, for
-example `vec_push(param_v, fn() -> n)`. U's later masked `n = ...` is then
-visible through that closure. Such a program already changes its caller's
-storage with no effect at all in 0.6, through the `vec_push` itself, so this
-is the same gap and not a new one. Charging builtin mutators on non-owned
-receivers closes both. The spec and `docs/reference/runtime-semantics.md`
-state the boundary.
+**Boundary.** The assumption fails for mutating builtins, which the reference
+checker leaves uncharged on every receiver (section 5). Masking does not widen
+that gap for owned collections, because O4 and O5 count any closure mention
+and any non-borrowing use as an escape. It does widen it in two ways, and
+both need an uncharged builtin store into caller-reachable storage:
+
+1. **A closure over one of U's cells.** `vec_push(param_v, fn() -> n)`
+   followed by a masked `n = 5`, or `vec_push(param_v, fn() -> q.x)` followed
+   by a masked `q.x = 5`. The caller then sees the new value through the
+   stored closure. 0.6 charged U for this only by accident, because U held a
+   `var`; under 0.7, U is pure.
+2. **A closure a callee built from a `var`-held value.** For example
+   `cb(keep(s)); s.x = 7`, where `cb` is a pure callback that `vec_push`es its
+   argument into storage it captured. 0.6 charged the write because of the
+   `var`; 0.7 masks it.
+
+In both cases the program already changes its caller's storage with no effect
+at all, through the builtin store itself. Charging builtin mutators on
+non-owned receivers (Unresolved Question 1) closes the base gap and both
+widenings: in case 1 the `vec_push` on `param_v` is charged, and in case 2
+`cb`'s lambda writes through a captured, non-owned `Vec`, so `cb` carries
+`mutation` and the call is charged by L4. Package 3 pins both widenings as
+current behaviour on all three backends. The spec note and
+`docs/reference/runtime-semantics.md` state the boundary, including the
+argument-passing alias.
 
 ### 7. Interactions
 
@@ -466,9 +588,15 @@ state the boundary.
   and still terminates. A unit's masking depends only on its own body, and
   call effects stay monotone.
   - Pass 3 still treats unannotated functions as pure.
-  - L3 needs the container types: the effect walk type-checks each prefix of
-    the write target in the effect environment. It already visits the target
-    to infer the target's effects.
+  - L2 and L3 read the write classification that the statement checks
+    stored (section 2). The effect walk never type-checks a write target.
+    Type-checking targets in the effect environment was considered and
+    rejected. It would add side effects inside the stabilization fixpoint:
+    `_record_captured_binding` on real parent scopes, repeated
+    `_generic_value_refs` appends, and errors or `Any` where
+    `_bind_pattern_effect_env` skips a pattern or an unannotated generic
+    initializer comes back as a type variable. It would also cost time on
+    every fixpoint iteration.
   - The perf ratchets (`check-medium` 166.2 ms, `test-medium` 186.8 ms,
     `perf-budgets.toml`) must stay green.
 - **Declared effects.** A declared set is still an upper bound. `with
@@ -507,9 +635,22 @@ state the boundary.
 - **Requires, ensures, examples and defaults.** These are expressions, not
   write statements, so nothing changes for them.
 - **LSP and tools.**
-  - Hover on a local binding prints its inferred type through `hover_label`
-    and now shows the masked type: `let f = total` hovers as `f: (List[Int])
-    -> Int`.
+  - Hover on a local binding prints the type recorded in
+    `TypeChecker.binding_types`. Each local is recorded twice: once in pass 3,
+    where every unannotated function is still pure, and once in the final
+    pass. `lsp_analysis._collect_facts` keeps the first fact per (line,
+    column, name, kind), so hover already shows the pass-3 type in 0.6:
+    `let g = bump` hovers as `g: (Int) -> Int` even when `bump` carries
+    `mutation`, while the use of `g` on the next line shows `with mutation`.
+    A hover test on a masked function would pass without this proposal. This
+    proposal changes `_collect_facts` so that, for facts coming from
+    `binding_types`, a later record for the same key replaces an earlier one.
+    The final pass then wins. If the final pass stopped early at an error, the
+    pass-3 fact stays, as today. Identifier-use facts already come from
+    `_resolved_type`, which each pass overwrites. Tests pin that
+    `let g = bump` (still charged) hovers with `with mutation`, that
+    `let f = total` (masked) hovers without it, and that a lambda binding
+    whose own body is masked hovers as pure.
   - Function hover (`_extract_user_func_sig`) and `geno doc` show declared
     effects only, as in 0.6. Showing inferred effects there is not part of this
     proposal (Unresolved Question 4).
@@ -518,7 +659,8 @@ state the boundary.
   - Effect-name completions are unchanged.
 - **No syntax.** The lexer, parser, AST, formatter, constrained-decoding
   grammar (`geno/constraints.py`) and VS Code grammar are unchanged, because
-  no keyword or form is added.
+  no keyword or form is added. The only LSP code change is the
+  binding-fact precedence in `geno/lsp_analysis.py` described above.
 - **Self-hosted frontend.** `selfhost/TypeChecker.geno` registers every builtin
   with an empty effect list and `format_gtype` drops effects. It never infers
   or checks effects, under 0.6 rules or these. Per `selfhost/SCOPE.md` it may
@@ -551,19 +693,34 @@ names in Geno 0.6", which becomes "in Geno 0.7".
 >   assignment's target, an index read, an argument a builtin only borrows,
 >   the container of `in`, the iterable of `for`, or a returned value. The
 >   test considers the whole body of the function or lambda, by name.
-> - Builtins carry no `mutation`: `vec_push`, `array_set`, `set_add`,
->   `mutable_map_set` and the other mutating builtins are not effects in 0.7,
->   whatever they mutate. This is a known limit of the effect system.
+> - Writing a reference collection that is reachable from outside the writing
+>   function or lambda is a `mutation`, whether the write is an index
+>   assignment or a mutating builtin (`vec_push`, `array_set`, `set_add`,
+>   `mutable_map_set` and the others). A builtin applied to an owned
+>   variable is not an effect.
 > - Capability-gated builtins contribute the corresponding semantic effect.
 > - When a function has no annotation, its effects are inferred. When an
 >   annotation is present, every inferred effect must be included in the
 >   declared set; a declared superset is allowed. A pure function can be used
 >   where a more-effectful callback is accepted, but not the reverse.
 
+After the list, section 3.5 gains a non-normative note:
+
+> *Known limitation (0.7 draft).* The reference checker does not yet charge
+> mutating builtins on any receiver, so `vec_push(v, x)` on a parameter `v`
+> is not reported as `mutation`. A program that relies on this is outside the
+> rule above, and a future checker may reject it. Passing a `var`-held
+> constructor value to a function does not snapshot it on any backend, so a
+> closure the callee builds over that parameter observes later field writes
+> through the `var` (see 3.2.1). Neither case lets a masked write reach a
+> caller without an uncharged builtin store.
+
 Sections 6.2 and 6.3 gain one sentence each, pointing at 3.5: declaring or
 assigning a local `var` is not an effect. Section 7.6 states that a lambda
 assigning a captured variable carries `mutation`. The 0.6 sentence in 3.2.1
-about snapshot semantics is unchanged; the rule now depends on it.
+about snapshot semantics is unchanged, because it states the intended
+semantics. The argument-passing deviation is recorded in the 3.5 note and in
+Unresolved Question 7, not written into 3.2.1 as a rule.
 
 ## Backend And Target Parity
 
@@ -579,15 +736,20 @@ browser targets are not special.
 The rule depends on the value and reference semantics that every backend
 already implements:
 
-- binding or assigning a value snapshots it;
+- binding, assigning, destructuring or storing a value snapshots it;
 - reference collections share storage;
 - a write into a value inside a shared array writes back into the array.
 
 Tests pin these today (`test_deep_review_backends.py`,
-`test_call_capture_parity.py`). Package 3 adds three-backend parity programs
-for every masked shape. Each prints the caller's state after the call, so a
-backend that broke snapshot semantics would now also break the effect system,
-and the parity test would say so.
+`test_call_capture_parity.py`). They cover binding and storage transfers, not
+argument passing. Argument passing does not snapshot a `var`-held value on any
+backend (section 6), and the rule does not depend on it doing so. Package 3
+adds three-backend parity programs for every masked shape. Each prints the
+caller's state after the call, so a backend that broke snapshot semantics
+would now also break the effect system, and the parity test would say so.
+Package 3 also pins the argument-passing alias (`keep(s)` then `s.x = 7`, and
+the `ys[0].x` form) as current behaviour on all three backends. A runtime fix
+for Unresolved Question 7 then shows up as a deliberate test change.
 
 ## Compatibility And Migration
 
@@ -600,7 +762,11 @@ and the parity test would say so.
   of collections it allocated (E310 in 0.6).
 
 **No program changes meaning.** Effects are static, no runtime code changes,
-and property-check eligibility is unchanged (section 7).
+and property-check eligibility is unchanged (section 7). The normative 3.5
+statement that mutating builtins on reachable collections are `mutation`
+restates the 0.6 text. The checker does not enforce it (the known
+limitation), so it rejects no program. A later checker that enforces it
+would be a conformance fix with its own compatibility record.
 
 **Diagnostics.** Programs that remain rejected keep their codes. Messages
 that print an inferred function type omit `mutation` where it is now masked.
@@ -711,12 +877,17 @@ it open. The adversarial tests in Package 3 pin the boundary.
 
 - **Ownership analysis** (`geno/tests/test_mutation_ownership.py`, new):
   - each permitted position and each listed escape;
-  - O1 to O4;
+  - O0 to O4, including that a name a lambda captures and a module-constant
+    name are never owned (O0);
   - a same-block redeclaration (fresh then parameter, parameter then fresh);
   - a nested-block shadow;
   - flow-insensitivity: a write before `a = param`, and a reassignment inside
     a loop;
-  - a user function and a local binding named `array_new`;
+  - a top-level user function named `array_new`, and a local binding named
+    `array_new`. The local-binding case is checker-only: the JavaScript
+    backend refuses a local binding named after a runtime builtin ("'array_new'
+    is a reserved runtime name"), while the interpreter and compiled Python
+    accept it;
   - method spellings and named arguments of borrowing builtins;
   - a completeness test over every `Statement` and `Expression` subclass.
 - **Builtin metadata** (`test_builtin_metadata.py`): the three checks in
@@ -732,6 +903,14 @@ it open. The adversarial tests in Package 3 pin the boundary.
   - a declared `with mutation` that stays legal;
   - E310 for a captured write and a parameter alias under a declared `with io`;
   - E300 for a capturing closure returned as `() -> Int`;
+  - unknown never masks: a write whose root does not resolve (an undefined
+    name, reported with its own error) still leaves the function's inferred
+    effects containing `mutation`, and so does a statement whose check
+    returned early on an error;
+  - the classification is read from the statement node, and the effect walk
+    does not call `_check_expression` on write targets (asserted by counting
+    calls on a small program);
+  - the local `array_new` binding shadow case;
   - the breaking class above.
 
   Existing tests that change:
@@ -754,25 +933,40 @@ it open. The adversarial tests in Package 3 pin the boundary.
   - loops that reassign from a parameter after the write;
   - match and `for` bindings that reuse the name;
   - `var v = v` over an `Array` parameter;
-  - `grid[i][j] = v`;
+  - `grid[i][j] = v`, including `array_new(h, array_new(w, 0))` whose rows
+    alias (charged);
   - `b.cells[0] = v` and `b.pts[0].x = v`;
   - `xs[0].x = v` on a `List` of records;
   - `m[k] = v` on a fresh `MutableMap`, and `v[i] = x` on a fresh `Vec`;
   - `array_copy(param)` and `set_union`;
+  - a rolling buffer `prev = cur; cur = array_new(n, 0)` (charged);
   - passing a fresh collection to a user function, then writing it;
   - a nested lambda writing the enclosing lambda's variable;
   - an async function;
   - a generic higher-order call;
-  - the documented builtin gap of section 6, asserted as the current
-    behaviour and referenced from Unresolved Question 1, so that closing it
-    shows up as a deliberate test change.
+  - a top-level user function named `array_new` (not fresh; the
+    local-binding shadow stays checker-only, above);
+  - the argument-passing alias of section 6, asserted as current behaviour:
+    `var s = P(x: 1); let peek = keep(s); s.x = 7; peek()` gives `7`, and
+    `var ys = [p]; let g = keep_list(ys); ys[0].x = 5; g()` gives `5`, with
+    the writing function pure;
+  - the two widenings of section 6, asserted as current behaviour:
+    `vec_push(param_v, fn() -> n)` followed by `n = 5`, and
+    `cb(keep(s)); s.x = 7` with a pure `cb` that `vec_push`es into captured
+    storage. Each writing function is pure, and the caller observes the
+    write. These and the base builtin gap are referenced from Unresolved
+    Questions 1 and 7, so closing either shows up as a deliberate test
+    change.
 - **Backend parity:** a `local_mutation_masking` entry in
   `test_backend_parity.py`'s `PARITY_PROGRAMS`.
 - **Interactions:**
   - `test_property_check.py`: the eligible set is unchanged for `{mutation}`
     and `{mutation, io}` functions;
-  - `test_lsp.py`: local-binding hover shows the masked type, and function
-    hover still shows declared effects;
+  - `test_lsp.py`: `let g = bump` (still charged) hovers with
+    `with mutation`; `let f = total` (masked) hovers without it; a lambda
+    binding whose own body is masked hovers as pure; function hover still
+    shows declared effects. The first case fails before the
+    `_collect_facts` precedence change, so the test is not vacuous;
   - `test_doc_generator.py`: declared effects only, as before;
   - `test_var_shadowing.py`: W300 is unchanged.
 - **Conformance:** the three v0.7 cases, the new ids in
@@ -817,14 +1011,25 @@ list of causes explains.
   higher-order use, and keeps `main() -> Unit with io` failing for any local
   `var`. Rejected: the effect buys callers nothing.
 - **Mask only declarations and plain assignment (decision 1 alone).** This is
-  simpler and covers the accumulator. It still charges every fresh-array
-  algorithm (histograms, sieves, dynamic-programming tables), which is the
-  next most common shape. Decision 2 requires ownership, and the ownership
-  test is small.
+  simpler and covers the accumulator. It still charges every algorithm over a
+  one-dimensional array it allocates (histograms, sieves, 1-D
+  dynamic-programming tables), which is the next most common shape. Decision
+  2 requires ownership, and the ownership test is small. Two-dimensional
+  tables stay charged either way (Motivation, Unresolved Question 6).
 - **Charge mutating builtins on non-owned receivers now.** Rejected for this
   proposal (section 5): it rejects 0.6 programs, including the repository's
   own apps and selfhost, and it deserves its own breaking-change record. It is
-  the natural next step (Unresolved Question 1).
+  the natural next step (Unresolved Question 1). The spec states the rule
+  normatively anyway, so the later change is a checker conformance fix.
+- **Charge writes to a cell that a nested lambda mentions, and field writes
+  through a `var` passed to a user function.** This would close the two
+  widenings of section 6 without touching builtins. Rejected for now. The
+  first half contradicts the brief's decision 1, which masks every assignment
+  to a function's own `var`. Both halves charge common shapes:
+  `xs.map(fn(x: Int) -> x * 100 / total)` after an accumulator loop, and
+  `st.n = step(st)` on a state record. And both widenings need an uncharged
+  builtin store, which Unresolved Question 1 closes at the source. It stays
+  an option for the project lead if Unresolved Question 1 is declined.
 - **Koka-style effect masking with regions or local state types.** This is
   precise, but it changes the type language. Geno's function types cannot
   name a region, and models would have to write region annotations. Rejected
@@ -854,16 +1059,25 @@ list of causes explains.
 
 ## Unresolved Questions
 
-1. **Mutating builtins carry no effect.** The brief's decision 2 assumes that
-   mutating parameters through builtins "keeps `mutation`". It never had it.
-   This proposal keeps decision 2 (masking on fresh receivers is trivially
-   true) and records the concern: the effect system does not see `vec_push`,
-   `array_set` and similar calls on non-owned values, so section 6's soundness
-   claim holds only up to that gap. The project lead should decide whether a
-   follow-up proposal charges mutators on non-owned receivers in 0.7. That
-   would break programs 0.6 accepts (tetris, selfhost), with the migration of
-   declaring `with mutation`. The ownership analysis here is designed to be
-   reused for it.
+1. **Mutating builtins carry no effect (sign-off required before Package 2).**
+   The brief's decision 2 assumes that mutating parameters through builtins
+   "keeps `mutation`". It never had it. This proposal reinterprets decision
+   2. The spec states the rule normatively (a write to a reference collection
+   reachable from outside is `mutation`, builtins included), and the reference
+   checker's failure to charge builtins is a recorded known limitation with a
+   pinned test. The project lead must explicitly accept that reinterpretation
+   before the typechecker package lands. Under 0.7, masking also widens the
+   gap in two narrow ways (section 6): a closure over one of the function's
+   cells, or one a callee built from a `var`-held value, stored by a builtin
+   into caller storage. 0.6 charged those functions by accident, because they
+   held a `var`. Three options:
+   - accept the limitation for 0.7 and follow up later;
+   - a follow-up proposal in 0.7 that charges mutators on non-owned
+     receivers. That would break programs 0.6 accepts (tetris, selfhost),
+     with `with mutation` as the migration. The ownership analysis here (with
+     O0) is designed to be reused for it;
+   - the narrower cell-capture and argument restrictions listed under
+     Alternatives.
 2. **Calls of local closures.** These are charged conservatively. If models
    write `let add = fn(x: Int) do total = total + x ... end fn` inside
    functions often enough, masking such calls is worth a follow-up.
@@ -877,7 +1091,24 @@ list of causes explains.
    statement made a function carry `mutation`. A note naming the first charged
    write ("assigns captured variable `n` at 5:9") would make the remaining
    rejections self-explanatory. It is left out here to keep the diagnostic
-   surface unchanged.
+   surface unchanged. Until then, `docs/reference/common-pitfalls.md` and
+   `docs/llm-prompting.md` list the shapes that stay charged (Motivation), so
+   models do not drop `with mutation` where it is still needed.
+6. **Two-dimensional tables built row by row.** `var g = array_new(h,
+   array_new(w, 0))` must stay charged, because the rows alias. A table whose
+   rows are each fresh (`g[i] = array_new(w, 0)` in a loop before any `g[i][j]`
+   write) is private in fact, but proving it needs per-element freshness.
+   That is worth a follow-up if the benchmark harness shows 2-D DP tables
+   among the remaining E300/E310 rejections.
+7. **Argument passing does not snapshot (spec 3.2.1 deviation).** On every
+   backend, a callee that captures a constructor-value parameter in a closure
+   aliases the caller's `var`-held object, and later field writes through the
+   `var` are visible through the closure (section 6). Spec 3.2.1 says binding
+   an existing constructor value creates a snapshot. This is a pre-existing
+   runtime bug, outside this proposal's static-only scope, and it should be
+   filed as its own issue. The masking rule does not rely on argument
+   snapshots, and Package 3 pins the current behaviour so a fix shows up as a
+   deliberate test change.
 
 ## Implementation Plan
 
@@ -895,9 +1126,16 @@ previous one.
      `geno/tests/test_builtin_metadata.py`.
    - No checker behaviour changes in this package.
 2. **Typechecker masking.** Changes to `geno/typechecker.py`:
-   - L1–L3 in `_infer_stmt_effects`;
-   - a `_binding_is_unit_local` helper sharing the capture walk with
-     `_record_captured_binding`;
+   - gate: the project lead's sign-off on Unresolved Question 1;
+   - write classification in `_check_assign_statement`,
+     `_check_index_assign_statement` and `_check_field_assign_statement`,
+     stored on the statement node (section 2). It records root locality,
+     whether `c0` is a reference type, and whether all later hops are values;
+   - a `_binding_locality` helper sharing the capture walk with
+     `_record_captured_binding`, returning unit-local, captured or
+     unresolved. Unresolved never masks;
+   - L1–L3 in `_infer_stmt_effects`, reading only that classification. An
+     unclassified statement is charged;
    - owned-name state saved and restored by `_function_context`, set in
      `_infer_function_effects` and in `_check_lambda_body` for both block and
      expression bodies, and cached by unit node.
@@ -910,7 +1148,9 @@ previous one.
 3. **Adversarial soundness and parity.**
    - `geno/tests/test_local_mutation_soundness.py` (new, three backends);
    - a `local_mutation_masking` entry in `geno/tests/test_backend_parity.py`;
-   - hover tests in `geno/tests/test_lsp.py`;
+   - `geno/lsp_analysis.py`: later `binding_types` facts replace earlier ones
+     for the same key, so hover shows final-pass types (section 7), with
+     hover tests in `geno/tests/test_lsp.py`;
    - a declared-effects pin in `geno/tests/test_doc_generator.py`.
 
    Any unsoundness found is fixed in `geno/mutation_ownership.py` or
@@ -930,12 +1170,16 @@ previous one.
      - `docs/guide/language-tour.md`: an `### Effects` subsection appended at
        the end of `## Functions`, so that pinned snippet indices do not move;
      - `docs/llm-prompting.md`: a rule saying not to add `with mutation` for
-       local accumulators or arrays the function allocates;
-     - `docs/reference/runtime-semantics.md`: the section 6 boundary;
+       local accumulators or 1-D arrays the function allocates, and listing
+       the shapes that keep it (2-D tables, rolling buffers, accumulators
+       updated through a user callback, collections passed to helpers);
+     - `docs/reference/runtime-semantics.md`: the section 6 boundary,
+       including the argument-passing alias and the builtin known limitation;
      - `docs/reference/common-pitfalls.md`: an entry on which writes keep
-       `mutation`.
+       `mutation`, with the same list of shapes.
    - `geno/tests/test_docs_snippets.py` for the new snippets.
    - `selfhost/SCOPE.md`: "Effect inference gap".
    - Explicitly unchanged, with the reason recorded in the package's handoff:
-     lexer, parser, AST, formatter, `geno/constraints.py`, `vscode-geno`, LSP
-     code and the doc generator.
+     lexer, parser, AST, formatter, `geno/constraints.py`, `vscode-geno` and
+     the doc generator. The only LSP code change is Package 3's fact
+     precedence.
