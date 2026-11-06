@@ -1523,15 +1523,17 @@ class Compiler(BaseCompiler, ASTVisitor):
                 with self._with_name_overrides(contract_bindings):
                     cond = self._compile_expr(ens.condition)
                 described = (display_name, ens.source_text, param_names, call_arguments)
-                outcome = {
-                    "result": result_name,
-                    "checked": param_values if call_arguments != param_values else None,
-                }
+                checked = param_values if call_arguments != param_values else None
                 cond = self._contract_condition(
                     ens.condition,
                     cond,
                     self._contract_violation_call(
-                        "ensures", "propagate", index, *described, **outcome
+                        "ensures",
+                        "propagate",
+                        index,
+                        *described,
+                        result=result_name,
+                        checked=checked,
                     ),
                 )
                 self._writeln(f"if not ({cond}):")
@@ -1539,7 +1541,12 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._writeln(
                     "raise "
                     + self._contract_violation_call(
-                        "ensures", "false", index, *described, **outcome
+                        "ensures",
+                        "false",
+                        index,
+                        *described,
+                        result=result_name,
+                        checked=checked,
                     )
                 )
                 self._dedent()

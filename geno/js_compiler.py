@@ -1831,16 +1831,14 @@ class JSCompiler(BaseCompiler):
             float_result = self._is_float_typed(
                 defn.__dict__.get("_resolved_return_type"), defn.return_type
             )
-            outcome = {
-                "result": (
-                    f"_genoFloatDisplay({result_name})" if float_result else result_name
-                ),
-                "checked": (
-                    self._contract_values(param_refs, float_params)
-                    if snapshot is not None
-                    else None
-                ),
-            }
+            shown_result = (
+                f"_genoFloatDisplay({result_name})" if float_result else result_name
+            )
+            checked = (
+                self._contract_values(param_refs, float_params)
+                if snapshot is not None
+                else None
+            )
             for index, ens in enumerate(defn.specs.ensures):
                 if isinstance(ens.condition, BooleanLiteral):
                     if ens.condition.value:
@@ -1863,7 +1861,12 @@ class JSCompiler(BaseCompiler):
                     ens.condition,
                     cond,
                     self._contract_violation_call(
-                        "ensures", "propagate", index, *described, **outcome
+                        "ensures",
+                        "propagate",
+                        index,
+                        *described,
+                        result=shown_result,
+                        checked=checked,
                     ),
                 )
                 self._writeln(f"if (!({cond})) {{")
@@ -1871,7 +1874,12 @@ class JSCompiler(BaseCompiler):
                 self._writeln(
                     "throw "
                     + self._contract_violation_call(
-                        "ensures", "false", index, *described, **outcome
+                        "ensures",
+                        "false",
+                        index,
+                        *described,
+                        result=shown_result,
+                        checked=checked,
                     )
                     + ";"
                 )
