@@ -108,6 +108,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
+from .ast_nodes import EnsuresClause, RequiresClause
 from .base_compiler import BaseCompiler, top_level_runtime_shadows
 from .builtin_registry import (
     all_builtin_names,
@@ -129,6 +130,7 @@ from .runtime_prelude import RUNTIME_PRELUDE
 from .runtime_report import TRACE_AWAIT_KEY, TRACE_TABLE_PLACEHOLDER
 from .runtime_report import TraceRecorder as _TraceRecorder
 from .stdlib_scope import binds_unqualified
+from .tokens import SourceLocation
 from .types import AsyncType, FloatType, ListType, UserType
 
 
@@ -501,7 +503,9 @@ class Compiler(BaseCompiler, ASTVisitor):
         if self._trace is not None:
             self._write(self._trace.marker("E", 0))
 
-    def _trace_candidate(self, key: str | None, location) -> None:
+    def _trace_candidate(
+        self, key: str | None, location: SourceLocation | None
+    ) -> None:
         """Record a candidate site of the current statement (proposal 0018)."""
         trace = self._trace
         if trace is not None and key is not None:
@@ -517,7 +521,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         return None
 
     @contextmanager
-    def _traced_statement(self, location) -> Iterator[None]:
+    def _traced_statement(self, location: SourceLocation | None) -> Iterator[None]:
         """Attribute the lines written inside to a statement at *location*."""
         trace = self._trace
         if trace is None:
@@ -1671,7 +1675,7 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_requires_check(
         self,
         defn: FunctionDef,
-        req,
+        req: RequiresClause,
         index: int,
         display_name: str,
         param_names: tuple[str, ...],
@@ -1699,7 +1703,7 @@ class Compiler(BaseCompiler, ASTVisitor):
     def _compile_ensures_check(
         self,
         defn: FunctionDef,
-        ens,
+        ens: EnsuresClause,
         index: int,
         result_name: str,
         described: tuple[str, str | None, tuple[str, ...], str],

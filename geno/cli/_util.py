@@ -127,7 +127,9 @@ def host_traceback_requested() -> bool:
     return os.environ.get(HOST_TRACEBACK_ENV) == "host"
 
 
-def runtime_report_lines(error, label: str = "Runtime Error") -> list[str]:
+def runtime_report_lines(
+    error: BaseException, label: str = "Runtime Error"
+) -> list[str]:
     """The lines of the Geno runtime report for *error* (proposal 0018).
 
     The Geno stack the interpreter captured (most recent call last), a

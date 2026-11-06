@@ -104,6 +104,7 @@ from .entrypoint import (
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
+from .ast_nodes import EnsuresClause, RequiresClause
 from .ast_nodes import (
     FunctionType as ASTFunctionType,
 )
@@ -124,6 +125,7 @@ from .runtime_report import (
     TraceRecorder,
 )
 from .stdlib_scope import binds_unqualified
+from .tokens import SourceLocation
 from .types import (
     AnyType,
     ArrayType,
@@ -1518,7 +1520,9 @@ class JSCompiler(BaseCompiler):
         if self._trace is not None:
             self._write(self._trace.marker("E", 0))
 
-    def _trace_candidate(self, key: str | None, location) -> None:
+    def _trace_candidate(
+        self, key: str | None, location: SourceLocation | None
+    ) -> None:
         """Record a candidate site of the current statement (proposal 0018)."""
         trace = self._trace
         if trace is not None and key is not None:
@@ -1533,7 +1537,7 @@ class JSCompiler(BaseCompiler):
             return self._mangle_name(match.group(1))
         return None
 
-    def _trace_helper(self, code: str, location) -> None:
+    def _trace_helper(self, code: str, location: SourceLocation | None) -> None:
         """Record the runtime helper compiled *code* starts by calling."""
         if self._trace is None:
             return
@@ -1542,7 +1546,7 @@ class JSCompiler(BaseCompiler):
             self._trace_candidate(match.group(1), location)
 
     @contextmanager
-    def _traced_statement(self, location) -> Iterator[None]:
+    def _traced_statement(self, location: SourceLocation | None) -> Iterator[None]:
         """Attribute the lines written inside to a statement at *location*."""
         trace = self._trace
         if trace is None:
@@ -2044,7 +2048,7 @@ class JSCompiler(BaseCompiler):
     def _compile_requires_check(
         self,
         defn: FunctionDef,
-        req,
+        req: RequiresClause,
         index: int,
         described: tuple[str, str | None, list[str], str],
     ) -> None:
@@ -2069,7 +2073,7 @@ class JSCompiler(BaseCompiler):
     def _compile_ensures_check(
         self,
         defn: FunctionDef,
-        ens,
+        ens: EnsuresClause,
         index: int,
         result_name: str,
         described: tuple[str, str | None, list[str], str],

@@ -15,6 +15,7 @@ from ..test_runner import DEFAULT_TEST_MAX_STEPS, DEFAULT_TEST_TIMEOUT
 
 if TYPE_CHECKING:
     # The property-check engine is imported only under --properties.
+    from ..harness import SpecViolation
     from ..property_check import PropertyConfig, PropertyResult
     from ..test_runner import SuiteResult
 
@@ -157,7 +158,7 @@ def _property_label(status: str) -> str:
     return _dim("SKIP")
 
 
-def _violation_trace_lines(violation) -> list[str]:
+def _violation_trace_lines(violation: SpecViolation) -> list[str]:
     """The frame lines of a runtime failure, shown under its violation.
 
     The Geno stack, most recent call last (proposal 0018), or the failure's
