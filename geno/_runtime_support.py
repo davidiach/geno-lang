@@ -6018,6 +6018,7 @@ _GENO_STACK_HEAD = 10
 _GENO_STACK_TAIL = 10
 _GENO_STACK_HEADER = "Stack trace (most recent call last):"
 _GENO_TRACE_AWAIT_KEY = "<await>"
+_GENO_TRACE_CALL_KEY = "<call>"
 
 
 def _geno_trace_text(field: str) -> str:
@@ -6113,12 +6114,33 @@ def _geno_trace_statement(marks: Any, line: int) -> int:
 
 
 def _geno_trace_position(
-    statement: Any, sites: Any, key: Any, callee: Any, namespace: Any, direct: bool
+    statement: Any,
+    sites: Any,
+    key: Any,
+    callee: Any,
+    namespace: Any,
+    direct: bool,
+    overflow_keys: Any = None,
 ) -> Any:
-    """Where execution was in *statement*: a call site, or its start."""
+    """Where execution was in *statement*: a call site, or its start.
+
+    *overflow_keys*, for a host stack overflow raised in the frame itself,
+    names the Geno functions: the overflow happened at the statement's one
+    call of a Geno function (or through a function value), where the
+    interpreter reports its recursion limit too.
+    """
     if statement is None:
         return None
     path = statement[0]
+    if key is None and overflow_keys is not None:
+        calls = [
+            site
+            for site in sites
+            if site[0] in overflow_keys or site[0] == _GENO_TRACE_CALL_KEY
+        ]
+        if len(calls) == 1:
+            return (path, calls[0][1], calls[0][2])
+        return statement
     if key is not None:
         found = []
         for site in sites:
@@ -6132,6 +6154,11 @@ def _geno_trace_position(
             return (path, found[0][1], found[0][2])
         if found:
             return statement
+        # A callee no candidate names was reached through a function value
+        # (a parameter or a local): the statement's one indirect call.
+        calls = [site for site in sites if site[0] == _GENO_TRACE_CALL_KEY]
+        if len(calls) == 1:
+            return (path, calls[0][1], calls[0][2])
     if direct or key == "__await__":
         # An awaited `Async` made elsewhere: positioned at the `await`.
         awaits = [site for site in sites if site[0] == _GENO_TRACE_AWAIT_KEY]
@@ -6211,6 +6238,10 @@ def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
             direct = False
             key = entry[3]
             callee = entry[2]
+        overflow_keys = None
+        if key is None and isinstance(exc, RecursionError):
+            # The host ran out of stack making a call in this frame.
+            overflow_keys = {function[2] for function in functions}
         statement_id = _geno_trace_statement(marks, entry[0])
         position = _geno_trace_position(
             statements.get(statement_id),
@@ -6219,6 +6250,7 @@ def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
             callee,
             namespace,
             direct,
+            overflow_keys,
         )
         frames.append((body[index][4][3], position))
     location = frames[-1][1] if frames else None

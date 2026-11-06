@@ -3791,13 +3791,142 @@ class TestJSRuntimeFailureReporter:
         end func
         """
         code = compile_to_js(source)
+        esm = compile_to_js(source, esm=True)
         assert isinstance(code, str)
+        assert isinstance(esm, str)
         assert re.search(
             r"\}\)\(\)\.catch\((_temp_\d+) => _genoReportUncaught\(\1, "
             r"_GENO_TRACE, _genoTraceAnchor\)\);",
+            esm,
+        )
+        # CommonJS reports only as the entry module; a require()d build keeps
+        # 0.6's handler.
+        assert re.search(
+            r"\}\)\(\)\.catch\((_temp_\d+) => \{\n\s*if \((_temp_\d+)\) "
+            r"_genoReportUncaught\(\1, _GENO_TRACE, _genoTraceAnchor\);\n"
+            r"\s*else \{ console\.error\(\1\); process\.exitCode = 1; \}\n\s*\}\);",
             code,
         )
         assert "console.error(e)" not in code
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("node"), reason="Node.js is not installed"
+    )
+    @pytest.mark.parametrize("fails", [True, False], ids=["failing", "succeeding"])
+    def test_requiring_a_commonjs_build_leaves_the_host_in_charge(
+        self, tmp_path, fails
+    ):
+        """A require()d CommonJS build does not own the process.
+
+        Its failure propagates to the requirer as in 0.6, and neither the
+        stack trace limit nor an `unhandledRejection` listener changes, so a
+        later rejection in the host is the host's own business.
+        """
+        source = _REPORT_PANIC if fails else _REPORT_PANIC.replace("check(9)", "0")
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        (tmp_path / "lib.js").write_text(code, encoding="utf-8")
+        (tmp_path / "host.js").write_text(
+            "process.on('unhandledRejection', (r) => "
+            "console.log('host handled: ' + r.message));\n"
+            "const before = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "let caught = null;\n"
+            "try { require('./lib.js'); } catch (e) { caught = e.message; }\n"
+            "const after = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "console.log(JSON.stringify({before, after, caught}));\n"
+            "Promise.reject(new Error('host rejection'));\n"
+            "setTimeout(() => console.log('host still running'), 20);\n",
+            encoding="utf-8",
+        )
+        import subprocess
+
+        result = subprocess.run(
+            ["node", str(tmp_path / "host.js")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Runtime Error" not in result.stderr
+        lines = result.stdout.splitlines()
+        observed = json.loads(lines[0])
+        assert observed["after"] == observed["before"]
+        assert observed["caught"] == ("value too large" if fails else None)
+        assert lines[1:] == ["host handled: host rejection", "host still running"]
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("node"), reason="Node.js is not installed"
+    )
+    def test_builtins_build_host_errors_without_stacks(self, tmp_path):
+        """A host failure a builtin turns into `Err` captures no stack.
+
+        An entry build lifts `Error.stackTraceLimit`, so such an Error would
+        cost time in proportion to the stack's depth on a success path. The
+        host work runs with the limit at 0, which is restored afterwards.
+        """
+        source = (
+            "func main() -> Int\n"
+            '    let missing = fs_read_text("no-such-file.txt")\n'
+            '    match json_parse("[\\"a\\", }") with\n'
+            "        | Ok(_) -> return 1\n"
+            "        | Err(_) -> return 0\n"
+            "    end match\n"
+            "end func\n"
+        )
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        (tmp_path / "lib.js").write_text(code, encoding="utf-8")
+        (tmp_path / "host.js").write_text(
+            "const fs = require('fs');\n"
+            "const seen = [];\n"
+            "const parse = JSON.parse;\n"
+            "JSON.parse = function (text) {\n"
+            "  seen.push(['JSON.parse', Error.stackTraceLimit]);\n"
+            "  return parse.call(JSON, text);\n"
+            "};\n"
+            "const read = fs.readFileSync;\n"
+            "fs.readFileSync = function (...args) {\n"
+            "  seen.push(['readFileSync', Error.stackTraceLimit]);\n"
+            "  return read.apply(fs, args);\n"
+            "};\n"
+            "process.argv.push('--cap', 'fs');\n"
+            "Error.stackTraceLimit = Infinity;\n"
+            "require('./lib.js');\n"
+            "console.log(JSON.stringify({seen, after: String(Error.stackTraceLimit), "
+            "status: process.exitCode}));\n",
+            encoding="utf-8",
+        )
+        import subprocess
+
+        result = subprocess.run(
+            ["node", str(tmp_path / "host.js")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert ["readFileSync", 0] in observed["seen"]
+        assert ["JSON.parse", 0] in observed["seen"]
+        assert observed["after"] == "Infinity"
+        assert observed["status"] == 0
+
+    def test_module_is_a_host_name(self):
+        """A Geno `module` is renamed, so it cannot hide CommonJS's `module`."""
+        source = (
+            "func module(n: Int) -> Int\n    example 1 -> 1\n    return n\n"
+            "end func\n\nfunc main() -> Int\n    return module(0)\nend func\n"
+        )
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        assert "function module(" not in code
+        assert "require.main === module" in code
 
 
 class TestJSCompilerPreludeTreeShaking:

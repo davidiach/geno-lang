@@ -157,6 +157,7 @@ def _js_constants() -> dict[str, Any]:
         "    tail: _GENO_STACK_TAIL,\n"
         "    header: _GENO_STACK_HEADER,\n"
         "    await_key: _GENO_TRACE_AWAIT_KEY,\n"
+        "    call_key: _GENO_TRACE_CALL_KEY,\n"
         "    argument_limit: _GENO_ARGUMENT_DISPLAY_LIMIT,\n"
         "    host_header: _GENO_HOST_TRACEBACK_HEADER,\n"
         "}));\n"
@@ -170,6 +171,7 @@ def test_the_shared_constants_agree() -> None:
         "tail": runtime_report.STACK_TAIL,
         "header": runtime_report.STACK_HEADER,
         "await_key": runtime_report.TRACE_AWAIT_KEY,
+        "call_key": runtime_report.TRACE_CALL_KEY,
         "argument_limit": runtime_report.ARGUMENT_DISPLAY_LIMIT,
         "host_header": "Host traceback (GENO_TRACEBACK=host):",
     }
@@ -179,6 +181,7 @@ def test_the_shared_constants_agree() -> None:
         "tail": python_prelude._GENO_STACK_TAIL,
         "header": python_prelude._GENO_STACK_HEADER,
         "await_key": python_prelude._GENO_TRACE_AWAIT_KEY,
+        "call_key": python_prelude._GENO_TRACE_CALL_KEY,
         "argument_limit": python_prelude._GENO_ARGUMENT_DISPLAY_LIMIT,
     }
     assert python == {key: expected[key] for key in python}
@@ -265,3 +268,47 @@ def test_both_preludes_parse_a_table_alike() -> None:
     )
     assert js == python
     assert python["statements"]["0"][0] == "dir/we\tird\nname\\.geno"
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("sites", "key", "expected"),
+    [
+        # A callee no candidate names was reached through a function value.
+        (
+            [["f", 11, 16], ["<call>", 11, 16], ["_safe_add", 11, 12]],
+            "check",
+            ["app.geno", 11, 16],
+        ),
+        # Two calls through function values: the statement.
+        (
+            [["<call>", 11, 12], ["<call>", 11, 20]],
+            "check",
+            ["app.geno", 11, 5],
+        ),
+        # A named candidate still wins.
+        (
+            [["check", 11, 9], ["<call>", 11, 20]],
+            "check",
+            ["app.geno", 11, 9],
+        ),
+    ],
+)
+def test_both_preludes_resolve_an_indirect_call_alike(
+    sites: list[list[Any]], key: str, expected: list[Any]
+) -> None:
+    statement = ["app.geno", 11, 5]
+    python = python_prelude._geno_trace_position(
+        tuple(statement),
+        [tuple(site) for site in sites],
+        key,
+        None,
+        {},
+        True,
+    )
+    js = _run_js(
+        f"console.log(JSON.stringify(_genoTracePosition({json.dumps(statement)}, "
+        f"{json.dumps(sites)}, {json.dumps(key)}, true)));\n"
+    )
+    assert list(python) == expected
+    assert js == expected

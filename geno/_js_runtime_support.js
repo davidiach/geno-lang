@@ -1748,6 +1748,34 @@ function _genoContractViolation(clause, reason, clauseIndex, fn, clauseText, nam
 }
 
 // =============================================================================
+// Host Error Capture
+// =============================================================================
+
+// A Node entry build lifts Error.stackTraceLimit (proposal 0018), so building
+// an Error costs time in proportion to the stack's depth. A builtin that turns
+// a host failure into a Geno Err or None builds one on a success path, so it
+// runs that host work through `_genoQuietly`, with stack capture off. The work
+// must not run Geno code, whose failures need their stacks. An error the
+// builtin rethrows as a real failure (a collection limit) gets a stack again
+// from `_genoRestack`, captured where it is rethrown.
+function _genoQuietly(work) {
+    const _genoSavedStackLimit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    try {
+        return work();
+    } finally {
+        Error.stackTraceLimit = _genoSavedStackLimit;
+    }
+}
+
+function _genoRestack(error) {
+    if (error instanceof Error && typeof Error.captureStackTrace === "function") {
+        Error.captureStackTrace(error, _genoRestack);
+    }
+    return error;
+}
+
+// =============================================================================
 // Runtime Failure Reports
 // =============================================================================
 
@@ -1771,6 +1799,7 @@ const _GENO_STACK_HEAD = 10;
 const _GENO_STACK_TAIL = 10;
 const _GENO_STACK_HEADER = "Stack trace (most recent call last):";
 const _GENO_TRACE_AWAIT_KEY = "<await>";
+const _GENO_TRACE_CALL_KEY = "<call>";
 const _GENO_HOST_TRACEBACK_HEADER = "Host traceback (GENO_TRACEBACK=host):";
 const _GENO_TRACE_INTEGER = /^-?[0-9]+$/;
 
@@ -1877,6 +1906,10 @@ function _genoTracePosition(statement, sites, key, direct) {
         const _grMatches = sites.filter((site) => site[0] === key);
         if (_grMatches.length === 1) return [statement[0], _grMatches[0][1], _grMatches[0][2]];
         if (_grMatches.length) return statement;
+        // A callee no candidate names was reached through a function value
+        // (a parameter or a local): the statement's one indirect call.
+        const _grCalls = sites.filter((site) => site[0] === _GENO_TRACE_CALL_KEY);
+        if (_grCalls.length === 1) return [statement[0], _grCalls[0][1], _grCalls[0][2]];
     }
     if (direct) {
         // An awaited Async made elsewhere: positioned at the `await`.
@@ -2846,7 +2879,7 @@ function fs_read_text(path) {
     const fs = require("fs");
     let result;
     try {
-        result = fs.readFileSync(path, "utf-8").replace(/\r\n?/g, "\n");
+        result = _genoQuietly(() => fs.readFileSync(path, "utf-8")).replace(/\r\n?/g, "\n");
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -2861,7 +2894,7 @@ function fs_write_text(path, content) {
     }
     const fs = require("fs");
     try {
-        fs.writeFileSync(path, content, "utf-8");
+        _genoQuietly(() => fs.writeFileSync(path, content, "utf-8"));
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -2876,7 +2909,7 @@ function fs_list_dir(path) {
     const fs = require("fs");
     let entries;
     try {
-        entries = fs.readdirSync(path).sort(_comparePythonStrings);
+        entries = _genoQuietly(() => fs.readdirSync(path)).sort(_comparePythonStrings);
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -2918,7 +2951,7 @@ function fs_metadata(path) {
     const fs = require("fs");
     let stats;
     try {
-        stats = fs.statSync(path, { bigint: true });
+        stats = _genoQuietly(() => fs.statSync(path, { bigint: true }));
     } catch (e) {
         return Err(e.message);
     }
@@ -2933,7 +2966,7 @@ function fs_symlink_metadata(path) {
     const fs = require("fs");
     let stats;
     try {
-        stats = fs.lstatSync(path, { bigint: true });
+        stats = _genoQuietly(() => fs.lstatSync(path, { bigint: true }));
     } catch (e) {
         return Err(e.message);
     }
@@ -2950,7 +2983,7 @@ function fs_canonicalize(path) {
     const fs = require("fs");
     let canonical;
     try {
-        canonical = fs.realpathSync(path).replace(/\\/g, "/");
+        canonical = _genoQuietly(() => fs.realpathSync(path)).replace(/\\/g, "/");
     } catch (e) {
         return Err(e.message);
     }
@@ -4447,10 +4480,13 @@ function _escapeJsonAscii(text) {
 
 function json_parse(text) {
     try {
-        _ensureJsonNestingLimit(text);
-        return _checkCollectionSize({ _tag: "Ok", value: _jsonParseText(text) });
+        const value = _genoQuietly(() => {
+            _ensureJsonNestingLimit(text);
+            return _jsonParseText(text);
+        });
+        return _checkCollectionSize({ _tag: "Ok", value });
     } catch (e) {
-        if (String(e.message).includes("size exceeds limit")) throw e;
+        if (String(e.message).includes("size exceeds limit")) throw _genoRestack(e);
         return _checkCollectionSize(Err(e.message));
     }
 }
@@ -4825,7 +4861,7 @@ function _runProcessArgv(cp, argv, stdin = null) {
         options.input = stdin;
     }
 
-    const result = cp.spawnSync(argv[0], argv.slice(1), options);
+    const result = _genoQuietly(() => cp.spawnSync(argv[0], argv.slice(1), options));
     if (result.error) {
         if (result.error.code === "ETIMEDOUT") {
             return { _tag: "Err", error: "Process timed out" };
@@ -4843,7 +4879,7 @@ function exec(command) {
     const cp = require("child_process");
     let argv;
     try {
-        argv = _splitProcessCommand(command);
+        argv = _genoQuietly(() => _splitProcessCommand(command));
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -4858,7 +4894,7 @@ function exec_with_input(command, stdin) {
     const cp = require("child_process");
     let argv;
     try {
-        argv = _splitProcessCommand(command);
+        argv = _genoQuietly(() => _splitProcessCommand(command));
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }

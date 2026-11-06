@@ -104,6 +104,30 @@ def _runtime_failure_detail(exc: Exception) -> str:
     return _test_error_detail(exc)
 
 
+def _unlocated_text(exc: BaseException) -> str:
+    """``str(exc)`` without the location a Geno runtime error puts first.
+
+    Proposal 0018 locates every runtime failure, so ``str()`` of a Geno
+    runtime error now starts with ``<file:line:col>:`` (a host path) where
+    0.6 often had none. A ``geno test`` message never shows it: a violation
+    carries it as ``location`` and ``stack`` instead.
+    """
+    from .values import GenoRuntimeError
+
+    if isinstance(exc, GenoRuntimeError):
+        return f"Runtime Error: {exc.message}"
+    return str(exc)
+
+
+def _test_block_failure_detail(exc: Exception) -> str:
+    """The message of a failed ``test`` block or file load for *exc*."""
+    from .values import GenoRuntimeError
+
+    if isinstance(exc, GenoRuntimeError):
+        return _unlocated_text(exc)
+    return _test_error_detail(exc)
+
+
 def _failure_location(exc: BaseException) -> SourceLocation | None:
     location = getattr(exc, "location", None)
     return location if isinstance(location, SourceLocation) else None
@@ -170,11 +194,12 @@ def _run_examples_and_tests(
                 result.passed += 1
             except Exception as e:
                 result.failed += 1
+                interp.mark_test_origin(e)
                 result.violations.append(
                     SpecViolation(
                         kind="test",
                         function=test_block.name,
-                        message=_test_error_detail(e),
+                        message=_test_block_failure_detail(e),
                         location=_failure_location(e),
                         stack=_failure_stack(e),
                     )
@@ -692,7 +717,7 @@ def run_project_test_suite(
         try:
             interp.run(program, modules=parsed_modules, execute_main=False)
         except runtime_load_errors as e:
-            return _project_error_result(f"Runtime Error: {e}")
+            return _project_error_result(f"Runtime Error: {_unlocated_text(e)}")
         suite_steps = interp.steps
         suite_output_length = interp._output_length
         all_programs.append((mod_name, program, interp))
@@ -923,6 +948,6 @@ def _test_file(
     except Exception as e:
         return FileTestResult(
             path=str(filepath),
-            error=_test_error_detail(e),
+            error=_test_block_failure_detail(e),
             elapsed_ms=(time.monotonic() - file_start) * 1000,
         )

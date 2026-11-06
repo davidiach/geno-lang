@@ -1366,3 +1366,42 @@ class TestParserReviewFollowups:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestFStringInterpolationLocations:
+    """Nodes parsed from an f-string interpolation carry source locations.
+
+    The interpolation is lexed on its own, from line 1, column 1; its tokens
+    are rebased onto the source, so runtime failure locations and stack
+    positions inside an interpolation point where it is written (proposal
+    0018), not at the file's first line.
+    """
+
+    SOURCE = (
+        "func fstr(xs: List[Int], n: Int) -> String\n"
+        '    example [1, 2, 3, 4], 1 -> "v=4 1"\n'
+        '    return f"v={xs[3]} {check(n)}"\n'
+        "end func\n"
+    )
+
+    def test_an_index_and_a_call_are_located_in_the_source(self) -> None:
+        func = parse_function(self.SOURCE)
+        statement = func.body[-1]
+        assert isinstance(statement, ReturnStatement)
+        parts = [part for part in statement.value.parts if not isinstance(part, str)]
+        index, call = parts
+        assert (index.location.line, index.location.column) == (3, 17)
+        assert isinstance(call, FunctionCall)
+        assert (call.location.line, call.location.column) == (3, 25)
+        argument = call.arguments[0].value
+        assert (argument.location.line, argument.location.column) == (3, 31)
+
+    def test_a_parse_error_in_an_interpolation_is_located_once(self) -> None:
+        source = self.SOURCE.replace("{check(n)}", "{check(n) n}")
+        with pytest.raises((ParseError, ParseErrors)) as caught:
+            parse_source(source)
+        error = caught.value
+        if isinstance(error, ParseErrors):
+            error = error.errors[0]
+        assert (error.location.line, error.location.column) == (3, 34)
+        assert "f-string" in error.message

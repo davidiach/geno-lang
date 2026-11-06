@@ -476,22 +476,24 @@ class ExpressionParserMixin(ParserBase):
                 f"Invalid expression in f-string: {e.message}",
                 self._fstring_inner_location(base_location, e.location),
             ) from e
+        # The sub-lexer counts from line 1, column 1 of the interpolation.
+        # Rebase every token onto the source (an interpolation holds no
+        # string literal, so no nested f-string), so the parsed nodes, and
+        # with them runtime failure locations and stack positions (proposal
+        # 0018), and every parse error below, point where the expression is
+        # written.
+        for token in tokens:
+            token.location = self._fstring_inner_location(base_location, token.location)
         # Import here to avoid circular import; at runtime the final Parser class exists.
         from .parser import Parser
 
         sub_parser = Parser(tokens)
-        try:
-            expr = sub_parser._parse_expression()
-        except ParseError as e:
-            raise ParseError(
-                e.message,
-                self._fstring_inner_location(base_location, e.location),
-            ) from e
+        expr = sub_parser._parse_expression()
         if not sub_parser._check(TokenType.EOF):
             current = sub_parser._current()
             raise ParseError(
                 f"Unexpected token in f-string expression: {current}",
-                self._fstring_inner_location(base_location, current.location),
+                current.location,
             )
         return expr
 

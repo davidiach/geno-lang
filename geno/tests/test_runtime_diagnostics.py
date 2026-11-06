@@ -1027,6 +1027,45 @@ end func
 
         assert _frames(diagnostic) == [("main", (10, 14)), ("g", (4, 9))]
 
+    def test_a_default_value_runs_in_the_callee_frame(self) -> None:
+        """The caller is at the call, the callee at its default expression."""
+        source = """\
+let items: List[Int] = [1, 2]
+
+func boom() -> Int
+    example () panics "bad default"
+    panic("bad default")
+    return 0
+end func
+
+func label(n: Int, tag: Int = boom()) -> Int
+    example 1, 2 -> 3
+    return n + tag
+end func
+
+func pick(a: Int, c: Int = items[7]) -> Int
+    example 1, 2 -> 3
+    return a + c
+end func
+
+func main() -> Int
+    print(to_string(label(3, 4)))
+    let tagged = label(n: 3)
+    return pick(1)
+end func
+"""
+        diagnostic = _failure(source, capabilities=frozenset({"print"}))
+        assert _frames(diagnostic) == [
+            ("main", (21, 18)),
+            ("label", (9, 31)),
+            ("boom", (5, 5)),
+        ]
+        indexed = _failure(
+            source.replace("    let tagged = label(n: 3)\n", ""),
+            capabilities=frozenset({"print"}),
+        )
+        assert _frames(indexed) == [("main", (21, 12)), ("pick", (14, 28))]
+
     def test_nested_builtins_in_callbacks_locate_their_own_depth(self) -> None:
         diagnostic = _failure(
             G_PANICS

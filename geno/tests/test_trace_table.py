@@ -34,7 +34,7 @@ from geno.compiler import (
 from geno.dependency_graph import DependencyGraph
 from geno.project_graph import ProjectGraph
 from geno.runtime_prelude import RUNTIME_PRELUDE
-from geno.runtime_report import trace_field
+from geno.runtime_report import TRACE_CALL_KEY, trace_field
 from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 from geno.typechecker import TypeChecker
 
@@ -95,6 +95,24 @@ func main() -> Int
         return g(doubled)
     end fn)
     return length(ys)
+end func
+"""
+
+
+# A call through a parameter (recorded also under `<call>`), a direct call
+# (not), and a default parameter value (a statement of its own).
+INDIRECT = """func check(n: Int) -> Int
+    example 1 -> 1
+    return n
+end func
+
+func apply(f: (Int) -> Int, x: Int, n: Int = check(2)) -> Int
+    example check, 1 -> 3
+    return f(x) + check(n)
+end func
+
+func main() -> Int
+    return apply(check, 9)
 end func
 """
 
@@ -307,6 +325,19 @@ end func
         statement, candidates = _statement_of(code, "list_map(")
         assert statement == ("callback.geno", 10, 5)
         assert ("list_map", 10, 14) in candidates
+
+    def test_calls_through_function_values_and_default_values(self) -> None:
+        code = compile_to_python(INDIRECT, filename="indirect.geno")
+        statement, candidates = _statement_of(code, "f(x)")
+        assert statement == ("indirect.geno", 8, 5)
+        assert (TRACE_CALL_KEY, 8, 12) in candidates
+        assert ("check", 8, 19) in candidates
+        assert (TRACE_CALL_KEY, 8, 19) not in candidates
+        statement, candidates = _statement_of(code, "n = check(")
+        assert statement == ("indirect.geno", 6, 46)
+        assert ("check", 6, 46) in candidates
+        statement, candidates = _statement_of(code, "return apply(")
+        assert (TRACE_CALL_KEY, 12, 12) not in candidates
 
     def test_contract_checks_are_located_at_their_clause(self) -> None:
         source = """func safe_div(a: Int, b: Int) -> Int
@@ -644,6 +675,21 @@ class TestJavaScriptTable:
         assert statement == ("callback.geno", 10, 5)
         assert ("list_map", 10, 14) in candidates
 
+    def test_calls_through_function_values_and_default_values(self) -> None:
+        code = _js(INDIRECT, "indirect.geno")
+        statement, candidates = _js_statement_of(code, "f(x)")
+        assert statement == ("indirect.geno", 8, 5)
+        assert (TRACE_CALL_KEY, 8, 12) in candidates
+        assert ("check", 8, 19) in candidates
+        assert (TRACE_CALL_KEY, 8, 19) not in candidates
+        # The default value is on a line of its own, as its own statement;
+        # the function's body is not part of it.
+        statement, candidates = _js_statement_of(code, "n = check(")
+        assert statement == ("indirect.geno", 6, 46)
+        assert ("check", 6, 46) in candidates
+        assert _js_statement_of(code, "    try {")[0] is None
+        _assert_js_ranges_start_at_their_functions(code)
+
     def test_contract_checks_are_located_at_their_clause(self) -> None:
         code = _js(CONTRACT, "contract.geno")
         assert _js_statement_of(code, 'throw _genoContractViolation("requires"')[0] == (
@@ -696,7 +742,9 @@ class TestJavaScriptTable:
             assert "_genoTraceAnchor" not in code
             assert "_genoReportUncaught" not in code
             assert "_genoInstallReporter" not in code
-            assert "stackTraceLimit" not in code
+            # Builtins may still turn stack capture off around host work
+            # (`_genoQuietly`), but nothing lifts the limit.
+            assert "stackTraceLimit = Infinity" not in code
 
     def test_the_source_map_leaves_the_table_and_entry_lines_unmapped(
         self,

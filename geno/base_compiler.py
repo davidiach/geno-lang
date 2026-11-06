@@ -1077,6 +1077,32 @@ class BaseCompiler(ABC):
             return f"{self._display_module}.{defn.name}"
         return defn.name
 
+    def _is_indirect_callee(self, function: Expression) -> bool:
+        """Whether a call's callee is a function value, not a named function.
+
+        A call through a parameter, a local or any other expression reaches
+        a Geno function whose host name the call site does not spell, so the
+        trace table also records it under ``TRACE_CALL_KEY`` (proposal 0018,
+        section 8). A named function, method, builtin, constructor or module
+        function is direct. The test is lexical and conservative: a local
+        that shadows a function's name counts as direct, which only costs
+        that call its column.
+        """
+        if isinstance(function, TypeIdentifier):
+            return False
+        if isinstance(function, Identifier):
+            name = function.name
+            return name not in self.func_param_names and name not in (
+                all_builtin_names()
+            )
+        # A module function (`Helper.scale`) is direct; anything else is a
+        # value.
+        return not (
+            isinstance(function, FieldAccess)
+            and isinstance(function.target, (Identifier, TypeIdentifier))
+            and function.target.name in self._module_param_names
+        )
+
     def _record_impl_def_location(self, defn: ImplDef) -> None:
         """Record the impl block's source location.  No-op by default
         — Python does not emit an impl-level source marker since the

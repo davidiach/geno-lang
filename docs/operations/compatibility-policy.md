@@ -242,7 +242,10 @@ recorded anyway, because tests and scripts can observe them:
   awaits is reported the same way instead of with Node's raw stack, with the
   same status 1. Like 0.6's synchronous fatal path, the immediate exit can
   lose a tail of stdout still queued for a POSIX pipe beyond what the pipe
-  accepted (typically 64 KiB); 0.6's async `main` drained it.
+  accepted (typically 64 KiB); 0.6's async `main` drained it. Only a build
+  that runs as the entry point owns the process: a CommonJS build that a
+  host `require()`s keeps 0.6's behaviour, letting a failure of its `main`
+  propagate to the requirer, and changes no process-wide setting.
 
 It meets the five conditions above:
 

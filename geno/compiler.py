@@ -127,7 +127,7 @@ from .float_promotion import float_shape
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .runtime_report import TRACE_AWAIT_KEY, TRACE_TABLE_PLACEHOLDER
+from .runtime_report import TRACE_AWAIT_KEY, TRACE_CALL_KEY, TRACE_TABLE_PLACEHOLDER
 from .runtime_report import TraceRecorder as _TraceRecorder
 from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
@@ -510,6 +510,13 @@ class Compiler(BaseCompiler, ASTVisitor):
         trace = self._trace
         if trace is not None and key is not None:
             trace.candidate(key, location)
+
+    def _trace_indirect_call(
+        self, function: Expression, location: SourceLocation | None
+    ) -> None:
+        """Record a call through a function value (proposal 0018, section 8)."""
+        if self._trace is not None and self._is_indirect_callee(function):
+            self._trace_candidate(TRACE_CALL_KEY, location)
 
     def _trace_callee(self, func: str) -> str | None:
         """The host callee a compiled call expression *func* names, if known."""
@@ -3151,6 +3158,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         if reordered_call is not None:
             names, values, call = reordered_call
             self._trace_candidate(self._trace_callee(values[0]), expr.location)
+            self._trace_indirect_call(expr.function, expr.location)
             parameters = ", ".join(names)
             arguments = ", ".join(values)
             return f"(lambda {parameters}: {call})({arguments})"
@@ -3174,6 +3182,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             for arg in ordered_args
         )
         self._trace_candidate(self._trace_callee(func), expr.location)
+        self._trace_indirect_call(expr.function, expr.location)
 
         return f"{func}({args})"
 
@@ -3389,6 +3398,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._trace_candidate(
                 self._trace_callee(func), stage.location or expr.location
             )
+            self._trace_indirect_call(stage.function, stage.location or expr.location)
             current = f"(lambda {current_temp}: {func}({arg_str}))({current})"
 
         return current

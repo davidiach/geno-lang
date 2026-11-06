@@ -179,14 +179,17 @@ package version stays 0.6.0, and the Draft
   entry builds, which map host frames through a compact `_GENO_TRACE` table
   the compiler embeds and reads only when a failure escapes `main`: no call
   does extra work and the artifact still runs without Geno installed. Frames
-  are named Geno functions (`f`, `Type.method`, `Module.f`, and `<example>`
-  while an example is verified); lambdas, builtins, runtime helpers and host
+  are named Geno functions (`f`, `Type.method`, `Module.f`, `<example>`
+  while an example is verified and `<test>` for a call a `test` block made);
+  lambdas, builtins, runtime helpers and host
   frames never appear, and standard-library files show as `std/<Name>.geno`.
   A stack of more than 20 frames keeps its first 10 and last 10 and says how
   many it left out. Recursion, step and cooperative-timeout limits, callbacks
-  started by builtins and `async` functions get stacks too. The location and
-  stack never enter the message, so `panics "substring"` examples and
-  property checks match what they matched before.
+  started by builtins, default parameter values, calls through function
+  values and `async` functions get stacks too. The location and stack never
+  enter the message, so no file name, position or frame name can satisfy a
+  `panics "substring"` example or a property check (contract failure
+  messages themselves change; see Changed (breaking)).
 - Contract failures name the function, the call's argument values and the
   clause as written (`Precondition failed: safe_div(a: 8, b: 0) requires
   b != 0`), and an `ensures` failure the result
@@ -340,13 +343,24 @@ package version stays 0.6.0, and the Draft
   synchronous fatal path, that exit can lose a tail of stdout still queued for
   a POSIX pipe. `Error.stackTraceLimit` and the `unhandledRejection` listener
   are set only when the file runs as the entry point, so importing an ESM
-  build changes neither. The table and its anchor are the first two lines of
+  build changes neither, and a CommonJS build that a host `require()`s keeps
+  0.6's behaviour: a failure of its `main` propagates to the requirer (an
+  async `main`'s rejection is logged with `process.exitCode = 1`, as before)
+  and nothing process-wide changes. A Geno name `module` is renamed in
+  JavaScript output, like `require`, so it cannot hide CommonJS's own.
+  Builtins that turn a host failure into `Err` or `None` (`json_parse`, the
+  `fs_*` functions, `exec`) build that host error with stack capture off, so
+  the entry path's unlimited trace limit costs nothing on their success
+  paths. The table and its anchor are the first two lines of
   the program's code, so `--source-map` mappings move down by two lines; the
   map format is unchanged. Browser builds and programs without `main` are
   unchanged.
 - `geno test` records a runtime failure in an example as `Runtime error:
   <message>`, without the doubled `Runtime Error:` and location prefix, and
-  `-v` prints the failure's frames under it.
+  `-v` prints the failure's frames under it. A runtime failure in a `test`
+  block keeps its 0.6 message, `Runtime Error: <message>`, with no location
+  prefix even now that builtin failures are located; its stack starts with a
+  `<test>` frame at the test body's call.
 - The REPL prints the same runtime report for a failing input: its frames,
   with the typed input itself shown as the `<repl>` frame, then the
   `Runtime Error: <message>` line last (0.6 printed the message, then an
@@ -392,6 +406,11 @@ package version stays 0.6.0, and the Draft
   run time with a host error (`"s" + 1`); they are now type errors, and
   `let d = [None, Some(1), Some(2.5)]` infers `List[Option[Float]]` instead
   of asking for an annotation.
+- A node parsed from an f-string interpolation carried a location relative
+  to the interpolation (line 1), so a type error or a runtime failure inside
+  `{...}` pointed at the file's first line. The parser now rebases the
+  interpolation's tokens onto the source; parse errors inside an
+  interpolation are located as before.
 - Compiled Python showed an `ensures` failure's result with the host `str()`
   (`result was hi!`), where the interpreter and JavaScript showed `"hi!"`;
   all three now render it the same way (proposal 0018).

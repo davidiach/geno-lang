@@ -18,6 +18,7 @@ from geno.test_runner import (
 from geno.tests.project_resolution_fixture_helpers import (
     write_dependency_private_collision_fixture,
 )
+from geno.tokens import SourceLocation
 from geno.values import GenoRuntimeError
 
 
@@ -1184,3 +1185,171 @@ class TestRuntimeFailureReports:
         assert lines[index + 2].strip() == f"{path}:10:5 in <example>"
         assert lines[index + 3].strip() == f"{path}:11:12 in outer"
         assert lines[index + 4].strip() == f"{path}:4:9 in inner"
+
+
+class TestTestBlockFailureReports:
+    """Runtime failures in `test` blocks (proposal 0018).
+
+    The message keeps its 0.6 text, `Runtime Error: <message>`, with no
+    location prefix (and so no host path); the location and the stack, whose
+    outermost frame is the `<test>` origin at the test body's call, travel in
+    their own fields.
+    """
+
+    SOURCE = (
+        "import List\n"
+        "\n"
+        "func inner(n: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    if n > 3 then\n"
+        '        panic("inner boom")\n'
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        "func pos(n: Int) -> Int\n"
+        "    requires n > 0\n"
+        "    example 1 -> 1\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        'test "a call panics"\n'
+        "    assert inner(9) == 9\n"
+        "end test\n"
+        "\n"
+        'test "a contract fails"\n'
+        "    assert pos(0) == 0\n"
+        "end test\n"
+        "\n"
+        'test "the library fails"\n'
+        "    let parts = List.chunk([1, 2, 3], 0)\n"
+        "    assert length(parts) == 1\n"
+        "end test\n"
+        "\n"
+        'test "the body panics"\n'
+        '    panic("direct")\n'
+        "end test\n"
+    )
+
+    def _violations(self, tmp_path):
+        path = tmp_path / "blocks.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+        payload = run_test_suite([path]).to_dict()
+        return path, {v["function"]: v for v in payload["files"][0]["violations"]}
+
+    @staticmethod
+    def _frames(violation):
+        return [
+            (
+                frame["function"],
+                frame["location"]["filename"],
+                frame["location"]["line"],
+                frame["location"]["column"],
+            )
+            for frame in violation["stack"]
+        ]
+
+    def test_a_panic_in_a_call(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["a call panics"]
+        assert violation["kind"] == "test"
+        assert violation["message"] == "Runtime Error: inner boom"
+        assert violation["location"] == {
+            "line": 6,
+            "column": 9,
+            "filename": str(path),
+        }
+        assert self._frames(violation) == [
+            ("<test>", str(path), 18, 12),
+            ("inner", str(path), 6, 9),
+        ]
+
+    def test_a_contract_failure(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["a contract fails"]
+        assert violation["message"] == (
+            "Runtime Error: Precondition failed: pos(n: 0) requires n > 0"
+        )
+        assert self._frames(violation) == [
+            ("<test>", str(path), 22, 12),
+            ("pos", str(path), 12, 14),
+        ]
+
+    def test_a_library_failure_names_no_host_path(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["the library fails"]
+        assert violation["message"] == (
+            "Runtime Error: list_chunk: chunk size must be positive"
+        )
+        assert violation["location"]["filename"] == "std/List.geno"
+        assert [frame[:2] for frame in self._frames(violation)] == [
+            ("<test>", str(path)),
+            ("List.chunk", "std/List.geno"),
+        ]
+
+    def test_a_panic_in_the_test_body_has_a_location_only(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["the body panics"]
+        assert violation["message"] == "Runtime Error: direct"
+        assert violation["location"] == {
+            "line": 31,
+            "column": 5,
+            "filename": str(path),
+        }
+        assert "stack" not in violation
+
+    def test_verbose_text_shows_the_message_once(self, tmp_path):
+        path = tmp_path / "blocks.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "-v", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 1
+        lines = result.stdout.splitlines()
+        index = next(i for i, line in enumerate(lines) if "a call panics" in line)
+        assert lines[index].endswith("a call panics: Runtime Error: inner boom")
+        assert lines[index + 1].strip() == "Stack trace (most recent call last):"
+        assert lines[index + 2].strip() == f"{path}:18:12 in <test>"
+        assert lines[index + 3].strip() == f"{path}:6:9 in inner"
+        assert str(path) + ":6:9: Runtime Error" not in result.stdout
+
+    def test_a_located_load_error_names_no_location(self, tmp_path, monkeypatch):
+        """A file whose loading fails reports the message without its location."""
+        path = tmp_path / "load.geno"
+        path.write_text(
+            "func f(n: Int) -> Int\n    example 1 -> 1\n    return n\nend func\n",
+            encoding="utf-8",
+        )
+
+        def _boom(self, program, modules=None, execute_main=True):
+            raise GenoRuntimeError("at load", SourceLocation(3, 5, str(path)))
+
+        monkeypatch.setattr("geno.interpreter.Interpreter.run", _boom)
+
+        result = run_test_suite([path])
+
+        assert result.file_results[0].error == "Runtime Error: at load"
+
+    def test_a_located_project_load_error_names_no_location(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text('entrypoint = "App"\nfiles = ["App"]\n')
+        (tmp_path / "App.geno").write_text(
+            '@untested("entry point")\nfunc main() -> Int\n  return 1\nend func\n'
+        )
+
+        def _boom(self, program, modules=None, execute_main=True):
+            raise GenoRuntimeError(
+                "boom", SourceLocation(2, 3, str(tmp_path / "App.geno"))
+            )
+
+        monkeypatch.setattr("geno.interpreter.Interpreter.run", _boom)
+
+        result = run_project_test_suite(tmp_path)
+
+        assert result.file_results[0].error == "Runtime Error: Runtime Error: boom"

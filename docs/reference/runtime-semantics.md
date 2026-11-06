@@ -146,7 +146,8 @@ Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
 ```
 
 - Frames are named Geno functions (`f`, `Type.method`, `Module.f`), outermost
-  first. Each is positioned inside its own function: at the call it was
+  first, after a `<example>` or `<test>` origin when an example or a `test`
+  block made the failing call. Each is positioned inside its own function: at the call it was
   making, or, for the last frame, at the failure. Lambdas, builtins and the
   host are never frames. A stack of more than 20 frames keeps its first 10
   and last 10 and says how many it left out.
@@ -154,8 +155,13 @@ Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
   source: the `geno run` lanes. Standalone compiled artifacts carry no source
   and print the frames and the message only.
 - The `Runtime Error: <message>` line is always last. The message never
-  contains the location or the stack, so `panics "substring"` examples and
-  property checks match exactly what they matched before.
+  contains the location or the stack, so no file name, position or frame name
+  from the report can satisfy a `panics "substring"` example or a property
+  check. Contract failure messages themselves changed in this line (see the
+  [compatibility policy](../operations/compatibility-policy.md#07-draft-runtime-failures-report-a-geno-stack-and-contract-failures-name-their-arguments)):
+  a substring only the 0.6 wording had (`"Precondition failed for"`,
+  `"requires clause"`, `"evaluated to false"`) no longer matches, and an
+  argument value or the clause text (`"b != 0"`) can now match.
 - A contract failure names the function, the call's argument values (strings
   quoted, each cut to 64 code points) and the clause as written; an `ensures`
   failure adds the result, and the value a rebound parameter had when the
@@ -172,8 +178,11 @@ compact table that the compiler embeds in every program with a `main`. It is
 read only when a failure escapes `main`, so successful calls do no extra work
 and the generated file still needs no Geno install. The mapping is
 statement-precise where the interpreter is expression-precise in one case: a
-statement holding two operations of the same kind (`xs[i] + ys[j]`) reports
-its start. Compiled index and division messages keep their shorter 0.6
+statement holding two operations of the same kind (`xs[i] + ys[j]`, or two
+calls through function values) reports its start. A host stack overflow's
+depth, message and innermost frame are the host's: that frame is where the
+host ran out of stack, at the recursive call or inside the callee's first
+operation, and every other kept frame is the same on every backend. Compiled index and division messages keep their shorter 0.6
 wording. A Node entry build exits with status 1 as soon as the report is
 printed, for an async `main` too, so pending async work does not run after
 it; a tail of stdout still queued for a POSIX pipe can be lost, as on 0.6's

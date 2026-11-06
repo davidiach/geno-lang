@@ -57,6 +57,8 @@ STDLIB_DIR = (Path(__file__).parent / "std").resolve()
 
 # The origin pseudo-frame of a failure raised while verifying an example.
 EXAMPLE_ORIGIN = "<example>"
+# The origin pseudo-frame of a failure raised by a call a `test` block made.
+TEST_ORIGIN = "<test>"
 
 _ELLIPSIS = "..."
 
@@ -121,8 +123,8 @@ class CapturedStack:
     started (``None`` when no Geno position exists, as for ``main`` or a
     callback a builtin has not been located for yet). ``location`` is the
     failure location. ``origin`` names an outer pseudo-frame (the
-    ``<example>`` of example verification), positioned at the outermost
-    entry's call site.
+    ``<example>`` of example verification, the ``<test>`` of a ``test``
+    block), positioned at the outermost entry's call site.
 
     Nothing is bounded or renamed here: ``build_stack`` does that when a
     report is made, so the handlers the failure unwinds through can still
@@ -685,6 +687,8 @@ def decode_trace_payload(
 #                                (-1: no statement)
 #   C id key line col            a candidate site in statement id: the host
 #                                callee `key` called there, at line:col
+#                                (`<call>`: a call through a function value,
+#                                `<await>`: an await)
 #   E host_line                  the end of the generated body
 #
 # Neither compiler writes its output linearly (block lambdas compile into a
@@ -702,6 +706,11 @@ TRACE_TABLE_PLACEHOLDER = "\0geno-trace-table\0"
 TRACE_ANY_MARKER = re.compile("\0geno-trace(?::[0-9]+|-table)\0")
 # The candidate key of an `await` (proposal 0018, section 2: async frames).
 TRACE_AWAIT_KEY = "<await>"
+# The candidate key of a call through a function value (a parameter, a local
+# or any other expression): the callee's host name is not spelled at the call
+# site, so a callee that no candidate names resolves to the statement's one
+# indirect call (proposal 0018, section 8).
+TRACE_CALL_KEY = "<call>"
 
 
 def trace_field(text: str) -> str:

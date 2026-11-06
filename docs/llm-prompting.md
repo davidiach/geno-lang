@@ -632,7 +632,8 @@ Read it bottom-up for the cause and top-down for the path:
   call it was making, so the frame just above a failed `requires` is the
   call that passed the bad arguments, which is usually the line to fix.
 - `<example>` as the first frame means the failure happened while an
-  `example` clause was being verified, at that clause's line.
+  `example` clause was being verified, at that clause's line; `<test>` means
+  a call made by a `test` block, at that call.
 - `... N frames omitted ...` stands for the middle of a deep stack; the
   first 10 and last 10 frames are kept.
 - The source line and caret appear on the `geno run` lanes. Standalone

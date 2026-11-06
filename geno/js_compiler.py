@@ -121,6 +121,7 @@ from .manifest import validate_module_name
 from .runtime_report import (
     TRACE_ANY_MARKER,
     TRACE_AWAIT_KEY,
+    TRACE_CALL_KEY,
     TRACE_TABLE_PLACEHOLDER,
     TraceRecorder,
 )
@@ -480,6 +481,7 @@ _JS_HOST_INTRINSIC_NAMES = frozenset(
         "Symbol",
         "console",
         "globalThis",
+        "module",
         "require",
         "process",
         "undefined",
@@ -974,7 +976,19 @@ class JSCompiler(BaseCompiler):
         if esm:
             self._open_esm_entrypoint_guard()
         report_args = "_GENO_TRACE, _genoTraceAnchor"
-        if traced:
+        # A CommonJS build owns the process only when Node runs it as the
+        # entry module; a host that require()s it keeps 0.6's behaviour (a
+        # synchronous failure propagates to the requirer) and none of its
+        # process-wide settings change. The ESM guard already decided.
+        owner: str | None = None
+        if traced and not esm:
+            owner = self._fresh_temp()
+            self._writeln(
+                f'const {owner} = typeof require !== "undefined" && '
+                'typeof module !== "undefined" && require.main === module;'
+            )
+            self._writeln(f"if ({owner}) _genoInstallReporter({report_args});")
+        elif traced:
             self._writeln(f"_genoInstallReporter({report_args});")
         if is_async:
             self._writeln("(async () => {")
@@ -994,7 +1008,19 @@ class JSCompiler(BaseCompiler):
         )
         if is_async:
             self._dedent()
-            if traced:
+            if traced and owner is not None:
+                failure = self._fresh_temp()
+                self._writeln(f"}})().catch({failure} => {{")
+                self._indent()
+                self._writeln(
+                    f"if ({owner}) _genoReportUncaught({failure}, {report_args});"
+                )
+                self._writeln(
+                    f"else {{ console.error({failure}); process.exitCode = 1; }}"
+                )
+                self._dedent()
+                self._writeln("});")
+            elif traced:
                 failure = self._fresh_temp()
                 self._writeln(
                     f"}})().catch({failure} => "
@@ -1009,6 +1035,8 @@ class JSCompiler(BaseCompiler):
             self._dedent()
             self._writeln(f"}} catch ({failure}) {{")
             self._indent()
+            if owner is not None:
+                self._writeln(f"if (!{owner}) throw {failure};")
             self._writeln(f"_genoReportUncaught({failure}, {report_args});")
             self._dedent()
             self._writeln("}")
@@ -1528,6 +1556,13 @@ class JSCompiler(BaseCompiler):
         if trace is not None and key is not None:
             trace.candidate(key, location)
 
+    def _trace_indirect_call(
+        self, function: Expression, location: SourceLocation | None
+    ) -> None:
+        """Record a call through a function value (proposal 0018, section 8)."""
+        if self._trace is not None and self._is_indirect_callee(function):
+            self._trace_candidate(TRACE_CALL_KEY, location)
+
     def _trace_callee(self, func: str) -> str | None:
         """The host callee a compiled call expression *func* names, if known."""
         if _JS_TRACE_CALLEE.match(func):
@@ -1905,13 +1940,33 @@ class JSCompiler(BaseCompiler):
     ) -> None:
         self._writeln()
         self._record_mapping(defn.location)
+        trace = self._trace if trace_index is not None else None
         param_parts = []
+        traced_default = False
         for p in defn.params:
             part = self._mangle_name(p.name)
             if p.default_value is not None:
-                part += f" = {self._compile_expr(p.default_value)}"
+                if trace is None:
+                    part += f" = {self._compile_expr(p.default_value)}"
+                else:
+                    # Each default value is a statement of its own, located at
+                    # the default expression and written on a line of its
+                    # own, so a failure while evaluating it positions the
+                    # callee there (proposal 0018, section 9).
+                    statement = trace.statement(p.default_value.location)
+                    trace.stack.append(statement)
+                    try:
+                        default = self._compile_expr(p.default_value)
+                    finally:
+                        trace.stack.pop()
+                    indent = "    " * (self.indent_level + 1)
+                    part = f"\n{trace.marker('S', statement)}{indent}{part} = {default}"
+                    traced_default = True
             param_parts.append(part)
-        params = ", ".join(param_parts)
+        params = "".join(
+            part if not index else ("," if part.startswith("\n") else ", ") + part
+            for index, part in enumerate(param_parts)
+        )
         func_name = self._mangle_name(self._function_name_override or defn.name)
         async_prefix = "async " if is_async_execution_form(defn) else ""
         if trace_index is not None and self._trace is not None:
@@ -1925,6 +1980,9 @@ class JSCompiler(BaseCompiler):
             )
         else:
             self._writeln(f"{async_prefix}function {func_name}({params}) {{")
+        if traced_default and trace is not None:
+            # The body's lines belong to no default value.
+            self._write(trace.marker("S", -1))
         self._indent()
 
         # Contract failures name the function, its parameters and the call's
@@ -1933,8 +1991,12 @@ class JSCompiler(BaseCompiler):
         display_name = self._function_display_name(defn)
         param_names = [p.name for p in defn.params]
         param_refs = [self._mangle_name(p.name) for p in defn.params]
+        # The body sees a type parameter as rigid (a TypeParam), which a
+        # specialized copy's substitution replaces (`ident$g1` shows a Float
+        # as `2.0`); the checker's recorded return type is the callers'
+        # view, over inference variables no substitution reaches.
         type_bindings: dict[str, Type] = {
-            name: TypeVar(name) for name in defn.type_params
+            name: TypeParam(name) for name in defn.type_params
         }
         param_shapes = [
             self._contract_display_shape(p._resolved_type, p.param_type, type_bindings)
@@ -2008,7 +2070,9 @@ class JSCompiler(BaseCompiler):
             result_name = self._fresh_temp()
             self._writeln(f"const {result_name} = {await_body}{body_helper}();")
             result_shape = self._contract_display_shape(
-                defn.__dict__.get("_resolved_return_type"),
+                None
+                if defn.type_params
+                else defn.__dict__.get("_resolved_return_type"),
                 defn.return_type,
                 type_bindings,
             )
@@ -3640,6 +3704,7 @@ class JSCompiler(BaseCompiler):
         if reordered_call is not None:
             names, values, call = reordered_call
             self._trace_candidate(self._trace_callee(values[0]), expr.location)
+            self._trace_indirect_call(expr.function, expr.location)
             parameters = ", ".join(names)
             arguments = ", ".join(values)
             return f"(({parameters}) => {call})({arguments})"
@@ -3657,6 +3722,7 @@ class JSCompiler(BaseCompiler):
             for arg in ordered_args
         )
         self._trace_candidate(self._trace_callee(func), expr.location)
+        self._trace_indirect_call(expr.function, expr.location)
 
         return f"{func}({args})"
 
@@ -3965,6 +4031,7 @@ class JSCompiler(BaseCompiler):
             self._trace_candidate(
                 self._trace_callee(func), stage.location or expr.location
             )
+            self._trace_indirect_call(stage.function, stage.location or expr.location)
             current = f"(({current_temp}) => {func}({arg_str}))({current})"
 
         return current

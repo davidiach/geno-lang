@@ -390,8 +390,138 @@ func main() -> Int
 end func
 """
 
+# A default parameter value is evaluated inside the callee: the caller is
+# positioned at the call, the callee at the default expression.
+DEFAULT_ARGUMENT = """func boom() -> Int
+    example () panics "bad default"
+    panic("bad default")
+    return 0
+end func
+
+func label(n: Int, tag: Int = boom()) -> Int
+    example 1, 2 -> 3
+    return n + tag
+end func
+
+func main() -> Int
+    print(to_string(label(3, 4)))
+    return label(3)
+end func
+"""
+
+# Calls through function values: a parameter and a local.
+CALLBACK_CHECK = """func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("too big")
+    end if
+    return n
+end func
+"""
+
+PARAMETER_CALLEE = (
+    CALLBACK_CHECK
+    + """
+func apply(f: (Int) -> Int, x: Int) -> Int
+    example check, 1 -> 2
+    return 1 + f(x)
+end func
+
+func main() -> Int
+    return apply(check, 9)
+end func
+"""
+)
+
+LOCAL_CALLEE = (
+    CALLBACK_CHECK
+    + """
+func main() -> Int
+    let g = check
+    let r = 1 + g(9)
+    return r
+end func
+"""
+)
+
+# Failures inside f-string interpolations are located where they are written.
+FSTRING_CALL = """func boom(n: Int) -> Int
+    example 1 -> 1
+    if n > 3 then
+        panic("in boom")
+    end if
+    return n
+end func
+
+func show(n: Int) -> String
+    example 1 -> "n: 1, twice: 2"
+    return f"n: {boom(n)}, twice: {n * 2}"
+end func
+
+func main() -> Int
+    print(show(7))
+    return 0
+end func
+"""
+
+FSTRING_INDEX = """func fstr(xs: List[Int]) -> String
+    example [1, 2, 3, 4] -> "v=4"
+    return f"v={xs[3]}"
+end func
+
+func main() -> Int
+    print(fstr([2]))
+    return 0
+end func
+"""
+
+# An `ensures` on a generic function shows the result in the specialization's
+# shape (JavaScript cannot tell 2.0 from 2 at run time).
+GENERIC_FLOAT = """func ident[T](x: T) -> T
+    ensures result != x
+    example 1 panics "Postcondition"
+    return x
+end func
+
+func main() -> Int
+    print(to_string(ident(2.0)))
+    return 0
+end func
+"""
+
+GENERIC_FLOAT_LIST = """func rev[T](xs: List[T]) -> List[T]
+    ensures length(result) > 5
+    example [1, 2, 3, 4, 5, 6] -> [6, 5, 4, 3, 2, 1]
+    return xs.reverse()
+end func
+
+func main() -> Int
+    print(to_string(length(rev([1.0, 2.0]))))
+    return 0
+end func
+"""
+
+OVERFLOW = """func down(n: Int) -> Int
+    example 0 -> 0
+    if n == 0 then
+        return 0
+    end if
+    return down(n + 1)
+end func
+
+func main() -> Int
+    return down(1)
+end func
+"""
+
 SAME_MESSAGE = [
     ("panic.geno", PANIC),
+    ("default_argument.geno", DEFAULT_ARGUMENT),
+    ("parameter_callee.geno", PARAMETER_CALLEE),
+    ("local_callee.geno", LOCAL_CALLEE),
+    ("fstring_call.geno", FSTRING_CALL),
+    ("generic_float.geno", GENERIC_FLOAT),
+    ("generic_float_list.geno", GENERIC_FLOAT_LIST),
     ("requires.geno", REQUIRES),
     ("ensures.geno", ENSURES),
     ("rebound.geno", ENSURES_REBOUND),
@@ -459,6 +589,86 @@ class TestParity:
             program = _write(tmp_path, f"contract{number}.geno", source)
             report = _assert_parity(_lanes(program, tmp_path))
             assert report.message == f"Runtime Error: {message}"
+
+    def test_a_failing_default_argument(self, tmp_path: Path) -> None:
+        program = _write(tmp_path, "default_argument.geno", DEFAULT_ARGUMENT)
+        report = _assert_parity(_lanes(program, tmp_path))
+        assert report.frames == (
+            ("default_argument.geno:14:12", "main"),
+            ("default_argument.geno:7:31", "label"),
+            ("default_argument.geno:3:5", "boom"),
+        )
+        assert report.message == "Runtime Error: bad default"
+
+    def test_calls_through_function_values(self, tmp_path: Path) -> None:
+        parameter = _write(tmp_path, "parameter_callee.geno", PARAMETER_CALLEE)
+        assert _assert_parity(_lanes(parameter, tmp_path)).frames == (
+            ("parameter_callee.geno:15:12", "main"),
+            ("parameter_callee.geno:11:16", "apply"),
+            ("parameter_callee.geno:4:9", "check"),
+        )
+        local = _write(tmp_path, "local_callee.geno", LOCAL_CALLEE)
+        assert _assert_parity(_lanes(local, tmp_path)).frames == (
+            ("local_callee.geno:11:17", "main"),
+            ("local_callee.geno:4:9", "check"),
+        )
+
+    def test_failures_inside_fstring_interpolations(self, tmp_path: Path) -> None:
+        call = _write(tmp_path, "fstring_call.geno", FSTRING_CALL)
+        assert _assert_parity(_lanes(call, tmp_path)).frames == (
+            ("fstring_call.geno:15:11", "main"),
+            ("fstring_call.geno:11:18", "show"),
+            ("fstring_call.geno:4:9", "boom"),
+        )
+        index = _write(tmp_path, "fstring_index.geno", FSTRING_INDEX)
+        report = _assert_parity(_lanes(index, tmp_path), same_message=False)
+        assert report.frames == (
+            ("fstring_index.geno:7:11", "main"),
+            ("fstring_index.geno:3:17", "fstr"),
+        )
+
+    def test_a_generic_ensures_shows_the_specialized_result(
+        self, tmp_path: Path
+    ) -> None:
+        expected = {
+            GENERIC_FLOAT: "Postcondition failed: ident(x: 2.0) ensures "
+            "result != x (result was 2.0)",
+            GENERIC_FLOAT_LIST: "Postcondition failed: rev(xs: [1.0, 2.0]) "
+            "ensures length(result) > 5 (result was [2.0, 1.0])",
+        }
+        for number, (source, message) in enumerate(expected.items()):
+            program = _write(tmp_path, f"generic{number}.geno", source)
+            report = _assert_parity(_lanes(program, tmp_path))
+            assert report.message == f"Runtime Error: {message}"
+
+    def test_a_host_stack_overflow_differs_only_in_its_innermost_frame(
+        self, tmp_path: Path
+    ) -> None:
+        """Every kept frame but the innermost is the same on every lane.
+
+        The depth (and so the omitted count) and the message are the host's,
+        and so is the innermost frame's position: where the host ran out of
+        stack, at the recursive call or inside the callee's first operation
+        (CPython 3.10, V8).
+        """
+        runs = _lanes(_write(tmp_path, "overflow.geno", OVERFLOW), tmp_path)
+        for lane, run in runs.items():
+            assert run.returncode == 1, (lane, run.stderr)
+            assert "Traceback" not in run.stderr, (lane, run.stderr)
+            report = _parse(run.stderr)
+            assert len(report.frames) == 20, (lane, run.stderr)
+            assert report.omitted > 0, lane
+            assert report.frames[0] == ("overflow.geno:10:12", "main"), lane
+            assert report.frames[1:-1] == (("overflow.geno:6:12", "down"),) * 18, (
+                lane,
+                run.stderr,
+            )
+            assert report.frames[-1][1] == "down", lane
+        # Where the interpreter's limit stops a call, so does a CPython that
+        # runs out of stack making one.
+        assert _parse(runs["interpreter"].stderr).frames[-1][0] == (
+            "overflow.geno:6:12"
+        )
 
     def test_recursion_is_bounded_alike(self, tmp_path: Path) -> None:
         report = _assert_parity(_lanes(_write(tmp_path, "deep.geno", DEEP), tmp_path))

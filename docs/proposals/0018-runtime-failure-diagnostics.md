@@ -308,8 +308,11 @@ module (the Geno-source standard library included). These are not frames:
 - **The host.** The CLI, the worker, the sandbox, the thread runner and the
   event loop never appear.
 
-One origin pseudo-frame exists: when a failure happens while verifying an
-`example`, the outermost frame is `<example>`, positioned at the example clause.
+Two origin pseudo-frames exist: when a failure happens while verifying an
+`example`, the outermost frame is `<example>`, positioned at the example
+clause; when a call made by a `test` block fails, the outermost frame is
+`<test>`, positioned at that call in the test body. A failure raised directly
+in a test body (no Geno call failed) has a location and no stack.
 The stack of `main` starts at `main`, because the host's call of `main` has no
 Geno source position.
 
@@ -325,8 +328,11 @@ parser locates it today, the receiver's start). The innermost frame's position
 is the failure location. When frame *i+1* was started by a builtin calling a
 callback (`xs.map(g)`), its call site is that builtin call's location. When it
 was started from inside a lambda, its call site is the call inside the lambda
-body, wherever the lambda was defined. The position is `None` only when no
-Geno position exists.
+body, wherever the lambda was defined. A default parameter value belongs to
+the callee: both compiled backends evaluate it inside the callee's body, so a
+failure while evaluating one positions the caller at the call and the callee
+at the default expression. The position is `None` only when no Geno position
+exists.
 
 **Async functions.** Calling an `async` function creates an `Async` value; the
 function's frame exists while its body runs. On the interpreter and compiled
@@ -647,15 +653,22 @@ expression's location; the async-`main` entry (`interpreter.py:1664`) passes
 `None`. A second `await` of a failed `Async` re-raises the first error, whose
 stack was captured the first time.
 
-**Example origin.** Example verification marks the stack's origin, so the
-stack begins with `<example>`, positioned at the example clause. Like the
+**Default values.** `_call_function` evaluates a missing argument's default
+before it pushes the callee's entry, so `_eval_default_argument` pushes that
+entry around the evaluation (and captures on unwind, like `_call_function`).
+Only a call that omits a defaulted argument pays for it.
+
+**Example and test origins.** Example verification marks the stack's origin,
+so the stack begins with `<example>`, positioned at the example clause. Like the
 callback patch, this is failure-time work: the example's call is made as in
 0.6, with no call site, and the handler that sees the failure
 (`Interpreter.mark_example_origin`, used by `_verify_examples` and by
 `geno test`'s example runner) sets the outermost entry's call site to the
 example clause and the origin name. A failure that is not a stacked call
 failure (a mismatch, an input that fails before any call) has nothing to
-mark.
+mark. `geno test` marks a failed `test` block's stack the same way
+(`Interpreter.mark_test_origin`) with `<test>`; the outermost entry already
+has its call site, the call in the test body.
 
 **Display names** are computed once, when a function definition creates its
 closure (`Type.method`, `Module.function`). They are never computed per call.
@@ -699,7 +712,11 @@ lines count from the anchor's `def` line, which is line 0. The records are:
   callee the generated code calls there: a Geno function's host name, a
   builtin's host name, or a runtime helper (`_geno_panic`, `_safe_index`,
   `_safe_div`, `_require_cap`, ...). `line col` is the Geno location of the
-  call or construct that emitted it;
+  call or construct that emitted it. A call through a function value (a
+  parameter, a local, any callee that is not a named function, method,
+  builtin, constructor or module function; `BaseCompiler._is_indirect_callee`
+  decides lexically) is also recorded under the key `<call>`, because the
+  callee's host name is not spelled at the call site;
 - `E host_line`: the end of the body (exclusive).
 
 The contract-check lines (`if not (...)` and the `raise`) get a statement of
@@ -812,7 +829,9 @@ prelude) works in five steps:
    whose code object is the callee's (a prelude alias); the check reads only
    `type()` and `__code__`, never a program-defined method. If the statement
    has exactly one matching candidate, the position is the candidate's
-   location; two or more give the statement's location. For an awaited async
+   location; two or more give the statement's location. When no candidate
+   matches, a statement with exactly one `<call>` candidate gives that call's
+   location: the callee was reached through a function value. For an awaited async
    function (section 2) the compiler also records an `await` candidate (key
    `<await>`) at each `await` expression. In the split form `await pending`,
    the awaited body is reached through the prelude's `_GenoAsync.__await__`,
@@ -820,14 +839,20 @@ prelude) works in five steps:
    frame whose host name has no candidate, selects the statement's one
    `<await>` candidate. Otherwise the position is the statement's location. A
    failure raised inline in a Geno frame with no callee resolves to its
-   statement, which for contract checks is the clause.
+   statement, which for contract checks is the clause. The one exception is a
+   `RecursionError` raised in the frame itself: the host ran out of stack
+   making a call there, so the statement's one call of a Geno function (or
+   `<call>`) gives the position, where the interpreter reports its recursion
+   limit too.
 5. Bound the frames as in section 2. The failure location is the innermost
    frame's position.
 
 Where the interpreter is precise, this gives the same position: `panic`,
-`unwrap`, index, division, contract checks, calls between functions,
-callbacks, lambdas. The exception is a statement that holds two candidates
-with the same key, such as `xs[i] + ys[j]` failing on one index. There the
+`unwrap`, index, division, contract checks, calls between functions (through
+function values and in default parameter values too), callbacks, lambdas.
+The exception is a statement that holds two candidates with the same key,
+such as `xs[i] + ys[j]` failing on one index, or two calls through function
+values. There the
 compiled backends report the statement's start, which is the right line but a
 coarser column. Parity tests avoid such statements, and the spec documents the
 precision.
@@ -941,13 +966,16 @@ records:
   `async function`) line, because the reporter checks a frame's
   enclosing-function line against it;
 - `S`/`T` statements (every statement kind, plus a statement for each
-  `requires` and `ensures` check located at the clause);
+  `requires` and `ensures` check located at the clause, and one for each
+  default parameter value, which a traced build writes on a line of its own
+  in the parameter list, so V8's position inside it maps to that statement);
 - `C` candidates: the callee of each call (a plain host name, or a module
   function reached through `get_field(binding, 'name')`), the leading runtime
   helper of an inlined builtin or operator (`print_`, `_safe_div`,
   `_safe_index`, `_safe_mul`, ...; never `_checkCollectionSize`, which wraps
   every literal), `_divZero` for an inline float `%`, each pipeline stage's
-  callee and `<await>` at each `await`.
+  callee, `<call>` for each call through a function value and `<await>` at
+  each `await`.
 
 A block arrow is compiled into a scratch buffer and placed later, like a
 Python block lambda. Its records therefore use section 8's in-band
@@ -975,8 +1003,15 @@ these ways:
   side-effect safe.
 - The process-wide settings are made **only on the entry path**: inside the
   ESM entry guard (`_open_esm_entrypoint_guard`, which exists so that
-  importing the module is side-effect safe), and immediately before the
-  `main()` call in CommonJS. There,
+  importing the module is side-effect safe), and in CommonJS immediately
+  before the `main()` call, only when the build is the entry module
+  (`typeof require !== "undefined" && typeof module !== "undefined" &&
+  require.main === module`). A CommonJS build that a host `require()`s keeps
+  0.6's behaviour: a synchronous failure of its `main` is rethrown to the
+  requirer, an async `main`'s rejection is logged with
+  `process.exitCode = 1`, and nothing process-wide changes. `module` joins
+  the JavaScript host names, so a Geno `module` is renamed (proposal 0011)
+  instead of hiding CommonJS's. There,
   `_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor)` sets
   `Error.stackTraceLimit = Infinity` and installs an `unhandledRejection`
   listener that calls `_genoReportUncaught`. The unlimited trace limit lets a
@@ -985,10 +1020,18 @@ these ways:
   it, and the entry path owns the process. Geno control flow
   (`_PropagateReturn`, the bounded renderer's `_GenoDisplayLimitReached`) is
   not an `Error`. The only success paths that construct an `Error` are the
-  builtins that turn a host failure into a Geno `Err` or `None` (parsing,
-  JSON, fs, regex, process, http). There each capture costs O(stack depth),
-  which is nothing on a normal stack. A host application that imports an ESM
-  build never runs this code. A `test_js_compiler` test asserts that
+  builtins that turn a host failure into a Geno `Err` or `None`. With an
+  unlimited limit each such `Error` would cost O(stack depth), which a
+  recursive caller that tolerates many failures (a `json_parse` that returns
+  `Err` 10 000 times at depth 1 000) multiplies into seconds. So those
+  builtins (`json_parse`, the `fs_*` functions, `exec`'s command splitting and
+  spawn) run their host work through the prelude's `_genoQuietly`, which sets
+  the limit to 0 around it and restores it; the work never runs Geno code. An
+  error such a builtin rethrows as a real failure (a collection limit inside
+  `json_parse`) gets its stack back from `_genoRestack`
+  (`Error.captureStackTrace` where it is rethrown). The HTTP builtins are left
+  alone: each request already spawns a process. A host application that
+  imports an ESM build never runs this code. A `test_js_compiler` test asserts that
   importing an ESM build leaves `Error.stackTraceLimit` and the
   `unhandledRejection` listeners unchanged.
 - `const _main_result = main();` and the result handling are wrapped in
@@ -1119,7 +1162,12 @@ that. The module-project parity case runs as CommonJS.
   tracebacks never reach a client.
 - **`geno test`:** a runtime failure during an example records the
   violation's message as `Runtime error: <message>`, without the doubled
-  `Runtime Error:` and location prefix that `str(exc)` produced. Text output
+  `Runtime Error:` and location prefix that `str(exc)` produced. A failed
+  `test` block keeps 0.6's `Runtime Error: <message>`, never with the
+  location that builtin failures now carry (which would put a host path into
+  the message), and its stack starts with the `<test>` origin; a file or
+  project that fails while loading reports its message without the location
+  too. Text output
   adds the report's frame lines, indented under the violation. JSON violations
   gain optional `location`, `stack` and `stack_omitted`. Classification still
   goes by structured fields (`_classify_runtime_failure`).
@@ -1179,7 +1227,14 @@ Three differences are documented rather than removed:
 A host stack overflow's depth differs by host (interpreter
 `max_recursion_depth`, Python's recursion limit, V8's stack), so its
 `omitted` count and its message (`RangeError: Maximum call stack size
-exceeded` on Node) are host-specific. Its head and tail frames are not.
+exceeded` on Node) are host-specific. So is its innermost frame: it is where
+the host ran out of stack. The interpreter's limit stops the recursive call
+itself, and so does a CPython from 3.11 on (the frame is positioned at the
+call, section 8 step 4); CPython 3.10 overflows inside the callee's first
+operation, and V8 when the callee is entered, so their innermost frame is
+one more activation, positioned at the callee's first statement. Every other
+kept frame (the head and the rest of the tail) is the same on every backend,
+which the parity tests assert.
 
 Targets:
 

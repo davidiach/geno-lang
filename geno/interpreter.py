@@ -101,6 +101,7 @@ from .panic_outcome import evaluate_panics_call
 from .runtime_report import (
     ARGUMENT_DISPLAY_LIMIT,
     EXAMPLE_ORIGIN,
+    TEST_ORIGIN,
     CapturedStack,
     contract_message,
     format_position,
@@ -1979,12 +1980,26 @@ class Interpreter:
         example clause (proposal 0018, section 2). Only a failure of a call
         the example made from the top level has a stack to mark.
         """
+        self._mark_origin(error, location, EXAMPLE_ORIGIN)
+
+    def mark_test_origin(self, error: BaseException) -> None:
+        """Mark *error*'s stack as raised by a call a ``test`` block made.
+
+        The report's outermost frame becomes ``<test>``, positioned at that
+        call in the test body (proposal 0018, section 2). A failure raised
+        directly in the test body has no stack, only its location.
+        """
+        self._mark_origin(error, None, TEST_ORIGIN)
+
+    def _mark_origin(
+        self, error: BaseException, location: SourceLocation | None, origin: str
+    ) -> None:
         captured = getattr(error, "geno_stack", None)
         if not isinstance(captured, CapturedStack) or self._call_stack:
             return
         captured.locate_entry(0, location)
         if captured.origin is None:
-            captured.origin = EXAMPLE_ORIGIN
+            captured.origin = origin
 
     def _verify_panics_example(
         self,
@@ -2783,7 +2798,9 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            filled_args.append(self._eval_argument(default, func.env))
+                            filled_args.append(
+                                self._eval_default_argument(func, default, location)
+                            )
                         else:
                             break
                     args = filled_args
@@ -2793,7 +2810,9 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            args[i] = self._eval_argument(default, func.env)
+                            args[i] = self._eval_default_argument(
+                                func, default, location
+                            )
                         else:
                             raise RuntimeError(
                                 f"Missing argument for parameter '{func.params[i].name}'",
@@ -2930,6 +2949,27 @@ class Interpreter:
             raise RuntimeError(
                 f"Cannot call non-function: {type(func).__name__}", location
             )
+
+    def _eval_default_argument(
+        self, func: Closure, default: Expression, location: SourceLocation | None
+    ) -> Any:
+        """Evaluate one of *func*'s default parameter values for a call at *location*.
+
+        The default belongs to the callee (both compiled backends evaluate
+        it inside the callee's body), so it runs inside the callee's stack
+        entry: a failure reports the caller at the call and the callee at
+        the default expression (proposal 0018, section 2). Only a call that
+        omits an argument with a default pays for the entry.
+        """
+        self._call_stack.append((func.display_name or func.name, location))
+        try:
+            return self._eval_argument(default, func.env)
+        except (RuntimeError, SandboxError) as e:
+            if e.geno_stack is None:
+                e.geno_stack = CapturedStack(list(self._call_stack), e.location)
+            raise
+        finally:
+            self._call_stack.pop()
 
     def _recursion_limit_error(
         self, location: SourceLocation | None
