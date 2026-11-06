@@ -966,17 +966,17 @@ class _DisplayLimitReached(Exception):
 
 
 class _BoundedDisplayWriter:
-    __slots__ = ("limit", "parts", "size")
+    __slots__ = ("display_limit", "parts", "size")
 
     def __init__(self, limit: int) -> None:
-        self.limit = limit
+        self.display_limit = limit
         self.size = 0
         self.parts: list[str] = []
 
     def append(self, text: str) -> None:
         self.parts.append(text)
         self.size += len(text)
-        if self.size > self.limit:
+        if self.size > self.display_limit:
             raise _DisplayLimitReached
 
 
@@ -1028,7 +1028,7 @@ def _write_display_value(
         data = value._data
         # Enough elements for any limit: each renders to at least one code
         # point. heapq.nsmallest is documented equal to sorted(...)[:n].
-        wanted = writer.limit + 1
+        wanted = writer.display_limit + 1
         ordered = (
             sorted(data, key=_geno_sort_key)
             if len(data) <= wanted
@@ -1061,7 +1061,7 @@ def _write_display_value(
     elif isinstance(value, str):
         # Escaping is per character, so the escaped head of the string is the
         # head of its full rendering; never escape more than can be shown.
-        head = value[: writer.limit + 1]
+        head = value[: writer.display_limit + 1]
         quoted = _format_string_literal(head)
         append(quoted if len(head) == len(value) else quoted[:-1])
         if len(head) != len(value):
