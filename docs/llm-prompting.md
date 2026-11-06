@@ -540,6 +540,81 @@ precondition the body assumes as a `requires`, and a panics example for every
 panic the function means to raise. Fix a reported counterexample by correcting
 the body, adding the missing `requires`, or adding the panics example.
 
+### 21. Declaring `with mutation` for a local accumulator
+
+*0.7 development line ([spec v0.7](spec/v0.7.md), section 3.5).* Changing
+state that only the function's own call can see is not an effect: a local
+`var`, the fields of a record held in one, and an `Array`, `Vec` or
+`MutableMap` the function allocates and keeps to itself. Do not declare
+`with mutation` for them. A declared effect is part of the function's type,
+so it stops the function from being passed where a pure function is
+expected.
+
+Wrong -- the declared effect makes `rows.map(total)` an error (E300):
+```
+func total(xs: List[Int]) -> Int with mutation
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func totals(rows: List[List[Int]]) -> List[Int]
+    example [[1, 2], [3]] -> [3, 3]
+    return rows.map(total)
+end func
+```
+
+Correct -- leave the effect out, and keep a 1-D working array local:
+```
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func totals(rows: List[List[Int]]) -> List[Int]
+    example [[1, 2], [3]] -> [3, 3]
+    return rows.map(total)
+end func
+
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+```
+
+`main() -> Unit with io` likewise needs no `mutation` for its own `var`s.
+These shapes still carry `mutation`, because a caller can observe the write,
+so leave them inferred or declare it:
+
+- writing through a parameter's `Array`, `Vec` or `MutableMap`, or through a
+  `var` copied from one (`var a = param` copies the reference);
+- a two-dimensional table written as `g[i][j] = v`, even with fresh rows:
+  the write goes below a reference-typed element, and in
+  `array_new(h, array_new(w, 0))` every row is the same array;
+- a rolling buffer (`prev = cur` then `cur = array_new(n, 0)`), because
+  `prev = cur` copies the reference;
+- an accumulator updated through a user higher-order function, such as a
+  lambda passed to your own `each` that does `total = total + x`: the lambda
+  assigns a captured variable;
+- a collection the function allocated and then passed to a helper function,
+  stored in another value, or mentioned in a lambda, before writing it.
+
+Mutating builtins (`vec_push`, `array_set`, `set_add`, `mutable_map_set`)
+add no effect in the current checker, even on a parameter. That is a known
+limitation, not the rule: declare `with mutation` on a function that changes
+a caller's collection through them.
+
 ## Prompting Patterns
 
 ### Generate a function

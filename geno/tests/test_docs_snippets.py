@@ -280,3 +280,126 @@ def test_spec_runtime_report_sample_matches_the_engine(tmp_path):
     for directory in {os.path.realpath(tmp_path), str(tmp_path)}:
         stderr = stderr.replace(directory + os.sep, "")
     assert stderr == expected
+
+
+def _function_effects(code: str, source: str) -> dict[str, frozenset[str]]:
+    """The checked effect set of every top-level function in *code*."""
+    from geno.types import FuncType
+
+    program = Parser(Lexer(code, source).tokenize(), code).parse_program()
+    checker = TypeChecker()
+    checker.check_program(program)
+    effects = {}
+    for definition in program.definitions:
+        name = getattr(definition, "name", None)
+        func_type = checker.global_env.lookup(name) if name else None
+        if isinstance(func_type, FuncType):
+            effects[name] = func_type.effects
+    return effects
+
+
+def test_tour_effects_snippet_passes_local_accumulators_to_map():
+    """The tour's local-mutation example (0.7 draft, proposal 0019) checks,
+    passes its examples and prints what it says; 0.6 rejected it (E300 for
+    `.map(total)`, E310 for `main`'s own `var`)."""
+    import geno
+    from geno.formatter import format_source
+
+    path = "docs/guide/language-tour.md"
+    heading = "### Effects"
+    code = _geno_snippet_after_heading(path, heading)
+    source = f"{path}#{heading}"
+    assert ".map(total)" in code and "array_new(" in code
+
+    assert format_source(code + "\n") == code + "\n"
+    assert _function_effects(code, source) == {
+        "total": frozenset(),
+        "histogram": frozenset(),
+        "main": frozenset({"io"}),
+    }
+    interpret(code, source, check_examples=True)
+    result = geno.run(code, config=geno.RunConfig(capabilities=["print"]))
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.output == "[3, 3, 9]\n[1, 0, 2]\n3\n"
+
+    section = " ".join(_section(path, heading).split())
+    for shape in ("array_new(h, array_new(w, 0))", "`prev = cur`", "known limitation"):
+        assert shape in section, shape
+
+
+def test_llm_prompting_says_not_to_declare_mutation_for_local_state():
+    import geno
+    from geno.formatter import format_source
+
+    section = _section(
+        "docs/llm-prompting.md",
+        "### 21. Declaring `with mutation` for a local accumulator",
+    )
+    wrong, right = re.findall(r"```\n(.*?)```", section, re.S)
+    main = "\nfunc main() -> Unit\nend func\n"
+
+    result = geno.check(wrong + main)
+    assert [d.code.value for d in result.diagnostics] == ["E300"]
+    assert "with mutation" in result.diagnostics[0].message
+    effects = _function_effects(right + main, "llm-prompting#21")
+    assert effects["total"] == effects["histogram"] == frozenset()
+    assert geno.run(right + main).ok
+    for code in (wrong, right):
+        assert format_source(code) == code
+    # The shapes that still carry `mutation` are listed for models.
+    text = " ".join(section.split())
+    for shape in (
+        "a two-dimensional table",
+        "a rolling buffer",
+        "a user higher-order function",
+        "passed to a helper function",
+    ):
+        assert shape in text, shape
+
+
+def test_common_pitfalls_observable_write_fix_is_pure():
+    import geno
+
+    section = _section(
+        "docs/reference/common-pitfalls.md",
+        "## 13. Writes a Caller Can See Are `mutation`",
+    )
+    wrong, right = re.findall(r"```\n(.*?)```", section, re.S)[:2]
+
+    result = geno.check(wrong)
+    assert [d.code.value for d in result.diagnostics] == ["E300"]
+    start, end = wrong.index("func bump"), wrong.index("func apply")
+    fixed = wrong[:start] + right.split("\n", 1)[1] + "\n" + wrong[end:]
+    run = geno.run(fixed, config=geno.RunConfig(capabilities=["print"]))
+    assert run.ok, [d.message for d in run.diagnostics]
+    assert run.output == "1\n"
+    for shape in (
+        "**Two-dimensional tables.**",
+        "**Rolling buffers.**",
+        "**Accumulators updated through a user higher-order function.**",
+        "**Collections passed to helpers.**",
+    ):
+        assert shape in section, shape
+
+
+def test_runtime_semantics_argument_alias_is_current_behaviour():
+    """The documented argument-passing alias (proposal 0019, Unresolved
+    Question 7) is what the interpreter does; a runtime fix must update the
+    page. The soundness tests pin the compiled backends."""
+    import textwrap
+
+    import geno
+
+    section = _section(
+        "docs/reference/runtime-semantics.md", "## Effects and local state"
+    )
+    (snippet,) = re.findall(r"```geno\n(.*?)```", section, re.S)
+    code = textwrap.dedent(snippet)
+
+    assert _function_effects(code, "runtime-semantics#effects")["main"] == frozenset(
+        {"io"}
+    )
+    result = geno.run(code, config=geno.RunConfig(capabilities=["print"]))
+    assert result.ok, [d.message for d in result.diagnostics]
+    assert result.output == "7\n"
+    assert "This prints `7` on every backend" in section

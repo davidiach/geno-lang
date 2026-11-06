@@ -283,6 +283,105 @@ It meets the five conditions above:
    and the JSON `stack` with `expected_diagnostic` on `cli-json`; and
 5. the release owner records it in release evidence when 0.7 is released.
 
+### 0.7 (draft): local mutation is not an effect
+
+Recorded for the unreleased 0.7 development line. 0.6 charged `mutation` for
+every `var` declaration and every assignment, so a function that summed into a
+local `var` had the type `(List[Int]) -> Int with mutation` and could not be
+passed where `(List[Int]) -> Int` was expected. 0.7 charges only writes that a
+caller can observe (section 3.5 of `docs/spec/v0.7.md`). That accepts programs
+0.6 rejected:
+
+- a function or lambda that mutates only its own state, passed where a pure
+  function type is expected (E300 in 0.6);
+- a declared effect set without `mutation` on a function that declares or
+  assigns its own `var`s, writes fields of its own records, or writes
+  elements of collections it allocated (E310 in 0.6), such as
+  `main() -> Unit with io` with a local counter.
+
+No program changes meaning. Effects are static and no backend reads them, so
+every program that ran in 0.6 runs the same way, and `geno test --properties`
+("no effects but mutation") selects the same functions. Section 3.5 states
+that a mutating builtin applied to a reachable collection is a `mutation`,
+which restates the 0.6 text; the reference checker still does not enforce it
+(a known limitation), so that sentence rejects nothing. Programs that stay
+rejected keep their diagnostic codes. Only messages that print an inferred
+function type change, by leaving out a `mutation` that is now masked, and so
+do the local-binding hover and the REPL's `:type`.
+
+One class of program 0.6 accepted is rejected. Geno requires equal function
+types where a `var` is assigned, where a name is redeclared in the same block,
+where an `Option` or list of functions is reassigned through a `var`, and
+where a generic type parameter is bound by an earlier argument. In those
+places a function whose inferred type lost `mutation` no longer matches one
+that kept it. In 0.6 both had `mutation`, so the two matched by accident:
+
+```geno
+func local_sum(n: Int) -> Int
+    example 2 -> 3
+    var y = n
+    y = y + 1
+    return y
+end func
+
+func shared_bump(n: Int) -> Int
+    example 1 -> 1
+    var cells = array_new(1, n)
+    var alias = cells
+    alias[0] = n
+    return cells[0]
+end func
+
+func main() -> Unit with io, mutation
+    var f = local_sum
+    f = shared_bump
+    print(f(1))
+end func
+```
+
+`local_sum` is now `(Int) -> Int`, while `shared_bump` keeps `mutation`,
+because `var alias = cells` copies the reference and the write through
+`alias` changes `cells`. `f = shared_bump` is therefore E300 "Type mismatch
+in assignment: expected (Int) -> Int, got (Int) -> Int with mutation".
+If-expressions, match expressions and list and map literals already join the
+effects of their branches and elements, so they are unaffected.
+
+It meets the five conditions above:
+
+1. [proposal 0019](../proposals/0019-local-mutation-is-not-an-effect.md)
+   (Draft; it must be accepted before 0.7 is released, including the project
+   lead's decision on its Unresolved Question 1, the mutating-builtin
+   limitation) records the motivation, the soundness argument and the
+   alternatives, including charging mutating builtins on non-owned receivers
+   now, which it defers;
+2. the impact is stated in `docs/spec/v0.7.md` sections 3.5, 6.2, 6.3 and
+   7.6 and its "Changes from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration: restore the 0.6 type
+   with an annotation, on the function
+
+   ```geno
+   func local_sum(n: Int) -> Int with mutation
+       example 2 -> 3
+       var y = n
+       y = y + 1
+       return y
+   end func
+   ```
+
+   or on the binding, `var f: (Int) -> Int with mutation = local_sum`. No
+   automatic fix is offered, because either site is a valid choice. When the
+   rule was implemented, none of the 283 repository `.geno` files, the 93
+   benchmark canonical solutions or the 483 documentation snippets changed
+   status, and no diagnostic message changed;
+4. no frozen case depends on inferred effects, so `conformance/v0.5` and
+   `conformance/v0.6` pass unchanged on every target. The development corpus
+   adds `local-mutation-is-pure`, a program 0.6 rejected, which runs on all
+   seven runtime lanes, and two checker cases that stay E300:
+   `diagnostic-mutation-parameter-alias` (a write through a copy of a
+   parameter's array) and `diagnostic-mutation-captured-var` (a closure that
+   assigns a captured variable, returned as `() -> Int`); and
+5. the release owner records it in release evidence when 0.7 is released.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

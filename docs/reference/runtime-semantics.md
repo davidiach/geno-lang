@@ -70,6 +70,81 @@ with `?` returns from that lambda and requires its inferred return type to be
 the corresponding `Option` or `Result`; it cannot borrow the enclosing
 function's return contract or escape to an enclosing loop.
 
+## Effects and local state
+
+*0.7 development line (Draft
+[proposal 0019](../proposals/0019-local-mutation-is-not-an-effect.md); the
+contract is [spec v0.7 section 3.5](../spec/v0.7.md#35-function-effects)).*
+Effects are a static property. No backend reads them, so the rule below
+changes how no program runs; it relies on the copy rules above. A write that
+only the writing function or lambda can observe is not a `mutation`:
+
+- Assigning one of its own variables. Each call has its own variables, and
+  only closures created during the call share them. A closure that assigns
+  such a variable is charged `mutation` itself, because its later calls see
+  the change.
+- Writing a field or element of a value its own variable holds. Binding,
+  assigning, destructuring and storing a constructor value take a snapshot,
+  so no other variable or collection shares it (passing it as an argument
+  is the exception described below).
+- Writing the elements of an `Array`, `Vec` or `MutableMap` held by an
+  *owned* variable: one initialized and reassigned only from allocating
+  builtins (`array_new`, `vec_new`, `mutable_map_new`, `array_copy` and the
+  others spec 3.5 lists), whose collection is never stored, passed to a
+  function that is not a borrowing builtin, copied into another variable or
+  mentioned in a lambda. Returning it hands the caller a new object.
+
+A write below a reference-typed element is still charged, owned root or not:
+`array_new(h, array_new(w, 0))` puts the same row array in every slot, so
+`g[i][j] = v` changes every row on every backend.
+
+Two current behaviours sit at the edge of that argument. The test suite pins
+both on all three backends, so a change to either shows up deliberately.
+
+- **Argument passing does not snapshot.** Passing a `var`-held constructor
+  value to a function hands the callee the same object, so a closure the
+  callee builds over that parameter sees later in-place writes through the
+  caller's `var`:
+
+  ```geno
+  type P = P(x: Int)
+
+  @untested("returns a closure")
+  func keep(q: P) -> () -> Int
+      return fn() -> q.x
+  end func
+
+  func main() -> Unit with io
+      var s = P(x: 1)
+      let peek = keep(s)
+      s.x = 7
+      print(peek())
+  end func
+  ```
+
+  This prints `7` on every backend, which departs from the snapshot rule of
+  spec section 3.2.1; it is a known runtime deviation (proposal 0019,
+  Unresolved Question 7). Masking `s.x = 7` is still sound: the alias changes
+  only what `main` itself computes, and the closure can reach storage a
+  caller sees only through a write that is charged or through an uncharged
+  builtin store.
+- **Mutating builtins carry no effect.** As in 0.6, the checker does not
+  charge `vec_push`, `vec_set`, `array_set`, `array_fill`, `set_add`,
+  `mutable_map_set` or the other mutators on any receiver, so a function
+  that pushes onto a parameter's `Vec` is inferred pure. That is a known
+  limitation of the checker, not the rule: spec 3.5 says such a write is a
+  `mutation`, and a later checker may enforce it. Together with masking it
+  lets a write reach a caller in two narrow ways, both through such a store:
+  a builtin stores a closure over one of the function's variables into the
+  caller's collection (`vec_push(param_v, fn() -> n)`, then `n = 5`), or a
+  pure callback stores a closure like `peek` above. Declare `with mutation`
+  on a function that changes a caller's collection through a builtin.
+
+Effects are inferred within a module. An importing module currently treats an
+imported function that declares no effects as pure, whatever its body does.
+That is an existing checker limitation, independent of this rule, so declare
+the effects of exported functions that have any.
+
 ## Maps
 
 Maps retain insertion order for `map_entries` and other ordered traversal.

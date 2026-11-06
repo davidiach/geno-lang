@@ -311,6 +311,29 @@ package version stays 0.6.0, and the Draft
   0.7:  "message": "Runtime Error: Index 5 out of bounds for list of length 1",
         "location": {"file": "/abs/ti.geno", "line": 3, "column": 12, ...}
   ```
+- Where Geno requires two function types to be equal (assigning a `var`,
+  redeclaring a name in the same block, reassigning an `Option` or list of
+  functions through a `var`, binding a generic type parameter from an
+  earlier argument), a function whose inferred type lost `mutation` under
+  proposal 0019 (see Changed) no longer matches one that kept it. In 0.6
+  both carried `mutation`, so they matched by accident. `var f = local_sum`
+  followed by `f = shared_bump`, where `local_sum` writes only its own `var`
+  and `shared_bump` writes an array through a copied reference, is now E300
+  "Type mismatch in assignment: expected (Int) -> Int, got (Int) -> Int with
+  mutation". No repository program or benchmark solution hits this, and
+  no documentation snippet besides the ones showing the break. Recorded in
+  the [compatibility policy](docs/operations/compatibility-policy.md#07-draft-local-mutation-is-not-an-effect).
+  To migrate, restore the 0.6 type on the function or on the binding:
+
+  ```geno
+  // before (0.6 inferred the effect)
+  func local_sum(n: Int) -> Int
+  // after (0.7 draft)
+  func local_sum(n: Int) -> Int with mutation
+  ```
+
+  or `var f: (Int) -> Int with mutation = local_sum`. No automatic fix is
+  offered, because either site is a valid choice.
 
 ### Changed
 
@@ -391,6 +414,32 @@ package version stays 0.6.0, and the Draft
   sets in place, keeping the error's type, code and trusted denial tags; its
   `str()` includes the location, while `.message`, which `panics` examples
   match, is unchanged.
+- Local mutation is not an effect, from Draft
+  [proposal 0019](docs/proposals/0019-local-mutation-is-not-an-effect.md)
+  ([spec v0.7](docs/spec/v0.7.md) sections 3.5, 6.2, 6.3 and 7.6). A
+  function or lambda that changes only state its own call created is pure:
+  declaring a `var`, assigning one, writing a field or element of a value it
+  holds (`var q = p; q.x = 1`), and writing elements of an `Array`, `Vec` or
+  `MutableMap` it allocated and never let escape (`var counts =
+  array_new(n, 0); counts[i] = counts[i] + 1`) no longer contribute
+  `mutation`. A function with a local accumulator can now be passed where
+  `(List[Int]) -> Int` is expected (`apply(total, xs)`, `xs.map(total)`),
+  where 0.6 reported E300 "expected (List[Int]) -> Int, got (List[Int]) ->
+  Int with mutation", and `main() -> Unit with io` may use local `var`s, where
+  0.6 reported E310. Writes a caller can observe keep `mutation`: through a
+  parameter's collection or a copy of it, below a reference-typed field or
+  element (every `array_new(h, array_new(w, 0))` table), through a
+  collection that was stored, passed to a function or captured, and a
+  lambda's write to a captured variable, which charges the lambda and not the
+  function that creates it. Effects stay static: no backend, diagnostic code
+  or syntax changes, a declared `with mutation` stays legal, and
+  `geno test --properties` selects the same functions. Messages, local-binding
+  hover and the REPL's `:type` print the new inferred types. The checker
+  still does not charge mutating builtins (`vec_push`, `array_set`,
+  `set_add`, ...) on any receiver, as in 0.6; the spec now records that as a
+  known limitation, and closing it awaits a decision on the proposal's
+  Unresolved Question 1. `conformance/v0.7` adds `local-mutation-is-pure`
+  on all seven runtime lanes and two checker cases that stay E300.
 
 ### Fixed
 
@@ -442,6 +491,12 @@ package version stays 0.6.0, and the Draft
   (`... at /usr/lib/.../geno/std/List.geno:20:40`), which the hosted
   server passed on to clients; it now ends in `std/List.geno:20:40`, as
   every runtime report names the standard library (proposal 0018).
+- Language-server hover on a local binding showed the type the checker
+  recorded in its first pass, where every unannotated function still looks
+  pure: `let g = bump` hovered as `g: (Int) -> Int` while the next use of
+  `g` showed `with mutation`. A later record for the same binding now
+  replaces the earlier one, so hover shows the final pass's type, and the
+  first pass's type stays when the final pass stopped at an error.
 
 ## [0.6.0] - 2026-10-25
 

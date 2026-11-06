@@ -273,6 +273,73 @@ allows arithmetic and is met by `Int` and `Float`. `Hash` allows use as a
 lets the function call `Shape`'s methods on a `T`. Calling `largest([true],
 false)` is rejected, because `Bool` is not ordered.
 
+### Effects
+
+A function type says which effects a call can have, after `with`:
+`-> Unit with io` prints, `with fs` uses files, and `with mutation` changes
+state the caller can see. A function that declares no effects has them
+inferred; a declared set must include every effect the body has, and may
+list more. A function with an effect cannot be passed where a function type
+without it is expected.
+
+Changing state that only the function's own call can see is not an effect
+(new in the 0.7 development line, [spec v0.7](../spec/v0.7.md) section 3.5).
+A local `var`, the fields of a record it holds, and an `Array`, `Vec` or
+`MutableMap` the function allocates and keeps to itself are private to the
+call. So these functions are pure, and `map` accepts them:
+
+```geno
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+
+func main() -> Unit with io
+    var rows = 0
+    for row in [[1, 2], [3], [4, 5]] do
+        rows = rows + 1
+    end for
+    print([[1, 2], [3], [4, 5]].map(total))
+    print(histogram([0, 2, 2], 3))
+    print(rows)
+end func
+```
+
+`main` declares only `io`, although it updates a local `var`. Writes that a
+caller could observe keep `mutation`:
+
+- writing through a parameter's `Array`, `Vec` or `MutableMap`, or through a
+  `var` copied from one, which copies the reference rather than the
+  collection;
+- writing below a reference-typed field or element, as in every
+  two-dimensional table built with `array_new(h, array_new(w, 0))`, whose
+  rows share storage;
+- writing a collection after storing it somewhere, passing it to a function,
+  copying it into a second variable (a rolling `prev = cur` buffer), or
+  mentioning it in a lambda;
+- a lambda that assigns a variable of the function around it. The lambda
+  carries `mutation`, because each call of the closure sees the last one's
+  change; creating the lambda is not an effect.
+
+Mutating builtins such as `vec_push` and `array_set` add no effect in the
+current checker, even on a parameter; the spec records that as a known
+limitation, so declare `with mutation` on a function that changes its
+caller's collections with them. A declared `with mutation` is always allowed,
+even where it is no longer needed.
+
 ## Type Definitions (ADTs)
 
 ```geno

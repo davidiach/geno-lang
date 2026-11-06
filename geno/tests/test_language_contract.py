@@ -222,6 +222,48 @@ def test_the_draft_records_runtime_diagnostics() -> None:
     ) in policy
 
 
+def _effects_section() -> str:
+    """Section 3.5 of the Draft spec (proposal 0019)."""
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+    start = text.index("\n### 3.5 Function Effects\n")
+    return text[start : text.index("\n## 4. Declarations\n", start)]
+
+
+def test_the_draft_records_local_mutation_masking() -> None:
+    """Proposal 0019 is in the Draft spec, its Changes list and spec.json."""
+    spec = _load_spec()
+    assert any(
+        "proposal 0019" in addition and "known limitation" in addition
+        for addition in spec["development_line"]["additions"]
+    )
+    # The 0.6-normative effect block is left alone, as 0017 and 0018 left theirs.
+    assert spec["effect_system"]["inference"].startswith(
+        "Effects are inferred from effectful builtins, mutation,"
+    )
+
+    link = "](../proposals/0019-local-mutation-is-not-an-effect.md)"
+    (entry,) = [entry for entry in _draft_changes() if link in entry]
+    assert any(link in line for line in entry.splitlines())
+    assert "3.5" in entry.splitlines()[0]
+    assert not any(line.lstrip().startswith("- ") for line in entry.splitlines())
+    assert "#07-draft-local-mutation-is-not-an-effect)" in entry
+
+    section = " ".join(_effects_section().split())
+    assert "The valid effect names in Geno 0.7 are" in section
+    assert "Declaring a `var` is never an effect." in section
+    # The builtin rule is normative; the checker's gap is a non-normative note.
+    assert (
+        "Writing a reference collection that is reachable from outside the "
+        "writing function or lambda is a `mutation`, whether the write is an "
+        "index assignment or a mutating builtin"
+    ) in section
+    assert "*Known limitation (0.7 draft).*" in section
+    assert "does not snapshot it on any backend" in section
+
+    policy = (ROOT / "docs/operations/compatibility-policy.md").read_text()
+    assert "\n### 0.7 (draft): local mutation is not an effect\n" in policy
+
+
 def _isolated_lane_section() -> str:
     """Section 9.11.1 of the Draft spec (proposal 0013)."""
     text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")

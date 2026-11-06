@@ -71,6 +71,21 @@ results and fail in the same places; only the report is shorter. The
 canonical interpreter, compiled Python and compiled JavaScript cover the new
 report, and the selfhost tests are unchanged.
 
+## Effect inference gap
+
+The selfhost frontend has no effects. Its parser does not accept an effect
+annotation (`-> Int with io` on a function, or `with mutation` in a function
+type) and builds every function type with an empty effect list; its type
+checker registers every builtin with no effects, `format_gtype` leaves
+effects out, and nothing infers or compares them. No selfhost source uses an
+effect annotation. That gap predates the 0.7 draft. The 0.7 draft
+specification (section 3.5, proposal 0019) changes which writes contribute
+`mutation`: state that only the writing function or lambda can observe no
+longer does. The selfhost has nothing to change for it: it never rejects a
+program for its effects, and it cannot parse one that writes an effect
+annotation. The canonical type checker covers the rule, and the selfhost
+tests are unchanged.
+
 ## What selfhost is NOT (yet)
 
 - **Not a compiler**: There is no code-generation backend. The selfhost does not
