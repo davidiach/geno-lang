@@ -1797,13 +1797,17 @@ class TestRuntimeStackTrace:
                     timeout=10,
                 )
                 assert result.returncode != 0
+                # Reports name the resolved path, as compile errors do: on
+                # Windows the temp directory can be an 8.3 short name
+                # (RUNNER~1) that resolution expands.
+                path = os.path.realpath(f.name)
                 # Each frame is positioned inside its own function: the call
                 # it was making, or the failure (proposal 0018).
                 assert result.stderr == (
                     "Stack trace (most recent call last):\n"
-                    f"  {f.name}:10:12 in main\n"
-                    f"  {f.name}:7:12 in outer\n"
-                    f"  {f.name}:3:12 in inner\n"
+                    f"  {path}:10:12 in main\n"
+                    f"  {path}:7:12 in outer\n"
+                    f"  {path}:3:12 in inner\n"
                     "      return 10 / x\n"
                     "             ^\n"
                     "Runtime Error: Division by zero: cannot compute 10 / 0\n"
