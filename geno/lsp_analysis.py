@@ -216,7 +216,8 @@ def display_type(type_: Type) -> str:
 def _display(type_: Type) -> str:
     from .typechecker import _display_type
 
-    return _display_type(type_)
+    label: str = _display_type(type_)
+    return label
 
 
 def _within(scope: tuple[int, int], line: int) -> bool:

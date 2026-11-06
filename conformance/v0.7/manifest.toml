@@ -330,3 +330,46 @@ stack = [
     "runtime_capability_denial_stack.geno:12:11 in main",
     "runtime_capability_denial_stack.geno:7:22 in home_directory",
 ]
+
+# Proposal 0019 (Draft): local mutation is not an effect. A function or lambda
+# that changes only state its own call created (its own `var`s, value-typed
+# content they hold, and arrays it allocated and never let escape) does not
+# carry `mutation`, so it can be passed where a pure function type is
+# expected, and `main` declares only `io`. 0.6 rejected the first case with
+# E300 and E310. Effects are static, so every lane runs the program as 0.6
+# would have; the compiled lanes pin that no backend reads effects. Mutation a
+# caller can observe keeps the effect: writing through a copy of a
+# parameter's array, and a lambda assigning a captured variable, stay E300.
+
+[[cases]]
+id = "local-mutation-is-pure"
+path = "programs/local_mutation_is_pure.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "15\ntotals: [3, 3]\n[1, 0, 2]\n[0, 2, 2]\n[9, 7]\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "diagnostic-mutation-parameter-alias"
+path = "programs/diagnostic_mutation_parameter_alias.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]
+
+[[cases]]
+id = "diagnostic-mutation-captured-var"
+path = "programs/diagnostic_mutation_captured_var.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]

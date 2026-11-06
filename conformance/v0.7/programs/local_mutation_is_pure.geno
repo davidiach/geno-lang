@@ -1,0 +1,56 @@
+// Proposal 0019 (0.7 draft): a function that changes only state its own call
+// created is pure. Its callers cannot see that state, so its type does not
+// say `with mutation`, and it can be passed where a pure function type is
+// expected. 0.6 typed `total`, `histogram` and the lambda passed to `map`
+// below `with mutation`, rejected each call that passes them with E300, and
+// rejected `main` with E310 for its own local `var`.
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func apply(f: (List[Int]) -> Int, xs: List[Int]) -> Int
+    example fn(ys: List[Int]) -> length(ys), [4, 5] -> 2
+    return f(xs)
+end func
+
+// `counts` is an array this call allocates and never lets escape, so writing
+// its elements is invisible to callers.
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+
+func tally(count: (List[Int], Int) -> List[Int], xs: List[Int]) -> List[Int]
+    example fn(ys: List[Int], n: Int) -> [n], [7] -> [3]
+    return count(xs, 3)
+end func
+
+func main() -> Unit with io
+    var label = "totals: "
+    label = label + to_string([[1, 2], [3]].map(total))
+    print(apply(total, [4, 5, 6]))
+    print(label)
+    let counts = [0, 2, 2]
+    print(tally(histogram, counts))
+    print(counts)
+    let maxima = [[3, 9, 2], [7]].map(fn(ys: List[Int]) do
+        var best = 0
+        for y in ys do
+            if y > best then
+                best = y
+            end if
+        end for
+        return best
+    end fn)
+    print(maxima)
+    return ()
+end func

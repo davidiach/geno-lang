@@ -185,6 +185,8 @@ def test_the_repository_development_corpus_is_v07() -> None:
         "isolated-grant-env-cli-args",
         "isolated-grant-is-exact",
         *_RUNTIME_REPORT_CASES,
+        "local-mutation-is-pure",
+        *_LOCAL_MUTATION_DIAGNOSTIC_CASES,
     }
     assert all(load_manifest(p).status is None for p in retained_manifest_paths())
 
@@ -291,6 +293,59 @@ def test_the_isolated_grant_is_exact_in_every_lane_with_a_stderr() -> None:
         *_COMPILED_LANES,
     }
     _assert_lanes_passed(results)
+
+
+# Proposal 0019's v0.7 cases: a function that mutates only its own state is
+# pure on every lane, and observable mutation keeps the effect.
+_LOCAL_MUTATION_DIAGNOSTIC_CASES = (
+    "diagnostic-mutation-parameter-alias",
+    "diagnostic-mutation-captured-var",
+)
+
+
+def test_the_local_mutation_case_runs_on_every_lane() -> None:
+    """A program 0.6 rejected (E300, E310) checks and runs identically on the
+    interpreter lanes and the compiled backends: effects are static, so no
+    backend reads them (proposal 0019)."""
+    (path,) = development_manifest_paths()
+    manifest = load_manifest(path)
+    (case,) = [case for case in manifest.cases if case.id == "local-mutation-is-pure"]
+
+    assert case.kind == "run"
+    assert set(case.targets) == {
+        "interpreter",
+        "cli-process",
+        "cli-direct",
+        "cli-json",
+        *_COMPILED_LANES,
+    }
+    assert set(case.capabilities) == {"print"}
+    assert case.expected_exit_status == 0
+    results = run_suite(
+        manifest, case_ids=frozenset({"local-mutation-is-pure"}), timeout=60.0
+    )
+
+    assert {result.target for result in results} == {"checker", *case.targets}
+    _assert_lanes_passed(results)
+
+
+@pytest.mark.parametrize("case_id", _LOCAL_MUTATION_DIAGNOSTIC_CASES)
+def test_the_observable_mutation_cases_stay_e300(case_id: str) -> None:
+    """Writing through a copy of a parameter's array, and a lambda assigning a
+    captured variable, keep `mutation` (proposal 0019), so each case expects
+    exactly the one E300 that 0.6 reported."""
+    (path,) = development_manifest_paths()
+    manifest = load_manifest(path)
+    (case,) = [case for case in manifest.cases if case.id == case_id]
+
+    assert case.kind == "diagnostic"
+    assert case.targets == ("checker",)
+    assert list(case.expected_diagnostics) == ["E300"]
+    results = run_suite(manifest, case_ids=frozenset({case_id}), timeout=60.0)
+
+    assert [(result.target, result.status) for result in results] == [
+        ("checker", "passed")
+    ]
 
 
 def test_all_retained_runs_the_development_corpus_last(

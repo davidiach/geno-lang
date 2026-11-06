@@ -2271,6 +2271,103 @@ end func
 """,
         id="float_print_whole_values",
     ),
+    pytest.param(
+        # --- proposal 0019: local mutation is not an effect ---
+        # Each function below infers no `mutation`, and `main` declares only
+        # `io`. The state each caller passed in prints unchanged afterwards on
+        # every backend, which is what makes the masking sound.
+        """\
+type P = P(x: Int)
+type Bag = Bag(pts: List[P])
+
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func apply(f: (List[Int]) -> Int, xs: List[Int]) -> Int
+    example fn(ys: List[Int]) -> length(ys), [4, 5] -> 2
+    return f(xs)
+end func
+
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+
+func moved(p: P, dx: Int) -> P
+    example P(x: 1), 3 -> P(x: 4)
+    var q = p
+    q.x = q.x + dx
+    return q
+end func
+
+func shifted(b: Bag) -> Bag
+    example Bag(pts: [P(x: 1)]) -> Bag(pts: [P(x: 2)])
+    var c = b
+    c.pts[0].x = c.pts[0].x + 1
+    return c
+end func
+
+func doubled_copy(a: Array[Int]) -> List[Int]
+    example array_from_list([1, 2]) -> [2, 4]
+    var b = array_copy(a)
+    var i = 0
+    while i < array_length(b) do
+        b[i] = b[i] * 2
+        i = i + 1
+    end while
+    return array_to_list(b)
+end func
+
+func word_count(words: List[String]) -> Int
+    example ["a", "b", "a"] -> 2
+    var seen: MutableMap[String, Int] = mutable_map_new()
+    for w in words do
+        seen[w] = 1
+    end for
+    return mutable_map_size(seen)
+end func
+
+func main() -> Unit with io
+    let xs = [4, 5, 6]
+    print(apply(total, xs))
+    print([[1, 2], [3]].map(total))
+    print([[1], [2, 3]].map(fn(ys: List[Int]) do
+        var n = 0
+        for y in ys do
+            n = n + y * 10
+        end for
+        return n
+    end fn))
+    print(xs)
+    print(histogram([0, 1, 1, 2], 3))
+    let p = P(x: 1)
+    print(moved(p, 3))
+    print(moved(p, 3))
+    print(p)
+    let b = Bag(pts: [P(x: 1)])
+    print(shifted(b))
+    print(b)
+    let a = array_from_list([1, 2, 3])
+    print(doubled_copy(a))
+    print(array_to_list(a))
+    print(word_count(["a", "b", "a"]))
+    var label = "done: "
+    label = label + to_string(total(xs))
+    print(label)
+end func
+""",
+        id="local_mutation_masking",
+    ),
 ]
 
 

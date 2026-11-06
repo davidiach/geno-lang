@@ -129,6 +129,48 @@ end func call_and_print
         assert "() -&gt; String with io" in html
         assert 'Unit</span> <span class="keyword">with</span> io' in html
 
+    def test_signatures_show_declared_effects_not_inferred_ones(self):
+        """Proposal 0019 changes which effects are inferred; docs show only
+        what a signature declares, so masking changes no rendered page."""
+        source = """
+/// Declares the effect 0.6 required; it now infers pure.
+func local_sum(n: Int) -> Int with mutation
+    example 2 -> 3
+    var y = n
+    y = y + 1
+    return y
+end func
+
+/// Infers `mutation`, declares nothing.
+func bump(counter: Array[Int]) -> Int
+    example array_new(1, 0) -> 1
+    var alias = counter
+    alias[0] = alias[0] + 1
+    return alias[0]
+end func
+
+/// Infers pure, declares nothing.
+func total(xs: List[Int]) -> Int
+    example [1, 2] -> 3
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+"""
+
+        module = parse_module(source, "Main.geno")
+        html = generate_html([module])
+
+        assert [(f.name, f.effects) for f in module.functions] == [
+            ("local_sum", ["mutation"]),
+            ("bump", []),
+            ("total", []),
+        ]
+        assert 'Int</span> <span class="keyword">with</span> mutation' in html
+        assert html.count('<span class="keyword">with</span>') == 1
+
     def test_type_aliases_and_traits_are_documented(self):
         source = """
 /// Alias docs
