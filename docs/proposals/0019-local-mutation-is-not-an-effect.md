@@ -302,7 +302,7 @@ Each applies to the unit U that contains the statement.
   (record, `List`, `Map`).
 - **Write classification.** The facts L2 and L3 need do not depend on effects,
   so they are computed once, by the statement checks that already have them,
-  and stored on the statement node. `_check_assign_statement`,
+  and recorded per statement node. `_check_assign_statement`,
   `_check_index_assign_statement` and `_check_field_assign_statement`
   already compute the target type and the root name, and they already call
   `_record_captured_binding` on the root. They record three things: the root's
@@ -622,6 +622,17 @@ current behaviour on all three backends. The spec note and
 `docs/reference/runtime-semantics.md` state the boundary, including the
 argument-passing alias.
 
+The claim also assumes that a call's effects are known (L4). Package 3 found
+that an importing module sees an imported function that declares no effects
+as pure, whatever its body does, losing `io` as well as `mutation`. The 0.6
+checker behaves the same, so it is a pre-existing gap independent of masking,
+to be filed as its own issue; fixing it may reject existing multi-module
+programs. Until then the claim holds within a module, and across modules for
+imported functions that declare their effects. Masking itself works across
+modules: an imported function whose writes are masked passes as a pure
+callback on all three backends. `docs/reference/runtime-semantics.md` tells
+users to declare the effects of exported functions.
+
 ### 7. Interactions
 
 - **Inference and its fixpoint.** `_stabilize_function_effects` is unchanged
@@ -703,15 +714,18 @@ argument-passing alias.
   binding-fact precedence in `geno/lsp_analysis.py` described above.
 - **Self-hosted frontend.** `selfhost/TypeChecker.geno` registers every builtin
   with an empty effect list and `format_gtype` drops effects. It never infers
-  or checks effects, under 0.6 rules or these. Per `selfhost/SCOPE.md` it may
-  lag. The gap is recorded there as "Effect inference gap", and its tests are
-  unchanged.
+  or checks effects, under 0.6 rules or these, and its parser does not accept
+  an effect annotation at all, so it never rejects a program for its effects.
+  Per `selfhost/SCOPE.md` it may lag. The gap is recorded there as "Effect
+  inference gap", and its tests are unchanged.
 
 ### 8. Specification text
 
 Section 3.5 of `docs/spec/v0.7.md` replaces its bullet list with the
-following. The rest of the section is unchanged, apart from "valid effect
-names in Geno 0.6", which becomes "in Geno 0.7".
+following, after a "*Changed in 0.7*" paragraph that links this proposal and
+says that 0.6 charged `mutation` for every `var` and every assignment. "Valid
+effect names in Geno 0.6" becomes "in Geno 0.7"; the rest of the section is
+unchanged.
 
 > - Calling an effectful function propagates its effects to the caller.
 > - A write is a `mutation` unless only the writing function or lambda can
@@ -725,14 +739,19 @@ names in Geno 0.6", which becomes "in Geno 0.7".
 >   variable's own and the variable is *owned*. Every other write is a
 >   `mutation`: through a parameter's collection or a copy of one, below a
 >   reference-typed field or element, or through a captured variable.
-> - A variable is owned when it is a `var` that is only ever initialized and
->   assigned from an allocating builtin (`array_new`, `array_from_list`,
->   `array_copy`, `vec_new`, `vec_from_list`, `set_new`, `set_from_list`,
->   `set_union`, `set_intersection`, `mutable_map_new`) and whose collection
->   never escapes. It is not mentioned in a nested lambda, and each use is an
->   assignment's target, an index read, an argument a builtin only borrows,
->   the container of `in`, the iterable of `for`, or a returned value. The
->   test considers the whole body of the function or lambda, by name.
+> - A variable is owned when its collection is allocated by the writing
+>   function or lambda and never escapes. Its name is not a parameter; every
+>   declaration of the name in the body is a `var` initialized from a call of
+>   an allocating builtin (`array_new`, `array_from_list`, `array_copy`,
+>   `vec_new`, `vec_from_list`, `set_new`, `set_from_list`, `set_union`,
+>   `set_intersection`, `mutable_map_new`), and every assignment to it assigns
+>   such a call. It is not mentioned in a nested lambda, and each other use is
+>   the root of an index or field write, an index read, an argument a builtin
+>   only borrows, the container of `in`, the iterable of a `for` loop or
+>   comprehension, or a returned value (alone, as an element of a returned
+>   tuple, list or constructor call, or as a branch of a returned `if` or
+>   `match` expression). The test considers the whole body of the function or
+>   lambda, by name.
 > - Writing a reference collection that is reachable from outside the writing
 >   function or lambda is a `mutation`, whether the write is an index
 >   assignment or a mutating builtin (`vec_push`, `array_set`, `set_add`,
@@ -744,7 +763,9 @@ names in Geno 0.6", which becomes "in Geno 0.7".
 >   declared set; a declared superset is allowed. A pure function can be used
 >   where a more-effectful callback is accepted, but not the reverse.
 
-After the list, section 3.5 gains a non-normative note:
+After the list, section 3.5 gains a short example (a pure `histogram` that
+writes an owned array, and a `bump` that writes through a copied parameter
+reference and so declares `with mutation`) and a non-normative note:
 
 > *Known limitation (0.7 draft).* The reference checker does not yet charge
 > mutating builtins on any receiver, so `vec_push(v, x)` on a parameter `v`
@@ -960,9 +981,9 @@ it open. The adversarial tests in Package 3 pin the boundary.
     name, reported with its own error) still leaves the function's inferred
     effects containing `mutation`, and so does a statement whose check
     returned early on an error;
-  - the classification is read from the statement node, and the effect walk
-    does not call `_check_expression` on write targets (asserted by counting
-    calls on a small program);
+  - the classification is read from the statement's recorded entry, and the
+    effect walk does not call `_check_expression` on write targets (asserted
+    by counting calls on a small program);
   - the local `array_new` binding shadow case;
   - the breaking class above.
 
@@ -1182,12 +1203,17 @@ previous one.
    - Tests: `geno/tests/test_mutation_ownership.py` (new) and
      `geno/tests/test_builtin_metadata.py`.
    - No checker behaviour changes in this package.
+
+   Status: implemented, with the corrections recorded in sections 3 and 4
+   (branch values of `if` and `match` expressions take the expression's
+   position; `length(list)` is borrowed).
 2. **Typechecker masking.** Changes to `geno/typechecker.py`:
    - gate: the project lead's sign-off on Unresolved Question 1;
    - write classification in `_check_assign_statement`,
      `_check_index_assign_statement` and `_check_field_assign_statement`,
-     stored on the statement node (section 2). It records root locality,
-     whether `c0` is a reference type, and whether all later hops are values;
+     recorded per statement node in a checker table (section 2). It records
+     root locality, whether `c0` is a reference type, and whether all later
+     hops are values;
    - a `_binding_locality` helper sharing the capture walk with
      `_record_captured_binding`, returning unit-local, captured or
      unresolved. Unresolved never masks;
@@ -1218,6 +1244,10 @@ previous one.
 
    Any unsoundness found is fixed in `geno/mutation_ownership.py` or
    `geno/typechecker.py`.
+
+   Status: implemented. The adversarial table found no unsoundness in the
+   masking rule, so neither file changed in this package; the known gaps of
+   section 6 are pinned as current behaviour on all three backends.
 4. **Specification, documentation, conformance and compatibility.**
    - `docs/spec/v0.7.md`: sections 3.5, 6.2, 6.3 and 7.6, the "Geno 0.7"
      effect-name line, and a "Changes from 0.6" entry linking this proposal and
@@ -1246,3 +1276,6 @@ previous one.
      lexer, parser, AST, formatter, `geno/constraints.py`, `vscode-geno` and
      the doc generator. The only LSP code change is Package 3's fact
      precedence.
+
+   Status: implemented. Spec section 3.5 spells out the returned-value
+   positions of section 3 (P6) in its ownership bullet.
