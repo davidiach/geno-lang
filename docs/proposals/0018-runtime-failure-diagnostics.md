@@ -867,9 +867,11 @@ infrastructure failure. So:
 
 Example-phase failures are interpreted in the worker and keep travelling as
 pre-formatted text through `_format_process_frontend_error`, which now uses
-the new renderer. The worker fits that text into `max_output_length` with
-`fit_report_text` (section 4) instead of `_truncate_worker_text`, which keeps
-the head and would cut exactly the final message line. Tests cover a panic
+the new renderer. The worker passes it `limit=max_output_length`, and a
+runtime report is fitted with `fit_report_text` (section 4) instead of being
+cut by `_truncate_worker_text`, which keeps the head and would cut exactly the
+final message line. Other frontend text (parse and type errors) is returned
+whole and still cut at its tail by `_truncate_worker_text`, as in 0.6. Tests cover a panic
 whose message is close to `max_output_length`, a run with
 `--max-output-length 200`, a non-ASCII message and a 60-deep recursion with
 long paths: each reports a parseable runtime error, never an infrastructure
