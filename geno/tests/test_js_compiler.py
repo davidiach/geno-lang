@@ -3673,6 +3673,116 @@ class TestJSCompilerSourceMapTracking:
             no_map_compiler.generate_source_map()
 
 
+_REPORT_PANIC = """
+func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+
+func main() -> Int
+    return check(9)
+end func
+"""
+
+
+class TestJSRuntimeFailureReporter:
+    """Proposal 0018: the reporter lives only on a Node entry build's entry path."""
+
+    def test_tree_shaking_keeps_the_reporter_only_in_entry_builds(self):
+        from geno.target_profile import TargetProfile
+
+        entry = compile_to_js(_REPORT_PANIC)
+        library = compile_to_js(_REPORT_PANIC.split("func main", 1)[0])
+        browser = compile_to_js(
+            _REPORT_PANIC, target_profile=TargetProfile.load("browser")
+        )
+        assert isinstance(entry, str)
+        assert isinstance(library, str)
+        assert isinstance(browser, str)
+        reporter = (
+            "function _genoReportUncaught(",
+            "function _genoInstallReporter(",
+            "function _genoFailureReport(",
+            "const _GENO_STACK_HEADER = ",
+        )
+        for definition in reporter:
+            assert definition in entry
+            assert definition not in library
+            assert definition not in browser
+
+    def test_the_trace_table_does_not_drive_tree_shaking(self):
+        # The table names the source file; only real references pull a
+        # prelude section in.
+        entry = compile_to_js(_REPORT_PANIC, filename="option_flatten.geno")
+        assert isinstance(entry, str)
+        assert "option_flatten.geno" in entry
+        assert "function option_flatten(" not in entry
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("node"), reason="Node.js is not installed"
+    )
+    def test_importing_an_esm_build_changes_no_process_setting(self, tmp_path):
+        esm = compile_to_js(_REPORT_PANIC, esm=True)
+        assert isinstance(esm, str)
+        (tmp_path / "lib.mjs").write_text(esm, encoding="utf-8")
+        (tmp_path / "importer.mjs").write_text(
+            "const before = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "const lib = await import('./lib.mjs');\n"
+            "const after = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "console.log(JSON.stringify({before, after, "
+            "exports: Object.keys(lib).sort(), value: lib.check(1)}));\n",
+            encoding="utf-8",
+        )
+        import subprocess
+
+        result = subprocess.run(
+            ["node", str(tmp_path / "importer.mjs")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert observed["after"] == observed["before"]
+        assert observed["exports"] == ["check", "main"]
+        assert observed["value"] == 1
+
+    def test_the_entry_path_installs_the_reporter_before_main(self):
+        cjs = compile_to_js(_REPORT_PANIC)
+        esm = compile_to_js(_REPORT_PANIC, esm=True)
+        assert isinstance(cjs, str)
+        assert isinstance(esm, str)
+        for code in (cjs, esm):
+            install = code.index("_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);")
+            call = code.index("const _main_result = main();")
+            report = code.index("_genoReportUncaught(_temp_")
+            assert install < call < report
+        guard = esm.index("import.meta.main === true")
+        assert guard < esm.index("_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);")
+
+    def test_an_async_main_reports_through_its_catch(self):
+        source = """
+        async func main() -> Int
+            return 0
+        end func
+        """
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        assert re.search(
+            r"\}\)\(\)\.catch\((_temp_\d+) => _genoReportUncaught\(\1, "
+            r"_GENO_TRACE, _genoTraceAnchor\)\);",
+            code,
+        )
+        assert "console.error(e)" not in code
+
+
 class TestJSCompilerPreludeTreeShaking:
     @pytest.mark.parametrize(
         "user_code",

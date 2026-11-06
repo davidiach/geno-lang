@@ -3,15 +3,17 @@
 The same failure must give the same report (label, message, frames,
 positions, omitted count) on the interpreter (``geno run --unsafe``), the
 default process-isolated ``geno run`` lane (compiled ``main`` mapped by the
-trusted worker) and standalone compiled Python. Compiled index and capability
+trusted worker), standalone compiled Python, and compiled JavaScript run by
+Node as a CommonJS script and as an ES module. Compiled index and capability
 messages keep their 0.6 wording, which the proposal documents, so those
 cases compare the shared prefix.
 
-This file holds the Python half; the JavaScript backend joins it in P4. It
-also covers the default lane's budgeted worker payload, the parent's strict
-snippet reader, standalone output with no Geno install, the
-``GENO_TRACEBACK=host`` escape hatch and the reporter's fallback on a
-corrupted table.
+It also covers the default lane's budgeted worker payload, the parent's
+strict snippet reader, standalone output with no Geno install, the
+``GENO_TRACEBACK=host`` escape hatch, the reporters' fallback on a corrupted
+table, and the Node entry path: immediate termination after a report, the
+``unhandledRejection`` reporter, the stack-text fallback and
+``node --enable-source-maps``.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -37,6 +40,8 @@ from geno.tokens import SourceLocation
 
 ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT = 120
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="Node.js is not installed")
 LABELS = ("Runtime Error: ", "Sandbox Error: ", "Limit Error: ")
 _FRAME = re.compile(r"^  (?:(.+):(\d+):(\d+) )?in (.+)$")
 _OMITTED = re.compile(r"^  \.\.\. (\d+) frames? omitted \.\.\.$")
@@ -118,14 +123,59 @@ def _standalone(
     )
 
 
-def _lanes(program: Path, tmp_path: Path, caps: str = "print") -> dict[str, Any]:
-    """Run *program* on the interpreter, the default lane and standalone."""
+def _compile_js(program: Path, out_dir: Path, *flags: str, esm: bool = False) -> Path:
+    """Compile *program* to a Node entry build in *out_dir*."""
+    out_dir.mkdir(exist_ok=True)
+    artifact = out_dir / (program.stem + (".mjs" if esm else ".js"))
+    args = ["compile", "--target", "js", str(program), "-o", str(artifact), *flags]
+    if esm:
+        args.append("--esm")
+    compiled = _geno(*args, cwd=ROOT)
+    assert compiled.returncode == 0, compiled.stderr
+    return artifact
+
+
+def _run_node(
+    artifact: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    node_flags: tuple[str, ...] = (),
+) -> Any:
+    assert NODE is not None
+    return subprocess.run(
+        [NODE, *node_flags, str(artifact), *args],
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT,
+        cwd=artifact.parent,
+        env=_env(**(env or {})),
+        check=False,
+    )
+
+
+def _node(
+    program: Path, out_dir: Path, *args: str, esm: bool = False, **options: Any
+) -> Any:
+    """Compile *program* to JavaScript and run it with Node."""
+    return _run_node(_compile_js(program, out_dir, esm=esm), *args, **options)
+
+
+def _lanes(
+    program: Path, tmp_path: Path, caps: str = "print", *, esm: bool = True
+) -> dict[str, Any]:
+    """Run *program* on the interpreter, the default lane, standalone Python
+    and, when Node is installed, as a CommonJS script and an ES module."""
     common = ("--no-check-examples", "--cap", caps)
-    return {
+    runs = {
         "interpreter": _geno("run", "--unsafe", *common, str(program), cwd=tmp_path),
         "default": _geno("run", *common, str(program), cwd=tmp_path),
         "standalone": _standalone(program, tmp_path / "out", "--cap", caps),
     }
+    if NODE is not None:
+        runs["node"] = _node(program, tmp_path / "js", "--cap", caps)
+        if esm:
+            runs["node-esm"] = _node(program, tmp_path / "js", "--cap", caps, esm=True)
+    return runs
 
 
 def _write(tmp_path: Path, name: str, source: str) -> Path:
@@ -299,6 +349,47 @@ func main() -> Int
 end func
 """
 
+# A synchronous `main` that fails while an un-awaited async call is still
+# pending: JavaScript starts it eagerly, so its continuation is queued.
+PENDING_ASYNC = """async func noisy(n: Int) -> Int
+    let v = await quiet(n)
+    print("late output")
+    return v
+end func
+
+async func quiet(n: Int) -> Int
+    return n
+end func
+
+func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 1 then
+        panic("sync failure")
+    end if
+    return n
+end func
+
+func main() -> Int
+    let pending = noisy(1)
+    return check(2)
+end func
+"""
+
+# An Async that fails with nothing awaiting it.
+UNAWAITED = """async func work(n: Int) -> Int
+    if n > 3 then
+        panic("work failed")
+    end if
+    return n
+end func
+
+func main() -> Int
+    let pending = work(5)
+    print("main done")
+    return 0
+end func
+"""
+
 SAME_MESSAGE = [
     ("panic.geno", PANIC),
     ("requires.geno", REQUIRES),
@@ -317,6 +408,12 @@ def _assert_parity(runs: dict[str, Any], *, same_message: bool = True) -> Report
     for lane, run in runs.items():
         assert run.returncode == 1, (lane, run.stderr)
         assert "Traceback" not in run.stderr, (lane, run.stderr)
+        assert "    at " not in run.stderr, (lane, run.stderr)
+        if lane != "default":
+            # Nothing is printed after a report (the default lane may add
+            # the capability hint).
+            last = run.stderr.rstrip("\n").split("\n")[-1]
+            assert last == reports[lane].message, (lane, run.stderr)
     expected = reports["interpreter"]
     assert expected.frames, runs["interpreter"].stderr
     for lane, report in reports.items():
@@ -420,7 +517,9 @@ class TestParity:
             "    let n = Helper.scale(4)\n    return n\nend func\n",
         )
         _write(tmp_path, "Helper.geno", PANIC.split("func main", 1)[0])
-        report = _assert_parity(_lanes(program, tmp_path))
+        # An ES module build of a project does not run in 0.6 either (its
+        # `export { main }` names a function inside the module factory).
+        report = _assert_parity(_lanes(program, tmp_path, esm=False))
         assert report.frames == (
             ("Main.geno:4:13", "main"),
             ("Helper.geno:11:12", "Helper.scale"),
@@ -507,6 +606,209 @@ class TestStandalone:
         )
         assert result.returncode == 1
         assert result.stderr == "Runtime Error: value too large\n"
+
+
+PANIC_REPORT = (
+    "Stack trace (most recent call last):\n"
+    "  panic.geno:15:12 in main\n"
+    "  panic.geno:11:12 in scale\n"
+    "  panic.geno:4:9 in check\n"
+    "Runtime Error: value too large\n"
+)
+
+
+@needs_node
+class TestNode:
+    """The Node entry path (proposal 0018, section 9)."""
+
+    @pytest.mark.parametrize("esm", [False, True], ids=["cjs", "esm"])
+    def test_the_report_is_the_standalone_python_report(
+        self, tmp_path: Path, esm: bool
+    ) -> None:
+        result = _node(_write(tmp_path, "panic.geno", PANIC), tmp_path / "js", esm=esm)
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == PANIC_REPORT
+
+    @pytest.mark.parametrize("esm", [False, True], ids=["cjs", "esm"])
+    def test_geno_traceback_host_appends_the_host_stack(
+        self, tmp_path: Path, esm: bool
+    ) -> None:
+        artifact = _compile_js(
+            _write(tmp_path, "panic.geno", PANIC), tmp_path / "js", esm=esm
+        )
+        host = _run_node(artifact, env={"GENO_TRACEBACK": "host"})
+        assert host.returncode == 1
+        report, marker, traceback = host.stderr.partition(
+            "Host traceback (GENO_TRACEBACK=host):\n"
+        )
+        assert marker
+        assert report == PANIC_REPORT
+        assert traceback.startswith("Error: value too large\n    at ")
+        assert "    at check (" in traceback
+        assert "    at scale (" in traceback
+
+    @pytest.mark.parametrize(
+        "table", ['"garbage"', '"G\\t2\\nE\\t9"', '"G\\t1\\nE\\tx"', "42"]
+    )
+    def test_a_corrupted_table_reports_the_message_alone(
+        self, tmp_path: Path, table: str
+    ) -> None:
+        artifact = _compile_js(_write(tmp_path, "panic.geno", PANIC), tmp_path / "js")
+        code = artifact.read_text(encoding="utf-8")
+        code, replaced = re.subn(
+            r"^const _GENO_TRACE = .*;$",
+            lambda _match: f"const _GENO_TRACE = {table};",
+            code,
+            flags=re.M,
+        )
+        assert replaced == 1
+        artifact.write_text(code, encoding="utf-8")
+        result = _run_node(artifact)
+        assert result.returncode == 1
+        assert result.stderr == "Runtime Error: value too large\n"
+
+    @pytest.mark.parametrize("esm", [False, True], ids=["cjs", "esm"])
+    def test_an_already_formatted_stack_is_mapped_from_its_text(
+        self, tmp_path: Path, esm: bool
+    ) -> None:
+        """When something formatted `e.stack` first, the reporter parses it."""
+        artifact = _compile_js(
+            _write(tmp_path, "panic.geno", PANIC), tmp_path / "js", esm=esm
+        )
+        code = artifact.read_text(encoding="utf-8")
+        code, replaced = re.subn(
+            r"_genoReportUncaught\((_temp_[0-9]+), ",
+            lambda match: (
+                f"void {match.group(1)}.stack, _genoReportUncaught({match.group(1)}, "
+            ),
+            code,
+        )
+        assert replaced == 1
+        artifact.write_text(code, encoding="utf-8")
+        result = _run_node(artifact)
+        assert result.returncode == 1
+        assert result.stderr == PANIC_REPORT
+
+    def test_a_message_cannot_forge_frames_in_the_stack_text(
+        self, tmp_path: Path
+    ) -> None:
+        """The text fallback skips the error's own message lines.
+
+        The message forges a frame line that names the artifact and a line
+        inside `main`'s body; read as a frame, it would add a fourth frame.
+        """
+        artifact = _compile_js(_write(tmp_path, "panic.geno", PANIC), tmp_path / "js")
+        lines = artifact.read_text(encoding="utf-8").split("\n")
+        body_line = 1 + next(
+            index for index, line in enumerate(lines) if "return scale(" in line
+        )
+        escaped_path = str(artifact).replace("\\", "\\\\")
+        forged = f"boom\\n    at main ({escaped_path}:{body_line}:16)"
+        source = PANIC.replace('"value too large"', f'"{forged}"')
+        artifact = _compile_js(_write(tmp_path, "panic.geno", source), tmp_path / "js")
+        code = artifact.read_text(encoding="utf-8")
+        assert code.split("\n")[body_line - 1] == lines[body_line - 1]
+        code, replaced = re.subn(
+            r"_genoReportUncaught\((_temp_[0-9]+), ",
+            lambda match: (
+                f"void {match.group(1)}.stack, _genoReportUncaught({match.group(1)}, "
+            ),
+            code,
+        )
+        assert replaced == 1
+        artifact.write_text(code, encoding="utf-8")
+        result = _run_node(artifact)
+        assert f"at main ({artifact}:{body_line}:16)" in result.stderr
+        assert _parse(result.stderr).frames == (
+            ("panic.geno:15:12", "main"),
+            ("panic.geno:11:12", "scale"),
+            ("panic.geno:4:9", "check"),
+        )
+
+    def test_under_enable_source_maps_with_a_source_map(self, tmp_path: Path) -> None:
+        artifact = _compile_js(
+            _write(tmp_path, "panic.geno", PANIC), tmp_path / "js", "--source-map"
+        )
+        assert artifact.with_name(artifact.name + ".map").is_file()
+        result = _run_node(artifact, node_flags=("--enable-source-maps",))
+        assert result.returncode == 1
+        assert result.stderr == PANIC_REPORT
+
+    def test_pending_async_work_never_runs_after_the_report(
+        self, tmp_path: Path
+    ) -> None:
+        program = _write(tmp_path, "pending.geno", PENDING_ASYNC)
+        runs = {
+            "interpreter": _geno(
+                "run", "--unsafe", "--no-check-examples", str(program), cwd=tmp_path
+            ),
+            "node": _node(program, tmp_path / "js", "--cap", "print"),
+            "node-esm": _node(program, tmp_path / "js", "--cap", "print", esm=True),
+        }
+        for lane, run in runs.items():
+            assert run.returncode == 1, lane
+            assert run.stdout == "", (lane, run.stdout)
+            assert run.stderr.rstrip("\n").split("\n")[-1] == (
+                "Runtime Error: sync failure"
+            ), lane
+        assert _parse(runs["node"].stderr).frames == (
+            ("pending.geno:21:12", "main"),
+            ("pending.geno:14:9", "check"),
+        )
+
+    @pytest.mark.parametrize("esm", [False, True], ids=["cjs", "esm"])
+    def test_an_unawaited_failing_async_is_reported(
+        self, tmp_path: Path, esm: bool
+    ) -> None:
+        """JavaScript starts an `Async` eagerly, so its failure is reported.
+
+        The interpreter and compiled Python never run an `Async` nothing
+        awaits (a documented backend difference); on Node the rejection
+        reaches the reporter through `unhandledRejection` instead of Node's
+        raw V8 stack, with 0.6's status 1.
+        """
+        program = _write(tmp_path, "unawaited.geno", UNAWAITED)
+        result = _node(program, tmp_path / "js", "--cap", "print", esm=esm)
+        assert result.returncode == 1
+        assert result.stdout == "main done\n"
+        assert result.stderr == (
+            "Stack trace (most recent call last):\n"
+            "  unawaited.geno:9:19 in main\n"
+            "  unawaited.geno:3:9 in work\n"
+            "Runtime Error: work failed\n"
+        )
+        interpreter = _geno(
+            "run", "--unsafe", "--no-check-examples", str(program), cwd=tmp_path
+        )
+        assert (interpreter.returncode, interpreter.stdout) == (0, "main done\n")
+
+    def test_a_host_stack_overflow_keeps_its_outermost_frames(
+        self, tmp_path: Path
+    ) -> None:
+        source = """func down(n: Int) -> Int
+    example 0 -> 0
+    if n == 0 then
+        return 0
+    end if
+    return down(n + 1)
+end func
+
+func main() -> Int
+    return down(1)
+end func
+"""
+        result = _node(_write(tmp_path, "overflow.geno", source), tmp_path / "js")
+        assert result.returncode == 1
+        report = _parse(result.stderr)
+        assert report.message == (
+            "Runtime Error: RangeError: Maximum call stack size exceeded"
+        )
+        # The depth is the host's (documented), the head and tail are not.
+        assert report.omitted > 0
+        assert report.frames[0] == ("overflow.geno:10:12", "main")
+        assert report.frames[1] == ("overflow.geno:6:12", "down")
+        assert len(report.frames) == 20
 
 
 class TestDefaultLaneBudget:

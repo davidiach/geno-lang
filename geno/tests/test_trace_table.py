@@ -503,3 +503,244 @@ class TestPreludeCopies:
             location=SourceLocation(line=9, column=2, filename="app.geno"),
         )[:-1]
         assert ours == theirs
+
+
+# ---------------------------------------------------------------------------
+# JavaScript (proposal 0018, section 9)
+# ---------------------------------------------------------------------------
+#
+# A Node entry build starts its user code with `_genoTraceAnchor` and the same
+# table format, written by the same recorder through the same in-band
+# markers, so records written while an arrow body is buffered land on the
+# lines the arrow is finally placed at.
+
+JS_ANCHOR = "function _genoTraceAnchor() { return new Error(); }"
+JS_TABLE_PREFIX = "const _GENO_TRACE = "
+
+CONTRACT = """func safe_div(a: Int, b: Int) -> Int
+    requires b != 0
+    ensures result >= 0
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Int
+    return safe_div(a: 8, b: 0)
+end func
+"""
+
+
+def _js(source: str, filename: str = "app.geno", **options: Any) -> str:
+    from geno.js_compiler import compile_to_js
+
+    code = compile_to_js(source, filename=filename, **options)
+    assert isinstance(code, str)
+    return code
+
+
+def _js_table(code: str) -> tuple[int, list[str], Any]:
+    """The anchor's line index, the code's lines and the parsed JS table."""
+    import json
+
+    lines = code.split("\n")
+    anchor = lines.index(JS_ANCHOR)
+    table_line = lines[anchor + 1]
+    assert table_line.startswith(JS_TABLE_PREFIX) and table_line.endswith(";")
+    table = json.loads(table_line[len(JS_TABLE_PREFIX) : -1])
+    return anchor, lines, runtime._geno_parse_trace(table)
+
+
+def _js_statement_of(code: str, needle: str, occurrence: int = 0) -> Any:
+    anchor, lines, (_functions, statements, marks, candidates, _end) = _js_table(code)
+    found = [
+        index
+        for index, line in enumerate(lines)
+        if index > anchor + 1 and needle in line
+    ]
+    statement = runtime._geno_trace_statement(marks, found[occurrence] - anchor)
+    return statements.get(statement), candidates.get(statement, [])
+
+
+def _assert_js_ranges_start_at_their_functions(code: str) -> None:
+    """Each range starts exactly at its `function` line, as the reporter's
+    enclosing-line check expects, and ends before the entry code."""
+    anchor, lines, (functions, _statements, _marks, _candidates, end) = _js_table(code)
+    assert functions
+    for start, stop, host, _shown in functions:
+        assert 0 < start < stop <= end
+        first = lines[anchor + start].lstrip()
+        assert first.startswith((f"function {host}(", f"async function {host}(")), (
+            host,
+            first,
+        )
+    entry = next(
+        index
+        for index, line in enumerate(lines)
+        if "_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);" in line
+    )
+    assert anchor + end <= entry
+
+
+class TestJavaScriptTable:
+    def test_the_table_is_one_string_constant_after_the_anchor(self) -> None:
+        code = _js(PANIC, "panic.geno")
+        _anchor, _lines, (_functions, statements, *_rest) = _js_table(code)
+        assert {statement[0] for statement in statements.values()} == {"panic.geno"}
+        _assert_js_ranges_start_at_their_functions(code)
+
+    def test_no_marker_survives(self, tmp_path: Path) -> None:
+        for source in (PANIC, NESTED_LAMBDAS, CALLBACK, CONTRACT):
+            assert "\0" not in _js(source)
+        from geno.js_compiler import JSCompiler
+
+        main = "import Helper\n\nfunc main() -> Int\n    return Helper.scale(4)\nend func\n"
+        _project(tmp_path, main, {"Helper": PANIC.split("func main", 1)[0]})
+        graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
+        TypeChecker().check_project_graph(graph)
+        assert "\0" not in JSCompiler().compile_project(graph)
+
+    def test_paths_are_relative_to_the_entry_file(self) -> None:
+        code = _js(PANIC, "/build/machine/app/panic.geno")
+        _anchor, _lines, (_functions, statements, *_rest) = _js_table(code)
+        assert {statement[0] for statement in statements.values()} == {"panic.geno"}
+        assert "/build/machine" not in code
+
+    def test_the_esm_anchor_and_entry_guard(self) -> None:
+        code = _js(PANIC, "panic.geno", esm=True)
+        anchor, lines, (_functions, _statements, _marks, _candidates, end) = _js_table(
+            code
+        )
+        _assert_js_ranges_start_at_their_functions(code)
+        guard = next(
+            index for index, line in enumerate(lines) if 'from "node:url";' in line
+        )
+        # The entry guard (and the reporter it installs) follow the body.
+        assert anchor + end <= guard
+        install = next(
+            index
+            for index, line in enumerate(lines)
+            if "_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);" in line
+        )
+        assert lines[install].startswith("    ")  # inside the guard's `if`
+
+    def test_records_of_buffered_arrows_name_their_final_lines(self) -> None:
+        code = _js(NESTED_LAMBDAS, "nested.geno")
+        statement, candidates = _js_statement_of(code, "g(y)")
+        assert statement == ("nested.geno", 11, 9)
+        assert ("g", 11, 31) in candidates
+        assert _js_statement_of(code, "return f(x)")[0] == ("nested.geno", 12, 9)
+        # The enclosing statements resume after the spliced arrow.
+        assert _js_statement_of(code, "const h = ")[0] == ("nested.geno", 10, 5)
+        assert _js_statement_of(code, "const ys = ")[0] == ("nested.geno", 14, 5)
+        _assert_js_ranges_start_at_their_functions(code)
+
+    def test_a_block_arrow_callback(self) -> None:
+        code = _js(CALLBACK, "callback.geno")
+        assert _js_statement_of(code, "const doubled = ")[0] == ("callback.geno", 11, 9)
+        statement, candidates = _js_statement_of(code, "return g(doubled)")
+        assert statement == ("callback.geno", 12, 9)
+        assert ("g", 12, 16) in candidates
+        statement, candidates = _js_statement_of(code, "list_map(")
+        assert statement == ("callback.geno", 10, 5)
+        assert ("list_map", 10, 14) in candidates
+
+    def test_contract_checks_are_located_at_their_clause(self) -> None:
+        code = _js(CONTRACT, "contract.geno")
+        assert _js_statement_of(code, 'throw _genoContractViolation("requires"')[0] == (
+            "contract.geno",
+            2,
+            14,
+        )
+        assert _js_statement_of(code, 'throw _genoContractViolation("ensures"')[0] == (
+            "contract.geno",
+            3,
+            13,
+        )
+        statement, candidates = _js_statement_of(code, "return _safe_div(")
+        assert statement == ("contract.geno", 5, 5)
+        assert ("_safe_div", 5, 12) in candidates
+
+    def test_module_factories(self, tmp_path: Path) -> None:
+        from geno.js_compiler import JSCompiler
+
+        main = "import Helper\n\nfunc main() -> Int\n    return Helper.scale(4)\nend func\n"
+        _project(tmp_path, main, {"Helper": PANIC.split("func main", 1)[0]})
+        graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
+        TypeChecker().check_project_graph(graph)
+        code = JSCompiler().compile_project(graph)
+        _anchor, _lines, (functions, *_rest) = _js_table(code)
+        assert {"main", "Helper.check", "Helper.scale"} <= {
+            function[3] for function in functions
+        }
+        statement, candidates = _js_statement_of(code, "return check(")
+        assert statement == ("Helper.geno", 11, 5)
+        assert ("check", 11, 12) in candidates
+        statement, candidates = _js_statement_of(code, "return get_field(")
+        assert statement == ("Main.geno", 4, 5)
+        assert ("scale", 4, 12) in candidates
+        _assert_js_ranges_start_at_their_functions(code)
+
+    def test_libraries_and_browser_builds_carry_no_table_or_reporter(self) -> None:
+        from geno.js_compiler import compile_to_html
+        from geno.target_profile import TargetProfile
+
+        library = "func double(n: Int) -> Int\n    example 1 -> 2\n    return n * 2\nend func\n"
+        browser = TargetProfile.load("browser")
+        for code in (
+            _js(library),
+            _js(PANIC, target_profile=browser),
+            _js(PANIC, esm=True, target_profile=browser),
+            compile_to_html(PANIC),
+        ):
+            assert "_GENO_TRACE" not in code
+            assert "_genoTraceAnchor" not in code
+            assert "_genoReportUncaught" not in code
+            assert "_genoInstallReporter" not in code
+            assert "stackTraceLimit" not in code
+
+    def test_the_source_map_leaves_the_table_and_entry_lines_unmapped(
+        self,
+    ) -> None:
+        import json
+
+        from geno.js_compiler import compile_to_js
+
+        result = compile_to_js(PANIC, filename="panic.geno", source_map=True)
+        assert isinstance(result, tuple)
+        code, source_map_json = result
+        source_map = json.loads(source_map_json)
+        assert set(source_map) == {
+            "version",
+            "file",
+            "sources",
+            "sourcesContent",
+            "mappings",
+        }
+        mapped = {
+            line
+            for line, segments in enumerate(source_map["mappings"].split(";"))
+            if segments
+        }
+        lines = code.split("\n")
+        anchor = lines.index(JS_ANCHOR)
+        for index, line in enumerate(lines):
+            if index in (anchor, anchor + 1) or "_genoReportUncaught(" in line:
+                assert index not in mapped, line
+        # The functions are still mapped to their definitions.
+        check = next(i for i, line in enumerate(lines) if line == "function check(n) {")
+        assert check in mapped
+        # The table is never embedded as a source map.
+        assert "sourceMappingURL" not in code
+
+    @pytest.mark.parametrize(
+        "name", ["_GENO_TRACE", "_genoTraceAnchor", "_genoReportUncaught"]
+    )
+    def test_the_table_and_reporter_names_are_reserved(self, name: str) -> None:
+        from geno.js_compiler import JSCompileError
+
+        source = (
+            f"func {name}() -> Int\n    example () -> 1\n    return 1\nend func\n\n"
+            "func main() -> Int\n    return 0\nend func\n"
+        )
+        with pytest.raises(JSCompileError):
+            _js(source, typecheck=False)
