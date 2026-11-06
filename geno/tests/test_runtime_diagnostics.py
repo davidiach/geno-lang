@@ -47,6 +47,8 @@ OLD_CONTRACT_WORDING = (
     "ensures clause",
     "evaluated to false",
 )
+# The 0.6 messages named the function as `... for <name>:`.
+OLD_FOR_NAME = re.compile(r'panics\s+"[^"]*\bfor [A-Za-z_][\w.]*:')
 
 
 def _function(source: str, name: str) -> FunctionDef:
@@ -603,7 +605,9 @@ class TestContractMessage:
                 for number, line in enumerate(path.read_text().splitlines(), 1):
                     if "panics" not in line:
                         continue
-                    if any(old in line for old in OLD_CONTRACT_WORDING):
+                    if any(old in line for old in OLD_CONTRACT_WORDING) or (
+                        OLD_FOR_NAME.search(line)
+                    ):
                         offenders.append(f"{path.relative_to(root)}:{number}")
 
         assert offenders == []
