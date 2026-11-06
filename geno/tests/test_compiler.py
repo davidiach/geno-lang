@@ -1563,7 +1563,10 @@ class TestCompilerSpecs:
         end func
         """
         python_code = compile_to_python(source)
-        assert 'raise _GenoContractViolation("Precondition failed' in python_code
+        assert (
+            "raise _geno_contract_violation('requires', 'false', 0, 'positive', "
+            "'x > 0', ('x',), (x,))"
+        ) in python_code
 
     def test_ensures_runtime_check(self):
         """Verify ensures clauses generate runtime checks."""
@@ -1579,8 +1582,10 @@ class TestCompilerSpecs:
         end func
         """
         python_code = compile_to_python(source)
-        assert "raise _GenoContractViolation" in python_code
-        assert "Postcondition failed" in python_code
+        assert (
+            "raise _geno_contract_violation('ensures', 'false', 0, 'double', "
+            "'result > x', ('x',), (x,), _temp_"
+        ) in python_code
 
     def test_ensures_rejects_result_parameter_collision_before_compile(self):
         source = """
@@ -1678,7 +1683,7 @@ class TestContractConstantFolding:
         end func
         """
         python_code = compile_to_python(source)
-        assert "Precondition failed" not in python_code
+        assert "raise _geno_contract_violation" not in python_code
         assert compile_and_run(source) == 1
 
     def test_ensures_true_omitted(self):
@@ -1694,7 +1699,7 @@ class TestContractConstantFolding:
         end func
         """
         python_code = compile_to_python(source)
-        assert "Postcondition failed" not in python_code
+        assert "raise _geno_contract_violation" not in python_code
         assert "_body_f" not in python_code
         assert compile_and_run(source) == 1
 
@@ -1741,7 +1746,7 @@ class TestContractConstantFolding:
         end func
         """
         python_code = compile_to_python(source)
-        assert "Precondition failed" in python_code
+        assert "raise _geno_contract_violation('requires'" in python_code
 
 
 class TestCompilerRuntimePrelude:
