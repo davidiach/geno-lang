@@ -487,7 +487,8 @@ def _effects(source: str, name: str) -> frozenset[str]:
     """The effects the checker settled on for top-level function *name*."""
     func_type = _typecheck(_RECORDS + source).global_env.lookup(name)
     assert isinstance(func_type, FuncType)
-    return func_type.effects
+    effects: frozenset[str] = func_type.effects
+    return effects
 
 
 def _check(source: str):
@@ -1176,6 +1177,73 @@ end func
         checker._write_classifications.clear()
         env = checker._effect_env_for_function(defn)
         assert checker._infer_function_effects(defn, env) == frozenset({"mutation"})
+
+    def test_effect_inference_re_checks_record_no_facts(self) -> None:
+        """Only a real check records ownership and write facts; the re-checks
+        effect inference makes in its own environment read them."""
+        source = (
+            _RECORDS
+            + """
+func f(n: Int) -> Int
+    example 1 -> 1
+    var a = array_new(n, 0)
+    a[0] = n
+    return a[0]
+end func
+"""
+        )
+        program = parse(source)
+        checker = TypeChecker()
+        checker.check_program(program)
+        [defn] = [d for d in program.definitions if getattr(d, "name", "") == "f"]
+        write = defn.body[1]
+        recorded = checker._write_classifications[id(write)]
+        assert checker._checked_unit_ownership(defn) == frozenset({"a"})
+        with checker._effect_inference():
+            checker._set_write_classification(write, None)
+            # The cache answers; a unit no real check saw owns nothing.
+            assert checker._record_unit_ownership(defn) == frozenset({"a"})
+            checker._unit_owned_names.clear()
+            assert checker._record_unit_ownership(defn) == frozenset()
+            assert checker._checked_unit_ownership(defn) == frozenset()
+        assert checker._write_classifications[id(write)] == recorded
+        # Outside effect inference, the unit's check records again.
+        assert checker._record_unit_ownership(defn) == frozenset({"a"})
+        assert checker._checked_unit_ownership(defn) == frozenset({"a"})
+
+    def test_a_lambda_checked_mid_walk_restores_the_functions_owned_names(
+        self,
+    ) -> None:
+        """Effect inference re-checks `g` between the two writes into `a`;
+        `_function_context` must hand `f` its own owned names back."""
+        source = """
+func f(n: Int) -> Int
+    example 1 -> 4
+    var a = array_new(1, 0)
+    let g = fn(x: Int) do
+        var b = array_new(1, x)
+        b[0] = b[0] + 1
+        return b[0]
+    end fn
+    a[0] = g(n)
+    let h: (Int) -> Int = g
+    a[0] = a[0] + h(1)
+    return a[0]
+end func
+
+func apply(k: (Int) -> Int, n: Int) -> Int
+    example fn(x: Int) -> x, 1 -> 1
+    return k(n)
+end func
+
+func caller(n: Int) -> Int
+    example 1 -> 4
+    return apply(f, n)
+end func
+"""
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        assert _effects(source, "f") == frozenset()
 
     def test_a_local_binding_named_like_a_builtin_is_not_fresh(self) -> None:
         """Checker only: JavaScript refuses a local named after a builtin."""

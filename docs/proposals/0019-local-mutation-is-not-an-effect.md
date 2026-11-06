@@ -318,6 +318,21 @@ Each applies to the unit U that contains the statement.
   body before `validate_effects`, and `_check_lambda_body` checks a lambda's
   statements before it infers the lambda's effects. Re-checking the same
   node overwrites the classification with the same value.
+  - The classification is kept in a checker table keyed by the statement
+    node's identity, with the node held next to it, rather than in a new AST
+    field, so the AST and its consumers are unchanged. Each statement check
+    first forgets the node's entry, and records a new one only after its
+    error returns: an index write only when its target is an `Array`, `Vec`
+    or `MutableMap`, and a field write only once the field resolves.
+  - Only a real check records it. Effect inference re-checks initializers,
+    callees and scrutinees in an environment of its own, which
+    `_bind_pattern_effect_env` and the destructure case only approximate.
+    While it runs (the stabilization walk, the `validate_effects` walk, and
+    each lambda's own effect walk in `_check_lambda_body`), statement checks
+    and lambda checks record no classification and no ownership, and read the
+    last real check's. The same holds for owned names (section 3), whose
+    freshness test reads `_resolved_builtin_name`, which the call check sets
+    but never clears.
 - **L4. Calls.** Calls are unchanged. A call contributes the effects of the
   callee's function type, whether the callee is a top-level function, a
   module or trait function, a parameter or a local closure. No builtin carries
@@ -856,7 +871,14 @@ or `var f: (Int) -> Int with mutation = local_sum`. No automatic fix is
 offered, because either site is a valid choice. Approximate masking was run
 over the 274 repository `.geno` files, the 299 benchmark reference solutions
 and every documentation snippet. It changed no file's accepted or rejected
-status. Package 2 re-runs that check with the real implementation.
+status. Package 2 re-ran that check with the real implementation, over 283
+repository `.geno` files (`geno.check_path`), the 93 Geno canonical solutions
+in `benchmark/problems/**/*.yaml` and 483 documentation snippets
+(`geno.check`), before and after the change. No repository file and no
+benchmark solution changed status, and no diagnostic message changed. The only
+changes are this proposal's own snippets: the Summary, Guide-Level and
+section 6 programs, which need the rule, go from rejected to accepted, and the
+breaking-class program above goes from accepted to rejected, as intended.
 
 **Recording.** The compatibility policy gains "0.7 (draft): local mutation is
 not an effect", meeting its five conditions:
@@ -1173,7 +1195,13 @@ previous one.
      unclassified statement is charged;
    - owned-name state saved and restored by `_function_context`, set in
      `_infer_function_effects` and in `_check_lambda_body` for both block and
-     expression bodies, and cached by unit node.
+     expression bodies, and cached by unit node. A unit's owned names are
+     computed right after its real check (in `_check_function_def_in_scope`
+     and `_check_lambda_body`); effect inference reads that cache and never
+     recomputes it (section 2, "Write classification").
+
+   Status: implemented in the working tree. The sign-off on Unresolved
+   Question 1 that gates landing it is not yet recorded.
 
    Tests: update `geno/tests/test_effect_checking.py` (the unannotated-`var`
    case, and the new `TestLocalMutationMasking`) and

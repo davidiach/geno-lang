@@ -3337,10 +3337,11 @@ class TypeChecker(ExhaustivenessMixin):
         """
         if self._effect_inference_depth:
             return self._checked_unit_ownership(unit)
-        if isinstance(unit, FunctionDef):
-            owned = function_owned_names(unit)
-        else:
-            owned = lambda_owned_names(unit)
+        owned: frozenset[str] = (
+            function_owned_names(unit)
+            if isinstance(unit, FunctionDef)
+            else lambda_owned_names(unit)
+        )
         self._unit_owned_names[id(unit)] = (unit, owned)
         return owned
 
