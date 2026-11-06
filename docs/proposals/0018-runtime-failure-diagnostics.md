@@ -716,7 +716,9 @@ backend already uses for its source map (`\0geno-map:N\0`,
   names its statement by id) go straight into side tables. The `_GENO_TRACE`
   line is written as a placeholder.
 - Markers are resolved once, over the final text, when `compile` or
-  `compile_project` returns (`_TraceRecorder.resolve`). Each marker's host line
+  `compile_project` returns (`TraceRecorder.resolve`, in
+  `geno/runtime_report.py`, which both compilers share; section 9). Each
+  marker's host line
   is the number of newlines between the anchor and the marker, counted in the
   text itself, never by `_writeln` calls, so multi-line strings, prelude text
   and blocks spliced in from any depth of scratch buffer are all counted
@@ -918,72 +920,135 @@ the default lane prints the same paths as `--unsafe`. `geno compile` and
 
 ### 9. Compiled JavaScript
 
-The JavaScript backend reuses its source-map recorder (`_record_mapping`, the
-deferred-marker machinery and prelude-offset handling). Statement records are
-always collected for entry builds, not only under `track_source_map`, and the
-recorder also records `D` function ranges and `C` candidates. Records written
-while an arrow body is buffered (`_mapping_buffer_depth > 0`) go through the
-same deferred `\0geno-map:N\0` markers that source-map entries use, resolved
-at final placement, so the JavaScript table has the property section 8 gives
-the Python recorder. From that data it emits the same `_GENO_TRACE` table
-format. It does not embed a V3 source map:
-that would need a VLQ decoder in the runtime and would tempt `sourcesContent`
-into production artifacts, which `docs/deploy/browser.md` advises against.
-`--source-map` output is unchanged.
+The JavaScript backend writes the same `_GENO_TRACE` table format with the same
+recorder as the Python backend. `TraceRecorder` and `trace_field` live in
+`geno/runtime_report.py`, shared by both compilers: `js_compiler` must not
+import `geno.compiler`, because `geno check --target node-cli` loads only the
+JavaScript backend (`test_target_validation_import_footprint`). The recorder
+is on for every Node entry build, independent of `track_source_map`. It
+records:
+
+- `D` function ranges. A range starts exactly at the `function` (or
+  `async function`) line, because the reporter checks a frame's
+  enclosing-function line against it;
+- `S`/`T` statements (every statement kind, plus a statement for each
+  `requires` and `ensures` check located at the clause);
+- `C` candidates: the callee of each call (a plain host name, or a module
+  function reached through `get_field(binding, 'name')`), the leading runtime
+  helper of an inlined builtin or operator (`print_`, `_safe_div`,
+  `_safe_index`, `_safe_mul`, ...; never `_checkCollectionSize`, which wraps
+  every literal), `_divZero` for an inline float `%`, each pipeline stage's
+  callee and `<await>` at each `await`.
+
+A block arrow is compiled into a scratch buffer and placed later, like a
+Python block lambda. Its records therefore use section 8's in-band
+`\0geno-trace:N\0` markers, resolved once over the final user code. They do
+not use the source map's `\0geno-map:N\0` markers, which resolve at each
+root-buffer write and would need the same bookkeeping section 8 avoids. The
+two kinds of marker never interact: neither contains a newline, so the source
+map's line counting is unchanged. The tree-shaker reads the user code with
+the markers and the table placeholder removed, so the table's text (host
+names and file names) never pulls a prelude section in.
+
+The table is not embedded as a V3 source map. That would need a VLQ decoder
+in the runtime and would tempt `sourcesContent` into production artifacts,
+which `docs/deploy/browser.md` advises against. `--source-map` output keeps
+its format. Its mappings move by the two lines the anchor and the table take,
+and those lines and the entry code have no mappings.
 
 **Node entry builds** (CommonJS and ESM with a `main` call) are changed in
 these ways:
 
 - The first user-code lines are
-  `function _genoTraceAnchor() { return new Error(); }` and the `_GENO_TRACE`
-  constant. Both are module-local bindings with no side effect, so importing
-  an ESM build stays side-effect safe.
+  `function _genoTraceAnchor() { return new Error(); }` and
+  `const _GENO_TRACE = "...";` (a JSON string literal). Both are
+  module-local bindings with no side effect, so importing an ESM build stays
+  side-effect safe.
 - The process-wide settings are made **only on the entry path**: inside the
   ESM entry guard (`_open_esm_entrypoint_guard`, which exists so that
   importing the module is side-effect safe), and immediately before the
-  `main()` call in CommonJS. There, `_genoInstallReporter()` sets
-  `Error.stackTraceLimit = Infinity` and installs
-  `process.on("unhandledRejection", _genoReportUncaught)`. The unlimited trace
-  limit lets a deep stack keep its outermost frames: V8 keeps the innermost
-  *N*. It is not restored afterwards, because errors raised later by async
-  work still need it, and the entry path owns the process. It costs nothing
-  on success paths, because Geno control flow (`_PropagateReturn`) is not an
-  `Error`; P4 verifies that no hot path constructs `Error`s. A host
-  application that imports an ESM build never runs this code, and a
-  `test_js_compiler` test asserts that importing an ESM build leaves
-  `Error.stackTraceLimit` and the `unhandledRejection` listeners unchanged.
+  `main()` call in CommonJS. There,
+  `_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor)` sets
+  `Error.stackTraceLimit = Infinity` and installs an `unhandledRejection`
+  listener that calls `_genoReportUncaught`. The unlimited trace limit lets a
+  deep stack keep its outermost frames: V8 keeps the innermost *N*. It is not
+  restored afterwards, because errors raised later by async work still need
+  it, and the entry path owns the process. Geno control flow
+  (`_PropagateReturn`, the bounded renderer's `_GenoDisplayLimitReached`) is
+  not an `Error`. The only success paths that construct an `Error` are the
+  builtins that turn a host failure into a Geno `Err` or `None` (parsing,
+  JSON, fs, regex, process, http). There each capture costs O(stack depth),
+  which is nothing on a normal stack. A host application that imports an ESM
+  build never runs this code. A `test_js_compiler` test asserts that
+  importing an ESM build leaves `Error.stackTraceLimit` and the
+  `unhandledRejection` listeners unchanged.
 - `const _main_result = main();` and the result handling are wrapped in
-  `try { ... } catch (e) { _genoReportUncaught(e); }`.
+  `try { ... } catch (_temp_N) { _genoReportUncaught(_temp_N, _GENO_TRACE,
+  _genoTraceAnchor); }`.
 - The async form's `.catch(e => { console.error(e); ... })` becomes
-  `.catch(e => _genoReportUncaught(e))`.
-- `_genoReportUncaught` prints the report to stderr, appends `e.stack` when
-  `process.env.GENO_TRACEBACK === "host"`, and then calls `process.exit(1)`.
-  In 0.6 an uncaught synchronous throw ended Node at once. Merely setting
-  `process.exitCode` would let pending work run after the report (for
-  example an `Async` created without `await`, which JavaScript starts
-  eagerly), printing more output or performing more effects. Exiting at once
-  restores 0.6's termination for synchronous `main`, and for async `main` it
+  `.catch(_temp_N => _genoReportUncaught(_temp_N, _GENO_TRACE,
+  _genoTraceAnchor))`.
+- `_genoReportUncaught` writes the report to stderr. When
+  `process.env.GENO_TRACEBACK === "host"` it appends the
+  `Host traceback (GENO_TRACEBACK=host):` header and the V8 stack (formatted
+  from the call sites when the mapping already consumed `e.stack`). It then
+  calls `process.exit(1)`. In 0.6 an uncaught synchronous throw ended Node at
+  once. Merely setting `process.exitCode` would let pending work run after the
+  report (for example an `Async` created without `await`, which JavaScript
+  starts eagerly), printing more output or performing more effects. Exiting at
+  once restores 0.6's termination for synchronous `main`. For async `main` it
   matches the interpreter and compiled Python, which never run an unawaited
-  `Async`. The flush behaviour is the same as Node's own fatal-exception path
-  (synchronous for files and, on POSIX, pipes). A rejection of an `Async` that
-  is never awaited reaches the same reporter through the `unhandledRejection`
-  listener instead of Node's raw V8 stack. Tests cover a synchronous `main`
-  that panics while an un-awaited async call is pending (no output after the
-  report, status 1) and an un-awaited `Async` that fails (Geno report, status
-  1).
+  `Async`.
+- **Flushing.** The flush behaviour is that of Node's own fatal-exception
+  path, which 0.6 used for a synchronous `main`. Writes to files are
+  synchronous. Writes to a pipe are asynchronous on POSIX: whatever the pipe
+  accepts at once (its buffer, typically 64 KiB) is kept, and a tail of stdout
+  still queued for a slow or full pipe is lost when the process exits. The
+  report itself is small and goes out with it. 0.6's async `main` set
+  `process.exitCode` and so drained such a queue. That case now ends like a
+  synchronous `main`: an async `main` that prints more than a pipe buffer
+  just before failing can lose the end of its stdout. Waiting for the drain
+  would let pending async work run after the report, which this proposal
+  rules out.
+- A rejection of an `Async` that is never awaited reaches the same reporter
+  through the `unhandledRejection` listener, instead of Node's raw V8 stack,
+  with 0.6's status 1. Tests cover a synchronous `main` that panics while an
+  un-awaited async call is pending (no output after the report, status 1) and
+  an un-awaited `Async` that fails (Geno report, status 1).
+- **The message** follows the Python worker's rule: a plain `Error` or a
+  `_GenoContractViolation` shows its message; any other error type is named
+  before it (`RangeError: Maximum call stack size exceeded` for a host stack
+  overflow); a thrown non-`Error` value shows `String(value)`. The label is
+  always `Runtime Error`.
 
 **Mapping** reads structured V8 call sites. It temporarily installs
 `Error.prepareStackTrace = (_, sites) => sites`, reads `e.stack` and restores
-the hook, falling back to parsing the stack text if `e.stack` was already
-formatted. It calls `_genoTraceAnchor()` the same way to learn the generated
-file's URL and the anchor's line. That makes the ESM line delta and any
-prologue irrelevant. From there, the algorithm is section 8's:
+the hook. It calls `_genoTraceAnchor()` the same way to learn the generated
+file's name (a path for CommonJS, a `file:` URL for ESM) and the anchor's
+line. That makes the ESM line delta and any prologue irrelevant. From there,
+the algorithm is section 8's:
 
-- A frame is a Geno frame when its function name, ignoring an `async ` prefix
-  and any `Type.` receiver prefix, equals the host name of the innermost `D`
-  range containing its line.
-- Anonymous arrows and `Object.<anonymous>` are transparent.
-- Prelude frames have lines before the anchor and are dropped.
+- A **body frame** is one whose file is the anchor's and whose line lies
+  inside some `D` range before the table's `E` line. Prelude frames have lines
+  before the anchor, and the entry code comes after `E`.
+- A body frame is a **Geno frame** when its function name equals the host name
+  of the innermost `D` range containing its line and, where V8 reports it
+  (`getEnclosingLineNumber`), its function starts on that range's first line.
+  The second test keeps a lambda bound to a name equal to the enclosing
+  function's host name from passing as that function. Anonymous and inferred
+  arrows, IIFEs and the `ensures` body helper are transparent.
+- Positions, candidate matching (by name; there is no prelude-alias identity
+  check, since JavaScript cannot look a binding up by name), the `<await>`
+  rule for a directly following frame, and the 10 + 10 bound are section 8's.
+
+When `e.stack` was already formatted (something read it first), the
+reporter parses its text instead. Each `    at name (file:line:col)` line
+gives a frame. `async ` and `new ` prefixes, a `[as alias]` suffix and a
+`Type.` receiver prefix are removed from the name, and there is no
+enclosing-line test. The text starts with the error's own `String(error)`,
+whose message may itself contain lines that look like frames. That prefix is
+removed before parsing, so a message cannot forge a frame. A test shows a
+forged frame line pointing into `main`'s body is ignored.
 
 **Under `node --enable-source-maps`** with a `--source-map` artifact, Node
 rewrites formatted `e.stack` text to `.geno` positions. The structured path is
@@ -1005,13 +1070,22 @@ position, so all three backends agree. In the split form (`let p = f(x)` ...
 compiled Python report the `await`. The difference is documented under
 Backend And Target Parity, not mapped away.
 
-The new prelude functions are reached by name, so tree-shaking keeps them only
-in entry builds. `_GENO_TRACE`, `_genoTraceAnchor` and `_genoReportUncaught`
-join the reserved-name lists.
+The new prelude section (`Runtime Failure Reports`) is reached by name, so
+tree-shaking keeps it only in entry builds. Its locals use a `_gr` prefix
+that no other section uses, so ordinary programs never pull it in.
+`_GENO_TRACE` and `_genoTraceAnchor` join `_JS_FIXED_GLOBAL_NAMES`. The
+prelude's own `_genoReportUncaught`, `_genoInstallReporter` and the other
+reporter functions are reserved as prelude bindings.
 
-**Browser builds** (`geno build`, no `main` call on a Node host) emit no table
-and install no reporter. Errors stay native `Error`s, as in 0.6. The browser
-has no process to report to, and stack formats differ by engine.
+**Browser builds** (`geno build`, `compile_to_html` and any `browser`-profile
+compile), libraries without `main` and app-mode programs emit no table and
+install no reporter. Errors stay native `Error`s, as in 0.6. The browser has
+no process to report to, and stack formats differ by engine.
+
+**ES module projects.** A multi-module project compiled with `--esm` does not
+run on 0.6 either: its `export { main }` names a function inside the entry
+module's factory, and Node rejects the module. This proposal does not change
+that. The module-project parity case runs as CommonJS.
 
 ### 10. Surfaces
 
@@ -1119,7 +1193,10 @@ the lag.
     async `main` too (0.6 let pending async work continue after an async
     `main` rejected). A rejection of an un-awaited `Async` prints a Geno
     report instead of Node's raw stack. The status is 1 in both cases, as
-    before.
+    before. Like 0.6's synchronous fatal path, an exit at once can lose a
+    tail of stdout still queued for a POSIX pipe (beyond what the pipe
+    buffer, typically 64 KiB, accepted); 0.6's async `main` drained it
+    (section 9, Flushing).
   - The first stderr line of a failure is now `Stack trace ...` whenever a
     stack exists. Tests that read the first line as the message
     (`test_isolated_run_stdin.py:389-391`) read the `Runtime Error:` line
@@ -1305,8 +1382,9 @@ Existing tests updated, with the old pins replaced by the new shape:
   property-check matching never see location or stack text;
 - `test_api.py` and `test_server.py` (envelope keys, pickling, remapped
   module locations);
-- `test_js_source_maps.py` (main-call lines stay unmapped; `--source-map` output
-  unchanged);
+- `test_js_source_maps.py`, unchanged and green (its main-call lines stay
+  unmapped); `test_trace_table.py` adds that the anchor, table and entry lines
+  have no mappings and the source map keeps its keys;
 - `test_worker_prelude_contract.py` and `test_python_prelude_bindings.py`, after
   `scripts/update_prelude_bindings.py`;
 - `test_cli_run_import_footprint.py`, unchanged and still green with
@@ -1524,7 +1602,8 @@ Five sequential packages; each leaves the tree green.
      compile-medium) and all retained conformance are green.
 4. **Compiled JavaScript mapping.**
    - The recorder always on for entry builds, emitting `D`/`C` records (through
-     the deferred markers inside buffered arrows) and the table.
+     the in-band trace markers inside buffered arrows) and the table, with the
+     recorder moved to `geno/runtime_report.py` so both compilers share it.
    - The anchor, and `_genoInstallReporter()` (`Error.stackTraceLimit`, the
      `unhandledRejection` listener) on the entry path only: inside the ESM
      guard, before `main()` in CommonJS.
