@@ -3,12 +3,15 @@
 Proposal 0018 makes every runtime failure as precise as a compile error.
 This module holds the parts every lane and backend must agree on: the stack
 bound, the report text, the ``std/`` path display, the budgeted fitting of a
-report into a size limit, the bounded source-snippet reader, and the
-contract-failure wording. The compiled runtimes cannot import it (generated
-code stays standalone), so the Python prelude (``geno/_runtime_support.py``)
-and the JavaScript prelude (``geno/_js_runtime_support.js``) carry copies of
-the constants and of ``contract_message``; ``geno/tests/test_runtime_diagnostics.py``
-pins that the copies agree.
+report into a size limit, the bounded source-snippet reader, the
+contract-failure wording, the default lane's worker payload, and the compiled
+trace table's format and writer (``TraceRecorder``, used by both compilers).
+The compiled runtimes cannot import it (generated code stays standalone), so
+the Python prelude (``geno/_runtime_support.py``) and the JavaScript prelude
+(``geno/_js_runtime_support.js``) carry copies of the constants, of
+``contract_message`` and of the frame-block renderer;
+``geno/tests/test_runtime_diagnostics.py`` and
+``geno/tests/test_runtime_report_parity.py`` pin that the copies agree.
 
 The module is deliberately light: it imports only ``geno.diagnostics`` and
 ``geno.tokens``, so any lane (including the default ``geno run`` parent,

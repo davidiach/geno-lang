@@ -1152,6 +1152,11 @@ Three differences are documented rather than removed:
   positions the caller at the creation call on JavaScript, and at the `await`
   on the interpreter and compiled Python. With `await f(...)` written as one
   expression, all three agree; parity tests and conformance use that form.
+- **An `Async` nothing awaits (JavaScript).** For the same reason, a failing
+  `Async` that is never awaited fails on JavaScript, reported through the
+  `unhandledRejection` listener with status 1, as 0.6 failed with status 1.
+  The interpreter and compiled Python never run it, and the program ends
+  normally.
 - **Existing message differences.** Compiled index and division messages are
   shorter than the interpreter's (`Index 7 out of bounds` against
   `... for list of length 3`). This proposal does not reword them. Doing so
@@ -1160,7 +1165,8 @@ Three differences are documented rather than removed:
 
 A host stack overflow's depth differs by host (interpreter
 `max_recursion_depth`, Python's recursion limit, V8's stack), so its
-`omitted` count is host-specific. Its head and tail frames are not.
+`omitted` count and its message (`RangeError: Maximum call stack size
+exceeded` on Node) are host-specific. Its head and tail frames are not.
 
 Targets:
 
