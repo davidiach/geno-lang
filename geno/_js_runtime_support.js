@@ -1654,107 +1654,50 @@ function unwrap_or(opt, def) {
 // (geno/runtime_report.py ARGUMENT_DISPLAY_LIMIT; a test pins the copies).
 const _GENO_ARGUMENT_DISPLAY_LIMIT = 64;
 
-// A Float-typed value: JavaScript numbers do not say whether 2 is an Int or
-// a Float, so the compiler marks Float arguments and results it reports.
-class _GenoFloatDisplay {
-    constructor(value) { this.value = value; }
-}
-function _genoFloatDisplay(value) { return new _GenoFloatDisplay(value); }
-
 class _GenoDisplayLimitReached {}
+
+// The f-string writer with a display budget instead of the collection
+// limit: it stops (throws _GenoDisplayLimitReached) once more than `limit`
+// code points are written, and shows function values as "<function>".
+class _GenoBoundedDisplay extends _GenoFString {
+    constructor(limit) {
+        super();
+        this.limit = limit;
+    }
+
+    append(part) {
+        let size = this.size;
+        for (const _character of part) size += 1;
+        this.size = size;
+        if (part) this.parts.push(part);
+        if (size > this.limit) throw new _GenoDisplayLimitReached();
+    }
+
+    appendValue(value, shape = null, topLevel = true) {
+        if (typeof value === "function") {
+            this.append("<function>");
+            return;
+        }
+        super.appendValue(value, shape, topLevel);
+    }
+}
 
 // The diagnostic rendering of `value` (strings quoted at every depth),
 // truncated to `limit` code points: equal to rendering it whole and keeping
 // its first `limit - 3` code points plus "...", but the walk stops once more
-// than `limit` code points are written. Function values render as
-// "<function>", as on the interpreter and compiled Python.
-function _formatValueBounded(value, limit) {
-    const parts = [];
-    let size = 0;
-    const emit = (text) => {
-        parts.push(text);
-        size += _stringLength(text);
-        if (size > limit) throw new _GenoDisplayLimitReached();
-    };
-    const items = (opening, values, closing, seen) => {
-        emit(opening);
-        let index = 0;
-        for (const item of values) {
-            if (index++) emit(", ");
-            walk(item, seen);
-        }
-        emit(closing);
-    };
-    const entries = (opening, pairs, closing, seen) => {
-        emit(opening);
-        let index = 0;
-        for (const [key, item] of pairs) {
-            if (index++) emit(", ");
-            walk(key, seen);
-            emit(": ");
-            walk(item, seen);
-        }
-        emit(closing);
-    };
-    const walk = (item, seen) => {
-        if (item instanceof _GenoFloatDisplay) { emit(_formatFloat(item.value)); return; }
-        if (item !== null && typeof item === "object") {
-            if (seen.has(item)) {
-                if (item instanceof GenoArray) emit("Array([...])");
-                else if (item instanceof GenoMutableMap) emit("MutableMap({...})");
-                else if (item instanceof GenoVec) emit("Vec([...])");
-                else if (item instanceof GenoSet) emit("Set({...})");
-                else if (Array.isArray(item)) emit("[...]");
-                else emit("{...}");
-                return;
-            }
-            seen = new _GENO_SET(seen);
-            seen.add(item);
-        }
-        if (item === null || item === undefined) emit("()");
-        else if (typeof item === "boolean") emit(_GENO_STRING(item));
-        else if (typeof item === "string") {
-            // Escaping is per code point: the escaped head is the head of the
-            // full rendering, so never escape more than can be shown.
-            const chars = _stringCodePoints(item);
-            if (chars.length <= limit + 1) emit(_reprString(item));
-            else {
-                const quoted = _reprString(chars.slice(0, limit + 1).join(""));
-                emit(quoted.slice(0, -1));
-                throw new _GenoDisplayLimitReached();
-            }
-        } else if (typeof item === "number") {
-            emit(_GENO_NUMBER.isFinite(item) ? _GENO_STRING(item) : _formatFloat(item));
-        } else if (typeof item === "function") emit("<function>");
-        else if (item instanceof GenoArray) items("Array([", item._elements, "])", seen);
-        else if (Array.isArray(item)) items("[", item, "]", seen);
-        else if (item instanceof _GENO_MAP) entries("{", item.entries(), "}", seen);
-        else if (item instanceof GenoMutableMap) entries("MutableMap({", item._data.entries(), "})", seen);
-        else if (item instanceof GenoSet) {
-            items("Set({", [...item._data.values()].sort(_compareGenoValues), "})", seen);
-        } else if (item instanceof GenoVec) items("Vec([", item._elements, "])", seen);
-        else if (isConstructor(item)) {
-            const formatter = _constructorFormatter(item);
-            if (typeof formatter === "function") { emit(formatter(item, undefined, false)); return; }
-            const fields = Object.keys(item).filter(k => k !== "_tag");
-            if (fields.length === 0) { emit(item._tag); return; }
-            emit(item._tag + "(");
-            fields.forEach((key, index) => {
-                emit((index ? ", " : "") + key + ": ");
-                walk(item[key], seen);
-            });
-            emit(")");
-        } else emit(_GENO_STRING(item));
-    };
+// than `limit` code points are written. `shape` is the static display shape
+// the compiler records (Float and tuple positions, as for f-strings), since
+// JavaScript values cannot tell 2.0 from 2 or a tuple from a list.
+function _formatValueBounded(value, limit, shape = null) {
+    const writer = new _GenoBoundedDisplay(limit);
     try {
-        walk(value, new _GENO_SET());
+        writer.appendValue(value, shape, false);
     } catch (e) {
         if (!(e instanceof _GenoDisplayLimitReached)) throw e;
     }
-    const text = parts.join("");
-    const chars = _stringCodePoints(text);
-    if (chars.length <= limit) return text;
-    return chars.slice(0, _GENO_MATH.max(limit - 3, 0)).join("") + "...";
+    const text = writer.finish();
+    if (writer.size <= limit) return text;
+    return _stringCodePoints(text).slice(0, _GENO_MATH.max(limit - 3, 0)).join("") + "...";
 }
 
 // Copy of geno/runtime_report.py contract_message (a test pins it).
@@ -1774,18 +1717,19 @@ function _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args,
 }
 
 // The error a failed contract clause throws (the caller throws it). `values`
-// are the call's arguments; `checked`, when given, are the parameters' values
-// at an ensures check in a function whose body rebound a parameter.
-function _genoContractViolation(clause, reason, clauseIndex, fn, clauseText, names, values, hasResult = false, result = undefined, checked = null) {
+// are the call's arguments as [value, shape] pairs; `checked`, when given,
+// are the parameters' values at an ensures check in a function whose body
+// rebound a parameter, and those that render differently are reported too.
+function _genoContractViolation(clause, reason, clauseIndex, fn, clauseText, names, values, hasResult = false, result = undefined, resultShape = null, checked = null) {
     const limit = _GENO_ARGUMENT_DISPLAY_LIMIT;
-    const args = names.map((name, index) => [name, _formatValueBounded(values[index], limit)]);
+    const args = names.map((name, index) => [name, _formatValueBounded(values[index][0], limit, values[index][1])]);
     let checkedValues = [];
     if (checked !== null) {
         checkedValues = names
-            .map((name, index) => [name, _formatValueBounded(checked[index], limit)])
+            .map((name, index) => [name, _formatValueBounded(checked[index][0], limit, checked[index][1])])
             .filter((pair, index) => pair[1] !== args[index][1]);
     }
-    const resultDisplay = hasResult ? _formatValueBounded(result, limit) : null;
+    const resultDisplay = hasResult ? _formatValueBounded(result, limit, resultShape) : null;
     const error = new _GenoContractViolation(
         _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args, resultDisplay, checkedValues)
     );

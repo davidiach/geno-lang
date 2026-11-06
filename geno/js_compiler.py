@@ -418,7 +418,6 @@ _JS_EMITTED_LOCAL_HELPER_NAMES = frozenset(
         "_GENO_STRING",
         "_GenoContractViolation",
         "_genoContractViolation",
-        "_genoFloatDisplay",
         "_compareGenoValues",
         "_compareOrderedValues",
         "_jsonFloatToString",
@@ -1748,8 +1747,12 @@ class JSCompiler(BaseCompiler):
         display_name = self._function_display_name(defn)
         param_names = [p.name for p in defn.params]
         param_refs = [self._mangle_name(p.name) for p in defn.params]
-        float_params = [
-            self._is_float_typed(p._resolved_type, p.param_type) for p in defn.params
+        type_bindings: dict[str, Type] = {
+            name: TypeVar(name) for name in defn.type_params
+        }
+        param_shapes = [
+            self._contract_display_shape(p._resolved_type, p.param_type, type_bindings)
+            for p in defn.params
         ]
 
         has_ensures = any(
@@ -1782,7 +1785,7 @@ class JSCompiler(BaseCompiler):
                 display_name,
                 req.source_text,
                 param_names,
-                self._contract_values(param_refs, float_params),
+                self._contract_values(param_refs, param_shapes),
             )
             cond = self._contract_condition(
                 req.condition,
@@ -1828,14 +1831,14 @@ class JSCompiler(BaseCompiler):
             await_body = "await " if is_async_execution_form(defn) else ""
             result_name = self._fresh_temp()
             self._writeln(f"const {result_name} = {await_body}{body_helper}();")
-            float_result = self._is_float_typed(
-                defn.__dict__.get("_resolved_return_type"), defn.return_type
+            result_shape = self._contract_display_shape(
+                defn.__dict__.get("_resolved_return_type"),
+                defn.return_type,
+                type_bindings,
             )
-            shown_result = (
-                f"_genoFloatDisplay({result_name})" if float_result else result_name
-            )
+            shown_result = f"{result_name}, {result_shape}"
             checked = (
-                self._contract_values(param_refs, float_params)
+                self._contract_values(param_refs, param_shapes)
                 if snapshot is not None
                 else None
             )
@@ -1855,7 +1858,7 @@ class JSCompiler(BaseCompiler):
                     display_name,
                     ens.source_text,
                     param_names,
-                    self._contract_values(call_refs, float_params),
+                    self._contract_values(call_refs, param_shapes),
                 )
                 cond = self._contract_condition(
                     ens.condition,
@@ -1918,30 +1921,33 @@ class JSCompiler(BaseCompiler):
         self._writeln("}")
         return value
 
-    def _is_float_typed(self, checked_type: Type | None, annotation: object) -> bool:
-        """Whether a parameter or return value is statically a Float here.
+    def _contract_display_shape(
+        self,
+        checked_type: Type | None,
+        annotation: object,
+        bindings: dict[str, Type],
+    ) -> str:
+        """The display shape of a contract argument or result (a JS literal).
 
-        JavaScript numbers do not tell an Int from a Float, so a contract
-        failure marks Float values for the renderer (``2.0``, not ``2``).
-        The checked type is used when the checker recorded one (an impl
-        method's rewritten definition has only its annotation).
+        JavaScript values do not tell an Int from a Float or a tuple from a
+        list, so a contract failure renders them through the f-string
+        writer with the static shape, as ``to_string`` does (``2.0``,
+        ``(1, "x")``). The checked type is used when the checker recorded
+        one (an impl method's rewritten definition has only its
+        annotation).
         """
-        if checked_type is not None:
-            return isinstance(self._static_type(checked_type), FloatType)
-        return (
-            isinstance(annotation, SimpleType)
-            and annotation.name == "Float"
-            and not annotation.type_params
-        )
+        if checked_type is None:
+            checked_type = self._annotation_to_type(annotation, bindings)
+        return self._compile_fstring_shape(checked_type)
 
     @staticmethod
-    def _contract_values(refs: list[str], float_flags: list[bool]) -> str:
-        """A JS array of the values *refs*, Float ones marked for display."""
-        shown = (
-            f"_genoFloatDisplay({ref})" if is_float else ref
-            for ref, is_float in zip(refs, float_flags)
+    def _contract_values(refs: list[str], shapes: list[str]) -> str:
+        """A JS array of ``[value, shape]`` pairs for the values *refs*."""
+        return (
+            "["
+            + ", ".join(f"[{ref}, {shape}]" for ref, shape in zip(refs, shapes))
+            + "]"
         )
-        return f"[{', '.join(shown)}]"
 
     def _contract_violation_call(
         self,
