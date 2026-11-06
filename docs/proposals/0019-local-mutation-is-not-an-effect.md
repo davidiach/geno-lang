@@ -593,6 +593,33 @@ The third is the top-level slots of a collection held by an owned name.
   or a write through a non-owned reference, both `mutation`) or an uncharged
   builtin. Inside U the alias changes only what U itself computes, which is
   not an effect. If U returns the closure, U's writes are complete.
+
+  Those whole-variable arguments alias on every backend. Compiled JavaScript
+  also aliases two shapes that the interpreter and compiled Python snapshot,
+  as the round-two parity review found:
+  - An element or field read passed as an argument. `keep(a[0])`,
+    `keep(ys[0])` or `keep(b.p)`, followed by `a[0].x = 5` (or
+    `ys[0].x = 5`, `b.p.x = 5`), makes the closure return `5` on JavaScript
+    and `0` on the other two. Binding the read first (`let q = a[0]`)
+    snapshots it on every backend.
+  - A `for` loop over an `Array`. The `GenoArray` iterator yields the live
+    elements, and the loop binds each one without a copy. Writing
+    `a[2] = 99` or `a[1].x = n` inside the loop therefore shows up in later
+    iterations on JavaScript only. Python's `_GenoArray.__iter__` iterates a
+    copy of the element list.
+
+  Both bugs are older than this proposal: the same programs diverge under
+  the 0.6 rule once the writer declares `with mutation`. Both are recorded
+  under Unresolved Question 7.
+  They do not affect soundness, by the argument above: a write still reaches
+  caller storage only through a charged write or an uncharged builtin store.
+  But masking accepts such a U as a pure callback, and U then returns a
+  different result on JavaScript than the `example` clauses that `geno test`
+  checks on the interpreter. Package 3 pins both shapes
+  (`js-element-and-field-argument-alias` and
+  `js-array-for-loop-iterates-live`) with JavaScript's output recorded
+  separately. A masked shape is identical on all three backends unless it
+  hits one of these two bugs.
 - **Owned collections.** By O0, O2 and O3, every value the name holds comes
   from an allocating builtin, so no other storage refers to it. By O4 and O5,
   the reference leaves the name only by being returned or lent to a builtin
@@ -810,8 +837,13 @@ reference and so declares `with mutation`) and a non-normative note:
 > and a future checker may reject it. Passing a `var`-held constructor value
 > to a function does not snapshot it on any backend, so a closure the callee
 > builds over that parameter observes later field writes through the `var`
-> (see 3.2.1). Neither case lets a masked write reach a caller without an
-> uncharged builtin store.
+> (see 3.2.1). Compiled JavaScript also passes an element or field read
+> (`f(a[0])`, `f(b.p)`) without a snapshot, and its `for` loop over an
+> `Array` iterates the live elements and binds each one without a copy; the
+> interpreter and compiled Python snapshot both. A function that relies on
+> either therefore computes a different result on JavaScript, which is a
+> runtime parity defect, not part of this rule. None of these cases lets a
+> masked write reach a caller without an uncharged builtin store.
 
 Sections 6.2 and 6.3 gain one sentence each, pointing at 3.5: declaring or
 assigning a local `var` is not an effect. Section 7.6 states that a lambda
@@ -846,8 +878,13 @@ adds three-backend parity programs for every masked shape. Each prints the
 caller's state after the call, so a backend that broke snapshot semantics
 would now also break the effect system, and the parity test would say so.
 Package 3 also pins the argument-passing alias (`keep(s)` then `s.x = 7`, and
-the `ys[0].x` form) as current behaviour on all three backends. A runtime fix
-for Unresolved Question 7 then shows up as a deliberate test change.
+the `keep_list(ys)` then `ys[0].x` form) as current behaviour on all three
+backends. Two shapes differ on compiled JavaScript only, and those cases
+record JavaScript's output separately (section 6): an element or field read
+passed as an argument (`keep(a[0])`, `keep(ys[0])`, `keep(b.p)`), and a `for`
+loop over an `Array` that the loop body writes. Both are pre-existing JS
+runtime parity bugs. A runtime fix for Unresolved Question 7 then shows up as
+a deliberate test change.
 
 ## Compatibility And Migration
 
@@ -1045,7 +1082,8 @@ it open. The adversarial tests in Package 3 pin the boundary.
   and, for masked cases, a `main` that prints the caller's state after one or
   two calls. The table runs on the interpreter, compiled Python and compiled
   JavaScript, which must print the same output with the caller's state
-  unchanged. The cases are:
+  unchanged; only the two known-gap cases for the JavaScript parity bugs of
+  section 6 record JavaScript's output separately. The cases are:
   - aliasing through `let` and through `var`;
   - tuple, record and list wrapping, returned (masked) and stored (charged);
   - a closure that reads the collection;
@@ -1071,6 +1109,16 @@ it open. The adversarial tests in Package 3 pin the boundary.
     `var s = P(x: 1); let peek = keep(s); s.x = 7; peek()` gives `7`, and
     `var ys = [p]; let g = keep_list(ys); ys[0].x = 5; g()` gives `5`, with
     the writing function pure;
+  - the two compiled-JavaScript parity bugs of section 6, asserted as current
+    behaviour with JavaScript's output recorded separately: an element or
+    field read passed as an argument (`keep(a[0])`, `keep(ys[0])`,
+    `keep(b.p)`, then a field write through the slot) gives `0` on the
+    interpreter and compiled Python and `5` on JavaScript, while
+    `let q = a[0]` snapshots everywhere; and a `for` loop over an owned
+    `Array` that writes `a[2]` or `a[1].x` gives the snapshot on the
+    interpreter and compiled Python and the live elements on JavaScript.
+    Every writer is pure on every backend. A test asserts that only these
+    known-gap cases carry a separate JavaScript output;
   - the three widenings of section 6, asserted as current behaviour:
     `vec_push(param_v, fn() -> n)` followed by `n = 5`;
     `cb(keep(s)); s.x = 7` with a pure `cb` that `vec_push`es into captured
@@ -1238,15 +1286,30 @@ list of causes explains.
    write) is private in fact, but proving it needs per-element freshness.
    That is worth a follow-up if the benchmark harness shows 2-D DP tables
    among the remaining E300/E310 rejections.
-7. **Argument passing does not snapshot (spec 3.2.1 deviation).** On every
-   backend, a callee that captures a constructor-value parameter in a closure
-   aliases the caller's `var`-held object, and later field writes through the
-   `var` are visible through the closure (section 6). Spec 3.2.1 says binding
-   an existing constructor value creates a snapshot. This is a pre-existing
-   runtime bug, outside this proposal's static-only scope, and it should be
-   filed as its own issue. The masking rule does not rely on argument
-   snapshots, and Package 3 pins the current behaviour so a fix shows up as a
-   deliberate test change.
+7. **Argument passing does not snapshot (spec 3.2.1 deviation), and
+   JavaScript `for` loops over an `Array` alias.** On every backend, a callee
+   that captures a constructor-value parameter in a closure aliases the
+   caller's `var`-held object, and later field writes through the `var` are
+   visible through the closure (section 6). Spec 3.2.1 says binding an
+   existing constructor value creates a snapshot. On compiled JavaScript
+   only, the same holds when the argument is an element or field read
+   (`keep(a[0])`, `keep(ys[0])`, `keep(b.p)`). In addition, a `for` loop over
+   an `Array` iterates the live elements there (`GenoArray`'s iterator is
+   `yield* this._elements`) and binds each one without a copy. The
+   interpreter and compiled Python snapshot both. These are pre-existing
+   runtime bugs, outside this proposal's static-only scope, and they should
+   be filed as their own issues:
+   - the argument-passing deviation on every backend;
+   - a JavaScript parity bug, whose fix is for the `Array` iterator to
+     iterate a snapshot (`[...this._elements]`) and for argument passing and
+     the loop binding to copy constructor values as the other backends do.
+
+   The masking rule does not rely on either snapshot. Masked writes still
+   reach no caller, but a masked function that hits the JavaScript shapes
+   computes a different result on JavaScript than its interpreter-checked
+   `example` clauses. Package 3 pins the current behaviour of each, with
+   JavaScript's output recorded separately where it differs, so a fix shows
+   up as a deliberate test change.
 
 ## Implementation Plan
 
@@ -1316,7 +1379,11 @@ previous one.
 
    Status: implemented. The adversarial table found no unsoundness in the
    masking rule, so neither file changed in this package; the known gaps of
-   section 6 are pinned as current behaviour on all three backends.
+   section 6 are pinned as current behaviour on all three backends. The
+   second review round found two pre-existing compiled-JavaScript parity bugs
+   that masked shapes can reach (section 6, Unresolved Question 7). They are
+   pinned with JavaScript's output recorded separately; the runtime is not
+   changed here.
 4. **Specification, documentation, conformance and compatibility.**
    - `docs/spec/v0.7.md`: sections 3.5, 6.2, 6.3 and 7.6, the "Geno 0.7"
      effect-name line, and a "Changes from 0.6" entry linking this proposal and

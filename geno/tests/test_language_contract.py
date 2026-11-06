@@ -278,6 +278,9 @@ def test_the_draft_records_local_mutation_masking() -> None:
     ) in section
     assert "*Known limitation (0.7 draft).*" in section
     assert "does not snapshot it on any backend" in section
+    # The compiled-JavaScript parity defects masked shapes can reach.
+    assert "Compiled JavaScript also passes an element or field read" in section
+    assert "`for` loop over an `Array` iterates the live elements" in section
 
     policy = (ROOT / "docs/operations/compatibility-policy.md").read_text()
     assert "\n### 0.7 (draft): local mutation is not an effect\n" in policy

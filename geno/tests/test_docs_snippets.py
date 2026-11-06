@@ -289,10 +289,12 @@ def _function_effects(code: str, source: str) -> dict[str, frozenset[str]]:
     program = Parser(Lexer(code, source).tokenize(), code).parse_program()
     checker = TypeChecker()
     checker.check_program(program)
-    effects = {}
+    effects: dict[str, frozenset[str]] = {}
     for definition in program.definitions:
         name = getattr(definition, "name", None)
-        func_type = checker.global_env.lookup(name) if name else None
+        if not isinstance(name, str):
+            continue
+        func_type = checker.global_env.lookup(name)
         if isinstance(func_type, FuncType):
             effects[name] = func_type.effects
     return effects
@@ -403,3 +405,8 @@ def test_runtime_semantics_argument_alias_is_current_behaviour():
     assert result.ok, [d.message for d in result.diagnostics]
     assert result.output == "7\n"
     assert "This prints `7` on every backend" in section
+    # The two compiled-JavaScript parity bugs masked shapes can reach, pinned
+    # in test_local_mutation_soundness's KNOWN_GAPS with their JS output.
+    prose = " ".join(section.split())
+    assert "aliases only on compiled JavaScript" in prose
+    assert "**Compiled JavaScript iterates an `Array` live.**" in prose
