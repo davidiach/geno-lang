@@ -1654,23 +1654,25 @@ function unwrap_or(opt, def) {
 // (geno/runtime_report.py ARGUMENT_DISPLAY_LIMIT; a test pins the copies).
 const _GENO_ARGUMENT_DISPLAY_LIMIT = 64;
 
+// Prelude tree-shaking treats every line-leading declaration as a name this
+// section defines, so the locals below have names no other section uses;
+// otherwise every program would pull the section in.
+
 class _GenoDisplayLimitReached {}
 
 // The f-string writer with a display budget instead of the collection
-// limit: it stops (throws _GenoDisplayLimitReached) once more than `limit`
-// code points are written, and shows function values as "<function>".
+// limit: it stops (throws _GenoDisplayLimitReached) once more than its
+// limit of code points is written, and shows functions as "<function>".
 class _GenoBoundedDisplay extends _GenoFString {
-    constructor(limit) {
+    constructor(displayLimit) {
         super();
-        this.limit = limit;
+        this.displayLimit = displayLimit;
     }
 
     append(part) {
-        let size = this.size;
-        for (const _character of part) size += 1;
-        this.size = size;
+        for (const _character of part) this.size += 1;
         if (part) this.parts.push(part);
-        if (size > this.limit) throw new _GenoDisplayLimitReached();
+        if (this.size > this.displayLimit) throw new _GenoDisplayLimitReached();
     }
 
     appendValue(value, shape = null, topLevel = true) {
@@ -1683,37 +1685,36 @@ class _GenoBoundedDisplay extends _GenoFString {
 }
 
 // The diagnostic rendering of `value` (strings quoted at every depth),
-// truncated to `limit` code points: equal to rendering it whole and keeping
-// its first `limit - 3` code points plus "...", but the walk stops once more
-// than `limit` code points are written. `shape` is the static display shape
-// the compiler records (Float and tuple positions, as for f-strings), since
-// JavaScript values cannot tell 2.0 from 2 or a tuple from a list.
-function _formatValueBounded(value, limit, shape = null) {
-    const writer = new _GenoBoundedDisplay(limit);
+// truncated to `displayLimit` code points: equal to rendering it whole and
+// keeping its first `displayLimit - 3` code points plus "...", but the walk
+// stops once more than `displayLimit` code points are written. `shape` is the
+// static display shape the compiler records (Float and tuple positions, as
+// for f-strings), since JavaScript values cannot tell 2.0 from 2 or a tuple
+// from a list.
+function _formatValueBounded(value, displayLimit, shape = null) {
+    const _boundedWriter = new _GenoBoundedDisplay(displayLimit);
     try {
-        writer.appendValue(value, shape, false);
+        _boundedWriter.appendValue(value, shape, false);
     } catch (e) {
         if (!(e instanceof _GenoDisplayLimitReached)) throw e;
     }
-    const text = writer.finish();
-    if (writer.size <= limit) return text;
-    return _stringCodePoints(text).slice(0, _GENO_MATH.max(limit - 3, 0)).join("") + "...";
+    if (_boundedWriter.size <= displayLimit) return _boundedWriter.finish();
+    return _stringCodePoints(_boundedWriter.finish())
+        .slice(0, _GENO_MATH.max(displayLimit - 3, 0)).join("") + "...";
 }
 
 // Copy of geno/runtime_report.py contract_message (a test pins it).
-function _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args, result, checked) {
-    const label = clause === "requires" ? "Precondition failed" : "Postcondition failed";
-    const shownArgs = args.map(([name, value]) => name + ": " + value).join(", ");
-    const shownClause = clauseText ? clauseText : "clause #" + _GENO_STRING(clauseIndex + 1);
-    let message = label + ": " + fn + "(" + shownArgs + ") " + clause + " " + shownClause;
-    const notes = [];
-    if (reason === "propagate") notes.push("'?' propagated None/Err");
-    if (result !== null) notes.push("result was " + result);
+function _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, shownArgs, shownResult, checked) {
+    const _contractNotes = [];
+    if (reason === "propagate") _contractNotes.push("'?' propagated None/Err");
+    if (shownResult !== null) _contractNotes.push("result was " + shownResult);
     if (checked.length) {
-        notes.push(checked.map(([name, value]) => name + " was " + value).join(", ") + " when checked");
+        _contractNotes.push(checked.map(([name, value]) => name + " was " + value).join(", ") + " when checked");
     }
-    if (notes.length) message += " (" + notes.join("; ") + ")";
-    return message;
+    return (clause === "requires" ? "Precondition failed" : "Postcondition failed")
+        + ": " + fn + "(" + shownArgs.map(([name, value]) => name + ": " + value).join(", ") + ") "
+        + clause + " " + (clauseText ? clauseText : "clause #" + _GENO_STRING(clauseIndex + 1))
+        + (_contractNotes.length ? " (" + _contractNotes.join("; ") + ")" : "");
 }
 
 // The error a failed contract clause throws (the caller throws it). `values`
@@ -1721,27 +1722,29 @@ function _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args,
 // are the parameters' values at an ensures check in a function whose body
 // rebound a parameter, and those that render differently are reported too.
 function _genoContractViolation(clause, reason, clauseIndex, fn, clauseText, names, values, hasResult = false, result = undefined, resultShape = null, checked = null) {
-    const limit = _GENO_ARGUMENT_DISPLAY_LIMIT;
-    const args = names.map((name, index) => [name, _formatValueBounded(values[index][0], limit, values[index][1])]);
-    let checkedValues = [];
-    if (checked !== null) {
-        checkedValues = names
-            .map((name, index) => [name, _formatValueBounded(checked[index][0], limit, checked[index][1])])
-            .filter((pair, index) => pair[1] !== args[index][1]);
-    }
-    const resultDisplay = hasResult ? _formatValueBounded(result, limit, resultShape) : null;
-    const error = new _GenoContractViolation(
-        _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, args, resultDisplay, checkedValues)
-    );
-    error.clause = clause;
-    error.reason = reason;
-    error.clauseIndex = clauseIndex;
-    error.function = fn;
-    error.clauseText = clauseText;
-    error.arguments = args;
-    error.resultDisplay = resultDisplay;
-    error.checkedValues = checkedValues;
-    return error;
+    const _shownArgs = names.map((name, index) => [
+        name, _formatValueBounded(values[index][0], _GENO_ARGUMENT_DISPLAY_LIMIT, values[index][1]),
+    ]);
+    const _shownChecked = checked === null ? [] : names
+        .map((name, index) => [
+            name, _formatValueBounded(checked[index][0], _GENO_ARGUMENT_DISPLAY_LIMIT, checked[index][1]),
+        ])
+        .filter((pair, index) => pair[1] !== _shownArgs[index][1]);
+    const _shownResult = hasResult
+        ? _formatValueBounded(result, _GENO_ARGUMENT_DISPLAY_LIMIT, resultShape)
+        : null;
+    const _violation = new _GenoContractViolation(_genoContractMessage(
+        clause, reason, fn, clauseText, clauseIndex, _shownArgs, _shownResult, _shownChecked,
+    ));
+    _violation.clause = clause;
+    _violation.reason = reason;
+    _violation.clauseIndex = clauseIndex;
+    _violation.function = fn;
+    _violation.clauseText = clauseText;
+    _violation.arguments = _shownArgs;
+    _violation.resultDisplay = _shownResult;
+    _violation.checkedValues = _shownChecked;
+    return _violation;
 }
 
 // =============================================================================
