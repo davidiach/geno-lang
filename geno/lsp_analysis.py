@@ -339,13 +339,20 @@ def _collect_facts(
 ) -> dict[int, list[Fact]]:
     lines = source.splitlines()
     facts: dict[int, list[Fact]] = {}
-    seen: set[tuple[int, int, str, str]] = set()
+    # Where each recorded fact sits in its line's list, by (line, column,
+    # name, kind).
+    slots: dict[tuple[int, int, str, str], int] = {}
 
-    def add(fact: Fact) -> None:
+    def add(fact: Fact, replace: bool = False) -> None:
+        """Record *fact*; an earlier one for the same key stays unless *replace*."""
         key = (fact.line, fact.column, fact.name, fact.kind)
-        if key not in seen:
-            seen.add(key)
-            facts.setdefault(fact.line, []).append(fact)
+        line_facts = facts.setdefault(fact.line, [])
+        slot = slots.get(key)
+        if slot is None:
+            slots[key] = len(line_facts)
+            line_facts.append(fact)
+        elif replace:
+            line_facts[slot] = fact
 
     parameters = {
         (param.location.line, param.location.column)
@@ -362,7 +369,12 @@ def _collect_facts(
         kind = (
             "parameter" if (location.line, location.column) in parameters else "local"
         )
-        add(Fact(location.line, column, name, type_, kind))
+        # The checker binds each local once per pass, and its final pass knows
+        # the most: by then every function's inferred effects are settled
+        # (proposal 0019), where an earlier pass still took them to be pure.
+        # A later record for the same binding therefore replaces an earlier
+        # one; a final pass that stopped early leaves the earlier fact.
+        add(Fact(location.line, column, name, type_, kind), replace=True)
 
     rewritten: set[int] = set()
     for node in _walk(program):
