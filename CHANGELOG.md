@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Target: **Geno 0.7**. The cold-write forms below are draft proposal 0026;
+the 0.6 specification and frozen conformance corpora remain unchanged.
+
 ### Added
 
 - Forms models write from other languages' habits, from draft
-  [proposal 0017](docs/proposals/0017-cold-write-forms.md); every previously
+  [proposal 0026](docs/proposals/0026-cold-write-forms.md); every previously
   accepted program keeps its meaning:
   - Compound assignment: `total += x`, also `-=`, `*=`, `/=` and `%=`, on a
     variable, field or index. The target may not call a function.

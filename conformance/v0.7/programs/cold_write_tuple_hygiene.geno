@@ -1,0 +1,8 @@
+func main() -> Unit
+    let _geno_item_1 = 10
+    for (a, b) in [(1, 2)] do
+        print(_geno_item_1)
+        print(f"{[c + d + _geno_item_1 for (c, d) in [(3, 4)]]}")
+        print(a + b)
+    end for
+end func

@@ -1,4 +1,4 @@
-"""Forms models write without Geno's prompt rules (proposal 0017).
+"""Forms models write without Geno's prompt rules (proposal 0026).
 
 Compound assignment, tuple patterns in loops, string literals in f-string
 interpolations and an untyped method receiver are accepted, the same on every

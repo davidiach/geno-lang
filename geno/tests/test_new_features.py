@@ -3954,7 +3954,7 @@ class TestReviewFixes:
             run_geno(source)
 
     # PR #59 rejected a string literal inside an f-string expression; it is
-    # accepted since proposal 0017.
+    # accepted since proposal 0026.
     def test_fstring_accepts_string_literal_in_expr(self):
         from geno.ast_nodes import StringLiteral
         from geno.lexer import Lexer

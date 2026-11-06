@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run a frozen Geno language conformance corpus across supported backends."""
+"""Run a Geno language conformance corpus across supported backends.
+
+The retained corpora are frozen; a development corpus for the unreleased next
+minor, when one exists, runs after them with ``--all-retained``.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFORMANCE_ROOT = ROOT / "conformance"
 SPEC_PATH = ROOT / "spec.json"
 FIRST_FROZEN_SERIES = (0, 4)
+# A corpus newer than `spec.json`'s `language_series` holds the cases of the
+# unreleased next minor (the draft 0.7 development line). It must say so
+# with `status = "development"`; it is not frozen, and the retained corpora
+# keep their meaning.
+DEVELOPMENT_STATUS = "development"
 DEFAULT_MANIFEST = CONFORMANCE_ROOT / "v0.4" / "manifest.toml"
 # `interpreter` is the in-process embedding lane; `cli-process` (the default
 # isolated run), `cli-direct` (`--unsafe`), `cli-json` (`--json`) and `js-esm`
@@ -128,6 +137,65 @@ def retained_manifest_paths(
     return tuple(available[series] for series in selected)
 
 
+def _declared_status(manifest_path: Path) -> object:
+    """The manifest's top-level ``status``, or ``None`` when it has none."""
+    try:
+        with manifest_path.open("rb") as handle:
+            raw = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ManifestError(f"cannot load {manifest_path}: {exc}") from exc
+    return raw.get("status")
+
+
+def development_manifest_paths(
+    *,
+    spec_path: Path = SPEC_PATH,
+    conformance_root: Path = CONFORMANCE_ROOT,
+) -> tuple[Path, ...]:
+    """Return the development corpus newer than the language series, if any.
+
+    `retained_manifest_paths` keeps naming the current and preceding frozen
+    corpora. A corpus for a series newer than `language_series` is the
+    unreleased next minor's: it must be marked `status = "development"`, at
+    most one may exist, and no other corpus may carry the mark.
+    """
+    try:
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManifestError(
+            f"cannot load language contract {spec_path}: {exc}"
+        ) from exc
+    current = _parse_series(spec.get("language_series"), field="language_series")
+
+    newer: list[tuple[tuple[int, int], Path]] = []
+    for manifest_path in sorted(conformance_root.glob("v*/manifest.toml")):
+        raw_series = manifest_path.parent.name.removeprefix("v")
+        try:
+            series = _parse_series(raw_series, field=str(manifest_path.parent))
+        except ManifestError:
+            continue
+        status = _declared_status(manifest_path)
+        name = manifest_path.parent.name
+        if series > current:
+            if status != DEVELOPMENT_STATUS:
+                raise ManifestError(
+                    f"conformance corpus {name} is newer than language series "
+                    f"{current[0]}.{current[1]} and must be marked "
+                    f'status = "{DEVELOPMENT_STATUS}"'
+                )
+            newer.append((series, manifest_path.resolve()))
+        elif status is not None:
+            raise ManifestError(
+                f"conformance corpus {name} is marked status = {status!r}; only "
+                f"a corpus newer than language series {current[0]}.{current[1]} "
+                f"may be a development corpus"
+            )
+    if len(newer) > 1:
+        names = ", ".join(f"v{s[0]}.{s[1]}" for s, _path in sorted(newer))
+        raise ManifestError(f"at most one development corpus may exist, found {names}")
+    return tuple(path for _series, path in newer)
+
+
 @dataclass(frozen=True)
 class ConformanceCase:
     """One immutable source or diagnostic compatibility contract."""
@@ -155,6 +223,8 @@ class ConformanceManifest:
     description: str
     path: Path
     cases: tuple[ConformanceCase, ...]
+    # "development" for the unreleased next minor's corpus, else None.
+    status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +343,9 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
     _parse_series(language_version, field="language_version")
     if not isinstance(description, str) or not description:
         raise ManifestError("description must be a non-empty string")
+    status = raw.get("status")
+    if status is not None and status != DEVELOPMENT_STATUS:
+        raise ManifestError(f'status must be "{DEVELOPMENT_STATUS}" when present')
 
     raw_cases = raw.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases:
@@ -440,6 +513,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
         description=description,
         path=resolved_manifest,
         cases=tuple(cases),
+        status=status,
     )
 
 
@@ -840,7 +914,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--all-retained",
         action="store_true",
-        help="Run the spec-declared current and immediately preceding corpora",
+        help=(
+            "Run the spec-declared current and immediately preceding corpora, "
+            "then the development corpus of the next minor when one exists"
+        ),
     )
     parser.add_argument("--target", choices=("all", *ALL_TARGETS), default="all")
     parser.add_argument("--case", action="append", dest="case_ids")
@@ -856,7 +933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.all_retained and args.manifest is not None:
             raise ManifestError("--manifest and --all-retained are mutually exclusive")
         manifest_paths = (
-            retained_manifest_paths()
+            (*retained_manifest_paths(), *development_manifest_paths())
             if args.all_retained
             else (args.manifest or DEFAULT_MANIFEST,)
         )
@@ -917,9 +994,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         for manifest, results in suites:
+            kind = "development" if manifest.status == DEVELOPMENT_STATUS else "frozen"
             print(
                 f"Geno {manifest.language_version} conformance: "
-                f"{len(manifest.cases)} frozen cases"
+                f"{len(manifest.cases)} {kind} cases"
             )
             for result in results:
                 detail = f" - {result.detail}" if result.detail else ""

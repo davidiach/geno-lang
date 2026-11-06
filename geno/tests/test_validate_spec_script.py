@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from scripts.validate_spec import validate_spec
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +19,60 @@ def _load_spec() -> dict[str, Any]:
 
 def test_current_spec_passes_validation():
     assert validate_spec(_load_spec()) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("series", "0.6", "must be newer"),
+        ("series", "0.7.0", "major.minor"),
+        ("status", "accepted", "must be 'draft'"),
+        ("human_spec", "docs/spec/v0.6.md", "human specification mismatch"),
+        ("conformance", "conformance/v0.6/manifest.toml", "corpus mismatch"),
+        ("additions", [], "non-empty list"),
+        ("additions", ["a", "a"], "duplicate entries"),
+    ],
+)
+def test_invalid_development_contract_is_reported(
+    field: str, value: object, message: str
+) -> None:
+    spec = _load_spec()
+    spec["development_line"][field] = value
+
+    assert any(message in error for error in validate_spec(spec))
+
+
+def test_development_line_is_optional_for_released_contracts() -> None:
+    spec = _load_spec()
+    del spec["development_line"]
+
+    assert validate_spec(spec) == []
+
+
+def test_development_corpus_cannot_claim_to_be_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import validate_spec as validator
+
+    spec = _load_spec()
+    line = spec["development_line"]
+    for path in (line["human_spec"], line["conformance"]):
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / path).read_text(encoding="utf-8"), encoding="utf-8")
+    corpus = tmp_path / line["conformance"]
+    corpus.write_text(
+        corpus.read_text(encoding="utf-8").replace(
+            'status = "development"', 'status = "frozen"'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validator, "ROOT", tmp_path)
+    errors: list[str] = []
+
+    validator._validate_development_line(spec, errors)
+
+    assert any("must be marked status = 'development'" in error for error in errors)
 
 
 def test_missing_builtin_is_reported():

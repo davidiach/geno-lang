@@ -612,6 +612,91 @@ def _validate_language_contract(spec: dict[str, Any], errors: list[str]) -> None
             )
 
 
+def _parse_series(raw: object) -> tuple[int, int] | None:
+    if not isinstance(raw, str):
+        return None
+    parts = raw.split(".")
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def _validate_development_line(spec: dict[str, Any], errors: list[str]) -> None:
+    """Check the optional Draft next-minor record.
+
+    Everything else in spec.json describes the normative series. While the
+    next minor is being developed, ``development_line`` names its Draft human
+    spec and its development conformance corpus, and lists what it adds.
+    """
+    line = spec.get("development_line")
+    if line is None:
+        return
+    if not isinstance(line, dict):
+        errors.append("'development_line' must be an object in spec.json")
+        return
+    series = _parse_series(line.get("series"))
+    current = _parse_series(spec.get("language_series"))
+    if series is None:
+        errors.append("'development_line.series' must be a major.minor string")
+        return
+    if current is not None and series <= current:
+        errors.append(
+            f"Development line {line.get('series')!r} must be newer than "
+            f"language series {spec.get('language_series')!r}"
+        )
+    if line.get("status") != "draft":
+        errors.append("'development_line.status' must be 'draft'")
+
+    name = f"{series[0]}.{series[1]}"
+    expected_human_spec = f"docs/spec/v{name}.md"
+    human_spec = line.get("human_spec")
+    if human_spec != expected_human_spec:
+        errors.append(
+            f"Development human specification mismatch: expected "
+            f"{expected_human_spec!r}, got {human_spec!r}"
+        )
+    elif not (ROOT / human_spec).is_file():
+        errors.append(f"Development human specification does not exist: {human_spec}")
+    else:
+        opening = (ROOT / human_spec).read_text(encoding="utf-8").splitlines()[:12]
+        if not opening or opening[0] != f"# Geno Language Specification v{name}":
+            errors.append(f"{human_spec} must open with its series heading")
+        if not any("draft" in line_text.lower() for line_text in opening):
+            errors.append(f"{human_spec} must say it is a Draft in its opening")
+
+    expected_corpus = f"conformance/v{name}/manifest.toml"
+    corpus = line.get("conformance")
+    if corpus != expected_corpus:
+        errors.append(
+            f"Development conformance corpus mismatch: expected "
+            f"{expected_corpus!r}, got {corpus!r}"
+        )
+    elif not (ROOT / corpus).is_file():
+        errors.append(f"Development conformance corpus does not exist: {corpus}")
+    else:
+        if sys.version_info >= (3, 11):
+            import tomllib
+        else:  # pragma: no cover - exercised by the supported Python 3.10 CI job
+            import tomli as tomllib
+        manifest = tomllib.loads((ROOT / corpus).read_text(encoding="utf-8"))
+        if manifest.get("status") != "development":
+            errors.append(f"{corpus} must be marked status = 'development'")
+        if manifest.get("language_version") != name:
+            errors.append(f"{corpus} must declare language_version {name!r}")
+
+    additions = line.get("additions")
+    if (
+        not isinstance(additions, list)
+        or not additions
+        or not all(isinstance(item, str) and item for item in additions)
+    ):
+        errors.append(
+            "'development_line.additions' must be a non-empty list of strings"
+        )
+    elif len(set(additions)) != len(additions):
+        errors.append("'development_line.additions' contains duplicate entries")
+
+
 def _validate_local_binding_syntax(spec: dict[str, Any], errors: list[str]) -> None:
     syntax = spec.get("syntax", {})
     if not isinstance(syntax, dict):
@@ -651,6 +736,7 @@ def _validate_local_binding_syntax(spec: dict[str, Any], errors: list[str]) -> N
 def validate_spec(spec: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     _validate_language_contract(spec, errors)
+    _validate_development_line(spec, errors)
 
     _record_set_mismatch(
         errors,

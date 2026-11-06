@@ -1,0 +1,8 @@
+async func twice(n: Int) -> Int
+    return n * 2
+end func
+
+func main() -> String
+    let xs = [await twice(a) for (a, b) in [(1, 2)]]
+    return f"{xs}"
+end func

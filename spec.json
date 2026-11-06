@@ -7,6 +7,19 @@
   "status": "normative-pre-1.0",
   "human_spec": "docs/spec/v0.6.md",
   "compatibility_policy": "docs/operations/compatibility-policy.md",
+  "development_line": {
+    "series": "0.7",
+    "status": "draft",
+    "human_spec": "docs/spec/v0.7.md",
+    "conformance": "conformance/v0.7/manifest.toml",
+    "additions": [
+      "Compound assignment (proposal 0026, Draft): target op= value for + - * / % is target = target op value. The assignable variable, field or index target may not contain a call; the operator and = must be adjacent.",
+      "Tuple loop and comprehension patterns (proposal 0026, Draft): for (i, x) in xs.enumerate() do and [k for (k, v) in pairs if v > 1] unpack matching tuples, with nesting, optional type annotations and _ wildcards. Hidden bindings do not capture user names. A tuple-pattern comprehension rejects await in its element or filter outside nested lambdas; a tuple-pattern for loop supports await.",
+      "String literals in f-string interpolations (proposal 0026, Draft): expressions may contain strings, including braces, quotes, comment markers and nested f-strings. Braces outside literals remain rejected; literal/interpolation nesting is bounded at 50 levels. Diagnostics use the original expression location.",
+      "Untyped method receivers (proposal 0026, Draft): the first self parameter in a trait or impl may omit its type, meaning Self or the implementing type respectively. Other parameters still require types.",
+      "Diagnostic fixes (proposal 0026, Draft): a match without with, braced record types and updates, Rust struct literals, unparenthesized tuple loops, assignments to let bindings, foreign conversion names, and a missing return type inferred from return values. Rewrites preserve comments or are withheld when they cannot; geno.fix and geno check --fix apply the fixes."
+    ]
+  },
 
   "keywords": [
     "and", "assert", "async", "await", "break", "catch", "continue",
@@ -20,7 +33,7 @@
     "integer": {"pattern": "[0-9]+", "examples": ["0", "42", "1000003"]},
     "float": {"pattern": "[0-9]+\\.[0-9]+", "examples": ["3.14", "0.0"]},
     "string": {"delimiters": ["\"", "\"\"\""], "escape": "\\", "examples": ["\"hello\"", "\"\"\"multi\\nline\"\"\""]},
-    "fstring": {"prefix": "f", "interpolation": "{expr}", "examples": ["f\"Hello {name}\"", "f\"{m.get(\"k\", 0)}\""], "notes": "An interpolation is one expression; it may contain string literals, whose text may hold braces, quotes or another f-string, but no braces outside them (string literals: unreleased, proposal 0017)"},
+    "fstring": {"prefix": "f", "interpolation": "{expr}", "examples": ["f\"Hello {name}\""]},
     "boolean": ["true", "false"]
   },
 
@@ -95,7 +108,7 @@
 
   "diagnostics": {
     "stability": "Published error-code meanings are stable within a language series, and are never repurposed across series; a code retains its meaning for every series this specification still retains.",
-    "fixes": "A diagnostic may carry fixes, each a title and text edits with 1-based start and exclusive end positions, when the correction is unambiguous: a 'Did you mean' rename to the single candidate one edit away (two for names of six letters or more, a swap of adjacent letters counting as one), another language's name for a builtin (len, str, upper, strip, startswith, ...), naming the arguments of an all-positional call to a 3+ parameter function, a missing then/do or a ':' in its place, a bare end, a missing return before a function's final expression, and let mut, True/False, ++, elif, else:, &&, ||, !, =>, #, null and lambda x: rewritten to Geno; unreleased (proposal 0017): a match without with, a record type in braces, a record update in braces ({ p with x = 1 }, { ...p, x: 1 }), a struct literal (Point { x: 1 }), for i, x in pairs, an assignment to a let binding, conversion names such as int_to_string and parseInt, and a missing return type inferred from the function's return values; geno.check() returns them, geno.fix() applies them until none is left, the language server offers them as quick fixes, and geno check --fix applies them to a file",
+    "fixes": "A diagnostic may carry fixes, each a title and text edits with 1-based start and exclusive end positions, when the correction is unambiguous: a 'Did you mean' rename to the single candidate one edit away (two for names of six letters or more, a swap of adjacent letters counting as one), another language's name for a builtin (len, str, upper, strip, startswith, ...), naming the arguments of an all-positional call to a 3+ parameter function, a missing then/do or a ':' in its place, a bare end, a missing return before a function's final expression, and let mut, True/False, ++, elif, else:, &&, ||, !, =>, #, null and lambda x: rewritten to Geno; geno.check() returns them, geno.fix() applies them until none is left, the language server offers them as quick fixes, and geno check --fix applies them to a file",
     "fallbacks": ["E100", "E200", "E300", "E499"],
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
@@ -139,7 +152,6 @@
     "let_binding": {
       "immutable": "let name[: Type] = expr",
       "mutable": "var name[: Type] = expr",
-      "compound_assignment": "target op= value, for op one of + - * / %, is target = target op value; a statement whose target is a variable, field or index containing no call (unreleased, proposal 0017)",
       "notes": ["Local let/var type annotations are optional when the initializer type is unambiguous", "var for mutable bindings (NOT let mut)", "Module-level let binds a compile-time constant; see syntax.module_constant"]
     },
     "module_constant": {
@@ -147,15 +159,15 @@
       "notes": ["Declared at module level, outside any function, and always immutable: 'var' is rejected there", "The initializer must be a literal, a negated numeric literal, or a list or tuple of those; calls, operators, f-strings and references to other bindings are rejected", "Names follow the snake_case variable convention", "Private to the declaring module: 'export let' is not supported and an importing module does not see the name"]
     },
     "type_definition": "type Name[T] = Variant1(field: Type) | Variant2(x: Int, y: String) (variants may span lines, with an optional leading '|')",
-    "trait": "trait Name\\n  func method(self: Self, ...) -> Type\\nend trait (self alone means self: Self; unreleased, proposal 0017)",
-    "impl": "impl TraitName for Type\\n  func method(self: Type, ...) -> Type\\n    body\\n  end func\\nend impl (self alone means self: Type; unreleased, proposal 0017)",
+    "trait": "trait Name\\n  func method(self: Self, ...) -> Type\\nend trait",
+    "impl": "impl TraitName for Type\\n  func method(self: Type, ...) -> Type\\n    body\\n  end func\\nend impl",
     "if_else": "if condition then\\n  body\\nelse\\n  body\\nend if",
     "match": "match expr with\\n  | Pattern -> result\\n  | Pattern when guard -> result\\n  | _ -> default\\nend match",
-    "for_loop": "for x: Type in iterable do\\n  body\\nend for (x may be a tuple pattern of names that unpacks each element, as in for (i, x) in xs.enumerate() do; unreleased, proposal 0017)",
+    "for_loop": "for x: Type in iterable do\\n  body\\nend for",
     "while_loop": "while condition do\\n  body\\nend while",
     "panic": "panic(\"message\")",
     "import": "import ModuleName [as Alias]",
-    "list_comprehension": "[expr for var: Type in iterable if condition] (var may be a tuple pattern of names, as in [k for (k, v) in m.entries()]; unreleased, proposal 0017)",
+    "list_comprehension": "[expr for var: Type in iterable if condition]",
     "pipe": "x |> f |> g(_, extra) |> h",
     "functional_update": "record with (field1: new_val1, field2: new_val2)",
     "propagation": "value?",

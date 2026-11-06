@@ -1,8 +1,12 @@
-# Proposal 0017: Forms Models Write Without the Prompt
+# Proposal 0026: Forms Models Write Without the Prompt
 
 - Status: Draft
 - Authors: David Iach (direction), Claude Code (drafting and implementation)
 - Created: 2026-11-04
+- Target release: 0.7 (project-lead direction, 2026-11-06)
+- Numbering: reassigned from 0017 to 0026 on 2026-11-06 to avoid the
+  0017-0025 allocation in PR #233; this does not change Draft status or
+  restart the original review period.
 - Discussion: https://github.com/davidiach/geno-lang/pull/232 (opened
   2026-11-04; under `docs/proposals/README.md` it stays open for review until
   at least 2026-11-11)
@@ -165,9 +169,14 @@ errors inside interpolations move to their true location, a tuple-pattern
 type error no longer adds "Undefined variable" errors (one of which carried a
 wrong rename fix), and the fixes above are new.
 
-`conformance/v0.6` is frozen from 0.6.0-rc.1 and is not changed. Where these
-forms land in the corpus depends on the release they ship in (see Unresolved
-Questions).
+These forms target Geno 0.7. `docs/spec/v0.6.md` and the retained 0.6/0.5
+corpora stay unchanged. `docs/spec/v0.7.md` starts from the 0.6 contract and
+describes the additions; `spec.json.development_line` records them separately
+from its normative 0.6 fields. The development corpus `conformance/v0.7`
+adds executable cases for the new forms and diagnostic cases for rejected
+forms. `--all-retained` runs it after the frozen corpora, so inherited cases
+are exercised without copying them. This shares the 0.7 structure used by
+PR #233; later integration combines both proposals' sections and cases.
 
 ## Security And Resource Limits
 
@@ -188,7 +197,9 @@ missing return type: 828 of 907 mutants repaired, none misrepaired.
 ## Rollout And Observability
 
 The prompt rules in `docs/llm-prompting.md` and the language tour mention the
-new forms. The changelog lists them under Unreleased.
+new forms. The changelog targets them at 0.7 under Unreleased. The package
+version remains 0.6.0 during development, as in PR #233; no 0.6 patch release
+is intended to ship these additions. Proposal acceptance is still pending.
 
 ## Alternatives
 
@@ -206,11 +217,6 @@ new forms. The changelog lists them under Unreleased.
 
 ## Unresolved Questions
 
-- Release: these forms are additive, so they could ship in a 0.6.x patch
-  under the compatibility policy, with the 0.6 specification amended in place
-  (as `docs/spec/v0.6.md` now is, marked as unreleased); or in 0.7, with
-  `docs/spec/v0.7.md` and a `conformance/v0.7` corpus forked from 0.6 that
-  adds cases for them. The lead decides on acceptance.
 - Whether `m[key]` should read a `MutableMap` entry and `v[i]` a `Vec`
   element, as `m[key]` reads a `Map`. That would make `counts[w] += 1` work
   and needs a runtime change in all three backends.

@@ -1,0 +1,4 @@
+func identity(n: Int)
+    example 1 -> 1
+    return n
+end func

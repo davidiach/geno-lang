@@ -1,0 +1,30 @@
+trait Describe
+    func describe(self) -> String
+    func scaled(self, k: Int) -> Int
+end trait
+
+type Point = Point(x: Int, y: Int)
+
+impl Describe for Point
+    func describe(self) -> String
+        example Point(1, 2) -> "(1, 2)"
+        return f"({self.x}, {self.y})"
+    end func
+
+    func scaled(self, k: Int) -> Int
+        example (Point(1, 2), 3) -> 9
+        return (self.x + self.y) * k
+    end func
+end impl
+
+func show[T: Describe](x: T) -> String
+    example Point(0, 0) -> "(0, 0)"
+    return x.describe()
+end func
+
+func main() -> Unit
+    let p = Point(x: 3, y: 4)
+    print(p.describe())
+    print(p.scaled(2))
+    print(show(p))
+end func

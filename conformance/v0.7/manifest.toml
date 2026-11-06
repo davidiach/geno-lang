@@ -1,0 +1,114 @@
+schema_version = 2
+language_version = "0.7"
+status = "development"
+description = "Geno 0.7 development corpus: cold-write forms (draft proposal 0026)"
+
+# Unreleased additions to the retained v0.5 and v0.6 corpora. --all-retained
+# runs those unchanged corpora first, then this one. This corpus is not frozen.
+# Proposal 0026 is still Draft; release targeting does not record acceptance.
+# Fix application, comment preservation, formatting and f-string nesting limits
+# are additionally covered by geno/tests/test_cold_write_forms.py.
+
+[[cases]]
+id = "cold-write-compound-assignment"
+path = "programs/cold_write_compound_assignment.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "10\n3.0\nab\n[1, 2, 3]\n[9, 20, 35]\n41\n"
+
+[[cases]]
+id = "cold-write-tuple-bindings"
+path = "programs/cold_write_tuple_bindings.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "5\n[\"b\"]\n[11, 15]\n"
+
+[[cases]]
+id = "cold-write-tuple-hygiene"
+path = "programs/cold_write_tuple_hygiene.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "10\n[17]\n3\n"
+
+[[cases]]
+id = "cold-write-tuple-await-loop"
+path = "programs/cold_write_tuple_await_loop.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "20\n"
+
+[[cases]]
+id = "cold-write-fstring-literals"
+path = "programs/cold_write_fstring_literals.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "the=2 none=0\nab{c a-b\n[x] \"q\" //\n"
+
+[[cases]]
+id = "cold-write-untyped-receiver"
+path = "programs/cold_write_untyped_receiver.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "(3, 4)\n14\n(3, 4)\n"
+
+[[cases]]
+id = "cold-write-diagnostic-compound-call-target"
+path = "programs/cold_write_diagnostic_compound_call_target.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E202"]
+
+[[cases]]
+id = "cold-write-diagnostic-compound-immutable"
+path = "programs/cold_write_diagnostic_compound_immutable.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E306"]
+
+[[cases]]
+id = "cold-write-diagnostic-tuple-non-tuple"
+path = "programs/cold_write_diagnostic_tuple_non_tuple.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E308"]
+
+[[cases]]
+id = "cold-write-diagnostic-tuple-await-element"
+path = "programs/cold_write_diagnostic_tuple_await_element.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E202"]
+
+[[cases]]
+id = "cold-write-diagnostic-tuple-await-filter"
+path = "programs/cold_write_diagnostic_tuple_await_filter.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E202"]
+
+[[cases]]
+id = "cold-write-diagnostic-free-self"
+path = "programs/cold_write_diagnostic_free_self.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E201"]
+
+[[cases]]
+id = "cold-write-diagnostic-record-type"
+path = "programs/cold_write_diagnostic_record_type.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E202"]
+
+[[cases]]
+id = "cold-write-diagnostic-missing-return-type"
+path = "programs/cold_write_diagnostic_missing_return_type.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E201"]
