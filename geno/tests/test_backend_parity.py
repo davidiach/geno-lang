@@ -4845,7 +4845,7 @@ class TestContractFailureParity:
 
         violation = exc_info.value
         assert type(violation).__name__ == "_GenoContractViolation"
-        fields = {"message": str(violation)}
+        fields: dict[str, Any] = {"message": str(violation)}
         for name in expected:
             if name != "message":
                 value = getattr(violation, name)

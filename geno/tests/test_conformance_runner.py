@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1173,7 +1174,7 @@ _PANIC_DIAGNOSTIC: dict[str, object] = {
 
 
 def _failing_json_corpus(tmp_path: Path, **overrides: object) -> Path:
-    fields: dict[str, object] = {
+    fields: dict[str, Any] = {
         "targets": ["cli-json"],
         "expected_stdout": "",
         "expected_exit_class": "nonzero",

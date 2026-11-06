@@ -73,7 +73,8 @@ def _function(source: str, name: str) -> FunctionDef:
 def _violation(source: str) -> ContractViolationError:
     with pytest.raises(ContractViolationError) as exc_info:
         interpret(source)
-    return exc_info.value
+    violation: ContractViolationError = exc_info.value
+    return violation
 
 
 def _prelude_namespace() -> dict[str, Any]:
@@ -923,7 +924,8 @@ def _raised(source: str, **interpreter: Any) -> BaseException:
     program = parse(source)
     with pytest.raises((GenoRuntimeError, SandboxError)) as exc_info:
         Interpreter(**interpreter).run(program)
-    return exc_info.value
+    error: BaseException = exc_info.value
+    return error
 
 
 class TestInterpreterStacks:

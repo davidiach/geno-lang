@@ -428,8 +428,9 @@ def _run_with_a_late_reader(command: list[str], cwd: Path) -> tuple[int, str, st
         env=_env(),
     )
     assert process.stdout is not None and process.stderr is not None
+    stderr = process.stderr
     errors: list[bytes] = []
-    reader = threading.Thread(target=lambda: errors.append(process.stderr.read()))
+    reader = threading.Thread(target=lambda: errors.append(stderr.read()))
     reader.start()
     threading.Event().wait(0.5)
     output = process.stdout.read()
@@ -1272,7 +1273,7 @@ class TestDefaultLaneBudget:
         assert result.returncode == 1
         assert "Sandbox Error" not in result.stderr
         assert "result JSON" not in result.stderr
-        lines = result.stderr.rstrip("\n").split("\n")
+        lines: list[str] = result.stderr.rstrip("\n").split("\n")
         assert lines[-1].startswith("Runtime Error: ")
         return lines
 

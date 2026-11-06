@@ -152,7 +152,7 @@ def test_the_python_prelude_matches_the_reference_renderer() -> None:
 
 
 def _js_constants() -> dict[str, Any]:
-    return _run_js(
+    constants: dict[str, Any] = _run_js(
         "console.log(JSON.stringify({\n"
         "    head: _GENO_STACK_HEAD,\n"
         "    tail: _GENO_STACK_TAIL,\n"
@@ -163,6 +163,7 @@ def _js_constants() -> dict[str, Any]:
         "    host_header: _GENO_HOST_TRACEBACK_HEADER,\n"
         "}));\n"
     )
+    return constants
 
 
 @needs_node

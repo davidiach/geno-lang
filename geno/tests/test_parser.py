@@ -16,6 +16,7 @@ from geno.ast_nodes import (
     ConstructorPattern,
     FieldAccess,
     ForStatement,
+    FStringExpr,
     FunctionCall,
     FunctionDef,
     FunctionType,
@@ -1388,6 +1389,7 @@ class TestFStringInterpolationLocations:
         func = parse_function(self.SOURCE)
         statement = func.body[-1]
         assert isinstance(statement, ReturnStatement)
+        assert isinstance(statement.value, FStringExpr)
         parts = [part for part in statement.value.parts if not isinstance(part, str)]
         index, call = parts
         assert (index.location.line, index.location.column) == (3, 17)
