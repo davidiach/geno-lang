@@ -544,6 +544,9 @@ def _prepare_process_run(
         example_output_length = interpreter.example_output_length
 
     compiler = Compiler()
+    # The parent prints the worker's mapped stack with the frontend's paths,
+    # exactly as `--unsafe` prints them (proposal 0018).
+    compiler.trace_absolute_paths = True
     if parsed_modules:
         python_code = compiler.compile_project(dependency_graph)
     else:
@@ -643,6 +646,49 @@ def _default_lane_capability_hint(
         "  To grant it, rerun without process isolation (trusted code only):\n"
         f"  geno run --unsafe --cap {caps} {target}"
     )
+
+
+def _snippet_roots(filename: str) -> list[str]:
+    """Where the default lane's parent may read a snippet from: the program.
+
+    The worker's locations are untrusted, so the parent reads only regular
+    ``.geno`` files inside the entry file's directory tree (or the project
+    directory) and the installed standard library
+    (``runtime_report.read_snippet_line``).
+    """
+    path = os.path.abspath(filename)
+    return [path if os.path.isdir(path) else os.path.dirname(path)]
+
+
+def _print_default_lane_runtime_error(
+    error: str, process_sandbox: Any, filename: str
+) -> None:
+    """Print a failure in the default lane's compiled ``main`` (proposal 0018).
+
+    The worker mapped the failure through the program's trace table and the
+    sandbox validated what it sent; without that, the report is the message
+    line alone, as in 0.6. The message line is last, so a capability hint
+    printed after it still follows ``Runtime Error: <message>`` directly.
+    """
+    from ..runtime_report import read_snippet_line, report_lines, snippet_location
+
+    stack = getattr(process_sandbox, "last_failure_stack", None)
+    location = getattr(process_sandbox, "last_failure_location", None)
+    where = snippet_location(stack, location)
+    source_line = (
+        read_snippet_line(where, allowed_roots=_snippet_roots(filename))
+        if where is not None
+        else None
+    )
+    lines = report_lines(
+        "Runtime Error",
+        error,
+        stack=stack,
+        location=location,
+        source_line=source_line,
+        omitted_at=getattr(process_sandbox, "last_failure_omitted_at", None),
+    )
+    print("\n".join(lines), file=sys.stderr)
 
 
 def _format_process_frontend_error(
@@ -1005,8 +1051,11 @@ def run_file(
                 # input, for the worker alone to inherit; nothing reads it
                 # until the program asks, and execute_geno_request owns and
                 # closes this copy, so nothing may come between the two.
+                host_traceback = host_traceback_requested()
+                # Asked for only under GENO_TRACEBACK=host (proposal 0018).
+                debug_options = {"host_traceback": True} if host_traceback else {}
                 result, run_output, error = process_sandbox.execute_geno_request(
-                    request, with_program_stdin(run_policy)
+                    request, with_program_stdin(run_policy), **debug_options
                 )
             finally:
                 _restore_cli_args_env()
@@ -1023,7 +1072,13 @@ def run_file(
                         file=sys.stderr,
                     )
                 else:
-                    _print_runtime_error(RuntimeError(error))
+                    _print_default_lane_runtime_error(error, process_sandbox, filename)
+                worker_traceback = getattr(
+                    process_sandbox, "last_worker_traceback", None
+                )
+                if host_traceback and isinstance(worker_traceback, str):
+                    print("Host traceback (GENO_TRACEBACK=host):", file=sys.stderr)
+                    print(worker_traceback.rstrip(), file=sys.stderr)
                 # A denial in an example (frontend phase) is as actionable as
                 # one in `main`; both come with the worker's structured tag.
                 hint = _default_lane_capability_hint(

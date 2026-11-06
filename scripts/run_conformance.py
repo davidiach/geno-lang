@@ -648,7 +648,7 @@ def _run_js_esm(case: ConformanceCase, source: str, timeout: float) -> TargetOut
     node_path = shutil.which("node")
     if node_path is None:
         raise RuntimeError("Node.js is not available")
-    generated = compile_to_js(source, esm=True)
+    generated = compile_to_js(source, filename=case.path.name, esm=True)
     if isinstance(generated, tuple):
         generated = generated[0]
     with tempfile.TemporaryDirectory(prefix="geno-conformance-esm-") as raw_dir:
@@ -668,7 +668,8 @@ def _run_js_esm(case: ConformanceCase, source: str, timeout: float) -> TargetOut
 def _run_python(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome:
     from geno.compiler import compile_to_python
 
-    generated = compile_to_python(source)
+    # The case's own file name, so a runtime report names it (proposal 0018).
+    generated = compile_to_python(source, filename=case.path.name)
     with tempfile.TemporaryDirectory(prefix="geno-conformance-python-") as raw_dir:
         artifact = Path(raw_dir) / "case.py"
         artifact.write_text(generated, encoding="utf-8", newline="\n")
@@ -690,7 +691,7 @@ def _run_js(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome
     node_path = shutil.which("node")
     if node_path is None:
         raise RuntimeError("Node.js is not available")
-    generated = compile_to_js(source)
+    generated = compile_to_js(source, filename=case.path.name)
     if isinstance(generated, tuple):
         generated = generated[0]
     with tempfile.TemporaryDirectory(prefix="geno-conformance-js-") as raw_dir:

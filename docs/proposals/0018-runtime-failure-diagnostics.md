@@ -678,22 +678,24 @@ Fields are separated by tabs, and text fields escape `\\`, `\t` and `\n`. Host
 lines count from the anchor's `def` line, which is line 0. The records are:
 
 - `F idx path`: a source file;
-- `D start end host_name display_name`: the host line range of one emitted Geno
-  function and its names. Nested ranges appear for module factories and nested
-  helpers;
+- `D start end host_name display_name`: the host line range `[start, end)` of
+  one emitted Geno function and its names. Functions of a module factory have
+  ranges of their own inside the factory, which has none;
 - `T id file line col`: a Geno statement's location;
 - `S host_line id`: from this host line on, generated lines belong to
-  statement `id`. The compiler writes one each time the attributed statement
-  changes, including when an enclosing statement resumes after a nested block;
+  statement `id` (`-1`: none). The compiler writes one each time the
+  attributed statement changes, including when an enclosing statement resumes
+  after a nested block;
 - `C id key line col`: a **candidate site** in statement `id`. `key` is the host
   callee the generated code calls there: a Geno function's host name, a
   builtin's host name, or a runtime helper (`_geno_panic`, `_safe_index`,
   `_safe_div`, `_require_cap`, ...). `line col` is the Geno location of the
   call or construct that emitted it;
-- `E host_line`: the end of the body.
+- `E host_line`: the end of the body (exclusive).
 
 The contract-check lines (`if not (...)` and the `raise`) get a statement of
-their own located at the clause condition. Every statement kind gets an `S`
+their own located at the clause condition, and so does each default
+parameter value's evaluation. Every statement kind gets an `S`
 record, including expression statements, `Assign` and `Assert`, which 0.6's
 `# geno:` comments skip. The `E` record precedes the standalone guard, so the
 guard's `<module>` lines are outside the body. The existing `# geno:file:line`
@@ -708,24 +710,30 @@ The recorder therefore uses in-band markers, the scheme the JavaScript
 backend already uses for its source map (`\0geno-map:N\0`,
 `js_compiler.py:1408-1430`, 1467-1484):
 
-- `D` start/end, `S` and the statement half of `C` records are written as
-  `\0geno-trace:N\0` markers into whatever buffer is current. Records whose
-  data needs no host line (`T`, the key and location of `C`, `F`) go straight
-  into side tables.
-- `_write` resolves markers only when it writes to the root buffer
-  (`self._trace_buffer_depth == 0`; a scratch-buffer swap increments the depth
-  and restores it in its `finally`). It computes each marker's host line by
-  counting the newlines in the written text before the marker, starting from a
-  root line counter that `_write` advances by the newlines of every write. It
-  counts newlines in the text, never `_writeln` calls, so multi-line strings,
-  prelude text and spliced blocks are all counted correctly. The markers are
-  then removed from the text.
+- `D` start/end, `S` and `E` records are written as `\0geno-trace:N\0`
+  markers into whatever buffer is current, at the start of the line they
+  describe. Records whose data needs no host line (`F`, `T`, and `C`, which
+  names its statement by id) go straight into side tables. The `_GENO_TRACE`
+  line is written as a placeholder.
+- Markers are resolved once, over the final text, when `compile` or
+  `compile_project` returns (`_TraceRecorder.resolve`). Each marker's host line
+  is the number of newlines between the anchor and the marker, counted in the
+  text itself, never by `_writeln` calls, so multi-line strings, prelude text
+  and blocks spliced in from any depth of scratch buffer are all counted
+  correctly. The markers are then removed and the placeholder replaced by the
+  table's `repr`. (Resolving at the root buffer's writes, with a depth counter
+  around buffer swaps, gives the same lines; one pass over the final text
+  needs no bookkeeping at the swap sites.)
 - Geno string literals escape NUL in both backends, so a marker cannot collide
-  with user text. A final assertion in `compile`/`compile_project` checks that
-  no `\0geno-trace:` remains in the output.
+  with user text. A final check in `compile`/`compile_project` raises if any
+  `\0geno-trace` remains in the output.
+- A statement's lines run from its `S` marker to the next one. When a nested
+  statement ends, an `S` marker resumes the enclosing statement (or `-1`, no
+  statement, after a function body's last statement), and each function range
+  starts with `S -1`. Consecutive markers on one line keep the last.
 
-Markers cost one `str.count` and one regex substitution per root write that
-contains a marker, at compile time only. `test_trace_table` covers a block
+Markers cost one regex scan and one newline count over the body, once per
+compilation. `test_trace_table` covers a block
 lambda nested inside an expression lambda inside a block lambda, a `map`
 callback written as a block lambda, and a module project (module factories),
 and asserts that each `S` and `D` line names the generated line that holds the
@@ -735,15 +743,19 @@ expected code.
 prelude) works in five steps:
 
 1. Walk `exc.__traceback__` from outermost to innermost. Keep **body frames**:
-   frames that satisfy all three tests:
+   frames that satisfy all four tests:
    - `tb.tb_frame.f_globals is anchor.__globals__` (identity of the program's
      namespace);
    - `f_code.co_filename == anchor.__code__.co_filename`;
-   - the line lies between the anchor line and the table's `E` line.
+   - the line lies between the anchor line and the table's `E` line;
+   - the line lies inside some `D` range. Generated code outside every Geno
+     function (trait dispatchers, module-level glue, the `<module>` frame)
+     counts as a host frame, so a dispatcher between a caller and an impl
+     method is the caller's callee, not a position frame.
 
-   Record, for each body frame, the `co_name` of the first non-body frame
-   directly below it, if any (its "callee key"). Prelude, guard, worker,
-   `isolated_host`, thread and event-loop frames are dropped.
+   Record, for each body frame, the `co_name` and code object of the first
+   non-body frame directly below it, if any (its "callee key"). Prelude,
+   guard, worker, `isolated_host`, thread and event-loop frames are dropped.
    A filename-and-range test alone is not enough. The trusted worker script is
    itself `exec`'d from the `-c` bootstrap (`sandbox.py:1384-1390`), so its
    frames, including its own `def main()` (worker line ~80, which `exec`s the
@@ -764,17 +776,18 @@ prelude) works in five steps:
    - capability-assignment insertion.
 
    The anchor's real line, `co_firstlineno`, is read at failure time, not
-   assumed. When the callee key names no candidate in the statement (for
-   example the worker's `safe_print`, which the program reaches as `print`,
-   raising the output-limit error), the position falls back to the statement,
-   which is the `print` call's statement. `test_trace_table` covers a blob
+   assumed. The callee key is the first frame below the body frame, so the
+   worker's `safe_print`, which raises the output-limit error, is never a key:
+   the program reaches it through the prelude's `print_`, whose candidate is
+   the `print` call. When a callee key names no candidate in the statement,
+   the position falls back to the statement. `test_trace_table` covers a blob
    layout whose body is longer than the worker script and a `safe_print`
    output-limit failure.
 2. A body frame is a **Geno frame** when the innermost `D` range that contains
    its line has a `host_name` equal to its `co_name`. Every other body frame is
    **transparent**: comprehension frames before 3.12, wrapper `(lambda ...)()`
-   IIFEs, Geno lambdas, the `ensures` body helper, trait dispatchers, module
-   factories.
+   IIFEs, Geno lambdas and block-lambda helpers, the `ensures` body helper.
+   Module factories have no range of their own; the functions they define do.
 3. The visible frames are the Geno frames, named by `display_name`. Frame *i*'s
    position comes from its **position frame**: the last body frame before Geno
    frame *i+1* (or the innermost body frame, for the last). That is either
@@ -782,15 +795,21 @@ prelude) works in five steps:
 4. Resolve the position frame's line to its statement through the `S` records.
    The lookup key is the host name of the next Geno frame when that frame
    directly follows the position frame, and otherwise the position frame's
-   callee key (the builtin that called a callback, or `_geno_panic`,
-   `_safe_index` and the like). If the statement has exactly one candidate with
-   that key, the position is the candidate's location. For an awaited async
+   callee key (the builtin that called a callback, or `panic`, `_safe_index`,
+   `_int_div` and the like). A candidate matches a callee by its code name, or
+   when the program namespace binds the candidate's key to a plain function
+   whose code object is the callee's (a prelude alias); the check reads only
+   `type()` and `__code__`, never a program-defined method. If the statement
+   has exactly one matching candidate, the position is the candidate's
+   location; two or more give the statement's location. For an awaited async
    function (section 2) the compiler also records an `await` candidate (key
-   `<await>`) at each `await` expression. When the next Geno frame directly
-   follows, the statement has no candidate with its host name (the split
-   form `await pending`), and it has exactly one `<await>` candidate, that
-   candidate is the position. Otherwise it is the statement's location. A failure raised inline in a Geno frame with no callee
-   resolves to its statement, which for contract checks is the clause.
+   `<await>`) at each `await` expression. In the split form `await pending`,
+   the awaited body is reached through the prelude's `_GenoAsync.__await__`,
+   so the callee key is `__await__`; that key, or a directly following Geno
+   frame whose host name has no candidate, selects the statement's one
+   `<await>` candidate. Otherwise the position is the statement's location. A
+   failure raised inline in a Geno frame with no callee resolves to its
+   statement, which for contract checks is the clause.
 5. Bound the frames as in section 2. The failure location is the innermost
    frame's position.
 
@@ -807,17 +826,21 @@ precision.
 
 1. flushes stdout;
 2. calls the prelude's `_geno_report_uncaught(exc, _GENO_TRACE,
-   _geno_trace_anchor, stderr=sys.stderr, host_traceback=...)`;
-3. raises `SystemExit(1)`.
+   _geno_trace_anchor, sys.stderr)`;
+3. when `os.environ.get("GENO_TRACEBACK") == "host"`, prints
+   `Host traceback (GENO_TRACEBACK=host):` (the CLI lanes' header) and
+   `traceback.print_exception(exc, file=sys.stderr)`, the single-argument form
+   Python 3.10 added, because the worker validates the guard's text too and
+   rejects a `__traceback__` attribute in it;
+4. raises `SystemExit(1)`.
 
-`host_traceback` is `os.environ.get("GENO_TRACEBACK") == "host"`. The guard
-imports `os`, `sys` and, when needed, `traceback` locally, as it already
-imports `sys`; the prelude gains no imports. `SystemExit` and
+The guard imports `os`, `sys` and, when needed, `traceback` locally, as it
+already imports `sys`; the prelude gains no imports. `SystemExit` and
 `KeyboardInterrupt` are not caught. The message rule is the worker's existing
 one: `str(e)` for the `RuntimeError` family, otherwise `TypeName: str(e)`. The
-label is always `Runtime Error`. `_GENO_TRACE`, `_geno_trace_anchor`,
-`_geno_failure_report` and `_geno_report_uncaught` join
-`_PYTHON_FIXED_GLOBAL_NAMES` and the generated prelude bindings. Every consumer
+label is always `Runtime Error`. `_GENO_TRACE`, `_geno_trace_anchor` and the
+guard's handler binding `_geno_uncaught` join `_PYTHON_FIXED_GLOBAL_NAMES`;
+`_geno_failure_report` and `_geno_report_uncaught` are prelude bindings. Every consumer
 that rewrites the guard by its opening (the worker capture,
 `compile_and_exec`) is updated with it. If the reporter itself fails (a
 missing or malformed table), it prints the message line alone. It never prints
@@ -847,23 +870,36 @@ infrastructure failure. So:
   capture window grows by the same reserved amount
   (`_STDERR_TRACE_OVERHEAD = 3072`, added to `_stderr_capture_limit`). The
   message's share and its truncation are unchanged, so a line that fits in
-  0.6 still fits.
+  0.6 still fits. The success-result bound the worker enforces
+  (`stderr_result_limit`, now `_stderr_result_limit()`) keeps its 0.6 value.
 - The `trace` object is
   `{"files": [path, ...], "location": [file_idx, line, col] | null,
-  "stack": [[name, file_idx, line, col], ...], "omitted": n}`. Each path
-  appears once in the file table, which a deep recursion through one file
-  makes tiny. Names are capped at 128 and paths at 512 code points.
+  "stack": [[name, file_idx, line, col] | [name], ...], "omitted": n,
+  "omitted_at": k}`, where `[name]` is a frame without a position and
+  `omitted_at` (present only when `omitted > 0`) is the number of kept frames
+  before the elision line. Each path appears once in the file table, which a
+  deep recursion through one file makes tiny. Names are capped at 128 and
+  paths at 512 code points. `runtime_report.encode_trace_payload` builds it
+  and `decode_trace_payload` validates it, so both sides live in one module.
 - The worker serializes the object and, while it is over the budget, drops
-  kept frames from the middle (the frames next to the elision point go first,
-  and `omitted` grows); then replaces each path longer than 128 code points by
-  its basename; then drops `stack`, keeping only `location`; then drops the
-  object entirely. It never truncates the message to make room.
+  kept frames next to the elision point, alternating sides and always keeping
+  the outermost and innermost frames (`omitted` grows and `omitted_at` moves);
+  then replaces each path longer than 128 code points by its basename; then
+  drops `stack`, keeping only `location`; then drops the object entirely. It
+  never truncates the message to make room.
 - The parent validates the object the way it validates the F2 denial tags
-  (types, index ranges, positive integers, total size), keeps it as
-  `ProcessSandbox.last_failure_location` and `last_failure_stack`, drops
-  anything malformed (fail closed: message only), and prints with
-  `runtime_report`, adding a snippet under the rule in section 4. The
-  capability hint still prints last.
+  (exact key set, types, index ranges, positive lines, bounded names, paths
+  and frame count, no control characters, which a terminal would interpret),
+  keeps it as `ProcessSandbox.last_failure_location`, `last_failure_stack`
+  and `last_failure_omitted_at`, drops anything malformed whole (fail closed:
+  message only), and prints with `runtime_report`, adding a snippet under the
+  rule in section 4 with the entry file's directory (or the project
+  directory) as the allowed tree. The capability hint still prints last.
+- With `GENO_TRACEBACK=host` the parent asks the worker for its own
+  traceback (the existing `debug` payload field, which the parent no longer
+  logs unless `GENO_SANDBOX_DEBUG` is set) and prints it after the report,
+  under the same `Host traceback (GENO_TRACEBACK=host):` header, before any
+  capability hint.
 
 Example-phase failures are interpreted in the worker and keep travelling as
 pre-formatted text through `_format_process_frontend_error`, which now uses
@@ -1154,9 +1190,12 @@ the lag.
   each, and diagnostics never render environment values. The default-lane
   parent reads snippets only from regular `.geno` files in the program's tree
   or the standard library, with a bounded read (section 4).
-  A new security-corpus entry (`# EXPECT` header style) asserts that a denial
-  in the isolated lane reports its call site with no `<string>`,
-  `sandbox.py`, `isolated_host.py` or absolute non-program paths. Unit tests
+  A new security-corpus entry (`# EXPECT` header style,
+  `isolated/denial_stack_has_no_host_frames.geno`) asserts that a denial in
+  the isolated lane reports its call site, and the isolated corpus test now
+  checks every entry for no `<string>`, `<geno-runtime-prelude>`,
+  `sandbox.py`, `isolated_host.py`, `_runtime_support` or `safe_print` text
+  and no frame path other than the program's own file. Unit tests
   of the parent's snippet reader feed it forged payload locations that name a
   `.env` file, a non-`.geno` file in the program directory, a FIFO (POSIX
   only), a directory, a symlink out of the tree and a file larger than the

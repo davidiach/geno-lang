@@ -10,6 +10,8 @@ import builtins as _python_builtins
 import hashlib
 import json
 import keyword
+import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from functools import lru_cache
@@ -125,7 +127,9 @@ from .float_promotion import float_shape
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
+from .runtime_report import display_path
 from .stdlib_scope import binds_unqualified
+from .tokens import SourceLocation
 from .types import AsyncType, FloatType, ListType, UserType
 
 
@@ -232,7 +236,17 @@ _PYTHON_EMITTED_HOST_INTRINSIC_NAMES = frozenset(
 )
 _PYTHON_HOST_INTRINSIC_NAMES = frozenset(dir(_python_builtins))
 _PYTHON_FIXED_GLOBAL_NAMES = frozenset(
-    {"__name__", "asyncio", "_geno_entry_main", "_geno_run_deep"}
+    {
+        "__name__",
+        "asyncio",
+        "_geno_entry_main",
+        "_geno_run_deep",
+        # The runtime trace table and its anchor (proposal 0018), and the
+        # standalone guard's handler binding.
+        "_GENO_TRACE",
+        "_geno_trace_anchor",
+        "_geno_uncaught",
+    }
 )
 
 
@@ -397,6 +411,175 @@ _RAW_INT_LITERAL_MAX_BITS = 63
 _GROWTH_FREE_ADDEND_MAX_BITS = 32
 
 
+# ---------------------------------------------------------------------------
+# Runtime trace table (proposal 0018, section 8)
+# ---------------------------------------------------------------------------
+#
+# A compiled program with a `main` starts its generated body with an anchor
+# function and one string constant, `_GENO_TRACE`, which maps host lines back
+# to Geno source. The prelude's reporter reads it only when a failure escapes
+# `main`, so a call costs nothing extra. Records are tab-separated lines;
+# host lines count from the anchor's `def` line (line 0):
+#
+#   G 1                          format and version
+#   F idx path                   a source file
+#   D start end host display     a Geno function's host line range [start, end)
+#   T id file line col           a Geno statement's location
+#   S host_line id               from this host line on, lines belong to id
+#                                (-1: no statement)
+#   C id key line col            a candidate site in statement id: the host
+#                                callee `key` called there, at line:col
+#   E host_line                  the end of the generated body
+#
+# The compiler does not write its output linearly (block lambdas compile into
+# a scratch buffer that is spliced in later), so the records that need a host
+# line are written as in-band `\0geno-trace:N\0` markers and resolved once,
+# over the final text, by counting the newlines before each marker.
+
+TRACE_TABLE_VERSION = 1
+_TRACE_MARKER_PATTERN = re.compile("\0geno-trace:([0-9]+)\0")
+_TRACE_TABLE_PLACEHOLDER = "\0geno-trace-table\0"
+_TRACE_ANCHOR_LINES = (
+    f"def _geno_trace_anchor(): pass\n_GENO_TRACE = {_TRACE_TABLE_PLACEHOLDER}\n"
+)
+# The host callee a compiled call names: a plain identifier, or a module
+# function reached through its namespace object.
+_TRACE_CALLEE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_TRACE_MODULE_CALLEE = re.compile(
+    r"get_field\([A-Za-z_][A-Za-z0-9_]*, '([A-Za-z_][A-Za-z0-9_]*)'\)\Z"
+)
+_TRACE_LEADING_HELPER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\(")
+# The candidate key of an `await` (proposal 0018, section 2: async frames).
+TRACE_AWAIT_KEY = "<await>"
+# The runtime helpers an inlined builtin can still fail in.
+_FAST_PATH_TRACE_KEYS = {
+    LENGTH_FAST_PATH_BUILTIN: ("_int_oob", "_require_int_bit_limit"),
+    APPEND_FAST_PATH_BUILTIN: ("_list_size_exceeded",),
+}
+
+
+def trace_field(text: str) -> str:
+    """Escape one text field of the trace table."""
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
+class _TraceRecorder:
+    """Collects the trace table of one compilation (proposal 0018)."""
+
+    def __init__(self, entry_filename: str | None, *, absolute_paths: bool) -> None:
+        entry_dir = "."
+        if entry_filename and not entry_filename.startswith("<"):
+            entry_dir = os.path.dirname(entry_filename) or "."
+        self._entry_dir = entry_dir
+        self._absolute_paths = absolute_paths
+        self._files: dict[str, int] = {}
+        self._paths: list[str] = []
+        self._statements: list[tuple[int, int, int]] = []
+        self._candidates: dict[tuple[int, str, int, int], None] = {}
+        self._functions: list[list[int | str]] = []
+        self._marks: list[tuple[str, int]] = []
+        # Statements being compiled, innermost last.
+        self.stack: list[int] = []
+
+    def marker(self, kind: str, value: int) -> str:
+        self._marks.append((kind, value))
+        return f"\0geno-trace:{len(self._marks) - 1}\0"
+
+    def _shown_path(self, filename: str) -> str:
+        if filename.startswith("<"):
+            return filename
+        shown = display_path(filename)
+        if shown != filename or self._absolute_paths:
+            return shown
+        # A compiled artifact must not carry the build machine's layout.
+        try:
+            relative = os.path.relpath(filename, self._entry_dir)
+        except ValueError:
+            return os.path.basename(filename)
+        if (
+            os.path.isabs(relative)
+            or relative == os.pardir
+            or relative.startswith(os.pardir + os.sep)
+        ):
+            return os.path.basename(filename)
+        return relative.replace(os.sep, "/")
+
+    def _file_index(self, filename: str) -> int:
+        index = self._files.get(filename)
+        if index is None:
+            index = len(self._paths)
+            self._files[filename] = index
+            self._paths.append(self._shown_path(filename))
+        return index
+
+    def statement(self, location: SourceLocation | None) -> int:
+        """Register a statement at *location*; -1 when it has none."""
+        if location is None or not isinstance(location.filename, str):
+            return -1
+        file_index = self._file_index(location.filename)
+        self._statements.append((file_index, location.line, location.column))
+        return len(self._statements) - 1
+
+    def candidate(self, key: str, location: SourceLocation | None) -> None:
+        """Record that the current statement calls *key* at *location*."""
+        if location is None or not self.stack or self.stack[-1] < 0:
+            return
+        self._candidates[(self.stack[-1], key, location.line, location.column)] = None
+
+    def function(self, host_name: str, display_name: str) -> int:
+        self._functions.append([0, 0, host_name, display_name])
+        return len(self._functions) - 1
+
+    def resolve(self, text: str, anchor_at: int) -> str:
+        """Remove the markers from *text* and fill in the table."""
+        pieces = [text[:anchor_at]]
+        line = 0
+        position = anchor_at
+        statement_lines: list[tuple[int, int]] = []
+        end_line = 0
+        for match in _TRACE_MARKER_PATTERN.finditer(text, anchor_at):
+            start = match.start()
+            line += text.count("\n", position, start)
+            pieces.append(text[position:start])
+            position = match.end()
+            kind, value = self._marks[int(match.group(1))]
+            if kind == "S":
+                if statement_lines and statement_lines[-1][0] == line:
+                    statement_lines.pop()
+                if not statement_lines or statement_lines[-1][1] != value:
+                    statement_lines.append((line, value))
+            elif kind == "D0":
+                self._functions[value][0] = line
+            elif kind == "D1":
+                self._functions[value][1] = line
+            elif kind == "E":
+                end_line = line
+        pieces.append(text[position:])
+        table = self._encode(statement_lines, end_line)
+        return "".join(pieces).replace(_TRACE_TABLE_PLACEHOLDER, repr(table), 1)
+
+    def _encode(self, statement_lines: list[tuple[int, int]], end_line: int) -> str:
+        records = [f"G\t{TRACE_TABLE_VERSION}"]
+        records.extend(
+            f"F\t{index}\t{trace_field(path)}" for index, path in enumerate(self._paths)
+        )
+        records.extend(
+            f"D\t{start}\t{end}\t{trace_field(str(host))}\t{trace_field(str(shown))}"
+            for start, end, host, shown in self._functions
+        )
+        records.extend(
+            f"T\t{index}\t{file_index}\t{line}\t{column}"
+            for index, (file_index, line, column) in enumerate(self._statements)
+        )
+        records.extend(f"S\t{line}\t{index}" for line, index in statement_lines)
+        records.extend(
+            f"C\t{index}\t{trace_field(key)}\t{line}\t{column}"
+            for index, key, line, column in self._candidates
+        )
+        records.append(f"E\t{end_line}")
+        return "\n".join(records)
+
+
 class CompileError(Exception):
     """Raised when compilation detects an unsafe or invalid program."""
 
@@ -430,6 +613,67 @@ class Compiler(BaseCompiler, ASTVisitor):
         # (see `test_shadowing`), so nested bindings are renamed here.
         self._block_scopes: list[_BlockScope] = []
         self._nonlocal_param_names: set[str] = set()
+        # Proposal 0018: the trace table of the program being compiled (only
+        # a program with a `main` has one). A compiled artifact stores paths
+        # relative to the entry file's directory; the default `geno run` lane
+        # keeps the frontend's paths, as `--unsafe` prints them.
+        self._trace: _TraceRecorder | None = None
+        self.trace_absolute_paths = False
+
+    def _begin_trace(self, entry_filename: str | None) -> int:
+        """Start the trace table; returns where the anchor starts."""
+        self._trace = _TraceRecorder(
+            entry_filename, absolute_paths=self.trace_absolute_paths
+        )
+        anchor_at = self.output.tell()
+        self._write(_TRACE_ANCHOR_LINES)
+        return anchor_at
+
+    def _finish_trace(self, text: str, anchor_at: int) -> str:
+        trace = self._trace
+        self._trace = None
+        if trace is None:
+            return text
+        resolved = trace.resolve(text, anchor_at)
+        if "\0geno-trace" in resolved:
+            raise CompileError("internal error: unresolved runtime trace marker")
+        return resolved
+
+    def _trace_end_of_body(self) -> None:
+        if self._trace is not None:
+            self._write(self._trace.marker("E", 0))
+
+    def _trace_candidate(self, key: str | None, location) -> None:
+        """Record a candidate site of the current statement (proposal 0018)."""
+        trace = self._trace
+        if trace is not None and key is not None:
+            trace.candidate(key, location)
+
+    def _trace_callee(self, func: str) -> str | None:
+        """The host callee a compiled call expression *func* names, if known."""
+        if _TRACE_CALLEE.match(func):
+            return func
+        match = _TRACE_MODULE_CALLEE.match(func)
+        if match is not None:
+            return self._mangle_name(match.group(1))
+        return None
+
+    @contextmanager
+    def _traced_statement(self, location) -> Iterator[None]:
+        """Attribute the lines written inside to a statement at *location*."""
+        trace = self._trace
+        if trace is None:
+            yield
+            return
+        trace.stack.append(trace.statement(location))
+        self._write(trace.marker("S", trace.stack[-1]))
+        try:
+            yield
+        finally:
+            trace.stack.pop()
+            # An enclosing statement resumes after a nested one; lines after
+            # a function body's last statement belong to no statement.
+            self._write(trace.marker("S", trace.stack[-1] if trace.stack else -1))
 
     @contextmanager
     def _function_scope(
@@ -861,6 +1105,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         """
         self.output = StringIO()
         self.indent_level = 0
+        self._trace = None
         self._reset_definition_state()
         self._shadow_runtime_names(program)
         self._active_module_bindings = {}
@@ -868,6 +1113,23 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Write runtime prelude
         self.output.write(RUNTIME_PRELUDE)
+
+        main_defn = next(
+            (
+                d
+                for d in program.definitions
+                if isinstance(d, FunctionDef) and d.name == "main"
+            ),
+            None,
+        )
+        # A program with a `main` starts its body with the trace table's
+        # anchor (proposal 0018), so a capability assignment spliced in
+        # before the body never shifts a host line the table records.
+        anchor_at = (
+            self._begin_trace(getattr(main_defn.location, "filename", None))
+            if main_defn is not None
+            else -1
+        )
 
         # First pass: collect type, function, trait, and impl definitions
         collect_definitions(program, into=self._definition_index)
@@ -905,12 +1167,8 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._emit_trait_dispatchers()
 
         # Add main call if 'main' was defined
-        main_defn = None
-        for d in program.definitions:
-            if isinstance(d, FunctionDef) and d.name == "main":
-                main_defn = d
-                break
         if main_defn is not None:
+            self._trace_end_of_body()
             self.output.write(
                 _compiled_main_guard(
                     is_async=is_async_execution_form(main_defn),
@@ -918,7 +1176,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
             )
 
-        return str(self.output.getvalue())
+        return self._finish_trace(str(self.output.getvalue()), anchor_at)
 
     @staticmethod
     def _module_runtime_exports(program: Program) -> tuple[list[str], list[str]]:
@@ -945,6 +1203,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         """
         self.output = StringIO()
         self.indent_level = 0
+        self._trace = None
         self._reset_definition_state()
         self._active_module_bindings = {}
         for program in dep_graph.parsed.values():
@@ -982,6 +1241,19 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Find the entrypoint module (last in topo order, typically has main())
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
+        entry_main = next(
+            (
+                defn
+                for defn in dep_graph.parsed[entrypoint].definitions
+                if isinstance(defn, FunctionDef) and defn.name == "main"
+            ),
+            None,
+        )
+        anchor_at = (
+            self._begin_trace(getattr(entry_main.location, "filename", None))
+            if entry_main is not None
+            else -1
+        )
         main_defn = None
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
@@ -1107,6 +1379,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Add main call
         if main_defn is not None:
+            self._trace_end_of_body()
             self.output.write(
                 _compiled_main_guard(
                     is_async=is_async_execution_form(main_defn),
@@ -1117,7 +1390,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 )
             )
 
-        return str(self.output.getvalue())
+        return self._finish_trace(str(self.output.getvalue()), anchor_at)
 
     def _emit_source_location(self, location) -> None:
         """Emit a source mapping comment: # geno:<filename>:<line>."""
@@ -1361,7 +1634,29 @@ class Compiler(BaseCompiler, ASTVisitor):
         return f"{inputs} panics {json.dumps(example.panic_message)}"
 
     def _compile_function_def(self, defn: FunctionDef) -> None:
-        """Compile a function definition to Python."""
+        """Compile a function definition to Python.
+
+        With a trace table, the function's host line range is recorded with
+        its host and display names (proposal 0018, section 8).
+        """
+        trace = self._trace
+        if trace is None:
+            self._compile_function_def_untraced(defn)
+            return
+        index = trace.function(
+            self._mangle_name(defn.name), self._function_display_name(defn)
+        )
+        enclosing = trace.stack
+        trace.stack = []
+        self._write(trace.marker("D0", index))
+        self._write(trace.marker("S", -1))
+        try:
+            self._compile_function_def_untraced(defn)
+        finally:
+            trace.stack = enclosing
+            self._write(trace.marker("D1", index))
+
+    def _compile_function_def_untraced(self, defn: FunctionDef) -> None:
         self._writeln()
         self._emit_source_location(defn.location)
 
@@ -1397,12 +1692,13 @@ class Compiler(BaseCompiler, ASTVisitor):
         for p in defn.params:
             if p.default_value is None:
                 continue
-            param_name = self._mangle_name(p.name)
-            default_value = self._compile_call_argument(p.default_value)
-            self._writeln(f"if {param_name} is _GENO_MISSING:")
-            self._indent()
-            self._writeln(f"{param_name} = {default_value}")
-            self._dedent()
+            with self._traced_statement(p.default_value.location):
+                param_name = self._mangle_name(p.name)
+                default_value = self._compile_call_argument(p.default_value)
+                self._writeln(f"if {param_name} is _GENO_MISSING:")
+                self._indent()
+                self._writeln(f"{param_name} = {default_value}")
+                self._dedent()
 
         # Contract failures name the function, its parameters and the call's
         # argument values (proposal 0018); the values are rendered only once
@@ -1434,25 +1730,12 @@ class Compiler(BaseCompiler, ASTVisitor):
                 raise CompileError(
                     f"`requires false` on {defn.name} makes the function uncallable"
                 )
-            with self._with_name_overrides(
-                {p.name: self._mangle_name(p.name) for p in defn.params}
-            ):
-                cond = self._compile_expr(req.condition)
-            described = (display_name, req.source_text, param_names, param_values)
-            cond = self._contract_condition(
-                req.condition,
-                cond,
-                self._contract_violation_call(
-                    "requires", "propagate", index, *described
-                ),
-            )
-            self._writeln(f"if not ({cond}):")
-            self._indent()
-            self._writeln(
-                "raise "
-                + self._contract_violation_call("requires", "false", index, *described)
-            )
-            self._dedent()
+            # The check's lines are a statement located at the clause, so a
+            # failure maps to the clause (proposal 0018, section 8).
+            with self._traced_statement(req.condition.location):
+                self._compile_requires_check(
+                    defn, req, index, display_name, param_names, param_values
+                )
 
         body_helper = self._fresh_temp() if has_ensures else ""
 
@@ -1514,44 +1797,88 @@ class Compiler(BaseCompiler, ASTVisitor):
                     raise CompileError(
                         f"`ensures false` on {defn.name} makes the function unusable"
                     )
-                # The implicit result binding belongs only to the contract;
-                # the body can still read a module constant named result.
-                contract_bindings = {
-                    p.name: self._mangle_name(p.name) for p in defn.params
-                }
-                contract_bindings["result"] = result_name
-                with self._with_name_overrides(contract_bindings):
-                    cond = self._compile_expr(ens.condition)
-                described = (display_name, ens.source_text, param_names, call_arguments)
-                checked = param_values if call_arguments != param_values else None
-                cond = self._contract_condition(
-                    ens.condition,
-                    cond,
-                    self._contract_violation_call(
-                        "ensures",
-                        "propagate",
+                with self._traced_statement(ens.condition.location):
+                    self._compile_ensures_check(
+                        defn,
+                        ens,
                         index,
-                        *described,
-                        result=result_name,
-                        checked=checked,
-                    ),
-                )
-                self._writeln(f"if not ({cond}):")
-                self._indent()
-                self._writeln(
-                    "raise "
-                    + self._contract_violation_call(
-                        "ensures",
-                        "false",
-                        index,
-                        *described,
-                        result=result_name,
-                        checked=checked,
+                        result_name,
+                        (display_name, ens.source_text, param_names, call_arguments),
+                        param_values if call_arguments != param_values else None,
                     )
-                )
-                self._dedent()
             self._writeln(f"return {result_name}")
 
+        self._dedent()
+
+    def _compile_requires_check(
+        self,
+        defn: FunctionDef,
+        req,
+        index: int,
+        display_name: str,
+        param_names: tuple[str, ...],
+        param_values: str,
+    ) -> None:
+        """Emit the check of one ``requires`` clause at function entry."""
+        with self._with_name_overrides(
+            {p.name: self._mangle_name(p.name) for p in defn.params}
+        ):
+            cond = self._compile_expr(req.condition)
+        described = (display_name, req.source_text, param_names, param_values)
+        cond = self._contract_condition(
+            req.condition,
+            cond,
+            self._contract_violation_call("requires", "propagate", index, *described),
+        )
+        self._writeln(f"if not ({cond}):")
+        self._indent()
+        self._writeln(
+            "raise "
+            + self._contract_violation_call("requires", "false", index, *described)
+        )
+        self._dedent()
+
+    def _compile_ensures_check(
+        self,
+        defn: FunctionDef,
+        ens,
+        index: int,
+        result_name: str,
+        described: tuple[str, str | None, tuple[str, ...], str],
+        checked: str | None,
+    ) -> None:
+        """Emit the check of one ``ensures`` clause after the body ran."""
+        # The implicit result binding belongs only to the contract;
+        # the body can still read a module constant named result.
+        contract_bindings = {p.name: self._mangle_name(p.name) for p in defn.params}
+        contract_bindings["result"] = result_name
+        with self._with_name_overrides(contract_bindings):
+            cond = self._compile_expr(ens.condition)
+        cond = self._contract_condition(
+            ens.condition,
+            cond,
+            self._contract_violation_call(
+                "ensures",
+                "propagate",
+                index,
+                *described,
+                result=result_name,
+                checked=checked,
+            ),
+        )
+        self._writeln(f"if not ({cond}):")
+        self._indent()
+        self._writeln(
+            "raise "
+            + self._contract_violation_call(
+                "ensures",
+                "false",
+                index,
+                *described,
+                result=result_name,
+                checked=checked,
+            )
+        )
         self._dedent()
 
     def _contract_condition(
@@ -1618,7 +1945,18 @@ class Compiler(BaseCompiler, ASTVisitor):
     # =========================================================================
 
     def _compile_statement(self, stmt: Statement) -> None:
-        """Compile a statement to Python."""
+        """Compile a statement to Python.
+
+        With a trace table (proposal 0018), every statement kind is recorded,
+        so a runtime failure maps back to the statement that raised it.
+        """
+        if self._trace is None:
+            self._compile_statement_untraced(stmt)
+            return
+        with self._traced_statement(stmt.location):
+            self._compile_statement_untraced(stmt)
+
+    def _compile_statement_untraced(self, stmt: Statement) -> None:
         stmt_type = type(stmt)
 
         # Emit source mapping comment for control-flow and binding statements
@@ -1931,6 +2269,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                 binary.left
             ) or self._is_transient_chain_node(binary.right)
             needs_check = operand_is_chain or not self._has_growth_free_addend(binary)
+            if needs_check:
+                self._trace_candidate("_int_oob", value_expr.location)
             return raw, needs_check
         if self._is_growth_free_mul(value_expr) or (
             isinstance(value_expr, BinaryOp)
@@ -1941,6 +2281,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             binary = cast(BinaryOp, value_expr)
             left = self._compile_addsub_operand(binary.left)
             right = self._compile_addsub_operand(binary.right)
+            self._trace_candidate("_int_oob", value_expr.location)
             return f"(({left}) * ({right}))", True
         return None
 
@@ -2255,10 +2596,16 @@ class Compiler(BaseCompiler, ASTVisitor):
             return f"_check_collection_size([{elements}])"
 
         if expr_type is BinaryOp:
-            return self._compile_binary_op(cast(BinaryOp, expr))
+            binary_code = self._compile_binary_op(cast(BinaryOp, expr))
+            if self._trace is not None:
+                self._trace_operator(cast(BinaryOp, expr), binary_code)
+            return binary_code
 
         if expr_type is UnaryOp:
-            return self._compile_unary_op(cast(UnaryOp, expr))
+            unary_code = self._compile_unary_op(cast(UnaryOp, expr))
+            if self._trace is not None:
+                self._trace_operator(cast(UnaryOp, expr), unary_code)
+            return unary_code
 
         if expr_type is FunctionCall:
             return self._run_async_once(
@@ -2269,6 +2616,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             index_expr = cast(IndexAccess, expr)
             target = self._compile_expr(index_expr.target)
             index = self._compile_expr(index_expr.index)
+            self._trace_candidate("_safe_index", expr.location)
             return f"_safe_index({target}, {index})"
 
         if expr_type is FieldAccess:
@@ -2326,9 +2674,26 @@ class Compiler(BaseCompiler, ASTVisitor):
         if expr_type is AwaitExpr:
             await_expr = cast(AwaitExpr, expr)
             inner = self._compile_await_operand(await_expr.expr)
+            self._trace_candidate(TRACE_AWAIT_KEY, expr.location)
             return f"(await {inner})"
 
         return self._compile_expr_slowpath(expr)
+
+    def _trace_operator(self, expr: BinaryOp | UnaryOp, code: str) -> None:
+        """Record the runtime helper an operator's compiled form fails in."""
+        match = _TRACE_LEADING_HELPER.match(code)
+        if match is not None:
+            if match.group(1) != "bool":
+                self._trace_candidate(match.group(1), expr.location)
+            return
+        if not isinstance(expr, BinaryOp):
+            return
+        if expr.operator in ("/", "%") and is_int_type(expr.left):
+            # The inline form falls back to the helper for a zero divisor.
+            helper = "_int_div" if expr.operator == "/" else "_int_mod"
+            self._trace_candidate(helper, expr.location)
+        elif expr.operator in ("+", "-", "*") and code.startswith("(_temp_"):
+            self._trace_candidate("_int_oob", expr.location)
 
     def _compile_int_literal(self, value: int) -> str:
         """Emit an integer literal, skipping the runtime guard when provably safe.
@@ -2923,6 +3288,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         )
         if reordered_call is not None:
             names, values, call = reordered_call
+            self._trace_candidate(self._trace_callee(values[0]), expr.location)
             parameters = ", ".join(names)
             arguments = ", ".join(values)
             return f"(lambda {parameters}: {call})({arguments})"
@@ -2933,6 +3299,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                 expr._resolved_builtin_name, concrete_args
             )
             if fast_path is not None:
+                if self._trace is not None:
+                    for key in _FAST_PATH_TRACE_KEYS.get(
+                        expr._resolved_builtin_name or "", ()
+                    ):
+                        self._trace_candidate(key, expr.location)
                 return fast_path
 
         func = self._compile_expr(expr.function)
@@ -2940,6 +3311,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             "_GENO_MISSING" if arg is None else self._compile_call_argument(arg.value)
             for arg in ordered_args
         )
+        self._trace_candidate(self._trace_callee(func), expr.location)
 
         return f"{func}({args})"
 
@@ -3152,6 +3524,9 @@ class Compiler(BaseCompiler, ASTVisitor):
                 args = [current_temp] + args
 
             arg_str = ", ".join(args)
+            self._trace_candidate(
+                self._trace_callee(func), stage.location or expr.location
+            )
             current = f"(lambda {current_temp}: {func}({arg_str}))({current})"
 
         return current
@@ -3633,8 +4008,31 @@ def _compiled_main_guard_opening(*, is_async: bool, main_name: str = "main") -> 
     if is_async:
         lines.append("    import asyncio\n")
     lines.append(_STANDALONE_DEEP_RUNNER)
-    lines.append(f"    result = _geno_run_deep(lambda: {call})\n")
+    lines.append("    try:\n")
+    lines.append(f"        result = _geno_run_deep(lambda: {call})\n")
+    lines.append(_STANDALONE_FAILURE_HANDLER)
     return "".join(lines)
+
+
+# Proposal 0018: an uncaught failure prints the Geno report, mapped through
+# the program's trace table, instead of a host traceback, and exits 1 as an
+# uncaught exception did. `GENO_TRACEBACK=host` also prints the host
+# traceback, for debugging Geno itself. SystemExit and KeyboardInterrupt are
+# not Exceptions, so they pass through unchanged.
+_STANDALONE_FAILURE_HANDLER = """\
+    except Exception as _geno_uncaught:
+        import os
+        import sys
+        sys.stdout.flush()
+        _geno_report_uncaught(
+            _geno_uncaught, _GENO_TRACE, _geno_trace_anchor, sys.stderr
+        )
+        if os.environ.get("GENO_TRACEBACK") == "host":
+            import traceback
+            print("Host traceback (GENO_TRACEBACK=host):", file=sys.stderr)
+            traceback.print_exception(_geno_uncaught, file=sys.stderr)
+        raise SystemExit(1)
+"""
 
 
 # A standalone program allows the default Geno call depth (proposal 0011): a

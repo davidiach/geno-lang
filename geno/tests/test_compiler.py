@@ -3,6 +3,7 @@ Tests for the Geno Compiler
 ===========================
 """
 
+import ast
 import io
 import json
 import os
@@ -3382,6 +3383,88 @@ class TestMangledHelperNameShadowing:
         assert result.stdout == "2\n[10]\n"
 
 
+_TRACE_PANIC_SOURCE = """func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+
+func scale(n: Int) -> Int
+    example 2 -> 4
+    return check(n * 2)
+end func
+
+func main() -> Int
+    let doubled = [1].map(fn(x: Int) do
+        let y = fn(z: Int) -> z + 1
+        return y(x)
+    end fn)
+    return scale(4)
+end func
+"""
+
+
+class TestRuntimeTraceTable:
+    """Proposal 0018's trace table leaves the rest of the output alone."""
+
+    def test_source_comments_are_unchanged(self):
+        from geno.runtime_prelude import RUNTIME_PRELUDE
+
+        code = compile_to_python(_TRACE_PANIC_SOURCE, filename="panic.geno")
+        comments = [
+            line.strip()
+            for line in code[len(RUNTIME_PRELUDE) :].splitlines()
+            if line.strip().startswith("# geno:")
+        ]
+        # Definitions and control-flow/binding statements only, as in 0.6:
+        # the `panic(...)` expression statement still has no comment.
+        assert comments == [
+            "# geno:panic.geno:1",
+            "# geno:panic.geno:3",
+            "# geno:panic.geno:6",
+            "# geno:panic.geno:9",
+            "# geno:panic.geno:11",
+            "# geno:panic.geno:14",
+            "# geno:panic.geno:15",
+            "# geno:panic.geno:16",
+            "# geno:panic.geno:17",
+            "# geno:panic.geno:19",
+        ]
+
+    @pytest.mark.parametrize(
+        "name", ["_GENO_TRACE", "_geno_trace_anchor", "_geno_uncaught"]
+    )
+    def test_the_trace_names_are_reserved(self, name):
+        source = (
+            f"func main() -> Int\n    let {name} = 1\n    return {name}\nend func\n"
+        )
+        with pytest.raises(CompileError, match="reserved"):
+            compile_to_python(source)
+
+    def test_no_trace_marker_is_left_behind(self):
+        code = compile_to_python(_TRACE_PANIC_SOURCE)
+        assert "\0" not in code
+        assert code.count("def _geno_trace_anchor(): pass") == 1
+
+    def test_only_a_program_with_main_has_a_table(self):
+        library = _TRACE_PANIC_SOURCE.split("func main", 1)[0]
+        assert "_GENO_TRACE = " not in compile_to_python(library)
+
+    def test_the_guard_reports_and_exits_one(self):
+        code = compile_to_python(_TRACE_PANIC_SOURCE, filename="panic.geno")
+        result = run_python_code(code, python_executable=sys.executable)
+        assert result.returncode == 1
+        assert result.stderr.splitlines() == [
+            "Stack trace (most recent call last):",
+            "  panic.geno:19:12 in main",
+            "  panic.geno:11:12 in scale",
+            "  panic.geno:4:9 in check",
+            "Runtime Error: value too large",
+        ]
+
+
 class TestPipelineGapFixes:
     """Regression tests for compiler pipeline gap fixes."""
 
@@ -3494,10 +3577,20 @@ class TestPipelineGapFixes:
         compile(compiled, "<generated>", "exec")
         assert '# geno:evil.geno\\nprint("INJECT")\\r\\x1b#:1' in compiled
         assert '\nprint("INJECT")\n' not in compiled
+        # The runtime trace table (proposal 0018) names the file inside one
+        # escaped string constant; every other occurrence is a comment.
+        trace_lines = [
+            line for line in compiled.splitlines() if line.startswith("_GENO_TRACE = ")
+        ]
+        assert len(trace_lines) == 1
+        table = ast.parse(trace_lines[0]).body[0]
+        assert isinstance(table, ast.Assign)
+        assert isinstance(table.value, ast.Constant)
+        assert isinstance(table.value.value, str)
         assert all(
             line.lstrip().startswith("#")
             for line in compiled.splitlines()
-            if "INJECT" in line
+            if "INJECT" in line and not line.startswith("_GENO_TRACE = ")
         )
 
     def test_propagate_subclass_is_detected(self):

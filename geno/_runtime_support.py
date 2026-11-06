@@ -5998,5 +5998,288 @@ def cli_args():
 
 
 # =============================================================================
+# Runtime failure reports (proposal 0018)
+# =============================================================================
+#
+# A compiled program with a `main` defines `_GENO_TRACE`, a table that maps
+# host lines back to Geno source (geno/compiler.py's _TraceRecorder documents
+# the records), and `_geno_trace_anchor`, whose `def` line is the table's host
+# line 0. When a failure escapes `main`, the standalone guard calls
+# `_geno_report_uncaught`; the default `geno run` lane's trusted worker
+# imports `_geno_failure_report` from this module and never uses the copy in
+# the program's namespace. Mapping reads only host objects (the traceback,
+# its frames and code objects) and the table, which it treats as untrusted
+# data: anything malformed raises, and the caller then reports the message
+# alone. These copies of geno/runtime_report.py's constants and text layout
+# keep compiled output standalone; geno/tests/test_trace_table.py pins that
+# they agree.
+
+_GENO_STACK_HEAD = 10
+_GENO_STACK_TAIL = 10
+_GENO_STACK_HEADER = "Stack trace (most recent call last):"
+_GENO_TRACE_AWAIT_KEY = "<await>"
+
+
+def _geno_trace_text(field: str) -> str:
+    """Undo the trace table's escaping of one text field."""
+    if "\\" not in field:
+        return field
+    out = []
+    index = 0
+    size = len(field)
+    while index < size:
+        char = field[index]
+        if char == "\\" and index + 1 < size:
+            escaped = field[index + 1]
+            out.append("\t" if escaped == "t" else "\n" if escaped == "n" else escaped)
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+_GENO_FUNCTION_TYPE = type(_geno_trace_text)
+
+
+def _geno_parse_trace(table: str) -> Any:
+    """Parse a version-1 trace table; raises ValueError when malformed."""
+    records = table.split("\n")
+    if not records or records[0] != "G\t1":
+        raise ValueError("unsupported runtime trace table")
+    files: dict[int, str] = {}
+    functions = []
+    statements: dict[int, Any] = {}
+    marks = []
+    candidates: dict[int, Any] = {}
+    end = None
+    for record in records[1:]:
+        fields = record.split("\t")
+        kind = fields[0]
+        if kind == "F" and len(fields) == 3:
+            files[int(fields[1])] = _geno_trace_text(fields[2])
+        elif kind == "D" and len(fields) == 5:
+            functions.append(
+                (
+                    int(fields[1]),
+                    int(fields[2]),
+                    _geno_trace_text(fields[3]),
+                    _geno_trace_text(fields[4]),
+                )
+            )
+        elif kind == "T" and len(fields) == 5:
+            statements[int(fields[1])] = (
+                files[int(fields[2])],
+                int(fields[3]),
+                int(fields[4]),
+            )
+        elif kind == "S" and len(fields) == 3:
+            marks.append((int(fields[1]), int(fields[2])))
+        elif kind == "C" and len(fields) == 5:
+            candidates.setdefault(int(fields[1]), []).append(
+                (_geno_trace_text(fields[2]), int(fields[3]), int(fields[4]))
+            )
+        elif kind == "E" and len(fields) == 2:
+            end = int(fields[1])
+        else:
+            raise ValueError("malformed runtime trace record")
+    if end is None:
+        raise ValueError("runtime trace table has no end record")
+    return functions, statements, marks, candidates, end
+
+
+def _geno_trace_function(functions: Any, line: int) -> Any:
+    """The innermost function range containing host *line*, if any."""
+    found = None
+    for function in functions:
+        if function[0] <= line < function[1] and (
+            found is None or function[0] >= found[0]
+        ):
+            found = function
+    return found
+
+
+def _geno_trace_statement(marks: Any, line: int) -> int:
+    """The statement host *line* belongs to (-1: none)."""
+    low = 0
+    high = len(marks)
+    while low < high:
+        middle = (low + high) // 2
+        if marks[middle][0] <= line:
+            low = middle + 1
+        else:
+            high = middle
+    return marks[low - 1][1] if low else -1
+
+
+def _geno_trace_position(
+    statement: Any, sites: Any, key: Any, callee: Any, namespace: Any, direct: bool
+) -> Any:
+    """Where execution was in *statement*: a call site, or its start."""
+    if statement is None:
+        return None
+    path = statement[0]
+    if key is not None:
+        found = []
+        for site in sites:
+            if site[0] == key:
+                found.append(site)
+            elif callee is not None:
+                value = namespace.get(site[0])
+                if type(value) is _GENO_FUNCTION_TYPE and value.__code__ is callee:
+                    found.append(site)
+        if len(found) == 1:
+            return (path, found[0][1], found[0][2])
+        if found:
+            return statement
+    if direct or key == "__await__":
+        # An awaited `Async` made elsewhere: positioned at the `await`.
+        awaits = [site for site in sites if site[0] == _GENO_TRACE_AWAIT_KEY]
+        if len(awaits) == 1:
+            return (path, awaits[0][1], awaits[0][2])
+    return statement
+
+
+def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
+    """Map *exc*'s traceback through the trace *table* (proposal 0018).
+
+    Returns ``(frames, omitted, location)``: the Geno frames outermost
+    first, each ``(name, position)`` with ``position`` a
+    ``(path, line, column)`` tuple or ``None``, bounded to the first
+    ``_GENO_STACK_HEAD`` and the last ``_GENO_STACK_TAIL`` frames with
+    ``omitted`` frames left out between them; and the failure location,
+    the innermost frame's position.
+
+    A frame is program code only when its globals are the program's
+    namespace, its file is the anchor's and its line lies inside a Geno
+    function's range: the trusted worker's own functions share the file
+    name ``<string>`` but not the globals, and prelude functions share the
+    globals but not the file or lines. Of those body frames, a Geno frame
+    is one whose code is the function the range names; lambdas, the
+    ``ensures`` body helper and comprehensions are transparent. Frame i is
+    positioned where its last body frame before frame i+1 was: at the
+    candidate site of the callee it was calling there, or at the start of
+    the statement.
+    """
+    functions, statements, marks, candidates, end = _geno_parse_trace(table)
+    code = anchor.__code__
+    namespace = anchor.__globals__
+    filename = code.co_filename
+    base = code.co_firstlineno
+    owners: dict[int, Any] = {}
+    # Each body frame: [host line, code name, callee code, callee name].
+    body = []
+    previous_was_body = False
+    trace = exc.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame
+        frame_code = frame.f_code
+        lineno = trace.tb_lineno
+        owner = None
+        if (
+            frame.f_globals is namespace
+            and frame_code.co_filename == filename
+            and isinstance(lineno, int)
+            and 0 <= lineno - base < end
+        ):
+            line = lineno - base
+            if line not in owners:
+                owners[line] = _geno_trace_function(functions, line)
+            owner = owners[line]
+        if owner is not None:
+            body.append([lineno - base, frame_code.co_name, None, None, owner])
+            previous_was_body = True
+        else:
+            if previous_was_body:
+                body[-1][2] = frame_code
+                body[-1][3] = frame_code.co_name
+            previous_was_body = False
+        trace = trace.tb_next
+    geno = [
+        index for index, entry in _builtin_enumerate(body) if entry[4][2] == entry[1]
+    ]
+    frames = []
+    for number, index in _builtin_enumerate(geno):
+        if number + 1 < len(geno):
+            following = body[geno[number + 1]]
+            entry = body[geno[number + 1] - 1]
+            direct = entry[2] is None
+            key = following[1] if direct else entry[3]
+            callee = None if direct else entry[2]
+        else:
+            entry = body[-1]
+            direct = False
+            key = entry[3]
+            callee = entry[2]
+        statement_id = _geno_trace_statement(marks, entry[0])
+        position = _geno_trace_position(
+            statements.get(statement_id),
+            candidates.get(statement_id, ()),
+            key,
+            callee,
+            namespace,
+            direct,
+        )
+        frames.append((body[index][4][3], position))
+    location = frames[-1][1] if frames else None
+    total = len(frames)
+    if total <= _GENO_STACK_HEAD + _GENO_STACK_TAIL:
+        return frames, 0, location
+    kept = frames[:_GENO_STACK_HEAD] + frames[total - _GENO_STACK_TAIL :]
+    return kept, total - _GENO_STACK_HEAD - _GENO_STACK_TAIL, location
+
+
+def _geno_position_text(position: Any) -> str:
+    return f"{position[0]}:{position[1]}:{position[2]}"
+
+
+def _geno_report_lines(frames: Any, omitted: int, location: Any) -> list[str]:
+    """The frame block of a runtime report, as geno/runtime_report.py renders it."""
+    lines = []
+    if frames:
+        lines.append(_GENO_STACK_HEADER)
+        for name, position in frames:
+            if position is None:
+                lines.append(f"  in {name}")
+            else:
+                lines.append(f"  {_geno_position_text(position)} in {name}")
+        if omitted > 0:
+            noun = "frame" if omitted == 1 else "frames"
+            lines.insert(
+                1 + min(_GENO_STACK_HEAD, len(frames)),
+                f"  ... {omitted} {noun} omitted ...",
+            )
+    elif location is not None:
+        lines.append(f"  at {_geno_position_text(location)}")
+    return lines
+
+
+def _geno_uncaught_message(exc: Any) -> str:
+    """An uncaught failure's message: the worker's rule for compiled code."""
+    detail = str(exc) or type(exc).__name__
+    if not isinstance(exc, RuntimeError):
+        detail = type(exc).__name__ + ": " + detail
+    return detail
+
+
+def _geno_report_uncaught(exc: Any, table: Any, anchor: Any, stream: Any) -> None:
+    """Print the Geno report of a failure that escaped ``main``.
+
+    The frames come from the trace table; when the table or the mapping
+    fails, the report is the message line alone, never a host traceback.
+    """
+    try:
+        message = _geno_uncaught_message(exc)
+    except Exception:
+        message = type(exc).__name__
+    try:
+        lines = _geno_report_lines(*_geno_failure_report(exc, table, anchor))
+    except Exception:
+        lines = []
+    lines.append("Runtime Error: " + message)
+    stream.write("\n".join(lines) + "\n")
+
+
+# =============================================================================
 # Generated Code Follows
 # =============================================================================

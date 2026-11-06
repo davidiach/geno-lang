@@ -386,7 +386,8 @@ def test_over_limit_input_reports_the_size_at_detection(tmp_path: Path) -> None:
 
     assert isolated.returncode == 1
     assert isolated.stdout == b""
-    message = isolated.stderr.decode().strip().splitlines()[0]
+    # The message line is last, after the Geno stack (proposal 0018).
+    message = isolated.stderr.decode().strip().splitlines()[-1]
     prefix, _, rest = message.partition("String size exceeds limit (")
     assert prefix == "Runtime Error: "
     size, _, suffix = rest.partition(f" > {limit})")

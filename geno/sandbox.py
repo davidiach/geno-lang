@@ -1288,6 +1288,10 @@ class ProcessSandbox:
 
     _PIPE_READ_CHUNK_SIZE = 8192
     _STDERR_RESULT_OVERHEAD = 4096
+    # Reserved for a failure's mapped Geno stack, the error payload's `trace`
+    # object (proposal 0018), whose serialized size the worker keeps within
+    # runtime_report.TRACE_PAYLOAD_LIMIT; the message's share is unchanged.
+    _STDERR_TRACE_OVERHEAD = 3072
     _STDERR_TRUNCATION_MARKER = "[stderr truncated by ProcessSandbox]"
 
     def __init__(self, config: ProcessSandboxConfig | None = None):
@@ -1299,6 +1303,16 @@ class ProcessSandbox:
         # Variable named by the worker's environment-policy tag on the most
         # recent run, if an isolated `env` grant refused an unlisted name.
         self.last_env_policy_denied: str | None = None
+        # The Geno failure location and bounded stack the worker mapped for
+        # the most recent run's failure in compiled `main` (proposal 0018),
+        # validated here; None when absent or malformed. `omitted_at` says
+        # where the stack's elided frames lie when a budget moved it.
+        self.last_failure_location: Any = None
+        self.last_failure_stack: Any = None
+        self.last_failure_omitted_at: int | None = None
+        # The worker's own traceback, when the run asked for it
+        # (`GENO_TRACEBACK=host`); never shown otherwise.
+        self.last_worker_traceback: str | None = None
 
     @classmethod
     def _read_stream_bounded(
@@ -1342,6 +1356,14 @@ class ProcessSandbox:
         return "".join(chunks), truncated
 
     def _stderr_capture_limit(self) -> int:
+        return (
+            self.config.max_output_length
+            + self._STDERR_RESULT_OVERHEAD
+            + self._STDERR_TRACE_OVERHEAD
+        )
+
+    def _stderr_result_limit(self) -> int:
+        """The largest success-result line the worker may emit (unchanged)."""
         return self.config.max_output_length + self._STDERR_RESULT_OVERHEAD
 
     @staticmethod
@@ -2184,12 +2206,18 @@ class ProcessSandbox:
         self,
         request: dict[str, Any],
         policy: "IsolatedRunPolicy | None" = None,
+        *,
+        host_traceback: bool = False,
     ) -> tuple[Any, str, str | None]:
         """Compile and execute one Geno CLI request in the supervised worker.
 
         *policy* is the run's trusted grant and host policy (proposal 0013);
         ``None`` means the default grant. It travels in the parent-set worker
         configuration, which the worker validates before reading the request.
+
+        *host_traceback* (``GENO_TRACEBACK=host``) asks the worker for its own
+        traceback of a failure in ``main``, kept as ``last_worker_traceback``
+        for the caller to print after the Geno report (proposal 0018).
 
         A ``stdin`` grant's ``policy.stdin_fd`` is a duplicate of the caller's
         standard input made for this run (``isolated_host.with_program_stdin``).
@@ -2215,16 +2243,15 @@ class ProcessSandbox:
                 raise SandboxError(
                     "Geno worker request is not JSON serializable"
                 ) from exc
-            return self._execute_worker_payload(
-                payload,
-                {
-                    "worker_mode": "geno_cli",
-                    "prelude_blob_sha256": None,
-                    "trusted_prelude_line_count": 0,
-                    "run_policy": policy.to_config(),
-                },
-                pass_fds=pass_fds,
-            )
+            overrides: dict[str, Any] = {
+                "worker_mode": "geno_cli",
+                "prelude_blob_sha256": None,
+                "trusted_prelude_line_count": 0,
+                "run_policy": policy.to_config(),
+            }
+            if host_traceback:
+                overrides["debug"] = True
+            return self._execute_worker_payload(payload, overrides, pass_fds=pass_fds)
         finally:
             for fd in pass_fds:
                 try:
@@ -2266,6 +2293,10 @@ class ProcessSandbox:
         """
         self.last_capability_denied = None
         self.last_env_policy_denied = None
+        self.last_failure_location = None
+        self.last_failure_stack = None
+        self.last_failure_omitted_at = None
+        self.last_worker_traceback = None
         # Keep the command line tiny on Windows. The trusted worker and payload
         # are framed separately on stdin; no untrusted text is persisted.
         worker_script = self._create_worker_script()
@@ -2326,11 +2357,15 @@ class ProcessSandbox:
                     # Set only by the trusted env binding of an isolated run,
                     # in `main` or in an example (proposal 0013).
                     self.last_env_policy_denied = denied_env
+                if not success:
+                    self._keep_failure_trace(parsed.get("trace"))
                 worker_traceback = parsed.get("traceback")
-                if not success and worker_traceback:
-                    logger.error(
-                        "Sandbox worker error: %s\n%s", error, worker_traceback
-                    )
+                if not success and isinstance(worker_traceback, str):
+                    self.last_worker_traceback = worker_traceback
+                    if _sandbox_debug_enabled():
+                        logger.error(
+                            "Sandbox worker error: %s\n%s", error, worker_traceback
+                        )
                 return (
                     parsed.get("result"),
                     stdout,
@@ -2364,6 +2399,25 @@ class ProcessSandbox:
                 f"Execution timed out after {self.config.timeout} seconds",
                 partial_output=exc.output if isinstance(exc.output, str) else "",
             ) from exc
+
+    def _keep_failure_trace(self, trace: Any) -> None:
+        """Validate and keep the worker's mapped Geno stack (proposal 0018).
+
+        The object is untrusted: anything malformed is dropped whole, and
+        the run then reports its message alone.
+        """
+        if trace is None:
+            return
+        from .runtime_report import decode_trace_payload
+
+        decoded = decode_trace_payload(trace)
+        if decoded is None:
+            return
+        (
+            self.last_failure_location,
+            self.last_failure_stack,
+            self.last_failure_omitted_at,
+        ) = decoded
 
     def _frame_prelude_blob(self, code: str) -> tuple[str, dict[str, Any] | None]:
         """Replace a canonical runtime-prelude prefix with a marshal blob.
@@ -2503,6 +2557,14 @@ def main():
                 _format_process_frontend_error,
                 _preload_process_run_support,
                 _prepare_process_run,
+            )
+            # The trusted reporter maps a failure in compiled `main`; the copy
+            # in the program's namespace is never used (proposal 0018).
+            from geno._runtime_support import (
+                _geno_failure_report as _trusted_failure_report,
+            )
+            from geno.runtime_report import (
+                encode_trace_payload as _encode_trace_payload,
             )
             from geno.isolated_host import (
                 IsolatedRunClock as _IsolatedRunClock,
@@ -3536,6 +3598,26 @@ def main():
         if type(e) is RuntimeError and isinstance(denied_env, str):
             payload["error_type"] = "env_policy_denied"
             payload["env_name"] = denied_env[:256]
+        # The Geno location and stack of a failure in compiled `main`
+        # (proposal 0018), mapped by the trusted reporter through the
+        # program's trace table, which is treated as untrusted data. The
+        # object keeps to its own serialized budget, so it never costs the
+        # message its share of the parent's capture window.
+        if _is_geno_cli:
+            try:
+                _trace_table = globals_dict.get('_GENO_TRACE')
+                _trace_anchor = globals_dict.get('_geno_trace_anchor')
+                if (
+                    type(_trace_table) is str
+                    and type(_trace_anchor) is type(_emit_worker_error)
+                ):
+                    _trace = _encode_trace_payload(
+                        *_trusted_failure_report(e, _trace_table, _trace_anchor)
+                    )
+                    if _trace is not None:
+                        payload["trace"] = _trace
+            except Exception:
+                pass
         # Opt-in debug escape hatch: when the parent enables it, carry the
         # worker traceback so a compiler-bug report from the process-isolated
         # path is diagnosable. Off by default (never leaks internals).
@@ -3625,7 +3707,7 @@ if __name__ == "__main__":
             # overhead). The worker refuses to emit a success-result line
             # that could not survive the parent's tail capture, so oversized
             # results fail with an explicit error instead of being lost.
-            "stderr_result_limit": self._stderr_capture_limit(),
+            "stderr_result_limit": self._stderr_result_limit(),
             "allow_print": self.config.allow_print,
             "blocked_attrs": sorted(BLOCKED_ATTRIBUTES),
             "dangerous_dunders": sorted(_DANGEROUS_DUNDERS),

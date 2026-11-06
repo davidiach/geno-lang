@@ -267,15 +267,20 @@ def snippet_lines(source_line: str, column: int) -> list[str]:
     return [f"      {text}", f"      {caret}^"]
 
 
-def stack_lines(stack: GenoStack | None) -> list[str]:
-    """The frame lines of *stack*, with the elision line in place."""
+def stack_lines(stack: GenoStack | None, omitted_at: int | None = None) -> list[str]:
+    """The frame lines of *stack*, with the elision line in place.
+
+    The omitted frames lie after the first ``STACK_HEAD`` kept frames, or
+    after the first *omitted_at* frames when a budget dropped frames next to
+    the elision point (the default lane's worker payload).
+    """
     if stack is None or not stack.frames:
         return []
     frames = list(stack.frames)
     lines = [frame_line(frame) for frame in frames]
     if stack.omitted > 0:
-        at = min(STACK_HEAD, len(lines))
-        lines.insert(at, omitted_line(stack.omitted))
+        at = min(STACK_HEAD if omitted_at is None else omitted_at, len(lines))
+        lines.insert(max(at, 0), omitted_line(stack.omitted))
     return lines
 
 
@@ -286,6 +291,7 @@ def report_lines(
     stack: GenoStack | None = None,
     location: SourceLocation | None = None,
     source_line: str | None = None,
+    omitted_at: int | None = None,
 ) -> list[str]:
     """The lines of a runtime report (proposal 0018, section 4).
 
@@ -298,7 +304,7 @@ def report_lines(
     where = snippet_location(stack, location)
     if stack is not None and stack.frames:
         lines.append(STACK_HEADER)
-        lines.extend(stack_lines(stack))
+        lines.extend(stack_lines(stack, omitted_at))
     elif location is not None:
         lines.append(f"  at {format_position(location)}")
     if source_line is not None and where is not None:
@@ -323,11 +329,17 @@ def render(
     stack: GenoStack | None = None,
     location: SourceLocation | None = None,
     source_line: str | None = None,
+    omitted_at: int | None = None,
 ) -> str:
     """``report_lines`` joined with newlines (no trailing newline)."""
     return "\n".join(
         report_lines(
-            label, message, stack=stack, location=location, source_line=source_line
+            label,
+            message,
+            stack=stack,
+            location=location,
+            source_line=source_line,
+            omitted_at=omitted_at,
         )
     )
 
@@ -398,6 +410,227 @@ def fit_report_text(lines: Sequence[str], limit: int) -> str:
     if limit <= len(_ELLIPSIS):
         return message[: max(limit, 0)]
     return message[: limit - len(_ELLIPSIS)] + _ELLIPSIS
+
+
+# ---------------------------------------------------------------------------
+# The default lane's worker payload
+# ---------------------------------------------------------------------------
+#
+# In the default `geno run` lane, `main` runs as compiled Python inside the
+# process-isolated worker. The worker maps the failure through the program's
+# trace table (the prelude's `_geno_failure_report`) and sends the result to
+# the parent as one compact `trace` object in its error payload:
+#
+#   {"files": [path, ...], "location": [file, line, col] | null,
+#    "stack": [[name, file, line, col] | [name], ...], "omitted": n,
+#    "omitted_at": k}
+#
+# The object has a fixed serialized budget of its own, and the parent's
+# stderr capture window grows by the same reserved amount
+# (`ProcessSandbox._STDERR_TRACE_OVERHEAD`), so the message's share and its
+# truncation are what they were in 0.6. The parent treats the object as
+# untrusted: `decode_trace_payload` validates every field and rejects the
+# whole object when anything is malformed.
+
+TRACE_PAYLOAD_LIMIT = 3072
+TRACE_NAME_LIMIT = 128
+TRACE_PATH_LIMIT = 512
+# Over budget, paths longer than this are replaced by their basename.
+TRACE_SHORT_PATH_LIMIT = 128
+
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+
+_Position = tuple[str, int, int]
+
+
+def _payload_size(payload: dict[str, Any]) -> int:
+    import json
+
+    return len(json.dumps(payload))
+
+
+def _short_path(path: str) -> str:
+    if len(path) <= TRACE_SHORT_PATH_LIMIT:
+        return path
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return truncate_display(base, TRACE_SHORT_PATH_LIMIT)
+
+
+def _build_trace_payload(
+    frames: Sequence[tuple[str, _Position | None]],
+    omitted: int,
+    omitted_at: int,
+    location: _Position | None,
+    *,
+    short_paths: bool,
+    with_stack: bool,
+) -> dict[str, Any]:
+    files: list[str] = []
+    indexes: dict[str, int] = {}
+
+    def encode(position: _Position | None) -> list[Any] | None:
+        if position is None:
+            return None
+        path = truncate_display(position[0], TRACE_PATH_LIMIT)
+        if short_paths:
+            path = _short_path(path)
+        index = indexes.get(path)
+        if index is None:
+            index = indexes[path] = len(files)
+            files.append(path)
+        return [index, position[1], position[2]]
+
+    payload: dict[str, Any] = {"files": files, "location": encode(location)}
+    if with_stack:
+        stack: list[list[Any]] = []
+        for name, position in frames:
+            shown = truncate_display(name, TRACE_NAME_LIMIT)
+            encoded = encode(position)
+            stack.append([shown] if encoded is None else [shown, *encoded])
+        payload["stack"] = stack
+        payload["omitted"] = omitted
+        if omitted:
+            payload["omitted_at"] = omitted_at
+    return payload
+
+
+def encode_trace_payload(
+    frames: Sequence[tuple[str, _Position | None]],
+    omitted: int,
+    location: _Position | None,
+    limit: int = TRACE_PAYLOAD_LIMIT,
+) -> dict[str, Any] | None:
+    """The worker's ``trace`` object for a mapped failure, within *limit*.
+
+    *frames* (outermost first, already bounded), *omitted* and *location*
+    come from the prelude's ``_geno_failure_report``. While the serialized
+    object is over *limit* bytes, frames next to the elision point are
+    dropped (``omitted`` grows), then long paths are replaced by their
+    basenames, then the stack is dropped (keeping ``location``); ``None``
+    when even that does not fit. The message never pays for any of it.
+    """
+    kept = list(frames)
+    at = min(STACK_HEAD, len(kept)) if omitted else len(kept) // 2
+    take_head = True
+    while True:
+        payload = _build_trace_payload(
+            kept, omitted, at, location, short_paths=False, with_stack=True
+        )
+        if _payload_size(payload) <= limit or len(kept) <= 2:
+            break
+        # Drop the frames next to the elision point, alternating sides, but
+        # keep the outermost and innermost frames.
+        if take_head and at > 1:
+            del kept[at - 1]
+            at -= 1
+        elif at < len(kept) - 1:
+            del kept[at]
+        else:
+            del kept[at - 1]
+            at -= 1
+        take_head = not take_head
+        omitted += 1
+    for short_paths, with_stack in ((False, True), (True, True), (True, False)):
+        payload = _build_trace_payload(
+            kept,
+            omitted,
+            at,
+            location,
+            short_paths=short_paths,
+            with_stack=with_stack,
+        )
+        if _payload_size(payload) <= limit:
+            return payload
+    return None
+
+
+def _payload_int(value: Any, minimum: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        return None
+    return value
+
+
+def decode_trace_payload(
+    payload: Any,
+) -> tuple[SourceLocation | None, GenoStack | None, int | None] | None:
+    """Validate the worker's ``trace`` object: ``(location, stack, omitted_at)``.
+
+    The object is untrusted. Anything malformed (a wrong type, an index out
+    of range, a non-positive line, an oversized or control-character name or
+    path, more frames than a bounded stack holds) rejects all of it, and
+    the caller then reports the message alone.
+    """
+    if not isinstance(payload, dict) or not set(payload) <= {
+        "files",
+        "location",
+        "stack",
+        "omitted",
+        "omitted_at",
+    }:
+        return None
+    files = payload.get("files")
+    if not isinstance(files, list) or len(files) > 2 * (STACK_HEAD + STACK_TAIL) + 1:
+        return None
+    for path in files:
+        if (
+            not isinstance(path, str)
+            or not path
+            or len(path) > TRACE_PATH_LIMIT
+            or _CONTROL_CHARACTERS.search(path)
+        ):
+            return None
+
+    def position(fields: Sequence[Any]) -> SourceLocation | None:
+        if len(fields) != 3:
+            return None
+        index = _payload_int(fields[0], 0)
+        line = _payload_int(fields[1], 1)
+        column = _payload_int(fields[2], 0)
+        if index is None or line is None or column is None or index >= len(files):
+            return None
+        return SourceLocation(line=line, column=column, filename=files[index])
+
+    raw_location = payload.get("location")
+    location: SourceLocation | None = None
+    if raw_location is not None:
+        if not isinstance(raw_location, list):
+            return None
+        location = position(raw_location)
+        if location is None:
+            return None
+    raw_stack = payload.get("stack", [])
+    if not isinstance(raw_stack, list) or len(raw_stack) > STACK_HEAD + STACK_TAIL:
+        return None
+    frames: list[StackFrame] = []
+    for entry in raw_stack:
+        if not isinstance(entry, list) or len(entry) not in (1, 4):
+            return None
+        name = entry[0]
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name) > TRACE_NAME_LIMIT
+            or _CONTROL_CHARACTERS.search(name)
+        ):
+            return None
+        site: SourceLocation | None = None
+        if len(entry) == 4:
+            site = position(entry[1:])
+            if site is None:
+                return None
+        frames.append(StackFrame(name, site))
+    omitted = _payload_int(payload.get("omitted", 0), 0)
+    if omitted is None:
+        return None
+    omitted_at: int | None = None
+    if "omitted_at" in payload:
+        omitted_at = _payload_int(payload["omitted_at"], 0)
+        if omitted_at is None or omitted_at > len(frames):
+            return None
+    if omitted and not frames:
+        return None
+    stack = GenoStack(tuple(frames), omitted) if frames else None
+    return location, stack, omitted_at
 
 
 # ---------------------------------------------------------------------------

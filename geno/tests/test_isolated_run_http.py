@@ -988,10 +988,12 @@ def test_oversized_bodies_keep_the_size_error(tmp_path: Path) -> None:
 
             assert result.returncode == 1, result.stdout
             assert result.stdout == ""
-            assert result.stderr.startswith(
+            # The message line is last, after the Geno stack (proposal 0018).
+            last = result.stderr.rstrip().splitlines()[-1]
+            assert last.startswith(
                 f"Runtime Error: {builtin}: String size exceeds limit ("
             )
-            assert result.stderr.rstrip().endswith("> 1000)")
+            assert last.endswith("> 1000)")
 
 
 def _partial_body(

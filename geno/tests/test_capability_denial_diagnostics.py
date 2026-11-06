@@ -249,7 +249,10 @@ def test_cli_explicit_grant_hint_adds_to_the_grant(tmp_path: Path) -> None:
     result = _geno("--cap", "regex", "words.geno", cwd=tmp_path)
 
     assert result.returncode == 1
-    assert result.stderr == (
+    # Proposal 0018: the Geno stack comes first and the hint stays last.
+    assert result.stderr.startswith("Stack trace (most recent call last):\n")
+    assert "words.geno:3:25 in main\n" in result.stderr
+    assert result.stderr.endswith(
         "Runtime Error: Capability denied: 'print' requires the 'print' "
         "capability\n"
         "Hint: grant it with --cap; the program stays process-isolated:\n"
@@ -559,7 +562,10 @@ def test_cli_env_policy_denial_in_main_gets_the_allow_env_hint(
     result = _geno("--cap", "env,print", "secret.geno", cwd=tmp_path)
 
     assert result.returncode == 1
-    assert result.stderr == (
+    # Proposal 0018: the Geno stack comes first and the hint stays last.
+    assert result.stderr.startswith("Stack trace (most recent call last):\n")
+    assert "secret.geno:2:11 in main\n" in result.stderr
+    assert result.stderr.endswith(
         "Runtime Error: env_get_or: environment variable 'SECRET' is not "
         "allowed by the host env policy\n"
         + ENV_HINT_PREFIX

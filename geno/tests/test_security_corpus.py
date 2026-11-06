@@ -139,6 +139,17 @@ ISOLATED_HOST_POLICY_VARIABLES = frozenset(
 )
 
 
+# Host internals an isolated run's report must never show.
+ISOLATED_HOST_FRAME_MARKERS = (
+    "<string>",
+    "<geno-runtime-prelude>",
+    "sandbox.py",
+    "isolated_host.py",
+    "_runtime_support",
+    "safe_print",
+)
+
+
 def _collect_isolated_corpus_files():
     return [
         os.path.join(ISOLATED_CORPUS_DIR, name)
@@ -205,3 +216,12 @@ def test_isolated_security_corpus(filepath, tmp_path):
     assert headers["STDERR"] in result.stderr
     assert any(marker in result.stderr for marker in markers), result.stderr
     assert "Traceback (most recent call last)" not in result.stderr
+    # A runtime report names only the program's own file (proposal 0018):
+    # no worker, sandbox, isolated-host or prelude frame and no host path.
+    for host_marker in ISOLATED_HOST_FRAME_MARKERS:
+        assert host_marker not in result.stderr, result.stderr
+    program = str(tmp_path / "main.geno")
+    for line in result.stderr.splitlines():
+        frame = re.match(r"^  (?:at )?(.+):\d+:\d+(?: in .+)?$", line)
+        if frame is not None:
+            assert frame.group(1) == program, line
