@@ -1836,7 +1836,7 @@ class JSCompiler(BaseCompiler):
                 defn.return_type,
                 type_bindings,
             )
-            shown_result = f"{result_name}, {result_shape}"
+            shown_result = (result_name, result_shape)
             checked = (
                 self._contract_values(param_refs, param_shapes)
                 if snapshot is not None
@@ -1959,15 +1959,17 @@ class JSCompiler(BaseCompiler):
         names: list[str],
         values: str,
         *,
-        result: str | None = None,
+        result: tuple[str, str] | None = None,
         checked: str | None = None,
     ) -> str:
         """The prelude call that builds a contract violation (proposal 0018).
 
-        Every text is an escaped JS string literal, never template text, so
-        a clause containing `${`, backticks, quotes or backslashes is safe.
-        The call returns the error; the ``throw`` stays in the Geno
-        function's own frame.
+        *values* and *checked* are JS arrays of ``[value, shape]`` pairs
+        (``_contract_values``); *result* is the ``ensures`` result's
+        expression and display shape. Every text is an escaped JS string
+        literal, never template text, so a clause containing `${`,
+        backticks, quotes or backslashes is safe. The call returns the
+        error; the ``throw`` stays in the Geno function's own frame.
         """
         literal = self._js_string_literal
         parts = [
@@ -1980,7 +1982,9 @@ class JSCompiler(BaseCompiler):
             values,
         ]
         if result is not None:
-            parts += ["true", result]
+            parts += ["true", *result]
+        elif checked is not None:
+            parts += ["false", "undefined", "null"]
         if checked is not None:
             parts.append(checked)
         return f"_genoContractViolation({', '.join(parts)})"
