@@ -159,6 +159,25 @@ def test_every_draft_change_links_its_proposal() -> None:
             assert (ROOT / "docs/proposals" / link).is_file(), link
 
 
+def test_the_draft_records_accepted_cold_write_forms() -> None:
+    """The accepted 0026 additions coexist with the other 0.7 proposals."""
+    additions = [
+        addition
+        for addition in _load_spec()["development_line"]["additions"]
+        if "proposal 0026" in addition
+    ]
+    assert len(additions) == 5
+    assert all("Accepted" in addition for addition in additions)
+    (entry,) = [
+        entry
+        for entry in _draft_changes()
+        if "](../proposals/0026-cold-write-forms.md)" in entry
+    ]
+    assert "(Accepted)" in entry
+    for section in ("4.5", "4.6", "6.3.1", "6.6", "7.1.1", "7.13", "10.4", "14"):
+        assert section in entry, section
+
+
 def test_the_draft_records_property_checks() -> None:
     """Property checks (proposal 0017) are in the Draft spec and spec.json."""
     spec = _load_spec()
