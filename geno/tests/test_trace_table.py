@@ -731,16 +731,3 @@ class TestJavaScriptTable:
         assert check in mapped
         # The table is never embedded as a source map.
         assert "sourceMappingURL" not in code
-
-    @pytest.mark.parametrize(
-        "name", ["_GENO_TRACE", "_genoTraceAnchor", "_genoReportUncaught"]
-    )
-    def test_the_table_and_reporter_names_are_reserved(self, name: str) -> None:
-        from geno.js_compiler import JSCompileError
-
-        source = (
-            f"func {name}() -> Int\n    example () -> 1\n    return 1\nend func\n\n"
-            "func main() -> Int\n    return 0\nend func\n"
-        )
-        with pytest.raises(JSCompileError):
-            _js(source, typecheck=False)

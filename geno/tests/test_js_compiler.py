@@ -3767,6 +3767,23 @@ class TestJSRuntimeFailureReporter:
         guard = esm.index("import.meta.main === true")
         assert guard < esm.index("_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);")
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "_GENO_TRACE",
+            "_genoTraceAnchor",
+            "_genoReportUncaught",
+            "_genoInstallReporter",
+        ],
+    )
+    def test_the_table_and_reporter_names_are_reserved(self, name):
+        source = (
+            f"func {name}() -> Int\n    example () -> 1\n    return 1\nend func\n\n"
+            "func main() -> Int\n    return 0\nend func\n"
+        )
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
     def test_an_async_main_reports_through_its_catch(self):
         source = """
         async func main() -> Int
