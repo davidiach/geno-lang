@@ -223,7 +223,9 @@ class TestEnsuresFailures:
 
         assert result.failure is not None
         assert result.failure.kind == "panic"
-        assert "Postcondition failed for inner" in result.failure.message
+        assert result.failure.message == (
+            "Postcondition failed: inner(n: 0) ensures result > 0 (result was 0)"
+        )
         assert result.counterexample is not None
         assert result.counterexample.arguments == "0"
 
@@ -272,7 +274,10 @@ class TestRequires:
         assert result.status == "failed"
         assert result.failure is not None
         assert result.failure.kind == "panic"
-        assert "requires clause cannot use '?'" in result.failure.message
+        assert result.failure.message == (
+            "Precondition failed: first_positive(xs: []) requires "
+            "list_first(xs)? > 0 ('?' propagated None/Err)"
+        )
         assert result.counterexample is not None
         assert result.counterexample.arguments == "[]"
 
@@ -309,7 +314,9 @@ class TestRequires:
 
         assert result.failure is not None
         assert result.failure.kind == "panic"
-        assert "Precondition failed for positive" in result.failure.message
+        assert result.failure.message == (
+            "Precondition failed: positive(n: 0) requires n > 0"
+        )
         assert result.discarded == 0
 
     def test_nearly_everything_discarded_gives_up_as_a_warning(self):

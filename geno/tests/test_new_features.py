@@ -2020,7 +2020,9 @@ class TestPropagateOperator:
         result = run(source, config=RunConfig(timeout=5.0))
         assert not result.ok
         assert result.diagnostics
-        assert "requires clause cannot use '?'" in result.diagnostics[0].message
+        assert result.diagnostics[0].message == (
+            "Precondition failed: main() requires maybe()? ('?' propagated None/Err)"
+        )
 
     def test_propagate_in_ensures_returns_runtime_error(self):
         source = """
@@ -2038,7 +2040,10 @@ class TestPropagateOperator:
         result = run(source, config=RunConfig(timeout=5.0))
         assert not result.ok
         assert result.diagnostics
-        assert "ensures clause cannot use '?'" in result.diagnostics[0].message
+        assert result.diagnostics[0].message == (
+            "Postcondition failed: main() ensures maybe()? "
+            "('?' propagated None/Err; result was Some(value: 1))"
+        )
 
     def test_typechecker_rejects_result_error_type_mismatch(self):
         source = """

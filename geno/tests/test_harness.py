@@ -565,14 +565,14 @@ end func
 func prop(o: Option[Int]) -> Option[Int]
     requires o? > 0
     example Some(1) -> Some(1)
-    example None panics "requires clause cannot use '?'"
+    example None panics "requires o? > 0 ('?' propagated None/Err)"
     return Some(1)
 end func
 
 func post(o: Option[Int]) -> Option[Int]
     ensures o? > 0
     example Some(1) -> Some(1)
-    example None panics "ensures clause cannot use '?'"
+    example None panics "ensures o? > 0 ('?' propagated None/Err"
     return o
 end func
 """
