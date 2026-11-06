@@ -57,6 +57,48 @@ def _is_ascii_alnum(ch: str) -> bool:
     return _is_ascii_digit(ch) or _is_ascii_alpha(ch)
 
 
+# How deeply string literals may nest inside f-string interpolations, as in
+# f"{f"{f"..."}"}": deeper nesting is an error rather than a recursion limit.
+MAX_FSTRING_NESTING = 50
+
+
+def _starts_fstring(chars: list[str]) -> bool:
+    """Whether a quote written after ``chars`` opens an f-string (``f"``)."""
+    if not chars or chars[-1] != "f":
+        return False
+    return len(chars) < 2 or not (chars[-2].isalnum() or chars[-2] == "_")
+
+
+def string_literal_end(text: str, start: int) -> int:
+    """The index just past the string literal whose opening quote is
+    ``text[start]``, or ``len(text)`` when it does not close in ``text``.
+
+    The quote opens an f-string when an ``f`` starting a token precedes it;
+    a string literal inside one of its interpolations does not close it.
+    Triple-quoted strings are not recognized.
+    """
+    fstring = _starts_fstring(list(text[max(0, start - 2) : start]))
+    index = start + 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\\":
+            index += 2
+        elif char == '"':
+            return index + 1
+        elif fstring and char == "{":
+            index += 1
+            while index < length and text[index] != "}":
+                if text[index] == '"':
+                    index = string_literal_end(text, index)
+                else:
+                    index += 1
+            index += 1
+        else:
+            index += 1
+    return length
+
+
 class LexerError(Exception):
     """Exception raised for lexical analysis errors."""
 
@@ -199,13 +241,21 @@ class Lexer:
         return Token(TokenType.STRING, "".join(chars), start_loc)
 
     def _read_fstring(self) -> Token:
-        """Read an f-string literal: f"text {expr} text"."""
+        """Read an f-string literal: f"text {expr} text".
+
+        The token's value is ``(text, locations, spans)``: the text with its
+        escapes decoded and each interpolation's source copied unchanged,
+        where each interpolation starts in the source, and the
+        ``(start, end)`` of each interpolation's expression within the text.
+        """
         start_loc = self._current_location()
         self._advance()  # consume opening "
 
         chars: list[str] = []
         interp_locations: list[SourceLocation] = []
+        interp_spans: list[tuple[int, int]] = []
         in_expr = False
+        expr_start = 0
         while True:
             char = self._peek()
             if char == "\0":
@@ -218,6 +268,7 @@ class Lexer:
             if char == "{" and not in_expr:
                 in_expr = True
                 chars.append(self._advance())
+                expr_start = len(chars)
                 # Record the absolute source location of the first character of
                 # the interpolation so the parser can report errors inside it at
                 # their true offset rather than at the f-string's start.
@@ -225,6 +276,7 @@ class Lexer:
                 continue
             if char == "}" and in_expr:
                 in_expr = False
+                interp_spans.append((expr_start, len(chars)))
                 chars.append(self._advance())
                 continue
             if char == "{" and in_expr:
@@ -234,10 +286,14 @@ class Lexer:
                 )
             if char == '"':
                 if in_expr:
-                    raise LexerError(
-                        "String literals are not allowed inside f-string expressions",
-                        self._current_location(),
+                    # A string literal in the interpolation, copied unchanged
+                    # for the parser to read with the rest of the expression.
+                    chars.extend(
+                        self._read_string_source(
+                            fstring=_starts_fstring(chars), depth=1
+                        )
                     )
+                    continue
                 self._advance()  # consume closing "
                 break
             if char == "\\" and not in_expr:
@@ -254,8 +310,52 @@ class Lexer:
             chars.append(self._advance())
 
         return Token(
-            TokenType.FSTRING, ("".join(chars), tuple(interp_locations)), start_loc
+            TokenType.FSTRING,
+            ("".join(chars), tuple(interp_locations), tuple(interp_spans)),
+            start_loc,
         )
+
+    def _read_string_source(self, *, fstring: bool, depth: int) -> str:
+        """Read a one-line string literal inside an f-string interpolation and
+        return its source text unchanged, quotes included.
+
+        A nested f-string's own interpolations may hold string literals too;
+        ``depth`` counts how many interpolations this one is inside.
+        """
+        start_loc = self._current_location()
+        if depth > MAX_FSTRING_NESTING:
+            raise LexerError(
+                f"F-strings are nested too deeply (more than {MAX_FSTRING_NESTING} "
+                "levels); build the inner strings with let first",
+                start_loc,
+            )
+        chars = [self._advance()]  # opening quote
+        in_expr = False
+        while True:
+            char = self._peek()
+            if char == "\0" or char == "\n":
+                raise LexerError("Unterminated string literal", start_loc)
+            if char == "\\" and not in_expr:
+                chars.append(self._advance())
+                if self._peek() in ("\0", "\n"):
+                    raise LexerError("Unterminated string literal", start_loc)
+                chars.append(self._advance())
+                continue
+            if fstring and char == "{" and not in_expr:
+                in_expr = True
+            elif fstring and char == "}" and in_expr:
+                in_expr = False
+            elif char == '"':
+                if not in_expr:
+                    chars.append(self._advance())
+                    return "".join(chars)
+                chars.extend(
+                    self._read_string_source(
+                        fstring=_starts_fstring(chars), depth=depth + 1
+                    )
+                )
+                continue
+            chars.append(self._advance())
 
     def tokenize(self) -> list[Token]:
         """

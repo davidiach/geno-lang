@@ -1,0 +1,11 @@
+async func twice(n: Int) -> Int
+    return n * 2
+end func
+
+func main() -> Unit
+    var total = 0
+    for (a, b) in [(1, 2), (3, 4)] do
+        total += await twice(a + b)
+    end for
+    print(total)
+end func

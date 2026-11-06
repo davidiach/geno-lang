@@ -187,6 +187,9 @@ def test_the_repository_development_corpus_is_v07() -> None:
         *_RUNTIME_REPORT_CASES,
         "local-mutation-is-pure",
         *_LOCAL_MUTATION_DIAGNOSTIC_CASES,
+        "cold-write-compound-assignment",
+        "cold-write-tuple-bindings",
+        "cold-write-fstring-literals",
     }
     assert all(load_manifest(p).status is None for p in retained_manifest_paths())
 

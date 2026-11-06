@@ -104,6 +104,7 @@ from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
 from .mutation_ownership import function_owned_names, lambda_owned_names
+from .parser_patterns import pattern_bound_names
 from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
@@ -538,6 +539,22 @@ _FOREIGN_NAMES: dict[str, tuple[str, ...]] = {
     "str": ("to_string",),
     "to_str": ("to_string",),
     "toString": ("to_string",),
+    "int_to_string": ("to_string",),
+    "float_to_string": ("to_string",),
+    "bool_to_string": ("to_string",),
+    "int_to_str": ("to_string",),
+    "string_of_int": ("to_string",),
+    "string_of_float": ("to_string",),
+    "string_of_bool": ("to_string",),
+    "string_to_int": ("parse_int",),
+    "str_to_int": ("parse_int",),
+    "int_of_string": ("parse_int",),
+    "parseInt": ("parse_int",),
+    "string_to_float": ("parse_float",),
+    "float_of_string": ("parse_float",),
+    "parseFloat": ("parse_float",),
+    "float_of_int": ("int_to_float",),
+    "int_of_float": ("float_to_int",),
     "upper": ("to_upper",),
     "toUpperCase": ("to_upper",),
     "uppercase": ("to_upper",),
@@ -601,6 +618,27 @@ _FOREIGN_HINTS = {
     "pow": "Geno writes powers with '**': a ** b",
     "math_pow": "Geno writes powers with '**': a ** b",
 }
+
+
+def _index_read_hint(target_type: Type, compound_operator: str | None) -> str:
+    """How to read from a container that ``x[i]`` cannot read."""
+    if isinstance(target_type, MutableMapType):
+        if compound_operator is not None:
+            return (
+                f": '{compound_operator}=' reads the entry it updates, and a "
+                "MutableMap entry is read with get, which returns an Option; "
+                f"write m[key] = m.get(key).unwrap_or(0) {compound_operator} value"
+            )
+        return ": read an entry with m.get(key), which returns an Option"
+    if isinstance(target_type, VecType):
+        if compound_operator is not None:
+            return (
+                f": '{compound_operator}=' reads the element it updates, and a "
+                f"Vec element is read with get; write v[i] = v.get(i) "
+                f"{compound_operator} value"
+            )
+        return ": read an element with v.get(i)"
+    return ""
 
 
 def _rename_fixes(
@@ -2994,13 +3032,25 @@ class TypeChecker(ExhaustivenessMixin):
         # Check specification clauses
         self._check_specs(defn, local_env)
 
+        # A return type the source left out (a parse error, reported with
+        # the fix that writes this one) is inferred as a block lambda's is.
+        inferring_return = isinstance(defn.return_type, InferredType)
+        if inferring_return:
+            self._lambda_return_types = []
+
         # Check body
         for stmt in defn.body:
             self._check_statement(stmt, local_env)
         self._record_unit_ownership(defn)
 
+        if inferring_return:
+            assert isinstance(defn.return_type, InferredType)
+            defn.return_type._inferred = self._inferred_function_return_type(
+                self._lambda_return_types or []
+            )
+            self._lambda_return_types = None
         # Check return-path coverage for non-Unit functions
-        if not isinstance(self.current_return_type, UnitType):
+        elif not isinstance(self.current_return_type, UnitType):
             if not self._definitely_returns(defn.body):
                 self._report_missing_return(defn)
 
@@ -3045,6 +3095,32 @@ class TypeChecker(ExhaustivenessMixin):
         self.current_return_type = None
         self._in_async_function = prev_async
         self._in_main_function = prev_main
+
+    def _inferred_function_return_type(self, return_types: list[Type]) -> Type | None:
+        """The one type a function's ``return`` values agree on, if any.
+
+        A value whose type is unknown (a recursive call's, while the
+        function's own return type is being inferred) adds nothing.
+        """
+        known = [
+            return_type
+            for return_type in return_types
+            if not isinstance(return_type, NeverType)
+            and not self._contains_any(return_type)
+        ]
+        if not return_types:
+            return UnitType()
+        if not known:
+            return None
+        result = known[0]
+        for return_type in known[1:]:
+            merged = self._merge_match_expr_result_types(result, return_type)
+            if merged is None:
+                return None
+            result = merged
+        if self._has_type_vars(result) and not self._rigid_type_params:
+            return None
+        return result
 
     def _validate_ensures_result_binding_collisions(self, defn: FunctionDef) -> None:
         """Reject user bindings that collide with `ensures result`."""
@@ -4130,6 +4206,7 @@ class TypeChecker(ExhaustivenessMixin):
                     stmt.location,
                 )
             self._bind_local(stmt.name, declared_type, env, stmt.location)
+            env.let_locations[stmt.name] = stmt.location
         else:
             if len(self.errors) == errors_before and (
                 self._contains_any(actual_type) or self._has_type_vars(actual_type)
@@ -4141,6 +4218,7 @@ class TypeChecker(ExhaustivenessMixin):
                 )
             # Type inference: use the type of the RHS expression
             self._bind_local(stmt.name, actual_type, env, stmt.location)
+            env.let_locations[stmt.name] = stmt.location
 
     def _check_module_constant(self, defn: ModuleConstant) -> None:
         """Type check a module-level constant and bind it in module scope."""
@@ -4297,6 +4375,7 @@ class TypeChecker(ExhaustivenessMixin):
                 f"Cannot assign to immutable variable: {stmt.target}",
                 stmt.location,
                 ErrorCode.TYPE_IMMUTABLE_ASSIGN,
+                self._declare_with_var_fixes(stmt.target, env),
             )
             return
 
@@ -4316,6 +4395,15 @@ class TypeChecker(ExhaustivenessMixin):
                 f"Type mismatch in assignment: expected {var_type}, got {value_type}",
                 stmt.location,
             )
+
+    @staticmethod
+    def _declare_with_var_fixes(name: str, env: TypeEnv) -> tuple[Fix, ...]:
+        """The fix that declares the local ``let`` binding ``name`` with ``var``."""
+        scope = env.binding_scope(name)
+        location = None if scope is None else scope.let_locations.get(name)
+        if location is None:
+            return ()
+        return (replace_fix(location, "let", "var", f"Declare '{name}' with 'var'"),)
 
     def _check_index_assign_statement(
         self, stmt: IndexAssignStatement, env: TypeEnv
@@ -4337,6 +4425,7 @@ class TypeChecker(ExhaustivenessMixin):
                 f"Cannot assign index on immutable variable: {root_name}",
                 stmt.location,
                 ErrorCode.TYPE_IMMUTABLE_ASSIGN,
+                self._declare_with_var_fixes(root_name, env),
             )
             return
 
@@ -4379,8 +4468,15 @@ class TypeChecker(ExhaustivenessMixin):
                     stmt.location,
                 )
         else:
+            hint = (
+                ": a Map is immutable, so build a new one, as in "
+                "m = m.insert(key, value)"
+                if isinstance(target_type, MapType)
+                else ""
+            )
             self._error(
-                f"Cannot use index assignment on {target_type} (only Array, Vec, MutableMap)",
+                f"Cannot use index assignment on {target_type} "
+                f"(only Array, Vec, MutableMap){hint}",
                 stmt.location,
             )
 
@@ -4409,6 +4505,7 @@ class TypeChecker(ExhaustivenessMixin):
                 f"Cannot assign field on immutable variable: {root_name}",
                 stmt.location,
                 ErrorCode.TYPE_IMMUTABLE_ASSIGN,
+                self._declare_with_var_fixes(root_name, env),
             )
             return
 
@@ -4530,6 +4627,7 @@ class TypeChecker(ExhaustivenessMixin):
     def _check_match_statement(self, stmt: MatchStatement, env: TypeEnv) -> None:
         """Type check a match statement."""
         scrutinee_type = self._check_expression(stmt.scrutinee, env)
+        errors_before = len(self.errors)
 
         for arm in stmt.arms:
             arm_env = env.child()
@@ -4545,8 +4643,19 @@ class TypeChecker(ExhaustivenessMixin):
             for s in arm.body:
                 self._check_statement(s, arm_env)
 
-        # Check pattern exhaustiveness
-        self._check_pattern_exhaustiveness(scrutinee_type, stmt.arms, stmt.location)
+        if not self._pattern_mismatch_since(errors_before):
+            self._check_pattern_exhaustiveness(scrutinee_type, stmt.arms, stmt.location)
+
+    def _pattern_mismatch_since(self, errors_before: int) -> bool:
+        """Whether a pattern failed to type-check after ``errors_before`` errors.
+
+        Such a match is not checked for exhaustiveness: what its arms cover is
+        unknown, and the pattern's error already names the problem.
+        """
+        return any(
+            error.error_code is ErrorCode.TYPE_PATTERN_MISMATCH
+            for error in self.errors[errors_before:]
+        )
 
     def _check_return_statement(self, stmt: ReturnStatement, env: TypeEnv) -> None:
         """Type check a return statement."""
@@ -6265,7 +6374,13 @@ class TypeChecker(ExhaustivenessMixin):
                 return _ANY_TYPE
             return target_type.element_types[position]
         else:
-            self._error(f"Cannot index into {target_type}", expr.location)
+            self._error(
+                f"Cannot index into {target_type}"
+                + _index_read_hint(
+                    target_type, getattr(expr, "_compound_operator", None)
+                ),
+                expr.location,
+            )
             return AnyType()
 
     def _check_field_access(self, expr: FieldAccess, env: TypeEnv) -> Type:
@@ -7066,6 +7181,7 @@ class TypeChecker(ExhaustivenessMixin):
             )
             scrutinee_type = _BOOL_TYPE
 
+        errors_before = len(self.errors)
         result_type: Type | None = None
         for arm in expr.arms:
             arm_env = env.child()
@@ -7106,8 +7222,8 @@ class TypeChecker(ExhaustivenessMixin):
                 else:
                     result_type = merged_type
 
-        # Check pattern exhaustiveness
-        self._check_pattern_exhaustiveness(scrutinee_type, expr.arms, expr.location)
+        if not self._pattern_mismatch_since(errors_before):
+            self._check_pattern_exhaustiveness(scrutinee_type, expr.arms, expr.location)
 
         if result_type is not None:
             # An arm merged by widening (`Ok(1)` beside `Ok(2.5)`) must build
@@ -7325,6 +7441,10 @@ class TypeChecker(ExhaustivenessMixin):
                     pattern.location,
                     ErrorCode.TYPE_PATTERN_MISMATCH,
                 )
+                # The names still exist in the arm, so their uses do not add
+                # "Undefined variable" errors (or a rename fix) to this one.
+                for name in sorted(pattern_bound_names(pattern)):
+                    self._bind_local(name, _ANY_TYPE, env, pattern.location)
         elif isinstance(pattern, RestPattern):
             # Rest pattern at top level (shouldn't happen, but handle gracefully)
             if pattern.name is not None:
@@ -8017,3 +8137,32 @@ def type_check(program: Program) -> None:
     """
     checker = TypeChecker()
     checker.check_program(program)
+
+
+def infer_return_types(program: Program) -> dict[int, str]:
+    """The return type each function written without one would have.
+
+    Keyed by the ``id`` of the function's ``InferredType`` return annotation,
+    for those whose ``return`` values settle on one known type. Checks
+    ``program`` on its own (a partial program from a parse error); its other
+    errors are ignored.
+    """
+    checker = TypeChecker()
+    try:
+        checker.check_program(program)
+    except (TypeError, RecursionError):
+        pass
+    inferred: dict[int, str] = {}
+    for definition in program.definitions:
+        functions: list[FunctionDef] = []
+        if isinstance(definition, FunctionDef):
+            functions.append(definition)
+        elif isinstance(definition, ImplDef):
+            functions.extend(definition.methods)
+        for function in functions:
+            annotation = function.return_type
+            if isinstance(annotation, InferredType) and isinstance(
+                annotation._inferred, Type
+            ):
+                inferred[id(annotation)] = _display_type(annotation._inferred)
+    return inferred

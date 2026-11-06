@@ -1680,9 +1680,12 @@ class ProcessSandbox:
                     return
             # Killing the leader is not equivalent to killing the group, but it
             # guarantees a failed group kill cannot leave the synchronous wait
-            # blocked forever. Surface the infrastructure failure either way.
+            # blocked forever. Keep it unreaped while the lifecycle lock protects
+            # PID/PGID ownership: Popen.kill() polls and can reap an exited child
+            # before the timeout path retries group cleanup. Only the waiter may
+            # reap it. Surface the infrastructure failure either way.
             try:
-                process.kill()
+                os.kill(process.pid, signal.__dict__["SIGKILL"])
             except ProcessLookupError:
                 pass
             except OSError as leader_error:

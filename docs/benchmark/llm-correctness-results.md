@@ -24,15 +24,19 @@ The reproducible run configuration and methodology are in:
 ## Key-Free Result: Seeded Mistakes
 
 `docs/benchmark/seeded-mistakes.md` is a result anyone can reproduce without a
-model: 27 mistakes that models carry over from other languages (`let mut`,
-`True`, `&&`, `elif`, `len(xs)`, an implicit return, ...) or make by slip are
-seeded into each of the 78 reference solutions, and the 840 mutants are
-checked and repaired with `geno.fix`. Every mutant is rejected and reported on
-the line of its mistake; the fixes repair all 684 mutants of the 25 mistakes
-that have a fix, and none of the 156 mutants of the two that do not (a missing
-return type, missing `example` clauses). No repaired program fails a test. It
-measures the repair path only, not how often models make each mistake;
-regenerate it with `python3 scripts/seeded_mistakes.py --write`.
+model: 29 mistakes that models carry over from other languages (`let mut`,
+`True`, `&&`, `elif`, `len(xs)`, an implicit return, `match x` without
+`with`, ...) or make by slip are seeded into each of the 78 reference
+solutions, and the 907 mutants are checked and repaired with `geno.fix`.
+Every mutant but one is rejected (a JavaScript-style `let` for a variable the
+solution never reassigns is valid Geno). Every mistake except one is reported
+on its own line: a `let` that should be `var` is reported where the variable
+is reassigned, with a fix that edits the declaration. The fixes repair all
+828 mutants of the 28 mistakes that have a fix, a missing return type
+included (its fix writes the type the function's `return` values have), and
+none of the 78 mutants that drop every `example` clause. No repaired program
+fails a test. It measures the repair path only, not how often models make
+each mistake; regenerate it with `python3 scripts/seeded_mistakes.py --write`.
 
 Local `results/experiment_*` directories in development checkouts may contain
 smoke or canonical-generator artifacts. They are not published benchmark

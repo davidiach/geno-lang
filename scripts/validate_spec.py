@@ -667,7 +667,7 @@ def _parse_series(raw: object) -> tuple[int, int] | None:
 
 
 def _validate_development_line(spec: dict[str, Any], errors: list[str]) -> None:
-    """Check the optional Draft next-minor record (proposal 0017).
+    """Check the optional Draft next-minor record.
 
     Everything else in spec.json describes the normative series. While the
     next minor is being developed, ``development_line`` names its Draft human

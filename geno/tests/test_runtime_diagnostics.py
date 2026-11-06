@@ -131,6 +131,30 @@ class TestClauseText:
             's != "a//b" and s != "/* x */"'
         )
 
+    @pytest.mark.parametrize("clause", ["requires", "ensures"])
+    @pytest.mark.parametrize(
+        "condition",
+        [
+            'f"{s.replace("//", "")}" == "ok"',
+            'f"{s.replace("/* comment */", "")}" == "ok"',
+            'f"{f"{s.replace("//", "")}"}" == "ok"',
+        ],
+    )
+    def test_comment_markers_in_fstring_literals_are_kept(
+        self, clause: str, condition: str
+    ) -> None:
+        definition = _function(
+            "func clean(s: String) -> String\n"
+            f"    {clause} {condition} // real comment\n"
+            '    example "ok" -> "ok"\n'
+            "    return s\n"
+            "end func\n",
+            "clean",
+        )
+
+        clauses = getattr(definition.specs, clause)
+        assert clauses[0].source_text == condition
+
     def test_spacing_inside_one_line_is_kept_as_written(self) -> None:
         assert contract_clause_text("  a  +  b > 0  ") == "a  +  b > 0"
 

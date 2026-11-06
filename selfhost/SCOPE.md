@@ -46,6 +46,9 @@ selfhost parser does not yet implement:
 - Panic examples (`example 1, 0 panics "division"`, `example () panics`), from
   the 0.7 draft specification (proposal 0017). The selfhost parser still
   requires `->` in every example, and no selfhost file uses the form.
+- The forms of accepted proposal 0026: compound assignment (`x += 1`), tuple
+  patterns in `for` loops and comprehensions, string literals inside f-string
+  interpolations, and a trait or impl method receiver written `self` alone.
 
 These are parser/interpreter gaps, so the keyword and builtin parity checks do
 not detect them. Canonical frontend and backend tests cover the new forms.

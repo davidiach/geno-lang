@@ -1,0 +1,7 @@
+func main() -> Unit
+    let m = {"the": 2}
+    let s = "a}b{c"
+    print(f"the={m.get("the", 0)} none={m.get("none", 0)}")
+    print(f"{s.replace("}", "")} {"a,b".replace(",", "-")}")
+    print(f"{f"[{"x"}]"} {"\"q\""} {"//"}")
+end func

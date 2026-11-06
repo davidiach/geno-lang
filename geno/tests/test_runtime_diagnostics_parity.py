@@ -826,6 +826,27 @@ class TestParity:
             ("fstring_index.geno:3:17", "fstr"),
         )
 
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            'f"n: {boom(n + length(""))}, twice: {n * 2}"',
+            'f"{f"n: {boom(n)}, twice: {n * 2}"}"',
+        ],
+    )
+    def test_literals_and_nested_fstrings_keep_runtime_locations(
+        self, tmp_path: Path, expression: str
+    ) -> None:
+        """Proposal 0026's strings retain proposal 0018's Geno stack locations."""
+        source = FSTRING_CALL.replace('f"n: {boom(n)}, twice: {n * 2}"', expression)
+        program = _write(tmp_path, "nested_fstring.geno", source)
+        column = source.splitlines()[10].index("boom(") + 1
+
+        assert _assert_parity(_lanes(program, tmp_path)).frames == (
+            ("nested_fstring.geno:15:11", "main"),
+            (f"nested_fstring.geno:11:{column}", "show"),
+            ("nested_fstring.geno:4:9", "boom"),
+        )
+
     def test_a_generic_ensures_shows_the_specialized_result(
         self, tmp_path: Path
     ) -> None:

@@ -13,7 +13,8 @@ You are writing code in Geno, a statically typed, functional-first language.
 Key syntax rules:
 - Use `let` for immutable bindings: `let x: Int = 5` or `let x = 5`
 - Use `var` for mutable bindings: `var count: Int = 0` or `var count = 0`
-- Update a `var` by assigning to it: `count = count + 1`, not `var count = count + 1`
+- Update a `var` by assigning to it: `count = count + 1` or `count += 1`, not
+  `var count = count + 1`
 - Function parameters and return values require type annotations
 - Boolean literals are lowercase: `true`, `false`
 - String concatenation uses `+` (same as arithmetic addition)
@@ -42,8 +43,9 @@ Key syntax rules:
   key, add a bound: `[T: Ord]`, `[T: Num]`, `[K: Hash]`, or a trait name
 - Lambda parameters, `for` variables, comprehension variables and tuple
   destructuring may omit types when context fixes them: `xs.map(fn(x) -> x * 2)`,
-  `for x in xs do`, `[x * 2 for x in xs]`, `let (a, b) = pair`. Function
-  parameters and return types are always annotated
+  `for x in xs do`, `[x * 2 for x in xs]`, `let (a, b) = pair`. Loops unpack
+  tuples: `for (i, x) in xs.enumerate() do`. Function parameters and return
+  types are always annotated
 - `if` is an expression when used as a value, with a required `else`:
   `let label = if x > 0 then "pos" else "neg" end if`. Match arms can share a
   body: `| Red | Orange -> ...`. Tuple fields: `pair.0`. Map literals:

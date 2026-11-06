@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, fields, is_dataclass
 from itertools import pairwise
 
-from .lexer import Lexer, LexerError
+from .lexer import Lexer, LexerError, string_literal_end
 from .tokens import SourceLocation, TokenType
 
 
@@ -567,17 +567,12 @@ def _starts_block_comment(stripped: str) -> bool:
     """Check if line starts a block comment, ignoring /* inside string literals."""
     if "/*" not in stripped or "*/" in stripped:
         return False
-    # Walk the line tracking whether we're inside a string literal
-    in_string = False
     i = 0
     while i < len(stripped) - 1:
-        ch = stripped[i]
-        if ch == "\\" and in_string:
-            i += 2  # skip escape sequence
+        if stripped[i] == '"':
+            i = string_literal_end(stripped, i)
             continue
-        if ch == '"':
-            in_string = not in_string
-        elif ch == "/" and stripped[i + 1] == "*" and not in_string:
+        if stripped.startswith("/*", i):
             return True
         i += 1
     return False
@@ -586,30 +581,16 @@ def _starts_block_comment(stripped: str) -> bool:
 def _strip_strings_and_line_comments(line: str) -> str:
     """Remove string literal contents and line comments from one source line."""
     chars: list[str] = []
-    in_string = False
     i = 0
     while i < len(line):
-        ch = line[i]
-        if in_string:
-            if ch == "\\":
-                chars.append(" ")
-                if i + 1 < len(line):
-                    chars.append(" ")
-                    i += 2
-                    continue
-            elif ch == '"':
-                in_string = False
-            chars.append(" ")
-            i += 1
+        if line[i] == '"':
+            end = string_literal_end(line, i)
+            chars.append(" " * (end - i))
+            i = end
             continue
-
         if line.startswith("//", i) or line.startswith("/*", i):
             break
-        if ch == '"':
-            in_string = True
-            chars.append(" ")
-        else:
-            chars.append(ch)
+        chars.append(line[i])
         i += 1
     return "".join(chars)
 

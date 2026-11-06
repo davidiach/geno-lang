@@ -12,6 +12,7 @@ import re
 from typing import TYPE_CHECKING, TypeVar
 
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
+from .lexer import string_literal_end
 from .runtime_report import CLAUSE_TEXT_LIMIT, truncate_display
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
 
@@ -19,10 +20,13 @@ if TYPE_CHECKING:
     from .ast_nodes import (
         Expression,
         FunctionDef,
+        InferredType,
         MatchArm,
+        MatchExpr,
         Parameter,
         Pattern,
         Statement,
+        TuplePattern,
         TypeAnnotation,
     )
 
@@ -52,10 +56,7 @@ def contract_clause_text(raw: str) -> str | None:
             parts.append(raw[index:end])
             index = end
         elif raw[index] == '"':
-            end = index + 1
-            while end < length and raw[end] not in '"\n':
-                end += 2 if raw[end] == "\\" else 1
-            end = min(end + 1, length)
+            end = string_literal_end(raw, index)
             parts.append(raw[index:end])
             index = end
         elif raw.startswith("//", index):
@@ -131,8 +132,13 @@ REMOVED_THROW_EFFECT = (
 )
 
 
-# The keyword that must follow an `if` condition or a loop header.
-_CLAUSE_KEYWORDS = {TokenType.THEN: "then", TokenType.DO: "do"}
+# The keyword that must follow an `if` condition, a loop header or the value
+# a `match` examines.
+_CLAUSE_KEYWORDS = {
+    TokenType.THEN: "then",
+    TokenType.DO: "do",
+    TokenType.WITH: "with",
+}
 
 
 class ParserBase:
@@ -205,6 +211,14 @@ class ParserBase:
         }
     )
     _RIGHT_ASSOCIATIVE_TOKENS = frozenset({TokenType.DOUBLESTAR})
+    # `x += v` is these operators written directly before `=`.
+    _COMPOUND_ASSIGN_OPERATORS = {
+        TokenType.PLUS: "+",
+        TokenType.MINUS: "-",
+        TokenType.STAR: "*",
+        TokenType.SLASH: "/",
+        TokenType.PERCENT: "%",
+    }
     _LOGICAL_PRECEDENCE = {
         TokenType.OR: 1,
         TokenType.AND: 2,
@@ -233,6 +247,23 @@ class ParserBase:
         self.errors: list[ParseError] = []
         self._panic_mode = False
         self._nesting_depth = 0
+        # Tuple bindings need names stable under formatting and distinct from
+        # user identifiers. F-string text includes nested interpolation names.
+        self._synthetic_names = [0]
+        self._loop_binding_reserved: set[str] = {
+            token.value for token in tokens if token.type is TokenType.IDENTIFIER
+        }
+        for token in tokens:
+            if token.type is TokenType.FSTRING:
+                self._loop_binding_reserved.update(
+                    re.findall(r"\b_geno_item_\d+\b", token.value[0])
+                )
+        # Inside a trait or impl, the type a method's untyped `self` has:
+        # `Self` in a trait, the implementing type in an impl.
+        self._self_type: str | None = None
+        # "Needs a return type" errors, with the annotation that stands in for
+        # the missing type, to receive a fix once the program is parsed.
+        self._missing_return_types: list[tuple[ParseError, InferredType]] = []
 
     def _current(self) -> Token:
         """Get the current token."""
@@ -332,6 +363,25 @@ class ParserBase:
             fixes,
         )
 
+    def _compound_assign_operator(self) -> str | None:
+        """The operator of a compound assignment (``+=``) at the current token.
+
+        The lexer reads ``+=`` as ``+`` then ``=``; written with nothing
+        between them they are one compound assignment operator.
+        """
+        operator = self._COMPOUND_ASSIGN_OPERATORS.get(self._current_type)
+        if operator is None:
+            return None
+        current = self._current().location
+        following = self._peek(1)
+        if (
+            following.type is TokenType.ASSIGN
+            and following.location.line == current.line
+            and following.location.column == current.column + 1
+        ):
+            return operator
+        return None
+
     def _ends_line_with_colon(self) -> bool:
         """The current token is a ``:`` that ends its line, as in Python."""
         current = self._current()
@@ -427,24 +477,127 @@ class ParserBase:
             )
         return contract_clause_text(raw)
 
+    def _source_between(self, start: SourceLocation, end: SourceLocation) -> str | None:
+        """The source text from ``start`` up to ``end``, when it is known."""
+        lines = self._source_lines
+        if lines is None or not (0 < start.line <= end.line <= len(lines)):
+            return None
+        if start.line == end.line:
+            text: str = lines[start.line - 1]
+            return text[start.column - 1 : end.column - 1]
+        return "\n".join(
+            [lines[start.line - 1][start.column - 1 :]]
+            + lines[start.line : end.line - 1]
+            + [lines[end.line - 1][: end.column - 1]]
+        )
+
+    @staticmethod
+    def _token_end(token: Token) -> SourceLocation:
+        """Where a name's or a one-character token's text ends."""
+        location = token.location
+        width = (
+            len(token.value)
+            if token.type in (TokenType.IDENTIFIER, TokenType.TYPE_IDENTIFIER)
+            else 1
+        )
+        return SourceLocation(location.line, location.column + width, location.filename)
+
+    def _parse_braced_fields(
+        self, *, shorthand: bool = False
+    ) -> tuple[list[tuple[str, str | None]], str | None, Token]:
+        """Read ``name: value, ...}`` written in another language's braces.
+
+        Returns each field's name and value source text (``None`` when the
+        source is unknown), the source of a ``..base`` entry (Rust) when
+        ``shorthand`` allows one along with a bare ``name``, and the ``}``.
+        """
+        fields: list[tuple[str, str | None]] = []
+        base: str | None = None
+        while not self._check(TokenType.RBRACE, TokenType.EOF):
+            if (
+                shorthand
+                and self._check(TokenType.DOT)
+                and self._peek(1).type is TokenType.DOT
+            ):
+                self._advance()
+                self._advance()
+                base_start = self._current().location
+                self._parse_expression()
+                base = self._source_between(base_start, self._current().location)
+            else:
+                name = self._expect(TokenType.IDENTIFIER, "Expected a field name")
+                if shorthand and self._check(
+                    TokenType.COMMA, TokenType.SEMICOLON, TokenType.RBRACE
+                ):
+                    fields.append((name.value, name.value))
+                else:
+                    if not self._match(TokenType.ASSIGN):
+                        self._expect(TokenType.COLON)
+                    value_start = self._current().location
+                    self._parse_expression()
+                    fields.append(
+                        (
+                            name.value,
+                            self._source_between(value_start, self._current().location),
+                        )
+                    )
+            if not self._match(TokenType.COMMA, TokenType.SEMICOLON):
+                break
+        close = self._expect(TokenType.RBRACE)
+        return fields, base, close
+
+    def _contains_comment(self, start: SourceLocation, end: SourceLocation) -> bool:
+        """Whether a comment is written between ``start`` and ``end``; true
+        when the source is unknown, so a fix never deletes one unseen."""
+        text = self._source_between(start, end)
+        if text is None:
+            return True
+        index = 0
+        while index < len(text):
+            if text[index] == '"':
+                index = string_literal_end(text, index)
+                continue
+            if text.startswith(("//", "/*"), index):
+                return True
+            index += 1
+        return False
+
+    def _rewrite_fix(
+        self, title: str, start: SourceLocation, close: Token, text: str | None
+    ) -> tuple[Fix, ...]:
+        """A fix replacing ``start`` through the ``}`` token ``close`` with
+        ``text``; none when the text is unknown, or when the span holds a
+        comment, which the rewrite would delete or leave open."""
+        end = close.location
+        after_close = SourceLocation(end.line, end.column + 1, end.filename)
+        if text is None or self._contains_comment(start, after_close):
+            return ()
+        return (
+            Fix(
+                title,
+                (TextEdit(start.line, start.column, end.line, end.column + 1, text),),
+            ),
+        )
+
+    @staticmethod
+    def _field_list(fields: list[tuple[str, str | None]]) -> str | None:
+        """``name: value, ...`` for fields whose values' source is known."""
+        if any(value is None for _name, value in fields):
+            return None
+        return ", ".join(f"{name}: {(value or '').strip()}" for name, value in fields)
+
     def _line_end(self, line: int) -> SourceLocation | None:
         """Where the code on ``line`` ends, before any trailing comment."""
         if self._source_lines is None or not 0 < line <= len(self._source_lines):
             return None
         text = self._source_lines[line - 1]
-        in_string = False
         end = len(text)
         index = 0
         while index < len(text):
-            char = text[index]
-            if in_string:
-                if char == "\\":
-                    index += 1
-                elif char == '"':
-                    in_string = False
-            elif char == '"':
-                in_string = True
-            elif text.startswith("//", index):
+            if text[index] == '"':
+                index = string_literal_end(text, index)
+                continue
+            if text.startswith("//", index):
                 end = index
                 break
             index += 1
@@ -518,6 +671,23 @@ class ParserBase:
     def _parse_parameter_list(
         self, *, allow_inferred_types: bool = False
     ) -> list[Parameter]:
+        raise NotImplementedError
+
+    def _parse_loop_binding(
+        self,
+    ) -> tuple[str, TypeAnnotation, TuplePattern | None]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _unpack_loop_body(
+        name: str, pattern: TuplePattern, body: list[Statement]
+    ) -> list[Statement]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _unpack_loop_value(
+        name: str, pattern: TuplePattern, value: Expression
+    ) -> MatchExpr:
         raise NotImplementedError
 
     def _parse_effect_list(self) -> list[str]:
