@@ -1,4 +1,4 @@
-type Point = { x: Int, y: Int }
+type Point = {x: Int, y: Int}
 
 func f(p: Point) -> Int
     example Point(1, 2) -> 1
