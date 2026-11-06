@@ -1765,6 +1765,18 @@ class TestDidYouMean:
                 os.unlink(f.name)
 
 
+def _run_geno_cli(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "geno", "run", *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+
+
 class TestRuntimeStackTrace:
     """Runtime errors should include a stack trace."""
 
@@ -1785,12 +1797,108 @@ class TestRuntimeStackTrace:
                     timeout=10,
                 )
                 assert result.returncode != 0
-                assert "Stack trace" in result.stderr
-                assert "in main" in result.stderr
-                assert "in outer" in result.stderr
-                assert "in inner" in result.stderr
+                # Each frame is positioned inside its own function: the call
+                # it was making, or the failure (proposal 0018).
+                assert result.stderr == (
+                    "Stack trace (most recent call last):\n"
+                    f"  {f.name}:10:12 in main\n"
+                    f"  {f.name}:7:12 in outer\n"
+                    f"  {f.name}:3:12 in inner\n"
+                    "      return 10 / x\n"
+                    "             ^\n"
+                    "Runtime Error: Division by zero: cannot compute 10 / 0\n"
+                )
             finally:
                 os.unlink(f.name)
+
+    def test_unsafe_prints_the_proposal_reports(self, tmp_path: Path) -> None:
+        from geno.tests.test_runtime_diagnostics import DEMO_PROGRAM, PANIC_PROGRAM
+
+        panic = tmp_path / "panic.geno"
+        panic.write_text(PANIC_PROGRAM, encoding="utf-8")
+        demo = tmp_path / "demo.geno"
+        demo.write_text(DEMO_PROGRAM, encoding="utf-8")
+
+        panicked = _run_geno_cli("--unsafe", str(panic))
+        failed = _run_geno_cli("--unsafe", str(demo))
+
+        assert panicked.returncode == 1
+        assert panicked.stderr == (
+            "Stack trace (most recent call last):\n"
+            f"  {panic}:15:12 in main\n"
+            f"  {panic}:11:12 in scale\n"
+            f"  {panic}:4:9 in check\n"
+            '      panic("value too large")\n'
+            "      ^\n"
+            "Runtime Error: value too large\n"
+        )
+        assert failed.returncode == 1
+        assert failed.stderr == (
+            "Stack trace (most recent call last):\n"
+            f"  {demo}:21:21 in main\n"
+            f"  {demo}:15:14 in safe_div\n"
+            "      requires b != 0\n"
+            "               ^\n"
+            "Runtime Error: Precondition failed: safe_div(a: 8, b: 0) "
+            "requires b != 0\n"
+        )
+
+    def test_json_carries_location_stack_and_contract(self, tmp_path: Path) -> None:
+        import json
+
+        from geno.tests.test_runtime_diagnostics import DEMO_PROGRAM
+
+        demo = tmp_path / "demo.geno"
+        demo.write_text(DEMO_PROGRAM, encoding="utf-8")
+
+        result = _run_geno_cli("--json", str(demo))
+
+        assert result.returncode == 1
+        (diagnostic,) = json.loads(result.stdout)["diagnostics"]
+
+        def at(line: int, column: int) -> dict:
+            return {"line": line, "column": column, "filename": str(demo)}
+
+        assert diagnostic == {
+            "code": "E499",
+            "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+            "severity": "error",
+            "location": at(15, 14),
+            "stack": [
+                {"function": "main", "location": at(21, 21)},
+                {"function": "safe_div", "location": at(15, 14)},
+            ],
+            "contract": {
+                "clause": "requires",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "safe_div",
+                "clause_text": "b != 0",
+                "arguments": [
+                    {"name": "a", "value": "8"},
+                    {"name": "b", "value": "0"},
+                ],
+                "result": None,
+            },
+        }
+
+    def test_host_traceback_follows_the_report(self, tmp_path: Path) -> None:
+        from geno.tests.test_runtime_diagnostics import PANIC_PROGRAM
+
+        panic = tmp_path / "panic.geno"
+        panic.write_text(PANIC_PROGRAM, encoding="utf-8")
+        env = {**os.environ, "GENO_TRACEBACK": "host"}
+
+        unsafe = _run_geno_cli("--unsafe", str(panic), env=env)
+        as_json = _run_geno_cli("--json", str(panic), env=env)
+
+        report, _, host = unsafe.stderr.partition("Runtime Error: value too large\n")
+        assert report.startswith("Stack trace (most recent call last):\n")
+        assert host.startswith("Host traceback (GENO_TRACEBACK=host):\n")
+        assert "Traceback (most recent call last):" in host
+        assert "interpreter.py" in host
+        # Envelopes never carry it.
+        assert "Traceback" not in as_json.stdout + as_json.stderr
 
 
 class TestGenoCompile:

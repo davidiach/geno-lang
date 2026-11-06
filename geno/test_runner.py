@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, List, Mapping
 
 from .ast_nodes import ExampleClause, FunctionDef, TestBlock
-from .diagnostics import format_labeled_error
+from .diagnostics import GenoStack, format_labeled_error, location_to_dict
 from .execution_limits import (
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
@@ -29,6 +29,7 @@ from .harness import (
 )
 from .project_resolution import describe_project_resolution_error
 from .sandbox import SandboxConfig
+from .tokens import SourceLocation
 
 if TYPE_CHECKING:
     from .ast_nodes import Program
@@ -87,6 +88,31 @@ def _test_error_detail(exc: Exception) -> str:
         return str(exc)
     logger.exception("Internal error while running tests: %s", exc)
     return f"{type(exc).__name__}: {exc}"
+
+
+def _runtime_failure_detail(exc: Exception) -> str:
+    """The message a ``Runtime error:`` violation shows for *exc*.
+
+    A Geno runtime error shows its own message: its ``str()`` would repeat
+    the location and the ``Runtime Error:`` label (proposal 0018), which the
+    violation's ``location`` and ``stack`` now carry.
+    """
+    from .values import GenoRuntimeError
+
+    if isinstance(exc, GenoRuntimeError):
+        return exc.message
+    return _test_error_detail(exc)
+
+
+def _failure_location(exc: BaseException) -> SourceLocation | None:
+    location = getattr(exc, "location", None)
+    return location if isinstance(location, SourceLocation) else None
+
+
+def _failure_stack(exc: BaseException) -> GenoStack | None:
+    from .runtime_report import stack_of
+
+    return stack_of(exc)
 
 
 def _classify_runtime_failure(exc: BaseException) -> str:
@@ -149,6 +175,8 @@ def _run_examples_and_tests(
                         kind="test",
                         function=test_block.name,
                         message=_test_error_detail(e),
+                        location=_failure_location(e),
+                        stack=_failure_stack(e),
                     )
                 )
 
@@ -260,11 +288,14 @@ def _run_examples(
                     )
             except Exception as e:
                 result.failed += 1
+                interp.mark_example_origin(e, example.location)
                 result.violations.append(
                     SpecViolation(
                         kind=_classify_runtime_failure(e),
                         function=harness.name,
-                        message=f"Runtime error: {_test_error_detail(e)}",
+                        message=f"Runtime error: {_runtime_failure_detail(e)}",
+                        location=_failure_location(e),
+                        stack=_failure_stack(e),
                     )
                 )
 
@@ -423,14 +454,7 @@ class SuiteResult:
                     }
                     for name, reason in hr.untested
                 ]
-                entry["violations"] = [
-                    {
-                        "kind": v.kind,
-                        "function": v.function,
-                        "message": v.message,
-                    }
-                    for v in hr.violations
-                ]
+                entry["violations"] = [_violation_dict(v) for v in hr.violations]
             entry["elapsed_ms"] = round(fr.elapsed_ms, 2)
             files.append(entry)
         payload: dict = {
@@ -446,6 +470,26 @@ class SuiteResult:
         if report is not None:
             payload["properties"] = report.to_dict()
         return payload
+
+
+def _violation_dict(violation: SpecViolation) -> dict:
+    """One ``geno test --json`` violation.
+
+    ``location``, ``stack`` and ``stack_omitted`` appear only for a runtime
+    failure that has them (proposal 0018), so other entries are unchanged.
+    """
+    entry: dict = {
+        "kind": violation.kind,
+        "function": violation.function,
+        "message": violation.message,
+    }
+    if violation.location is not None:
+        entry["location"] = location_to_dict(violation.location)
+    if violation.stack is not None:
+        entry["stack"] = violation.stack.to_dicts()
+        if violation.stack.omitted > 0:
+            entry["stack_omitted"] = violation.stack.omitted
+    return entry
 
 
 def discover_files(target: Path) -> List[Path]:

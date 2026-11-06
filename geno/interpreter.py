@@ -98,7 +98,12 @@ from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_r
 from .float_promotion import float_shape
 from .harness import example_call_args, example_numbers_match
 from .panic_outcome import evaluate_panics_call
-from .runtime_report import ARGUMENT_DISPLAY_LIMIT, contract_message
+from .runtime_report import (
+    ARGUMENT_DISPLAY_LIMIT,
+    EXAMPLE_ORIGIN,
+    CapturedStack,
+    contract_message,
+)
 from .sandbox import (
     RecursionLimitError,
     SandboxConfig,
@@ -259,11 +264,6 @@ _EXPECTED_BUILTIN_ERRORS = (
     LookupError,
     OSError,
 )
-
-# Trusted provenance tags a denial error carries for the isolated `geno run`
-# lane's rerun hints (proposal 0013): the missing capability, or the variable
-# an environment policy refused. Only trusted host code ever sets them.
-_HOST_DENIAL_TAGS = ("_geno_capability_denied", "_geno_env_policy_denied")
 
 
 class _ModuleNamespace:
@@ -509,7 +509,9 @@ class Interpreter:
             or self.MAX_RECURSION_DEPTH
         )
         self.call_depth = 0
-        self._call_stack: list[tuple[str, SourceLocation | None]] = []
+        # One (display name, call site) entry per active Geno call; the name is
+        # None for a lambda, which reports do not show as a frame (0018).
+        self._call_stack: list[tuple[str | None, SourceLocation | None]] = []
 
         # Step counter for execution budgeting
         self.steps: int = 0
@@ -1878,9 +1880,11 @@ class Interpreter:
             return
 
         loc_str = f" at {location}" if location else ""
-        raise SandboxTimeout(
+        error = SandboxTimeout(
             f"Execution timed out after {self.sandbox_config.timeout} seconds{loc_str}"
         )
+        error.location = location
+        raise error
 
     def call_function(
         self,
@@ -1959,6 +1963,25 @@ class Interpreter:
                         "Unexpected return in example expression",
                         example.location,
                     )
+                except (RuntimeError, SandboxError) as e:
+                    self.mark_example_origin(e, example.location)
+                    raise
+
+    def mark_example_origin(
+        self, error: BaseException, location: SourceLocation | None
+    ) -> None:
+        """Mark *error*'s stack as raised while verifying the example at *location*.
+
+        The report's outermost frame becomes ``<example>``, positioned at the
+        example clause (proposal 0018, section 2). Only a failure of a call
+        the example made from the top level has a stack to mark.
+        """
+        captured = getattr(error, "geno_stack", None)
+        if not isinstance(captured, CapturedStack) or self._call_stack:
+            return
+        captured.locate_entry(0, location)
+        if captured.origin is None:
+            captured.origin = EXAMPLE_ORIGIN
 
     def _verify_panics_example(
         self,
@@ -2174,9 +2197,11 @@ class Interpreter:
             raise KeyboardInterrupt
         if self.max_steps is not None and self.steps > self.max_steps:
             loc_str = f" at {location}" if location else ""
-            raise StepLimitExceeded(
+            error = StepLimitExceeded(
                 f"Step limit exceeded ({self.max_steps} steps){loc_str}"
             )
+            error.location = location
+            raise error
 
     # =========================================================================
     # Expression Evaluation
@@ -2742,10 +2767,7 @@ class Interpreter:
             if self.call_depth >= self.max_recursion_depth:
                 # RecursionLimitError is a SandboxError rather than a
                 # GenoRuntimeError: hosts report it as a resource limit.
-                raise RecursionLimitError(
-                    f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
-                    f"Check for infinite recursion or increase the limit."
-                )
+                raise self._recursion_limit_error(location)
             self.call_depth += 1
             try:
                 # Fill in default values while this invocation counts toward the
@@ -2798,7 +2820,9 @@ class Interpreter:
                 if func.is_async:
                     return AsyncValue(func, list(args))
 
-                self._call_stack.append((func.name or "<anonymous>", location))
+                # A lambda's entry has no name: it is not a report frame
+                # (proposal 0018), but it keeps the stack depth honest.
+                self._call_stack.append((func.display_name or func.name, location))
                 try:
                     # Create new environment with parameters bound
                     # (immutable binds are plain dict entries, so build the
@@ -2838,9 +2862,13 @@ class Interpreter:
                     self._check_collection_limits([result], location)
                     self._check_timeout(location)
                     return result
-                except RuntimeError as e:
-                    if not hasattr(e, "_geno_stack"):
-                        e._geno_stack = list(self._call_stack)  # type: ignore[attr-defined]
+                except (RuntimeError, SandboxError) as e:
+                    # The first Geno frame a failure unwinds captures the
+                    # stack, once per failure (proposal 0018). Reports bound
+                    # and name it later; outer handlers may still locate a
+                    # callback's entry (see the builtin branch below).
+                    if e.geno_stack is None:
+                        e.geno_stack = CapturedStack(list(self._call_stack), e.location)
                     raise
                 finally:
                     self._call_stack.pop()
@@ -2859,30 +2887,18 @@ class Interpreter:
             self._step()
             try:
                 result = func.func(*args)
-            except SandboxError:
+            # These arms run only once a builtin has failed, so a successful
+            # call pays nothing for them (proposal 0018).
+            except SandboxError as e:
+                self._locate_builtin_failure(e, location)
                 raise
-            except (RuntimeError, GenoRuntimeError) as e:
-                if (
-                    e.location is None
-                    and e.error_code is ErrorCode.RUNTIME_CAPABILITY_DENIED
-                    and location is not None
-                ):
-                    # Denial stubs and host policy wrappers do not know the
-                    # call site; report the call instead of letting the trace
-                    # fall back to the enclosing function's definition.
-                    located: Any = RuntimeError(
-                        e.message,
-                        location,
-                        error_code=e.error_code,
-                    )
-                    # Keep the trusted denial tags the isolated `geno run`
-                    # hint reads (proposal 0013); the new error must carry
-                    # the same provenance as the one it replaces.
-                    for tag in _HOST_DENIAL_TAGS:
-                        tag_value = getattr(e, tag, None)
-                        if isinstance(tag_value, str):
-                            setattr(located, tag, tag_value)
-                    raise located from None
+            except RuntimeError as e:
+                # A builtin (panic, unwrap, a denial stub, a host policy
+                # wrapper) does not know its call site: report the call.
+                # Locating in place keeps the error's type, code, message and
+                # the trusted denial tags the isolated `geno run` hint reads
+                # (proposal 0013).
+                self._locate_builtin_failure(e, location)
                 raise
             except _EXPECTED_BUILTIN_ERRORS as e:
                 # Ordinary user-facing error from a builtin (bad argument,
@@ -2911,6 +2927,39 @@ class Interpreter:
             raise RuntimeError(
                 f"Cannot call non-function: {type(func).__name__}", location
             )
+
+    def _recursion_limit_error(
+        self, location: SourceLocation | None
+    ) -> RecursionLimitError:
+        """The limit error for a call at *location* that would go too deep."""
+        error = RecursionLimitError(
+            f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
+            f"Check for infinite recursion or increase the limit."
+        )
+        error.location = location
+        return error
+
+    def _locate_builtin_failure(
+        self, error: GenoRuntimeError | SandboxError, location: SourceLocation | None
+    ) -> None:
+        """Locate a failure that left the builtin called at *location*.
+
+        Failure-only code (proposal 0018): an error raised without a location
+        gets the builtin call's, and a callback the builtin started, whose
+        stack entry sits at the current depth with no call site, is
+        positioned at the builtin call too. Nested builtins inside callbacks
+        each locate their own depth, innermost first.
+        """
+        if location is None:
+            return
+        if error.location is None:
+            if isinstance(error, GenoRuntimeError):
+                error.set_location(location)
+            else:
+                error.location = location
+        captured = error.geno_stack
+        if isinstance(captured, CapturedStack):
+            captured.locate_entry(len(self._call_stack), location)
 
     def _check_requires(self, func: Closure, env: Environment, args: list[Any]) -> None:
         """Check all requires (precondition) clauses."""
@@ -3149,9 +3198,16 @@ class Interpreter:
         return result
 
     def _eval_await(self, expr: AwaitExpr, env: Environment) -> Any:
-        """Evaluate an await expression — execute the async value synchronously."""
+        """Evaluate an await expression — execute the async value synchronously.
+
+        The awaited body runs here, so its frame's call site is the awaited
+        call when ``await`` wraps the call directly (``await f(x)``), and the
+        ``await`` itself otherwise (proposal 0018, section 2).
+        """
         value = self.eval_expr(expr.expr, env)
-        return self._execute_async_value(value, expr.location)
+        awaited = expr.expr
+        site = awaited.location if isinstance(awaited, FunctionCall) else expr.location
+        return self._execute_async_value(value, site)
 
     def _execute_async_value(self, value: Any, location: SourceLocation | None) -> Any:
         """Execute a deferred async closure, or return a synchronous value.
@@ -3179,22 +3235,24 @@ class Interpreter:
     def _run_async_value(
         self, value: AsyncValue, location: SourceLocation | None
     ) -> Any:
-        """Run an async closure's body."""
-        # Execute the async closure's body directly (bypass is_async check)
+        """Run an async closure's body, as a frame started at *location*.
+
+        The body bypasses ``_call_function`` (its call only created the
+        ``Async``), so this pushes, captures and pops the stack entry the same
+        way (proposal 0018).
+        """
         func = value.closure
-        call_env = func.env.child()
-        for param, arg in zip(func.params, value.args):
-            call_env.bind(param.name, arg)
-        if func.specs:
-            self._check_requires(func, call_env, value.args)
         if self.call_depth >= self.max_recursion_depth:
             # See _call_function for why this is a RecursionLimitError.
-            raise RecursionLimitError(
-                f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
-                f"Check for infinite recursion or increase the limit."
-            )
+            raise self._recursion_limit_error(location)
         self.call_depth += 1
+        self._call_stack.append((func.display_name or func.name, location))
         try:
+            call_env = func.env.child()
+            for param, arg in zip(func.params, value.args):
+                call_env.bind(param.name, arg)
+            if func.specs:
+                self._check_requires(func, call_env, value.args)
             try:
                 for stmt in func.body:
                     self.exec_stmt(stmt, call_env)
@@ -3211,7 +3269,12 @@ class Interpreter:
                 self._check_ensures(func, call_env, result, value.args)
             self._check_collection_limits([result], location)
             return result
+        except (RuntimeError, SandboxError) as e:
+            if e.geno_stack is None:
+                e.geno_stack = CapturedStack(list(self._call_stack), e.location)
+            raise
         finally:
+            self._call_stack.pop()
             self.call_depth -= 1
 
     def _eval_pipeline(self, expr: Pipeline, env: Environment) -> Any:

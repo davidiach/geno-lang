@@ -39,6 +39,7 @@ from .execution_limits import (
 
 if TYPE_CHECKING:
     from .isolated_host import IsolatedRunPolicy
+    from .tokens import SourceLocation
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,17 @@ def _sandbox_debug_enabled() -> bool:
 
 
 class SandboxError(Exception):
-    """Base exception for sandbox violations."""
+    """Base exception for sandbox violations.
 
-    pass
+    ``location`` is where in the Geno program the limit was reached, when
+    the raiser knows it (the interpreter's recursion, step and cooperative
+    timeout checks set it), and ``geno_stack`` the raw Geno call stack the
+    interpreter captured as the error unwound (proposal 0018). Neither ever
+    enters the message.
+    """
+
+    location: "SourceLocation | None" = None
+    geno_stack: Any = None
 
 
 class SecurityViolation(SandboxError):
@@ -2833,7 +2842,12 @@ def main():
         except BaseException as exc:
             try:
                 _filename = _geno_request.get("filename", "<input>")
-                _formatted = _format_process_frontend_error(_filename, exc)
+                # A runtime report is fitted into the budget so that its
+                # final message line survives (proposal 0018); other text is
+                # cut at its tail below, as before.
+                _formatted = _format_process_frontend_error(
+                    _filename, exc, limit=max_result_error
+                )
             except BaseException:
                 _formatted = (
                     "Compiler Error: the isolated frontend failed safely "

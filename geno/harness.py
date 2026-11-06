@@ -26,7 +26,9 @@ from .capabilities import DEFAULT_ALLOWED_CAPABILITIES
 from .values import _UNBOUND, ConstructorValue
 
 if TYPE_CHECKING:
+    from .diagnostics import GenoStack
     from .panic_outcome import CallFailure
+    from .tokens import SourceLocation
 
 # What the harness runners grant a program: the direct interpreter's default
 # (``geno test`` grants the same), for interpreted and compiled runs alike.
@@ -37,9 +39,25 @@ HARNESS_CAPABILITIES = DEFAULT_ALLOWED_CAPABILITIES
 # =============================================================================
 
 
+def runtime_failure_message(exc: BaseException) -> str:
+    """The message of a runtime failure, without the location or label.
+
+    A Geno runtime error's ``str()`` carries its location and a
+    ``Runtime Error:`` label of its own, so reports that add their own
+    prefix use its ``message`` instead (proposal 0018).
+    """
+    message = getattr(exc, "message", None)
+    return message if isinstance(message, str) else str(exc)
+
+
 @dataclass
 class SpecViolation:
-    """Represents a specification violation."""
+    """Represents a specification violation.
+
+    A runtime failure also records where it happened and, when the
+    interpreter captured one, its bounded Geno stack (proposal 0018). Both
+    stay out of ``message``.
+    """
 
     kind: str  # "example", "requires", "ensures"
     function: str
@@ -47,6 +65,8 @@ class SpecViolation:
     inputs: Dict[str, Any] | None = None
     expected: Any | None = None
     actual: Any | None = None
+    location: "SourceLocation | None" = None
+    stack: "GenoStack | None" = None
 
 
 @dataclass
@@ -382,7 +402,7 @@ class HarnessRunner:
             return SpecViolation(
                 kind="example",
                 function=harness.name,
-                message=f"Runtime error: {e}",
+                message=f"Runtime error: {runtime_failure_message(e)}",
                 inputs={"args": str(example.input_expr)},
             )
 

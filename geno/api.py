@@ -33,7 +33,7 @@ from typing import (
 from .builtin_registry import allowed_gated_builtins
 from .capabilities import normalize_capability_values
 from .dependency_graph import DependencyGraphError
-from .diagnostics import Diagnostic, ErrorCode, Severity
+from .diagnostics import ContractDetails, Diagnostic, ErrorCode, GenoStack, Severity
 from .entrypoint import EntrypointResultKind, classify_entrypoint_result
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
@@ -391,13 +391,60 @@ class ConstraintResult:
 
 
 def _make_diagnostic(exc, default_code: ErrorCode) -> Diagnostic:
-    """Create a Diagnostic from a Geno exception."""
+    """Create a Diagnostic from a Geno exception.
+
+    A runtime failure also carries its bounded Geno stack and, for a
+    contract failure, the clause details (proposal 0018).
+    """
     return Diagnostic(
         code=getattr(exc, "error_code", None) or default_code,
         message=getattr(exc, "message", str(exc)),
         severity=Severity.ERROR,
         location=getattr(exc, "location", None),
         fixes=tuple(getattr(exc, "fixes", ())),
+        stack=_runtime_stack(exc),
+        contract=_contract_details(exc),
+    )
+
+
+def _runtime_stack(exc: BaseException) -> GenoStack | None:
+    """The bounded Geno stack a runtime failure captured, if any."""
+    if getattr(exc, "geno_stack", None) is None:
+        return None
+    from .runtime_report import stack_of
+
+    return stack_of(exc)
+
+
+def _contract_details(exc: BaseException) -> ContractDetails | None:
+    """The structured details of a contract failure, if *exc* is one."""
+    from .values import ContractViolationError
+
+    if not isinstance(exc, ContractViolationError):
+        return None
+    if exc.clause is None or exc.reason is None or exc.clause_index is None:
+        return None
+    return ContractDetails(
+        clause=exc.clause,
+        reason=exc.reason,
+        clause_index=exc.clause_index,
+        function=exc.function,
+        clause_text=exc.clause_text,
+        arguments=tuple(exc.arguments or ()),
+        result=exc.result_display if exc.clause == "ensures" else None,
+        checked_values=tuple(exc.checked_values or ()),
+    )
+
+
+def _limit_diagnostic(exc: BaseException, code: ErrorCode, message: str) -> Diagnostic:
+    """A resource-limit diagnostic, with the location and stack it carries."""
+    location = getattr(exc, "location", None)
+    return Diagnostic(
+        code=code,
+        message=message,
+        severity=Severity.ERROR,
+        location=location if isinstance(location, SourceLocation) else None,
+        stack=_runtime_stack(exc),
     )
 
 
@@ -607,50 +654,43 @@ def _remap_module_diagnostic_locations(
     user-facing overlay name, so overlays resolved onto internal graph keys
     surface under the name the caller supplied.
     """
-    remapped: list[Diagnostic] = []
     preserved = overlay_modules or {}
-    for diagnostic in diagnostics:
-        location = diagnostic.location
+
+    def remap(location: SourceLocation | None) -> SourceLocation | None:
         if (
-            location is not None
-            and location.filename.startswith("<module:")
-            and location.filename.endswith(">")
+            location is None
+            or not location.filename.startswith("<module:")
+            or not location.filename.endswith(">")
         ):
-            module_name = location.filename[len("<module:") : -1]
-            if module_name in preserved:
-                display_name = preserved[module_name]
-                if display_name != module_name:
-                    remapped.append(
-                        Diagnostic(
-                            code=diagnostic.code,
-                            message=diagnostic.message,
-                            severity=diagnostic.severity,
-                            location=SourceLocation(
-                                location.line,
-                                location.column,
-                                f"<module:{display_name}>",
-                            ),
-                        )
-                    )
-                else:
-                    remapped.append(diagnostic)
-                continue
+            return location
+        module_name = location.filename[len("<module:") : -1]
+        if module_name in preserved:
+            display_name = preserved[module_name]
+            if display_name == module_name:
+                return location
+            filename = f"<module:{display_name}>"
+        else:
             path = module_paths.get(module_name)
-            if path is not None:
-                remapped.append(
-                    Diagnostic(
-                        code=diagnostic.code,
-                        message=diagnostic.message,
-                        severity=diagnostic.severity,
-                        location=SourceLocation(
-                            location.line,
-                            location.column,
-                            path,
-                        ),
-                    )
-                )
-                continue
-        remapped.append(diagnostic)
+            if path is None:
+                return location
+            filename = path
+        return SourceLocation(location.line, location.column, filename)
+
+    remapped: list[Diagnostic] = []
+    for diagnostic in diagnostics:
+        location = remap(diagnostic.location)
+        stack = diagnostic.stack
+        if stack is not None:
+            frames = tuple(
+                replace(frame, location=remap(frame.location)) for frame in stack.frames
+            )
+            if frames != stack.frames:
+                stack = replace(stack, frames=frames)
+        if location is diagnostic.location and stack is diagnostic.stack:
+            remapped.append(diagnostic)
+        else:
+            # ``replace`` keeps every other field (fixes, contract, ...).
+            remapped.append(replace(diagnostic, location=location, stack=stack))
     return remapped
 
 
@@ -875,13 +915,7 @@ def run(
 
     except StepLimitExceeded as e:
         _finalize_timing(timing, "run_ms", t_run, t0)
-        diagnostics.append(
-            Diagnostic(
-                code=ErrorCode.SANDBOX_STEP_LIMIT,
-                message=str(e),
-                severity=Severity.ERROR,
-            )
-        )
+        diagnostics.append(_limit_diagnostic(e, ErrorCode.SANDBOX_STEP_LIMIT, str(e)))
         return _emit_monitoring_hook(
             cfg,
             RunResult(
@@ -895,11 +929,7 @@ def run(
     except RecursionLimitError as e:
         _finalize_timing(timing, "run_ms", t_run, t0)
         diagnostics.append(
-            Diagnostic(
-                code=ErrorCode.SANDBOX_RECURSION_LIMIT,
-                message=str(e),
-                severity=Severity.ERROR,
-            )
+            _limit_diagnostic(e, ErrorCode.SANDBOX_RECURSION_LIMIT, str(e))
         )
         return _emit_monitoring_hook(
             cfg,
@@ -941,13 +971,7 @@ def run(
             if isinstance(e, TimeoutError)
             else ErrorCode.SANDBOX_RESOURCE_LIMIT
         )
-        diagnostics.append(
-            Diagnostic(
-                code=code,
-                message=str(e),
-                severity=Severity.ERROR,
-            )
-        )
+        diagnostics.append(_limit_diagnostic(e, code, str(e)))
         return _emit_monitoring_hook(
             cfg,
             RunResult(
@@ -961,11 +985,7 @@ def run(
     except SecurityViolation as e:
         _finalize_timing(timing, "run_ms", t_run, t0)
         diagnostics.append(
-            Diagnostic(
-                code=ErrorCode.SANDBOX_SECURITY_VIOLATION,
-                message=str(e),
-                severity=Severity.ERROR,
-            )
+            _limit_diagnostic(e, ErrorCode.SANDBOX_SECURITY_VIOLATION, str(e))
         )
         return _emit_monitoring_hook(
             cfg,

@@ -51,7 +51,9 @@ from ._util import (
     _format_source_snippet,
     _print_error,
     _print_runtime_error,
+    host_traceback_requested,
     report_deep_nesting_error,
+    runtime_report_lines,
 )
 
 if TYPE_CHECKING:
@@ -643,10 +645,17 @@ def _default_lane_capability_hint(
     )
 
 
-def _format_process_frontend_error(filename: str, error: BaseException) -> str:
-    """Format a frontend failure without leaking a worker traceback."""
-    from io import StringIO
+def _format_process_frontend_error(
+    filename: str, error: BaseException, *, limit: int | None = None
+) -> str:
+    """Format a frontend failure without leaking a worker traceback.
 
+    A runtime failure (an example's panic, contract failure, denial or
+    limit) is formatted as the Geno runtime report. With *limit* that report
+    is fitted into *limit* characters by ``runtime_report.fit_report_text``,
+    which keeps its final ``<Label>: <message>`` line; other text is returned
+    whole, for the caller to truncate.
+    """
     from ..compiler import CompileError
     from ..dependency_graph import (
         CircularDependencyError,
@@ -701,23 +710,29 @@ def _format_process_frontend_error(filename: str, error: BaseException) -> str:
         return f"Compile Error: {error}"
     if isinstance(error, SecurityViolation):
         return f"Security Error: {error}"
-    if isinstance(error, (TimeoutError, StepLimitExceeded)):
-        return f"Limit Error: {error}"
-    if isinstance(error, SandboxError):
-        return f"Sandbox Error: {error}"
     if isinstance(error, RecursionError):
         return (
             f"Error: expression nesting is too deep to process in {filename} "
             "(exceeded the interpreter's recursion limit). Simplify deeply "
             "nested expressions such as very long operator chains."
         )
-    if isinstance(error, (GenoRuntimeError, RuntimeError)):
-        buffer = StringIO()
-        _print_runtime_error(error, file=buffer)
-        return buffer.getvalue().rstrip()
-    return (
-        f"Compiler Error: the isolated frontend failed safely ({type(error).__name__})"
-    )
+    if isinstance(error, (TimeoutError, StepLimitExceeded)):
+        label = "Limit Error"
+    elif isinstance(error, SandboxError):
+        label = "Sandbox Error"
+    elif isinstance(error, (GenoRuntimeError, RuntimeError)):
+        label = "Runtime Error"
+    else:
+        return (
+            "Compiler Error: the isolated frontend failed safely "
+            f"({type(error).__name__})"
+        )
+    lines = runtime_report_lines(error, label)
+    if limit is None:
+        return "\n".join(lines)
+    from ..runtime_report import fit_report_text
+
+    return fit_report_text(lines, limit)
 
 
 def run_file(
@@ -1219,24 +1234,28 @@ def run_file(
         print(f"Security Error: {e}", file=sys.stderr)
         sys.exit(1)
     except (TimeoutError, StepLimitExceeded) as e:
-        print(f"Limit Error: {e}", file=sys.stderr)
+        # Interpreter limits carry the Geno stack they unwound (proposal 0018).
+        _print_runtime_error(
+            e, label="Limit Error", host_traceback=host_traceback_requested()
+        )
         sys.exit(1)
     except SandboxError as e:
-        # Infrastructure failure inside the process sandbox (e.g. the worker's
-        # result channel was lost) — not a user-program error.
-        print(f"Sandbox Error: {e}", file=sys.stderr)
+        # A recursion limit or another sandbox refusal of the interpreter.
+        _print_runtime_error(
+            e, label="Sandbox Error", host_traceback=host_traceback_requested()
+        )
         sys.exit(1)
     except RecursionError:
         report_deep_nesting_error(filename)
     except GenoRuntimeError as e:
         # Must precede builtin RuntimeError since GenoRuntimeError
         # (geno.values.RuntimeError) extends Exception, not builtin RuntimeError.
-        # Use e.message to avoid "Runtime Error: Runtime Error: ..." duplication
-        # since str(e) already includes the "Runtime Error:" prefix.
-        _print_runtime_error(e)
+        # The report prints e.message, never str(e), which already carries a
+        # location and the "Runtime Error:" label.
+        _print_runtime_error(e, host_traceback=host_traceback_requested())
         sys.exit(1)
     except RuntimeError as e:
-        _print_runtime_error(e)
+        _print_runtime_error(e, host_traceback=host_traceback_requested())
         sys.exit(1)
 
     # Only `report_deep_nesting_error` reaches here without returning, and it

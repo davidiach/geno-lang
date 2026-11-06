@@ -1,9 +1,12 @@
 """Runtime failure diagnostics (draft proposal 0018).
 
-This file covers the contract-failure half that every backend shares: the
+This file covers the contract-failure half that every backend shares (the
 clause text the parser captures, the bounded value renderers, the message
-grammar and the structured fields of ``ContractViolationError``. The
-three-backend message parity lives in ``test_backend_parity.py``.
+grammar and the structured fields of ``ContractViolationError``) and the
+interpreter's Geno stacks: frame names and positions, callbacks, lambdas,
+async functions, the ``<example>`` origin, limits, the 10/10 bound, the
+report text and its budgeted fitting. The three-backend message parity lives
+in ``test_backend_parity.py``.
 """
 
 from __future__ import annotations
@@ -12,27 +15,36 @@ import ast
 import json
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from geno import api as geno_api
 from geno import builtins as geno_builtins
 from geno import runtime_report
 from geno.ast_nodes import EnsuresClause, FunctionDef, RequiresClause
+from geno.cli._util import runtime_report_lines
+from geno.diagnostics import ErrorCode
 from geno.formatter import format_source
-from geno.interpreter import interpret
+from geno.interpreter import Interpreter, interpret
 from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
 from geno.lexer import Lexer
 from geno.parser import Parser, parse
 from geno.parser_base import contract_clause_text
 from geno.property_check import ensures_clause_text
+from geno.sandbox import SandboxError
 from geno.tests._script_runner import run_node_code
+from geno.tokens import SourceLocation
 from geno.values import (
     ArrayValue,
     ConstructorValue,
     ContractViolationError,
+    GenoRuntimeError,
     MutableMapValue,
+    RuntimeLimitError,
     SetValue,
     VecValue,
 )
@@ -792,3 +804,718 @@ class TestInterpreterContractFailures:
             "result_display",
         ):
             assert getattr(copy, name) == getattr(violation, name), name
+
+
+# =============================================================================
+# Interpreter stacks and locations (proposal 0018, package 2)
+# =============================================================================
+
+PANIC_PROGRAM = """\
+func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+
+func scale(n: Int) -> Int
+    example 2 -> 4
+    return check(n * 2)
+end func
+
+func main() -> Int
+    return scale(4)
+end func
+"""
+
+DEMO_PROGRAM = """\
+func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+
+func scale(n: Int) -> Int
+    example 2 -> 4
+    return check(n * 2)
+end func
+
+func safe_div(a: Int, b: Int) -> Int
+    requires b != 0
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Int
+    print(to_string(safe_div(a: 8, b: 0)))
+    return scale(4)
+end func
+"""
+
+COUNT_DOWN = """\
+func count_down(n: Int) -> Int
+    example 0 panics "bottom"
+    if n == 0 then
+        panic("bottom")
+    end if
+    return count_down(n - 1)
+end func
+
+func main() -> Int
+    return count_down({depth})
+end func
+"""
+
+BOOM = """\
+func boom(x: Int) -> Int
+    example 1 -> 1
+    if x > 3 then
+        panic("boom")
+    end if
+    return x
+end func
+"""
+
+G_PANICS = """\
+func g(x: Int) -> Int
+    example 1 -> 1
+    if x > 2 then
+        panic("bad item")
+    end if
+    return x
+end func
+"""
+
+ASYNC_WORK = """\
+async func work(n: Int) -> Int
+    if n > 3 then
+        panic("work failed")
+    end if
+    return n
+end func
+"""
+
+Position = tuple[int, int] | None
+
+
+def _failure(source: str, filename: str = "t.geno", **config: Any) -> Any:
+    result = geno_api.run(source, filename, config=geno_api.RunConfig(**config))
+    assert not result.ok, result
+    (diagnostic,) = result.diagnostics
+    return diagnostic
+
+
+def _position(location: Any) -> Position:
+    return None if location is None else (location.line, location.column)
+
+
+def _frames(diagnostic: Any) -> list[tuple[str, Position]]:
+    assert diagnostic.stack is not None, diagnostic
+    return [
+        (frame.function, _position(frame.location)) for frame in diagnostic.stack.frames
+    ]
+
+
+def _raised(source: str, **interpreter: Any) -> BaseException:
+    program = parse(source)
+    with pytest.raises((GenoRuntimeError, SandboxError)) as exc_info:
+        Interpreter(**interpreter).run(program)
+    return exc_info.value
+
+
+class TestInterpreterStacks:
+    def test_a_panic_three_calls_deep(self) -> None:
+        diagnostic = _failure(PANIC_PROGRAM)
+
+        assert diagnostic.code is ErrorCode.RUNTIME_PANIC
+        assert diagnostic.message == "value too large"
+        assert _position(diagnostic.location) == (4, 9)
+        assert _frames(diagnostic) == [
+            ("main", (15, 12)),
+            ("scale", (11, 12)),
+            ("check", (4, 9)),
+        ]
+        assert diagnostic.stack.omitted == 0
+
+    def test_the_report_text(self) -> None:
+        error = _raised(PANIC_PROGRAM)
+
+        assert runtime_report_lines(error) == [
+            "Stack trace (most recent call last):",
+            "  <stdin>:15:12 in main",
+            "  <stdin>:11:12 in scale",
+            "  <stdin>:4:9 in check",
+            "Runtime Error: value too large",
+        ]
+
+    def test_an_index_error(self) -> None:
+        diagnostic = _failure(
+            """\
+func c(xs: List[Int]) -> Int
+    example [1, 2, 3, 4] -> 4
+    return xs[3]
+end func
+
+func b(xs: List[Int]) -> Int
+    example [1, 2, 3, 4] -> 4
+    return c(xs)
+end func
+
+func main() -> Int
+    return b([1, 2])
+end func
+"""
+        )
+
+        assert diagnostic.code is ErrorCode.RUNTIME_INDEX_OUT_OF_BOUNDS
+        assert _frames(diagnostic) == [
+            ("main", (12, 12)),
+            ("b", (8, 12)),
+            ("c", (3, 12)),
+        ]
+
+    def test_a_division_error(self) -> None:
+        diagnostic = _failure(
+            """\
+func ratio(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Int
+    return ratio(1, 0)
+end func
+"""
+        )
+
+        assert diagnostic.code is ErrorCode.RUNTIME_DIVISION_BY_ZERO
+        assert _frames(diagnostic) == [("main", (7, 12)), ("ratio", (3, 12))]
+
+    def test_a_capability_denial(self) -> None:
+        diagnostic = _failure(
+            """\
+@untested("reads a file")
+func load(path: String) -> String
+    return fs_read_text(path).unwrap()
+end func
+
+func main() -> Unit
+    print(load("notes.txt"))
+    return ()
+end func
+""",
+            capabilities={"print"},
+        )
+
+        assert diagnostic.code is ErrorCode.RUNTIME_CAPABILITY_DENIED
+        assert _position(diagnostic.location) == (3, 12)
+        assert _frames(diagnostic) == [("main", (7, 11)), ("load", (3, 12))]
+
+    def test_a_callback_is_positioned_at_the_builtin_call(self) -> None:
+        diagnostic = _failure(
+            G_PANICS
+            + """
+func main() -> Int
+    let ys = [1, 2, 3].map(g)
+    return length(ys)
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [("main", (10, 14)), ("g", (4, 9))]
+
+    def test_nested_builtins_in_callbacks_locate_their_own_depth(self) -> None:
+        diagnostic = _failure(
+            G_PANICS
+            + """
+func h(x: Int) -> Int
+    example 1 -> 1
+    let ys = [x, x + 5].map(g)
+    return length(ys)
+end func
+
+func main() -> Int
+    let zs = [1].map(h)
+    return length(zs)
+end func
+""",
+            check_examples=False,
+        )
+
+        assert _frames(diagnostic) == [
+            ("main", (16, 14)),
+            ("h", (11, 14)),
+            ("g", (4, 9)),
+        ]
+
+    def test_a_recursion_limit_reached_through_a_callback(self) -> None:
+        diagnostic = _failure(
+            """\
+func r(n: Int) -> Int
+    example 0 -> 0
+    if n == 0 then
+        return 0
+    end if
+    let xs = [n - 1].map(r)
+    return xs[0]
+end func
+
+func main() -> Int
+    return r(100)
+end func
+""",
+            max_recursion_depth=12,
+        )
+
+        assert diagnostic.code is ErrorCode.SANDBOX_RECURSION_LIMIT
+        assert _position(diagnostic.location) == (6, 14)
+        frames = _frames(diagnostic)
+        assert frames[0] == ("main", (11, 12))
+        assert frames[1:] == [("r", (6, 14))] * (len(frames) - 1)
+        assert len(frames) + diagnostic.stack.omitted == 12
+
+    def test_a_lambda_is_not_a_frame(self) -> None:
+        diagnostic = _failure(
+            BOOM
+            + """
+func main() -> Int
+    let f = fn(x: Int) -> boom(x + 10)
+    return f(1)
+end func
+"""
+        )
+
+        # main is positioned at the call made inside the lambda.
+        assert _frames(diagnostic) == [("main", (10, 27)), ("boom", (4, 9))]
+
+    def test_an_escaping_lambda_is_positioned_where_it_was_written(self) -> None:
+        diagnostic = _failure(
+            BOOM
+            + """
+@untested("returns a function")
+func make(n: Int) -> (Int) -> Int
+    return fn(x: Int) -> boom(x + n)
+end func
+
+func main() -> Int
+    let f = make(10)
+    return f(1)
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [("main", (11, 26)), ("boom", (4, 9))]
+
+    def test_an_impl_method_is_type_dot_method(self) -> None:
+        diagnostic = _failure(
+            """\
+type Shape = Circle(r: Int)
+
+trait Area
+    func area(self: Self) -> Int
+end trait
+
+impl Area for Shape
+    func area(self: Shape) -> Int
+        example Circle(1) -> 3
+        match self with
+            | Circle(r) ->
+                if r > 5 then
+                    panic("huge circle")
+                end if
+                return 3 * r * r
+        end match
+    end func
+end impl
+
+func main() -> Int
+    return Circle(9).area()
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [("main", (21, 12)), ("Shape.area", (13, 21))]
+
+    def test_a_stdlib_frame_displays_as_std(self) -> None:
+        source = """\
+import List
+
+func main() -> Int
+    let parts = List.chunk([1, 2, 3], 0)
+    return length(parts)
+end func
+"""
+        diagnostic = _failure(source)
+        list_lines = (GENO_DIR / "std" / "List.geno").read_text().splitlines()
+        chunk_line = next(
+            number
+            for number, text in enumerate(list_lines, 1)
+            if "return list_chunk(" in text
+        )
+
+        frames = diagnostic.stack.frames
+        assert [frame.function for frame in frames] == ["main", "List.chunk"]
+        # The envelope keeps the real filename; the text shows std/.
+        assert (
+            Path(frames[1].location.filename).resolve()
+            == (GENO_DIR / "std" / "List.geno").resolve()
+        )
+        lines = runtime_report.report_lines(
+            "Runtime Error", diagnostic.message, stack=diagnostic.stack
+        )
+        assert lines[2] == f"  std/List.geno:{chunk_line}:12 in List.chunk"
+        source_line = runtime_report.read_snippet_line(frames[1].location)
+        assert source_line is not None
+        assert "return list_chunk(xs, size)" in source_line
+
+    def test_example_verification_has_an_example_origin(self) -> None:
+        diagnostic = _failure(
+            """\
+func inner(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("too big")
+    end if
+    return n
+end func
+
+func outer(n: Int) -> Int
+    example 9 -> 9
+    return inner(n)
+end func
+
+func main() -> Int
+    return outer(1)
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [
+            ("<example>", (10, 5)),
+            ("outer", (11, 12)),
+            ("inner", (4, 9)),
+        ]
+
+    def test_a_requires_rejecting_its_own_example_keeps_the_stack(self) -> None:
+        diagnostic = _failure(
+            """\
+func safe_div(a: Int, b: Int) -> Result[Int, String]
+    requires b != 0
+    example 6, 3 -> Ok(2)
+    example 1, 0 -> Err("division by zero")
+    return Ok(a / b)
+end func
+
+func main() -> Int
+    return safe_div(4, 2).unwrap()
+end func
+"""
+        )
+
+        assert _position(diagnostic.location) == (4, 5)
+        assert _frames(diagnostic) == [("<example>", (4, 5)), ("safe_div", (2, 14))]
+        assert diagnostic.contract is not None
+        assert diagnostic.contract.function == "safe_div"
+
+    def test_successful_calls_leave_nothing_behind(self) -> None:
+        interpreter = Interpreter()
+        interpreter.run(
+            parse(BOOM + "\nfunc main() -> Int\n    return boom(1)\nend func\n")
+        )
+        assert interpreter._call_stack == []
+
+
+class TestAsyncStacks:
+    def test_async_main_helper_work(self) -> None:
+        diagnostic = _failure(
+            ASYNC_WORK
+            + """
+async func helper(n: Int) -> Int
+    let v = await work(n)
+    return v + 1
+end func
+
+async func main() -> Int
+    return await helper(5)
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [
+            ("main", (14, 18)),
+            ("helper", (9, 19)),
+            ("work", (3, 9)),
+        ]
+
+    def test_an_awaited_call_is_positioned_at_the_call(self) -> None:
+        diagnostic = _failure(
+            ASYNC_WORK
+            + """
+func main() -> Int
+    return await work(5)
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [("main", (9, 18)), ("work", (3, 9))]
+
+    def test_a_split_await_is_positioned_at_the_await(self) -> None:
+        diagnostic = _failure(
+            ASYNC_WORK
+            + """
+func main() -> Int
+    let pending = work(5)
+    let ignored = 1
+    return await pending
+end func
+"""
+        )
+
+        assert _frames(diagnostic) == [("main", (11, 12)), ("work", (3, 9))]
+
+    def test_a_second_await_raises_the_first_error_and_stack(self) -> None:
+        interpreter = Interpreter()
+        interpreter.run(parse(ASYNC_WORK), execute_main=False)
+        work = interpreter.global_env.lookup("work")
+        pending = interpreter.call_function(work, [5])
+        site = SourceLocation(1, 1, "t.geno")
+
+        with pytest.raises(GenoRuntimeError) as first:
+            interpreter._execute_async_value(pending, site)
+        with pytest.raises(GenoRuntimeError) as second:
+            interpreter._execute_async_value(pending, site)
+
+        assert second.value is first.value
+        stack = runtime_report.stack_of(second.value)
+        assert stack is not None
+        assert [frame.function for frame in stack.frames] == ["work"]
+        assert interpreter._call_stack == []
+
+
+class TestLimitStacks:
+    """Limits carry a stack; only structure is asserted, never timing."""
+
+    SPIN = """\
+func spin(n: Int) -> Int
+    example 0 -> 0
+    var x = n
+    while x >= 0 do
+        x = x + 1
+    end while
+    return x
+end func
+
+func main() -> Int
+    return spin(1)
+end func
+"""
+
+    def test_a_recursion_limit(self) -> None:
+        diagnostic = _failure(
+            """\
+func forever(n: Int) -> Int
+    example 0 -> 0
+    if n == 0 then
+        return 0
+    end if
+    return forever(n + 1)
+end func
+
+func main() -> Int
+    return forever(1)
+end func
+""",
+            max_recursion_depth=30,
+        )
+
+        assert diagnostic.code is ErrorCode.SANDBOX_RECURSION_LIMIT
+        assert _position(diagnostic.location) == (6, 12)
+        frames = _frames(diagnostic)
+        assert frames[0] == ("main", (10, 12))
+        assert set(frames[1:]) == {("forever", (6, 12))}
+        assert len(frames) == 20
+        assert diagnostic.stack.omitted == 10
+
+    def test_a_step_limit(self) -> None:
+        diagnostic = _failure(self.SPIN, check_examples=False, max_steps=500)
+
+        assert diagnostic.code is ErrorCode.SANDBOX_STEP_LIMIT
+        frames = _frames(diagnostic)
+        assert [name for name, _ in frames] == ["main", "spin"]
+        assert frames[0][1] == (11, 12)
+        assert diagnostic.location is not None
+        assert frames[1][1] == _position(diagnostic.location)
+        assert 3 <= diagnostic.location.line <= 7
+
+    def test_a_cooperative_timeout(self) -> None:
+        diagnostic = _failure(
+            self.SPIN, check_examples=False, max_steps=None, timeout=0.2
+        )
+
+        assert diagnostic.code is ErrorCode.SANDBOX_TIMEOUT
+        frames = _frames(diagnostic)
+        assert [name for name, _ in frames] == ["main", "spin"]
+        assert diagnostic.location is not None
+        assert frames[1][1] == _position(diagnostic.location)
+
+
+class TestElision:
+    @pytest.mark.parametrize(("depth", "omitted"), [(19, 1), (40, 22)])
+    def test_long_stacks_keep_ten_and_ten(self, depth: int, omitted: int) -> None:
+        source = COUNT_DOWN.format(depth=depth)
+        diagnostic = _failure(source)
+
+        frames = _frames(diagnostic)
+        assert len(frames) == runtime_report.STACK_HEAD + runtime_report.STACK_TAIL
+        assert diagnostic.stack.omitted == omitted
+        assert frames[0] == ("main", (10, 12))
+        assert frames[1:-1] == [("count_down", (6, 12))] * 18
+        assert frames[-1] == ("count_down", (4, 9))
+        payload = diagnostic.to_dict()
+        assert len(payload["stack"]) == 20
+        assert payload["stack_omitted"] == omitted
+
+        lines = runtime_report_lines(_raised(source))
+        noun = "frame" if omitted == 1 else "frames"
+        assert lines[11] == f"  ... {omitted} {noun} omitted ..."
+        assert len([line for line in lines if line.endswith(" in count_down")]) == 19
+
+    def test_short_stacks_have_no_omitted_key(self) -> None:
+        payload = _failure(PANIC_PROGRAM).to_dict()
+        assert "stack_omitted" not in payload
+
+
+class TestSetLocation:
+    def test_it_keeps_type_code_tags_and_message(self) -> None:
+        error = RuntimeLimitError(
+            "List size exceeds limit (3 > 2)", limit="collection size"
+        )
+        error._geno_capability_denied = "fs"  # type: ignore[attr-defined]
+        code = error.error_code
+        location = SourceLocation(2, 17, "notes.geno")
+
+        error.set_location(location)
+
+        assert type(error) is RuntimeLimitError
+        assert error.error_code is code
+        assert error.limit == "collection size"
+        assert error._geno_capability_denied == "fs"  # type: ignore[attr-defined]
+        assert error.message == "List size exceeds limit (3 > 2)"
+        assert error.location is location
+        assert str(error) == (
+            "notes.geno:2:17: Runtime Error: List size exceeds limit (3 > 2)"
+        )
+
+    def test_a_denial_keeps_its_trusted_tag_when_located(self) -> None:
+        error = _raised(
+            """\
+func main() -> Unit
+    let text = fs_read_text("notes.txt").unwrap()
+    print(text)
+    return ()
+end func
+""",
+            capabilities={"print"},
+        )
+
+        assert isinstance(error, GenoRuntimeError)
+        assert error.error_code is ErrorCode.RUNTIME_CAPABILITY_DENIED
+        assert getattr(error, "_geno_capability_denied", None) == "fs"
+        assert _position(error.location) == (2, 16)
+        assert "2:16" not in error.message
+
+
+class TestFitReportText:
+    LINES = [
+        runtime_report.STACK_HEADER,
+        *[f"  deep.geno:6:12 in count_down{index}" for index in range(10)],
+        "  ... 22 frames omitted ...",
+        *[f"  deep.geno:6:12 in count_down{index}" for index in range(10, 20)],
+        '      panic("bottom")',
+        "      ^",
+        "Runtime Error: bottom",
+    ]
+
+    def test_text_that_fits_is_unchanged(self) -> None:
+        text = "\n".join(self.LINES)
+        assert runtime_report.fit_report_text(self.LINES, len(text)) == text
+
+    def test_the_snippet_goes_first(self) -> None:
+        text = "\n".join(self.LINES)
+        fitted = runtime_report.fit_report_text(self.LINES, len(text) - 1)
+        assert "panic(" not in fitted
+        assert fitted.splitlines()[:-1] == self.LINES[:-3]
+
+    @pytest.mark.parametrize("limit", [400, 200, 120, 60, 30, 21, 12, 3, 0])
+    def test_the_message_line_is_always_last(self, limit: int) -> None:
+        fitted = runtime_report.fit_report_text(self.LINES, limit)
+        assert len(fitted) <= limit
+        last = fitted.splitlines()[-1] if fitted else ""
+        if limit >= len("Runtime Error: bottom"):
+            assert last == "Runtime Error: bottom"
+        else:
+            assert "Runtime Error: bottom".startswith(last.removesuffix("..."))
+        lines = fitted.splitlines()
+        omitted = [line for line in lines if "omitted" in line]
+        frames = [line for line in lines if " in count_down" in line]
+        if frames:
+            # Frames dropped from the middle are counted.
+            assert lines[0] == runtime_report.STACK_HEADER
+            (marker,) = omitted
+            count = int(marker.split()[1])
+            assert count + len(frames) == 42
+            # The innermost frame survives longest.
+            assert frames[-1].endswith("count_down19")
+
+    def test_a_report_without_frames_truncates_its_message(self) -> None:
+        lines = ["Runtime Error: " + "x" * 100]
+        fitted = runtime_report.fit_report_text(lines, 40)
+        assert len(fitted) == 40
+        assert fitted.startswith("Runtime Error: xxx")
+        assert fitted.endswith("...")
+
+
+class TestProcessLaneExamplePhase:
+    def test_a_long_panic_message_keeps_its_report_shape(self, tmp_path: Path) -> None:
+        source = tmp_path / "long.geno"
+        source.write_text(
+            """\
+func shout(n: Int) -> Int
+    example 9 -> 9
+    if n > 5 then
+        panic("{message}")
+    end if
+    return n
+end func
+
+func main() -> Int
+    return shout(1)
+end func
+""".replace("{message}", "é" * 150),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                "--max-output-length",
+                "200",
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+
+        assert result.returncode == 1
+        lines = result.stderr.splitlines()
+        assert lines[-1].startswith("Runtime Error: ééé")
+        assert len(result.stderr.rstrip("\n")) <= 200
+        assert "Sandbox Error" not in result.stderr

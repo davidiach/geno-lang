@@ -1733,3 +1733,163 @@ class TestTimeoutBehavior:
 
         time.sleep(0.05)
         assert side_effects == ["/test.txt"]
+
+
+# =============================================================================
+# Runtime stacks and contract details (proposal 0018)
+# =============================================================================
+
+
+class TestRuntimeStacks:
+    PANIC = (
+        "func check(n: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    if n > 5 then\n"
+        '        panic("value too large")\n'
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        "func main() -> Int\n"
+        "    return check(9)\n"
+        "end func\n"
+    )
+
+    def test_a_panic_gains_location_and_stack(self) -> None:
+        result = run(self.PANIC, "p.geno")
+
+        (diagnostic,) = result.diagnostics
+        payload = diagnostic.to_dict()
+        assert payload["code"] == "E414"
+        assert payload["message"] == "value too large"
+        assert payload["location"] == {"line": 4, "column": 9, "filename": "p.geno"}
+        assert payload["stack"] == [
+            {
+                "function": "main",
+                "location": {"line": 10, "column": 12, "filename": "p.geno"},
+            },
+            {
+                "function": "check",
+                "location": {"line": 4, "column": 9, "filename": "p.geno"},
+            },
+        ]
+        assert "stack_omitted" not in payload
+        assert "contract" not in payload
+
+    def test_a_contract_failure_has_contract_details(self) -> None:
+        source = (
+            "func shout(s: String) -> String\n"
+            "    ensures length(result) > 10\n"
+            '    example "hello world" -> "hello world!"\n'
+            '    return s + "!"\n'
+            "end func\n"
+            "\n"
+            "func main() -> String\n"
+            '    return shout("hi")\n'
+            "end func\n"
+        )
+
+        (diagnostic,) = run(source, "s.geno").diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["code"] == "E499"
+        assert payload["contract"] == {
+            "clause": "ensures",
+            "reason": "false",
+            "clause_index": 0,
+            "function": "shout",
+            "clause_text": "length(result) > 10",
+            "arguments": [{"name": "s", "value": '"hi"'}],
+            "result": '"hi!"',
+        }
+        assert [frame["function"] for frame in payload["stack"]] == ["main", "shout"]
+
+    def test_a_rebound_parameter_lists_checked_values(self) -> None:
+        source = (
+            "func g(n: Int) -> Int\n"
+            "    ensures n > 10\n"
+            "    example 20 -> 25\n"
+            "    let n = n + 5\n"
+            "    return n\n"
+            "end func\n"
+            "\n"
+            "func main() -> Int\n"
+            "    return g(1)\n"
+            "end func\n"
+        )
+
+        (diagnostic,) = run(source, "g.geno").diagnostics
+
+        contract = diagnostic.to_dict()["contract"]
+        assert contract["arguments"] == [{"name": "n", "value": "1"}]
+        assert contract["checked_values"] == [{"name": "n", "value": "6"}]
+
+    def test_limits_carry_location_and_stack(self) -> None:
+        source = (
+            "func forever(n: Int) -> Int\n"
+            "    example 0 -> 0\n"
+            "    if n == 0 then\n"
+            "        return 0\n"
+            "    end if\n"
+            "    return forever(n + 1)\n"
+            "end func\n"
+            "\n"
+            "func main() -> Int\n"
+            "    return forever(1)\n"
+            "end func\n"
+        )
+
+        (diagnostic,) = run(
+            source, "f.geno", config=RunConfig(max_recursion_depth=25)
+        ).diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["code"] == "E502"
+        assert payload["location"]["line"] == 6
+        assert len(payload["stack"]) == 20
+        assert payload["stack_omitted"] == 5
+
+    def test_an_err_from_main_has_no_stack(self) -> None:
+        source = (
+            'func main() -> Result[Int, String]\n    return Err("nope")\nend func\n'
+        )
+
+        result = run(source, "e.geno")
+
+        assert result.ok is True
+        assert result.diagnostics == []
+
+    def test_run_path_remaps_module_frames_to_real_paths(self, tmp_path) -> None:
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App", "Utils"]\n'
+        )
+        utils = tmp_path / "Utils.geno"
+        utils.write_text(
+            "func helper(x: Int) -> Int\n"
+            "  example 1 -> 1\n"
+            "  if x > 5 then\n"
+            '    panic("helper failed")\n'
+            "  end if\n"
+            "  return x\n"
+            "end func\n"
+        )
+        app = tmp_path / "App.geno"
+        app.write_text(
+            "import Utils\nfunc main() -> Int\n  return helper(9)\nend func\n"
+        )
+
+        result = run_path(str(app))
+
+        (diagnostic,) = result.diagnostics
+        assert diagnostic.code is ErrorCode.RUNTIME_PANIC
+        assert diagnostic.stack is not None
+        names = [frame.function for frame in diagnostic.stack.frames]
+        assert names == ["main", "Utils.helper"]
+        main_frame, helper_frame = diagnostic.stack.frames
+        assert main_frame.location is not None
+        assert Path(main_frame.location.filename).resolve() == app.resolve()
+        assert (main_frame.location.line, main_frame.location.column) == (3, 10)
+        assert helper_frame.location is not None
+        assert Path(helper_frame.location.filename).resolve() == utils.resolve()
+        assert (helper_frame.location.line, helper_frame.location.column) == (4, 5)
+        assert diagnostic.location == helper_frame.location

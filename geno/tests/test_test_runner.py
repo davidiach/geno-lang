@@ -1042,3 +1042,120 @@ class TestPropertyChecks:
         assert result.errors == 1
         assert result.to_dict()["properties"]["seed"] == 5
         assert result.property_results == []
+
+
+class TestRuntimeFailureReports:
+    """Runtime failures in examples (proposal 0018)."""
+
+    SOURCE = (
+        "func inner(n: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    if n > 5 then\n"
+        '        panic("too big")\n'
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        "func outer(n: Int) -> Int\n"
+        "    example 9 -> 9\n"
+        "    return inner(n)\n"
+        "end func\n"
+    )
+
+    def test_the_message_has_no_doubled_prefix(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        result = run_test_suite([path])
+
+        harness = result.file_results[0].harness_result
+        assert harness is not None
+        (violation,) = harness.violations
+        assert violation.kind == "example"
+        assert violation.message == "Runtime error: too big"
+        assert violation.location is not None
+        assert (violation.location.line, violation.location.column) == (4, 9)
+        assert violation.stack is not None
+        assert [
+            (frame.function, frame.location.line, frame.location.column)
+            for frame in violation.stack.frames
+            if frame.location is not None
+        ] == [("<example>", 10, 5), ("outer", 11, 12), ("inner", 4, 9)]
+
+    def test_json_violations_gain_location_and_stack(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        payload = run_test_suite([path]).to_dict()
+
+        (violation,) = payload["files"][0]["violations"]
+        assert violation["message"] == "Runtime error: too big"
+        assert violation["location"] == {
+            "line": 4,
+            "column": 9,
+            "filename": str(path),
+        }
+        assert [frame["function"] for frame in violation["stack"]] == [
+            "<example>",
+            "outer",
+            "inner",
+        ]
+        assert "stack_omitted" not in violation
+
+    def test_other_violations_are_unchanged(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(
+            "func f(n: Int) -> Int\n    example 1 -> 3\n    return n\nend func\n",
+            encoding="utf-8",
+        )
+
+        payload = run_test_suite([path]).to_dict()
+
+        (violation,) = payload["files"][0]["violations"]
+        assert set(violation) == {"kind", "function", "message"}
+
+    def test_a_contract_failure_keeps_its_kind(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(
+            "func pos(n: Int) -> Int\n"
+            "    requires n > 0\n"
+            "    example 0 -> 0\n"
+            "    return n\n"
+            "end func\n",
+            encoding="utf-8",
+        )
+
+        harness = run_test_suite([path]).file_results[0].harness_result
+        assert harness is not None
+        (violation,) = harness.violations
+        assert violation.kind == "requires"
+        assert violation.message == (
+            "Runtime error: Precondition failed: pos(n: 0) requires n > 0"
+        )
+        assert violation.stack is not None
+        assert [frame.function for frame in violation.stack.frames] == [
+            "<example>",
+            "pos",
+        ]
+
+    def test_verbose_text_shows_the_frames(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "-v", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 1
+        lines = result.stdout.splitlines()
+        index = next(
+            i for i, line in enumerate(lines) if "Runtime error: too big" in line
+        )
+        assert lines[index].endswith("outer: Runtime error: too big")
+        assert lines[index + 1].strip() == "Stack trace (most recent call last):"
+        assert lines[index + 2].strip() == f"{path}:10:5 in <example>"
+        assert lines[index + 3].strip() == f"{path}:11:12 in outer"
+        assert lines[index + 4].strip() == f"{path}:4:9 in inner"

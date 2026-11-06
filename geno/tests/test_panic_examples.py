@@ -1334,3 +1334,94 @@ def test_limit_errors_keep_their_messages_and_codes() -> None:
     assert isinstance(exc, GenoRuntimeError)
     assert exc.error_code is None  # reported as E499, as before
     assert str(exc) == "Runtime Error: List size exceeds limit (3 > 2)"
+
+
+# =============================================================================
+# Runtime reports stay out of message matching (proposal 0018)
+# =============================================================================
+
+_LOCATED_PANIC = """
+func check(n: Int) -> Int
+    example 1 -> 1
+    example 9 panics "{expected}"
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+"""
+
+# Text that appears only in a report's location and stack, never in the
+# panic's own message.
+_REPORT_ONLY_TEXT = ["case.geno", "6:9", "in check", "Stack trace", "Runtime Error"]
+
+
+class TestReportsStayOutOfMatching:
+    def test_the_panic_message_still_matches(self, tmp_path: Path) -> None:
+        result = _suite(tmp_path, _LOCATED_PANIC.replace("{expected}", "too large"))
+        assert result.success, _messages(result)
+
+    @pytest.mark.parametrize("expected", _REPORT_ONLY_TEXT)
+    def test_geno_test_never_matches_report_text(
+        self, tmp_path: Path, expected: str
+    ) -> None:
+        result = _suite(tmp_path, _LOCATED_PANIC.replace("{expected}", expected))
+        _assert_one_failure(result, "value too large", expected)
+
+    @pytest.mark.parametrize("expected", _REPORT_ONLY_TEXT)
+    def test_geno_run_never_matches_report_text(self, expected: str) -> None:
+        source = textwrap.dedent(_LOCATED_PANIC.replace("{expected}", expected))
+        result = run(source + _MAIN, "case.geno")
+
+        (diagnostic,) = result.diagnostics
+        assert diagnostic.code is ErrorCode.RUNTIME_EXAMPLE_FAILED
+        assert "value too large" in diagnostic.message
+
+    def test_a_located_panic_keeps_its_bare_message(self) -> None:
+        source = textwrap.dedent(
+            """
+            func main() -> Int
+                panic("value too large")
+                return 0
+            end func
+            """
+        )
+        with pytest.raises(GenoRuntimeError) as exc_info:
+            from geno.interpreter import Interpreter
+
+            tokens = Lexer(source, "case.geno").tokenize()
+            Interpreter().run(Parser(tokens, source).parse_program())
+
+        error = exc_info.value
+        assert error.location is not None
+        assert error.geno_stack is not None
+        assert panic_outcome.classify_call_failure(error) == panic_outcome.CallFailure(
+            "panic", "value too large"
+        )
+
+    def test_property_failures_report_the_bare_message(self, tmp_path: Path) -> None:
+        from geno.property_check import PropertyConfig
+
+        path = tmp_path / "case.geno"
+        path.write_text(
+            textwrap.dedent(
+                """
+                func inc(n: Int) -> Int
+                    ensures result > n
+                    example 1 -> 2
+                    if n > 3 then
+                        panic("too big")
+                    end if
+                    return n + 1
+                end func
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        suite = run_test_suite([path], properties=PropertyConfig())
+
+        (property_result,) = suite.property_results
+        assert property_result.status == "failed"
+        assert property_result.failure is not None
+        assert property_result.failure.message == "too big"

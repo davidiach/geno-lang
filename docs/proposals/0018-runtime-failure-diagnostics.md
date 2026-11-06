@@ -151,8 +151,8 @@ Stack trace (most recent call last):
   panic.geno:15:12 in main
   panic.geno:11:12 in scale
   panic.geno:4:9 in check
-        panic("value too large")
-        ^
+      panic("value too large")
+      ^
 Runtime Error: value too large
 ```
 
@@ -231,8 +231,8 @@ Stack trace (most recent call last):
   deep.geno:6:12 in count_down
   deep.geno:6:12 in count_down
   deep.geno:4:9 in count_down
-        panic("bottom")
-        ^
+      panic("bottom")
+      ^
 Runtime Error: bottom
 ```
 
@@ -386,12 +386,17 @@ Stack trace (most recent call last):
   ... <N> frames omitted ...           after the 10th frame, only when N > 0
   <position> in <name>
       <source line>                    only when the host can read the source;
-      <caret>                          indented four spaces under the last frame
+      <caret>                          see below
 <Label>: <message>
 ```
 
 - A frame without a position prints `  in <name>`. `1 frame omitted` is
   singular.
+- The snippet is the line the innermost frame (or the `at` location) points
+  at, shown without its own indentation and four spaces in from the frame
+  lines' text (six spaces in all), with the caret under the location's
+  column. Tabs before the column are kept in the caret line, so it stays
+  aligned.
 - When no stack is known but a location is, the frame block is replaced by
   `  at <location>` (followed by the snippet when available). When neither is
   known, only the message line prints, which is exactly 0.6's output.
@@ -633,8 +638,15 @@ expression's location; the async-`main` entry (`interpreter.py:1664`) passes
 `None`. A second `await` of a failed `Async` re-raises the first error, whose
 stack was captured the first time.
 
-**Example origin.** Example verification uses the example clause's location
-and marks the stack's origin, so the stack begins with `<example>`.
+**Example origin.** Example verification marks the stack's origin, so the
+stack begins with `<example>`, positioned at the example clause. Like the
+callback patch, this is failure-time work: the example's call is made as in
+0.6, with no call site, and the handler that sees the failure
+(`Interpreter.mark_example_origin`, used by `_verify_examples` and by
+`geno test`'s example runner) sets the outermost entry's call site to the
+example clause and the origin name. A failure that is not a stacked call
+failure (a mismatch, an input that fails before any call) has nothing to
+mark.
 
 **Display names** are computed once, when a function definition creates its
 closure (`Type.method`, `Module.function`). They are never computed per call.

@@ -24,7 +24,14 @@ class GenoRuntimeError(Exception):
 
     Named ``GenoRuntimeError`` to avoid shadowing Python's built-in
     ``RuntimeError``.
+
+    ``geno_stack`` is the raw Geno call stack the interpreter captured when
+    the error first unwound a Geno frame (a ``runtime_report.CapturedStack``),
+    or ``None``. Reports build the bounded stack from it (proposal 0018). It
+    never enters ``message`` or ``str()``.
     """
+
+    geno_stack: Any = None
 
     def __init__(
         self,
@@ -35,10 +42,23 @@ class GenoRuntimeError(Exception):
         self.message = message
         self.location = location
         self.error_code = error_code or runtime_error_code_for_message(message)
+        super().__init__(self._text(message, location))
+
+    @staticmethod
+    def _text(message: str, location: SourceLocation | None) -> str:
         if location:
-            super().__init__(f"{location}: Runtime Error: {message}")
-        else:
-            super().__init__(f"Runtime Error: {message}")
+            return f"{location}: Runtime Error: {message}"
+        return f"Runtime Error: {message}"
+
+    def set_location(self, location: SourceLocation | None) -> None:
+        """Locate this error in place at *location*.
+
+        The object keeps its type, its error code, its ``message`` and any
+        trusted host tags set on it, because it stays the same object; only
+        ``location`` and the ``str()`` that shows it change.
+        """
+        self.location = location
+        self.args = (self._text(self.message, location),)
 
 
 ContractClause = Literal["requires", "ensures"]
@@ -107,8 +127,11 @@ class ContractViolationError(GenoRuntimeError):
     def with_message(
         self, message: str, location: SourceLocation | None
     ) -> ContractViolationError:
-        """The same violation, explained by *message* at *location*."""
-        return ContractViolationError(
+        """The same violation, explained by *message* at *location*.
+
+        Every structured field and the captured Geno stack carry over.
+        """
+        explained = ContractViolationError(
             message,
             location,
             call_depth=self.call_depth,
@@ -121,6 +144,8 @@ class ContractViolationError(GenoRuntimeError):
             arguments=self.arguments,
             checked_values=self.checked_values,
         )
+        explained.geno_stack = self.geno_stack
+        return explained
 
 
 RuntimeLimitKind = Literal["collection size", "integer size", "numeric range", "output"]

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import TextIO
 
 from ..diagnostics import Diagnostic, ErrorCode, error_parts
+from ..tokens import SourceLocation
 from ..version_support import is_supported_python, unsupported_python_message
 
 
@@ -112,24 +114,72 @@ def write_text_output(
         sys.exit(1)
 
 
-def _print_runtime_error(error, file=sys.stderr):
-    """Print a runtime error with stack trace if available."""
-    msg = getattr(error, "message", str(error))
-    loc = getattr(error, "location", None)
-    snippet = _format_source_snippet(loc)
-    stack = getattr(error, "_geno_stack", None)
-    if stack:
-        print("Stack trace (most recent call last):", file=file)
-        for name, frame_loc in stack:
-            if frame_loc:
-                line = f"  in {name}, {frame_loc}"
-            else:
-                line = f"  in {name}"
-            print(line, file=file)
-        if loc is not None:
-            # Frames carry definition sites; this is where the error happened.
-            print(f"  at {loc}", file=file)
-    print(f"Runtime Error: {msg}{snippet}", file=file)
+HOST_TRACEBACK_ENV = "GENO_TRACEBACK"
+
+
+def host_traceback_requested() -> bool:
+    """True when ``GENO_TRACEBACK=host`` asks for the raw host traceback.
+
+    The escape hatch is for debugging the toolchain itself (proposal 0018):
+    the CLI lanes print the host traceback after the Geno report. Envelopes,
+    the embedding API and the hosted server never read it.
+    """
+    return os.environ.get(HOST_TRACEBACK_ENV) == "host"
+
+
+def runtime_report_lines(error, label: str = "Runtime Error") -> list[str]:
+    """The lines of the Geno runtime report for *error* (proposal 0018).
+
+    The Geno stack the interpreter captured (most recent call last), a
+    snippet of the failing line when this process can read the program's
+    source, then ``<label>: <message>`` last. The message is the error's own
+    ``message`` (never its ``str()``, which may carry a location and a label
+    of its own); with neither stack nor location this is exactly the single
+    message line of 0.6.
+    """
+    from ..runtime_report import (
+        read_snippet_line,
+        report_lines,
+        snippet_location,
+        stack_of,
+    )
+
+    message = getattr(error, "message", None)
+    if not isinstance(message, str):
+        message = str(error)
+    location = getattr(error, "location", None)
+    if not isinstance(location, SourceLocation):
+        location = None
+    stack = stack_of(error)
+    where = snippet_location(stack, location)
+    source_line = read_snippet_line(where) if where is not None else None
+    return report_lines(
+        label, message, stack=stack, location=location, source_line=source_line
+    )
+
+
+def _print_runtime_error(
+    error,
+    file=sys.stderr,
+    *,
+    label: str = "Runtime Error",
+    host_traceback: bool = False,
+):
+    """Print the Geno runtime report for *error*.
+
+    With *host_traceback* (``GENO_TRACEBACK=host``) the host traceback of
+    the error follows the report.
+    """
+    print("\n".join(runtime_report_lines(error, label)), file=file)
+    trace = getattr(error, "__traceback__", None)
+    if host_traceback and trace is not None:
+        import traceback
+
+        print(f"Host traceback ({HOST_TRACEBACK_ENV}=host):", file=file)
+        print(
+            "".join(traceback.format_exception(type(error), error, trace)).rstrip(),
+            file=file,
+        )
 
 
 def _emit_unsupported_python_error(

@@ -255,6 +255,88 @@ def apply_fixes(source: str, fixes: list[Fix]) -> tuple[str, int]:
     return result, applied
 
 
+def location_to_dict(location: SourceLocation) -> dict:
+    """The JSON form of a location: ``{"line", "column", "filename"}``."""
+    return {
+        "line": location.line,
+        "column": location.column,
+        "filename": location.filename,
+    }
+
+
+@dataclass(frozen=True)
+class StackFrame:
+    """One frame of a Geno runtime stack (proposal 0018).
+
+    ``function`` is the frame's display name (``f``, ``Type.method``,
+    ``Module.f``, or the ``<example>`` origin). ``location`` is the position
+    inside that function: the call it was making, or the failure itself for
+    the innermost frame; ``None`` when no Geno position exists.
+    """
+
+    function: str
+    location: SourceLocation | None = None
+
+    def to_dict(self) -> dict:
+        d: dict = {"function": self.function}
+        if self.location is not None:
+            d["location"] = location_to_dict(self.location)
+        return d
+
+
+@dataclass(frozen=True)
+class GenoStack:
+    """A bounded Geno call stack, outermost frame first.
+
+    ``omitted`` counts the frames left out between the kept head and tail
+    (``runtime_report.STACK_HEAD`` and ``STACK_TAIL`` frames).
+    """
+
+    frames: tuple[StackFrame, ...]
+    omitted: int = 0
+
+    def to_dicts(self) -> list[dict]:
+        return [frame.to_dict() for frame in self.frames]
+
+
+@dataclass(frozen=True)
+class ContractDetails:
+    """What a failed ``requires``/``ensures`` clause saw (proposal 0018).
+
+    ``arguments`` are the call's ``(name, rendered value)`` pairs, ``result``
+    the rendered result of an ``ensures`` failure (``None`` for
+    ``requires``), and ``checked_values`` the parameters an ``ensures`` saw
+    rebound to a different value. Values are already bounded.
+    """
+
+    clause: str
+    reason: str
+    clause_index: int
+    function: str | None
+    clause_text: str | None
+    arguments: tuple[tuple[str, str], ...]
+    result: str | None = None
+    checked_values: tuple[tuple[str, str], ...] = ()
+
+    def to_dict(self) -> dict:
+        d: dict = {
+            "clause": self.clause,
+            "reason": self.reason,
+            "clause_index": self.clause_index,
+            "function": self.function,
+            "clause_text": self.clause_text,
+            "arguments": [
+                {"name": name, "value": value} for name, value in self.arguments
+            ],
+            "result": self.result,
+        }
+        if self.checked_values:
+            d["checked_values"] = [
+                {"name": name, "value": value} for name, value in self.checked_values
+            ]
+        return d
+
+
 @dataclass(frozen=True)
 class Diagnostic:
     """
@@ -263,6 +345,8 @@ class Diagnostic:
     Designed for machine consumption: error codes are stable identifiers
     that agents/tools can match on without parsing human-readable text, and
     ``fixes`` are edits a tool can apply when the correction is unambiguous.
+    A runtime failure can also carry its Geno ``stack`` and, for a contract
+    failure, the ``contract`` details (proposal 0018).
     """
 
     code: ErrorCode
@@ -270,6 +354,8 @@ class Diagnostic:
     severity: Severity
     location: SourceLocation | None = None
     fixes: tuple[Fix, ...] = ()
+    stack: GenoStack | None = None
+    contract: ContractDetails | None = None
 
     def __str__(self) -> str:
         parts = [f"[{self.code.value}]"]
@@ -286,11 +372,13 @@ class Diagnostic:
             "severity": self.severity.name.lower(),
         }
         if self.location:
-            d["location"] = {
-                "line": self.location.line,
-                "column": self.location.column,
-                "filename": self.location.filename,
-            }
+            d["location"] = location_to_dict(self.location)
         if self.fixes:
             d["fixes"] = [fix.to_dict() for fix in self.fixes]
+        if self.stack is not None:
+            d["stack"] = self.stack.to_dicts()
+            if self.stack.omitted > 0:
+                d["stack_omitted"] = self.stack.omitted
+        if self.contract is not None:
+            d["contract"] = self.contract.to_dict()
         return d

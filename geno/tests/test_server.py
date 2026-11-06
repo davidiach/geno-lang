@@ -4016,3 +4016,93 @@ class TestGenoServeOptIn:
         assert len(called) == 1
         _args, kwargs = called[0]
         assert kwargs["api_key"] is None
+
+
+# Runtime failure envelopes (proposal 0018): stacks and contract details are
+# additive keys, pickle across the worker pipe and stay bounded.
+_DEEP_PANIC_SOURCE = """func count_down(n: Int) -> Int
+    example 0 panics "bottom"
+    if n == 0 then
+        panic("bottom")
+    end if
+    return count_down(n - 1)
+end func
+
+func main() -> Int
+    return count_down(400)
+end func
+"""
+
+
+def test_run_envelope_carries_stack_and_contract_keys():
+    from geno.api import run
+    from geno.server import _serialize_run_result
+
+    source = """func safe_div(a: Int, b: Int) -> Int
+    requires b != 0
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Int
+    return safe_div(a: 8, b: 0)
+end func
+"""
+    payload = _serialize_run_result(run(source, "<http>"))
+
+    (diagnostic,) = payload["diagnostics"]
+    assert set(diagnostic) == {
+        "code",
+        "message",
+        "severity",
+        "location",
+        "stack",
+        "contract",
+    }
+    assert [frame["function"] for frame in diagnostic["stack"]] == [
+        "main",
+        "safe_div",
+    ]
+    assert diagnostic["stack"][0]["location"] == {
+        "line": 8,
+        "column": 12,
+        "filename": "<http>",
+    }
+    assert diagnostic["contract"]["arguments"] == [
+        {"name": "a", "value": "8"},
+        {"name": "b", "value": "0"},
+    ]
+    # Every existing key keeps its value.
+    assert diagnostic["code"] == "E499"
+    assert diagnostic["location"] == {"line": 2, "column": 14, "filename": "<http>"}
+
+
+def test_run_request_worker_pickles_a_bounded_stack(monkeypatch):
+    import geno.server as server_mod
+    from geno.api import run
+
+    monkeypatch.setattr(server_mod, "_apply_worker_resource_limits", tuple)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    conn = _PicklingConnection()
+
+    _run_request_worker(
+        cast(Any, conn),
+        _DEEP_PANIC_SOURCE,
+        RunConfig(timeout=10.0),
+        "<http>",
+        runner=run,
+    )
+
+    status, result = conn.messages[1]
+    assert status == "result"
+    (diagnostic,) = result.diagnostics
+    assert diagnostic.stack is not None
+    assert len(diagnostic.stack.frames) == 20
+    assert diagnostic.stack.omitted == 382
+    assert pickle.loads(pickle.dumps(diagnostic)) == diagnostic
+    body = server_mod._bounded_json_response_body(
+        server_mod._serialize_run_result(result)
+    )
+    # 400 frames deep, the envelope stays small: 20 frames are kept.
+    assert len(body) < 8192
+    assert json.loads(body)["diagnostics"][0]["stack_omitted"] == 382

@@ -116,6 +116,8 @@ def _print_test_results(suite_result, elapsed: float, verbose: bool = False):
         if verbose and hr:
             for v in hr.violations:
                 print(f"        {_red('x')} {v.function}: {v.message}")
+                for line in _violation_trace_lines(v):
+                    print(f"          {line}")
             for name, reason in hr.untested:
                 print(f"        {_yellow('o')} {name}: @untested({reason!r})")
 
@@ -153,6 +155,23 @@ def _property_label(status: str) -> str:
     if status == "incomplete":
         return _yellow("INCOMPLETE")
     return _dim("SKIP")
+
+
+def _violation_trace_lines(violation) -> list[str]:
+    """The frame lines of a runtime failure, shown under its violation.
+
+    The Geno stack, most recent call last (proposal 0018), or the failure's
+    location when no stack was captured; nothing for other violations.
+    """
+    from ..runtime_report import STACK_HEADER, format_position, stack_lines
+
+    stack = getattr(violation, "stack", None)
+    if stack is not None and stack.frames:
+        return [STACK_HEADER, *stack_lines(stack)]
+    location = getattr(violation, "location", None)
+    if location is not None:
+        return [f"at {format_position(location)}"]
+    return []
 
 
 def _print_property_results(suite_result: SuiteResult, verbose: bool = False) -> None:

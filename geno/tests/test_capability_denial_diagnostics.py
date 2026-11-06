@@ -163,11 +163,15 @@ def test_cli_unsafe_reports_call_site(notes_dir: Path) -> None:
     result = _geno("--unsafe", "--cap", "print", "notes.geno", cwd=notes_dir)
 
     assert result.returncode == 1
-    # The trace keeps the frame's definition site and adds the call site.
-    assert f"  in main, {notes_dir / 'notes.geno'}:1:1\n" in result.stderr
-    assert f"  at {notes_dir / 'notes.geno'}:2:17\n" in result.stderr
-    assert f"Runtime Error: {FS_DENIED}\n" in result.stderr
-    assert 'let notes = fs_read_text("notes.txt").unwrap()' in result.stderr
+    # The frame is positioned at the denied call (proposal 0018), and the
+    # report's message line comes last.
+    assert result.stderr == (
+        "Stack trace (most recent call last):\n"
+        f"  {notes_dir / 'notes.geno'}:2:17 in main\n"
+        '      let notes = fs_read_text("notes.txt").unwrap()\n'
+        "                  ^\n"
+        f"Runtime Error: {FS_DENIED}\n"
+    )
 
 
 def test_cli_json_reports_e412_with_call_site(notes_dir: Path) -> None:
