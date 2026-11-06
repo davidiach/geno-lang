@@ -10,7 +10,6 @@ import builtins as _python_builtins
 import hashlib
 import json
 import keyword
-import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -127,9 +126,9 @@ from .float_promotion import float_shape
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .manifest import validate_module_name
 from .runtime_prelude import RUNTIME_PRELUDE
-from .runtime_report import display_path
+from .runtime_report import TRACE_AWAIT_KEY, TRACE_TABLE_PLACEHOLDER
+from .runtime_report import TraceRecorder as _TraceRecorder
 from .stdlib_scope import binds_unqualified
-from .tokens import SourceLocation
 from .types import AsyncType, FloatType, ListType, UserType
 
 
@@ -417,28 +416,11 @@ _GROWTH_FREE_ADDEND_MAX_BITS = 32
 #
 # A compiled program with a `main` starts its generated body with an anchor
 # function and one string constant, `_GENO_TRACE`, which maps host lines back
-# to Geno source. The prelude's reporter reads it only when a failure escapes
-# `main`, so a call costs nothing extra. Records are tab-separated lines;
-# host lines count from the anchor's `def` line (line 0):
-#
-#   G 1                          format and version
-#   F idx path                   a source file
-#   D start end host display     a Geno function's host line range [start, end)
-#   T id file line col           a Geno statement's location
-#   S host_line id               from this host line on, lines belong to id
-#                                (-1: no statement)
-#   C id key line col            a candidate site in statement id: the host
-#                                callee `key` called there, at line:col
-#   E host_line                  the end of the generated body
-#
-# The compiler does not write its output linearly (block lambdas compile into
-# a scratch buffer that is spliced in later), so the records that need a host
-# line are written as in-band `\0geno-trace:N\0` markers and resolved once,
-# over the final text, by counting the newlines before each marker.
+# to Geno source. The table format and its writer (`TraceRecorder`) live in
+# geno/runtime_report.py, shared with the JavaScript backend; host lines count
+# from the anchor's `def` line (line 0).
 
-TRACE_TABLE_VERSION = 1
-_TRACE_MARKER_PATTERN = re.compile("\0geno-trace:([0-9]+)\0")
-_TRACE_TABLE_PLACEHOLDER = "\0geno-trace-table\0"
+_TRACE_TABLE_PLACEHOLDER = TRACE_TABLE_PLACEHOLDER
 _TRACE_ANCHOR_LINES = (
     f"def _geno_trace_anchor(): pass\n_GENO_TRACE = {_TRACE_TABLE_PLACEHOLDER}\n"
 )
@@ -449,135 +431,11 @@ _TRACE_MODULE_CALLEE = re.compile(
     r"get_field\([A-Za-z_][A-Za-z0-9_]*, '([A-Za-z_][A-Za-z0-9_]*)'\)\Z"
 )
 _TRACE_LEADING_HELPER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\(")
-# The candidate key of an `await` (proposal 0018, section 2: async frames).
-TRACE_AWAIT_KEY = "<await>"
 # The runtime helpers an inlined builtin can still fail in.
 _FAST_PATH_TRACE_KEYS = {
     LENGTH_FAST_PATH_BUILTIN: ("_int_oob", "_require_int_bit_limit"),
     APPEND_FAST_PATH_BUILTIN: ("_list_size_exceeded",),
 }
-
-
-def trace_field(text: str) -> str:
-    """Escape one text field of the trace table."""
-    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
-
-
-class _TraceRecorder:
-    """Collects the trace table of one compilation (proposal 0018)."""
-
-    def __init__(self, entry_filename: str | None, *, absolute_paths: bool) -> None:
-        entry_dir = "."
-        if entry_filename and not entry_filename.startswith("<"):
-            entry_dir = os.path.dirname(entry_filename) or "."
-        self._entry_dir = entry_dir
-        self._absolute_paths = absolute_paths
-        self._files: dict[str, int] = {}
-        self._paths: list[str] = []
-        self._statements: list[tuple[int, int, int]] = []
-        self._candidates: dict[tuple[int, str, int, int], None] = {}
-        self._functions: list[list[int | str]] = []
-        self._marks: list[tuple[str, int]] = []
-        # Statements being compiled, innermost last.
-        self.stack: list[int] = []
-
-    def marker(self, kind: str, value: int) -> str:
-        self._marks.append((kind, value))
-        return f"\0geno-trace:{len(self._marks) - 1}\0"
-
-    def _shown_path(self, filename: str) -> str:
-        if filename.startswith("<"):
-            return filename
-        shown = display_path(filename)
-        if shown != filename or self._absolute_paths:
-            return shown
-        # A compiled artifact must not carry the build machine's layout.
-        try:
-            relative = os.path.relpath(filename, self._entry_dir)
-        except ValueError:
-            return os.path.basename(filename)
-        if (
-            os.path.isabs(relative)
-            or relative == os.pardir
-            or relative.startswith(os.pardir + os.sep)
-        ):
-            return os.path.basename(filename)
-        return relative.replace(os.sep, "/")
-
-    def _file_index(self, filename: str) -> int:
-        index = self._files.get(filename)
-        if index is None:
-            index = len(self._paths)
-            self._files[filename] = index
-            self._paths.append(self._shown_path(filename))
-        return index
-
-    def statement(self, location: SourceLocation | None) -> int:
-        """Register a statement at *location*; -1 when it has none."""
-        if location is None or not isinstance(location.filename, str):
-            return -1
-        file_index = self._file_index(location.filename)
-        self._statements.append((file_index, location.line, location.column))
-        return len(self._statements) - 1
-
-    def candidate(self, key: str, location: SourceLocation | None) -> None:
-        """Record that the current statement calls *key* at *location*."""
-        if location is None or not self.stack or self.stack[-1] < 0:
-            return
-        self._candidates[(self.stack[-1], key, location.line, location.column)] = None
-
-    def function(self, host_name: str, display_name: str) -> int:
-        self._functions.append([0, 0, host_name, display_name])
-        return len(self._functions) - 1
-
-    def resolve(self, text: str, anchor_at: int) -> str:
-        """Remove the markers from *text* and fill in the table."""
-        pieces = [text[:anchor_at]]
-        line = 0
-        position = anchor_at
-        statement_lines: list[tuple[int, int]] = []
-        end_line = 0
-        for match in _TRACE_MARKER_PATTERN.finditer(text, anchor_at):
-            start = match.start()
-            line += text.count("\n", position, start)
-            pieces.append(text[position:start])
-            position = match.end()
-            kind, value = self._marks[int(match.group(1))]
-            if kind == "S":
-                if statement_lines and statement_lines[-1][0] == line:
-                    statement_lines.pop()
-                if not statement_lines or statement_lines[-1][1] != value:
-                    statement_lines.append((line, value))
-            elif kind == "D0":
-                self._functions[value][0] = line
-            elif kind == "D1":
-                self._functions[value][1] = line
-            elif kind == "E":
-                end_line = line
-        pieces.append(text[position:])
-        table = self._encode(statement_lines, end_line)
-        return "".join(pieces).replace(_TRACE_TABLE_PLACEHOLDER, repr(table), 1)
-
-    def _encode(self, statement_lines: list[tuple[int, int]], end_line: int) -> str:
-        records = [f"G\t{TRACE_TABLE_VERSION}"]
-        records.extend(
-            f"F\t{index}\t{trace_field(path)}" for index, path in enumerate(self._paths)
-        )
-        records.extend(
-            f"D\t{start}\t{end}\t{trace_field(str(host))}\t{trace_field(str(shown))}"
-            for start, end, host, shown in self._functions
-        )
-        records.extend(
-            f"T\t{index}\t{file_index}\t{line}\t{column}"
-            for index, (file_index, line, column) in enumerate(self._statements)
-        )
-        records.extend(f"S\t{line}\t{index}" for line, index in statement_lines)
-        records.extend(
-            f"C\t{index}\t{trace_field(key)}\t{line}\t{column}"
-            for index, key, line, column in self._candidates
-        )
-        records.append(f"E\t{end_line}")
-        return "\n".join(records)
 
 
 class CompileError(Exception):

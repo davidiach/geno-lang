@@ -30,11 +30,11 @@ from geno.compiler import (
     _strip_runtime_prelude_imports,
     _stripped_runtime_prelude,
     compile_to_python,
-    trace_field,
 )
 from geno.dependency_graph import DependencyGraph
 from geno.project_graph import ProjectGraph
 from geno.runtime_prelude import RUNTIME_PRELUDE
+from geno.runtime_report import trace_field
 from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 from geno.typechecker import TypeChecker
 
