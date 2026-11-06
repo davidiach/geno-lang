@@ -16,6 +16,7 @@ from geno.ast_nodes import (
     ConstructorPattern,
     FieldAccess,
     ForStatement,
+    FStringExpr,
     FunctionCall,
     FunctionDef,
     FunctionType,
@@ -38,12 +39,20 @@ from geno.ast_nodes import (
     WhileStatement,
     WildcardPattern,
 )
+from geno.diagnostics import ErrorCode, apply_fix
 from geno.parser import ParseError, ParseErrors, parse
 
 
 def parse_source(source: str) -> Program:
     """Helper to parse source code."""
     return parse(source)
+
+
+def parse_function(source: str) -> FunctionDef:
+    """Parse ``source`` and return its first definition, a function."""
+    func = parse_source(source).definitions[0]
+    assert isinstance(func, FunctionDef)
+    return func
 
 
 class TestParserBasics:
@@ -698,6 +707,153 @@ class TestParserSpecs:
         assert isinstance(func, FunctionDef)
         assert len(func.specs.examples) == 2
 
+    def test_panics_examples(self):
+        """`example <inputs> panics ["message"]` (0.7 draft, proposal 0017)."""
+        source = """
+        func div(a: Int, b: Int) -> Int
+            example 6, 3 -> 2
+            example 1, 0 panics
+            example 1, 0 panics "division"
+            return a / b
+        end func
+
+        func usage() -> String
+            example () panics "not implemented"
+            panic("not implemented")
+        end func
+        """
+        program = parse_source(source)
+        div, usage = program.definitions
+        assert isinstance(div, FunctionDef) and isinstance(usage, FunctionDef)
+        value, bare, message = div.specs.examples
+        assert not value.expects_panic and value.output_expr is not None
+        assert bare.expects_panic and bare.panic_message is None
+        assert message.expects_panic and message.panic_message == "division"
+        assert usage.specs.examples[0].panic_message == "not implemented"
+
+    def test_panics_is_an_ordinary_identifier_elsewhere(self):
+        source = """
+        func panics(panics: Int) -> Int
+            example panics -> 1
+            let x = panics
+            return x
+        end func
+        """
+        program = parse_source(source)
+        func = program.definitions[0]
+        assert isinstance(func, FunctionDef)
+        assert func.name == "panics"
+        assert func.params[0].name == "panics"
+        assert not func.specs.examples[0].expects_panic
+
+    def test_a_token_after_the_panics_message_is_an_error(self):
+        source = """
+        func f(n: Int) -> Int
+            example 1 panics "m" f"x"
+            return n
+        end func
+        """
+        with pytest.raises((ParseError, ParseErrors)) as info:
+            parse_source(source)
+        assert "after 'panics'" in str(info.value)
+
+    @pytest.mark.parametrize("message", ["", ' "not implemented"'])
+    def test_a_zero_input_panics_example_without_parens_is_e201(self, message):
+        """`example panics` gets a fix that writes `example () panics`."""
+        source = (
+            "func usage() -> String\n"
+            f"    example panics{message}\n"
+            '    panic("not implemented")\n'
+            "end func\n"
+        )
+        with pytest.raises(ParseError) as info:
+            parse_source(source)
+        error = info.value
+        assert error.error_code is ErrorCode.PARSE_EXPECTED_TOKEN
+        assert "example () panics" in error.message
+        assert (error.location.line, error.location.column) == (2, 13)
+        [fix] = error.fixes
+        assert fix.title == "Write 'example () panics'"
+        fixed = apply_fix(source, fix)
+        assert f"    example () panics{message}\n" in fixed
+        # The parser went on as if `()` were written.
+        [usage] = error.partial_program.definitions
+        [example] = usage.specs.examples
+        assert example.expects_panic
+        assert example.panic_message == (message.strip(' "') or None)
+        assert isinstance(parse_source(fixed).definitions[0], FunctionDef)
+
+    def test_panics_as_an_input_keeps_its_value_meaning(self):
+        """Only `example panics` with nothing but a message after it is E201."""
+        source = """
+        func f(n: Int) -> Int
+            example panics -> 1
+            example panics
+                -> 1
+            return 1
+        end func
+        """
+        examples = parse_function(source).specs.examples
+        assert [example.expects_panic for example in examples] == [False, False]
+
+    @pytest.mark.parametrize("empty", ['""', '""""""'])
+    def test_an_empty_panics_message_is_e202(self, empty):
+        source = (
+            "func f(n: Int) -> Int\n"
+            f"    example 1 panics {empty}  // never matches anything else\n"
+            "    return n\n"
+            "end func\n"
+        )
+        with pytest.raises(ParseError) as info:
+            parse_source(source)
+        error = info.value
+        assert error.error_code is ErrorCode.PARSE_INVALID_SYNTAX
+        assert "empty panics message" in error.message
+        [fix] = error.fixes
+        assert apply_fix(source, fix).split("\n")[1] == (
+            "    example 1 panics  // never matches anything else"
+        )
+
+    def test_a_message_after_an_expected_panics_value_is_recorded(self):
+        """`-> panics "m"` keeps the string for E330 instead of the body."""
+        source = """
+        func f(n: Int) -> Int
+            example 1 -> panics "m"
+            example 2 -> panics
+            "a statement"
+            return n
+        end func
+        """
+        func = parse_function(source)
+        with_message, without = func.specs.examples
+        assert with_message.panic_message == "m"
+        assert not with_message.expects_panic
+        assert without.panic_message is None
+        assert len(func.body) == 2
+
+    @pytest.mark.parametrize(
+        ("line", "end_column"),
+        [
+            ("example 1, 0 -> panic", 17),
+            ("example 1, 0->panic", 17),
+            ("example 1, 0 /* c */   ->  panic", 25),
+            ("example -> panic", 12),
+        ],
+    )
+    def test_the_inputs_end_is_recorded_for_fixes(self, line, end_column):
+        source = f"func f(a: Int, b: Int) -> Int\n    {line}\n    return a\nend func\n"
+        [example] = parse_function(source).specs.examples
+        assert example.inputs_end_location is not None
+        assert (
+            example.inputs_end_location.line,
+            example.inputs_end_location.column,
+        ) == (2, end_column)
+
+    def test_no_inputs_end_when_the_arrow_starts_its_line(self):
+        source = "func f(a: Int) -> Int\n    example 1\n        -> 1\n    return a\nend func\n"
+        [example] = parse_function(source).specs.examples
+        assert example.inputs_end_location is None
+
 
 class TestParserTypeDefinitions:
     """Type definition parsing tests."""
@@ -1211,3 +1367,43 @@ class TestParserReviewFollowups:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestFStringInterpolationLocations:
+    """Nodes parsed from an f-string interpolation carry source locations.
+
+    The interpolation is lexed on its own, from line 1, column 1; its tokens
+    are rebased onto the source, so runtime failure locations and stack
+    positions inside an interpolation point where it is written (proposal
+    0018), not at the file's first line.
+    """
+
+    SOURCE = (
+        "func fstr(xs: List[Int], n: Int) -> String\n"
+        '    example [1, 2, 3, 4], 1 -> "v=4 1"\n'
+        '    return f"v={xs[3]} {check(n)}"\n'
+        "end func\n"
+    )
+
+    def test_an_index_and_a_call_are_located_in_the_source(self) -> None:
+        func = parse_function(self.SOURCE)
+        statement = func.body[-1]
+        assert isinstance(statement, ReturnStatement)
+        assert isinstance(statement.value, FStringExpr)
+        parts = [part for part in statement.value.parts if not isinstance(part, str)]
+        index, call = parts
+        assert (index.location.line, index.location.column) == (3, 17)
+        assert isinstance(call, FunctionCall)
+        assert (call.location.line, call.location.column) == (3, 25)
+        argument = call.arguments[0].value
+        assert (argument.location.line, argument.location.column) == (3, 31)
+
+    def test_a_parse_error_in_an_interpolation_is_located_once(self) -> None:
+        source = self.SOURCE.replace("{check(n)}", "{check(n) n}")
+        with pytest.raises((ParseError, ParseErrors)) as caught:
+            parse_source(source)
+        error = caught.value
+        if isinstance(error, ParseErrors):
+            error = error.errors[0]
+        assert (error.location.line, error.location.column) == (3, 34)
+        assert "f-string" in error.message

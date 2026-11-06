@@ -27,14 +27,19 @@ import types as _types
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Collection
+from typing import TYPE_CHECKING, Any, Callable, Collection
 
+from .capabilities import ISOLATED_HOST_PRIVATE_NAMES
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
     DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     INLINE_RECURSION_LIMIT,
 )
+
+if TYPE_CHECKING:
+    from .isolated_host import IsolatedRunPolicy
+    from .tokens import SourceLocation
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +55,17 @@ def _sandbox_debug_enabled() -> bool:
 
 
 class SandboxError(Exception):
-    """Base exception for sandbox violations."""
+    """Base exception for sandbox violations.
 
-    pass
+    ``location`` is where in the Geno program the limit was reached, when
+    the raiser knows it (the interpreter's recursion, step and cooperative
+    timeout checks set it), and ``geno_stack`` the raw Geno call stack the
+    interpreter captured as the error unwound (proposal 0018). Neither ever
+    enters the message.
+    """
+
+    location: "SourceLocation | None" = None
+    geno_stack: Any = None
 
 
 class SecurityViolation(SandboxError):
@@ -1275,6 +1288,10 @@ class ProcessSandbox:
 
     _PIPE_READ_CHUNK_SIZE = 8192
     _STDERR_RESULT_OVERHEAD = 4096
+    # Reserved for a failure's mapped Geno stack, the error payload's `trace`
+    # object (proposal 0018), whose serialized size the worker keeps within
+    # runtime_report.TRACE_PAYLOAD_LIMIT; the message's share is unchanged.
+    _STDERR_TRACE_OVERHEAD = 3072
     _STDERR_TRUNCATION_MARKER = "[stderr truncated by ProcessSandbox]"
 
     def __init__(self, config: ProcessSandboxConfig | None = None):
@@ -1283,6 +1300,19 @@ class ProcessSandbox:
         # Capability named by the worker's authenticated denial tag on the
         # most recent run, if that run failed on a capability check.
         self.last_capability_denied: str | None = None
+        # Variable named by the worker's environment-policy tag on the most
+        # recent run, if an isolated `env` grant refused an unlisted name.
+        self.last_env_policy_denied: str | None = None
+        # The Geno failure location and bounded stack the worker mapped for
+        # the most recent run's failure in compiled `main` (proposal 0018),
+        # validated here; None when absent or malformed. `omitted_at` says
+        # where the stack's elided frames lie when a budget moved it.
+        self.last_failure_location: Any = None
+        self.last_failure_stack: Any = None
+        self.last_failure_omitted_at: int | None = None
+        # The worker's own traceback, when the run asked for it
+        # (`GENO_TRACEBACK=host`); never shown otherwise.
+        self.last_worker_traceback: str | None = None
 
     @classmethod
     def _read_stream_bounded(
@@ -1326,6 +1356,14 @@ class ProcessSandbox:
         return "".join(chunks), truncated
 
     def _stderr_capture_limit(self) -> int:
+        return (
+            self.config.max_output_length
+            + self._STDERR_RESULT_OVERHEAD
+            + self._STDERR_TRACE_OVERHEAD
+        )
+
+    def _stderr_result_limit(self) -> int:
+        """The largest success-result line the worker may emit (unchanged)."""
         return self.config.max_output_length + self._STDERR_RESULT_OVERHEAD
 
     @staticmethod
@@ -1869,7 +1907,17 @@ class ProcessSandbox:
         cmd: list[str],
         code: str,
         config_overrides: dict[str, Any] | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> tuple[int, str, str, bool]:
+        """Run one supervised worker and return its exit status and output.
+
+        *pass_fds* are extra descriptors the worker inherits, at the same
+        numbers (POSIX only): an isolated run's program input handle when
+        ``stdin`` is granted, and nothing otherwise. Every other descriptor
+        but the three control pipes is closed in the worker.
+        """
+        if pass_fds and os.name != "posix":
+            raise SandboxError("Inherited worker handles are supported on POSIX only")
         job_handle: Any | None = None
         stdout_thread: threading.Thread | None = None
         stderr_thread: threading.Thread | None = None
@@ -1893,6 +1941,7 @@ class ProcessSandbox:
             errors="replace",
             env=self._create_restricted_env(config_overrides),
             start_new_session=os.name == "posix",
+            pass_fds=pass_fds,
         )
 
         try:
@@ -2157,25 +2206,61 @@ class ProcessSandbox:
         return self._execute_worker_payload(payload, config_overrides)
 
     def execute_geno_request(
-        self, request: dict[str, Any]
+        self,
+        request: dict[str, Any],
+        policy: "IsolatedRunPolicy | None" = None,
+        *,
+        host_traceback: bool = False,
     ) -> tuple[Any, str, str | None]:
-        """Compile and execute one Geno CLI request in the supervised worker."""
-        if not self.config.compiled_runtime_prelude:
-            raise SandboxError(
-                "Geno worker mode requires compiled_runtime_prelude=True"
-            )
+        """Compile and execute one Geno CLI request in the supervised worker.
+
+        *policy* is the run's trusted grant and host policy (proposal 0013);
+        ``None`` means the default grant. It travels in the parent-set worker
+        configuration, which the worker validates before reading the request.
+
+        *host_traceback* (``GENO_TRACEBACK=host``) asks the worker for its own
+        traceback of a failure in ``main``, kept as ``last_worker_traceback``
+        for the caller to print after the Geno report (proposal 0018).
+
+        A ``stdin`` grant's ``policy.stdin_fd`` is a duplicate of the caller's
+        standard input made for this run (``isolated_host.with_program_stdin``).
+        The worker inherits it at the same number, and this method owns the
+        parent's copy: it is closed when the run ends, however it ends.
+        """
+        from .isolated_host import IsolatedRunPolicy
+
+        pass_fds: tuple[int, ...] = ()
+        if policy is not None and policy.stdin_fd is not None:
+            pass_fds = (policy.stdin_fd,)
         try:
-            payload = json.dumps(request, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise SandboxError("Geno worker request is not JSON serializable") from exc
-        return self._execute_worker_payload(
-            payload,
-            {
+            if not self.config.compiled_runtime_prelude:
+                raise SandboxError(
+                    "Geno worker mode requires compiled_runtime_prelude=True"
+                )
+            if policy is None:
+                policy = IsolatedRunPolicy.default()
+            policy.validate()
+            try:
+                payload = json.dumps(request, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise SandboxError(
+                    "Geno worker request is not JSON serializable"
+                ) from exc
+            overrides: dict[str, Any] = {
                 "worker_mode": "geno_cli",
                 "prelude_blob_sha256": None,
                 "trusted_prelude_line_count": 0,
-            },
-        )
+                "run_policy": policy.to_config(),
+            }
+            if host_traceback:
+                overrides["debug"] = True
+            return self._execute_worker_payload(payload, overrides, pass_fds=pass_fds)
+        finally:
+            for fd in pass_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def execute_python_benchmark(
         self, request: dict[str, Any]
@@ -2203,9 +2288,18 @@ class ProcessSandbox:
         self,
         payload: str,
         config_overrides: dict[str, Any] | None,
+        pass_fds: tuple[int, ...] = (),
     ) -> tuple[Any, str, str | None]:
-        """Run and parse a framed worker payload under hard resource limits."""
+        """Run and parse a framed worker payload under hard resource limits.
+
+        *pass_fds* reach :meth:`_run_worker` unchanged (see there).
+        """
         self.last_capability_denied = None
+        self.last_env_policy_denied = None
+        self.last_failure_location = None
+        self.last_failure_stack = None
+        self.last_failure_omitted_at = None
+        self.last_worker_traceback = None
         # Keep the command line tiny on Windows. The trusted worker and payload
         # are framed separately on stdin; no untrusted text is persisted.
         worker_script = self._create_worker_script()
@@ -2214,7 +2308,7 @@ class ProcessSandbox:
 
         try:
             returncode, stdout, stderr, stderr_truncated = self._run_worker(
-                cmd, worker_input, config_overrides
+                cmd, worker_input, config_overrides, pass_fds=pass_fds
             )
 
             # Result JSON is written to stderr so program output cannot spoof it.
@@ -2249,15 +2343,32 @@ class ProcessSandbox:
                 denied_cap = parsed.get("capability")
                 if (
                     not success
-                    and parsed.get("error_type") == "capability_denied"
+                    and parsed.get("error_type")
+                    in {"capability_denied", "geno_frontend"}
                     and isinstance(denied_cap, str)
                 ):
+                    # A frontend failure carries the tag only when an example
+                    # hit the interpreter's denial stub (proposal 0013).
                     self.last_capability_denied = denied_cap
+                denied_env = parsed.get("env_name")
+                if (
+                    not success
+                    and parsed.get("error_type")
+                    in {"env_policy_denied", "geno_frontend"}
+                    and isinstance(denied_env, str)
+                ):
+                    # Set only by the trusted env binding of an isolated run,
+                    # in `main` or in an example (proposal 0013).
+                    self.last_env_policy_denied = denied_env
+                if not success:
+                    self._keep_failure_trace(parsed.get("trace"))
                 worker_traceback = parsed.get("traceback")
-                if not success and worker_traceback:
-                    logger.error(
-                        "Sandbox worker error: %s\n%s", error, worker_traceback
-                    )
+                if not success and isinstance(worker_traceback, str):
+                    self.last_worker_traceback = worker_traceback
+                    if _sandbox_debug_enabled():
+                        logger.error(
+                            "Sandbox worker error: %s\n%s", error, worker_traceback
+                        )
                 return (
                     parsed.get("result"),
                     stdout,
@@ -2291,6 +2402,25 @@ class ProcessSandbox:
                 f"Execution timed out after {self.config.timeout} seconds",
                 partial_output=exc.output if isinstance(exc.output, str) else "",
             ) from exc
+
+    def _keep_failure_trace(self, trace: Any) -> None:
+        """Validate and keep the worker's mapped Geno stack (proposal 0018).
+
+        The object is untrusted: anything malformed is dropped whole, and
+        the run then reports its message alone.
+        """
+        if trace is None:
+            return
+        from .runtime_report import decode_trace_payload
+
+        decoded = decode_trace_payload(trace)
+        if decoded is None:
+            return
+        (
+            self.last_failure_location,
+            self.last_failure_stack,
+            self.last_failure_omitted_at,
+        ) = decoded
 
     def _frame_prelude_blob(self, code: str) -> tuple[str, dict[str, Any] | None]:
         """Replace a canonical runtime-prelude prefix with a marshal blob.
@@ -2326,6 +2456,7 @@ class ProcessSandbox:
 import json
 import os
 import sys
+import time
 
 # A Windows venv uses a redirector executable that can escape a Job Object
 # before assignment. The parent launches the real base interpreter instead,
@@ -2345,13 +2476,16 @@ def _truncate_worker_text(value, max_chars):
         return suffix[:max_chars]
     return text[: max_chars - len(suffix)] + suffix
 
-def _emit_worker_error(error, error_type):
-    sys.stderr.write(json.dumps({
+def _emit_worker_error(error, error_type, extra=None):
+    _payload = {
         "result": None,
         "success": False,
         "error": error,
         "error_type": error_type,
-    }) + '\n')
+    }
+    if extra:
+        _payload.update(extra)
+    sys.stderr.write(json.dumps(_payload) + '\n')
 
 def _worker_rlimit_as_ceiling(requested_bytes):
     if sys.platform != "darwin":
@@ -2397,6 +2531,9 @@ def _fit_recursion_to_stack(frames):
     return max(1000, min(frames, available // bytes_per_frame))
 
 def main():
+    # The run's one cooperative deadline starts here; the parent's hard kill,
+    # measured from before launch, stays authoritative.
+    _worker_started_at = time.monotonic()
     # Load configuration from environment variable
     config = json.loads(os.environ["GENO_SANDBOX_CONFIG"])
     max_result_error = int(config.get("max_output_length", 100000))
@@ -2407,6 +2544,7 @@ def main():
     # parsing, source compilation, validation, and execution remain behind
     # the configured address-space growth budget below.
     _worker_mode = config.get("worker_mode")
+    _is_geno_cli = _worker_mode == "geno_cli"
     if _worker_mode in {"python_benchmark", "geno_cli"}:
         if _GENO_TRUSTED_ROOT not in sys.path:
             sys.path.insert(0, _GENO_TRUSTED_ROOT)
@@ -2423,6 +2561,21 @@ def main():
                 _preload_process_run_support,
                 _prepare_process_run,
             )
+            # The trusted reporter maps a failure in compiled `main`; the copy
+            # in the program's namespace is never used (proposal 0018).
+            from geno._runtime_support import (
+                _geno_failure_report as _trusted_failure_report,
+            )
+            from geno.runtime_report import (
+                encode_trace_payload as _encode_trace_payload,
+            )
+            from geno.isolated_host import (
+                IsolatedRunClock as _IsolatedRunClock,
+                IsolatedRunPolicy as _IsolatedRunPolicy,
+                checked_prepared_host_state as _checked_prepared_host_state,
+                frontend_error_tags as _frontend_error_tags,
+                preload_isolated_capability_support as _preload_isolated_support,
+            )
             _preload_process_run_support()
     except BaseException as exc:
         _detail = str(exc) or type(exc).__name__
@@ -2434,6 +2587,35 @@ def main():
             "startup_error",
         )
         return
+
+    # The isolated run's grant and host policy come only from the parent-set
+    # configuration. Validate them before any untrusted input is read: a bad
+    # grant or policy (process, serve, an unknown or not-yet-supported
+    # capability, settings for an ungranted capability) runs nothing.
+    _run_policy = None
+    _geno_host_table = {}
+    _geno_example_output_length = 0
+    if _is_geno_cli:
+        try:
+            _run_policy = _IsolatedRunPolicy.from_config(config.get("run_policy"))
+        except ValueError as exc:
+            _emit_worker_error(
+                "startup_error: invalid isolated run policy: "
+                + _truncate_worker_text(str(exc), max_result_error),
+                "startup_error",
+            )
+            sys.exit(1)
+        # Only a validated grant's support joins the trusted baseline: the
+        # HTTP client modules load here with `http` and never without it.
+        try:
+            _preload_isolated_support(_run_policy.capabilities)
+        except BaseException as exc:
+            _emit_worker_error(
+                "startup_error: failed to load trusted worker support: "
+                + type(exc).__name__,
+                "startup_error",
+            )
+            sys.exit(1)
 
     # Probe Darwin's trusted bootstrap floor and install a temporary soft guard
     # before reading attacker-controlled stdin. The final hard ceiling is
@@ -2530,7 +2712,9 @@ def main():
         ):
             sys.exit(1)
 
-        # File size limit (prevent file creation)
+        # File size limit (prevent file creation). In an isolated `geno run`
+        # it is the resolved per-file write limit: 0 without an fs grant, the
+        # fs facade's limit with one (an OS backstop for the same number).
         file_limit = config.get("max_file_size_bytes", 0)
         if not _try_setrlimit(
             resource.RLIMIT_FSIZE, file_limit, file_limit, "RLIMIT_FSIZE"
@@ -2708,22 +2892,43 @@ def main():
             sys.exit(1)
 
         try:
-            _prepared = _prepare_process_run(_geno_request)
+            _prepared = _prepare_process_run(
+                _geno_request,
+                _run_policy,
+                _IsolatedRunClock(
+                    _run_policy.deadline_seconds, started_at=_worker_started_at
+                ),
+                # The per-file write limit is RLIMIT_FSIZE's, set above; an
+                # fs grant's facade enforces it on every platform.
+                max_file_size_bytes=config.get("max_file_size_bytes", 0),
+            )
         except MemoryError:
             raise
         except BaseException as exc:
             try:
                 _filename = _geno_request.get("filename", "<input>")
-                _formatted = _format_process_frontend_error(_filename, exc)
+                # A runtime report is fitted into the budget so that its
+                # final message line survives (proposal 0018); other text is
+                # cut at its tail below, as before.
+                _formatted = _format_process_frontend_error(
+                    _filename, exc, limit=max_result_error
+                )
             except BaseException:
                 _formatted = (
                     "Compiler Error: the isolated frontend failed safely "
                     f"({type(exc).__name__})"
                 )
+            try:
+                # Only the interpreter's own denial stub tags an example's
+                # failure; the parent's rerun hint relies on nothing else.
+                _frontend_tags = _frontend_error_tags(exc)
+            except BaseException:
+                _frontend_tags = {}
             _emit_worker_error(
                 "\x1eGENO_FRONTEND\x1e"
                 + _truncate_worker_text(_formatted, max_result_error),
                 "geno_frontend",
+                _frontend_tags,
             )
             sys.exit(1)
 
@@ -2740,6 +2945,18 @@ def main():
         ):
             _emit_worker_error(
                 "startup_error: isolated frontend returned an invalid payload",
+                "startup_error",
+            )
+            sys.exit(1)
+        try:
+            (
+                _geno_host_table,
+                _geno_example_output_length,
+            ) = _checked_prepared_host_state(_prepared, _run_policy)
+        except ValueError as exc:
+            _emit_worker_error(
+                "startup_error: isolated frontend returned invalid host state: "
+                + str(exc),
                 "startup_error",
             )
             sys.exit(1)
@@ -2828,6 +3045,32 @@ def main():
                     and _node.id in _WORKER_COMPILED_INTERNAL_NAMES
                 ):
                     _worker_fail(f"Access to compiler runtime internal '{_node.id}' is not allowed")
+                # Binding forms that are not Name nodes must not shadow them
+                # either: a tail redefining a prelude helper (such as the
+                # isolated run's host channel) would replace it for the
+                # trusted prelude functions that call it.
+                _bound_names = ()
+                if isinstance(
+                    _node,
+                    (
+                        _ast.FunctionDef,
+                        _ast.AsyncFunctionDef,
+                        _ast.ClassDef,
+                        _ast.ExceptHandler,
+                        _ast.MatchAs,
+                        _ast.MatchStar,
+                    ),
+                ):
+                    _bound_names = (_node.name,)
+                elif isinstance(_node, _ast.arg):
+                    _bound_names = (_node.arg,)
+                elif isinstance(_node, _ast.MatchMapping):
+                    _bound_names = (_node.rest,)
+                elif isinstance(_node, (_ast.Global, _ast.Nonlocal)):
+                    _bound_names = tuple(_node.names)
+                for _bound_name in _bound_names:
+                    if _bound_name in _WORKER_COMPILED_INTERNAL_NAMES:
+                        _worker_fail(f"Access to compiler runtime internal '{_bound_name}' is not allowed")
                 # 2. Direct attribute access to blocked names (. operator)
                 if isinstance(_node, _ast.Attribute):
                     if _node.attr in _WORKER_BLOCKED_ATTRS:
@@ -3185,6 +3428,9 @@ def main():
     allow_print = config.get("allow_print", True)
     output_buffer = []
     total_output_len = [0]  # Use list for mutable closure
+    if _is_geno_cli:
+        # Example output is counted, never shown: one output budget per run.
+        total_output_len[0] = _geno_example_output_length
     def safe_print(*args, sep=' ', end='\n', **kwargs):
         if not allow_print:
             raise RuntimeError("print() is disabled in this sandbox")
@@ -3263,6 +3509,15 @@ def main():
     _fake_mod.__dict__.update(globals_dict)
     sys.modules['__sandbox__'] = _fake_mod
 
+    # The isolated run's private host table (proposal 0013), injected after
+    # the fake module copied the globals so it never reaches sys.modules.
+    # Always present in this mode, empty when no granted capability needs
+    # the host, so the runtime prelude never falls back to an import here.
+    if _is_geno_cli:
+        globals_dict['_GENO_HOST'] = _sandbox_types.MappingProxyType(
+            _geno_host_table
+        )
+
     # Apply the address-space limit only after trusted worker setup is done.
     try:
         import resource as _resource
@@ -3340,6 +3595,32 @@ def main():
         if type(e) is RuntimeError and isinstance(denied_cap, str):
             payload["error_type"] = "capability_denied"
             payload["capability"] = denied_cap
+        # Likewise only the isolated run's trusted env binding tags a name
+        # outside the --allow-env allowlist.
+        denied_env = getattr(e, "_geno_env_policy_denied", None)
+        if type(e) is RuntimeError and isinstance(denied_env, str):
+            payload["error_type"] = "env_policy_denied"
+            payload["env_name"] = denied_env[:256]
+        # The Geno location and stack of a failure in compiled `main`
+        # (proposal 0018), mapped by the trusted reporter through the
+        # program's trace table, which is treated as untrusted data. The
+        # object keeps to its own serialized budget, so it never costs the
+        # message its share of the parent's capture window.
+        if _is_geno_cli:
+            try:
+                _trace_table = globals_dict.get('_GENO_TRACE')
+                _trace_anchor = globals_dict.get('_geno_trace_anchor')
+                if (
+                    type(_trace_table) is str
+                    and type(_trace_anchor) is type(_emit_worker_error)
+                ):
+                    _trace = _encode_trace_payload(
+                        *_trusted_failure_report(e, _trace_table, _trace_anchor)
+                    )
+                    if _trace is not None:
+                        payload["trace"] = _trace
+            except Exception:
+                pass
         # Opt-in debug escape hatch: when the parent enables it, carry the
         # worker traceback so a compiler-bug report from the process-isolated
         # path is diagnosable. Off by default (never leaks internals).
@@ -3429,7 +3710,7 @@ if __name__ == "__main__":
             # overhead). The worker refuses to emit a success-result line
             # that could not survive the parent's tail capture, so oversized
             # results fail with an explicit error instead of being lost.
-            "stderr_result_limit": self._stderr_capture_limit(),
+            "stderr_result_limit": self._stderr_result_limit(),
             "allow_print": self.config.allow_print,
             "blocked_attrs": sorted(BLOCKED_ATTRIBUTES),
             "dangerous_dunders": sorted(_DANGEROUS_DUNDERS),
@@ -3478,6 +3759,17 @@ if __name__ == "__main__":
             and (config_overrides or {}).get("worker_mode") != "python_benchmark"
         ):
             env["GENO_CLI_ARGS"] = os.environ["GENO_CLI_ARGS"]
+
+        # An isolated run's `http` grant carries the caller's TLS trust
+        # variables in its run policy (proposal 0013), so OpenSSL in the
+        # worker trusts what it trusts in the `--unsafe` CLI process. Without
+        # `http` the policy holds none and nothing is added.
+        if (config_overrides or {}).get("worker_mode") == "geno_cli":
+            from .isolated_host import isolated_worker_environment
+
+            env.update(
+                isolated_worker_environment((config_overrides or {}).get("run_policy"))
+            )
 
         return env
 
@@ -3559,22 +3851,26 @@ _FORMAT_METHODS = frozenset({"format", "format_map"})
 # Informational/REPL helpers like help() and quit() are blocked as
 # builtins in the thread sandbox, but they should still be legal local
 # function names in non-strict process execution.
-_WORKER_COMPILED_INTERNAL_NAMES = frozenset(
-    {
-        "_GENO_CAPS",
-        "_GENO_CAPS_FROM_ARGV",
-        "_bounded_regex_replace",
-        "_dataclasses_fields",
-        "_object_getattribute",
-        "_re",
-        "_runtime_codecs",
-        "_runtime_posixpath",
-        "_runtime_random",
-        "_runtime_time",
-        "cmp_to_key",
-        "deepcopy",
-        "math",
-    }
+_WORKER_COMPILED_INTERNAL_NAMES = (
+    frozenset(
+        {
+            "_GENO_CAPS",
+            "_GENO_CAPS_FROM_ARGV",
+            "_bounded_regex_replace",
+            "_dataclasses_fields",
+            "_object_getattribute",
+            "_re",
+            "_runtime_codecs",
+            "_runtime_posixpath",
+            "_runtime_random",
+            "_runtime_time",
+            "cmp_to_key",
+            "deepcopy",
+            "math",
+        }
+    )
+    # The isolated run's private host channel (proposal 0013).
+    | ISOLATED_HOST_PRIVATE_NAMES
 )
 
 

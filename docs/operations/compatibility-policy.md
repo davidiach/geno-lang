@@ -110,6 +110,296 @@ followed by a new `if` statement, it is now rejected with E201, reported at
 the `end`, with a fix that writes `end if`. `geno fmt` never produced the
 two-line form. `conformance/v0.6` adds the `diagnostic-bare-end` case.
 
+### 0.7 (draft): an example's expected value cannot be a `panic(...)` call
+
+Recorded for the unreleased 0.7 development line. 0.6 accepted
+`example 1, 0 -> panic("division")`: `panic` returns `Never`, which every type
+accepts, so the program passed `geno check` and compiled and ran with
+`geno compile`, `geno build` and `geno run --no-check-examples`, none of which
+evaluate examples. The example itself could never pass, because its expected
+value panics before the call is made. 0.7 adds panic examples
+(`example 1, 0 panics "division"`), and from then on every way of writing a
+panic as an expected value (`-> panic(...)`, `-> panic`, `-> panics`,
+`-> panics "m"`) is rejected with E330 and a fix that writes the new form. It
+meets the five conditions above:
+
+1. [proposal 0017](../proposals/0017-panic-examples-and-property-checks.md)
+   (Draft; it must be accepted before 0.7 is released) records the motivation
+   and the alternatives, including a warning instead of an error, which it
+   rejects;
+2. the impact is stated in `docs/spec/v0.7.md` section 5.3.1 and its "Changes
+   from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration example:
+
+   ```geno
+   // before
+   example 1, 0 -> panic("division")
+   // after
+   example 1, 0 panics "division"
+   ```
+
+   `geno check --fix` performs it. `-> panic(e)` with a message that is not a
+   string literal has no automatic fix: write the message text literally, or
+   drop it (`example 1, 0 panics`);
+4. no frozen case uses the form, so `conformance/v0.5` and `conformance/v0.6`
+   are unchanged, and the new expectation is the development corpus's
+   `diagnostic-panic-example-arrow-form` checker case; and
+5. the release owner records it in release evidence when 0.7 is released.
+
+### 0.7 (draft): examples share the isolated run's grant and budgets
+
+Recorded for the unreleased 0.7 development line. In 0.6 the default
+process-isolated `geno run` lane checked examples in an interpreter of their
+own, always with `clock`, `print` and `random`, and with an output allowance
+of their own the size of `--max-output-length`, separate from `main`'s. 0.7
+lets that lane grant capabilities with `--cap` and gives examples exactly the
+run's grant, host restrictions and cumulative budgets:
+
+- **Output.** Output printed by examples is still never shown, but it now
+  counts against the one `--max-output-length` budget that `main` then
+  shares. A program whose examples print close to the limit can stop with the
+  output limit before or during `main`, even without `--cap`.
+- **Deadline.** Examples run in the time left of `--timeout` rather than a
+  fresh allowance. The hard kill was already measured from the worker's
+  launch, so only the cooperative limit is earlier; timeout messages still
+  name `--timeout`.
+- **Grant.** With `--cap`, examples get exactly the list: `--cap env` denies
+  `print` in examples too. Without `--cap` they get the defaults, as before,
+  and an example may now call `sleep_ms` (E413 in 0.6).
+- **Process limits.** `--max-file-size-bytes` and the new
+  `--max-total-write-bytes` default by grant, and `--unsafe` and `--json`
+  refuse either flag when it is given at all, so an explicit
+  `--max-file-size-bytes 0` there, which 0.6 accepted and ignored, now exits
+  1.
+
+It meets the five conditions above:
+
+1. accepted [proposal 0013](../proposals/0013-isolated-run-capabilities.md)
+   records the motivation and the alternatives, and names this enforcement
+   change in its compatibility section;
+2. the impact is stated in `docs/spec/v0.7.md` sections 5.3.1 and 9.11.1 and
+   its "Changes from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration: skip examples in an
+   operational run, or raise the limit,
+
+   ```bash
+   geno run --no-check-examples --cap env,print main.geno -- hello
+   geno run --max-output-length 200000 main.geno
+   ```
+
+   and keep effectful work in thin wrappers whose pure helpers carry the
+   examples;
+4. no frozen case depends on example output or example timing, so
+   `conformance/v0.5` and `conformance/v0.6` are unchanged, and the
+   development corpus adds the `isolated-grant-regex` and
+   `isolated-grant-env-cli-args` cases, which the `cli-process` lane runs
+   with the case's declared `--cap` and the compiled Python and JavaScript
+   lanes run with the same grant; and
+5. the release owner records it in release evidence when 0.7 is released.
+
+### 0.7 (draft): runtime failures report a Geno stack, and contract failures name their arguments
+
+Recorded for the unreleased 0.7 development line. Every runtime failure now
+reports its Geno location and call stack on every lane and backend, and a
+failed contract names the function, the call's arguments and the clause.
+Diagnostic wording and stderr layout are not compatibility surfaces, and exit
+statuses, codes and every existing JSON key are unchanged. Four changes are
+recorded anyway, because tests and scripts can observe them:
+
+- **What `panics "substring"` matches.** A panics example (section 5.3.1 of
+  `docs/spec/v0.7.md`) matches a substring of the failure's message, and the
+  contract message changes from
+  `Precondition failed for safe_div: requires clause evaluated to false` to
+  `Precondition failed: safe_div(a: 8, b: 0) requires b != 0`. Matching
+  changes in both directions:
+  - *Stops matching.* `panics "Precondition failed"` and
+    `panics "Postcondition failed"` still match. Substrings of the old wording
+    that the new one drops no longer match a contract failure:
+    `"Precondition failed for"`, `"Postcondition failed for"`, any
+    `"for <name>:"`, `"requires clause"`, `"ensures clause"` and
+    `"evaluated to false"`. No corpus in the repository uses one.
+  - *Starts matching.* The message now holds the argument values and the
+    clause text, so a substring such as `"b != 0"`, `"0)"`, a function name
+    followed by `(`, or a value that a panic's message also contains can
+    match a contract failure it did not match before. A panics example that
+    expected a different panic but now hits such a contract failure passes
+    where it failed. To mean one panic and not a contract failure, include
+    that panic's own words.
+
+  The location and the stack never enter the message, so no file name,
+  position or frame name can match.
+- **Standalone artifacts and the default lane print a Geno report.** A
+  standalone compiled Python or Node program prints the frames, mapped back
+  to Geno source, and the `Runtime Error:` line instead of a host traceback.
+  The first line of a failure's stderr is now `Stack trace (most recent call
+  last):` whenever a stack exists, so a script that read the first line as the
+  message should read the `Runtime Error:` line, which is always last before
+  any hint. `GENO_TRACEBACK=host` restores the host traceback, after the
+  report.
+- **`geno test` messages lose their location prefix.** A violation's message
+  for a located runtime failure in a `test` block (an index, key, division
+  or contract failure), or in a file that fails while loading, was
+  `<file:line:col>: Runtime Error: <message>` in 0.6, with the file's host
+  path. It is now `Runtime Error: <message>`, the form unlocated failures
+  such as panics already had, in text output and in `--json`'s `message`;
+  the position is the violation's new `location` and `stack`. This is the
+  one existing JSON value that changes.
+- **Node exits at once.** A Node entry build ends with status 1 as soon as it
+  has printed the report, for an async `main` too: 0.6 let pending async work
+  continue after an async `main` rejected. A rejection of an `Async` nothing
+  awaits is reported the same way instead of with Node's raw stack, with the
+  same status 1. The entry path makes stdout and stderr blocking first, as
+  they are in compiled Python, so the immediate exit loses none of the
+  output printed before the failure, even through a full or slow pipe. Only a
+  build
+  that runs as the entry point owns the process: a CommonJS build that a
+  host `require()`s keeps 0.6's behaviour, letting a failure of its `main`
+  propagate to the requirer, and changes no process-wide setting.
+
+It meets the five conditions above:
+
+1. [proposal 0018](../proposals/0018-runtime-failure-diagnostics.md)
+   (Draft; it must be accepted before 0.7 is released) records the
+   motivation and the alternatives, including keeping the 0.6 frame
+   convention and putting the message first, which it rejects;
+2. the impact is stated in `docs/spec/v0.7.md` sections 4.1.1, 5.1, 5.2 and
+   6.9.1 and its "Changes from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration: match a contract
+   failure by its new prefix or by the structured fields,
+
+   ```geno
+   // before
+   example 1, 0 panics "Precondition failed for safe_div"
+   // after
+   example 1, 0 panics "Precondition failed: safe_div("
+   ```
+
+   read `geno run --json`'s `stack` and `contract` instead of scraping frame
+   lines, and set `GENO_TRACEBACK=host` where a host traceback is wanted;
+4. no frozen case depends on contract wording, frame lines or host
+   tracebacks, so `conformance/v0.5` and `conformance/v0.6` pass unchanged on
+   every target, and the development corpus adds six `runtime-*` cases that
+   pin the frames on `cli-process`, `cli-direct`, `python`, `js` and `js-esm`
+   and the JSON `stack` with `expected_diagnostic` on `cli-json`; and
+5. the release owner records it in release evidence when 0.7 is released.
+
+### 0.7 (draft): local mutation is not an effect
+
+Recorded for the unreleased 0.7 development line. 0.6 charged `mutation` for
+every `var` declaration and every assignment, so a function that summed into a
+local `var` had the type `(List[Int]) -> Int with mutation` and could not be
+passed where `(List[Int]) -> Int` was expected. 0.7 charges only writes that a
+caller can observe (section 3.5 of `docs/spec/v0.7.md`). That accepts programs
+0.6 rejected:
+
+- a function or lambda that mutates only its own state, passed where a pure
+  function type is expected (E300 in 0.6);
+- a declared effect set without `mutation` on a function that declares or
+  assigns its own `var`s, writes fields of its own records, or writes
+  elements of collections it allocated (E310 in 0.6), such as
+  `main() -> Unit with io` with a local counter.
+
+No program changes meaning. Effects are static and no backend reads them, so
+every program that ran in 0.6 runs the same way, and `geno test --properties`
+("no effects but mutation") selects the same functions. Section 3.5 states
+that a mutating builtin applied to a reachable collection is a `mutation`,
+which restates the 0.6 text; the reference checker still does not enforce it
+(a known limitation), so that sentence rejects nothing. Programs that stay
+rejected keep their diagnostic codes. Only messages that print an inferred
+function type change, by leaving out a `mutation` that is now masked, and so
+do the local-binding hover, function hover (which now names the inferred
+effects of a function that declares none) and the REPL's `:type`.
+
+One class of function loses `mutation` although its caller can observe its
+writes. A function that changes its caller's collection only through
+mutating builtins, such as `array_set(array: grid, ...)` on a parameter
+`grid`, was charged in 0.6 only because it also declares or assigns a local
+`var`, typically a loop counter. 0.7 masks the counter and, by the known
+limitation, does not charge the builtin, so the function is now inferred
+pure and is accepted where a pure function type is expected. It runs exactly
+as before; only its type is weaker. Declaring `with mutation` on it restores
+the 0.6 type. Three repository functions had this shape, `lock_piece` and
+`clear_lines` in `examples/apps/tetris.geno` and `update` in
+`examples/apps/notetaker.geno`, and now declare `with mutation` (which also
+gives tetris `update`, their caller, `mutation` again). The shape is pinned
+on all three backends as `builtin-writer-with-a-local-counter` in
+`geno/tests/test_local_mutation_soundness.py`, which also pins the three
+declarations and that removing them leaves the functions inferred pure.
+
+One class of program 0.6 accepted is rejected. Geno requires equal function
+types where a `var` is assigned, where a name is redeclared in the same block,
+where an `Option` or list of functions is reassigned through a `var`, and
+where a generic type parameter is bound by an earlier argument. In those
+places a function whose inferred type lost `mutation` no longer matches one
+that kept it. In 0.6 both had `mutation`, so the two matched by accident:
+
+```geno
+func local_sum(n: Int) -> Int
+    example 2 -> 3
+    var y = n
+    y = y + 1
+    return y
+end func
+
+func shared_bump(n: Int) -> Int
+    example 1 -> 1
+    var cells = array_new(1, n)
+    var alias = cells
+    alias[0] = n
+    return cells[0]
+end func
+
+func main() -> Unit with io, mutation
+    var f = local_sum
+    f = shared_bump
+    print(f(1))
+end func
+```
+
+`local_sum` is now `(Int) -> Int`, while `shared_bump` keeps `mutation`,
+because `var alias = cells` copies the reference and the write through
+`alias` changes `cells`. `f = shared_bump` is therefore E300 "Type mismatch
+in assignment: expected (Int) -> Int, got (Int) -> Int with mutation".
+If-expressions, match expressions and list and map literals already join the
+effects of their branches and elements, so they are unaffected.
+
+It meets the five conditions above:
+
+1. [proposal 0019](../proposals/0019-local-mutation-is-not-an-effect.md)
+   (Draft; it must be accepted before its implementation merges and before
+   0.7 is released, including the project lead's decision on its Unresolved
+   Question 1, the mutating-builtin limitation, which is not yet recorded)
+   records the motivation, the soundness argument and the alternatives,
+   including charging mutating builtins on non-owned receivers now, which it
+   defers;
+2. the impact is stated in `docs/spec/v0.7.md` sections 3.5, 6.2, 6.3 and
+   7.6 and its "Changes from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration: restore the 0.6 type
+   with an annotation, on the function
+
+   ```geno
+   func local_sum(n: Int) -> Int with mutation
+       example 2 -> 3
+       var y = n
+       y = y + 1
+       return y
+   end func
+   ```
+
+   or on the binding, `var f: (Int) -> Int with mutation = local_sum`. No
+   automatic fix is offered, because either site is a valid choice. When the
+   rule was implemented, none of the 283 repository `.geno` files, the 93
+   benchmark canonical solutions or the 483 documentation snippets changed
+   status, and no diagnostic message changed;
+4. no frozen case depends on inferred effects, so `conformance/v0.5` and
+   `conformance/v0.6` pass unchanged on every target. The development corpus
+   adds `local-mutation-is-pure`, a program 0.6 rejected, which runs on all
+   seven runtime lanes, and two checker cases that stay E300:
+   `diagnostic-mutation-parameter-alias` (a write through a copy of a
+   parameter's array) and `diagnostic-mutation-captured-var` (a closure that
+   assigns a captured variable, returned as `() -> Int`); and
+5. the release owner records it in release evidence when 0.7 is released.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It
@@ -137,6 +427,32 @@ Release qualification runs both the current corpus and at least the immediately
 preceding minor corpus. Cases may be corrected only when the original fixture
 was internally inconsistent; such corrections require a proposal and a changelog
 entry.
+
+### Development Corpus
+
+While the next minor is being developed, its cases live in a development
+corpus: `conformance/v0.7/manifest.toml`, opened by
+[proposal 0017](../proposals/0017-panic-examples-and-property-checks.md) for
+the Draft [`docs/spec/v0.7.md`](../spec/v0.7.md). It is marked
+`status = "development"`, holds only cases new in that line, and is **not
+frozen**: its cases may change with the draft until the minor is released.
+`scripts/run_conformance.py --all-retained` runs it after the retained
+corpora, so release and scheduled evidence keep it green, but it adds no
+compatibility promise. The runner refuses a corpus newer than `spec.json`'s
+`language_series` that is not marked, a marked corpus that is not newer, and
+more than one development corpus. When the minor is promoted, the promotion
+proposal carries the previous corpus's cases forward, drops the mark, and the
+corpus is frozen like the others.
+
+A schema 2 case may state a failing `geno run --json` envelope with an
+`expected_diagnostic` table (proposal
+[0018](../proposals/0018-runtime-failure-diagnostics.md)): the diagnostic's
+`code`, optional `message_contains` fragments, its `location` and its `stack`
+as `file:line:col` and `file:line:col in name` suffixes of the reported path,
+and `stack_omitted`. On the `cli-json` lane it takes the place of
+`expected_json_value` and of the stderr fragments, which describe the text
+report of the lanes that own a stderr. A retained corpus that does not use
+the field loads and runs unchanged.
 
 ## What Users Can Rely On
 

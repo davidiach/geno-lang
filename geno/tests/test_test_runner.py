@@ -18,6 +18,7 @@ from geno.test_runner import (
 from geno.tests.project_resolution_fixture_helpers import (
     write_dependency_private_collision_fixture,
 )
+from geno.tokens import SourceLocation
 from geno.values import GenoRuntimeError
 
 
@@ -516,7 +517,7 @@ end func
             """
 func tricky(x: Int) -> Int
     example 1 -> 1
-    panic("user says: Precondition failed for demo")
+    panic("user says: Precondition failed: demo(x: 1) requires x > 0")
 end func
 
 func main() -> Int
@@ -529,6 +530,48 @@ end func
         violations = _first_harness_result(result).violations
         assert len(violations) == 1
         assert violations[0].kind == "example"
+
+    def test_user_panic_with_the_contract_prefix_stays_example(self, tmp_path):
+        """The kind comes from ``ContractViolationError.clause``, not the
+        message (proposal 0017), so even a panic that starts with a contract
+        prefix is an ordinary example failure."""
+        f = tmp_path / "prefixed.geno"
+        f.write_text(
+            """
+func prefixed(x: Int) -> Int
+    example 1 -> 1
+    panic("Precondition failed: prefixed(x: 1) requires x > 0")
+end func
+
+func main() -> Int
+    return 0
+end func
+"""
+        )
+        result = run_test_suite([f])
+        violations = _first_harness_result(result).violations
+        assert [v.kind for v in violations] == ["example"]
+
+    def test_contract_failures_are_classified_by_clause(self, tmp_path):
+        f = tmp_path / "contracts.geno"
+        f.write_text(
+            """
+func pos(x: Int) -> Int
+    requires x > 0
+    example 0 -> 0
+    return x
+end func
+
+func neg(x: Int) -> Int
+    ensures result < 0
+    example 1 -> 1
+    return x
+end func
+"""
+        )
+        result = run_test_suite([f])
+        kinds = {v.function: v.kind for v in _first_harness_result(result).violations}
+        assert kinds == {"pos": "requires", "neg": "ensures"}
 
 
 class TestProjectTestSuite:
@@ -828,13 +871,16 @@ class TestRejectionExampleExplanation:
 
         assert harness_result.failed == 1
         message = harness_result.violations[0].message
-        assert "expects Err" in message
-        assert "requires clause evaluated to false" not in message
+        assert (
+            "Precondition failed: to_roman(n: 0) requires n >= 1: "
+            "this example expects Err"
+        ) in message
 
     def test_violation_is_still_classified_as_a_requires_failure(self, tmp_path):
-        """The explanation keeps the 'Precondition failed for X:' prefix that
-        ``_classify_runtime_failure`` reads, so the report still separates a
-        contract violation from a plain wrong-answer example."""
+        """The explanation is re-raised with the violation's structured fields
+        (``with_message``), which ``_classify_runtime_failure`` reads, so the
+        report still separates a contract violation from a plain wrong-answer
+        example."""
         f = tmp_path / "roman.geno"
         f.write_text(self._ROMAN)
 
@@ -856,4 +902,484 @@ class TestRejectionExampleExplanation:
 
         violation = harness_result.violations[0]
         assert violation.kind == "requires"
-        assert "requires clause evaluated to false" in violation.message
+        assert violation.message.endswith(
+            "Precondition failed: half(n: 2) requires n >= 10"
+        )
+
+
+class TestPropertyChecks:
+    """``geno test --properties`` in the runner (proposal 0017).
+
+    Property results ride alongside the example results: they never change
+    the example counts, a failed property fails the suite, and the JSON
+    payload of a run without them is unchanged.
+    """
+
+    _ABS_BUG = (
+        "func abs_val(n: Int) -> Int\n"
+        "    ensures result >= 0\n"
+        "    example 3 -> 3\n"
+        "    if n >= 0 then\n"
+        "        return n\n"
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+    )
+
+    def test_to_dict_without_properties_is_unchanged(self, tmp_path):
+        f = tmp_path / "abs.geno"
+        f.write_text(self._ABS_BUG)
+
+        result = run_test_suite([f])
+
+        assert result.property_config is None
+        assert result.file_results[0].properties is None
+        assert result.property_report() is None
+        data = result.to_dict()
+        assert list(data) == [
+            "files",
+            "total",
+            "passed",
+            "failed",
+            "errors",
+            "untested",
+            "success",
+        ]
+        assert list(data["files"][0]) == [
+            "path",
+            "total",
+            "passed",
+            "failed",
+            "untested",
+            "violations",
+            "elapsed_ms",
+        ]
+        assert data["success"] is True
+
+    def test_a_property_failure_fails_the_suite_but_not_the_counts(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        f = tmp_path / "abs.geno"
+        f.write_text(self._ABS_BUG)
+
+        plain = run_test_suite([f])
+        result = run_test_suite([f], properties=PropertyConfig())
+
+        assert (result.total, result.passed, result.failed) == (1, 1, 0)
+        assert result.property_failures == 1
+        assert result.success is False
+        # The examples ran exactly as they do without property checks.
+        assert result.file_results[0].harness_result == (
+            plain.file_results[0].harness_result
+        )
+        data = result.to_dict()
+        assert data["success"] is False
+        assert data["properties"]["failed"] == 1
+        (entry,) = data["properties"]["functions"]
+        assert entry["path"] == str(f)
+        assert entry["counterexample"]["arguments"] == "-1"
+
+    def test_the_suite_filter_selects_the_properties(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        f = tmp_path / "two.geno"
+        f.write_text(
+            self._ABS_BUG + "\nfunc double(n: Int) -> Int\n"
+            "    example 2 -> 4\n"
+            "    return n * 2\n"
+            "end func\n"
+        )
+
+        result = run_test_suite(
+            [f],
+            filter_pattern="double",
+            properties=PropertyConfig(filter_pattern="abs_val"),
+        )
+
+        assert result.property_config is not None
+        assert result.property_config.filter_pattern == "double"
+        assert [r.function for r in result.property_results] == ["double"]
+        assert result.success is True
+
+    def test_project_mode_checks_only_the_projects_own_modules(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App"]\n\n'
+            '[dependencies.alpha]\ngit = "https://example.com/alpha.git"\n'
+        )
+        alpha = tmp_path / "geno_modules" / "alpha" / "Alpha.geno"
+        alpha.parent.mkdir(parents=True)
+        # A dependency's bug is not the project's to fix: its examples run,
+        # its properties are not checked.
+        alpha.write_text(self._ABS_BUG)
+        (tmp_path / "App.geno").write_text(
+            "import Alpha\n"
+            "import List\n"
+            "\n"
+            "func uses(n: Int) -> Int\n"
+            "    example 1 -> 1\n"
+            "    return n\n"
+            "end func\n"
+        )
+
+        result = run_project_test_suite(tmp_path, properties=PropertyConfig())
+
+        tested = {Path(fr.path).name for fr in result.file_results}
+        assert {"Alpha.geno", "List.geno", "App.geno"} <= tested
+        assert [r.function for r in result.property_results] == ["uses"]
+        assert result.success is True
+
+    def test_a_project_error_still_reports_the_property_settings(self, tmp_path):
+        from geno.property_check import PropertyConfig
+
+        (tmp_path / "geno.toml").write_text('entrypoint = "App"\nfiles = ["App"]\n')
+        (tmp_path / "App.geno").write_text(
+            "func f(n: Int) -> Int\n    return n\nend func\n"
+        )
+
+        result = run_project_test_suite(tmp_path, properties=PropertyConfig(seed=5))
+
+        assert result.errors == 1
+        assert result.to_dict()["properties"]["seed"] == 5
+        assert result.property_results == []
+
+
+class TestRuntimeFailureReports:
+    """Runtime failures in examples (proposal 0018)."""
+
+    SOURCE = (
+        "func inner(n: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    if n > 5 then\n"
+        '        panic("too big")\n'
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        "func outer(n: Int) -> Int\n"
+        "    example 9 -> 9\n"
+        "    return inner(n)\n"
+        "end func\n"
+    )
+
+    def test_the_message_has_no_doubled_prefix(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        result = run_test_suite([path])
+
+        harness = result.file_results[0].harness_result
+        assert harness is not None
+        (violation,) = harness.violations
+        assert violation.kind == "example"
+        assert violation.message == "Runtime error: too big"
+        assert violation.location is not None
+        assert (violation.location.line, violation.location.column) == (4, 9)
+        assert violation.stack is not None
+        assert [
+            (frame.function, frame.location.line, frame.location.column)
+            for frame in violation.stack.frames
+            if frame.location is not None
+        ] == [("<example>", 10, 5), ("outer", 11, 12), ("inner", 4, 9)]
+
+    def test_json_violations_gain_location_and_stack(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        payload = run_test_suite([path]).to_dict()
+
+        (violation,) = payload["files"][0]["violations"]
+        assert violation["message"] == "Runtime error: too big"
+        assert violation["location"] == {
+            "line": 4,
+            "column": 9,
+            "filename": str(path),
+        }
+        assert [frame["function"] for frame in violation["stack"]] == [
+            "<example>",
+            "outer",
+            "inner",
+        ]
+        assert "stack_omitted" not in violation
+
+    def test_json_shows_std_for_a_stdlib_frame(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(
+            "import List\n"
+            "\n"
+            "func split(n: Int) -> Int\n"
+            "    example 0 -> 0\n"
+            "    return length(List.chunk([1, 2], n))\n"
+            "end func\n",
+            encoding="utf-8",
+        )
+
+        payload = run_test_suite([path]).to_dict()
+
+        (violation,) = payload["files"][0]["violations"]
+        assert violation["location"]["filename"] == "std/List.geno"
+        assert [
+            (frame["function"], frame["location"]["filename"])
+            for frame in violation["stack"]
+        ] == [
+            ("<example>", str(path)),
+            ("split", str(path)),
+            ("List.chunk", "std/List.geno"),
+        ]
+
+    def test_other_violations_are_unchanged(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(
+            "func f(n: Int) -> Int\n    example 1 -> 3\n    return n\nend func\n",
+            encoding="utf-8",
+        )
+
+        payload = run_test_suite([path]).to_dict()
+
+        (violation,) = payload["files"][0]["violations"]
+        assert set(violation) == {"kind", "function", "message"}
+
+    def test_a_contract_failure_keeps_its_kind(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(
+            "func pos(n: Int) -> Int\n"
+            "    requires n > 0\n"
+            "    example 0 -> 0\n"
+            "    return n\n"
+            "end func\n",
+            encoding="utf-8",
+        )
+
+        harness = run_test_suite([path]).file_results[0].harness_result
+        assert harness is not None
+        (violation,) = harness.violations
+        assert violation.kind == "requires"
+        assert violation.message == (
+            "Runtime error: Precondition failed: pos(n: 0) requires n > 0"
+        )
+        assert violation.stack is not None
+        assert [frame.function for frame in violation.stack.frames] == [
+            "<example>",
+            "pos",
+        ]
+
+    def test_verbose_text_shows_the_frames(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "-v", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 1
+        lines = result.stdout.splitlines()
+        index = next(
+            i for i, line in enumerate(lines) if "Runtime error: too big" in line
+        )
+        assert lines[index].endswith("outer: Runtime error: too big")
+        assert lines[index + 1].strip() == "Stack trace (most recent call last):"
+        assert lines[index + 2].strip() == f"{path}:10:5 in <example>"
+        assert lines[index + 3].strip() == f"{path}:11:12 in outer"
+        assert lines[index + 4].strip() == f"{path}:4:9 in inner"
+
+
+class TestTestBlockFailureReports:
+    """Runtime failures in `test` blocks (proposal 0018).
+
+    The message is `Runtime Error: <message>`, with no location prefix (and
+    so no host path): 0.6 put `<file:line:col>: ` before a located failure's
+    message (an index, key, division or contract failure), and that is the
+    one existing value the proposal changes. The location and the stack,
+    whose outermost frame is the `<test>` origin at the test body's call,
+    travel in their own fields.
+    """
+
+    SOURCE = (
+        "import List\n"
+        "\n"
+        "func inner(n: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    if n > 3 then\n"
+        '        panic("inner boom")\n'
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        "func pos(n: Int) -> Int\n"
+        "    requires n > 0\n"
+        "    example 1 -> 1\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        'test "a call panics"\n'
+        "    assert inner(9) == 9\n"
+        "end test\n"
+        "\n"
+        'test "a contract fails"\n'
+        "    assert pos(0) == 0\n"
+        "end test\n"
+        "\n"
+        'test "the library fails"\n'
+        "    let parts = List.chunk([1, 2, 3], 0)\n"
+        "    assert length(parts) == 1\n"
+        "end test\n"
+        "\n"
+        'test "the body panics"\n'
+        '    panic("direct")\n'
+        "end test\n"
+        "\n"
+        "func pick(xs: List[Int], i: Int) -> Int\n"
+        "    example [1], 0 -> 1\n"
+        "    return xs[i]\n"
+        "end func\n"
+        "\n"
+        'test "an index fails"\n'
+        "    assert pick([1], 5) == 1\n"
+        "end test\n"
+    )
+
+    def _violations(self, tmp_path):
+        path = tmp_path / "blocks.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+        payload = run_test_suite([path]).to_dict()
+        return path, {v["function"]: v for v in payload["files"][0]["violations"]}
+
+    @staticmethod
+    def _frames(violation):
+        return [
+            (
+                frame["function"],
+                frame["location"]["filename"],
+                frame["location"]["line"],
+                frame["location"]["column"],
+            )
+            for frame in violation["stack"]
+        ]
+
+    def test_a_panic_in_a_call(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["a call panics"]
+        assert violation["kind"] == "test"
+        assert violation["message"] == "Runtime Error: inner boom"
+        assert violation["location"] == {
+            "line": 6,
+            "column": 9,
+            "filename": str(path),
+        }
+        assert self._frames(violation) == [
+            ("<test>", str(path), 18, 12),
+            ("inner", str(path), 6, 9),
+        ]
+
+    def test_a_contract_failure(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["a contract fails"]
+        assert violation["message"] == (
+            "Runtime Error: Precondition failed: pos(n: 0) requires n > 0"
+        )
+        assert self._frames(violation) == [
+            ("<test>", str(path), 22, 12),
+            ("pos", str(path), 12, 14),
+        ]
+
+    def test_a_located_failure_drops_the_0_6_location_prefix(self, tmp_path):
+        """0.6 reported this index failure as
+        `<path>:36:12: Runtime Error: Index 5 out of bounds ...`."""
+        path, violations = self._violations(tmp_path)
+        violation = violations["an index fails"]
+        assert violation["message"] == (
+            "Runtime Error: Index 5 out of bounds for list of length 1"
+        )
+        assert str(path) not in violation["message"]
+        assert violation["location"] == {
+            "line": 36,
+            "column": 12,
+            "filename": str(path),
+        }
+        assert self._frames(violation) == [
+            ("<test>", str(path), 40, 12),
+            ("pick", str(path), 36, 12),
+        ]
+
+    def test_a_library_failure_names_no_host_path(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["the library fails"]
+        assert violation["message"] == (
+            "Runtime Error: list_chunk: chunk size must be positive"
+        )
+        assert violation["location"]["filename"] == "std/List.geno"
+        assert [frame[:2] for frame in self._frames(violation)] == [
+            ("<test>", str(path)),
+            ("List.chunk", "std/List.geno"),
+        ]
+
+    def test_a_panic_in_the_test_body_has_a_location_only(self, tmp_path):
+        path, violations = self._violations(tmp_path)
+        violation = violations["the body panics"]
+        assert violation["message"] == "Runtime Error: direct"
+        assert violation["location"] == {
+            "line": 31,
+            "column": 5,
+            "filename": str(path),
+        }
+        assert "stack" not in violation
+
+    def test_verbose_text_shows_the_message_once(self, tmp_path):
+        path = tmp_path / "blocks.geno"
+        path.write_text(self.SOURCE, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "-v", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 1
+        lines = result.stdout.splitlines()
+        index = next(i for i, line in enumerate(lines) if "a call panics" in line)
+        assert lines[index].endswith("a call panics: Runtime Error: inner boom")
+        assert lines[index + 1].strip() == "Stack trace (most recent call last):"
+        assert lines[index + 2].strip() == f"{path}:18:12 in <test>"
+        assert lines[index + 3].strip() == f"{path}:6:9 in inner"
+        assert str(path) + ":6:9: Runtime Error" not in result.stdout
+
+    def test_a_located_load_error_names_no_location(self, tmp_path, monkeypatch):
+        """A file whose loading fails reports the message without its location."""
+        path = tmp_path / "load.geno"
+        path.write_text(
+            "func f(n: Int) -> Int\n    example 1 -> 1\n    return n\nend func\n",
+            encoding="utf-8",
+        )
+
+        def _boom(self, program, modules=None, execute_main=True):
+            raise GenoRuntimeError("at load", SourceLocation(3, 5, str(path)))
+
+        monkeypatch.setattr("geno.interpreter.Interpreter.run", _boom)
+
+        result = run_test_suite([path])
+
+        assert result.file_results[0].error == "Runtime Error: at load"
+
+    def test_a_located_project_load_error_names_no_location(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "geno.toml").write_text('entrypoint = "App"\nfiles = ["App"]\n')
+        (tmp_path / "App.geno").write_text(
+            '@untested("entry point")\nfunc main() -> Int\n  return 1\nend func\n'
+        )
+
+        def _boom(self, program, modules=None, execute_main=True):
+            raise GenoRuntimeError(
+                "boom", SourceLocation(2, 3, str(tmp_path / "App.geno"))
+            )
+
+        monkeypatch.setattr("geno.interpreter.Interpreter.run", _boom)
+
+        result = run_project_test_suite(tmp_path)
+
+        assert result.file_results[0].error == "Runtime Error: Runtime Error: boom"

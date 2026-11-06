@@ -118,11 +118,15 @@ def test_geno_run_runs_ordinary_recursion(tmp_path: Path, lane: list[str]) -> No
         cwd=_REPO_ROOT,
     )
     if not lane and not _sandbox_stack_grows():
-        # The documented fallback: a recursion error, never a crash.
+        # The documented fallback: a recursion error, never a crash. The
+        # error comes with its Geno report (proposal 0018): the stack, with
+        # the deep middle omitted, and the failing line.
         assert completed.returncode == 1, completed.stderr
-        assert completed.stderr.strip() == (
-            "Runtime Error: maximum recursion depth exceeded"
-        )
+        lines = completed.stderr.strip().splitlines()
+        assert lines[-1] == "Runtime Error: maximum recursion depth exceeded"
+        assert lines[0] == "Stack trace (most recent call last):"
+        assert any(" frames omitted ..." in line for line in lines), lines
+        assert len(lines) < 60, lines
         return
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == DEEP_OUTPUT

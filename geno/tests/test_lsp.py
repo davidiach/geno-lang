@@ -1539,6 +1539,178 @@ class TestSemanticHover:
         assert "(parameter)" in contents.value
 
 
+_SETTLED_EFFECTS_SOURCE = (
+    "func bump(n: Int) -> Int\n"
+    "    example 1 -> 1\n"
+    "    var cells = array_new(1, n)\n"
+    "    var alias = cells\n"
+    "    alias[0] = n\n"
+    "    return cells[0]\n"
+    "end func\n"
+    "\n"
+    "func total(xs: List[Int]) -> Int\n"
+    "    example [1, 2] -> 3\n"
+    "    var sum = 0\n"
+    "    for x in xs do\n"
+    "        sum = sum + x\n"
+    "    end for\n"
+    "    return sum\n"
+    "end func\n"
+    "\n"
+    "func local_sum(n: Int) -> Int with mutation\n"
+    "    example 2 -> 3\n"
+    "    var y = n\n"
+    "    y = y + 1\n"
+    "    return y\n"
+    "end func\n"
+    "\n"
+    "func main() -> Unit with io, mutation\n"
+    "    let g = bump\n"
+    "    print(g(1))\n"
+    "    let f = total\n"
+    "    print(f([1]))\n"
+    "    let h = fn(n: Int) do\n"
+    "        var acc = 0\n"
+    "        acc = acc + n\n"
+    "        return acc\n"
+    "    end fn\n"
+    "    print(h(2))\n"
+    "    print(local_sum(1))\n"
+    "    print(bump(2))\n"
+    "    print(total([2]))\n"
+    "end func\n"
+)
+
+
+@pytest.fixture(scope="module")
+def settled_effects_hover(tmp_path_factory):
+    """Hover at the first line containing a needle, in a checked document."""
+    source = _SETTLED_EFFECTS_SOURCE
+    main_file = tmp_path_factory.mktemp("effects") / "Main.geno"
+    main_file.write_text(source)
+    server = create_server(diag_debounce_sec=0)
+    server.lsp._workspace = Workspace(None, sync_kind=types.TextDocumentSyncKind.Full)
+    server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=main_file.as_uri(), language_id="geno", version=1, text=source
+            )
+        )
+    )
+    handler = server.lsp._get_handler(types.TEXT_DOCUMENT_HOVER)
+    lines = source.split("\n")
+
+    def at(needle: str, offset: int = 0) -> str:
+        line = next(i for i, text in enumerate(lines) if needle in text)
+        character = lines[line].index(needle) + offset
+        result = handler(
+            types.HoverParams(
+                text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
+                position=types.Position(line=line, character=character),
+            )
+        )
+        assert result is not None, needle
+        assert isinstance(result.contents, types.MarkupContent)
+        value: str = result.contents.value
+        return value
+
+    return at
+
+
+class TestHoverShowsSettledEffects:
+    """Proposal 0019: hover shows the effects the checker settled on.
+
+    The checker binds each local once per pass. Its first pass still takes
+    every unannotated function to be pure, so a local bound to a function
+    that keeps ``mutation`` must hover with the final pass's type.
+    """
+
+    def test_a_binding_of_a_charged_function_hovers_with_mutation(
+        self, settled_effects_hover
+    ):
+        hover = settled_effects_hover
+        # Before the final pass's binding replaced the first one, this hovered
+        # as `g: (Int) -> Int`, while the use of `g` on the next line showed
+        # the effect.
+        assert "```\ng: (Int) -> Int with mutation\n```" in hover("let g", 4)
+        assert "```\ng: (Int) -> Int with mutation\n```" in hover("print(g(", 6)
+
+    def test_a_binding_of_a_masked_function_hovers_pure(self, settled_effects_hover):
+        hover = settled_effects_hover
+        assert "```\nf: (List[Int]) -> Int\n```" in hover("let f", 4)
+        assert "```\nf: (List[Int]) -> Int\n```" in hover("print(f(", 6)
+
+    def test_a_lambda_whose_body_is_masked_hovers_pure(self, settled_effects_hover):
+        hover = settled_effects_hover
+        assert "```\nh: (Int) -> Int\n```" in hover("let h", 4)
+        assert "```\nacc: Int\n```" in hover("var acc", 4)
+
+    @pytest.mark.parametrize("needle", ["func bump", "print(bump(", "= bump"])
+    def test_a_charged_function_hovers_with_its_inferred_mutation(
+        self, settled_effects_hover, needle: str
+    ):
+        hover = settled_effects_hover(needle, needle.index("bump") + 1)
+        # Before hover read the checker's settled type, this showed only the
+        # signature as written, the same as for the masked `total` below.
+        assert (
+            "```\nbump(n: Int) -> Int\n```\n(function, inferred `with mutation`)"
+            in (hover)
+        )
+
+    @pytest.mark.parametrize("needle", ["func total", "print(total(", "= total"])
+    def test_a_masked_function_hovers_as_inferred_pure(
+        self, settled_effects_hover, needle: str
+    ):
+        hover = settled_effects_hover(needle, needle.index("total") + 1)
+        assert "```\ntotal(xs: List[Int]) -> Int\n```\n(function, inferred pure)" in (
+            hover
+        )
+
+    @pytest.mark.parametrize("needle", ["func local_sum", "print(local_sum("])
+    def test_a_function_that_declares_effects_hovers_as_written(
+        self, settled_effects_hover, needle: str
+    ):
+        hover = settled_effects_hover(needle, needle.index("local_sum") + 1)
+        assert "```\nlocal_sum(n: Int) -> Int with mutation\n```\n(function)" in hover
+        assert "inferred" not in hover
+
+
+def test_function_hover_names_no_inferred_effects_before_they_settle(tmp_path):
+    # A type error stops the checker before it settles inferred effects, so
+    # hover shows the signature as written and claims nothing about them.
+    source = (
+        _SETTLED_EFFECTS_SOURCE.split("func main()")[0]
+        + "func broken() -> Int\n"
+        + "    example () -> 1\n"
+        + '    return "one"\n'
+        + "end func\n"
+    )
+    main_file = tmp_path / "Main.geno"
+    main_file.write_text(source)
+    server = create_server(diag_debounce_sec=0)
+    server.lsp._workspace = Workspace(None, sync_kind=types.TextDocumentSyncKind.Full)
+    server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=main_file.as_uri(), language_id="geno", version=1, text=source
+            )
+        )
+    )
+    handler = server.lsp._get_handler(types.TEXT_DOCUMENT_HOVER)
+    lines = source.split("\n")
+    for name in ("bump", "total"):
+        line = next(i for i, text in enumerate(lines) if f"func {name}" in text)
+        result = handler(
+            types.HoverParams(
+                text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
+                position=types.Position(line=line, character=lines[line].index(name)),
+            )
+        )
+        assert result is not None
+        assert isinstance(result.contents, types.MarkupContent)
+        assert result.contents.value.endswith("```\n(function)"), name
+
+
 class TestSemanticSignatureHelp:
     """Tests for semantic signature help content."""
 

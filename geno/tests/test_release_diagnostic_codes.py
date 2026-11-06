@@ -33,6 +33,41 @@ def test_undefined_variable_uses_granular_type_code() -> None:
     assert _codes(result) == [ErrorCode.TYPE_UNDEFINED_VAR]
 
 
+def test_an_expected_panic_uses_the_specification_clause_code() -> None:
+    """E330 (0.7 draft, proposal 0017) owns every arrow spelling of a panic."""
+    result = check(
+        "func div(a: Int, b: Int) -> Int\n"
+        "    example 6, 3 -> 2\n"
+        "    example 1, 0 -> panic\n"
+        "    return a / b\n"
+        "end func\n"
+    )
+
+    assert not result.ok
+    assert _codes(result) == [ErrorCode.TYPE_EXAMPLE_PANIC_FORM]
+    assert ErrorCode.TYPE_EXAMPLE_PANIC_FORM.value == "E330"
+    assert result.diagnostics[0].to_dict()["code"] == "E330"
+
+
+def test_a_misspelled_panics_example_keeps_the_parse_codes() -> None:
+    """`example panics` and `panics ""` reuse E201 and E202, unchanged."""
+    zero = check(
+        "func usage() -> String\n"
+        "    example panics\n"
+        '    panic("not implemented")\n'
+        "end func\n"
+    )
+    empty = check(
+        "func div(a: Int, b: Int) -> Int\n"
+        '    example 1, 0 panics ""\n'
+        "    return a / b\n"
+        "end func\n"
+    )
+
+    assert _codes(zero) == [ErrorCode.PARSE_EXPECTED_TOKEN]
+    assert _codes(empty) == [ErrorCode.PARSE_INVALID_SYNTAX]
+
+
 def test_wrong_call_arity_uses_granular_type_code() -> None:
     result = check(
         '@untested("diagnostic fixture")\n'

@@ -1,0 +1,12 @@
+// A panics example whose call returns normally is a failed example (E409):
+// `geno run` checks examples before `main` and exits nonzero.
+func double(n: Int) -> Int
+    example 2 -> 4
+    example 3 panics
+    return n * 2
+end func
+
+func main() -> Unit
+    print(double(21))
+    return ()
+end func

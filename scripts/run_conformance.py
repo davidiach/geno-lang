@@ -59,6 +59,13 @@ SCHEMA_2_ONLY_FIELDS = (
     "expected_stderr",
     "expected_stderr_contains",
     "expected_json_value",
+    "expected_diagnostic",
+)
+# The keys of a `cli-json` case's `expected_diagnostic` table (proposal 0018):
+# the one diagnostic a failing `geno run --json` envelope must report. `code` is
+# required; the others are checked only when stated.
+EXPECTED_DIAGNOSTIC_KEYS = frozenset(
+    {"code", "message_contains", "location", "stack", "stack_omitted"}
 )
 # The `geno run --json` envelope's own fields. Timings are per-run, so only the
 # shape is a contract; `steps_used` is checked the same way and for the same
@@ -197,6 +204,25 @@ def development_manifest_paths(
 
 
 @dataclass(frozen=True)
+class ExpectedDiagnostic:
+    """The diagnostic a failing `geno run --json` envelope must report.
+
+    Locations are written ``file:line:col`` and frames ``file:line:col in name``.
+    Both match a suffix of the reported text at a path-component boundary, so a
+    case names its program by its file name and holds on every machine and
+    platform, whatever absolute path the lane reports. ``stack`` lists every
+    kept frame, outermost first, and ``stack_omitted`` the frames the bound
+    left out (0, the default, means the envelope has no ``stack_omitted``).
+    """
+
+    code: str
+    message_contains: tuple[str, ...] = ()
+    location: str | None = None
+    stack: tuple[str, ...] | None = None
+    stack_omitted: int = 0
+
+
+@dataclass(frozen=True)
 class ConformanceCase:
     """One immutable source or diagnostic compatibility contract."""
 
@@ -212,6 +238,8 @@ class ConformanceCase:
     expected_stderr_contains: tuple[str, ...]
     expected_json_value: str | None
     expected_diagnostics: tuple[str, ...]
+    # Set only for a `cli-json` case whose envelope must fail (proposal 0018).
+    expected_diagnostic: ExpectedDiagnostic | None = None
 
 
 @dataclass(frozen=True)
@@ -314,6 +342,85 @@ def _optional_str(raw: Any, *, field: str, case_id: str) -> str | None:
     if raw is None or isinstance(raw, str):
         return raw
     raise ManifestError(f"{case_id}: {field} must be a string")
+
+
+def _source_position(raw: Any, *, field: str, case_id: str) -> str:
+    """Validate a ``file:line:col`` position, optionally followed by `` in name``."""
+    if not isinstance(raw, str):
+        raise ManifestError(f"{case_id}: {field} must be a string")
+    position, separator, name = raw.partition(" in ")
+    if separator and not name:
+        raise ManifestError(f"{case_id}: {field} names no function: {raw!r}")
+    file_name, line, column = (position.rsplit(":", 2) + ["", ""])[:3]
+    if not file_name or not line.isdigit() or not column.isdigit():
+        raise ManifestError(
+            f"{case_id}: {field} must be written file:line:col, got {raw!r}"
+        )
+    return raw
+
+
+def _expected_diagnostic(raw: Any, *, case_id: str) -> ExpectedDiagnostic | None:
+    """Validate a case's ``expected_diagnostic`` table (proposal 0018)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ManifestError(f"{case_id}: expected_diagnostic must be a table")
+    unknown = set(raw) - EXPECTED_DIAGNOSTIC_KEYS
+    if unknown:
+        raise ManifestError(
+            f"{case_id}: expected_diagnostic has unknown keys: "
+            f"{', '.join(sorted(unknown))}"
+        )
+    code = raw.get("code")
+    if not isinstance(code, str) or not code:
+        raise ManifestError(f"{case_id}: expected_diagnostic.code must be a string")
+    message_contains = _string_list(
+        raw.get("message_contains", []),
+        field="expected_diagnostic.message_contains",
+        case_id=case_id,
+    )
+    location = raw.get("location")
+    if location is not None:
+        location = _source_position(
+            location, field="expected_diagnostic.location", case_id=case_id
+        )
+        if " in " in location:
+            raise ManifestError(
+                f"{case_id}: expected_diagnostic.location is a position, "
+                f"not a frame: {location!r}"
+            )
+    stack: tuple[str, ...] | None = None
+    if "stack" in raw:
+        stack = _string_list(
+            raw["stack"], field="expected_diagnostic.stack", case_id=case_id
+        )
+        for frame in stack:
+            _source_position(frame, field="expected_diagnostic.stack", case_id=case_id)
+            if " in " not in frame:
+                raise ManifestError(
+                    f"{case_id}: expected_diagnostic.stack frames are written "
+                    f"'file:line:col in name', got {frame!r}"
+                )
+    stack_omitted = raw.get("stack_omitted", 0)
+    if isinstance(stack_omitted, bool) or not isinstance(stack_omitted, int):
+        raise ManifestError(
+            f"{case_id}: expected_diagnostic.stack_omitted must be an integer"
+        )
+    if stack_omitted < 0:
+        raise ManifestError(
+            f"{case_id}: expected_diagnostic.stack_omitted must be non-negative"
+        )
+    if stack_omitted and stack is None:
+        raise ManifestError(
+            f"{case_id}: expected_diagnostic.stack_omitted requires stack"
+        )
+    return ExpectedDiagnostic(
+        code=code,
+        message_contains=message_contains,
+        location=location,
+        stack=stack,
+        stack_omitted=stack_omitted,
+    )
 
 
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
@@ -438,6 +545,9 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
             field="expected_diagnostics",
             case_id=case_id,
         )
+        expected_diagnostic = _expected_diagnostic(
+            raw_case.get("expected_diagnostic"), case_id=case_id
+        )
         if kind == "run":
             if not isinstance(expected_stdout, str):
                 raise ManifestError(f"{case_id}: run case requires expected_stdout")
@@ -460,22 +570,44 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 # `Unit`, a missing `main` and every displayed kind report.
                 expected_exit_status = 0
             if "cli-json" in targets:
-                if expected_json_value is None:
+                if expected_diagnostic is not None:
+                    # A failing envelope (proposal 0018): its diagnostic takes
+                    # the place of the value, and it states its failure there,
+                    # not on the stderr the other lanes report it on.
+                    if expected_json_value is not None:
+                        raise ManifestError(
+                            f"{case_id}: expected_json_value and "
+                            f"expected_diagnostic are mutually exclusive"
+                        )
+                    if expected_exit_status == 0:
+                        raise ManifestError(
+                            f"{case_id}: expected_diagnostic requires a nonzero "
+                            f"exit status"
+                        )
+                    if expected_stderr is not None:
+                        raise ManifestError(
+                            f"{case_id}: expected_diagnostic cannot be combined "
+                            f"with expected_stderr"
+                        )
+                elif expected_json_value is None:
                     raise ManifestError(
                         f"{case_id}: a cli-json case requires expected_json_value"
                     )
-                if expected_exit_class is not None:
+                elif expected_exit_class is not None:
                     # The `--json` lane reports a failure inside the envelope
-                    # rather than on stderr, and no field states an expected
-                    # envelope diagnostic yet, so such a case would be checked
-                    # against the wrong channel.
+                    # rather than on stderr, so without `expected_diagnostic`
+                    # such a case would be checked against the wrong channel.
                     raise ManifestError(
-                        f"{case_id}: cli-json cannot express a failing envelope; "
-                        f"state expected_exit_status"
+                        f"{case_id}: cli-json cannot express a failing envelope "
+                        f"without expected_diagnostic; state expected_exit_status"
                     )
             elif expected_json_value is not None:
                 raise ManifestError(
                     f"{case_id}: expected_json_value requires the cli-json target"
+                )
+            elif expected_diagnostic is not None:
+                raise ManifestError(
+                    f"{case_id}: expected_diagnostic requires the cli-json target"
                 )
         else:
             if targets != ("checker",):
@@ -504,6 +636,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> ConformanceManifest:
                 expected_stderr_contains=expected_stderr_contains,
                 expected_json_value=expected_json_value,
                 expected_diagnostics=expected_diagnostics,
+                expected_diagnostic=expected_diagnostic,
             )
         )
 
@@ -571,14 +704,19 @@ def _run_cli(
 ) -> TargetOutcome:
     """Run the source through `geno run` as a child process.
 
-    Two lanes, because they grant capabilities differently and the contract
-    requires them to agree anyway. The default isolated lane refuses `--cap`
-    outright -- it spawns a worker that holds its own grants -- while `--unsafe`
-    runs the interpreter in this process and takes them on the command line.
+    Two lanes, because they run programs differently and the contract requires
+    them to agree anyway: the default lane compiles to Python and runs it in a
+    process-isolated worker, while `--unsafe` runs the interpreter in the CLI's
+    own process. Both receive exactly the case's declared capabilities as
+    `--cap` (proposal 0013 lets the isolated lane grant them; it keeps
+    refusing `process` and `serve`). A case that declares none passes no
+    `--cap`, so each lane keeps its default grant: `clock`, `print` and
+    `random`, in both lanes.
     """
     argv = [sys.executable, "-m", "geno", "run"]
     if unsafe:
-        argv += ["--unsafe", *_capability_args(case.capabilities)]
+        argv.append("--unsafe")
+    argv += _capability_args(case.capabilities)
     argv.append(str(case.path))
     # The interpreter and manifest source are both controlled by this runner.
     completed = subprocess.run(  # noqa: S603
@@ -643,7 +781,7 @@ def _run_js_esm(case: ConformanceCase, source: str, timeout: float) -> TargetOut
     node_path = shutil.which("node")
     if node_path is None:
         raise RuntimeError("Node.js is not available")
-    generated = compile_to_js(source, esm=True)
+    generated = compile_to_js(source, filename=case.path.name, esm=True)
     if isinstance(generated, tuple):
         generated = generated[0]
     with tempfile.TemporaryDirectory(prefix="geno-conformance-esm-") as raw_dir:
@@ -663,7 +801,8 @@ def _run_js_esm(case: ConformanceCase, source: str, timeout: float) -> TargetOut
 def _run_python(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome:
     from geno.compiler import compile_to_python
 
-    generated = compile_to_python(source)
+    # The case's own file name, so a runtime report names it (proposal 0018).
+    generated = compile_to_python(source, filename=case.path.name)
     with tempfile.TemporaryDirectory(prefix="geno-conformance-python-") as raw_dir:
         artifact = Path(raw_dir) / "case.py"
         artifact.write_text(generated, encoding="utf-8", newline="\n")
@@ -685,7 +824,7 @@ def _run_js(case: ConformanceCase, source: str, timeout: float) -> TargetOutcome
     node_path = shutil.which("node")
     if node_path is None:
         raise RuntimeError("Node.js is not available")
-    generated = compile_to_js(source)
+    generated = compile_to_js(source, filename=case.path.name)
     if isinstance(generated, tuple):
         generated = generated[0]
     with tempfile.TemporaryDirectory(prefix="geno-conformance-js-") as raw_dir:
@@ -745,11 +884,15 @@ def _channel_mismatches(case: ConformanceCase, actual: TargetOutcome) -> list[st
             )
     elif case.expected_exit_class == "nonzero" and actual.exit_status == 0:
         mismatches.append("expected a nonzero exit status, got 0")
+    # The `--json` lane reports a failure inside its envelope, which
+    # `expected_diagnostic` describes; the stderr fragments describe the text
+    # report of the lanes that own a stderr.
+    stderr_reports = actual.envelope is None or case.expected_diagnostic is None
     if case.expected_stderr is not None and actual.stderr != case.expected_stderr:
         mismatches.append(
             f"expected stderr {case.expected_stderr!r}, got {actual.stderr!r}"
         )
-    for fragment in case.expected_stderr_contains:
+    for fragment in case.expected_stderr_contains if stderr_reports else ():
         if fragment not in actual.stderr:
             mismatches.append(
                 f"expected stderr to contain {fragment!r}, got {actual.stderr!r}"
@@ -771,16 +914,20 @@ def _envelope_mismatches(case: ConformanceCase, envelope: dict[str, Any]) -> lis
     always present here.
     """
     mismatches: list[str] = []
-    if envelope.get("ok") is not True:
-        mismatches.append(f"expected envelope ok true, got {envelope.get('ok')!r}")
-    diagnostics = envelope.get("diagnostics")
-    if diagnostics != []:
-        mismatches.append(f"expected no envelope diagnostics, got {diagnostics!r}")
-    expected_value = json.loads(cast(str, case.expected_json_value))
-    if not _json_equal(expected_value, envelope.get("value")):
-        mismatches.append(
-            f"expected envelope value {expected_value!r}, got {envelope.get('value')!r}"
-        )
+    if case.expected_diagnostic is not None:
+        mismatches += _failing_envelope_mismatches(case.expected_diagnostic, envelope)
+    else:
+        if envelope.get("ok") is not True:
+            mismatches.append(f"expected envelope ok true, got {envelope.get('ok')!r}")
+        diagnostics = envelope.get("diagnostics")
+        if diagnostics != []:
+            mismatches.append(f"expected no envelope diagnostics, got {diagnostics!r}")
+        expected_value = json.loads(cast(str, case.expected_json_value))
+        if not _json_equal(expected_value, envelope.get("value")):
+            mismatches.append(
+                f"expected envelope value {expected_value!r}, "
+                f"got {envelope.get('value')!r}"
+            )
     timing = envelope.get("timing")
     if not isinstance(timing, dict):
         mismatches.append(f"expected an envelope timing table, got {timing!r}")
@@ -797,6 +944,121 @@ def _envelope_mismatches(case: ConformanceCase, envelope: dict[str, Any]) -> lis
     elif steps_used < 0:
         mismatches.append(f"expected steps_used to be non-negative, got {steps_used}")
     return mismatches
+
+
+def _failing_envelope_mismatches(
+    expected: ExpectedDiagnostic, envelope: dict[str, Any]
+) -> list[str]:
+    """What a failing `--json` report must say (proposal 0018).
+
+    The run reports exactly one diagnostic, no value, and the diagnostic's code,
+    message, location and Geno stack the case states. Locations are compared as
+    ``file:line:col`` suffixes at a path-component boundary (see
+    `ExpectedDiagnostic`).
+    """
+    mismatches: list[str] = []
+    if envelope.get("ok") is not False:
+        mismatches.append(f"expected envelope ok false, got {envelope.get('ok')!r}")
+    if envelope.get("value") is not None:
+        mismatches.append(f"expected no envelope value, got {envelope.get('value')!r}")
+    diagnostics = envelope.get("diagnostics")
+    if not isinstance(diagnostics, list) or len(diagnostics) != 1:
+        return [*mismatches, f"expected one envelope diagnostic, got {diagnostics!r}"]
+    (diagnostic,) = diagnostics
+    if not isinstance(diagnostic, dict):
+        return [*mismatches, f"expected a diagnostic object, got {diagnostic!r}"]
+    if diagnostic.get("code") != expected.code:
+        mismatches.append(
+            f"expected diagnostic code {expected.code!r}, "
+            f"got {diagnostic.get('code')!r}"
+        )
+    message = diagnostic.get("message")
+    for fragment in expected.message_contains:
+        if not isinstance(message, str) or fragment not in message:
+            mismatches.append(
+                f"expected diagnostic message to contain {fragment!r}, got {message!r}"
+            )
+    if expected.location is not None:
+        actual_location = _rendered_location(diagnostic.get("location"))
+        if not _matches_suffix(actual_location, expected.location):
+            mismatches.append(
+                f"expected diagnostic location {expected.location!r}, "
+                f"got {actual_location!r}"
+            )
+    if expected.stack is not None:
+        actual_frames = _rendered_stack(diagnostic.get("stack"))
+        if (
+            actual_frames is None
+            or len(actual_frames) != len(expected.stack)
+            or not all(
+                _matches_suffix(actual, wanted)
+                for actual, wanted in zip(actual_frames, expected.stack)
+            )
+        ):
+            mismatches.append(
+                f"expected diagnostic stack {list(expected.stack)!r}, "
+                f"got {actual_frames!r}"
+            )
+        omitted = diagnostic.get("stack_omitted", 0)
+        if "stack_omitted" in diagnostic and (
+            isinstance(omitted, bool) or not isinstance(omitted, int) or omitted <= 0
+        ):
+            # The envelope states the key only when frames were left out.
+            mismatches.append(
+                f"expected stack_omitted to be a positive integer, got {omitted!r}"
+            )
+        elif omitted != expected.stack_omitted:
+            mismatches.append(
+                f"expected stack_omitted {expected.stack_omitted}, got {omitted!r}"
+            )
+    return mismatches
+
+
+def _rendered_location(raw: Any) -> str | None:
+    """A JSON location as ``file:line:col``, or ``None`` when it is not one."""
+    if not isinstance(raw, dict):
+        return None
+    filename, line, column = raw.get("filename"), raw.get("line"), raw.get("column")
+    if (
+        not isinstance(filename, str)
+        or isinstance(line, bool)
+        or not isinstance(line, int)
+        or isinstance(column, bool)
+        or not isinstance(column, int)
+    ):
+        return None
+    return f"{filename}:{line}:{column}"
+
+
+def _rendered_stack(raw: Any) -> list[str | None] | None:
+    """A JSON stack as ``file:line:col in name`` frames, outermost first."""
+    if not isinstance(raw, list):
+        return None
+    frames: list[str | None] = []
+    for frame in raw:
+        if not isinstance(frame, dict) or not isinstance(frame.get("function"), str):
+            frames.append(None)
+            continue
+        location = _rendered_location(frame.get("location"))
+        frames.append(
+            f"{location} in {frame['function']}"
+            if location is not None
+            else f"in {frame['function']}"
+        )
+    return frames
+
+
+def _matches_suffix(actual: str | None, expected: str) -> bool:
+    """Whether ``actual`` ends with ``expected`` at a path-component boundary.
+
+    ``main.geno:3:5`` matches ``/home/me/main.geno:3:5`` and
+    ``C:\\work\\main.geno:3:5`` but not ``other_main.geno:3:5``.
+    """
+    if actual is None:
+        return False
+    if actual == expected:
+        return True
+    return actual.endswith(expected) and actual[-len(expected) - 1] in "/\\"
 
 
 def _json_equal(expected: Any, actual: Any) -> bool:

@@ -1,0 +1,19 @@
+// Proposal 0013: `--cap env` gives `cli_args()` the program arguments in the
+// default `geno run` lane without exposing any environment variable. The
+// corpus passes no program arguments, so every lane prints an empty list.
+
+func describe(args: List[String]) -> String
+    example [] -> "no arguments"
+    example ["a", "b"] -> "a,b"
+    if length(args) == 0 then
+        return "no arguments"
+    end if
+    return join(args, ",")
+end func
+
+func main() -> Unit
+    let args = cli_args()
+    print(args)
+    print(describe(args))
+    return ()
+end func

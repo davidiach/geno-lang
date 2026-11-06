@@ -1,0 +1,13 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print
+# STDERR: Capability denied: 'http_fetch' requires the 'http' capability
+# An isolated run without the http grant has no client binding: the builtin
+# is denied before any name is resolved or any connection is made, and the
+# denial hint keeps the program process-isolated.
+func main() -> Unit
+    match http_fetch("http://example.com/") with
+        | Ok(body) -> print("ESCAPED " + body)
+        | Err(error) -> print("ESCAPED " + error)
+    end match
+end func

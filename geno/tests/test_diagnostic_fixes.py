@@ -329,3 +329,280 @@ def test_geno_fix_leaves_errors_in_modules_alone() -> None:
     result = geno.fix(main, modules={"Util": util})
     assert (result.source, result.applied) == (main, 0)
     assert "lenght" in result.check.diagnostics[0].message
+
+
+# Panic examples (proposal 0017, 0.7 draft): an expected value written as a
+# panic is E330, whose fix writes the `panics` form.
+
+
+def _divider(example: str, preamble: str = "") -> str:
+    return (
+        f"{preamble}func safe_div(a: Int, b: Int) -> Int\n"
+        "    example 6, 3 -> 2\n"
+        f"    {example}\n"
+        "    return a / b\n"
+        "end func\n"
+    )
+
+
+def _usage(example: str) -> str:
+    return (
+        "func usage() -> String\n"
+        f"    {example}\n"
+        '    panic("not implemented")\n'
+        "end func\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "written", "title", "fixed_line"),
+    [
+        (
+            _divider("example 1, 0 -> panics"),
+            "example 1, 0 panics",
+            "Write 'panics'",
+            "    example 1, 0 panics",
+        ),
+        (
+            _divider('example 1, 0 -> panics "division"'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _divider("example 1, 0 -> panic"),
+            "example 1, 0 panics",
+            "Write 'panics'",
+            "    example 1, 0 panics",
+        ),
+        (
+            _divider('example 1, 0 -> panic("division")'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _divider('example 1, 0 -> panic(message: "division")'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            # Spacing around the arrow does not matter: one space is left.
+            _divider('example 1, 0->panic("division")'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _divider('example 1, 0   ->   panic("division")'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _usage("example -> panics"),
+            "example () panics",
+            "Write '() panics'",
+            "    example () panics",
+        ),
+        (
+            _usage('example -> panic("not implemented")'),
+            'example () panics "not implemented"',
+            "Write '() panics \"not implemented\"'",
+            '    example () panics "not implemented"',
+        ),
+        (
+            _usage('example () -> panic("not implemented")'),
+            'example () panics "not implemented"',
+            "Write 'panics \"not implemented\"'",
+            '    example () panics "not implemented"',
+        ),
+    ],
+)
+def test_an_expected_panic_gets_a_fix_to_the_panics_form(
+    source: str, written: str, title: str, fixed_line: str
+) -> None:
+    result = geno.check(source)
+    [diagnostic] = result.diagnostics
+    assert diagnostic.code is geno.ErrorCode.TYPE_EXAMPLE_PANIC_FORM
+    assert diagnostic.message == (
+        f"An example that expects a panic is written without an arrow: {written}"
+    )
+    # Reported at the arrow.
+    example_line = source.split("\n")[diagnostic.location.line - 1]
+    assert example_line.lstrip().startswith("example") and "panic" in example_line
+    assert diagnostic.location.column == example_line.index("->") + 1
+    assert [fix.title for fix in diagnostic.fixes] == [title]
+    fixed = apply_fix(source, diagnostic.fixes[0])
+    assert fixed_line in fixed.split("\n")
+    assert geno.check(fixed).ok
+
+    # geno.fix() applies it and the result checks clean.
+    result = geno.fix(source)
+    assert result.check.ok, [d.message for d in result.check.diagnostics]
+    assert (result.source, result.applied) == (fixed, 1)
+
+
+def test_the_e330_fix_edits_serialize() -> None:
+    source = _divider('example 1, 0 -> panic("division")')
+    [diagnostic] = geno.check(source).diagnostics
+    assert diagnostic.to_dict()["fixes"] == [
+        {
+            "title": "Write 'panics \"division\"'",
+            "edits": [
+                {
+                    "start": {"line": 3, "column": 17},
+                    "end": {"line": 3, "column": 27},
+                    "text": " panics ",
+                },
+                {
+                    "start": {"line": 3, "column": 37},
+                    "end": {"line": 3, "column": 38},
+                    "text": "",
+                },
+            ],
+        }
+    ]
+
+
+def test_the_old_panic_typo_fix_is_never_offered() -> None:
+    """0.6 offered E301 "Did you mean 'panic'?" with a fix to `panic`."""
+    result = geno.check(_divider("example 1, 0 -> panics"))
+    assert [d.code for d in result.diagnostics] == [
+        geno.ErrorCode.TYPE_EXAMPLE_PANIC_FORM
+    ]
+    titles = [fix.title for d in result.diagnostics for fix in d.fixes]
+    assert "Change 'panics' to 'panic'" not in titles
+
+
+def test_a_non_literal_panic_message_gets_no_fix() -> None:
+    source = _divider('example 1, 0 -> panic(to_string(1) + " left")')
+    [diagnostic] = geno.check(source).diagnostics
+    assert diagnostic.code is geno.ErrorCode.TYPE_EXAMPLE_PANIC_FORM
+    assert diagnostic.fixes == ()
+    assert "example 1, 0 panics" in diagnostic.message
+    assert "string literal" in diagnostic.message
+    assert geno.fix(source).applied == 0
+
+
+def test_an_arrow_starting_its_line_gets_no_fix() -> None:
+    """Removing it would put `panics` on another line than the inputs."""
+    source = _divider('example 1, 0\n        -> panic("division")')
+    [diagnostic] = geno.check(source).diagnostics
+    assert diagnostic.code is geno.ErrorCode.TYPE_EXAMPLE_PANIC_FORM
+    assert diagnostic.fixes == ()
+
+
+@pytest.mark.parametrize(
+    "preamble, example",
+    [
+        # The program's own `panic` is a function like any other.
+        (
+            "func panic(code: Int) -> Int\n    example 1 -> 1\n    return code\n"
+            "end func\n\n",
+            "example 6, 0 -> panic(3)",
+        ),
+        (
+            'func panic(text: String) -> Int\n    example "a" -> 1\n'
+            "    return 1\nend func\n\n",
+            'example 6, 0 -> panic("a")',
+        ),
+        # A `panics` value in scope keeps `-> panics` a value example.
+        ("let panics = 0\n\n", "example 0, 1 -> panics"),
+        (
+            "func panics() -> Int\n    example () -> 0\n    return 0\nend func\n\n",
+            "example 0, 1 -> panics()",
+        ),
+    ],
+)
+def test_a_programs_own_panic_or_panics_is_not_diagnosed(
+    preamble: str, example: str
+) -> None:
+    result = geno.check(_divider(example, preamble))
+    assert result.ok, [d.message for d in result.diagnostics]
+
+
+def test_a_message_after_a_panics_value_is_still_e330() -> None:
+    """A value example has no message, so `-> panics "m"` is always the form."""
+    source = _divider('example 0, 1 -> panics "m"', "let panics = 0\n\n")
+    [diagnostic] = geno.check(source).diagnostics
+    assert diagnostic.code is geno.ErrorCode.TYPE_EXAMPLE_PANIC_FORM
+    assert 'example 0, 1 panics "m"' in diagnostic.message
+
+
+def test_geno_check_fix_rewrites_every_arrow_form(tmp_path: Path) -> None:
+    path = tmp_path / "panics.geno"
+    path.write_text(
+        "func safe_div(a: Int, b: Int) -> Int\n"
+        "    example 6, 3 -> 2\n"
+        '    example 1, 0 -> panic("division")\n'
+        "    example 2, 0 -> panic\n"
+        '    example 3, 0 -> panics "zero"\n'
+        "    example 4, 0 -> panics\n"
+        "    return a / b\n"
+        "end func\n\n"
+        "func usage() -> String\n"
+        "    example -> panics\n"
+        '    panic("not implemented")\n'
+        "end func\n",
+        encoding="utf-8",
+    )
+    fixed = subprocess.run(
+        [sys.executable, "-m", "geno", "check", "--fix", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        cwd=_REPO_ROOT,
+    )
+    assert fixed.returncode == 0, fixed.stderr
+    assert "Applied 5 fixes" in fixed.stdout
+    assert path.read_text(encoding="utf-8") == (
+        "func safe_div(a: Int, b: Int) -> Int\n"
+        "    example 6, 3 -> 2\n"
+        '    example 1, 0 panics "division"\n'
+        "    example 2, 0 panics\n"
+        '    example 3, 0 panics "zero"\n'
+        "    example 4, 0 panics\n"
+        "    return a / b\n"
+        "end func\n\n"
+        "func usage() -> String\n"
+        "    example () panics\n"
+        '    panic("not implemented")\n'
+        "end func\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "code", "title", "fixed_line"),
+    [
+        (
+            _usage("example panics"),
+            geno.ErrorCode.PARSE_EXPECTED_TOKEN,
+            "Write 'example () panics'",
+            "    example () panics",
+        ),
+        (
+            _usage('example panics "not implemented"'),
+            geno.ErrorCode.PARSE_EXPECTED_TOKEN,
+            "Write 'example () panics'",
+            '    example () panics "not implemented"',
+        ),
+        (
+            _divider('example 1, 0 panics ""'),
+            geno.ErrorCode.PARSE_INVALID_SYNTAX,
+            "Remove the empty message",
+            "    example 1, 0 panics",
+        ),
+    ],
+)
+def test_a_misspelled_panics_example_gets_a_parse_fix(
+    source: str, code: geno.ErrorCode, title: str, fixed_line: str
+) -> None:
+    [diagnostic] = geno.check(source).diagnostics
+    assert diagnostic.code is code
+    assert diagnostic.fixes[0].title == title
+    result = geno.fix(source)
+    assert result.check.ok, [d.message for d in result.check.diagnostics]
+    assert fixed_line in result.source.split("\n")

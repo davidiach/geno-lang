@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Target: **Geno 0.7**. The cold-write forms below are accepted proposal 0026;
-the 0.6 specification and frozen conformance corpora remain unchanged.
+This section opens the 0.7 development line. Nothing in it is released: the
+package version stays 0.6.0, and the Draft
+[`docs/spec/v0.7.md`](docs/spec/v0.7.md) specifies the additions.
 
 ### Added
 
@@ -36,13 +37,506 @@ the 0.6 specification and frozen conformance corpora remain unchanged.
   for a reassigned variable, and now repair the missing return type: 828 of
   907 mutants repaired, none misrepaired.
 
+- Panic examples, from Draft
+  [proposal 0017](docs/proposals/0017-panic-examples-and-property-checks.md):
+  `example 1, 0 panics "division"` states that a call must panic, optionally
+  with a substring of the panic's message (compared ignoring case), and
+  `example () panics` covers a zero-argument function. `panics` is a
+  contextual word, so it stays a legal name everywhere else. A panics example
+  passes on `panic(...)` or any runtime error, including a failed `requires`
+  or `ensures`; exhausting a resource limit (steps, time, recursion, memory,
+  collection size, integer size, output) or a host refusal (E412, E413, E500)
+  does not satisfy one and is reported by name. `geno run`, `geno test`, the
+  harness runners, the embedding API's `check_examples` and the hosted server
+  all check them; compiled Python documents them in docstrings and the
+  documentation generator renders them.
+- E330 (`TYPE_EXAMPLE_PANIC_FORM`): an example whose expected value is written
+  as a panic (`-> panics`, `-> panics "m"`, `-> panic`, `-> panic("m")`) is an
+  error with a machine-applicable fix that writes the `panics` form, which
+  `geno check --fix`, `geno.fix()` and the language server's quick fix apply.
+  `-> panics` stays legal when the program defines its own `panics`, and so
+  do `-> panic(...)` forms that call the program's own `panic`. A zero-argument
+  `example panics` is E201 with a fix that adds `()`, and an empty message,
+  `panics ""`, is E202 with a fix that deletes it.
+- `docs/spec/v0.7.md`, the Draft contract of the 0.7 development line, forked
+  from v0.6, and `conformance/v0.7`, a development corpus marked
+  `status = "development"` that `scripts/run_conformance.py --all-retained`
+  runs after the retained v0.5 and v0.6 corpora. `spec.json` records the draft
+  in a new `development_line` object, which `scripts/validate_spec.py` checks.
+- `geno test --properties` (Experimental), from the same proposal
+  ([spec v0.7](docs/spec/v0.7.md) section 5.4). It calls every function that
+  has no effects but mutation on generated arguments (100 per function, or
+  `--trials N` up to 10,000) and judges each call by the function's own
+  contracts. An input its `requires` rejects is discarded. An `ensures`
+  violation, a panic (unless the function has a panics example) or a resource
+  limit fails it. A failing input is shrunk and printed in the form that
+  follows `example`, with a reproduce command. Runs are deterministic: the
+  default seed is 0, and `--seed S` and `--filter` reproduce a function's
+  inputs from any directory. Work is counted in interpreter steps: 200,000
+  per call, 5,000,000 per function for trials and 4,000,000 for shrinking.
+  Wall time is only a safety stop, per call (`--timeout`, at most 5 s) and
+  per function (2 × `--timeout`), and a function it stops is `incomplete`,
+  never failed, so the same seed gives the same verdict on a busy machine.
+  A call that uses up its full allowance is a `limit` failure; a function
+  whose budget runs out first is `incomplete`.
+  `gave_up`, `incomplete` and `skipped` are warnings, and only a failed
+  property makes the run exit 1. `--json` gains a `properties` object. Single
+  files, directories and projects are supported; in a project only its own
+  modules are checked. Trials run in an interpreter of their own with no
+  capabilities. Plain `geno test`, its JSON and its exit status are
+  unchanged, and the property engine is imported only with `--properties`.
+- `geno.values.ContractViolationError` carries structured fields: `clause`
+  (`"requires"` or `"ensures"`), `reason` (`"false"` or `"propagate"`),
+  `clause_index`, `call_depth` (now set on every violation) and
+  `result_display`. Property checks, `geno test` and example verification
+  read these instead of parsing the message. Also new for embedders and
+  tools: `Interpreter.step_allowance(n)`, `geno.parser.parse_expression()` and
+  `TypeChecker.check_project_graph(..., retain_module_checkers=True)`.
+- Capability grants in the default process-isolated `geno run` lane, from
+  accepted [proposal 0013](docs/proposals/0013-isolated-run-capabilities.md)
+  ([spec v0.7](docs/spec/v0.7.md) section 9.11.1). `geno run --cap LIST`
+  runs with exactly the listed capabilities, for examples and `main`, and
+  keeps the hard wall-clock kill and the memory, CPU, file-size and process
+  limits, instead of exiting with "--cap is not supported in the default
+  process-isolated run mode". Without `--cap` the grant is unchanged
+  (`clock`, `print`, `random`). Refused grants exit 1 before the program
+  starts: `process` and `serve` with a message naming `--unsafe`, and a
+  capability that is not available yet, or not on this platform, as "not
+  yet available in the process-isolated run mode". The worker validates the
+  grant and host policy from its parent-set configuration before reading
+  any input, binds host access only for granted capabilities, and the
+  runtime's private names for that channel (`_GENO_HOST`,
+  `_GenoHostUnavailable`, `_geno_host_module`, `_geno_environ`) are
+  reserved runtime names on both backends, for top-level definitions,
+  references and local bindings alike. One milestone per capability:
+  - **`regex`** (milestone 1): `geno run --cap print,regex lint.geno`.
+    Examples get the same exact grant (`--cap regex` denies `print` in
+    examples too), and `sleep_ms` works in examples when `clock` is granted.
+  - **`env`** (milestone 2), which addresses
+    [#68](https://github.com/davidiach/geno-lang/issues/68):
+    `geno run --cap env,print main.geno -- hello world` gives `cli_args()`
+    the program arguments. `--cap env` alone exposes no environment
+    variable: the new repeatable `--allow-env NAME` lets
+    `env_get`/`env_get_or` read one exact name from the caller's environment
+    (case-insensitive on Windows, as `os.environ` is there), and only allowed
+    variables the caller has are sent to the worker. Reading any other name,
+    even one the caller does not have, fails with E412 "environment variable
+    'NAME' is not allowed by the host env policy" and a hint naming
+    `--allow-env`; the program never sees the worker's own environment.
+    Examples and `main` read the same snapshot. `--allow-env` requires an
+    explicit `--cap env` grant and is refused under `--unsafe` and `--json`,
+    whose environment behaviour is unchanged.
+  - **`stdin`** (milestone 3) is implemented but not enabled:
+    `geno run --cap stdin ...` is still refused before launch on every
+    platform. The proposal keeps it refused until its stdin gate (handle
+    setup, inheritance, timeout and interruption cleanup) has passed on
+    Linux, macOS and Windows; only Linux and macOS can be validated so far,
+    and enabling it on those alone would deviate from that gate, which needs
+    the project lead's sign-off. Until then, programs that read standard
+    input keep using `geno run --unsafe --cap stdin,...` (trusted code
+    only). In place for that step: only a `stdin` grant makes the parent
+    duplicate its standard input for the worker alone, and nothing is read
+    until `stdin_read_all` asks. Trusted worker code then reads 8 KiB at a
+    time against the collection limit and decodes strict UTF-8 with the same
+    `Err` text as standalone compiled output; an over-limit error reports
+    the characters decoded when the limit was detected (at most 8,192 over
+    it). Examples and `main` share one stream and one deadline, with no
+    replay.
+  - **`fs`** (milestone 4): `geno run --cap fs,print report.geno --
+    data/input.csv`. The seven `fs_*` builtins go through a narrow trusted
+    facade in the worker with exactly the roots of `--unsafe` (the working
+    directory, the source's directory, the project root and the directories
+    of path arguments after `--`, or `GENO_FS_ROOTS`), the same symlink and
+    absolute-path rules (`GENO_FS_ALLOW_ABSOLUTE`) and the same
+    `GENO_FS_READ_ONLY` policy, all read from the caller's environment only
+    when `fs` is granted. A path argument widens the roots without `env`,
+    while `cli_args()` itself still needs `env`. Writes get two portable
+    limits, 64 MiB per file (`--max-file-size-bytes`, which also sets
+    `RLIMIT_FSIZE` where available) and 64 MiB per run across examples and
+    `main` (new `--max-total-write-bytes`). A write is counted in the UTF-8
+    bytes it emits after newline translation, reserved before the file is
+    opened, and never refunded, even for a rewrite of the same path or a
+    write that then fails; a limit of 0 disables every write, including empty
+    ones. Quota rejections return `Err` naming the limit and leave the file
+    unchanged, so a program can recover; a read-only write and an
+    `fs_exists` outside the roots still raise. Without `fs` both limits stay
+    0, as before.
+  - **`http`** (milestone 5, Linux and macOS): `geno run --cap http,print
+    fetch.geno`. `http_fetch`, `http_post` and `http_request` go through the
+    same validated client as `--unsafe`, now run in trusted worker code: only
+    `http` and `https`; every connection and redirect hop resolves, validates
+    and connects only to public addresses; at most ten redirects, with caller
+    headers (`Authorization`, `Cookie`, ...) dropped across origins; proxy
+    variables never reroute a request; TLS certificates and hostnames are
+    verified against the caller's trust store (`SSL_CERT_FILE` and
+    `SSL_CERT_DIR` reach the worker's TLS library only with an `http`
+    grant); and response bodies count against the collection limit. Private
+    and loopback destinations need `GENO_HTTP_ALLOW_PRIVATE` in the caller's
+    environment, read only with an `http` grant and never through
+    `--allow-env`. Each connection attempt waits at most 30 seconds and at
+    most the time the run has left, examples and `main` alike, and the hard
+    kill at `--timeout` still ends any request that cannot return in time.
+    The HTTP client modules are loaded during the worker's trusted setup
+    only with an `http` grant.
+- Runtime failures report their Geno location and call stack, from Draft
+  [proposal 0018](docs/proposals/0018-runtime-failure-diagnostics.md)
+  ([spec v0.7](docs/spec/v0.7.md) section 6.9.1). A panic, runtime error,
+  failed contract, capability denial or resource limit prints the Geno frames
+  that led to it, most recent call last, each as `file:line:col in name`
+  positioned inside its own function (at the call it was making, or at the
+  failure for the last frame), then the source line with a caret where the
+  host can read the source, then the `Runtime Error: <message>` line, which
+  stays last so hints still follow it:
+
+  ```text
+  Stack trace (most recent call last):
+    demo.geno:21:21 in main
+    demo.geno:15:14 in safe_div
+        requires b != 0
+                 ^
+  Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
+  ```
+
+  This holds on every `geno run` lane (the default isolated lane maps its
+  compiled `main` back to Geno source in the trusted worker), `--watch`,
+  `geno test -v`, and standalone compiled Python and Node CommonJS and ESM
+  entry builds, which map host frames through a compact `_GENO_TRACE` table
+  the compiler embeds and reads only when a failure escapes `main`: no call
+  does extra work and the artifact still runs without Geno installed. Frames
+  are named Geno functions (`f`, `Type.method`, `Module.f`, `<example>`
+  while an example is verified and `<test>` for a call a `test` block made);
+  lambdas, builtins, runtime helpers and host
+  frames never appear, and standard-library files show as `std/<Name>.geno`.
+  A stack of more than 20 frames keeps its first 10 and last 10 and says how
+  many it left out. Recursion, step and cooperative-timeout limits, callbacks
+  started by builtins, default parameter values, calls through function
+  values and `async` functions get stacks too. The location and stack never
+  enter the message, so no file name, position or frame name can satisfy a
+  `panics "substring"` example or a property check (contract failure
+  messages themselves change; see Changed (breaking)).
+- Contract failures name the function, the call's argument values and the
+  clause as written (`Precondition failed: safe_div(a: 8, b: 0) requires
+  b != 0`), and an `ensures` failure the result
+  (`Postcondition failed: shout(s: "hi") ensures length(result) > 10 (result
+  was "hi!")`), identically on the interpreter, compiled Python and compiled
+  JavaScript. Values are quoted where they are strings and cut to 64 code
+  points by bounded renderers that stop walking a large value early. The
+  arguments are always the call's: when the body rebound a parameter the
+  clause reads, the message adds `; n was 6 when checked`. The clause text is
+  captured at parse time (`RequiresClause.source_text`,
+  `EnsuresClause.source_text`, ignored by AST equality), which also fixes the
+  truncated clause of a multi-line `ensures` in property-check reports.
+  `ContractViolationError` and the compiled contract exceptions also carry
+  `function`, `clause_text`, `arguments` and `checked_values`.
+- `geno run --json`, `geno.api.run()`/`run_path()` and the hosted server's
+  `/run` report a runtime failure's `location`, a `stack` list of
+  `{"function", "location"}` objects, `stack_omitted` when frames were left
+  out, and a `contract` object for a failed `requires`/`ensures` (`clause`,
+  `reason`, `clause_index`, `function`, `clause_text`, `arguments`,
+  `result`, and `checked_values` when present); `geno test --json`
+  violations gain `location`, `stack` and `stack_omitted`. A
+  standard-library file is named `std/<Name>.geno` in these fields, as in
+  text reports, so a hosted client never sees the server's install path.
+  `Diagnostic`
+  gains `stack` (`GenoStack` of `StackFrame`s) and `contract`
+  (`ContractDetails`). The keys are additive: existing keys keep their
+  values, codes are unchanged (a contract failure stays E499), and the one
+  value that is new where it was absent is `location` on panics and other
+  builtin failures. One existing value changes: a `geno test` violation's
+  `message` loses its location prefix (see Changed (breaking)).
+- `GENO_TRACEBACK=host` also prints the host's own traceback after the Geno
+  report, under `Host traceback (GENO_TRACEBACK=host):`, on `geno run`
+  (the interpreter's or the isolated worker's), in standalone compiled
+  Python and in Node entry builds, for debugging Geno itself. `--json`, the
+  embedding API and the hosted server ignore it.
+- `scripts/run_conformance.py` accepts an `expected_diagnostic` table on a
+  schema 2 `cli-json` case, stating a failing envelope's `code`,
+  `message_contains`, `location`, `stack` and `stack_omitted` as path-suffix
+  matches, and `conformance/v0.7` adds six `runtime-*` cases (a panic three
+  calls deep, an index error, `requires` arguments, an `ensures` result,
+  recursion elision and a capability denial) on `cli-process`, `cli-direct`,
+  `cli-json`, `python`, `js` and `js-esm`. The compiled lanes now compile
+  with the case's file name.
+
+### Changed (breaking)
+
+- An example's expected value can no longer be a call of the builtin `panic`
+  (E330). 0.6 accepted `example 1, 0 -> panic("division")`, because `panic`
+  returns `Never`, although the example could never pass: its expected value
+  panics before the call is made. Such a program still compiled and ran with
+  `geno compile`, `geno build` and `geno run --no-check-examples`; it no longer
+  checks. `geno check --fix` migrates it. Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-an-examples-expected-value-cannot-be-a-panic-call).
+
+  ```geno
+  // before (0.6)
+  example 1, 0 -> panic("division")
+  // after (0.7 draft)
+  example 1, 0 panics "division"
+  ```
+
+  A message that is not a string literal (`-> panic(reason)`) has no automatic
+  fix: write the text literally, or drop it (`example 1, 0 panics`).
+- In the default process-isolated `geno run` lane, examples and `main` share
+  one output budget and one deadline (proposal 0013), with or without `--cap`.
+  Output printed by examples is still never shown, but it now counts against
+  the same `--max-output-length` budget as `main`'s output instead of an
+  allowance of its own, so a run whose examples print a lot reaches the limit
+  earlier; the example phase also runs under the time left of `--timeout`
+  rather than a fresh allowance. Timeout messages still name `--timeout`.
+  Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-examples-share-the-isolated-runs-grant-and-budgets).
+  To migrate, skip examples in an operational run or raise the limit:
+
+  ```bash
+  geno run --no-check-examples --cap env,print main.geno -- hello
+  geno run --max-output-length 200000 main.geno
+  ```
+- `--max-file-size-bytes` and the new `--max-total-write-bytes` default by
+  grant (0 without `fs`, 64 MiB with it) and, like the other process sandbox
+  limits, are refused under `--unsafe` and `--json` whenever they are given,
+  so an explicit `--max-file-size-bytes 0` there, which 0.6 accepted, now
+  exits 1. An empty `GENO_FS_ROOTS` stops an isolated run that grants `fs`
+  before launch (`Error: GENO_FS_ROOTS must contain at least one filesystem
+  root`); without `fs` the variable is not read.
+- Contract failure messages change from `Precondition failed for safe_div:
+  requires clause evaluated to false` to `Precondition failed:
+  safe_div(a: 8, b: 0) requires b != 0` (proposal 0018), which changes what
+  `panics "substring"` examples match in both directions. `panics
+  "Precondition failed"` and `panics "Postcondition failed"` still match;
+  substrings only the old wording had (`"Precondition failed for"`, `"for
+  <name>:"`, `"requires clause"`, `"ensures clause"`, `"evaluated to
+  false"`) no longer do, and a substring of an argument value or of the
+  clause text (`"b != 0"`) can now match a contract failure. No corpus in the
+  repository uses an old substring. Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-runtime-failures-report-a-geno-stack-and-contract-failures-name-their-arguments).
+  To migrate, match the new prefix, or read the structured fields:
+
+  ```geno
+  // before (0.6)
+  example 1, 0 panics "Precondition failed for safe_div"
+  // after (0.7 draft)
+  example 1, 0 panics "Precondition failed: safe_div("
+  ```
+- `geno test` violation messages no longer start with a location (proposal
+  0018). In 0.6 a located runtime failure in a `test` block (an index, key,
+  division or contract failure), or in a file that fails while loading, had
+  the message `<file:line:col>: Runtime Error: <message>`, with the file's
+  host path; it is now `Runtime Error: <message>`, the form unlocated
+  failures such as panics already had, in text output and in `--json`'s
+  `message`. The position moves to the violation's new `location` and
+  `stack`. Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-runtime-failures-report-a-geno-stack-and-contract-failures-name-their-arguments).
+  To migrate, read the position from `--json`'s `location` rather than
+  parsing it out of `message`:
+
+  ```text
+  0.6:  "message": "/abs/ti.geno:3:12: Runtime Error: Index 5 out of bounds for list of length 1"
+  0.7:  "message": "Runtime Error: Index 5 out of bounds for list of length 1",
+        "location": {"file": "/abs/ti.geno", "line": 3, "column": 12, ...}
+  ```
+- Where Geno requires two function types to be equal (assigning a `var`,
+  redeclaring a name in the same block, reassigning an `Option` or list of
+  functions through a `var`, binding a generic type parameter from an
+  earlier argument), a function whose inferred type lost `mutation` under
+  proposal 0019 (see Changed) no longer matches one that kept it. In 0.6
+  both carried `mutation`, so they matched by accident. `var f = local_sum`
+  followed by `f = shared_bump`, where `local_sum` writes only its own `var`
+  and `shared_bump` writes an array through a copied reference, is now E300
+  "Type mismatch in assignment: expected (Int) -> Int, got (Int) -> Int with
+  mutation". No repository program or benchmark solution hits this, and
+  no documentation snippet besides the ones showing the break. Recorded in
+  the [compatibility policy](docs/operations/compatibility-policy.md#07-draft-local-mutation-is-not-an-effect).
+  To migrate, restore the 0.6 type on the function or on the binding:
+
+  ```geno
+  // before (0.6 inferred the effect)
+  func local_sum(n: Int) -> Int
+  // after (0.7 draft)
+  func local_sum(n: Int) -> Int with mutation
+  ```
+
+  or `var f: (Int) -> Int with mutation = local_sum`. No automatic fix is
+  offered, because either site is a valid choice.
+
+### Changed
+
+- A capability denial in the default `geno run` lane, in `main` or in an
+  example, now ends with the isolated command when the lane can grant the
+  capability (`Hint: grant it with --cap; the program stays
+  process-isolated:` and `geno run --cap clock,env,print,random main.geno --
+  hello`) and an unlisted environment variable with an `--allow-env` hint.
+  Only `process`, `serve` and the capabilities refused on the platform still
+  get `--unsafe` advice. Hints are still derived only from the worker's
+  structured denial, so a forged denial text gets none. The README, guides,
+  capability, filesystem and execution-surface references, `SECURITY.md`,
+  the reference-app READMEs and the website now show `geno run --cap ...`,
+  keeping `--unsafe` for `process`, `serve`, `stdin` and trusted code.
+- Platform notes for the isolated lane: `http` is refused before launch on
+  Windows ("not yet available in the process-isolated run mode on Windows")
+  until proposal 0013's HTTP gate has Windows evidence, so Windows programs
+  that need it keep `--unsafe --cap http,...` (trusted code only); `stdin` is
+  refused on every platform (see Added); `env` names are case-insensitive on
+  Windows only; and the `fs` write quotas, which count `\r\n` as two bytes on
+  Windows, are the only file-size limit there.
+- The process sandbox worker's validator of compiled program code also
+  rejects a runtime-internal name bound by a `def`, `class`, parameter,
+  `global`, `except ... as` or match pattern, not only one referenced by name.
+- Runtime errors raised where the interpreter and the builtins enforce a
+  `SandboxConfig` limit (`max_collection_size`, `max_integer_bits`,
+  `max_output_length`), and the interpreter's error for a `Float` power
+  outside the host's range, are now `geno.values.RuntimeLimitError`, a
+  subclass of `GenoRuntimeError`, so a limit is told from a panic by type.
+  Their messages and error codes are unchanged.
+- `geno test` reads whether a failure was a `requires` or an `ensures` from
+  the violation's `clause` field, not its message. A program's own
+  `panic("Precondition failed ...")` is therefore reported as an `example`
+  failure, not a `requires` failure.
+- Runtime failure stderr (proposal 0018): the first line is `Stack trace
+  (most recent call last):` whenever a stack exists, and the `Runtime Error:`
+  line is last, before any hint; read that line, or `--json`, rather than the
+  first. `--unsafe` frames change from `  in <name>, <call site>` (with `main`
+  at its definition) to `  <file:line:col> in <name>`, the snippet moves above
+  the message, and the separate `at` line appears only when there is no
+  stack. Scripts that scraped frame lines should read `--json`'s `stack`.
+- Standalone compiled Python and Node entry builds print the Geno report
+  instead of a Python traceback into the generated file or a V8 stack of
+  generated JavaScript; the status stays 1. A Node entry build now exits as
+  soon as the report is printed, for an async `main` too (0.6 let pending
+  async work run after an async `main` rejected), and a rejected `Async` that
+  nothing awaits is reported the same way, with status 1. The entry path makes
+  stdout and stderr blocking before `main` runs, as they are in compiled
+  Python, so that exit loses none of the output printed before the failure,
+  even through a full or slow pipe (0.6's synchronous fatal path could drop a
+  queued tail). `Error.stackTraceLimit`, the `unhandledRejection` listener
+  and the blocking mode are set only when the file runs as the entry point,
+  so importing an ESM build changes none of them, and a CommonJS build that a host `require()`s keeps
+  0.6's behaviour: a failure of its `main` propagates to the requirer (an
+  async `main`'s rejection is logged with `process.exitCode = 1`, as before)
+  and nothing process-wide changes. A Geno name `module` is renamed in
+  JavaScript output, like `require`, so it cannot hide CommonJS's own.
+  Builtins that turn a host failure into `Err` or `None` (`json_parse`, the
+  `fs_*` functions, `exec`) build that host error with stack capture off, so
+  the entry path's unlimited trace limit costs nothing on their success
+  paths. The table and its anchor are the first two lines of
+  the program's code, so `--source-map` mappings move down by two lines; the
+  map format is unchanged. Browser builds and programs without `main` are
+  unchanged.
+- `geno test` records a runtime failure in an example as `Runtime error:
+  <message>`, without the doubled `Runtime Error:` and location prefix, and
+  `-v` prints the failure's frames under it. A runtime failure in a `test`
+  block is `Runtime Error: <message>` with no location prefix, now that every
+  failure is located (see Changed (breaking) for the located failures whose
+  0.6 message had one); its stack starts with a `<test>` frame at the test
+  body's call.
+- The REPL prints the same runtime report for a failing input: its frames,
+  with the typed input itself shown as the `<repl>` frame, then the
+  `Runtime Error: <message>` line last (0.6 printed the message, then an
+  `at` line).
+- A failure inside a builtin (`panic`, `unwrap`, `expect`, a denial) carries
+  the builtin call's location on the error itself, which the interpreter now
+  sets in place, keeping the error's type, code and trusted denial tags; its
+  `str()` includes the location, while `.message`, which `panics` examples
+  match, is unchanged.
+- Local mutation is not an effect, from Draft
+  [proposal 0019](docs/proposals/0019-local-mutation-is-not-an-effect.md)
+  ([spec v0.7](docs/spec/v0.7.md) sections 3.5, 6.2, 6.3 and 7.6). A
+  function or lambda that changes only state its own call created is pure:
+  declaring a `var`, assigning one, writing a field or element of a value it
+  holds (`var q = p; q.x = 1`), and writing elements of an `Array`, `Vec` or
+  `MutableMap` it allocated and never let escape (`var counts =
+  array_new(n, 0); counts[i] = counts[i] + 1`) no longer contribute
+  `mutation`. A function with a local accumulator can now be passed where
+  `(List[Int]) -> Int` is expected (`apply(total, xs)`, `xs.map(total)`),
+  where 0.6 reported E300 "expected (List[Int]) -> Int, got (List[Int]) ->
+  Int with mutation", and `main() -> Unit with io` may use local `var`s, where
+  0.6 reported E310. Index and field writes a caller can observe keep
+  `mutation`: through a parameter's collection or a copy of it, below a
+  reference-typed field or element (every `array_new(h, array_new(w, 0))`
+  table), through a collection that was stored, passed to a function or
+  captured, and a lambda's write to a captured variable, which charges the
+  lambda and not the function that creates it. A builtin that only uses an
+  owned collection (`array_to_list(counts)`, also as a pipeline stage,
+  `counts |> array_to_list`) is not an escape. Effects stay static: no
+  backend, diagnostic code or syntax changes, a declared `with mutation`
+  stays legal, and `geno test --properties` selects the same functions.
+  Messages, local-binding hover and the REPL's `:type` print the new
+  inferred types, and language-server hover on a function that declares no
+  effects now names the ones the checker settled on, `(function, inferred
+  `with mutation`)` or `(function, inferred pure)`, so a masked function can
+  be told from one that keeps `mutation`. The checker still does not charge
+  mutating builtins (`vec_push`, `array_set`, `set_add`, ...) on any
+  receiver, as in 0.6; the spec now records that as a known limitation, and
+  closing it awaits a decision on the proposal's Unresolved Question 1. As a
+  result, a function that writes its caller's collection only through such
+  builtins, and that 0.6 charged only because it also updates a local `var`
+  such as a loop counter, is now inferred pure; declare `with mutation` on
+  it to keep the 0.6 type. `lock_piece` and `clear_lines` in
+  `examples/apps/tetris.geno` and `update` in `examples/apps/notetaker.geno`
+  had this shape and now declare it. `conformance/v0.7` adds
+  `local-mutation-is-pure` on all seven runtime lanes and two checker cases
+  that stay E300.
+
 ### Fixed
 
-- Type errors inside an f-string interpolation are reported at the line and
-  column where the expression is written, not at line 1.
 - A tuple pattern matched against a value that is not a tuple is one error:
   the names it binds no longer add "Undefined variable" errors, one of which
   carried a rename fix to an unrelated variable.
+
+- A nullary constructor of a generic ADT nested in another constructor call
+  type-checks. With `type Tree[T] = Leaf | Node(left: Tree[T], value: T,
+  right: Tree[T])`, `Node(Leaf, 1, Leaf)` was rejected ("expected Tree[T], got
+  Tree[__ctor_arg0___fresh_T_2]") as an example input, in an annotated `let`,
+  as a call argument and in a generic function's body. It is now a
+  `Tree[Int]`, and mistyped values such as `Node(Leaf, "x", Node(Leaf, 1,
+  Leaf))` are still rejected.
+- A bare nullary constructor of a generic ADT type-checks as an example input
+  or a call argument of a generic function. `example Leaf -> 0` for
+  `size[T](t: Tree[T])` and `g(Leaf, x)` for `g[T](t: Tree[T], x: T)` were
+  rejected ("expected Tree[T], got Tree[__fresh_T_1]").
+- `run_harness_from_compiled` grants the same capabilities as
+  `run_harness_from_source` (`print`, `clock`, `random`), and it treats a
+  compiled capability denial as a refusal rather than a panic. A panics
+  example of a function whose call is denied now fails in both runners, as it
+  does under `geno test`. Compiled `panic`, `option_expect` and
+  `result_expect` mark their exception as a panic, so a panic whose message
+  reads like a resource limit (`panic("List size exceeds limit (1 > 0)")`)
+  is a panic in the compiled harness too, not the collection size limit.
+- A `?` that propagates `None` or `Err` inside a `requires` or `ensures`
+  clause is a contract violation in compiled Python and JavaScript, as it is
+  in the interpreter (the message ends in `('?' propagated None/Err)`).
+  Compiled Python let its internal
+  `_PropagateReturn` escape the function (and a caller that used `?` then
+  returned the propagated value); compiled JavaScript returned from the
+  function silently.
+- A list or map literal whose first element has an open type completes it
+  from the other elements. `let d: List[Tree[Int]] = [Leaf, Node(Leaf, "s",
+  Leaf)]`, `let d: List[Option[Int]] = [None, Some("s")]` and `[Ok(1),
+  Err("x")]` under `List[Result[Int, Int]]` passed `geno check` and failed at
+  run time with a host error (`"s" + 1`); they are now type errors, and
+  `let d = [None, Some(1), Some(2.5)]` infers `List[Option[Float]]` instead
+  of asking for an annotation.
+- A node parsed from an f-string interpolation carried a location relative
+  to the interpolation (line 1), so a type error or a runtime failure inside
+  `{...}` pointed at the file's first line. The parser now rebases the
+  interpolation's tokens onto the source; parse errors inside an
+  interpolation are located as before.
+- Compiled Python showed an `ensures` failure's result with the host `str()`
+  (`result was hi!`), where the interpreter and JavaScript showed `"hi!"`;
+  all three now render it the same way (proposal 0018).
+- `geno test --json` reported a runtime failure in an example as
+  `"Runtime error: Runtime Error: boom"`; it is now `"Runtime error: boom"`.
+- A step-limit or cooperative-timeout message raised inside a
+  standard-library function ended in the library's installed host path
+  (`... at /usr/lib/.../geno/std/List.geno:20:40`), which the hosted
+  server passed on to clients; it now ends in `std/List.geno:20:40`, as
+  every runtime report names the standard library (proposal 0018).
+- Language-server hover on a local binding showed the type the checker
+  recorded in its first pass, where every unannotated function still looks
+  pure: `let g = bump` hovered as `g: (Int) -> Int` while the next use of
+  `g` showed `with mutation`. A later record for the same binding now
+  replaces the earlier one, so hover shows the final pass's type, and the
+  first pass's type stays when the final pass stopped at an error.
 
 ## [0.6.0] - 2026-10-25
 

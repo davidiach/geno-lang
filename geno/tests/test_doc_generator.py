@@ -129,6 +129,48 @@ end func call_and_print
         assert "() -&gt; String with io" in html
         assert 'Unit</span> <span class="keyword">with</span> io' in html
 
+    def test_signatures_show_declared_effects_not_inferred_ones(self):
+        """Proposal 0019 changes which effects are inferred; docs show only
+        what a signature declares, so masking changes no rendered page."""
+        source = """
+/// Declares the effect 0.6 required; it now infers pure.
+func local_sum(n: Int) -> Int with mutation
+    example 2 -> 3
+    var y = n
+    y = y + 1
+    return y
+end func
+
+/// Infers `mutation`, declares nothing.
+func bump(counter: Array[Int]) -> Int
+    example array_new(1, 0) -> 1
+    var alias = counter
+    alias[0] = alias[0] + 1
+    return alias[0]
+end func
+
+/// Infers pure, declares nothing.
+func total(xs: List[Int]) -> Int
+    example [1, 2] -> 3
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+"""
+
+        module = parse_module(source, "Main.geno")
+        html = generate_html([module])
+
+        assert [(f.name, f.effects) for f in module.functions] == [
+            ("local_sum", ["mutation"]),
+            ("bump", []),
+            ("total", []),
+        ]
+        assert 'Int</span> <span class="keyword">with</span> mutation' in html
+        assert html.count('<span class="keyword">with</span>') == 1
+
     def test_type_aliases_and_traits_are_documented(self):
         source = """
 /// Alias docs
@@ -187,3 +229,26 @@ def test_signatures_render_tuple_types_as_written():
     swap = program.definitions[0]
     assert _render_type(swap.params[0].param_type) == "(A, B)"
     assert _render_type(swap.return_type) == "(B, A)"
+
+
+def test_panics_examples_are_rendered():
+    """`example 1, 0 panics "division"` (proposal 0017), HTML-escaped."""
+    source = """
+/// Divides.
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division <by> zero"
+    example 2, 0 panics
+    return a / b
+end func
+"""
+
+    module = parse_module(source, "Main.geno")
+    html = generate_html([module])
+
+    assert '<div class="example">(6, 3) &rarr; 2</div>' in html
+    assert (
+        '<div class="example">(1, 0) panics &quot;division &lt;by&gt; zero&quot;</div>'
+        in html
+    )
+    assert '<div class="example">(2, 0) panics</div>' in html

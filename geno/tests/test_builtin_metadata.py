@@ -1,4 +1,12 @@
-from geno.builtin_manifest import BUILTIN_MANIFEST
+import pytest
+
+from geno import builtin_manifest
+from geno.builtin_manifest import (
+    BORROWED_COLLECTION_PARAMS,
+    BUILTIN_MANIFEST,
+    manifest_borrowed_collection_params,
+    manifest_fresh_collection_builtins,
+)
 from geno.builtin_metadata import (
     builtin_param_name_lists as compat_builtin_param_name_lists,
 )
@@ -7,10 +15,13 @@ from geno.builtin_metadata import (
 )
 from geno.builtin_registry import (
     ALWAYS_AVAILABLE_BUILTINS,
+    BORROWED_ARGUMENT_NAMES,
+    BORROWED_ARGUMENT_POSITIONS,
     BUILTIN_PARAM_NAMES,
     BUILTIN_REGISTRY,
     CAPABILITY_MAP,
     DEFAULT_ALLOWED_CAPABILITIES,
+    FRESH_COLLECTION_BUILTINS,
     SOURCE_BUILTIN_NAME_OVERRIDES,
     all_builtin_names,
     allowed_gated_builtins,
@@ -27,7 +38,9 @@ from geno.builtin_registry import (
 from geno.compiler import RESERVED_PRELUDE_NAMES, Compiler
 from geno.interpreter import Interpreter
 from geno.js_compiler import JS_RESERVED_PRELUDE_NAMES, JSCompiler
+from geno.parser import parse
 from geno.typechecker import TypeChecker
+from geno.types import ArrayType, MutableMapType, SetType, VecType
 from geno.values import BuiltinFunction
 
 
@@ -232,3 +245,119 @@ def test_capability_map_derived_from_manifest():
             f"registry={sorted(CAPABILITY_MAP[cap])}, "
             f"manifest={sorted(expected[cap])}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Collection ownership metadata (proposal 0019)
+# ---------------------------------------------------------------------------
+
+_REFERENCE_COLLECTION_TYPES = (ArrayType, VecType, SetType, MutableMapType)
+
+# Parameters whose declared type is not a reference collection but which the
+# checker also accepts an Array for. Each is verified by type-checking a call.
+_ARRAY_ACCEPTING_PARAMS = {("length", "list")}
+
+
+def test_fresh_collection_builtins_are_derived_from_manifest():
+    expected = frozenset(
+        SOURCE_BUILTIN_NAME_OVERRIDES.get(name, name)
+        for name in builtin_manifest.FRESH_COLLECTION_BUILTINS
+    )
+    assert expected == FRESH_COLLECTION_BUILTINS
+    assert "array_new" in FRESH_COLLECTION_BUILTINS
+    assert "array_fill" not in FRESH_COLLECTION_BUILTINS
+
+
+def test_every_fresh_builtin_returns_a_reference_collection():
+    signatures = build_builtin_signatures()
+    for name in FRESH_COLLECTION_BUILTINS:
+        return_type = signatures[name].return_type
+        assert isinstance(return_type, _REFERENCE_COLLECTION_TYPES), (
+            f"'{name}' is listed as allocating a collection but returns {return_type}"
+        )
+
+
+def test_every_borrowed_parameter_has_a_reference_collection_type():
+    signatures = build_builtin_signatures()
+    param_names = source_builtin_param_name_lists()
+    for name, borrowed in BORROWED_ARGUMENT_NAMES.items():
+        for param in borrowed:
+            if (name, param) in _ARRAY_ACCEPTING_PARAMS:
+                continue
+            param_type = signatures[name].param_types[param_names[name].index(param)]
+            assert isinstance(param_type, _REFERENCE_COLLECTION_TYPES), (
+                f"'{name}({param})' is listed as borrowing a collection but has "
+                f"type {param_type}"
+            )
+
+
+def test_array_accepting_borrowed_parameters_accept_an_array():
+    for name, param in _ARRAY_ACCEPTING_PARAMS:
+        assert param in BORROWED_ARGUMENT_NAMES[name]
+        source = (
+            "func f(n: Int) -> Int\n"
+            "    example 2 -> 2\n"
+            f"    return {name}({param}: array_new(n, 0))\n"
+            "end func\n"
+        )
+        TypeChecker().check_program(parse(source))
+
+
+def test_every_reference_collection_parameter_is_listed_as_borrowed():
+    """Completeness: a builtin that keeps a collection must be classified.
+
+    A parameter left out of BORROWED_COLLECTION_PARAMS only makes fewer
+    collections owned, so this guards against forgetting a new builtin, not
+    against unsoundness.
+    """
+    param_names = source_builtin_param_name_lists()
+    for name, signature in build_builtin_signatures().items():
+        for index, param_type in enumerate(signature.param_types):
+            if isinstance(param_type, _REFERENCE_COLLECTION_TYPES):
+                param = param_names[name][index]
+                assert param in BORROWED_ARGUMENT_NAMES.get(name, frozenset()), (
+                    f"'{name}({param}: {param_type})' takes a reference "
+                    "collection: list it in BORROWED_COLLECTION_PARAMS"
+                )
+
+
+def test_borrowed_argument_views_are_derived_from_manifest():
+    param_names = source_builtin_param_name_lists()
+    assert set(BORROWED_ARGUMENT_NAMES) == {
+        SOURCE_BUILTIN_NAME_OVERRIDES.get(name, name)
+        for name in BORROWED_COLLECTION_PARAMS
+    }
+    assert set(BORROWED_ARGUMENT_POSITIONS) == set(BORROWED_ARGUMENT_NAMES)
+    for name, borrowed in BORROWED_ARGUMENT_NAMES.items():
+        positions = frozenset(
+            index for index, param in enumerate(param_names[name]) if param in borrowed
+        )
+        assert len(positions) == len(borrowed)
+        assert BORROWED_ARGUMENT_POSITIONS[name] == positions
+    assert BORROWED_ARGUMENT_POSITIONS["array_set"] == {0}
+    assert BORROWED_ARGUMENT_POSITIONS["vec_push"] == {0}
+    assert BORROWED_ARGUMENT_POSITIONS["set_union"] == {0, 1}
+
+
+def test_ownership_tables_reject_unknown_names(monkeypatch):
+    monkeypatch.setattr(
+        builtin_manifest,
+        "FRESH_COLLECTION_BUILTINS",
+        builtin_manifest.FRESH_COLLECTION_BUILTINS | {"array_nwe"},
+    )
+    with pytest.raises(ValueError, match="array_nwe"):
+        manifest_fresh_collection_builtins(SOURCE_BUILTIN_NAME_OVERRIDES)
+
+    monkeypatch.setattr(
+        builtin_manifest,
+        "BORROWED_COLLECTION_PARAMS",
+        {**BORROWED_COLLECTION_PARAMS, "vec_push": ("vec", "elem")},
+    )
+    with pytest.raises(ValueError, match="elem"):
+        manifest_borrowed_collection_params(SOURCE_BUILTIN_NAME_OVERRIDES)
+
+    monkeypatch.setattr(
+        builtin_manifest, "BORROWED_COLLECTION_PARAMS", {"vec_shove": ("vec",)}
+    )
+    with pytest.raises(ValueError, match="vec_shove"):
+        manifest_borrowed_collection_params(SOURCE_BUILTIN_NAME_OVERRIDES)

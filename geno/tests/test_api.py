@@ -6,6 +6,7 @@ Tests geno.run(), geno.check(), RunResult, CheckResult,
 step counting, timing, capabilities, error codes, and JSON serialization.
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -276,6 +277,47 @@ class TestRunErrors:
         assert result.ok is False
         assert result.diagnostics
         assert "immutable variable: b" in result.diagnostics[0].message
+
+    def test_check_examples_runs_panics_examples(self):
+        """`example ... panics` (proposal 0017) through the embedding API."""
+        source = """
+        func safe_div(a: Int, b: Int) -> Int
+            example 6, 3 -> 2
+            example 1, 0 panics "division"
+            return a / b
+        end func
+
+        func main() -> Int
+            return safe_div(6, 3)
+        end func
+        """
+        assert run(source).value == 2
+
+        failing = source.replace('panics "division"', 'panics "overflow"')
+        result = run(failing)
+        assert result.ok is False
+        (diagnostic,) = result.diagnostics
+        assert diagnostic.code is ErrorCode.RUNTIME_EXAMPLE_FAILED
+        assert 'expected a panic containing "overflow"' in diagnostic.message
+        assert run(failing, RunConfig(check_examples=False)).value == 2
+
+    def test_panics_example_limits_keep_their_codes(self):
+        source = """
+        func spin(n: Int) -> Int
+            example 0 panics
+            var x = n
+            while true do
+                x = x + 1
+            end while
+            return x
+        end func
+
+        func main() -> Int
+            return 0
+        end func
+        """
+        result = run(source, RunConfig(max_steps=200))
+        assert [d.code for d in result.diagnostics] == [ErrorCode.SANDBOX_STEP_LIMIT]
 
     def test_runtime_error(self):
         source = """
@@ -1692,3 +1734,225 @@ class TestTimeoutBehavior:
 
         time.sleep(0.05)
         assert side_effects == ["/test.txt"]
+
+
+# =============================================================================
+# Runtime stacks and contract details (proposal 0018)
+# =============================================================================
+
+
+class TestRuntimeStacks:
+    PANIC = (
+        "func check(n: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    if n > 5 then\n"
+        '        panic("value too large")\n'
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+        "\n"
+        "func main() -> Int\n"
+        "    return check(9)\n"
+        "end func\n"
+    )
+
+    def test_a_panic_gains_location_and_stack(self) -> None:
+        result = run(self.PANIC, "p.geno")
+
+        (diagnostic,) = result.diagnostics
+        payload = diagnostic.to_dict()
+        assert payload["code"] == "E414"
+        assert payload["message"] == "value too large"
+        assert payload["location"] == {"line": 4, "column": 9, "filename": "p.geno"}
+        assert payload["stack"] == [
+            {
+                "function": "main",
+                "location": {"line": 10, "column": 12, "filename": "p.geno"},
+            },
+            {
+                "function": "check",
+                "location": {"line": 4, "column": 9, "filename": "p.geno"},
+            },
+        ]
+        assert "stack_omitted" not in payload
+        assert "contract" not in payload
+
+    def test_a_contract_failure_has_contract_details(self) -> None:
+        source = (
+            "func shout(s: String) -> String\n"
+            "    ensures length(result) > 10\n"
+            '    example "hello world" -> "hello world!"\n'
+            '    return s + "!"\n'
+            "end func\n"
+            "\n"
+            "func main() -> String\n"
+            '    return shout("hi")\n'
+            "end func\n"
+        )
+
+        (diagnostic,) = run(source, "s.geno").diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["code"] == "E499"
+        assert payload["contract"] == {
+            "clause": "ensures",
+            "reason": "false",
+            "clause_index": 0,
+            "function": "shout",
+            "clause_text": "length(result) > 10",
+            "arguments": [{"name": "s", "value": '"hi"'}],
+            "result": '"hi!"',
+        }
+        assert [frame["function"] for frame in payload["stack"]] == ["main", "shout"]
+
+    def test_a_rebound_parameter_lists_checked_values(self) -> None:
+        source = (
+            "func g(n: Int) -> Int\n"
+            "    ensures n > 10\n"
+            "    example 20 -> 25\n"
+            "    let n = n + 5\n"
+            "    return n\n"
+            "end func\n"
+            "\n"
+            "func main() -> Int\n"
+            "    return g(1)\n"
+            "end func\n"
+        )
+
+        (diagnostic,) = run(source, "g.geno").diagnostics
+
+        contract = diagnostic.to_dict()["contract"]
+        assert contract["arguments"] == [{"name": "n", "value": "1"}]
+        assert contract["checked_values"] == [{"name": "n", "value": "6"}]
+
+    def test_limits_carry_location_and_stack(self) -> None:
+        source = (
+            "func forever(n: Int) -> Int\n"
+            "    example 0 -> 0\n"
+            "    if n == 0 then\n"
+            "        return 0\n"
+            "    end if\n"
+            "    return forever(n + 1)\n"
+            "end func\n"
+            "\n"
+            "func main() -> Int\n"
+            "    return forever(1)\n"
+            "end func\n"
+        )
+
+        (diagnostic,) = run(
+            source, "f.geno", config=RunConfig(max_recursion_depth=25)
+        ).diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["code"] == "E502"
+        assert payload["location"]["line"] == 6
+        assert len(payload["stack"]) == 20
+        assert payload["stack_omitted"] == 5
+
+    def test_an_err_from_main_has_no_stack(self) -> None:
+        source = (
+            'func main() -> Result[Int, String]\n    return Err("nope")\nend func\n'
+        )
+
+        result = run(source, "e.geno")
+
+        assert result.ok is True
+        assert result.diagnostics == []
+
+    def test_run_path_remaps_module_frames_to_real_paths(self, tmp_path) -> None:
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "App"\nfiles = ["App", "Utils"]\n'
+        )
+        utils = tmp_path / "Utils.geno"
+        utils.write_text(
+            "func helper(x: Int) -> Int\n"
+            "  example 1 -> 1\n"
+            "  if x > 5 then\n"
+            '    panic("helper failed")\n'
+            "  end if\n"
+            "  return x\n"
+            "end func\n"
+        )
+        app = tmp_path / "App.geno"
+        app.write_text(
+            "import Utils\nfunc main() -> Int\n  return helper(9)\nend func\n"
+        )
+
+        result = run_path(str(app))
+
+        (diagnostic,) = result.diagnostics
+        assert diagnostic.code is ErrorCode.RUNTIME_PANIC
+        assert diagnostic.stack is not None
+        names = [frame.function for frame in diagnostic.stack.frames]
+        assert names == ["main", "Utils.helper"]
+        main_frame, helper_frame = diagnostic.stack.frames
+        assert main_frame.location is not None
+        assert Path(main_frame.location.filename).resolve() == app.resolve()
+        assert (main_frame.location.line, main_frame.location.column) == (3, 10)
+        assert helper_frame.location is not None
+        assert Path(helper_frame.location.filename).resolve() == utils.resolve()
+        assert (helper_frame.location.line, helper_frame.location.column) == (4, 5)
+        assert diagnostic.location == helper_frame.location
+
+    STDLIB_FAILURE = (
+        "import List\n"
+        "\n"
+        "func main() -> Int\n"
+        "    let parts = List.chunk([1, 2], 0)\n"
+        "    return length(parts)\n"
+        "end func\n"
+    )
+
+    @staticmethod
+    def _filenames(payload: dict) -> list[str]:
+        names = [payload["location"]["filename"]]
+        names.extend(frame["location"]["filename"] for frame in payload["stack"])
+        return names
+
+    def test_a_stdlib_failure_names_std_not_the_install_path(self) -> None:
+        (diagnostic,) = run(self.STDLIB_FAILURE, "<http>").diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["location"]["filename"] == "std/List.geno"
+        assert [frame["function"] for frame in payload["stack"]] == [
+            "main",
+            "List.chunk",
+        ]
+        assert self._filenames(payload) == ["std/List.geno", "<http>", "std/List.geno"]
+        std_dir = str(Path(__file__).resolve().parents[1] / "std")
+        assert std_dir not in json.dumps(payload)
+
+    def test_run_path_shows_std_for_a_stdlib_frame(self, tmp_path) -> None:
+        app = tmp_path / "app.geno"
+        app.write_text(self.STDLIB_FAILURE)
+
+        (diagnostic,) = run_path(str(app)).diagnostics
+
+        payload = diagnostic.to_dict()
+        filenames = self._filenames(payload)
+        assert filenames[0] == "std/List.geno"
+        assert Path(filenames[1]).resolve() == app.resolve()
+        assert filenames[2] == "std/List.geno"
+
+    def test_a_step_limit_inside_the_stdlib_names_std(self) -> None:
+        source = (
+            "import List\n"
+            "\n"
+            "func main() -> Int\n"
+            "    let xs = range(0, 3000)\n"
+            "    return length(List.flatten([xs, xs, xs]))\n"
+            "end func\n"
+        )
+
+        (diagnostic,) = run(
+            source, "<http>", config=RunConfig(max_steps=50)
+        ).diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["code"] == ErrorCode.SANDBOX_STEP_LIMIT.value
+        assert payload["location"]["filename"] == "std/List.geno"
+        # Neither the message text nor any structured field names the
+        # installed library's host directory.
+        std_dir = str(Path(__file__).resolve().parents[1] / "std")
+        assert std_dir not in json.dumps(payload)

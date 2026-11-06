@@ -58,13 +58,15 @@ print(
 """
 
 
-def _loaded_modules(source: Path, *args: str) -> dict[str, object]:
-    """Run the CLI in-process and report which frontend modules it imported."""
+def _loaded_modules(
+    source: Path, *args: str, modules: tuple[str, ...] = FRONTEND_MODULES
+) -> dict[str, object]:
+    """Run the CLI in-process and report which of *modules* it imported."""
     completed = subprocess.run(
         [
             sys.executable,
             "-c",
-            _PROBE % {"modules": FRONTEND_MODULES},
+            _PROBE % {"modules": modules},
             *args,
             str(source),
         ],
@@ -117,3 +119,20 @@ def test_unsafe_run_still_imports_the_frontend_in_the_parent(program: Path) -> N
     assert result["status"] == 42
     assert "geno.interpreter" in result["loaded"]
     assert "geno.typechecker" in result["loaded"]
+
+
+def test_geno_test_imports_the_property_engine_only_with_properties(
+    program: Path,
+) -> None:
+    # `geno test` keeps its import footprint (and the `test-medium` perf
+    # budget): the property-check engine of proposal 0017 is loaded only for
+    # `--properties`.
+    modules = ("geno.property_check",)
+
+    plain = _loaded_modules(program, "test", modules=modules)
+    with_properties = _loaded_modules(program, "test", "--properties", modules=modules)
+
+    assert plain["status"] == 0
+    assert plain["loaded"] == []
+    assert with_properties["status"] == 0
+    assert with_properties["loaded"] == ["geno.property_check"]

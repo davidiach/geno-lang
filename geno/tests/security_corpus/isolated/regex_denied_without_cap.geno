@@ -1,0 +1,12 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print
+# STDERR: Capability denied: 'regex_match' requires the 'regex' capability
+# An isolated run granted print alone cannot reach the regex engine, and the
+# denial hint keeps the program process-isolated.
+func main() -> Unit
+    match regex_match(pattern: "a+", text: "aaa") with
+        | Some(found) -> print("ESCAPED " + found)
+        | None -> print("ESCAPED")
+    end match
+end func

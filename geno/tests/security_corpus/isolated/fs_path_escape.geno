@@ -1,0 +1,21 @@
+# EXPECT: E414
+# LANE: isolated
+# RUN: --cap fs,print
+# STDERR: confined: fs_read_text: path escapes configured filesystem roots
+# The isolated fs facade applies the --unsafe roots: a relative path that
+# climbs out of the working and source directories is refused for reads,
+# writes and listings alike, and nothing outside is touched.
+func main() -> Unit
+    match fs_write_text("../ESCAPED.txt", "ESCAPED") with
+        | Ok(_) -> print("ESCAPED write")
+        | Err(_) -> ()
+    end match
+    match fs_list_dir("..") with
+        | Ok(names) -> print("ESCAPED " + join(names, ","))
+        | Err(_) -> ()
+    end match
+    match fs_read_text("../../etc/passwd") with
+        | Ok(text) -> print("ESCAPED " + text)
+        | Err(error) -> panic("confined: " + error)
+    end match
+end func

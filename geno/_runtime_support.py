@@ -568,7 +568,22 @@ class _PropagateReturn(Exception):
 
 
 class _GenoContractViolation(RuntimeError):
-    """Internal: uncatchable requires/ensures failure."""
+    """Internal: uncatchable requires/ensures failure.
+
+    Built by ``_geno_contract_violation``; carries the structured fields of
+    the interpreter's ``ContractViolationError`` (proposal 0018).
+    ``call_depth`` is ``None`` on compiled backends.
+    """
+
+    clause: Any = None
+    reason: Any = None
+    clause_index: Any = None
+    function: Any = None
+    clause_text: Any = None
+    arguments: Any = None
+    result_display: Any = None
+    checked_values: Any = ()
+    call_depth: Any = None
 
 
 def _geno_named_constructor(cls: Any, name: str) -> Any:
@@ -584,7 +599,21 @@ def _geno_named_constructor(cls: Any, name: str) -> Any:
 
 def _geno_panic(message: str) -> None:
     """End the program with *message*: Geno code cannot recover from a panic."""
-    raise RuntimeError(message)
+    raise _geno_panic_error(message)
+
+
+def _geno_panic_error(message: str) -> Any:
+    """The exception a panic raises: a ``RuntimeError`` marked as a panic.
+
+    Provenance for classifiers (``geno.panic_outcome``): the compiled
+    runtime's resource limits are plain ``RuntimeError``s recognized by their
+    fixed messages, so a panic whose own text reads like one ("List size
+    exceeds limit") carries ``_geno_panic`` to stay a panic. Only ``panic``,
+    ``option_expect``, ``result_expect`` and compiler-emitted panics set it.
+    """
+    error: Any = RuntimeError(message)
+    error._geno_panic = True
+    return error
 
 
 def _propagate(val: Any) -> Any:
@@ -1070,7 +1099,7 @@ def unwrap(opt: Any) -> Any:
 
 def panic(message: str) -> None:
     """End the program with *message*; Geno code cannot recover from a panic."""
-    raise RuntimeError(message)
+    raise _geno_panic_error(message)
 
 
 def unwrap_or(opt: Any, default: Any) -> Any:
@@ -1653,6 +1682,152 @@ class _GenoFString:
 
     async def finish_async(self) -> str:
         return self.finish()
+
+
+# =============================================================================
+# Contract Failures
+# =============================================================================
+
+# The longest rendering of one value in a contract failure, in code points
+# (geno/runtime_report.py ARGUMENT_DISPLAY_LIMIT; a test pins the copies).
+_GENO_ARGUMENT_DISPLAY_LIMIT = 64
+
+
+class _GenoDisplayLimitReached(Exception):
+    """Internal: the bounded renderer has more than its limit."""
+
+
+class _GenoBoundedDisplay(_GenoFString):
+    """The f-string writer with a display budget instead of the size limit.
+
+    It stops (raises ``_GenoDisplayLimitReached``) once more than *limit*
+    code points are written, and shows function values as ``<function>``.
+    """
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+
+    def append(self, part: str) -> None:
+        self.size += len(part)
+        if part:
+            self.parts += [part]
+        if self.size > self.limit:
+            raise _GenoDisplayLimitReached
+
+    def _append_value(
+        self, value: Any, seen: tuple[Any, ...], *, top_level: bool
+    ) -> None:
+        if callable(value):
+            self.append("<function>")
+            return
+        super()._append_value(value, seen, top_level=top_level)
+
+
+def _geno_format_bounded(value: Any, limit: int) -> str:
+    """The diagnostic rendering of *value*, truncated to *limit* code points.
+
+    Strings are quoted at every depth. Equal to rendering the whole value and
+    keeping its first ``limit - 3`` code points plus ``...`` when longer, but
+    the walk stops once more than *limit* code points are written. Function
+    values render as ``<function>`` (proposal 0018, section 6), as on the
+    interpreter and in JavaScript.
+    """
+    writer = _GenoBoundedDisplay(limit)
+    try:
+        writer._append_value(value, (), top_level=False)
+    except _GenoDisplayLimitReached:
+        pass
+    text = writer.finish()
+    if writer.size <= limit:
+        return text
+    return text[: max(limit - 3, 0)] + "..."
+
+
+def _geno_contract_message(
+    clause: str,
+    reason: str,
+    function: str,
+    clause_text: Any,
+    clause_index: int,
+    arguments: Any,
+    result: Any,
+    checked_values: Any,
+) -> str:
+    """Copy of geno/runtime_report.py ``contract_message`` (a test pins it)."""
+    label = "Precondition failed" if clause == "requires" else "Postcondition failed"
+    shown_arguments = ", ".join(name + ": " + value for name, value in arguments)
+    shown_clause = clause_text if clause_text else "clause #" + str(clause_index + 1)
+    message = label + ": " + function + "(" + shown_arguments + ") "
+    message += clause + " " + shown_clause
+    notes = []
+    if reason == "propagate":
+        notes.append("'?' propagated None/Err")
+    if result is not None:
+        notes.append("result was " + result)
+    if checked_values:
+        rebound = ", ".join(name + " was " + value for name, value in checked_values)
+        notes.append(rebound + " when checked")
+    if notes:
+        message += " (" + "; ".join(notes) + ")"
+    return message
+
+
+def _geno_contract_violation(
+    clause: str,
+    reason: str,
+    clause_index: int,
+    function: str,
+    clause_text: Any,
+    names: Any,
+    values: Any,
+    result: Any = _GENO_MISSING,
+    checked: Any = None,
+) -> Any:
+    """The exception a failed contract clause raises (the caller raises it).
+
+    *values* are the call's arguments; *checked*, when given, are the
+    parameters' values at an ``ensures`` check in a function whose body
+    rebound a parameter, and those that differ are reported too. *result*
+    is the returned value, for ``ensures``.
+    """
+    limit = _GENO_ARGUMENT_DISPLAY_LIMIT
+    arguments = tuple(
+        (name, _geno_format_bounded(value, limit)) for name, value in zip(names, values)
+    )
+    checked_values: Any = ()
+    if checked is not None:
+        shown = tuple(
+            (name, _geno_format_bounded(value, limit))
+            for name, value in zip(names, checked)
+        )
+        checked_values = tuple(
+            pair for pair, argument in zip(shown, arguments) if pair != argument
+        )
+    result_display = (
+        None if result is _GENO_MISSING else _geno_format_bounded(result, limit)
+    )
+    error: Any = _GenoContractViolation(
+        _geno_contract_message(
+            clause,
+            reason,
+            function,
+            clause_text,
+            clause_index,
+            arguments,
+            result_display,
+            checked_values,
+        )
+    )
+    error.clause = clause
+    error.reason = reason
+    error.clause_index = clause_index
+    error.function = function
+    error.clause_text = clause_text
+    error.arguments = arguments
+    error.result_display = result_display
+    error.checked_values = checked_values
+    return error
 
 
 def _check_string_result_size(func_name: str, size: int) -> None:
@@ -3864,7 +4039,7 @@ def result_unwrap(result: Any) -> Any:
 def result_expect(result: Any, message: str) -> Any:
     if isinstance(result, Ok):
         return result.value
-    raise RuntimeError(f"{message}: {_geno_format(result.error)}")
+    raise _geno_panic_error(f"{message}: {_geno_format(result.error)}")
 
 
 def result_is_ok(result):
@@ -3907,7 +4082,7 @@ def option_unwrap_or(option, default):
 def option_expect(option: Any, message: str) -> Any:
     if isinstance(option, Some):
         return option.value
-    raise RuntimeError(message)
+    raise _geno_panic_error(message)
 
 
 def option_is_some(option):
@@ -4532,6 +4707,40 @@ def _require_cap(cap_name: str, builtin_name: str) -> None:
         raise error
 
 
+# Host access in the process-isolated ``geno run`` worker (proposal 0013). The
+# worker injects a read-only table holding one trusted binding per granted
+# capability that needs the host; generated program code cannot name it.
+# Standalone output and other sandboxes have no table and keep their own host
+# access, byte for byte. A gated builtin checks ``_require_cap`` first, then
+# looks up its binding outside any ``try``: a missing binding is a second,
+# independent gate that never turns into an ``Err``.
+_GENO_HOST: Any
+try:
+    _GENO_HOST = _GENO_HOST
+except NameError:
+    _GENO_HOST = None
+
+
+class _GenoHostUnavailable(RuntimeError):
+    """Internal: the isolated worker bound no host access for this capability."""
+
+
+def _geno_host_module(name: str) -> Any:
+    """Return the isolated worker's binding for *name*; None when standalone."""
+    if _GENO_HOST is None:
+        return None
+    binding = _GENO_HOST.get(name)
+    if binding is None:
+        raise _GenoHostUnavailable(f"host access for '{name}' is not bound in this run")
+    return binding
+
+
+def _geno_environ() -> Any:
+    """The isolated run's filtered environment snapshot; None when standalone."""
+    host = _geno_host_module("env")
+    return None if host is None else host.environ
+
+
 def _minimal_process_env():
     import os
 
@@ -5122,6 +5331,20 @@ def _run_limited_process(argv, *, input_text=None):
 def fs_read_text(path: str) -> Any:
     """Read a text file, returning Result[String, String]."""
     _require_cap("fs", "fs_read_text")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the trusted facade checks the path and opens
+        # the file; this bounded reader reads it.
+        try:
+            with host.open_text_reader(path, "fs_read_text") as f:
+                result = _read_limited_text_stream(
+                    f, "fs_read_text", limit_error_type=_GenoOutputLimitError
+                )
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        return Ok(result)
     try:
         path = _resolve_fs_path(path, "fs_read_text")
         with open(path, encoding="utf-8") as f:
@@ -5138,6 +5361,16 @@ def fs_read_text(path: str) -> Any:
 def fs_write_text(path: str, content: str) -> Any:
     """Write text to a file, returning Result[Unit, String]."""
     _require_cap("fs", "fs_write_text")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: read-only mode raises; the facade then checks
+        # the path and both write limits before it opens the file.
+        host.require_writable("fs_write_text")
+        try:
+            host.write_text(path, content, "fs_write_text")
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        return Ok(None)
     if not _fs_writes_allowed():
         raise RuntimeError("fs_write_text: filesystem writes are not allowed")
     try:
@@ -5152,6 +5385,14 @@ def fs_write_text(path: str, content: str) -> Any:
 def fs_list_dir(path: str):
     """List directory entries, returning Result[List[String], String]."""
     _require_cap("fs", "fs_list_dir")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade lists a directory inside the roots.
+        try:
+            entries = host.list_dir(path, "fs_list_dir")
+        except (OSError, RuntimeError) as e:
+            return Err(str(e))
+        return _check_collection_size(Ok(entries))
     import os
 
     try:
@@ -5165,6 +5406,10 @@ def fs_list_dir(path: str):
 def fs_exists(path: str) -> bool:
     """Check if a path exists."""
     _require_cap("fs", "fs_exists")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: a path outside the roots raises, as standalone.
+        return bool(host.exists(path, "fs_exists"))
     import os.path
 
     path = _resolve_fs_path(path, "fs_exists")
@@ -5192,9 +5437,37 @@ def _file_metadata_from_stat(stat_result: Any, fn_name: str) -> FileMetadata:
     return FileMetadata(kind, size, modified_ms)
 
 
+def _file_metadata_from_parts(
+    kind_name: str, size: int, mtime_ns: int, fn_name: str
+) -> FileMetadata:
+    """``FileMetadata`` from the isolated facade's classified stat triple."""
+    kind: Constructor
+    if kind_name == "file":
+        kind = FileKindFile()
+    elif kind_name == "directory":
+        kind = FileKindDirectory()
+    elif kind_name == "symlink":
+        kind = FileKindSymlink()
+    else:
+        kind = FileKindOther()
+    size = _require_safe_js_int(size, f"{fn_name} size")
+    modified_ms = _require_safe_js_int(mtime_ns // 1_000_000, f"{fn_name} modified_ms")
+    return FileMetadata(kind, size, modified_ms)
+
+
 def fs_metadata(path: str) -> Any:
     """Return metadata for a path, following the final symbolic link."""
     _require_cap("fs", "fs_metadata")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade stats and classifies the path.
+        try:
+            kind_name, size, mtime_ns = host.metadata(path, "fs_metadata", follow=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        return _check_collection_size(
+            Ok(_file_metadata_from_parts(kind_name, size, mtime_ns, "fs_metadata"))
+        )
     import os as _os
 
     try:
@@ -5210,6 +5483,22 @@ def fs_metadata(path: str) -> Any:
 def fs_symlink_metadata(path: str) -> Any:
     """Return metadata without following the final symbolic link."""
     _require_cap("fs", "fs_symlink_metadata")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade describes the link itself.
+        try:
+            kind_name, size, mtime_ns = host.metadata(
+                path, "fs_symlink_metadata", follow=False
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        return _check_collection_size(
+            Ok(
+                _file_metadata_from_parts(
+                    kind_name, size, mtime_ns, "fs_symlink_metadata"
+                )
+            )
+        )
     import os as _os
 
     try:
@@ -5225,6 +5514,16 @@ def fs_symlink_metadata(path: str) -> Any:
 def fs_canonicalize(path: str) -> Any:
     """Return the absolute, symlink-resolved path using portable separators."""
     _require_cap("fs", "fs_canonicalize")
+    host = _geno_host_module("fs")
+    if host is not None:
+        # Isolated `geno run`: the facade resolves an existing path.
+        try:
+            resolved = host.canonicalize(path, "fs_canonicalize")
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        canonical = resolved.replace("\\", "/")
+        _check_string_result_size("fs_canonicalize", len(canonical))
+        return _check_collection_size(Ok(canonical))
     import os as _os
 
     try:
@@ -5376,6 +5675,20 @@ def _http_body(method: str, url: str, body: Any, fn_name: str) -> Any:
     Every received status is a response. Scheme, transport, redirect-policy
     and network-policy failures are ``Err``; exceeding the output limit is not.
     """
+    host = _geno_host_module("http")
+    if host is not None:
+        # Isolated `geno run`: the trusted client validates, pins and sends.
+        try:
+            with host.open_body(method, url, body, fn_name) as resp:
+                result = _read_limited_utf8_stream(
+                    resp, fn_name, limit_error_type=_GenoOutputLimitError
+                )
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return Err(str(e))
+        _check_string_result_size(fn_name, len(result))
+        return Ok(result)
     from urllib.error import HTTPError
     from urllib.request import Request
 
@@ -5415,6 +5728,21 @@ def http_post(url: str, body: str) -> Any:
 def http_request(method: str, url: str, headers, body):
     """Make an HTTP request, returning Result[HttpResponse, String]."""
     _require_cap("http", "http_request")
+    host = _geno_host_module("http")
+    if host is not None:
+        # Isolated `geno run`: the trusted client validates, pins and sends.
+        try:
+            with host.open_request(method, url, headers, body, "http_request") as resp:
+                resp_headers = [(k, v) for k, v in resp.getheaders()]
+                body_text = _read_limited_utf8_stream(
+                    resp, "http_request", limit_error_type=_GenoOutputLimitError
+                )
+                response = HttpResponse(resp.status, body_text, resp_headers)
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return Err(str(e))
+        return _check_collection_size(Ok(response))
     from urllib.error import HTTPError, URLError
     from urllib.request import Request
 
@@ -5576,6 +5904,17 @@ def spawn_with_input(program, args, stdin):
 def stdin_read_all():
     """Read stdin to EOF as UTF-8. Non-UTF-8 input returns Err."""
     _require_cap("stdin", "stdin_read_all")
+    host = _geno_host_module("stdin")
+    if host is not None:
+        # Isolated `geno run`: trusted code reads the program's input lazily,
+        # chunk by chunk, against the collection limit.
+        try:
+            text = host.read_text(lambda size: _check_collection_kind("String", size))
+        except OSError as e:
+            return Err(str(e))
+        except UnicodeError as e:
+            return Err(f"stdin is not valid UTF-8: {e}")
+        return _check_collection_size(Ok(text))
     import sys as _sys
 
     try:
@@ -5603,6 +5942,13 @@ def stdin_read_all():
 def env_get(name: str):
     """Return the value of an environment variable, or None if unset."""
     _require_cap("env", "env_get")
+    host = _geno_host_module("env")
+    if host is not None:
+        # Isolated `geno run`: only allowed names, from the caller's snapshot.
+        found = host.lookup("env_get", name)
+        if found is None:
+            return None_
+        return _check_collection_size(Some(found))
     import os
 
     value = os.environ.get(name)
@@ -5614,6 +5960,13 @@ def env_get(name: str):
 def env_get_or(name: str, default: str) -> str:
     """Return the value of an environment variable, or a default if unset."""
     _require_cap("env", "env_get_or")
+    host = _geno_host_module("env")
+    if host is not None:
+        # Isolated `geno run`: only allowed names, from the caller's snapshot.
+        found = host.lookup("env_get_or", name)
+        chosen = default if found is None else found
+        _check_string_result_size("env_get_or", len(chosen))
+        return chosen
     import os
 
     result = os.environ.get(name, default)
@@ -5624,6 +5977,10 @@ def env_get_or(name: str, default: str) -> str:
 def cli_args():
     """Return command-line arguments passed after '--' to the program."""
     _require_cap("env", "cli_args")
+    host = _geno_host_module("env")
+    if host is not None:
+        # Isolated `geno run`: the parent's request supplies the arguments.
+        return _check_collection_size(list(host.program_args))
     import json as _json
     import os
     import sys
@@ -5638,6 +5995,347 @@ def cli_args():
         idx = argv.index("--")
         return _check_collection_size(list(argv[idx + 1 :]))
     return []
+
+
+# =============================================================================
+# Runtime failure reports (proposal 0018)
+# =============================================================================
+#
+# A compiled program with a `main` defines `_GENO_TRACE`, a table that maps
+# host lines back to Geno source (geno/runtime_report.py's TraceRecorder
+# documents the records), and `_geno_trace_anchor`, whose `def` line is the
+# table's host line 0. When a failure escapes `main`, the standalone guard
+# calls `_geno_report_uncaught`; the default `geno run` lane's trusted worker
+# imports `_geno_failure_report` from this module and never uses the copy in
+# the program's namespace. Mapping reads only host objects (the traceback,
+# its frames and code objects) and the table, which it treats as untrusted
+# data: anything malformed raises, and the caller then reports the message
+# alone. These copies of geno/runtime_report.py's constants and text layout
+# keep compiled output standalone; geno/tests/test_trace_table.py pins that
+# they agree.
+
+_GENO_STACK_HEAD = 10
+_GENO_STACK_TAIL = 10
+_GENO_STACK_HEADER = "Stack trace (most recent call last):"
+_GENO_TRACE_AWAIT_KEY = "<await>"
+_GENO_TRACE_CALL_KEY = "<call>"
+
+
+def _geno_trace_text(field: str) -> str:
+    """Undo the trace table's escaping of one text field."""
+    if "\\" not in field:
+        return field
+    out = []
+    index = 0
+    size = len(field)
+    while index < size:
+        char = field[index]
+        if char == "\\" and index + 1 < size:
+            escaped = field[index + 1]
+            out.append("\t" if escaped == "t" else "\n" if escaped == "n" else escaped)
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+_GENO_FUNCTION_TYPE = type(_geno_trace_text)
+
+
+def _geno_parse_trace(table: str) -> Any:
+    """Parse a version-1 trace table; raises ValueError when malformed."""
+    records = table.split("\n")
+    if not records or records[0] != "G\t1":
+        raise ValueError("unsupported runtime trace table")
+    files: dict[int, str] = {}
+    functions = []
+    statements: dict[int, Any] = {}
+    marks = []
+    candidates: dict[int, Any] = {}
+    end = None
+    for record in records[1:]:
+        fields = record.split("\t")
+        kind = fields[0]
+        if kind == "F" and len(fields) == 3:
+            files[int(fields[1])] = _geno_trace_text(fields[2])
+        elif kind == "D" and len(fields) == 5:
+            functions.append(
+                (
+                    int(fields[1]),
+                    int(fields[2]),
+                    _geno_trace_text(fields[3]),
+                    _geno_trace_text(fields[4]),
+                )
+            )
+        elif kind == "T" and len(fields) == 5:
+            statements[int(fields[1])] = (
+                files[int(fields[2])],
+                int(fields[3]),
+                int(fields[4]),
+            )
+        elif kind == "S" and len(fields) == 3:
+            marks.append((int(fields[1]), int(fields[2])))
+        elif kind == "C" and len(fields) == 5:
+            candidates.setdefault(int(fields[1]), []).append(
+                (_geno_trace_text(fields[2]), int(fields[3]), int(fields[4]))
+            )
+        elif kind == "E" and len(fields) == 2:
+            end = int(fields[1])
+        else:
+            raise ValueError("malformed runtime trace record")
+    if end is None:
+        raise ValueError("runtime trace table has no end record")
+    return functions, statements, marks, candidates, end
+
+
+def _geno_trace_function(functions: Any, line: int) -> Any:
+    """The innermost function range containing host *line*, if any."""
+    found = None
+    for function in functions:
+        if function[0] <= line < function[1] and (
+            found is None or function[0] >= found[0]
+        ):
+            found = function
+    return found
+
+
+def _geno_trace_statement(marks: Any, line: int) -> int:
+    """The statement host *line* belongs to (-1: none)."""
+    low = 0
+    high = len(marks)
+    while low < high:
+        middle = (low + high) // 2
+        if marks[middle][0] <= line:
+            low = middle + 1
+        else:
+            high = middle
+    return marks[low - 1][1] if low else -1
+
+
+def _geno_trace_site(path: str, sites: Any) -> Any:
+    """The one position all of *sites* share, or ``None``."""
+    if not sites:
+        return None
+    line, column = sites[0][1], sites[0][2]
+    for site in sites:
+        if site[1] != line or site[2] != column:
+            return None
+    return (path, line, column)
+
+
+def _geno_trace_position(
+    statement: Any,
+    sites: Any,
+    key: Any,
+    callee: Any,
+    namespace: Any,
+    direct: bool,
+    function_names: Any,
+    overflow: bool = False,
+) -> Any:
+    """Where execution was in *statement*: a call site, or its start.
+
+    A position is chosen only when exactly one site of the statement can
+    have made the call. A candidate whose key names the callee can; so can
+    every call through a function value (``<call>``) when the callee is
+    something a function value holds: a Geno function (one of
+    *function_names*, the table's host names) or a builtin. Runtime helpers,
+    prelude names that start with ``_`` and that no Geno function has, are
+    never function values (no builtin name starts with ``_``). Several
+    possible sites leave the statement's start: the right line, a coarser
+    column.
+
+    *overflow*, for a host stack overflow raised in the frame itself: the
+    overflow happened at the statement's one call of a Geno function (or
+    through a function value), where the interpreter reports its recursion
+    limit too.
+    """
+    if statement is None:
+        return None
+    path = statement[0]
+    if key is None and overflow:
+        position = _geno_trace_site(
+            path,
+            [
+                site
+                for site in sites
+                if site[0] in function_names or site[0] == _GENO_TRACE_CALL_KEY
+            ],
+        )
+        return statement if position is None else position
+    if key is not None:
+        found = []
+        for site in sites:
+            if site[0] == key:
+                found.append(site)
+            elif callee is not None:
+                value = namespace.get(site[0])
+                if type(value) is _GENO_FUNCTION_TYPE and value.__code__ is callee:
+                    found.append(site)
+        calls = [site for site in sites if site[0] == _GENO_TRACE_CALL_KEY]
+        if found:
+            if key in function_names or not key.startswith("_"):
+                # The callee may have been reached through a function value
+                # as well as by name.
+                found.extend(calls)
+            position = _geno_trace_site(path, found)
+            return statement if position is None else position
+        # A callee no candidate names was reached through a function value
+        # (a parameter or a local): the statement's one indirect call.
+        position = _geno_trace_site(path, calls)
+        if position is not None:
+            return position
+    if direct or key == "__await__":
+        # An awaited `Async` made elsewhere: positioned at the `await`.
+        awaits = [site for site in sites if site[0] == _GENO_TRACE_AWAIT_KEY]
+        if len(awaits) == 1:
+            return (path, awaits[0][1], awaits[0][2])
+    return statement
+
+
+def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
+    """Map *exc*'s traceback through the trace *table* (proposal 0018).
+
+    Returns ``(frames, omitted, location)``: the Geno frames outermost
+    first, each ``(name, position)`` with ``position`` a
+    ``(path, line, column)`` tuple or ``None``, bounded to the first
+    ``_GENO_STACK_HEAD`` and the last ``_GENO_STACK_TAIL`` frames with
+    ``omitted`` frames left out between them; and the failure location,
+    the innermost frame's position.
+
+    A frame is program code only when its globals are the program's
+    namespace, its file is the anchor's and its line lies inside a Geno
+    function's range: the trusted worker's own functions share the file
+    name ``<string>`` but not the globals, and prelude functions share the
+    globals but not the file or lines. Of those body frames, a Geno frame
+    is one whose code is the function the range names; lambdas, the
+    ``ensures`` body helper and comprehensions are transparent. Frame i is
+    positioned where its last body frame before frame i+1 was: at the
+    candidate site of the callee it was calling there, or at the start of
+    the statement.
+    """
+    functions, statements, marks, candidates, end = _geno_parse_trace(table)
+    code = anchor.__code__
+    namespace = anchor.__globals__
+    filename = code.co_filename
+    base = code.co_firstlineno
+    owners: dict[int, Any] = {}
+    # Each body frame: [host line, code name, callee code, callee name].
+    body = []
+    previous_was_body = False
+    trace = exc.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame
+        frame_code = frame.f_code
+        lineno = trace.tb_lineno
+        owner = None
+        if (
+            frame.f_globals is namespace
+            and frame_code.co_filename == filename
+            and isinstance(lineno, int)
+            and 0 <= lineno - base < end
+        ):
+            line = lineno - base
+            if line not in owners:
+                owners[line] = _geno_trace_function(functions, line)
+            owner = owners[line]
+        if owner is not None:
+            body.append([lineno - base, frame_code.co_name, None, None, owner])
+            previous_was_body = True
+        else:
+            if previous_was_body:
+                body[-1][2] = frame_code
+                body[-1][3] = frame_code.co_name
+            previous_was_body = False
+        trace = trace.tb_next
+    geno = [
+        index for index, entry in _builtin_enumerate(body) if entry[4][2] == entry[1]
+    ]
+    function_names = {function[2] for function in functions}
+    frames = []
+    for number, index in _builtin_enumerate(geno):
+        if number + 1 < len(geno):
+            following = body[geno[number + 1]]
+            entry = body[geno[number + 1] - 1]
+            direct = entry[2] is None
+            key = following[1] if direct else entry[3]
+            callee = None if direct else entry[2]
+        else:
+            entry = body[-1]
+            direct = False
+            key = entry[3]
+            callee = entry[2]
+        statement_id = _geno_trace_statement(marks, entry[0])
+        position = _geno_trace_position(
+            statements.get(statement_id),
+            candidates.get(statement_id, ()),
+            key,
+            callee,
+            namespace,
+            direct,
+            function_names,
+            # The host ran out of stack making a call in this frame.
+            key is None and isinstance(exc, RecursionError),
+        )
+        frames.append((body[index][4][3], position))
+    location = frames[-1][1] if frames else None
+    total = len(frames)
+    if total <= _GENO_STACK_HEAD + _GENO_STACK_TAIL:
+        return frames, 0, location
+    kept = frames[:_GENO_STACK_HEAD] + frames[total - _GENO_STACK_TAIL :]
+    return kept, total - _GENO_STACK_HEAD - _GENO_STACK_TAIL, location
+
+
+def _geno_position_text(position: Any) -> str:
+    return f"{position[0]}:{position[1]}:{position[2]}"
+
+
+def _geno_report_lines(frames: Any, omitted: int, location: Any) -> list[str]:
+    """The frame block of a runtime report, as geno/runtime_report.py renders it."""
+    lines = []
+    if frames:
+        lines.append(_GENO_STACK_HEADER)
+        for name, position in frames:
+            if position is None:
+                lines.append(f"  in {name}")
+            else:
+                lines.append(f"  {_geno_position_text(position)} in {name}")
+        if omitted > 0:
+            noun = "frame" if omitted == 1 else "frames"
+            lines.insert(
+                1 + min(_GENO_STACK_HEAD, len(frames)),
+                f"  ... {omitted} {noun} omitted ...",
+            )
+    elif location is not None:
+        lines.append(f"  at {_geno_position_text(location)}")
+    return lines
+
+
+def _geno_uncaught_message(exc: Any) -> str:
+    """An uncaught failure's message: the worker's rule for compiled code."""
+    detail = str(exc) or type(exc).__name__
+    if not isinstance(exc, RuntimeError):
+        detail = type(exc).__name__ + ": " + detail
+    return detail
+
+
+def _geno_report_uncaught(exc: Any, table: Any, anchor: Any, stream: Any) -> None:
+    """Print the Geno report of a failure that escaped ``main``.
+
+    The frames come from the trace table; when the table or the mapping
+    fails, the report is the message line alone, never a host traceback.
+    """
+    try:
+        message = _geno_uncaught_message(exc)
+    except Exception:
+        message = type(exc).__name__
+    try:
+        lines = _geno_report_lines(*_geno_failure_report(exc, table, anchor))
+    except Exception:
+        lines = []
+    lines.append("Runtime Error: " + message)
+    stream.write("\n".join(lines) + "\n")
 
 
 # =============================================================================
