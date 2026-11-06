@@ -1,19 +1,31 @@
 # Proposal 0026: Forms Models Write Without the Prompt
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-06 by David Iach (project lead)
 - Authors: David Iach (direction), Claude Code (drafting and implementation)
 - Created: 2026-11-04
 - Target release: 0.7 (project-lead direction, 2026-11-06)
 - Numbering: reassigned from 0017 to 0026 on 2026-11-06 to avoid the
-  0017-0025 allocation in PR #233; this does not change Draft status or
-  restart the original review period.
+  0017-0025 allocation in PR #233, retaining the original review opening.
 - Discussion: https://github.com/davidiach/geno-lang/pull/232 (opened
-  2026-11-04; under `docs/proposals/README.md` it stays open for review until
-  at least 2026-11-11)
+  2026-11-04)
 - Supersedes: None
-- Review: None yet. Automated review (Codex) and CI ran on #232; neither is an
-  independent review or an acceptance. The project lead records the decision
-  under `GOVERNANCE.md`.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: automated Codex review, focused local validation, and GitHub CI,
+  Release Gate and External Apps on #232. These are not independent approval.
+
+## Acceptance Decision
+
+On 2026-11-06, David Iach instructed: "I accept proposal 0026. Merge #232 when
+CI is green". This records acceptance for Geno 0.7 and authorization to merge
+the implementation after green CI.
+
+The proposal opened on 2026-11-04. The usual seven-day review period in
+`docs/proposals/README.md` would have ended on 2026-11-11; the project lead's
+explicit acceptance and merge direction on November 6 is recorded here as an
+exception to that waiting period. It does not imply that seven days elapsed
+or that independent human review occurred.
 
 ## Summary
 
@@ -199,7 +211,8 @@ missing return type: 828 of 907 mutants repaired, none misrepaired.
 The prompt rules in `docs/llm-prompting.md` and the language tour mention the
 new forms. The changelog targets them at 0.7 under Unreleased. The package
 version remains 0.6.0 during development, as in PR #233; no 0.6 patch release
-is intended to ship these additions. Proposal acceptance is still pending.
+is intended to ship these additions. Acceptance is recorded above; the
+implementation lands through #232 after green CI.
 
 ## Alternatives
 

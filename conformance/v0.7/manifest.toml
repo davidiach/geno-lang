@@ -1,11 +1,11 @@
 schema_version = 2
 language_version = "0.7"
 status = "development"
-description = "Geno 0.7 development corpus: cold-write forms (draft proposal 0026)"
+description = "Geno 0.7 development corpus: cold-write forms (accepted proposal 0026)"
 
 # Unreleased additions to the retained v0.5 and v0.6 corpora. --all-retained
 # runs those unchanged corpora first, then this one. This corpus is not frozen.
-# Proposal 0026 is still Draft; release targeting does not record acceptance.
+# Proposal 0026 was accepted for 0.7 on 2026-11-06; this corpus is unreleased.
 # Fix application, comment preservation, formatting and f-string nesting limits
 # are additionally covered by geno/tests/test_cold_write_forms.py.
 
