@@ -117,6 +117,12 @@ from .capabilities import ISOLATED_HOST_PRIVATE_NAMES
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .js_runtime_prelude import JS_RUNTIME_PRELUDE
 from .manifest import validate_module_name
+from .runtime_report import (
+    TRACE_ANY_MARKER,
+    TRACE_AWAIT_KEY,
+    TRACE_TABLE_PLACEHOLDER,
+    TraceRecorder,
+)
 from .stdlib_scope import binds_unqualified
 from .types import (
     AnyType,
@@ -159,6 +165,25 @@ _PRELUDE_NAME_DEF_RE = _re.compile(
     r"^(?:function\s+(\w+)|class\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=)"
 )
 _MAX_SAFE_JS_INT = 9_007_199_254_740_991
+
+# Proposal 0018: a Node entry build starts its user code with an anchor
+# function and the runtime trace table (geno/runtime_report.py documents the
+# format). The anchor's definition line is the table's host line 0; the
+# prelude's reporter reads both only when a failure escapes `main`.
+_JS_TRACE_ANCHOR_LINES = (
+    "function _genoTraceAnchor() { return new Error(); }\n"
+    f"const _GENO_TRACE = {TRACE_TABLE_PLACEHOLDER};\n"
+)
+# The host callee a compiled call names: a plain identifier, or a module
+# function reached through its namespace object.
+_JS_TRACE_CALLEE = _re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\Z")
+_JS_TRACE_MODULE_CALLEE = _re.compile(
+    r"get_field\([A-Za-z_$][A-Za-z0-9_$]*, '([A-Za-z_$][A-Za-z0-9_$]*)'\)\Z"
+)
+_JS_TRACE_LEADING_HELPER = _re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\(")
+# Every literal goes through this guard, so it names no call site worth a
+# candidate (a failure in it maps to its statement).
+_JS_TRACE_UNRECORDED_HELPERS = frozenset({"_checkCollectionSize"})
 
 # Sections whose names should always be included
 _CORE_NAMES = (
@@ -468,6 +493,8 @@ _JS_FIXED_GLOBAL_NAMES = frozenset(
         "_geno_last_ts",
         "_geno_state",
         "_GENO_CREATE_REQUIRE",
+        "_GENO_TRACE",
+        "_genoTraceAnchor",
         "_main_result",
     }
 )
@@ -674,6 +701,9 @@ class JSCompiler(BaseCompiler):
         self._current_module: str | None = None
         self._type_subst: dict[str, Type] = {}
         self._function_name_override: str | None = None
+        # Proposal 0018: the runtime trace table of a Node entry build (a
+        # program with a `main` compiled for a host with a process).
+        self._trace: TraceRecorder | None = None
 
     _BUILTIN_NAME_MAP: dict[str, str] = js_backend_builtin_name_map()
 
@@ -916,6 +946,74 @@ class JSCompiler(BaseCompiler):
         self._dedent()
         self._writeln("}")
 
+    def _emit_entry_main_call(
+        self,
+        call: str,
+        main_def: FunctionDef | None,
+        *,
+        kind: EntrypointResultKind,
+        esm: bool,
+        node_host: bool,
+        type_aliases: dict[str, TypeAlias] | None = None,
+    ) -> None:
+        """Emit the call of ``main`` and the handling of its result.
+
+        A Node entry build (one with a trace table) reports an uncaught
+        failure as a Geno report and ends the process at once (proposal
+        0018, section 9). Its process-wide settings (the unlimited stack
+        trace limit and the ``unhandledRejection`` reporter) are made here
+        on the entry path only: inside the ESM entry guard, so importing an
+        ES module build changes nothing, and just before the call in
+        CommonJS. A browser build keeps native errors, as in 0.6.
+        """
+        is_async = main_def is not None and is_async_execution_form(main_def)
+        traced = self._trace is not None
+        self._writeln()
+        if esm:
+            self._open_esm_entrypoint_guard()
+        report_args = "_GENO_TRACE, _genoTraceAnchor"
+        if traced:
+            self._writeln(f"_genoInstallReporter({report_args});")
+        if is_async:
+            self._writeln("(async () => {")
+            self._indent()
+            self._writeln(f"const _main_result = await {call};")
+        elif traced:
+            self._writeln("try {")
+            self._indent()
+            self._writeln(f"const _main_result = {call};")
+        else:
+            self._writeln(f"const _main_result = {call};")
+        self._emit_main_result(
+            main_def,
+            type_aliases=type_aliases,
+            kind=kind,
+            node_host=node_host,
+        )
+        if is_async:
+            self._dedent()
+            if traced:
+                failure = self._fresh_temp()
+                self._writeln(
+                    f"}})().catch({failure} => "
+                    f"_genoReportUncaught({failure}, {report_args}));"
+                )
+            else:
+                self._writeln(
+                    "})().catch(e => { console.error(e); process.exitCode = 1; });"
+                )
+        elif traced:
+            failure = self._fresh_temp()
+            self._dedent()
+            self._writeln(f"}} catch ({failure}) {{")
+            self._indent()
+            self._writeln(f"_genoReportUncaught({failure}, {report_args});")
+            self._dedent()
+            self._writeln("}")
+        if esm:
+            self._dedent()
+            self._writeln("}")
+
     def _open_esm_entrypoint_guard(self) -> None:
         """Guard ESM main execution so importing the module is side-effect safe."""
         file_url_to_path = self._fresh_temp()
@@ -1008,6 +1106,27 @@ class JSCompiler(BaseCompiler):
         )
         self._validate_renamed_identifiers(program, JSCompileError)
 
+        # Detect app mode (init/update/render lifecycle functions) and main.
+        func_names = {d.name for d in program.definitions if isinstance(d, FunctionDef)}
+        is_app_mode = {"init", "update", "render"}.issubset(
+            func_names
+        ) and "main" not in func_names
+        main_def = next(
+            (
+                d
+                for d in program.definitions
+                if isinstance(d, FunctionDef) and d.name == "main"
+            ),
+            None,
+        )
+        # A Node entry build starts with the trace table's anchor (proposal
+        # 0018); browser builds and libraries carry no table.
+        anchor_at = (
+            self._begin_trace(main_def)
+            if node_host and main_def is not None and not is_app_mode
+            else -1
+        )
+
         self._compile_module_constants(program)
 
         # Compile all definitions
@@ -1032,12 +1151,6 @@ class JSCompiler(BaseCompiler):
         # Emit trait dispatch wrapper functions
         self._emit_trait_dispatchers()
 
-        # Detect app mode: init/update/render lifecycle functions
-        func_names = {d.name for d in program.definitions if isinstance(d, FunctionDef)}
-        is_app_mode = {"init", "update", "render"}.issubset(
-            func_names
-        ) and "main" not in func_names
-
         if is_app_mode:
             # App mode: emit requestAnimationFrame loop
             self._writeln()
@@ -1058,47 +1171,24 @@ class JSCompiler(BaseCompiler):
             self._dedent()
             self._writeln("}")
             self._writeln("requestAnimationFrame(_geno_frame);")
-        else:
+        elif main_def is not None:
             # Standard mode: call main
-            has_main = "main" in func_names
-            main_def = next(
-                (
-                    d
-                    for d in program.definitions
-                    if isinstance(d, FunctionDef) and d.name == "main"
-                ),
-                None,
+            self._trace_end_of_body()
+            self._emit_entry_main_call(
+                "main()",
+                main_def,
+                kind=classify_entrypoint_result(program),
+                esm=esm,
+                node_host=node_host,
             )
-            main_is_async = main_def is not None and is_async_execution_form(main_def)
-            if has_main:
-                self._writeln()
-                if esm:
-                    self._open_esm_entrypoint_guard()
-                if main_is_async:
-                    self._writeln("(async () => {")
-                    self._indent()
-                    self._writeln("const _main_result = await main();")
-                else:
-                    self._writeln("const _main_result = main();")
-                self._emit_main_result(
-                    main_def,
-                    kind=classify_entrypoint_result(program),
-                    node_host=node_host,
-                )
-                if main_is_async:
-                    self._dedent()
-                    self._writeln(
-                        "})().catch(e => { console.error(e); process.exitCode = 1; });"
-                    )
-                if esm:
-                    self._dedent()
-                    self._writeln("}")
 
-        user_code = str(self.output.getvalue())
+        marked_code = str(self.output.getvalue())
+        user_code = self._finish_trace(marked_code, anchor_at)
 
-        # Prepend the prelude (tree-shaken or full)
+        # Prepend the prelude (tree-shaken or full). The shaker reads the
+        # code without the trace table, whose text names host functions.
         if tree_shake:
-            prelude = _tree_shake_prelude(user_code)
+            prelude = _tree_shake_prelude(TRACE_ANY_MARKER.sub("", marked_code))
         else:
             prelude = JS_RUNTIME_PRELUDE
 
@@ -1189,6 +1279,31 @@ class JSCompiler(BaseCompiler):
         self._deferred_mappings = []
 
         entrypoint = dep_graph.project.entrypoint or dep_graph.sorted_modules[-1]
+        ep_program = dep_graph.parsed.get(entrypoint)
+        func_names: set[str] = set()
+        main_def: FunctionDef | None = None
+        if ep_program:
+            func_names = {
+                d.name for d in ep_program.definitions if isinstance(d, FunctionDef)
+            }
+            main_def = next(
+                (
+                    d
+                    for d in ep_program.definitions
+                    if isinstance(d, FunctionDef) and d.name == "main"
+                ),
+                None,
+            )
+        is_app_mode = {"init", "update", "render"}.issubset(
+            func_names
+        ) and "main" not in func_names
+        # A Node entry build starts with the trace table's anchor (proposal
+        # 0018); browser builds and libraries carry no table.
+        anchor_at = (
+            self._begin_trace(main_def)
+            if node_host and main_def is not None and not is_app_mode
+            else -1
+        )
         self._emit_function_assignments = False
         self._spec_plan = plan_specializations(
             (mod_name, dep_graph.parsed[mod_name])
@@ -1310,28 +1425,9 @@ class JSCompiler(BaseCompiler):
 
         # Add main call from entrypoint module
         entry_binding = module_bindings[entrypoint]
-        func_names = set()
-        main_is_async = False
-        ep_program = dep_graph.parsed.get(entrypoint)
         entrypoint_type_aliases: dict[str, TypeAlias] = {}
         if ep_program:
             entrypoint_type_aliases = visible_type_aliases(ep_program, dep_graph.parsed)
-            func_names = {
-                d.name for d in ep_program.definitions if isinstance(d, FunctionDef)
-            }
-            main_def = next(
-                (
-                    d
-                    for d in ep_program.definitions
-                    if isinstance(d, FunctionDef) and d.name == "main"
-                ),
-                None,
-            )
-            main_is_async = main_def is not None and is_async_execution_form(main_def)
-
-        is_app_mode = {"init", "update", "render"}.issubset(
-            func_names
-        ) and "main" not in func_names
 
         if is_app_mode:
             # App mode: emit requestAnimationFrame loop
@@ -1354,16 +1450,9 @@ class JSCompiler(BaseCompiler):
             self._writeln("}")
             self._writeln("requestAnimationFrame(_geno_frame);")
         elif "main" in func_names:
-            self._writeln()
-            if esm:
-                self._open_esm_entrypoint_guard()
-            if main_is_async:
-                self._writeln("(async () => {")
-                self._indent()
-                self._writeln(f"const _main_result = await {entry_binding}['main']();")
-            else:
-                self._writeln(f"const _main_result = {entry_binding}['main']();")
-            self._emit_main_result(
+            self._trace_end_of_body()
+            self._emit_entry_main_call(
+                f"{entry_binding}['main']()",
                 main_def,
                 type_aliases=entrypoint_type_aliases,
                 kind=(
@@ -1371,21 +1460,16 @@ class JSCompiler(BaseCompiler):
                     if ep_program
                     else EntrypointResultKind.MISSING
                 ),
+                esm=esm,
                 node_host=node_host,
             )
-            if main_is_async:
-                self._dedent()
-                self._writeln(
-                    "})().catch(e => { console.error(e); process.exitCode = 1; });"
-                )
-            if esm:
-                self._dedent()
-                self._writeln("}")
 
-        user_code = str(self.output.getvalue())
+        marked_code = str(self.output.getvalue())
+        user_code = self._finish_trace(marked_code, anchor_at)
 
+        # The shaker reads the code without the trace table (see compile).
         if tree_shake:
-            prelude = _tree_shake_prelude(user_code)
+            prelude = _tree_shake_prelude(TRACE_ANY_MARKER.sub("", marked_code))
         else:
             prelude = JS_RUNTIME_PRELUDE
 
@@ -1404,6 +1488,75 @@ class JSCompiler(BaseCompiler):
         self._write(user_code)
         self._emit_function_assignments = False
         return str(self.output.getvalue())
+
+    # =========================================================================
+    # Runtime trace table (proposal 0018, section 9)
+    # =========================================================================
+
+    def _begin_trace(self, main_def: FunctionDef | None) -> int:
+        """Start the trace table of an entry build; returns the anchor's offset."""
+        self._trace = TraceRecorder(
+            getattr(getattr(main_def, "location", None), "filename", None),
+            absolute_paths=False,
+        )
+        anchor_at = self.output.tell()
+        self._write(_JS_TRACE_ANCHOR_LINES)
+        return anchor_at
+
+    def _finish_trace(self, user_code: str, anchor_at: int) -> str:
+        """Resolve the trace markers of *user_code* and fill in the table."""
+        trace = self._trace
+        self._trace = None
+        if trace is None:
+            return user_code
+        resolved = trace.resolve(user_code, anchor_at, literal=_json.dumps)
+        if "\0geno-trace" in resolved:
+            raise JSCompileError("internal error: unresolved runtime trace marker")
+        return resolved
+
+    def _trace_end_of_body(self) -> None:
+        if self._trace is not None:
+            self._write(self._trace.marker("E", 0))
+
+    def _trace_candidate(self, key: str | None, location) -> None:
+        """Record a candidate site of the current statement (proposal 0018)."""
+        trace = self._trace
+        if trace is not None and key is not None:
+            trace.candidate(key, location)
+
+    def _trace_callee(self, func: str) -> str | None:
+        """The host callee a compiled call expression *func* names, if known."""
+        if _JS_TRACE_CALLEE.match(func):
+            return func
+        match = _JS_TRACE_MODULE_CALLEE.match(func)
+        if match is not None:
+            return self._mangle_name(match.group(1))
+        return None
+
+    def _trace_helper(self, code: str, location) -> None:
+        """Record the runtime helper compiled *code* starts by calling."""
+        if self._trace is None:
+            return
+        match = _JS_TRACE_LEADING_HELPER.match(code)
+        if match is not None and match.group(1) not in _JS_TRACE_UNRECORDED_HELPERS:
+            self._trace_candidate(match.group(1), location)
+
+    @contextmanager
+    def _traced_statement(self, location) -> Iterator[None]:
+        """Attribute the lines written inside to a statement at *location*."""
+        trace = self._trace
+        if trace is None:
+            yield
+            return
+        trace.stack.append(trace.statement(location))
+        self._write(trace.marker("S", trace.stack[-1]))
+        try:
+            yield
+        finally:
+            trace.stack.pop()
+            # An enclosing statement resumes after a nested one; lines after
+            # a function body's last statement belong to no statement.
+            self._write(trace.marker("S", trace.stack[-1] if trace.stack else -1))
 
     # =========================================================================
     # Output helpers
@@ -1722,6 +1875,30 @@ class JSCompiler(BaseCompiler):
         self._writeln("}")
 
     def _compile_function_def(self, defn: FunctionDef) -> None:
+        """Compile a function definition to JavaScript.
+
+        With a trace table, the function's host line range is recorded with
+        its host and display names (proposal 0018, section 9).
+        """
+        trace = self._trace
+        if trace is None:
+            self._compile_function_def_untraced(defn, None)
+            return
+        index = trace.function(
+            self._mangle_name(self._function_name_override or defn.name),
+            self._function_display_name(defn),
+        )
+        enclosing = trace.stack
+        trace.stack = []
+        try:
+            self._compile_function_def_untraced(defn, index)
+        finally:
+            trace.stack = enclosing
+            self._write(trace.marker("D1", index))
+
+    def _compile_function_def_untraced(
+        self, defn: FunctionDef, trace_index: int | None
+    ) -> None:
         self._writeln()
         self._record_mapping(defn.location)
         param_parts = []
@@ -1733,6 +1910,11 @@ class JSCompiler(BaseCompiler):
         params = ", ".join(param_parts)
         func_name = self._mangle_name(self._function_name_override or defn.name)
         async_prefix = "async " if is_async_execution_form(defn) else ""
+        if trace_index is not None and self._trace is not None:
+            # The range starts at the `function` line itself: the reporter
+            # checks a frame's enclosing-function line against it.
+            self._write(self._trace.marker("D0", trace_index))
+            self._write(self._trace.marker("S", -1))
         if self._emit_function_assignments:
             self._writeln(
                 f"var {func_name} = {async_prefix}function {func_name}({params}) {{"
@@ -1779,30 +1961,20 @@ class JSCompiler(BaseCompiler):
                 raise JSCompileError(
                     f"`requires false` on {defn.name} makes the function uncallable"
                 )
-            with self._block_scope(p.name for p in defn.params):
-                cond = self._compile_expr(req.condition)
-            described = (
-                display_name,
-                req.source_text,
-                param_names,
-                self._contract_values(param_refs, param_shapes),
-            )
-            cond = self._contract_condition(
-                req.condition,
-                cond,
-                self._contract_violation_call(
-                    "requires", "propagate", index, *described
-                ),
-            )
-            self._writeln(f"if (!({cond})) {{")
-            self._indent()
-            self._writeln(
-                "throw "
-                + self._contract_violation_call("requires", "false", index, *described)
-                + ";"
-            )
-            self._dedent()
-            self._writeln("}")
+            # The check's lines are a statement located at the clause, so a
+            # failure maps to the clause (proposal 0018, section 8).
+            with self._traced_statement(req.condition.location):
+                self._compile_requires_check(
+                    defn,
+                    req,
+                    index,
+                    (
+                        display_name,
+                        req.source_text,
+                        param_names,
+                        self._contract_values(param_refs, param_shapes),
+                    ),
+                )
 
         body_helper = self._fresh_temp() if has_ensures else ""
         if has_ensures:
@@ -1849,49 +2021,95 @@ class JSCompiler(BaseCompiler):
                     raise JSCompileError(
                         f"`ensures false` on {defn.name} makes the function unusable"
                     )
-                # Limit the implicit result binding to the contract, while
-                # allowing lambdas inside it to shadow that binding normally.
-                with self._block_scope([*(p.name for p in defn.params), "result"]):
-                    self._js_block_scopes[-1].overrides["result"] = result_name
-                    cond = self._compile_expr(ens.condition)
-                described = (
-                    display_name,
-                    ens.source_text,
-                    param_names,
-                    self._contract_values(call_refs, param_shapes),
-                )
-                cond = self._contract_condition(
-                    ens.condition,
-                    cond,
-                    self._contract_violation_call(
-                        "ensures",
-                        "propagate",
+                with self._traced_statement(ens.condition.location):
+                    self._compile_ensures_check(
+                        defn,
+                        ens,
                         index,
-                        *described,
-                        result=shown_result,
-                        checked=checked,
-                    ),
-                )
-                self._writeln(f"if (!({cond})) {{")
-                self._indent()
-                self._writeln(
-                    "throw "
-                    + self._contract_violation_call(
-                        "ensures",
-                        "false",
-                        index,
-                        *described,
-                        result=shown_result,
-                        checked=checked,
+                        result_name,
+                        (
+                            display_name,
+                            ens.source_text,
+                            param_names,
+                            self._contract_values(call_refs, param_shapes),
+                        ),
+                        shown_result,
+                        checked,
                     )
-                    + ";"
-                )
-                self._dedent()
-                self._writeln("}")
             self._writeln(f"return {result_name};")
 
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
+
+    def _compile_requires_check(
+        self,
+        defn: FunctionDef,
+        req,
+        index: int,
+        described: tuple[str, str | None, list[str], str],
+    ) -> None:
+        """Emit the check of one ``requires`` clause at function entry."""
+        with self._block_scope(p.name for p in defn.params):
+            cond = self._compile_expr(req.condition)
+        cond = self._contract_condition(
+            req.condition,
+            cond,
+            self._contract_violation_call("requires", "propagate", index, *described),
+        )
+        self._writeln(f"if (!({cond})) {{")
+        self._indent()
+        self._writeln(
+            "throw "
+            + self._contract_violation_call("requires", "false", index, *described)
+            + ";"
+        )
+        self._dedent()
+        self._writeln("}")
+
+    def _compile_ensures_check(
+        self,
+        defn: FunctionDef,
+        ens,
+        index: int,
+        result_name: str,
+        described: tuple[str, str | None, list[str], str],
+        shown_result: tuple[str, str],
+        checked: str | None,
+    ) -> None:
+        """Emit the check of one ``ensures`` clause after the body ran."""
+        # Limit the implicit result binding to the contract, while allowing
+        # lambdas inside it to shadow that binding normally.
+        with self._block_scope([*(p.name for p in defn.params), "result"]):
+            self._js_block_scopes[-1].overrides["result"] = result_name
+            cond = self._compile_expr(ens.condition)
+        cond = self._contract_condition(
+            ens.condition,
+            cond,
+            self._contract_violation_call(
+                "ensures",
+                "propagate",
+                index,
+                *described,
+                result=shown_result,
+                checked=checked,
+            ),
+        )
+        self._writeln(f"if (!({cond})) {{")
+        self._indent()
+        self._writeln(
+            "throw "
+            + self._contract_violation_call(
+                "ensures",
+                "false",
+                index,
+                *described,
+                result=shown_result,
+                checked=checked,
+            )
+            + ";"
+        )
+        self._dedent()
+        self._writeln("}")
 
     def _contract_condition(
         self, condition: Expression, compiled: str, violation: str
@@ -2040,6 +2258,18 @@ class JSCompiler(BaseCompiler):
     # =========================================================================
 
     def _compile_statement(self, stmt: Statement) -> None:
+        """Compile a statement to JavaScript.
+
+        With a trace table (proposal 0018), every statement kind is recorded,
+        so a runtime failure maps back to the statement that raised it.
+        """
+        if self._trace is None:
+            self._compile_statement_untraced(stmt)
+            return
+        with self._traced_statement(stmt.location):
+            self._compile_statement_untraced(stmt)
+
+    def _compile_statement_untraced(self, stmt: Statement) -> None:
         self._record_mapping(stmt.location)
         if isinstance(stmt, LetStatement):
             self._compile_let_statement(stmt)
@@ -3191,10 +3421,17 @@ class JSCompiler(BaseCompiler):
             return f"_mapLiteral([{pairs}])"
 
         if isinstance(expr, BinaryOp):
-            return self._compile_binary_op(expr)
+            binary_code = self._compile_binary_op(expr)
+            if self._trace is not None:
+                self._trace_helper(binary_code, expr.location)
+                if expr.operator == "%" and "_divZero()" in binary_code:
+                    self._trace_candidate("_divZero", expr.location)
+            return binary_code
 
         if isinstance(expr, UnaryOp):
-            return self._compile_unary_op(expr)
+            unary_code = self._compile_unary_op(expr)
+            self._trace_helper(unary_code, expr.location)
+            return unary_code
 
         if isinstance(expr, FunctionCall):
             return self._compile_function_call(expr)
@@ -3202,6 +3439,7 @@ class JSCompiler(BaseCompiler):
         if isinstance(expr, IndexAccess):
             target = self._compile_expr(expr.target)
             index = self._compile_expr(expr.index)
+            self._trace_candidate("_safe_index", expr.location)
             return f"_safe_index({target}, {index})"
 
         if isinstance(expr, FieldAccess):
@@ -3266,6 +3504,7 @@ class JSCompiler(BaseCompiler):
 
         if isinstance(expr, AwaitExpr):
             inner = self._compile_expr(expr.expr)
+            self._trace_candidate(TRACE_AWAIT_KEY, expr.location)
             return f"(await {inner})"
 
         raise JSCompileError(f"Unsupported expression type: {type(expr).__name__}")
@@ -3396,6 +3635,7 @@ class JSCompiler(BaseCompiler):
         reordered_call = self._compile_reordered_call(expr, ordered_args, "undefined")
         if reordered_call is not None:
             names, values, call = reordered_call
+            self._trace_candidate(self._trace_callee(values[0]), expr.location)
             parameters = ", ".join(names)
             arguments = ", ".join(values)
             return f"(({parameters}) => {call})({arguments})"
@@ -3404,6 +3644,7 @@ class JSCompiler(BaseCompiler):
         if len(concrete_args) == len(ordered_args):
             fast_path = self._compile_builtin_fast_path(expr, concrete_args)
             if fast_path is not None:
+                self._trace_helper(fast_path, expr.location)
                 return fast_path
 
         func = self._compile_expr(expr.function)
@@ -3411,6 +3652,7 @@ class JSCompiler(BaseCompiler):
             "undefined" if arg is None else self._compile_expr(arg.value)
             for arg in ordered_args
         )
+        self._trace_candidate(self._trace_callee(func), expr.location)
 
         return f"{func}({args})"
 
@@ -3716,6 +3958,9 @@ class JSCompiler(BaseCompiler):
                 args = [current_temp] + args
 
             arg_str = ", ".join(args)
+            self._trace_candidate(
+                self._trace_callee(func), stage.location or expr.location
+            )
             current = f"(({current_temp}) => {func}({arg_str}))({current})"
 
         return current
