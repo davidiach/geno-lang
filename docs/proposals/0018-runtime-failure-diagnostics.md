@@ -487,9 +487,10 @@ Postcondition failed: <name>(...) ensures <clause text> ('?' propagated None/Err
     `ensures` rebinds a parameter at the body's top level (the case that
     reaches the parameter's own host variable; a nested-block shadow does not,
     and the parity tests pin both). Only such functions get one entry
-    statement that keeps the original values (`_geno_args = (n,)` / `const
-    _geno_args = [n];`); every other function renders its parameters at
-    failure time and pays nothing;
+    statement that keeps the original values in a fresh compiler temporary
+    (`_temp_1 = (n,)` / `const _temp_1 = [n];`, collision-free by
+    construction); every other function renders its parameters at failure
+    time and pays nothing;
   - when a rebound parameter's value at the check differs from its argument,
     the postcondition message adds it after the result:
     `Postcondition failed: g(n: 1) ensures n > 10 (result was 6; n was 6 when checked)`,
@@ -537,26 +538,40 @@ line-based extraction as the fallback, which fixes its multi-line truncation.
 too, so `f(s: "0")` cannot be confused with `f(s: 0)`. Each value is capped at
 `ARGUMENT_DISPLAY_LIMIT = 64` code points: a longer rendering keeps its first
 61 code points and gains `...`. A new bounded renderer in each of the three
-runtimes (`format_value_bounded(value, limit)`) returns exactly what
+runtimes (`format_value_bounded(value, limit)`; `_geno_format_bounded` and
+`_formatValueBounded(value, limit, shape)` in the preludes) returns exactly what
 truncating the full rendering would return, but stops walking a value once it
 has more than `limit` code points. Cost is therefore bounded by the limit, not
 by the value's size. This matters because property checks raise and discard
 many `requires` rejections. JavaScript counts code points, not UTF-16 units,
 so astral characters truncate identically. The fix for the Python `ensures`
 `str()` bug falls out of this: every backend renders through the same
-function.
+function. Both prelude renderers are the
+existing budgeted f-string writer (`_GenoFString`) with a display budget in
+place of the collection limit, so they share its escaping, cycle and set
+ordering rules. JavaScript values cannot tell `2.0` from `2` or a tuple from
+a list, so the JavaScript compiler passes each argument's and the result's
+static display shape, the one f-strings already use
+(`_compile_fstring_shape`: Float, tuple, sequence, map and variant-field
+positions), and the renderer applies it; compiled records keep using their
+own formatter's bounded-writer branch.
 
 **Structured fields.** `ContractViolationError` keeps `clause`, `reason`,
 `clause_index`, `call_depth` and `result_display`, with their meanings
 unchanged. It gains `function: str | None`, `clause_text: str | None` and
-`arguments: tuple[tuple[str, str], ...] | None` (name and rendered value).
-`with_message` carries every field and the stack. Compiled Python's
-`_GenoContractViolation` and JavaScript's `_GenoContractViolation` get the
-same attributes (JS: `clause`, `reason`, `clauseIndex`, `function`,
-`clauseText`, `arguments`, `resultDisplay`). They are built by a prelude
-factory, `_geno_contract_violation(clause, reason, index, function,
-clause_text, names, values, result=...)`, which *returns* the exception (like
-`_geno_panic_error`). The `raise` therefore stays in the Geno function's own
+`arguments: tuple[tuple[str, str], ...] | None` (name and rendered value),
+and `checked_values` (the same shape, empty unless an `ensures` saw a
+rebound parameter). `with_message` carries every field and the stack.
+Compiled Python's `_GenoContractViolation` and JavaScript's
+`_GenoContractViolation` get the same attributes (JS: `clause`, `reason`,
+`clauseIndex`, `function`, `clauseText`, `arguments`, `resultDisplay`,
+`checkedValues`). They are built by a prelude factory, which *returns* the
+exception (like `_geno_panic_error`): Python
+`_geno_contract_violation(clause, reason, index, function, clause_text,
+names, values[, result][, checked=...])`, and JavaScript
+`_genoContractViolation(clause, reason, index, fn, clauseText, names,
+values[, hasResult, result, resultShape][, checked])`, whose `values` and
+`checked` are `[value, shape]` pairs (section 6, argument rendering). The `raise` therefore stays in the Geno function's own
 frame, on a host line that the trace table maps to the clause. The compiler
 passes the clause text, function name and parameter names as ordinary escaped
 string literals (Python `repr`; JS `JSON.stringify`) and never as f-string or
@@ -1388,7 +1403,7 @@ Five sequential packages; each leaves the tree green.
    - The `_explain_rejection_example` prefix, and the property-check clause
      text read from the field.
    - `ensures` argument display from the call's arguments: the interpreter
-     passes `args` to `_check_ensures`; the compilers emit the `_geno_args`
+     passes `args` to `_check_ensures`; the compilers emit the arguments
      snapshot only for functions that rebind a parameter at top level; the
      `checked_values` suffix.
    - The `docs/spec/v0.7.md` 5.4 JSON sample's message, updated with the

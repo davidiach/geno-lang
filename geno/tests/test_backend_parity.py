@@ -4774,58 +4774,110 @@ class TestContractFailureParity:
             found = _CONTRACT_MESSAGE_RE.findall(error)
             assert found == [expected], (backend, error)
 
-    def test_compiled_python_carries_the_structured_fields(self) -> None:
-        source = _CONTRACT_FAILURE_PROGRAMS["ensures-top-level-rebinding"][0]
+    # (program, function, arguments, expected fields) of each library call.
+    # JavaScript spells the fields in camelCase; the probe maps them back.
+    _STRUCTURED_CASES = [
+        (
+            "requires",
+            "safe_div",
+            (8, 0),
+            {
+                "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+                "clause": "requires",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "safe_div",
+                "clause_text": "b != 0",
+                "arguments": [["a", "8"], ["b", "0"]],
+                "result_display": None,
+                "checked_values": [],
+            },
+        ),
+        (
+            "ensures-string-result",
+            "shout",
+            ("hi",),
+            {
+                "message": 'Postcondition failed: shout(s: "hi") ensures '
+                'length(result) > 10 (result was "hi!")',
+                "clause": "ensures",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "shout",
+                "clause_text": "length(result) > 10",
+                "arguments": [["s", '"hi"']],
+                "result_display": '"hi!"',
+                "checked_values": [],
+            },
+        ),
+        (
+            "ensures-top-level-rebinding",
+            "g",
+            (1,),
+            {
+                "message": "Postcondition failed: g(n: 1) ensures n > 10 "
+                "(result was 6; n was 6 when checked)",
+                "clause": "ensures",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "g",
+                "clause_text": "n > 10",
+                "arguments": [["n", "1"]],
+                "result_display": "6",
+                "checked_values": [["n", "6"]],
+            },
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        ("case", "function", "args", "expected"),
+        _STRUCTURED_CASES,
+        ids=[case[0] for case in _STRUCTURED_CASES],
+    )
+    def test_compiled_python_carries_the_structured_fields(
+        self, case: str, function: str, args: tuple, expected: dict
+    ) -> None:
+        source = _CONTRACT_FAILURE_PROGRAMS[case][0].split("func main")[0]
         namespace = compile_and_exec(source, timeout=None)
 
         with pytest.raises(RuntimeError) as exc_info:
-            namespace["g"](1)
+            namespace[function](*args)
 
         violation = exc_info.value
         assert type(violation).__name__ == "_GenoContractViolation"
-        assert str(violation) == (
-            "Postcondition failed: g(n: 1) ensures n > 10 "
-            "(result was 6; n was 6 when checked)"
-        )
-        assert {
-            name: getattr(violation, name)
-            for name in (
-                "clause",
-                "reason",
-                "clause_index",
-                "function",
-                "clause_text",
-                "arguments",
-                "result_display",
-                "checked_values",
-                "call_depth",
-            )
-        } == {
-            "clause": "ensures",
-            "reason": "false",
-            "clause_index": 0,
-            "function": "g",
-            "clause_text": "n > 10",
-            "arguments": (("n", "1"),),
-            "result_display": "6",
-            "checked_values": (("n", "6"),),
-            "call_depth": None,
-        }
+        fields = {"message": str(violation)}
+        for name in expected:
+            if name != "message":
+                value = getattr(violation, name)
+                fields[name] = (
+                    [list(pair) for pair in value]
+                    if isinstance(value, tuple)
+                    else value
+                )
+        assert fields == expected
+        assert violation.call_depth is None
 
     @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
-    def test_compiled_javascript_carries_the_structured_fields(self) -> None:
-        source = _CONTRACT_FAILURE_PROGRAMS["requires"][0].split("func main")[0]
-        probe = """
-try {
-    safe_div(8, 0);
-} catch (e) {
-    console.log(JSON.stringify({
+    @pytest.mark.parametrize(
+        ("case", "function", "args", "expected"),
+        _STRUCTURED_CASES,
+        ids=[case[0] for case in _STRUCTURED_CASES],
+    )
+    def test_compiled_javascript_carries_the_structured_fields(
+        self, case: str, function: str, args: tuple, expected: dict
+    ) -> None:
+        source = _CONTRACT_FAILURE_PROGRAMS[case][0].split("func main")[0]
+        probe = f"""
+try {{
+    {function}(...{json.dumps(list(args))});
+}} catch (e) {{
+    console.log(JSON.stringify({{
         name: e.name, message: e.message, clause: e.clause, reason: e.reason,
-        clauseIndex: e.clauseIndex, function: e.function, clauseText: e.clauseText,
-        arguments: e.arguments, resultDisplay: e.resultDisplay,
-        checkedValues: e.checkedValues,
-    }));
-}
+        clause_index: e.clauseIndex, function: e.function,
+        clause_text: e.clauseText, arguments: e.arguments,
+        result_display: e.resultDisplay, checked_values: e.checkedValues,
+    }}));
+}}
 """
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
@@ -4835,15 +4887,7 @@ try {
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {
             "name": "_GenoContractViolation",
-            "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
-            "clause": "requires",
-            "reason": "false",
-            "clauseIndex": 0,
-            "function": "safe_div",
-            "clauseText": "b != 0",
-            "arguments": [["a", "8"], ["b", "0"]],
-            "resultDisplay": None,
-            "checkedValues": [],
+            **expected,
         }
 
     def test_only_a_rebinding_function_keeps_its_call_arguments(self) -> None:
