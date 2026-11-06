@@ -261,6 +261,24 @@ class TestClauseText:
 # =============================================================================
 
 
+def _vec(items: list[Any]) -> VecValue:
+    value = VecValue()
+    value._elements = list(items)
+    return value
+
+
+def _set(items: set[Any]) -> SetValue:
+    value = SetValue()
+    value._data = set(items)
+    return value
+
+
+def _mutable_map(items: dict[Any, Any]) -> MutableMapValue:
+    value = MutableMapValue()
+    value._data = dict(items)
+    return value
+
+
 def _sample_values() -> list[Any]:
     point = ConstructorValue("Point", {"x": 1.5, "y": -2})
     return [
@@ -290,9 +308,9 @@ def _sample_values() -> list[Any]:
         ConstructorValue("Some", {"value": point}),
         [point] * 10,
         ArrayValue([1, 2, 3]),
-        VecValue(["a", "b"]),
-        SetValue({3, 1, 2}),
-        MutableMapValue({"a": 1}),
+        _vec(["a", "b"]),
+        _set({3, 1, 2}),
+        _mutable_map({"a": 1}),
         [[[[1, 2, 3]]], [["deep" * 20]]],
     ]
 
@@ -369,7 +387,7 @@ class TestBoundedRenderer:
         assert len(rendered) < 40
 
     def test_large_sets_are_not_fully_sorted_before_rendering(self) -> None:
-        big = SetValue(set(range(50_000)))
+        big = _set(set(range(50_000)))
 
         shown = geno_builtins.format_value_bounded(big, 64)
 
@@ -549,6 +567,26 @@ class TestContractMessage:
             re.MULTILINE,
         )
 
+    def test_the_spec_property_sample_shows_the_engine_message(self) -> None:
+        from geno.property_check import check_module_properties
+        from geno.typechecker import TypeChecker
+
+        spec = (GENO_DIR.parent / "docs/spec/v0.7.md").read_text()
+        section = spec.split("### 5.4 Property Checks", 1)[1].split("\n### ", 1)[0]
+        code = section.split("```geno\n", 1)[1].split("```", 1)[0]
+        program = Parser(Lexer(code, "abs.geno").tokenize(), code).parse_program()
+        checker = TypeChecker()
+        checker.check_program(program)
+        (result,) = check_module_properties(
+            program, checker, module="abs", path="abs.geno", source=code
+        )
+
+        assert result.failure is not None
+        assert result.failure.message == (
+            "Postcondition failed: abs_val(n: -1) ensures result >= 0 (result was -1)"
+        )
+        assert f'"message": {json.dumps(result.failure.message)},' in section
+
     def test_no_corpus_panics_example_matches_the_old_wording(self) -> None:
         """Proposal 0018 rewords contract failures; `panics "substring"`
         examples written against the 0.6 wording would stop matching."""
@@ -683,12 +721,9 @@ class TestInterpreterContractFailures:
             "end func\n"
         )
 
+        widened = "[" + ", ".join(f"{n}.0" for n in range(1, 16)) + "]"
         assert violation.arguments == (
-            (
-                "xs",
-                "[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, "
-                "12.0, 13.0, ...",
-            ),
+            ("xs", widened[:61] + "..."),
             ("name", '"😀😀"'),
         )
         assert all(

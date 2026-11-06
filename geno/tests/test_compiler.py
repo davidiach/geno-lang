@@ -6,6 +6,7 @@ Tests for the Geno Compiler
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1665,6 +1666,61 @@ class TestCompilerSpecs:
         with pytest.raises(RuntimeError) as exc_info:
             compile_and_run(source)
         assert "Postcondition failed" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("body", "snapshot"),
+        [
+            ("    let n = n + 5\n    return n\n", True),
+            ("    var n = n + 5\n    n = n + 1\n    return n\n", True),
+            ("    let (n, m) = (n + 1, 2)\n    return n + m\n", True),
+            (
+                "    if n > 0 then\n        let n = n + 5\n"
+                "        return n\n    end if\n    return n\n",
+                False,
+            ),
+            (
+                "    var total = 0\n    for n in [20, 30] do\n"
+                "        total = total + n\n    end for\n    return n\n",
+                False,
+            ),
+            ("    let k = n + 5\n    return k\n", False),
+        ],
+        ids=["let", "var", "destructure", "nested-shadow", "for-loop", "none"],
+    )
+    def test_only_a_top_level_rebinding_snapshots_the_call_arguments(
+        self, body: str, snapshot: bool
+    ):
+        """An ``ensures`` sees a parameter rebound at the body's top level,
+        so only such a function keeps the call's arguments for its failure
+        message (proposal 0018); the others pay nothing."""
+        source = (
+            "func g(n: Int) -> Int\n"
+            "    ensures result > 0\n"
+            "    example 11 -> 16\n" + body + "end func\n"
+        )
+
+        python_code = compile_to_python(source, typecheck=False)
+
+        snapshots = re.findall(r"^    _temp_\d+ = \(n,\)$", python_code, re.M)
+        assert len(snapshots) == (1 if snapshot else 0)
+
+    def test_a_rebinding_function_without_ensures_keeps_nothing(self):
+        source = """
+        func g(n: Int) -> Int
+            requires n > 0
+            example 1 -> 6
+            let n = n + 5
+            return n
+        end func
+        """
+
+        python_code = compile_to_python(source)
+
+        assert not re.search(r"^    _temp_\d+ = \(n,\)$", python_code, re.M)
+        assert (
+            "raise _geno_contract_violation('requires', 'false', 0, 'g', 'n > 0', "
+            "('n',), (n,))"
+        ) in python_code
 
 
 class TestContractConstantFolding:
