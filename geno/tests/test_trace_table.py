@@ -117,6 +117,31 @@ end func
 """
 
 
+# Parameters and locals that shadow a builtin (`format`) or a function
+# (`check`) name are function values; the same names elsewhere are direct.
+SHADOWING = """func check(n: Int) -> Int
+    example 1 -> 1
+    return n
+end func
+
+func render(n: Int, format: (Int) -> String) -> String
+    example 1, to_string -> "1"
+    return format(n)
+end func
+
+func apply(check: (Int) -> Int, x: Int) -> Int
+    example abs, 1 -> 1
+    let abs = check
+    return check(x) + abs(x)
+end func
+
+func main() -> Int
+    print(format("{}", [to_string(check(1))]))
+    return apply(check, abs(-9))
+end func
+"""
+
+
 def _table(code: str) -> tuple[int, list[str], Any]:
     """The anchor's line index, the code's lines and the parsed table."""
     lines = code.split("\n")
@@ -137,6 +162,20 @@ def _statement_of(code: str, needle: str, occurrence: int = 0) -> Any:
     host_line = found[occurrence] - anchor
     statement = runtime._geno_trace_statement(marks, host_line)
     return statements.get(statement), candidates.get(statement, [])
+
+
+def _assert_shadowing_candidates(statement_of: Any, code: str, format_: str) -> None:
+    """SHADOWING's calls through shadowing names are recorded under `<call>`;
+    *format_* is the host name of the parameter `format`."""
+    _statement, candidates = statement_of(code, f"return {format_}(n)")
+    assert (TRACE_CALL_KEY, 8, 12) in candidates
+    _statement, candidates = statement_of(code, "check(x)")
+    assert (TRACE_CALL_KEY, 14, 12) in candidates
+    assert (TRACE_CALL_KEY, 14, 23) in candidates
+    _statement, candidates = statement_of(code, "print_(")
+    assert not [site for site in candidates if site[0] == TRACE_CALL_KEY]
+    _statement, candidates = statement_of(code, "return apply(")
+    assert not [site for site in candidates if site[0] == TRACE_CALL_KEY]
 
 
 def _assert_ranges_name_their_defs(code: str) -> None:
@@ -338,6 +377,10 @@ end func
         assert ("check", 6, 46) in candidates
         statement, candidates = _statement_of(code, "return apply(")
         assert (TRACE_CALL_KEY, 12, 12) not in candidates
+
+    def test_shadowing_parameters_and_locals_are_function_values(self) -> None:
+        code = compile_to_python(SHADOWING, filename="shadowing.geno")
+        _assert_shadowing_candidates(_statement_of, code, "format_")
 
     def test_contract_checks_are_located_at_their_clause(self) -> None:
         source = """func safe_div(a: Int, b: Int) -> Int
@@ -689,6 +732,11 @@ class TestJavaScriptTable:
         assert ("check", 6, 46) in candidates
         assert _js_statement_of(code, "    try {")[0] is None
         _assert_js_ranges_start_at_their_functions(code)
+
+    def test_shadowing_parameters_and_locals_are_function_values(self) -> None:
+        _assert_shadowing_candidates(
+            _js_statement_of, _js(SHADOWING, "shadowing.geno"), "format"
+        )
 
     def test_contract_checks_are_located_at_their_clause(self) -> None:
         code = _js(CONTRACT, "contract.geno")

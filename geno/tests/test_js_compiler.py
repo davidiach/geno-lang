@@ -3673,6 +3673,22 @@ class TestJSCompilerSourceMapTracking:
             no_map_compiler.generate_source_map()
 
 
+# Records every call that makes stdout or stderr blocking (proposal 0018:
+# only a build that runs as the entry point does).
+_BLOCKING_SPY = (
+    "const blocked = [];\n"
+    "for (const [name, stream] of [['stdout', process.stdout], "
+    "['stderr', process.stderr]]) {\n"
+    "  const handle = stream._handle;\n"
+    "  if (handle && typeof handle.setBlocking === 'function') {\n"
+    "    const original = handle.setBlocking.bind(handle);\n"
+    "    handle.setBlocking = (flag) => { blocked.push(name); "
+    "return original(flag); };\n"
+    "  }\n"
+    "}\n"
+)
+
+
 _REPORT_PANIC = """
 func check(n: Int) -> Int
     example 1 -> 1
@@ -3729,12 +3745,12 @@ class TestJSRuntimeFailureReporter:
         assert isinstance(esm, str)
         (tmp_path / "lib.mjs").write_text(esm, encoding="utf-8")
         (tmp_path / "importer.mjs").write_text(
-            "const before = [Error.stackTraceLimit, "
+            _BLOCKING_SPY + "const before = [Error.stackTraceLimit, "
             "process.listenerCount('unhandledRejection')];\n"
             "const lib = await import('./lib.mjs');\n"
             "const after = [Error.stackTraceLimit, "
             "process.listenerCount('unhandledRejection')];\n"
-            "console.log(JSON.stringify({before, after, "
+            "console.log(JSON.stringify({before, after, blocked, "
             "exports: Object.keys(lib).sort(), value: lib.check(1)}));\n",
             encoding="utf-8",
         )
@@ -3751,6 +3767,7 @@ class TestJSRuntimeFailureReporter:
         assert result.returncode == 0, result.stderr
         observed = json.loads(result.stdout)
         assert observed["after"] == observed["before"]
+        assert observed["blocked"] == []
         assert observed["exports"] == ["check", "main"]
         assert observed["value"] == 1
 
@@ -3827,7 +3844,7 @@ class TestJSRuntimeFailureReporter:
         assert isinstance(code, str)
         (tmp_path / "lib.js").write_text(code, encoding="utf-8")
         (tmp_path / "host.js").write_text(
-            "process.on('unhandledRejection', (r) => "
+            _BLOCKING_SPY + "process.on('unhandledRejection', (r) => "
             "console.log('host handled: ' + r.message));\n"
             "const before = [Error.stackTraceLimit, "
             "process.listenerCount('unhandledRejection')];\n"
@@ -3835,7 +3852,7 @@ class TestJSRuntimeFailureReporter:
             "try { require('./lib.js'); } catch (e) { caught = e.message; }\n"
             "const after = [Error.stackTraceLimit, "
             "process.listenerCount('unhandledRejection')];\n"
-            "console.log(JSON.stringify({before, after, caught}));\n"
+            "console.log(JSON.stringify({before, after, blocked, caught}));\n"
             "Promise.reject(new Error('host rejection'));\n"
             "setTimeout(() => console.log('host still running'), 20);\n",
             encoding="utf-8",
@@ -3855,6 +3872,7 @@ class TestJSRuntimeFailureReporter:
         lines = result.stdout.splitlines()
         observed = json.loads(lines[0])
         assert observed["after"] == observed["before"]
+        assert observed["blocked"] == []
         assert observed["caught"] == ("value too large" if fails else None)
         assert lines[1:] == ["host handled: host rejection", "host still running"]
 

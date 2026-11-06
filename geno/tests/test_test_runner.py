@@ -1190,10 +1190,12 @@ class TestRuntimeFailureReports:
 class TestTestBlockFailureReports:
     """Runtime failures in `test` blocks (proposal 0018).
 
-    The message keeps its 0.6 text, `Runtime Error: <message>`, with no
-    location prefix (and so no host path); the location and the stack, whose
-    outermost frame is the `<test>` origin at the test body's call, travel in
-    their own fields.
+    The message is `Runtime Error: <message>`, with no location prefix (and
+    so no host path): 0.6 put `<file:line:col>: ` before a located failure's
+    message (an index, key, division or contract failure), and that is the
+    one existing value the proposal changes. The location and the stack,
+    whose outermost frame is the `<test>` origin at the test body's call,
+    travel in their own fields.
     """
 
     SOURCE = (
@@ -1228,6 +1230,15 @@ class TestTestBlockFailureReports:
         "\n"
         'test "the body panics"\n'
         '    panic("direct")\n'
+        "end test\n"
+        "\n"
+        "func pick(xs: List[Int], i: Int) -> Int\n"
+        "    example [1], 0 -> 1\n"
+        "    return xs[i]\n"
+        "end func\n"
+        "\n"
+        'test "an index fails"\n'
+        "    assert pick([1], 5) == 1\n"
         "end test\n"
     )
 
@@ -1273,6 +1284,25 @@ class TestTestBlockFailureReports:
         assert self._frames(violation) == [
             ("<test>", str(path), 22, 12),
             ("pos", str(path), 12, 14),
+        ]
+
+    def test_a_located_failure_drops_the_0_6_location_prefix(self, tmp_path):
+        """0.6 reported this index failure as
+        `<path>:36:12: Runtime Error: Index 5 out of bounds ...`."""
+        path, violations = self._violations(tmp_path)
+        violation = violations["an index fails"]
+        assert violation["message"] == (
+            "Runtime Error: Index 5 out of bounds for list of length 1"
+        )
+        assert str(path) not in violation["message"]
+        assert violation["location"] == {
+            "line": 36,
+            "column": 12,
+            "filename": str(path),
+        }
+        assert self._frames(violation) == [
+            ("<test>", str(path), 40, 12),
+            ("pick", str(path), 36, 12),
         ]
 
     def test_a_library_failure_names_no_host_path(self, tmp_path):

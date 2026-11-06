@@ -965,8 +965,9 @@ class JSCompiler(BaseCompiler):
         A Node entry build (one with a trace table) reports an uncaught
         failure as a Geno report and ends the process at once (proposal
         0018, section 9). Its process-wide settings (the unlimited stack
-        trace limit and the ``unhandledRejection`` reporter) are made here
-        on the entry path only: inside the ESM entry guard, so importing an
+        trace limit, blocking stdout and stderr, and the
+        ``unhandledRejection`` reporter) are made here on the entry path
+        only: inside the ESM entry guard, so importing an
         ES module build changes nothing, and just before the call in
         CommonJS. A browser build keeps native errors, as in 0.6.
         """
@@ -1930,7 +1931,8 @@ class JSCompiler(BaseCompiler):
         enclosing = trace.stack
         trace.stack = []
         try:
-            self._compile_function_def_untraced(defn, index)
+            with self._trace_function_scope(defn):
+                self._compile_function_def_untraced(defn, index)
         finally:
             trace.stack = enclosing
             self._write(trace.marker("D1", index))

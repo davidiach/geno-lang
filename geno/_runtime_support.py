@@ -6113,6 +6113,17 @@ def _geno_trace_statement(marks: Any, line: int) -> int:
     return marks[low - 1][1] if low else -1
 
 
+def _geno_trace_site(path: str, sites: Any) -> Any:
+    """The one position all of *sites* share, or ``None``."""
+    if not sites:
+        return None
+    line, column = sites[0][1], sites[0][2]
+    for site in sites:
+        if site[1] != line or site[2] != column:
+            return None
+    return (path, line, column)
+
+
 def _geno_trace_position(
     statement: Any,
     sites: Any,
@@ -6120,27 +6131,39 @@ def _geno_trace_position(
     callee: Any,
     namespace: Any,
     direct: bool,
-    overflow_keys: Any = None,
+    function_names: Any,
+    overflow: bool = False,
 ) -> Any:
     """Where execution was in *statement*: a call site, or its start.
 
-    *overflow_keys*, for a host stack overflow raised in the frame itself,
-    names the Geno functions: the overflow happened at the statement's one
-    call of a Geno function (or through a function value), where the
-    interpreter reports its recursion limit too.
+    A position is chosen only when exactly one site of the statement can
+    have made the call. A candidate whose key names the callee can; so can
+    every call through a function value (``<call>``) when the callee is
+    something a function value holds: a Geno function (one of
+    *function_names*, the table's host names) or a builtin. Runtime helpers,
+    prelude names that start with ``_`` and that no Geno function has, are
+    never function values (no builtin name starts with ``_``). Several
+    possible sites leave the statement's start: the right line, a coarser
+    column.
+
+    *overflow*, for a host stack overflow raised in the frame itself: the
+    overflow happened at the statement's one call of a Geno function (or
+    through a function value), where the interpreter reports its recursion
+    limit too.
     """
     if statement is None:
         return None
     path = statement[0]
-    if key is None and overflow_keys is not None:
-        calls = [
-            site
-            for site in sites
-            if site[0] in overflow_keys or site[0] == _GENO_TRACE_CALL_KEY
-        ]
-        if len(calls) == 1:
-            return (path, calls[0][1], calls[0][2])
-        return statement
+    if key is None and overflow:
+        position = _geno_trace_site(
+            path,
+            [
+                site
+                for site in sites
+                if site[0] in function_names or site[0] == _GENO_TRACE_CALL_KEY
+            ],
+        )
+        return statement if position is None else position
     if key is not None:
         found = []
         for site in sites:
@@ -6150,15 +6173,19 @@ def _geno_trace_position(
                 value = namespace.get(site[0])
                 if type(value) is _GENO_FUNCTION_TYPE and value.__code__ is callee:
                     found.append(site)
-        if len(found) == 1:
-            return (path, found[0][1], found[0][2])
+        calls = [site for site in sites if site[0] == _GENO_TRACE_CALL_KEY]
         if found:
-            return statement
+            if key in function_names or not key.startswith("_"):
+                # The callee may have been reached through a function value
+                # as well as by name.
+                found.extend(calls)
+            position = _geno_trace_site(path, found)
+            return statement if position is None else position
         # A callee no candidate names was reached through a function value
         # (a parameter or a local): the statement's one indirect call.
-        calls = [site for site in sites if site[0] == _GENO_TRACE_CALL_KEY]
-        if len(calls) == 1:
-            return (path, calls[0][1], calls[0][2])
+        position = _geno_trace_site(path, calls)
+        if position is not None:
+            return position
     if direct or key == "__await__":
         # An awaited `Async` made elsewhere: positioned at the `await`.
         awaits = [site for site in sites if site[0] == _GENO_TRACE_AWAIT_KEY]
@@ -6225,6 +6252,7 @@ def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
     geno = [
         index for index, entry in _builtin_enumerate(body) if entry[4][2] == entry[1]
     ]
+    function_names = {function[2] for function in functions}
     frames = []
     for number, index in _builtin_enumerate(geno):
         if number + 1 < len(geno):
@@ -6238,10 +6266,6 @@ def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
             direct = False
             key = entry[3]
             callee = entry[2]
-        overflow_keys = None
-        if key is None and isinstance(exc, RecursionError):
-            # The host ran out of stack making a call in this frame.
-            overflow_keys = {function[2] for function in functions}
         statement_id = _geno_trace_statement(marks, entry[0])
         position = _geno_trace_position(
             statements.get(statement_id),
@@ -6250,7 +6274,9 @@ def _geno_failure_report(exc: Any, table: Any, anchor: Any) -> Any:
             callee,
             namespace,
             direct,
-            overflow_keys,
+            function_names,
+            # The host ran out of stack making a call in this frame.
+            key is None and isinstance(exc, RecursionError),
         )
         frames.append((body[index][4][3], position))
     location = frames[-1][1] if frames else None

@@ -169,7 +169,9 @@ Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
 - `geno run --json`, `geno.api.run()` and `geno serve` report the same facts
   as `location`, `stack`, `stack_omitted` and, for a contract failure,
   `contract`; `geno test --json` violations carry `location`, `stack` and
-  `stack_omitted`. These keys are additive.
+  `stack_omitted`. These keys are additive. A `geno test` violation's
+  message no longer starts with the location (0.6 put
+  `<file:line:col>: ` before a located failure's `Runtime Error:`).
 - An `Err` returned from `main` is a result, not a failure: it stays
   `Error: <value>` with no location or stack.
 
@@ -178,15 +180,20 @@ compact table that the compiler embeds in every program with a `main`. It is
 read only when a failure escapes `main`, so successful calls do no extra work
 and the generated file still needs no Geno install. The mapping is
 statement-precise where the interpreter is expression-precise in one case: a
-statement holding two operations of the same kind (`xs[i] + ys[j]`, or two
-calls through function values) reports its start. A host stack overflow's
+statement in which two operations could have made the failing call reports
+its start rather than guess. That is two operations of the same kind
+(`xs[i] + ys[j]`, or two calls through function values), or a call of a
+function or builtin by name next to a call through a function value that
+could hold it (`check(1) + f(9)`). A parameter or local that shadows a
+function or builtin name, such as a callback parameter called `format`,
+counts as a function value. A host stack overflow's
 depth, message and innermost frame are the host's: that frame is where the
 host ran out of stack, at the recursive call or inside the callee's first
 operation, and every other kept frame is the same on every backend. Compiled index and division messages keep their shorter 0.6
 wording. A Node entry build exits with status 1 as soon as the report is
 printed, for an async `main` too, so pending async work does not run after
-it; a tail of stdout still queued for a POSIX pipe can be lost, as on 0.6's
-synchronous fatal path. JavaScript starts an async function at its call, so
+it; its stdout and stderr are blocking, as compiled Python's are, so no
+output printed before the failure is lost to a full pipe. JavaScript starts an async function at its call, so
 an `Async` created in one statement and awaited in another can position its
 caller at the creation call; write `await f(...)` as one expression where the
 position matters. Browser builds and programs without `main` are unchanged.

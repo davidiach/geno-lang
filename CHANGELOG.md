@@ -218,7 +218,8 @@ package version stays 0.6.0, and the Draft
   (`ContractDetails`). The keys are additive: existing keys keep their
   values, codes are unchanged (a contract failure stays E499), and the one
   value that is new where it was absent is `location` on panics and other
-  builtin failures.
+  builtin failures. One existing value changes: a `geno test` violation's
+  `message` loses its location prefix (see Changed (breaking)).
 - `GENO_TRACEBACK=host` also prints the host's own traceback after the Geno
   report, under `Host traceback (GENO_TRACEBACK=host):`, on `geno run`
   (the interpreter's or the isolated worker's), in standalone compiled
@@ -293,6 +294,23 @@ package version stays 0.6.0, and the Draft
   // after (0.7 draft)
   example 1, 0 panics "Precondition failed: safe_div("
   ```
+- `geno test` violation messages no longer start with a location (proposal
+  0018). In 0.6 a located runtime failure in a `test` block (an index, key,
+  division or contract failure), or in a file that fails while loading, had
+  the message `<file:line:col>: Runtime Error: <message>`, with the file's
+  host path; it is now `Runtime Error: <message>`, the form unlocated
+  failures such as panics already had, in text output and in `--json`'s
+  `message`. The position moves to the violation's new `location` and
+  `stack`. Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-runtime-failures-report-a-geno-stack-and-contract-failures-name-their-arguments).
+  To migrate, read the position from `--json`'s `location` rather than
+  parsing it out of `message`:
+
+  ```text
+  0.6:  "message": "/abs/ti.geno:3:12: Runtime Error: Index 5 out of bounds for list of length 1"
+  0.7:  "message": "Runtime Error: Index 5 out of bounds for list of length 1",
+        "location": {"file": "/abs/ti.geno", "line": 3, "column": 12, ...}
+  ```
 
 ### Changed
 
@@ -339,11 +357,13 @@ package version stays 0.6.0, and the Draft
   generated JavaScript; the status stays 1. A Node entry build now exits as
   soon as the report is printed, for an async `main` too (0.6 let pending
   async work run after an async `main` rejected), and a rejected `Async` that
-  nothing awaits is reported the same way, with status 1. Like 0.6's
-  synchronous fatal path, that exit can lose a tail of stdout still queued for
-  a POSIX pipe. `Error.stackTraceLimit` and the `unhandledRejection` listener
-  are set only when the file runs as the entry point, so importing an ESM
-  build changes neither, and a CommonJS build that a host `require()`s keeps
+  nothing awaits is reported the same way, with status 1. The entry path makes
+  stdout and stderr blocking before `main` runs, as they are in compiled
+  Python, so that exit loses none of the output printed before the failure,
+  even through a full or slow pipe (0.6's synchronous fatal path could drop a
+  queued tail). `Error.stackTraceLimit`, the `unhandledRejection` listener
+  and the blocking mode are set only when the file runs as the entry point,
+  so importing an ESM build changes none of them, and a CommonJS build that a host `require()`s keeps
   0.6's behaviour: a failure of its `main` propagates to the requirer (an
   async `main`'s rejection is logged with `process.exitCode = 1`, as before)
   and nothing process-wide changes. A Geno name `module` is renamed in
@@ -358,9 +378,10 @@ package version stays 0.6.0, and the Draft
 - `geno test` records a runtime failure in an example as `Runtime error:
   <message>`, without the doubled `Runtime Error:` and location prefix, and
   `-v` prints the failure's frames under it. A runtime failure in a `test`
-  block keeps its 0.6 message, `Runtime Error: <message>`, with no location
-  prefix even now that builtin failures are located; its stack starts with a
-  `<test>` frame at the test body's call.
+  block is `Runtime Error: <message>` with no location prefix, now that every
+  failure is located (see Changed (breaking) for the located failures whose
+  0.6 message had one); its stack starts with a `<test>` frame at the test
+  body's call.
 - The REPL prints the same runtime report for a failing input: its frames,
   with the typed input itself shown as the `<repl>` frame, then the
   `Runtime Error: <message>` line last (0.6 printed the message, then an

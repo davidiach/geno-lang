@@ -203,7 +203,7 @@ Recorded for the unreleased 0.7 development line. Every runtime failure now
 reports its Geno location and call stack on every lane and backend, and a
 failed contract names the function, the call's arguments and the clause.
 Diagnostic wording and stderr layout are not compatibility surfaces, and exit
-statuses, codes and every existing JSON key are unchanged. Three changes are
+statuses, codes and every existing JSON key are unchanged. Four changes are
 recorded anyway, because tests and scripts can observe them:
 
 - **What `panics "substring"` matches.** A panics example (section 5.3.1 of
@@ -236,13 +236,22 @@ recorded anyway, because tests and scripts can observe them:
   message should read the `Runtime Error:` line, which is always last before
   any hint. `GENO_TRACEBACK=host` restores the host traceback, after the
   report.
+- **`geno test` messages lose their location prefix.** A violation's message
+  for a located runtime failure in a `test` block (an index, key, division
+  or contract failure), or in a file that fails while loading, was
+  `<file:line:col>: Runtime Error: <message>` in 0.6, with the file's host
+  path. It is now `Runtime Error: <message>`, the form unlocated failures
+  such as panics already had, in text output and in `--json`'s `message`;
+  the position is the violation's new `location` and `stack`. This is the
+  one existing JSON value that changes.
 - **Node exits at once.** A Node entry build ends with status 1 as soon as it
   has printed the report, for an async `main` too: 0.6 let pending async work
   continue after an async `main` rejected. A rejection of an `Async` nothing
   awaits is reported the same way instead of with Node's raw stack, with the
-  same status 1. Like 0.6's synchronous fatal path, the immediate exit can
-  lose a tail of stdout still queued for a POSIX pipe beyond what the pipe
-  accepted (typically 64 KiB); 0.6's async `main` drained it. Only a build
+  same status 1. The entry path makes stdout and stderr blocking first, as
+  they are in compiled Python, so the immediate exit loses none of the
+  output printed before the failure, even through a full or slow pipe. Only a
+  build
   that runs as the entry point owns the process: a CommonJS build that a
   host `require()`s keeps 0.6's behaviour, letting a failure of its `main`
   propagate to the requirer, and changes no process-wide setting.

@@ -1520,7 +1520,8 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._write(trace.marker("D0", index))
         self._write(trace.marker("S", -1))
         try:
-            self._compile_function_def_untraced(defn)
+            with self._trace_function_scope(defn):
+                self._compile_function_def_untraced(defn)
         finally:
             trace.stack = enclosing
             self._write(trace.marker("D1", index))

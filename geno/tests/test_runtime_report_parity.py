@@ -20,6 +20,7 @@ import pytest
 
 from geno import _runtime_support as python_prelude
 from geno import parser_base, runtime_report
+from geno.builtin_registry import all_builtin_names
 from geno.diagnostics import GenoStack, StackFrame
 from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
 from geno.tests._script_runner import run_node_code
@@ -286,9 +287,42 @@ def test_both_preludes_parse_a_table_alike() -> None:
             "check",
             ["app.geno", 11, 5],
         ),
-        # A named candidate still wins.
+        # A named candidate alone wins.
         (
-            [["check", 11, 9], ["<call>", 11, 20]],
+            [["check", 11, 9], ["other", 11, 20]],
+            "check",
+            ["app.geno", 11, 9],
+        ),
+        # A Geno function named by one call and possibly held by the
+        # function value of another (`check(1) + f(9)` with `f = check`):
+        # either could have made the call, so the statement.
+        (
+            [["check", 11, 9], ["f", 11, 20], ["<call>", 11, 20]],
+            "check",
+            ["app.geno", 11, 5],
+        ),
+        # The same for a builtin, which a function value can hold too.
+        (
+            [["abs", 11, 9], ["<call>", 11, 20]],
+            "abs",
+            ["app.geno", 11, 5],
+        ),
+        # A runtime helper is never a function value.
+        (
+            [["_safe_index", 11, 9], ["<call>", 11, 20]],
+            "_safe_index",
+            ["app.geno", 11, 9],
+        ),
+        # A Geno function whose name starts with "_" is still one.
+        (
+            [["_check", 11, 9], ["<call>", 11, 20]],
+            "_check",
+            ["app.geno", 11, 5],
+        ),
+        # A shadowing parameter (`check(9)` with a parameter `check`) records
+        # its name and an indirect call at one position: that position.
+        (
+            [["check", 11, 9], ["<call>", 11, 9]],
             "check",
             ["app.geno", 11, 9],
         ),
@@ -298,6 +332,7 @@ def test_both_preludes_resolve_an_indirect_call_alike(
     sites: list[list[Any]], key: str, expected: list[Any]
 ) -> None:
     statement = ["app.geno", 11, 5]
+    function_names = ["check", "_check", "main"]
     python = python_prelude._geno_trace_position(
         tuple(statement),
         [tuple(site) for site in sites],
@@ -305,10 +340,17 @@ def test_both_preludes_resolve_an_indirect_call_alike(
         None,
         {},
         True,
+        set(function_names),
     )
     js = _run_js(
         f"console.log(JSON.stringify(_genoTracePosition({json.dumps(statement)}, "
-        f"{json.dumps(sites)}, {json.dumps(key)}, true)));\n"
+        f"{json.dumps(sites)}, {json.dumps(key)}, true, "
+        f"new Set({json.dumps(function_names)}))));\n"
     )
     assert list(python) == expected
     assert js == expected
+
+
+def test_no_builtin_name_starts_with_an_underscore() -> None:
+    """The preludes tell runtime helpers from function values by a leading "_"."""
+    assert not [name for name in all_builtin_names() if name.startswith("_")]

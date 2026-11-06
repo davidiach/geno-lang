@@ -1899,17 +1899,41 @@ function _genoTraceStatement(marks, line) {
     return _grLow ? marks[_grLow - 1][1] : -1;
 }
 
-// Where execution was in `statement`: a call site, or its start.
-function _genoTracePosition(statement, sites, key, direct) {
+// The one position all of `sites` share, or null.
+function _genoTraceSite(path, sites) {
+    if (!sites.length) return null;
+    for (const _grSite of sites) {
+        if (_grSite[1] !== sites[0][1] || _grSite[2] !== sites[0][2]) return null;
+    }
+    return [path, sites[0][1], sites[0][2]];
+}
+
+// Where execution was in `statement`: a call site, or its start. A position
+// is chosen only when exactly one site of the statement can have made the
+// call: a candidate whose key names the callee, and every call through a
+// function value ("<call>") when the callee is something a function value
+// holds, a Geno function (one of `functionNames`, the table's host names) or
+// a builtin. Runtime helpers, prelude names that start with "_" and that no
+// Geno function has, are never function values (no builtin name starts with
+// "_"). Several possible sites leave the statement's start.
+function _genoTracePosition(statement, sites, key, direct, functionNames) {
     if (statement === undefined) return null;
     if (key !== null) {
         const _grMatches = sites.filter((site) => site[0] === key);
-        if (_grMatches.length === 1) return [statement[0], _grMatches[0][1], _grMatches[0][2]];
-        if (_grMatches.length) return statement;
+        const _grCalls = sites.filter((site) => site[0] === _GENO_TRACE_CALL_KEY);
+        if (_grMatches.length) {
+            // The callee may have been reached through a function value as
+            // well as by name.
+            const _grPossible = functionNames.has(key) || !key.startsWith("_")
+                ? _grMatches.concat(_grCalls)
+                : _grMatches;
+            const _grSite = _genoTraceSite(statement[0], _grPossible);
+            return _grSite === null ? statement : _grSite;
+        }
         // A callee no candidate names was reached through a function value
         // (a parameter or a local): the statement's one indirect call.
-        const _grCalls = sites.filter((site) => site[0] === _GENO_TRACE_CALL_KEY);
-        if (_grCalls.length === 1) return [statement[0], _grCalls[0][1], _grCalls[0][2]];
+        const _grIndirect = _genoTraceSite(statement[0], _grCalls);
+        if (_grIndirect !== null) return _grIndirect;
     }
     if (direct) {
         // An awaited Async made elsewhere: positioned at the `await`.
@@ -2026,6 +2050,7 @@ function _genoFailureReport(error, table, anchor) {
             _grGeno.push(index);
         }
     });
+    const _grFunctionNames = new _GENO_SET(functions.map((range) => range[2]));
     const _grFrames = [];
     for (let number = 0; number < _grGeno.length; number += 1) {
         let _grEntry;
@@ -2047,6 +2072,7 @@ function _genoFailureReport(error, table, anchor) {
                 candidates.get(_grStatementId) || [],
                 _grKey === undefined ? null : _grKey,
                 _grDirect,
+                _grFunctionNames,
             ),
         ]);
     }
@@ -2111,9 +2137,11 @@ function _genoHostTraceback(error) {
 
 // Print the Geno report of a failure that escaped `main` and end the process
 // with status 1 at once, so no pending asynchronous work runs after it (the
-// interpreter and compiled Python never run an Async nothing awaits). When
-// the table or the mapping fails, the report is the message line alone,
-// never a host traceback unless GENO_TRACEBACK=host asks for one.
+// interpreter and compiled Python never run an Async nothing awaits). The
+// entry path made stdout and stderr blocking, so the output printed before
+// the failure and the report are complete when the process ends. When the
+// table or the mapping fails, the report is the message line alone, never a
+// host traceback unless GENO_TRACEBACK=host asks for one.
 function _genoReportUncaught(error, table, anchor) {
     let _grMessage;
     try {
@@ -2138,11 +2166,29 @@ function _genoReportUncaught(error, table, anchor) {
 // The entry path's process-wide settings (never made when an ES module
 // build is imported): an unlimited stack trace limit, since V8 keeps only
 // the innermost frames of a deeper stack and a report shows the outermost
-// too; and the reporter for an Async that rejects with nothing awaiting it.
-// Neither is restored: errors raised later by asynchronous work still need
-// them, and the entry path owns the process.
+// too; the reporter for an Async that rejects with nothing awaiting it; and
+// blocking writes to stdout and stderr when they are pipes, as compiled
+// Python and the interpreter have. The reporter ends the process at once,
+// which would drop anything still queued for a slow or full pipe: what a
+// program printed before failing, or the report itself. A blocking write
+// returns once the pipe has taken it, so nothing is queued at the exit
+// (files and POSIX terminals are written synchronously already). It is set
+// before `main` runs, because libuv keeps no order between writes queued
+// before and after the mode changes. None of these is restored: errors
+// raised later by asynchronous work still need them, and the entry path
+// owns the process.
 function _genoInstallReporter(table, anchor) {
     Error.stackTraceLimit = Infinity;
+    for (const _grStream of [process.stdout, process.stderr]) {
+        const _grHandle = _grStream === undefined || _grStream === null ? undefined : _grStream._handle;
+        if (_grHandle !== undefined && _grHandle !== null && typeof _grHandle.setBlocking === "function") {
+            try {
+                _grHandle.setBlocking(true);
+            } catch (_unused) {
+                // A handle that cannot block keeps Node's default.
+            }
+        }
+    }
     process.on("unhandledRejection", (reason) => _genoReportUncaught(reason, table, anchor));
 }
 

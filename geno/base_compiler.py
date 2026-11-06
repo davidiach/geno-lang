@@ -156,6 +156,10 @@ class BaseCompiler(ABC):
         # method `Type.method`. See _function_display_name.
         self._display_module: str | None = None
         self._display_name_override: str | None = None
+        # The function a trace table is being recorded for, and the names it
+        # binds anywhere (computed on first use). See _is_indirect_callee.
+        self._trace_scope: FunctionDef | None = None
+        self._trace_scope_names: frozenset[str] | None = None
         self._definition_index = DefinitionIndex(
             type_defs=self.type_defs,
             type_aliases=self.type_aliases,
@@ -1077,6 +1081,72 @@ class BaseCompiler(ABC):
             return f"{self._display_module}.{defn.name}"
         return defn.name
 
+    @contextmanager
+    def _trace_function_scope(self, defn: FunctionDef) -> Iterator[None]:
+        """Record trace candidates for *defn*'s body (see _is_indirect_callee)."""
+        saved = (self._trace_scope, self._trace_scope_names)
+        self._trace_scope, self._trace_scope_names = defn, None
+        try:
+            yield
+        finally:
+            self._trace_scope, self._trace_scope_names = saved
+
+    def _trace_bound_names(self) -> frozenset[str]:
+        """Every name the function being traced binds, anywhere in it."""
+        names = self._trace_scope_names
+        if names is None:
+            scope = self._trace_scope
+            names = (
+                frozenset() if scope is None else frozenset(self._names_bound_in(scope))
+            )
+            self._trace_scope_names = names
+        return names
+
+    @staticmethod
+    def _names_bound_in(defn: FunctionDef) -> set[str]:
+        """The names *defn* binds anywhere: its parameters, and every `let`,
+        `var`, destructuring, loop, comprehension and pattern variable and
+        lambda parameter in its contracts and body.
+
+        Scopes are ignored, so this is a superset of the names bound where
+        any one call is made.
+        """
+        names = {param.name for param in defn.params}
+        field_cache: dict[type, tuple[str, ...]] = {}
+        stack: list[object] = [defn.specs, defn.body]
+        while stack:
+            node = stack.pop()
+            node_type = type(node)
+            if node_type is list or node_type is tuple:
+                stack.extend(cast(Sequence[object], node))
+                continue
+            if not hasattr(node, "__dict__"):
+                continue
+            if isinstance(node, (LetStatement, VarStatement)):
+                names.add(node.name)
+            elif isinstance(node, TupleDestructureStatement):
+                names.update(node.names)
+            elif isinstance(node, (ForStatement, ListComprehension)):
+                names.add(node.variable)
+            elif isinstance(node, (VariablePattern, RestPattern)):
+                if node.name is not None:
+                    names.add(node.name)
+            elif isinstance(node, LambdaExpr):
+                names.update(param.name for param in node.params)
+            field_names = field_cache.get(node_type)
+            if field_names is None:
+                field_names = tuple(
+                    name
+                    for name in vars(node)
+                    if not name.startswith("_") and name != "location"
+                )
+                field_cache[node_type] = field_names
+            for field_name in field_names:
+                child = getattr(node, field_name)
+                if child is not None and not isinstance(child, (str, int, float, bool)):
+                    stack.append(child)
+        return names
+
     def _is_indirect_callee(self, function: Expression) -> bool:
         """Whether a call's callee is a function value, not a named function.
 
@@ -1084,17 +1154,19 @@ class BaseCompiler(ABC):
         a Geno function whose host name the call site does not spell, so the
         trace table also records it under ``TRACE_CALL_KEY`` (proposal 0018,
         section 8). A named function, method, builtin, constructor or module
-        function is direct. The test is lexical and conservative: a local
-        that shadows a function's name counts as direct, which only costs
-        that call its column.
+        function is direct. A name the traced function binds (a parameter or
+        local that shadows a function or builtin name, such as a callback
+        parameter called ``format``) is a function value too; the test
+        ignores scopes, so it errs only towards an extra candidate, which
+        can cost a column but never names a call that was not made.
         """
         if isinstance(function, TypeIdentifier):
             return False
         if isinstance(function, Identifier):
             name = function.name
-            return name not in self.func_param_names and name not in (
-                all_builtin_names()
-            )
+            if name not in self.func_param_names and name not in all_builtin_names():
+                return True
+            return name in self._trace_bound_names()
         # A module function (`Helper.scale`) is direct; anything else is a
         # value.
         return not (

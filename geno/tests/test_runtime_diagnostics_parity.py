@@ -11,8 +11,8 @@ cases compare the shared prefix.
 It also covers the default lane's budgeted worker payload, the parent's
 strict snippet reader, standalone output with no Geno install, the
 ``GENO_TRACEBACK=host`` escape hatch, the reporters' fallback on a corrupted
-table, and the Node entry path: immediate termination after a report, the
-``unhandledRejection`` reporter, the stack-text fallback and
+table, and the Node entry path: immediate termination after a report with
+no output lost to a full pipe, the ``unhandledRejection`` reporter, the stack-text fallback and
 ``node --enable-source-maps``.
 """
 
@@ -375,6 +375,69 @@ func main() -> Int
 end func
 """
 
+# Output larger than a pipe's buffer (typically 64 KiB) and within the
+# default output limit (100,000 characters), then a failure, from a
+# synchronous and an asynchronous `main`.
+LOUD_LINES = 1400
+LOUD_FILL = "x" * 56
+LOUD_SYNC = f"""func work(n: Int) -> Int
+    example 1 -> 1
+    if n > 3 then
+        panic("work failed")
+    end if
+    return n
+end func
+
+func main() -> Int
+    for i: Int in range(0, {LOUD_LINES}) do
+        print("line " + to_string(i) + " {LOUD_FILL}")
+    end for
+    return work(9)
+end func
+"""
+
+LOUD_ASYNC = f"""async func work(n: Int) -> Int
+    if n > 3 then
+        panic("work failed")
+    end if
+    return n
+end func
+
+async func main() -> Int
+    for i: Int in range(0, {LOUD_LINES}) do
+        print("line " + to_string(i) + " {LOUD_FILL}")
+    end for
+    let v = await work(9)
+    return v
+end func
+"""
+
+
+def _run_with_a_late_reader(command: list[str], cwd: Path) -> tuple[int, str, str]:
+    """Run *command* while its stdout pipe is left full for a moment.
+
+    The reader starts late, so the program fills the pipe and has the rest of
+    its output queued, or blocks, when it fails. The delay only provokes that
+    state: with complete output the result is the same however long it is.
+    """
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+        env=_env(),
+    )
+    assert process.stdout is not None and process.stderr is not None
+    errors: list[bytes] = []
+    reader = threading.Thread(target=lambda: errors.append(process.stderr.read()))
+    reader.start()
+    threading.Event().wait(0.5)
+    output = process.stdout.read()
+    reader.join(TIMEOUT)
+    status = process.wait(TIMEOUT)
+    return status, output.decode("utf-8"), b"".join(errors).decode("utf-8")
+
+
 # An Async that fails with nothing awaiting it.
 UNAWAITED = """async func work(n: Int) -> Int
     if n > 3 then
@@ -440,6 +503,87 @@ func main() -> Int
     let g = check
     let r = 1 + g(9)
     return r
+end func
+"""
+)
+
+# A parameter or local that shadows a builtin or function name is still a
+# function value.
+SHADOWED_BUILTIN = """func boom(n: Int) -> String
+    example 1 -> "1"
+    if n > 3 then
+        panic("boom")
+    end if
+    return to_string(n)
+end func
+
+func render(n: Int, format: (Int) -> String) -> String
+    example 1, boom -> "<1>"
+    return "<" + format(n) + ">"
+end func
+
+func main() -> Int
+    print(render(9, boom))
+    return 0
+end func
+"""
+
+SHADOWED_FUNCTION = (
+    CALLBACK_CHECK
+    + """
+func other(n: Int) -> Int
+    example 1 -> 1
+    if n > 3 then
+        panic("other failed")
+    end if
+    return n
+end func
+
+func apply(check: (Int) -> Int, x: Int) -> Int
+    example other, 1 -> 2
+    return 1 + check(x)
+end func
+
+func main() -> Int
+    return apply(other, 9)
+end func
+"""
+)
+
+SHADOWED_LOCAL = (
+    CALLBACK_CHECK
+    + """
+func main() -> Int
+    let abs = check
+    let total = 1 + abs(9)
+    return total
+end func
+"""
+)
+
+# A function called by name next to a call through a function value that
+# holds the same function: either call could have failed.
+NAMED_AND_INDIRECT = (
+    CALLBACK_CHECK
+    + """
+func main() -> Int
+    let f = check
+    let total = check(1) + f(9)
+    return total
+end func
+"""
+)
+
+NAMED_AROUND_INDIRECT = (
+    CALLBACK_CHECK
+    + """
+func apply(f: (Int) -> Int, v: Int) -> Int
+    example check, 1 -> 1
+    return check(f(v))
+end func
+
+func main() -> Int
+    return apply(check, 9)
 end func
 """
 )
@@ -612,6 +756,60 @@ class TestParity:
             ("local_callee.geno:11:17", "main"),
             ("local_callee.geno:4:9", "check"),
         )
+
+    def test_shadowing_callback_names_keep_their_columns(self, tmp_path: Path) -> None:
+        builtin = _write(tmp_path, "shadowed_builtin.geno", SHADOWED_BUILTIN)
+        assert _assert_parity(_lanes(builtin, tmp_path)).frames == (
+            ("shadowed_builtin.geno:15:11", "main"),
+            ("shadowed_builtin.geno:11:18", "render"),
+            ("shadowed_builtin.geno:4:9", "boom"),
+        )
+        function = _write(tmp_path, "shadowed_function.geno", SHADOWED_FUNCTION)
+        assert _assert_parity(_lanes(function, tmp_path)).frames == (
+            ("shadowed_function.geno:23:12", "main"),
+            ("shadowed_function.geno:19:16", "apply"),
+            ("shadowed_function.geno:12:9", "other"),
+        )
+        local = _write(tmp_path, "shadowed_local.geno", SHADOWED_LOCAL)
+        assert _assert_parity(_lanes(local, tmp_path)).frames == (
+            ("shadowed_local.geno:11:21", "main"),
+            ("shadowed_local.geno:4:9", "check"),
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "source", "interpreter", "statement", "succeeded"),
+        [
+            # `check(1) + f(9)`: the interpreter reports `f(9)`; `check(1)`
+            # had succeeded.
+            ("named_and_indirect", NAMED_AND_INDIRECT, "11:28", "11:5", "11:17"),
+            # `check(f(v))`: `f(v)` failed; `check(...)` had not started.
+            ("named_around_indirect", NAMED_AROUND_INDIRECT, "11:18", "11:5", "11:12"),
+        ],
+    )
+    def test_a_named_and_an_indirect_call_report_the_statement(
+        self,
+        tmp_path: Path,
+        name: str,
+        source: str,
+        interpreter: str,
+        statement: str,
+        succeeded: str,
+    ) -> None:
+        """Either call could hold the failing function, so compiled backends
+        report the statement's start, never the call that did not fail."""
+        runs = _lanes(_write(tmp_path, f"{name}.geno", source), tmp_path)
+        frame = 0 if name == "named_and_indirect" else 1
+        reports = {lane: _parse(run.stderr) for lane, run in runs.items()}
+        for lane, run in runs.items():
+            assert run.returncode == 1, (lane, run.stderr)
+            assert reports[lane].message == "Runtime Error: too big", lane
+            assert reports[lane].frames[-1] == (f"{name}.geno:4:9", "check"), lane
+            position = reports[lane].frames[frame][0]
+            assert position != f"{name}.geno:{succeeded}", (lane, run.stderr)
+            expected = interpreter if lane == "interpreter" else statement
+            assert position == f"{name}.geno:{expected}", (lane, run.stderr)
+        compiled = {reports[lane].frames for lane in reports if lane != "interpreter"}
+        assert len(compiled) == 1, compiled
 
     def test_failures_inside_fstring_interpolations(self, tmp_path: Path) -> None:
         call = _write(tmp_path, "fstring_call.geno", FSTRING_CALL)
@@ -966,6 +1164,51 @@ class TestNode:
             ("pending.geno:21:12", "main"),
             ("pending.geno:14:9", "check"),
         )
+
+    @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+    def test_output_before_a_failure_survives_a_full_pipe(
+        self, tmp_path: Path, asynchronous: bool
+    ) -> None:
+        """The report ends the process at once, yet no output is lost.
+
+        The Node entry path makes stdout and stderr blocking, as they are in
+        Python, so nothing is still queued for a full pipe when the reporter
+        exits; every lane prints every line, then the report.
+        """
+        program = _write(
+            tmp_path, "loud.geno", LOUD_ASYNC if asynchronous else LOUD_SYNC
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        compiled = _geno("compile", str(program), "-o", str(out / "loud.py"), cwd=ROOT)
+        assert compiled.returncode == 0, compiled.stderr
+        commands = {
+            "interpreter": [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                "--unsafe",
+                "--no-check-examples",
+                "--cap",
+                "print",
+                str(program),
+            ],
+            "standalone": [sys.executable, str(out / "loud.py"), "--cap", "print"],
+        }
+        assert NODE is not None
+        for lane, esm in (("node", False), ("node-esm", True)):
+            artifact = _compile_js(program, tmp_path / "js", esm=esm)
+            commands[lane] = [NODE, str(artifact), "--cap", "print"]
+        expected = "".join(f"line {index} {LOUD_FILL}\n" for index in range(LOUD_LINES))
+        for lane, command in commands.items():
+            status, stdout, stderr = _run_with_a_late_reader(command, tmp_path)
+            assert status == 1, (lane, stderr)
+            assert stdout.count("\n") == LOUD_LINES, lane
+            assert stdout == expected, lane
+            assert stderr.rstrip("\n").split("\n")[-1] == (
+                "Runtime Error: work failed"
+            ), (lane, stderr)
 
     @pytest.mark.parametrize("esm", [False, True], ids=["cjs", "esm"])
     def test_an_unawaited_failing_async_is_reported(

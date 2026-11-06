@@ -43,10 +43,10 @@ Runtime Error: value too large
 ```
 
 A Node entry build exits as soon as the report is printed, for an async
-`main` too, so pending asynchronous work does not run after it. On POSIX a
-tail of stdout still queued for a full or slow pipe can be lost at that exit,
-as with 0.6's synchronous fatal errors; write to a file, or let the reader
-drain the pipe, when every byte matters. The table and its anchor are the
+`main` too, so pending asynchronous work does not run after it. Its stdout
+and stderr are blocking, as they are for compiled Python, so everything the
+program printed before failing reaches a full or slow pipe before that exit
+(0.6's synchronous fatal errors could lose the tail). The table and its anchor are the
 first two lines of the program's code, after the runtime prelude, so
 `--source-map` mappings move down by those two lines; the map format is
 unchanged. Libraries without `main` and browser builds carry no table.

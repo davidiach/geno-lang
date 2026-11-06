@@ -45,7 +45,8 @@ for debugging Geno itself.
 `geno run --json`, the embedding API, the hosted server and `geno test --json`
 gain structured `stack` (and, where it was missing, `location`) fields, plus a
 `contract` object for contract failures. These are additive: existing keys and
-values do not change. Exit statuses, error codes and every frozen conformance
+values do not change, except that a `geno test` violation's message drops the
+location prefix 0.6 gave located failures (section 10). Exit statuses, error codes and every frozen conformance
 case are unchanged. The location and stack never enter the message text, which
 proposal 0017's `panics "substring"` matching reads. The feature adds no
 syntax. The package version stays `0.6.0`, and the contract is specified by
@@ -475,7 +476,9 @@ they are set:
 
 No existing key is renamed, removed or given a different value. The one
 envelope value that is new where it used to be absent is `location` on panics
-and other builtin failures. Codes do not change: a contract failure stays E499
+and other builtin failures. (`geno test --json` violations are not envelopes:
+their `message` drops the location prefix 0.6 gave located failures, section
+10.) Codes do not change: a contract failure stays E499
 (spec v0.7 section 5.4 already says so), a panic E414, a denial E412. E407 and
 E408 stay registered and unused (see Unresolved Questions).
 
@@ -716,7 +719,12 @@ lines count from the anchor's `def` line, which is line 0. The records are:
   parameter, a local, any callee that is not a named function, method,
   builtin, constructor or module function; `BaseCompiler._is_indirect_callee`
   decides lexically) is also recorded under the key `<call>`, because the
-  callee's host name is not spelled at the call site;
+  callee's host name is not spelled at the call site. A name the function
+  binds anywhere (a parameter, `let`, `var`, loop, pattern or lambda
+  variable) counts as a function value even when it shadows a function or
+  builtin name, so a callback parameter called `format` or `abs` is
+  recorded under `<call>` too. The test ignores scopes: it can only add a
+  candidate, which may cost a column but never names the wrong call;
 - `E host_line`: the end of the body (exclusive).
 
 The contract-check lines (`if not (...)` and the `raise`) get a statement of
@@ -827,11 +835,18 @@ prelude) works in five steps:
    `_int_div` and the like). A candidate matches a callee by its code name, or
    when the program namespace binds the candidate's key to a plain function
    whose code object is the callee's (a prelude alias); the check reads only
-   `type()` and `__code__`, never a program-defined method. If the statement
-   has exactly one matching candidate, the position is the candidate's
-   location; two or more give the statement's location. When no candidate
-   matches, a statement with exactly one `<call>` candidate gives that call's
-   location: the callee was reached through a function value. For an awaited async
+   `type()` and `__code__`, never a program-defined method. When some
+   candidate matches and the key is something a function value can hold (a
+   Geno function, one of the table's `D` host names, or a builtin, whose
+   names never start with `_`; runtime helpers such as `_safe_index` start
+   with `_` and are never function values), the statement's `<call>`
+   candidates could have made the call too and join the matches. If all the
+   matches share one location, that is the position; otherwise it is the
+   statement's location. So `check(1) + f(9)` with `f = check`, failing in
+   `f(9)`, reports the statement rather than `check(1)`, a call that
+   succeeded. When no candidate matches, a statement whose `<call>`
+   candidates share one location gives that location: the callee was reached
+   through a function value. For an awaited async
    function (section 2) the compiler also records an `await` candidate (key
    `<await>`) at each `await` expression. In the split form `await pending`,
    the awaited body is reached through the prelude's `_GenoAsync.__await__`,
@@ -850,12 +865,15 @@ prelude) works in five steps:
 Where the interpreter is precise, this gives the same position: `panic`,
 `unwrap`, index, division, contract checks, calls between functions (through
 function values and in default parameter values too), callbacks, lambdas.
-The exception is a statement that holds two candidates with the same key,
-such as `xs[i] + ys[j]` failing on one index, or two calls through function
-values. There the
-compiled backends report the statement's start, which is the right line but a
-coarser column. Parity tests avoid such statements, and the spec documents the
-precision.
+The exception is a statement in which two candidates could have made the
+failing call: two with the same key, such as `xs[i] + ys[j]` failing on one
+index, two calls through function values, or a named call next to a call
+through a function value that could hold the same function
+(`check(f(v))` with `f = check`). There the compiled backends report the
+statement's start, which is the right line but a coarser column, and never
+the location of a call that did not fail. Parity tests otherwise avoid such
+statements; `test_a_named_and_an_indirect_call_report_the_statement` pins
+this case on every lane, and the spec documents the precision.
 
 **Standalone entry.** `_compiled_main_guard_opening` wraps the
 `_geno_run_deep(...)` call in a `try`. On `Exception`, the guard:
@@ -1013,8 +1031,9 @@ these ways:
   the JavaScript host names, so a Geno `module` is renamed (proposal 0011)
   instead of hiding CommonJS's. There,
   `_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor)` sets
-  `Error.stackTraceLimit = Infinity` and installs an `unhandledRejection`
-  listener that calls `_genoReportUncaught`. The unlimited trace limit lets a
+  `Error.stackTraceLimit = Infinity`, makes stdout and stderr blocking (see
+  Flushing below) and installs an `unhandledRejection` listener that calls
+  `_genoReportUncaught`. The unlimited trace limit lets a
   deep stack keep its outermost frames: V8 keeps the innermost *N*. It is not
   restored afterwards, because errors raised later by async work still need
   it, and the entry path owns the process. Geno control flow
@@ -1051,17 +1070,25 @@ these ways:
   once restores 0.6's termination for synchronous `main`. For async `main` it
   matches the interpreter and compiled Python, which never run an unawaited
   `Async`.
-- **Flushing.** The flush behaviour is that of Node's own fatal-exception
-  path, which 0.6 used for a synchronous `main`. Writes to files are
-  synchronous. Writes to a pipe are asynchronous on POSIX: whatever the pipe
-  accepts at once (its buffer, typically 64 KiB) is kept, and a tail of stdout
-  still queued for a slow or full pipe is lost when the process exits. The
-  report itself is small and goes out with it. 0.6's async `main` set
-  `process.exitCode` and so drained such a queue. That case now ends like a
-  synchronous `main`: an async `main` that prints more than a pipe buffer
-  just before failing can lose the end of its stdout. Waiting for the drain
-  would let pending async work run after the report, which this proposal
-  rules out.
+- **Flushing.** Node writes files and POSIX terminals synchronously, but a
+  pipe asynchronously on POSIX: whatever the pipe accepts at once (its
+  buffer, typically 64 KiB) is written, and the rest is queued until the
+  reader drains it. `process.exit(1)` drops that queue, which 0.6's
+  synchronous fatal path did too, while 0.6's async `main` set
+  `process.exitCode` and drained it. Waiting for the drain would let pending
+  async work run after the report, which this proposal rules out. So
+  `_genoInstallReporter` makes stdout and stderr blocking
+  (`stream._handle.setBlocking(true)`, where the handle has it; a handle
+  that cannot block keeps Node's default) before `main` runs, since libuv
+  keeps no order between writes queued before and after the mode changes. A
+  blocking write returns once the pipe has taken it, as a write does in
+  compiled Python and the interpreter, so nothing is queued when the reporter
+  exits: every line printed before the failure and the report itself reach
+  the reader, for synchronous and async `main`, CommonJS and ESM. Like the
+  other entry-path settings it is never made when a build is imported or
+  `require()`d. A test pipes about 90 KiB of output through a reader that
+  starts late on all four Node builds, the interpreter and standalone
+  Python, and checks that every line arrives.
 - A rejection of an `Async` that is never awaited reaches the same reporter
   through the `unhandledRejection` listener, instead of Node's raw V8 stack,
   with 0.6's status 1. Tests cover a synchronous `main` that panics while an
@@ -1163,11 +1190,14 @@ that. The module-project parity case runs as CommonJS.
 - **`geno test`:** a runtime failure during an example records the
   violation's message as `Runtime error: <message>`, without the doubled
   `Runtime Error:` and location prefix that `str(exc)` produced. A failed
-  `test` block keeps 0.6's `Runtime Error: <message>`, never with the
-  location that builtin failures now carry (which would put a host path into
+  `test` block's message is `Runtime Error: <message>`, never with the
+  location that every failure now carries (which would put a host path into
   the message), and its stack starts with the `<test>` origin; a file or
   project that fails while loading reports its message without the location
-  too. Text output
+  too. This changes one existing value: 0.6 started a located failure's
+  message (an index, key, division or contract failure) with
+  `<file:line:col>: `, and that prefix is gone (Compatibility And
+  Migration). Text output
   adds the report's frame lines, indented under the violation. JSON violations
   gain optional `location`, `stack` and `stack_omitted`. Classification still
   goes by structured fields (`_classify_runtime_failure`).
@@ -1267,14 +1297,22 @@ the lag.
     async `main` too (0.6 let pending async work continue after an async
     `main` rejected). A rejection of an un-awaited `Async` prints a Geno
     report instead of Node's raw stack. The status is 1 in both cases, as
-    before. Like 0.6's synchronous fatal path, an exit at once can lose a
-    tail of stdout still queued for a POSIX pipe (beyond what the pipe
-    buffer, typically 64 KiB, accepted); 0.6's async `main` drained it
-    (section 9, Flushing).
+    before. Stdout and stderr are blocking on the entry path, so the exit
+    loses no output, even through a full pipe, where 0.6's synchronous fatal
+    path could lose a queued tail (section 9, Flushing).
   - The first stderr line of a failure is now `Stack trace ...` whenever a
     stack exists. Tests that read the first line as the message
     (`test_isolated_run_stdin.py:389-391`) read the `Runtime Error:` line
     instead.
+- **`geno test` messages:** a violation's message for a located runtime
+  failure in a `test` block (an index, key, division or contract failure),
+  or in a file that fails while loading, was
+  `<file:line:col>: Runtime Error: <message>` in 0.6, with the file's host
+  path. It becomes `Runtime Error: <message>`, the form 0.6 already gave
+  unlocated failures such as panics, in text output and in `--json`'s
+  `message`, which is the one existing JSON value that changes. The
+  position moves to the violation's `location` and `stack`. The 0.7
+  compatibility notes record it, and `test_test_runner.py` pins it.
 - **Contract wording:** `Precondition failed for f: requires clause evaluated
   to false` becomes `Precondition failed: f(...) requires <clause>`. Tools must
   use `clause` / `reason` / `contract`, as proposal 0017 already asks. The
@@ -1299,7 +1337,8 @@ the lag.
   together with the wording change, so the draft spec is never stale between
   packages.
 - **Diagnostics and API:** additive keys only (`stack`, `stack_omitted`,
-  `contract`, and `location` where it was absent). `Diagnostic` grows two
+  `contract`, and `location` where it was absent). The one changed value is
+  a `geno test` violation's `message` (see `geno test` messages above). `Diagnostic` grows two
   defaulted fields, so positional construction is unaffected.
 - **Artifacts:** generated Python and JavaScript grow by the table, roughly
   one record per statement and call site. Compile-time and startup budgets
@@ -1689,9 +1728,9 @@ Five sequential packages; each leaves the tree green.
    - The recorder always on for entry builds, emitting `D`/`C` records (through
      the in-band trace markers inside buffered arrows) and the table, with the
      recorder moved to `geno/runtime_report.py` so both compilers share it.
-   - The anchor, and `_genoInstallReporter()` (`Error.stackTraceLimit`, the
-     `unhandledRejection` listener) on the entry path only: inside the ESM
-     guard, before `main()` in CommonJS.
+   - The anchor, and `_genoInstallReporter()` (`Error.stackTraceLimit`,
+     blocking stdout and stderr, the `unhandledRejection` listener) on the
+     entry path only: inside the ESM guard, before `main()` in CommonJS.
    - The `try`/`catch` and async `.catch` reporters ending in
      `process.exit(1)`, CallSite-based mapping and the text fallback, tested
      under `--enable-source-maps`.
