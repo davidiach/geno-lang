@@ -23,6 +23,7 @@ from .ast_nodes import (
     Parameter,
     Program,
     RequiresClause,
+    SimpleType,
     SpecBlock,
     Statement,
     TestBlock,
@@ -86,6 +87,7 @@ class Parser(
         # If we collected any errors, attach partial results and raise
         if self.errors:
             partial = Program(location=location, definitions=definitions)
+            self._add_return_type_fixes(partial)
             if len(self.errors) == 1:
                 self.errors[0].partial_program = partial
                 raise self.errors[0]
@@ -94,6 +96,22 @@ class Parser(
             raise err
 
         return Program(location=location, definitions=definitions)
+
+    def _add_return_type_fixes(self, partial: Program) -> None:
+        """Give each "needs a return type" error the fix that writes the type
+        its function's ``return`` values have, when they agree on one."""
+        if not self._missing_return_types:
+            return
+        # The checker imports the parser, so it is imported here.
+        from .typechecker import infer_return_types
+
+        inferred = infer_return_types(partial)
+        for error, annotation in self._missing_return_types:
+            text = inferred.get(id(annotation))
+            if text is not None:
+                error.fixes = (
+                    insert_fix(f"Add '-> {text}'", [(error.location, f" -> {text}")]),
+                )
 
     def _parse_definition(self) -> Definition:
         """Parse a top-level definition (func, type, trait, impl, export, or import)."""
@@ -289,6 +307,20 @@ class Parser(
             TokenType.TYPE_IDENTIFIER, "Expected trait name (PascalCase)"
         )
         trait_name = name_token.value
+        if self._check(TokenType.LBRACKET):
+            # Reported, then skipped so the trait's methods still parse.
+            self._record_error(
+                ParseError(
+                    f"A trait cannot take type parameters ({trait_name}[...]). "
+                    "Declare the trait without them; a generic function can then "
+                    f"require it, as in func f[T: {trait_name}](x: T)",
+                    self._current().location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
+                )
+            )
+            while not self._check(TokenType.RBRACKET, TokenType.FUNC, TokenType.EOF):
+                self._advance()
+            self._match(TokenType.RBRACKET)
 
         # Parse method signatures until 'end trait'
         methods: list[TraitMethodSig] = []
@@ -300,9 +332,13 @@ class Parser(
             )
             method_name = method_name_token.value
 
-            # Parameters
+            # Parameters; an untyped `self` is `self: Self`.
             self._expect(TokenType.LPAREN)
-            params = self._parse_parameter_list()
+            self._self_type = "Self"
+            try:
+                params = self._parse_parameter_list()
+            finally:
+                self._self_type = None
             self._expect(TokenType.RPAREN)
 
             # Return type
@@ -351,10 +387,15 @@ class Parser(
         )
         target_type = type_name_token.value
 
-        # Parse full function definitions until 'end impl'
+        # Parse full function definitions until 'end impl'; an untyped
+        # `self` has the implementing type.
         methods: list[FunctionDef] = []
-        while not (self._check(TokenType.END) or self._check(TokenType.EOF)):
-            methods.append(self._parse_function_def())
+        self._self_type = target_type
+        try:
+            while not (self._check(TokenType.END) or self._check(TokenType.EOF)):
+                methods.append(self._parse_function_def())
+        finally:
+            self._self_type = None
 
         # Closing: end impl
         self._expect_end(TokenType.IMPL)
@@ -396,22 +437,31 @@ class Parser(
         close = self._expect(TokenType.RPAREN)
 
         # Return type
+        return_type: TypeAnnotation
         if (
             not self._check(TokenType.ARROW)
             and self._current().location.line > close.location.line
         ):
-            raise ParseError(
+            # Reported, and the rest of the function parsed with the return
+            # type left for the checker to infer: the error's fix writes it
+            # (``_add_return_type_fixes``).
+            after_params = SourceLocation(
+                close.location.line,
+                close.location.column + 1,
+                close.location.filename,
+            )
+            error = ParseError(
                 f"Function '{name}' needs a return type: write '-> Type' after "
                 "its parameters, or '-> Unit' when it returns nothing",
-                SourceLocation(
-                    close.location.line,
-                    close.location.column + 1,
-                    close.location.filename,
-                ),
+                after_params,
                 ErrorCode.PARSE_EXPECTED_TOKEN,
             )
-        self._expect(TokenType.ARROW)
-        return_type = self._parse_type()
+            self._record_error(error)
+            return_type = InferredType(location=after_params)
+            self._missing_return_types.append((error, return_type))
+        else:
+            self._expect(TokenType.ARROW)
+            return_type = self._parse_type()
 
         # Optional effect annotations: with fs, io, http
         effects: list[str] = []
@@ -480,7 +530,25 @@ class Parser(
         if self._check(TokenType.RPAREN):
             return params
 
-        params.append(self._parse_parameter(allow_inferred_types))
+        if (
+            self._self_type is not None
+            and not allow_inferred_types
+            and self._check(TokenType.IDENTIFIER)
+            and self._current().value == "self"
+            and self._peek(1).type in (TokenType.COMMA, TokenType.RPAREN)
+        ):
+            # A method's receiver: `self` alone means `self: Self` in a trait
+            # and `self: Circle` in `impl ... for Circle`.
+            location = self._advance().location
+            params.append(
+                Parameter(
+                    name="self",
+                    param_type=SimpleType(location=location, name=self._self_type),
+                    location=location,
+                )
+            )
+        else:
+            params.append(self._parse_parameter(allow_inferred_types))
         while self._match(TokenType.COMMA):
             params.append(self._parse_parameter(allow_inferred_types))
 

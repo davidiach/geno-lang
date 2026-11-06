@@ -1,0 +1,6 @@
+func main() -> Unit
+    var total = 0
+    for (a, b) in [1, 2] do
+        total += a
+    end for
+end func

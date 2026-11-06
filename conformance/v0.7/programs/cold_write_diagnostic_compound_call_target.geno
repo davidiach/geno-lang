@@ -1,0 +1,9 @@
+func zero() -> Int
+    example () -> 0
+    return 0
+end func
+
+func main() -> Unit
+    var xs = array_from_list([1])
+    xs[zero()] += 1
+end func

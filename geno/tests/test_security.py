@@ -1821,14 +1821,10 @@ class TestProcessSandbox:
         from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
 
         sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=1.0, strict=False))
-        leader_killed = False
+        leader_signals: list[int] = []
 
         class FakeProcess:
             pid = 123
-
-            def kill(self):
-                nonlocal leader_killed
-                leader_killed = True
 
         def denied_group(_pid, _signal):
             raise PermissionError(errno.EPERM, "group denied")
@@ -1839,6 +1835,7 @@ class TestProcessSandbox:
         monkeypatch.setitem(sandbox_module.os.__dict__, "killpg", denied_group)
 
         def missing_leader(_pid, _signal):
+            leader_signals.append(_signal)
             raise ProcessLookupError(errno.ESRCH, "leader already reaped")
 
         monkeypatch.setattr(sandbox_module.os, "kill", missing_leader)
@@ -1849,7 +1846,7 @@ class TestProcessSandbox:
                 leader_exit_observed=leader_exit_observed,
             )
 
-        assert leader_killed is True
+        assert leader_signals == ([0, 9] if leader_exit_observed else [9])
 
     @staticmethod
     def _darwin_zombie_group(monkeypatch, *, exit_observable):
@@ -1878,9 +1875,18 @@ class TestProcessSandbox:
 
         class FakeProcess:
             pid = 123
+            returncode: int | None = None
 
-            def kill(self):
-                pass
+            def poll(self) -> int:
+                self.returncode = 0
+                return self.returncode
+
+            def kill(self) -> None:
+                # POSIX Popen.kill() polls first and can reap an exited child.
+                self.poll()
+
+            def wait(self) -> int:
+                return self.poll()
 
         monkeypatch.setattr(sandbox_module.os, "name", "posix")
         monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Darwin")
@@ -1920,6 +1926,47 @@ class TestProcessSandbox:
 
         assert termination_errors == []
         assert timed_out.is_set() is True
+
+    def test_timeout_preserves_unreaped_leader_through_group_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry must retain PID/PGID ownership until the waiter reaps."""
+        import threading
+
+        sandbox, process = self._darwin_zombie_group(
+            monkeypatch, exit_observable=lambda call: call >= 1
+        )
+        lifecycle_lock = threading.Lock()
+        exit_observed = threading.Event()
+        finished = threading.Event()
+        termination_errors: list[SandboxError] = []
+
+        sandbox._terminate_worker_on_timeout(
+            process,
+            lifecycle_lock,
+            exit_observed,
+            finished,
+            threading.Event(),
+            termination_errors,
+        )
+
+        assert termination_errors == []
+        assert process.returncode is None, "group cleanup must not reap the leader"
+
+        class ExitObserver:
+            def control(
+                self, _changes: object, _count: int, _timeout: object
+            ) -> list[object]:
+                assert process.returncode is None
+                return [object()]
+
+        monkeypatch.setattr(sandbox, "_waitid_supervision_available", lambda: False)
+        returncode = sandbox._wait_for_worker_tree(
+            process, lifecycle_lock, exit_observed, finished, ExitObserver()
+        )
+
+        assert returncode == process.returncode == 0
+        assert finished.is_set()
 
     def test_timeout_group_error_stays_fatal_without_an_observed_exit(
         self, monkeypatch

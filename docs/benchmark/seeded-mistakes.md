@@ -21,11 +21,11 @@ mistake. See `benchmark/seeded_mistakes.py` for the definitions.
 
 ## Summary
 
-- Mutants: 840 (0 accepted as valid Geno)
-- Rejected: 840
-- Located on the mistake's line: 840 (100%)
-- Carry a fix: 684 (81.4%)
-- Repaired by `geno check --fix`: 684 (81.4%)
+- Mutants: 907 (1 accepted as valid Geno)
+- Rejected: 906
+- Located on the mistake's line: 848 (93.6%)
+- Carry a fix: 828 (91.4%)
+- Repaired by `geno check --fix`: 828 (91.4%)
 - Misrepaired: 0
 
 ## By Mistake
@@ -57,7 +57,9 @@ mistake. See `benchmark/seeded_mistakes.py` for the definitions.
 | misspelled function | a slip | `lenght(xs)` | 58 | 58 | 100% | 100% | 100% | 0 |
 | misspelled variable | a slip | `nusm[0]` | 37 | 37 | 100% | 100% | 100% | 0 |
 | misspelled type | a slip | `Strign` | 78 | 78 | 100% | 100% | 100% | 0 |
-| no return type | Python | `func f(x: Int)` | 78 | 78 | 100% | 0.0% | 0.0% | 0 |
+| no with | Rust, Python | `match x` | 8 | 8 | 100% | 100% | 100% | 0 |
+| let for a variable | JavaScript | `let total = 0` | 59 | 58 | 0.0% | 100% | 100% | 0 |
+| no return type | Python | `func f(x: Int)` | 78 | 78 | 100% | 100% | 100% | 0 |
 | no examples | every language | `(no example clause)` | 78 | 78 | 100% | 0.0% | 0.0% | 0 |
 
 ## Not Repaired
@@ -67,5 +69,4 @@ it was seeded in, and the first error of the first such mutant.
 
 | Mistake | Problems | First error |
 |---|---|---|
-| no return type | all 78 | [E201] Function 'add' needs a return type: write '-> Type' after its parameters, or '-> Unit' when it returns nothing |
 | no examples | all 78 | [E300] Function 'add' must have at least one example clause |

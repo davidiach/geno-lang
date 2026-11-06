@@ -28,7 +28,7 @@ CONFORMANCE_ROOT = ROOT / "conformance"
 SPEC_PATH = ROOT / "spec.json"
 FIRST_FROZEN_SERIES = (0, 4)
 # A corpus newer than `spec.json`'s `language_series` holds the cases of the
-# unreleased next minor (the 0.7 line opened by proposal 0017). It must say so
+# unreleased next minor (the draft 0.7 development line). It must say so
 # with `status = "development"`; it is not frozen, and the retained corpora
 # keep their meaning.
 DEVELOPMENT_STATUS = "development"

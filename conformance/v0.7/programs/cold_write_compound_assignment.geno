@@ -1,0 +1,28 @@
+type Point = Point(x: Int, y: Int)
+
+func main() -> Unit
+    var n = 100
+    n -= 1
+    n *= 2
+    n /= 4
+    n %= 7
+    n += 10
+    var f = 1.5
+    f *= 2.0
+    var s = "a"
+    s += "b"
+    var xs = [1]
+    xs += [2, 3]
+    var arr = array_from_list([10, 20, 30])
+    let i = 1
+    arr[i + 1] += 5
+    arr[0] -= 1
+    var p = Point(x: 1, y: 2)
+    p.x += 40
+    print(n)
+    print(f)
+    print(s)
+    print(xs)
+    print(array_to_list(arr))
+    print(p.x)
+end func

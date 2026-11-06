@@ -1,0 +1,4 @@
+func f(self) -> Int
+    example 1 -> 1
+    return 1
+end func
