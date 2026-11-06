@@ -1,5 +1,7 @@
 """Tests for the effect typing system — Phase 3: inference and checking."""
 
+import pytest
+
 from geno.parser import parse
 from geno.typechecker import TypeChecker
 from geno.types import FuncType
@@ -231,9 +233,9 @@ end func bad
         assert errors == []
 
     def test_explicitly_pure_but_effectful_error(self):
-        """A function declared with no effects but performing mutation should
-        get effects inferred (since no annotation = no constraint)."""
-        # When there's NO annotation at all, we just infer — no error
+        """An unannotated function gets its effects inferred (no annotation =
+        no constraint). Since proposal 0019 a counter in its own `var` is not
+        an effect, so the inferred set is empty."""
         checker = _typecheck("""
 func counter(start: Int) -> Int
     example 0 -> 5
@@ -244,7 +246,7 @@ end func counter
 """)
         ft = checker.global_env.lookup("counter")
         assert isinstance(ft, FuncType)
-        assert ft.effects == frozenset({"mutation"})
+        assert ft.effects == frozenset()
 
     def test_declared_pure_but_calls_effectful_error(self):
         """Function annotated with empty 'with' but calling effectful builtin.
@@ -468,3 +470,838 @@ end func use_touch
         ft = checker.global_env.lookup("use_touch")
         assert isinstance(ft, FuncType)
         assert ft.effects == frozenset({"io"})
+
+
+# ---------------------------------------------------------------------------
+# Proposal 0019: local mutation is not an effect
+# ---------------------------------------------------------------------------
+
+_RECORDS = """
+type Point = Point(x: Int, y: Int)
+type Bag = Bag(items: List[Point], label: String)
+type Board = Board(cells: Array[Int], pts: Array[Point])
+"""
+
+
+def _effects(source: str, name: str) -> frozenset[str]:
+    """The effects the checker settled on for top-level function *name*."""
+    func_type = _typecheck(_RECORDS + source).global_env.lookup(name)
+    assert isinstance(func_type, FuncType)
+    return func_type.effects
+
+
+def _check(source: str):
+    from geno import check
+
+    return check(_RECORDS + source)
+
+
+def _codes(source: str) -> list[str]:
+    return [d.code.value for d in _check(source).diagnostics if d.code is not None]
+
+
+def _messages(source: str) -> list[str]:
+    return [d.message for d in _check(source).diagnostics]
+
+
+TOTAL = """
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+"""
+
+BUMP = """
+func bump(counter: Array[Int]) -> Int
+    example array_new(1, 0) -> 1
+    var alias = counter
+    alias[0] = alias[0] + 1
+    return alias[0]
+end func
+"""
+
+# Section 2 of the proposal, one function per table row: (source, name,
+# effects under 0.7). Every one of these was `{mutation}` in 0.6, except the
+# mutating builtins, which carried nothing and still carry nothing.
+MASKING_TABLE = {
+    "var never written": (
+        """
+func keep(n: Int) -> Int
+    example 2 -> 2
+    var z = n
+    return z
+end func
+""",
+        "keep",
+        frozenset(),
+    ),
+    "unit-local assignment": (TOTAL, "total", frozenset()),
+    "mutable destructure": (
+        """
+func swap_sum(a: Int, b: Int) -> Int
+    example 1, 2 -> 5
+    var (x, y): (Int, Int) = (a, b)
+    x = x + y
+    y = x + y
+    return y
+end func
+""",
+        "swap_sum",
+        frozenset(),
+    ),
+    "field write on a local record": (
+        """
+func moved(p: Point, dx: Int) -> Point
+    example Point(x: 1, y: 2), 3 -> Point(x: 4, y: 2)
+    var q = p
+    q.x = q.x + dx
+    return q
+end func
+""",
+        "moved",
+        frozenset(),
+    ),
+    "field write through a local list": (
+        """
+func shift_first(ps: List[Point]) -> List[Point]
+    example [Point(x: 1, y: 2)] -> [Point(x: 2, y: 2)]
+    var xs = ps
+    xs[0].x = xs[0].x + 1
+    return xs
+end func
+""",
+        "shift_first",
+        frozenset(),
+    ),
+    "field write through value hops": (
+        """
+func relabel(b: Bag) -> Bag
+    example Bag(items: [Point(x: 1, y: 1)], label: "a") -> Bag(items: [Point(x: 9, y: 1)], label: "a")
+    var q = b
+    q.items[0].x = 9
+    return q
+end func
+""",
+        "relabel",
+        frozenset(),
+    ),
+    "index write into an owned array": (
+        """
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+""",
+        "histogram",
+        frozenset(),
+    ),
+    "field write into an owned array's element": (
+        """
+func bumped(n: Int) -> Int
+    example 2 -> 1
+    var pts = array_new(n, Point(x: 0, y: 0))
+    pts[0].x = 1
+    return pts[0].x
+end func
+""",
+        "bumped",
+        frozenset(),
+    ),
+    "index writes into an owned MutableMap and Vec": (
+        """
+func memo(n: Int) -> Int
+    example 2 -> 4
+    var m: MutableMap[Int, Int] = mutable_map_new()
+    m[n] = n * 2
+    var v: Vec[Int] = vec_new()
+    vec_push(v, 1)
+    v[0] = n
+    return mutable_map_get(m, n).unwrap() + vec_get(v, 0) - n
+end func
+""",
+        "memo",
+        frozenset(),
+    ),
+    "owned array returned": (
+        """
+func squares(n: Int) -> Array[Int]
+    example 2 -> array_from_list([0, 1])
+    var a = array_new(n, 0)
+    for i in range(0, n) do
+        a[i] = i * i
+    end for
+    return a
+end func
+""",
+        "squares",
+        frozenset(),
+    ),
+    "array aliasing a parameter": (BUMP, "bump", frozenset({"mutation"})),
+    "array copied into a second binding": (
+        """
+func rolled(n: Int) -> Int
+    example 2 -> 0
+    var prev = array_new(n, 0)
+    var cur = array_new(n, 0)
+    prev = cur
+    cur = array_new(n, 0)
+    prev[0] = 1
+    return cur[0]
+end func
+""",
+        "rolled",
+        frozenset({"mutation"}),
+    ),
+    "array passed to a user function": (
+        """
+func first(a: Array[Int]) -> Int
+    example array_new(1, 7) -> 7
+    return a[0]
+end func
+
+func lent(n: Int) -> Int
+    example 1 -> 0
+    var a = array_new(n, 0)
+    let seen = first(a)
+    a[0] = 1
+    return seen
+end func
+""",
+        "lent",
+        frozenset({"mutation"}),
+    ),
+    "array read by a closure": (
+        """
+func peeked(n: Int) -> Int
+    example 1 -> 1
+    var a = array_new(n, 0)
+    let peek = fn() -> a[0]
+    a[0] = 1
+    return peek()
+end func
+""",
+        "peeked",
+        frozenset({"mutation"}),
+    ),
+    "array reassigned from a parameter after the write": (
+        """
+func swapped(p: Array[Int]) -> Int
+    example array_new(1, 0) -> 0
+    var a = array_new(1, 0)
+    for i in range(0, 2) do
+        a[0] = i
+        a = p
+    end for
+    return a[0]
+end func
+""",
+        "swapped",
+        frozenset({"mutation"}),
+    ),
+    "write through a reference field": (
+        """
+func set_cell(b: Board) -> Int
+    example Board(cells: array_new(1, 0), pts: array_new(1, Point(x: 0, y: 0))) -> 1
+    var q = b
+    q.cells[0] = 1
+    return q.cells[0]
+end func
+""",
+        "set_cell",
+        frozenset({"mutation"}),
+    ),
+    "field write below a reference field": (
+        """
+func set_pt(b: Board) -> Int
+    example Board(cells: array_new(1, 0), pts: array_new(1, Point(x: 0, y: 0))) -> 1
+    var q = b
+    q.pts[0].x = 1
+    return q.pts[0].x
+end func
+""",
+        "set_pt",
+        frozenset({"mutation"}),
+    ),
+    "two-dimensional table with aliased rows": (
+        """
+func grid_set(n: Int) -> Int
+    example 2 -> 1
+    var grid = array_new(n, array_new(n, 0))
+    grid[0][1] = 1
+    return grid[1][1]
+end func
+""",
+        "grid_set",
+        frozenset({"mutation"}),
+    ),
+    # Known limitation (0.7 draft): the reference checker does not charge
+    # mutating builtins on any receiver. Closing it flips these on purpose.
+    "mutating builtins on a parameter": (
+        """
+func push_param(v: Vec[Int], a: Array[Int]) -> Int
+    example vec_new(), array_new(1, 0) -> 1
+    vec_push(v, 1)
+    array_set(array: a, index: 0, value: 1)
+    return vec_length(v)
+end func
+""",
+        "push_param",
+        frozenset(),
+    ),
+    "calling a still-charged function": (
+        BUMP
+        + """
+func calls_bump(n: Int) -> Int
+    example 0 -> 1
+    return bump(array_new(1, n))
+end func
+""",
+        "calls_bump",
+        frozenset({"mutation"}),
+    ),
+    "calling a masked function": (
+        TOTAL
+        + """
+func calls_total(xs: List[Int]) -> Int
+    example [1] -> 1
+    return total(xs)
+end func
+""",
+        "calls_total",
+        frozenset(),
+    ),
+    "calling a closure that writes a captured var": (
+        """
+func ticks(n: Int) -> Int
+    example 2 -> 2
+    var count = 0
+    let tick = fn() do
+        count = count + 1
+        return count
+    end fn
+    for i in range(0, n) do
+        let ignored = tick()
+    end for
+    return count
+end func
+""",
+        "ticks",
+        frozenset({"mutation"}),
+    ),
+    "creating a closure that writes a captured var": (
+        """
+@untested("returns a closure")
+func make_counter() -> () -> Int with mutation
+    var n = 0
+    return fn() do
+        n = n + 1
+        return n
+    end fn
+end func
+
+func makes(n: Int) -> Int
+    example 1 -> 1
+    let next = make_counter
+    return n
+end func
+""",
+        "makes",
+        frozenset(),
+    ),
+}
+
+
+class TestLocalMutationMasking:
+    """Proposal 0019: a write only the writing function or lambda can see."""
+
+    @pytest.mark.parametrize("case", sorted(MASKING_TABLE))
+    def test_section_two_table(self, case: str) -> None:
+        source, name, expected = MASKING_TABLE[case]
+        assert _effects(source, name) == expected
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "apply(total, xs)",
+            "map([xs], total)[0]",
+            "[xs].map(total)[0]",
+            "xs |> total",
+            "[xs] |> map(_, total) |> sum",
+        ],
+    )
+    def test_a_local_accumulator_is_a_pure_callback(self, call: str) -> None:
+        source = (
+            TOTAL
+            + """
+func apply(f: (List[Int]) -> Int, xs: List[Int]) -> Int
+    example fn(ys: List[Int]) -> length(ys), [4, 5] -> 2
+    return f(xs)
+end func
+"""
+            + f"""
+func caller(xs: List[Int]) -> Int
+    example [1, 2] -> 3
+    return {call}
+end func
+"""
+        )
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        assert _effects(source, "caller") == frozenset()
+
+    def test_a_lambda_with_its_own_accumulator_is_pure(self) -> None:
+        source = """
+func sums(rows: List[List[Int]]) -> List[Int]
+    example [[1, 2], [3]] -> [3, 3]
+    return rows.map(fn(ys: List[Int]) do
+        var s = 0
+        for y in ys do
+            s = s + y
+        end for
+        return s
+    end fn)
+end func
+
+func pure_slot() -> Int
+    example () -> 1
+    let f: () -> Int = fn() do
+        var n = 0
+        n = n + 1
+        return n
+    end fn
+    return f()
+end func
+"""
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        assert _effects(source, "sums") == frozenset()
+        assert _effects(source, "pure_slot") == frozenset()
+
+    def test_main_with_io_may_keep_locals(self) -> None:
+        source = """
+func main() -> Unit with io
+    var label = "total: "
+    var counts = array_new(2, 0)
+    counts[1] = 5
+    var p = Point(x: 1, y: 2)
+    p.x = counts[1]
+    label = label + to_string(p.x)
+    print(label)
+end func
+"""
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        assert _effects(source, "main") == frozenset({"io"})
+
+    def test_impl_methods_mask_their_locals(self) -> None:
+        source = """
+type Counter = Counter(n: Int)
+
+trait Tally
+    func tally(self: Self, xs: List[Int]) -> Int
+end trait
+
+impl Tally for Counter
+    func tally(self: Counter, xs: List[Int]) -> Int
+        example Counter(n: 1), [2, 3] -> 6
+        var t = self.n
+        for x in xs do
+            t = t + x
+        end for
+        return t
+    end func
+end impl
+
+func use_tally[T: Tally](c: T) -> Int
+    example Counter(n: 1) -> 1
+    return tally(c, [])
+end func
+
+func apply(f: (Counter) -> Int, c: Counter) -> Int
+    example fn(c: Counter) -> 0, Counter(n: 1) -> 0
+    return f(c)
+end func
+
+func caller(c: Counter) -> Int
+    example Counter(n: 2) -> 2
+    return apply(use_tally, c)
+end func
+"""
+        checker = _typecheck(_RECORDS + source)
+        method = checker.impl_registry[("Tally", "Counter")]["tally"]
+        assert method.effects == frozenset()
+        bounded = checker.global_env.lookup("use_tally")
+        assert isinstance(bounded, FuncType)
+        assert bounded.effects == frozenset()
+
+    def test_async_functions_mask_their_locals(self) -> None:
+        source = """
+async func summed(xs: List[Int]) -> Int
+    var s = 0
+    for x in xs do
+        s = s + x
+    end for
+    return s
+end func
+
+async func caller(xs: List[Int]) -> Int
+    var a = array_new(1, 0)
+    a[0] = await summed(xs)
+    return a[0]
+end func
+"""
+        assert _effects(source, "summed") == frozenset()
+        assert _effects(source, "caller") == frozenset()
+
+    def test_generic_functions_mask_their_locals(self) -> None:
+        source = """
+func count_where[T](xs: List[T], keep: (T) -> Bool) -> Int
+    example [1, 2, 3], fn(x: Int) -> x > 1 -> 2
+    var n = 0
+    for x in xs do
+        if keep(x) then
+            n = n + 1
+        end if
+    end for
+    return n
+end func
+
+func apply(f: (List[Int], (Int) -> Bool) -> Int, xs: List[Int]) -> Int
+    example fn(ys: List[Int], p: (Int) -> Bool) -> 0, [1] -> 0
+    return f(xs, fn(x: Int) -> x > 0)
+end func
+
+func caller(xs: List[Int]) -> Int
+    example [1, -1] -> 1
+    let f: (List[Int], (Int) -> Bool) -> Int = count_where
+    return apply(f, xs) + count_where(xs, fn(x: Int) -> x > 0) - 1
+end func
+"""
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        assert _effects(source, "count_where") == frozenset()
+        assert _effects(source, "caller") == frozenset()
+
+    def test_a_declared_mutation_stays_legal(self) -> None:
+        source = TOTAL.replace("-> Int\n", "-> Int with mutation\n", 1)
+        assert "with mutation" in source
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        assert _effects(source, "total") == frozenset({"mutation"})
+
+    def test_a_captured_write_still_needs_a_declared_mutation(self) -> None:
+        source = """
+func main() -> Unit with io
+    var n = 0
+    let inc = fn() do
+        n = n + 1
+        return n
+    end fn
+    print(inc())
+end func
+"""
+        assert _codes(source) == ["E310"]
+        assert _messages(source) == [
+            "Function 'main' performs undeclared effects: mutation. "
+            "Declared effects: io"
+        ]
+
+    def test_a_parameter_alias_still_needs_a_declared_mutation(self) -> None:
+        source = BUMP.replace("-> Int\n", "-> Int with io\n", 1)
+        assert _codes(source) == ["E310"]
+        assert "performs undeclared effects: mutation" in _messages(source)[0]
+
+    def test_a_capturing_closure_returned_as_pure_is_rejected(self) -> None:
+        source = """
+@untested("returns a closure")
+func make_counter() -> () -> Int
+    var n = 0
+    return fn() do
+        n = n + 1
+        return n
+    end fn
+end func
+"""
+        assert _codes(source) == ["E300"]
+        assert _messages(source) == [
+            "Return type mismatch: expected () -> Int, got () -> Int with mutation"
+        ]
+
+    def test_a_nested_lambda_writing_the_enclosing_lambdas_var(self) -> None:
+        source = """
+func outer(n: Int) -> Int
+    example 1 -> 1
+    let make = fn() do
+        var c = 0
+        let inc = fn() do
+            c = c + 1
+            return c
+        end fn
+        return inc
+    end fn
+    let calls = fn() do
+        var c = 0
+        let inc = fn() do
+            c = c + 1
+            return c
+        end fn
+        return inc()
+    end fn
+    let pure_make: () -> () -> Int with mutation = make
+    let charged: () -> Int with mutation = calls
+    return n
+end func
+"""
+        # The inner lambda writes `c`, captured from the enclosing lambda, so
+        # it carries `mutation`. `make` only creates it and stays pure;
+        # `calls` calls it and is charged.
+        result = _check(source)
+        assert result.ok, [str(d) for d in result.diagnostics]
+        rejected = source.replace(
+            "let charged: () -> Int with mutation = calls",
+            "let charged: () -> Int = calls",
+        )
+        assert _codes(rejected) == ["E300"]
+
+    def test_unknown_never_masks(self) -> None:
+        """A write whose check stops at an error, or whose root does not
+        resolve, keeps the function charged."""
+        for body in (
+            "ghost = 1",
+            "ghost[0] = 1",
+            "ghost.x = 1",
+            "let a = array_new(1, 0)\n    a[0] = 1",
+            "var p = Point(x: 0, y: 0)\n    p.z = 1",
+        ):
+            source = (
+                _RECORDS
+                + f"""
+func f() -> Int
+    example () -> 0
+    {body}
+    return 0
+end func
+"""
+            )
+            program = parse(source)
+            checker = TypeChecker()
+            try:
+                checker.check_program(program)
+            except Exception:
+                pass
+            else:  # pragma: no cover - every body is an error
+                raise AssertionError(body)
+            [defn] = [d for d in program.definitions if getattr(d, "name", "") == "f"]
+            inferred = checker._infer_function_effects(
+                defn, checker._effect_env_for_function(defn)
+            )
+            assert "mutation" in inferred, body
+
+    def test_binding_locality(self) -> None:
+        from geno.types import IntType, TypeEnv
+
+        checker = TypeChecker()
+        local = checker.global_env.child()
+        local.bind("x", IntType(), mutable=True)
+        assert checker._binding_locality("x", local.child()) == "unit-local"
+        assert checker._binding_locality("missing", local) == "unresolved"
+        checker.global_env.bind("module_value", IntType())
+        assert checker._binding_locality("module_value", local) == "captured"
+        detached = TypeEnv()
+        detached.bind("y", IntType(), mutable=True)
+        assert checker._binding_locality("y", detached) == "captured"
+        # Inside a lambda checked in `local`, its own scope is unit-local and
+        # anything at or above the capture environment is captured.
+        checker._lambda_capture_env = local
+        inner = local.child()
+        inner.bind("z", IntType(), mutable=True)
+        assert checker._binding_locality("z", inner) == "unit-local"
+        assert checker._binding_locality("x", inner) == "captured"
+
+    def test_effect_inference_reads_the_classification_not_the_target(
+        self, monkeypatch
+    ) -> None:
+        source = (
+            _RECORDS
+            + """
+func f(n: Int) -> Int
+    example 1 -> 1
+    var a = array_new(n, 0)
+    a[0] = n
+    var p = Point(x: 0, y: 0)
+    p.x = a[0]
+    var t = 0
+    t = p.x
+    return t
+end func
+"""
+        )
+        program = parse(source)
+        checker = TypeChecker()
+        checker.check_program(program)
+        [defn] = [d for d in program.definitions if getattr(d, "name", "") == "f"]
+        writes = [s for s in defn.body if type(s).__name__.endswith("AssignStatement")]
+        assert len(writes) == 3
+        for stmt in writes:
+            entry = checker._write_classifications[id(stmt)]
+            assert entry[0] is stmt
+            assert entry[1].locality == "unit-local"
+        index_write, field_write, _plain = writes
+        assert checker._write_classifications[id(index_write)][1].root_is_reference
+        assert not checker._write_classifications[id(field_write)][1].root_is_reference
+
+        targets = {id(index_write.target), id(field_write.target)}
+        checked: list[int] = []
+        original = TypeChecker._check_expression
+
+        def counting(self, expr, env):
+            checked.append(id(expr))
+            return original(self, expr, env)
+
+        monkeypatch.setattr(TypeChecker, "_check_expression", counting)
+        env = checker._effect_env_for_function(defn)
+        assert checker._infer_function_effects(defn, env) == frozenset()
+        assert checked, "effect inference re-checks initializers"
+        assert targets.isdisjoint(checked)
+
+        # Without the recorded classification every write is charged.
+        checker._write_classifications.clear()
+        env = checker._effect_env_for_function(defn)
+        assert checker._infer_function_effects(defn, env) == frozenset({"mutation"})
+
+    def test_a_local_binding_named_like_a_builtin_is_not_fresh(self) -> None:
+        """Checker only: JavaScript refuses a local named after a builtin."""
+        source = """
+func f(shared: Array[Int]) -> Int
+    example array_new(1, 0) -> 5
+    let array_new = fn(n: Int, v: Int) -> shared
+    var a = array_new(1, 0)
+    a[0] = 5
+    return shared[0]
+end func
+"""
+        assert _effects(source, "f") == frozenset({"mutation"})
+        unshadowed = source.replace("let array_new = fn", "let make = fn").replace(
+            "var a = array_new(1, 0)", "var a = make(1, 0)"
+        )
+        assert _effects(unshadowed, "f") == frozenset({"mutation"})
+
+    def test_a_top_level_function_named_like_a_builtin_is_not_fresh(self) -> None:
+        source = """
+func array_new(n: Int, v: Int) -> Array[Int]
+    example 1, 0 -> array_from_list([0])
+    return array_from_list([v])
+end func
+
+func f(n: Int) -> Int
+    example 1 -> 5
+    var a = array_new(n, 0)
+    a[0] = 5
+    return a[0]
+end func
+"""
+        assert _effects(source, "f") == frozenset({"mutation"})
+
+
+BREAKING = """
+func local_sum(n: Int) -> Int
+    example 2 -> 3
+    var y = n
+    y = y + 1
+    return y
+end func
+
+func shared_bump(n: Int) -> Int
+    example 1 -> 1
+    var cells = array_new(1, n)
+    var alias = cells
+    alias[0] = n
+    return cells[0]
+end func
+
+func pick[T](a: T, b: T) -> T
+    example 1, 2 -> 1
+    return a
+end func
+"""
+
+
+class TestLocalMutationBreakingClass:
+    """Programs 0.6 accepted because both function types carried `mutation`."""
+
+    def test_reassigning_a_var_function(self) -> None:
+        source = (
+            BREAKING
+            + """
+func main() -> Unit with io, mutation
+    var f = local_sum
+    f = shared_bump
+    print(f(1))
+end func
+"""
+        )
+        assert _codes(source) == ["E300"]
+        assert _messages(source) == [
+            "Type mismatch in assignment: expected (Int) -> Int, got (Int) -> Int "
+            "with mutation"
+        ]
+
+    def test_a_generic_parameter_bound_by_its_first_argument(self) -> None:
+        source = (
+            BREAKING
+            + """
+func main() -> Unit with io, mutation
+    let g = pick(local_sum, shared_bump)
+    print(g(1))
+end func
+"""
+        )
+        assert _codes(source) == ["E300"]
+        assert "Argument 2 type mismatch" in _messages(source)[0]
+
+    def test_reassigning_an_option_of_a_function(self) -> None:
+        source = (
+            BREAKING
+            + """
+func main() -> Unit with io, mutation
+    var o = Some(local_sum)
+    o = Some(shared_bump)
+    print(o.unwrap()(1))
+end func
+"""
+        )
+        assert _codes(source) == ["E300"]
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ("var f = local_sum", "var f: (Int) -> Int with mutation = local_sum"),
+            (
+                "func local_sum(n: Int) -> Int\n",
+                "func local_sum(n: Int) -> Int with mutation\n",
+            ),
+        ],
+    )
+    def test_the_migration_restores_the_06_type(self, old: str, new: str) -> None:
+        source = (
+            BREAKING
+            + """
+func main() -> Unit with io, mutation
+    var f = local_sum
+    f = shared_bump
+    print(f(1))
+end func
+"""
+        )
+        migrated = source.replace(old, new, 1)
+        assert migrated != source
+        result = _check(migrated)
+        assert result.ok, [str(d) for d in result.diagnostics]

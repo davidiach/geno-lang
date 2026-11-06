@@ -1430,6 +1430,53 @@ class TestEligibility:
         assert results["lookup"].note is not None
         assert "MutableMap[String, Int] has no generator" in results["lookup"].note
 
+    def test_masking_local_mutation_leaves_the_eligible_set_unchanged(self):
+        """Proposal 0019 only removes `mutation`: `{mutation}` became `{}` and
+        both are checked; `{mutation, io}` became `{io}` and both are not."""
+        source = """\
+        func local_sum(n: Int) -> Int
+            ensures result >= n
+            example 2 -> 3
+            var y = n
+            y = y + 1
+            return y
+        end func
+
+        func noisy_sum(n: Int) -> Int
+            example 2 -> 3
+            var y = n
+            y = y + 1
+            print(y)
+            return y
+        end func
+
+        func ticks(n: Int) -> Int
+            ensures result == 1
+            example 2 -> 1
+            var count = 0
+            let tick = fn() do
+                count = count + 1
+                return count
+            end fn
+            return tick()
+        end func
+        """
+        _text, _program, checker = _load(source)
+        effects = {}
+        for name in ("local_sum", "noisy_sum", "ticks"):
+            func_type = checker.global_env.lookup(name)
+            assert isinstance(func_type, FuncType)
+            effects[name] = func_type.effects
+        assert effects == {
+            "local_sum": frozenset(),
+            "noisy_sum": frozenset({"io"}),
+            "ticks": frozenset({"mutation"}),
+        }
+        results = check(source)
+        assert set(results) == {"local_sum", "ticks"}
+        assert results["local_sum"].status == "passed"
+        assert results["ticks"].status == "passed"
+
     def test_a_field_without_a_generator_is_named_in_the_note(self):
         source = """\
         type Fn = Fn(f: (Int) -> Int)

@@ -18,6 +18,7 @@ from typing import (
     Callable,
     Iterable,
     Iterator,
+    Literal,
     Mapping,
     Sequence,
     Union,
@@ -102,6 +103,7 @@ from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
+from .mutation_ownership import function_owned_names, lambda_owned_names
 from .stdlib_scope import binds_unqualified
 from .tokens import SourceLocation
 from .typechecker_calls import resolve_call_parameter_info
@@ -367,6 +369,54 @@ class _ModuleImportSummary:
     generic_functions: dict[str, GenericSignature] = dataclasses.field(
         default_factory=dict
     )
+
+
+# Proposal 0019: where a write statement's root binding lives, relative to the
+# unit (function or lambda body) that contains the statement.
+_WriteLocality = Literal["unit-local", "captured", "unresolved"]
+
+# Containers with value semantics (spec 3.2.1): writing into one writes back
+# into the binding's own copy. Every other type on a write path, an unknown one
+# included, counts as a reference.
+_VALUE_CONTAINER_TYPES = (UserType, ListType, MapType, TupleType)
+
+
+@dataclass(frozen=True)
+class _WriteClassification:
+    """The facts masking rules L2 and L3 of proposal 0019 read for one write.
+
+    The statement checks record it while they type-check the write, so effect
+    inference never type-checks a write target. *root* is the binding the
+    target chain starts from (None when it does not start at a name) and
+    *locality* where that binding lives relative to the writing unit. For an
+    index or field write, *root_is_reference* says whether the root's own
+    value ``c0`` is a reference collection (or of unknown type), and
+    *later_hops_are_values* whether every later container ``c1 ... ck`` the
+    write steps into has a value type.
+    """
+
+    root: str | None
+    locality: _WriteLocality
+    root_is_reference: bool = False
+    later_hops_are_values: bool = True
+
+
+def _write_containers(target: Expression) -> list[Expression] | None:
+    """The containers ``c0 ... ck`` of a write into *target* (``ck``), root first.
+
+    None when the chain of field accesses and index reads does not start at
+    an identifier.
+    """
+    chain: list[Expression] = []
+    node = target
+    while isinstance(node, (FieldAccess, IndexAccess)):
+        chain.append(node)
+        node = node.target
+    if not isinstance(node, Identifier):
+        return None
+    chain.append(node)
+    chain.reverse()
+    return chain
 
 
 def _block_returns(statements: list[Statement]) -> Iterator[ReturnStatement]:
@@ -915,6 +965,22 @@ class TypeChecker(ExhaustivenessMixin):
         self._lambda_return_types: list[Type] | None = None
         self._lambda_propagation_types: list[Type] | None = None
         self._lambda_capture_env: TypeEnv | None = None
+        # Proposal 0019. The names the unit whose effects are being inferred
+        # owns, and per unit node (function or lambda) the owned names its
+        # last real check computed. Per write statement, the classification
+        # its last real check recorded. Both tables keep the node itself next
+        # to the value, so an id is never reused while it is a key.
+        self._owned_names: frozenset[str] = frozenset()
+        self._unit_owned_names: dict[
+            int, tuple[FunctionDef | LambdaExpr, frozenset[str]]
+        ] = {}
+        self._write_classifications: dict[
+            int, tuple[Statement, _WriteClassification]
+        ] = {}
+        # Above zero while effect inference re-checks expressions in its own
+        # approximate environment; those re-checks record no ownership or
+        # write facts, so the real check's stay authoritative.
+        self._effect_inference_depth: int = 0
         self.errors: list[TypeError] = []
         # Opt-in for tools (the language server): every local the checker
         # binds, as (location of its binding construct, name, type). When set,
@@ -1555,6 +1621,8 @@ class TypeChecker(ExhaustivenessMixin):
         """
         self.errors = []
         self._resolved_type_cache.clear()
+        self._unit_owned_names.clear()
+        self._write_classifications.clear()
 
         self._imported_module_names = {
             defn.module_name: defn.alias
@@ -2929,6 +2997,7 @@ class TypeChecker(ExhaustivenessMixin):
         # Check body
         for stmt in defn.body:
             self._check_statement(stmt, local_env)
+        self._record_unit_ownership(defn)
 
         # Check return-path coverage for non-Unit functions
         if not isinstance(self.current_return_type, UnitType):
@@ -3226,11 +3295,16 @@ class TypeChecker(ExhaustivenessMixin):
         # Effect inference may revisit an unannotated initializer to learn its
         # type. That visit needs this function's context even during the global
         # signature-stabilization pass, where no function is otherwise active.
-        with self._function_context(
-            self._resolve_type(defn.return_type),
-            is_async=defn.is_async,
-            is_main=defn.name == "main",
+        with (
+            self._function_context(
+                self._resolve_type(defn.return_type),
+                is_async=defn.is_async,
+                is_main=defn.name == "main",
+            ),
+            self._effect_inference(),
         ):
+            # Proposal 0019: writes into collections the body owns are masked.
+            self._owned_names = self._checked_unit_ownership(defn)
             effects: set[str] = set(self._infer_specs_effects(defn, env))
             for param in defn.params:
                 if param.default_value is not None:
@@ -3239,6 +3313,123 @@ class TypeChecker(ExhaustivenessMixin):
                     )
             effects |= self._infer_body_effects(defn.body, env)
             return frozenset(effects)
+
+    @contextmanager
+    def _effect_inference(self) -> Iterator[None]:
+        """Mark expression re-checks as effect inference's own (proposal 0019).
+
+        Effect inference re-checks initializers, callees and scrutinees in an
+        approximate environment of its own. Those re-checks must not replace
+        the ownership and write facts the real check recorded.
+        """
+        self._effect_inference_depth += 1
+        try:
+            yield
+        finally:
+            self._effect_inference_depth -= 1
+
+    def _record_unit_ownership(self, unit: FunctionDef | LambdaExpr) -> frozenset[str]:
+        """Compute the names *unit* owns, after its statements were checked.
+
+        Ownership reads which calls the check resolved to allocating builtins,
+        so only a real check records it; under effect inference the last real
+        check's answer is returned instead.
+        """
+        if self._effect_inference_depth:
+            return self._checked_unit_ownership(unit)
+        if isinstance(unit, FunctionDef):
+            owned = function_owned_names(unit)
+        else:
+            owned = lambda_owned_names(unit)
+        self._unit_owned_names[id(unit)] = (unit, owned)
+        return owned
+
+    def _checked_unit_ownership(self, unit: FunctionDef | LambdaExpr) -> frozenset[str]:
+        """The names *unit* owns, as its last real check computed; none if unchecked."""
+        entry = self._unit_owned_names.get(id(unit))
+        if entry is None or entry[0] is not unit:
+            return frozenset()
+        return entry[1]
+
+    def _set_write_classification(
+        self, stmt: Statement, classification: _WriteClassification | None
+    ) -> None:
+        """Record (or, with None, forget) what a write statement's check found."""
+        if self._effect_inference_depth:
+            return
+        if classification is None:
+            self._write_classifications.pop(id(stmt), None)
+        else:
+            self._write_classifications[id(stmt)] = (stmt, classification)
+
+    def _write_is_observable(
+        self,
+        stmt: AssignStatement | FieldAssignStatement | IndexAssignStatement,
+    ) -> bool:
+        """Do masking rules L2 and L3 of proposal 0019 leave this write charged?
+
+        Reads only the classification the statement's check recorded. A write
+        with none (its check stopped at an error, or never ran) is charged, and
+        so is one whose root is captured or does not resolve.
+        """
+        entry = self._write_classifications.get(id(stmt))
+        if entry is None or entry[0] is not stmt:
+            return True
+        classification = entry[1]
+        if classification.locality != "unit-local":
+            return True
+        if isinstance(stmt, AssignStatement):
+            return False  # L2: the unit's own cell.
+        if not classification.later_hops_are_values:
+            return True  # L3: the write reaches a reference below the root.
+        return (
+            classification.root_is_reference
+            and classification.root not in self._owned_names
+        )
+
+    def _binding_locality(self, name: str, env: TypeEnv) -> _WriteLocality:
+        """Where *name* is bound, relative to the unit being checked.
+
+        Unknown never masks: a name with no binding is unresolved, and a
+        module-scope binding (or one outside the checker's scopes) is
+        captured. Inside a lambda, a binding at or above its capture
+        environment is captured, by the walk ``_record_captured_binding`` uses.
+        """
+        binding_scope = env.binding_scope(name)
+        if binding_scope is None:
+            return "unresolved"
+        if binding_scope is self.global_env:
+            return "captured"
+        scope: TypeEnv | None = binding_scope.parent
+        while scope is not None and scope is not self.global_env:
+            scope = scope.parent
+        if scope is None or self._capture_path(binding_scope) is not None:
+            return "captured"
+        return "unit-local"
+
+    def _classify_container_write(
+        self, target: Expression, env: TypeEnv
+    ) -> _WriteClassification:
+        """Classify an index or field write into *target*, just after its check.
+
+        Container types come from each prefix's ``_resolved_type``, which
+        checking *target* set; a missing one counts as a reference.
+        """
+        chain = _write_containers(target)
+        if chain is None:
+            return _WriteClassification(root=None, locality="unresolved")
+        root = cast(Identifier, chain[0])
+        return _WriteClassification(
+            root=root.name,
+            locality=self._binding_locality(root.name, env),
+            root_is_reference=not isinstance(
+                root._resolved_type, _VALUE_CONTAINER_TYPES
+            ),
+            later_hops_are_values=all(
+                isinstance(node._resolved_type, _VALUE_CONTAINER_TYPES)
+                for node in chain[1:]
+            ),
+        )
 
     def _infer_specs_effects(self, defn: FunctionDef, env: TypeEnv) -> frozenset[str]:
         """Infer effects from requires and ensures clauses."""
@@ -3270,14 +3461,17 @@ class TypeChecker(ExhaustivenessMixin):
             stmt,
             (AssignStatement, FieldAssignStatement, IndexAssignStatement),
         ):
-            effects.add("mutation")
+            # Proposal 0019, L2 and L3: only a write a caller (or a later call
+            # of the same closure) can observe is a mutation.
+            if self._write_is_observable(stmt):
+                effects.add("mutation")
             if isinstance(stmt, (FieldAssignStatement, IndexAssignStatement)):
                 effects |= self._infer_expr_effects(stmt.target, env)
             if isinstance(stmt, IndexAssignStatement):
                 effects |= self._infer_expr_effects(stmt.index, env)
             effects |= self._infer_expr_effects(stmt.value, env)
         elif isinstance(stmt, VarStatement):
-            effects.add("mutation")
+            # L1: declaring a var is never an effect.
             effects |= self._infer_expr_effects(stmt.value, env)
             binding_type = (
                 self._resolve_type(stmt.type_annotation)
@@ -3313,8 +3507,7 @@ class TypeChecker(ExhaustivenessMixin):
         elif isinstance(stmt, AssertStatement):
             effects |= self._infer_expr_effects(stmt.expression, env)
         elif isinstance(stmt, TupleDestructureStatement):
-            if stmt.mutable:
-                effects.add("mutation")
+            # L1: a mutable destructure only declares vars.
             effects |= self._infer_expr_effects(stmt.value, env)
             tuple_type = self._resolve_type(stmt.type_annotation)
             if isinstance(tuple_type, TupleType):
@@ -4082,6 +4275,9 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _check_assign_statement(self, stmt: AssignStatement, env: TypeEnv) -> None:
         """Type check an assignment statement."""
+        # A check that stops at an error leaves the write unclassified, so
+        # effect inference charges it (proposal 0019).
+        self._set_write_classification(stmt, None)
         var_type = env.lookup(stmt.target)
         if var_type is None:
             hint, fixes = _rename_fixes(
@@ -4104,6 +4300,13 @@ class TypeChecker(ExhaustivenessMixin):
             return
 
         self._record_captured_binding(stmt.target, env, require_mutable=True)
+        self._set_write_classification(
+            stmt,
+            _WriteClassification(
+                root=stmt.target,
+                locality=self._binding_locality(stmt.target, env),
+            ),
+        )
         value_type = self._check_expression(stmt.value, env)
         stmt._expected_runtime_type = var_type
         self._record_expected_runtime_type(stmt.value, var_type)
@@ -4117,7 +4320,9 @@ class TypeChecker(ExhaustivenessMixin):
         self, stmt: IndexAssignStatement, env: TypeEnv
     ) -> None:
         """Type check an index assignment: arr[i] = value."""
+        self._set_write_classification(stmt, None)
         target_type = self._check_expression(stmt.target, env)
+        classification = self._classify_container_write(stmt.target, env)
         index_type = self._check_expression(stmt.index, env)
         value_type = self._check_expression(stmt.value, env)
 
@@ -4136,6 +4341,8 @@ class TypeChecker(ExhaustivenessMixin):
 
         if root_name is not None:
             self._record_captured_binding(root_name, env, require_mutable=True)
+        if isinstance(target_type, (ArrayType, VecType, MutableMapType)):
+            self._set_write_classification(stmt, classification)
         if isinstance(target_type, ArrayType):
             if not isinstance(index_type, IntType):
                 self._error(f"Array index must be Int, got {index_type}", stmt.location)
@@ -4180,7 +4387,9 @@ class TypeChecker(ExhaustivenessMixin):
         self, stmt: FieldAssignStatement, env: TypeEnv
     ) -> None:
         """Type check a field assignment: obj.field = value."""
+        self._set_write_classification(stmt, None)
         target_type = self._check_expression(stmt.target, env)
+        classification = self._classify_container_write(stmt.target, env)
 
         if not isinstance(target_type, UserType):
             self._error(
@@ -4238,6 +4447,7 @@ class TypeChecker(ExhaustivenessMixin):
         if expected_field_type is None:
             return
 
+        self._set_write_classification(stmt, classification)
         self._record_expected_runtime_type(stmt.value, expected_field_type)
         if not self._types_strictly_compatible(expected_field_type, value_type):
             self._error(
@@ -4814,14 +5024,10 @@ class TypeChecker(ExhaustivenessMixin):
     ) -> None:
         """Constrain future locals inserted into a closure's live parent frames."""
         binding_scope = env.binding_scope(name)
-        if binding_scope is None or self._lambda_capture_env is None:
+        if binding_scope is None:
             return
-        intermediate_scopes: list[TypeEnv] = []
-        scope: TypeEnv | None = self._lambda_capture_env
-        while scope is not None and scope is not binding_scope:
-            intermediate_scopes.append(scope)
-            scope = scope.parent
-        if scope is None:
+        intermediate_scopes = self._capture_path(binding_scope)
+        if intermediate_scopes is None:
             # A parameter or local inside the lambda, not a captured binding.
             return
         type_ = binding_scope.bindings[name]
@@ -4835,6 +5041,24 @@ class TypeChecker(ExhaustivenessMixin):
                 # dispatch metadata absent from FuncType. Preserving only the
                 # structural type cannot make a later first shadow safe.
                 intermediate.captured_global_calls.add(name)
+
+    def _capture_path(self, binding_scope: TypeEnv) -> list[TypeEnv] | None:
+        """The live scopes the innermost lambda reaches *binding_scope* through.
+
+        The walk goes up from the lambda's capture environment. None means the
+        binding is not captured: no lambda is being checked, or the binding
+        lives inside the lambda, below its capture environment.
+        """
+        if self._lambda_capture_env is None:
+            return None
+        intermediate_scopes: list[TypeEnv] = []
+        scope: TypeEnv | None = self._lambda_capture_env
+        while scope is not None and scope is not binding_scope:
+            intermediate_scopes.append(scope)
+            scope = scope.parent
+        if scope is None:
+            return None
+        return intermediate_scopes
 
     def _identifier_resolves_to_builtin(self, name: str, env: TypeEnv) -> bool:
         """Return True when an identifier still refers to a builtin function."""
@@ -6512,7 +6736,7 @@ class TypeChecker(ExhaustivenessMixin):
         is_async: bool = False,
         is_main: bool = False,
     ) -> Iterator[None]:
-        """Isolate return, propagation, loop, and async state for a function."""
+        """Isolate return, propagation, loop, async and ownership state for a unit."""
         old_context = (
             self.current_return_type,
             self._lambda_return_types,
@@ -6521,6 +6745,7 @@ class TypeChecker(ExhaustivenessMixin):
             self._loop_depth,
             self._in_async_function,
             self._in_main_function,
+            self._owned_names,
         )
         self.current_return_type = return_type
         self._lambda_return_types = None
@@ -6529,6 +6754,7 @@ class TypeChecker(ExhaustivenessMixin):
         self._loop_depth = 0
         self._in_async_function = is_async
         self._in_main_function = is_main
+        self._owned_names = frozenset()
         try:
             yield
         finally:
@@ -6540,6 +6766,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._loop_depth,
                 self._in_async_function,
                 self._in_main_function,
+                self._owned_names,
             ) = old_context
 
     def _check_lambda(self, expr: LambdaExpr, env: TypeEnv) -> Type:
@@ -6633,7 +6860,10 @@ class TypeChecker(ExhaustivenessMixin):
                         expr.location,
                     )
 
-            lambda_effects = self._infer_body_effects(expr.block_body, effect_env)
+            # Proposal 0019, L5: the lambda is its own unit for masking.
+            self._owned_names = self._record_unit_ownership(expr)
+            with self._effect_inference():
+                lambda_effects = self._infer_body_effects(expr.block_body, effect_env)
             function_type = FuncType(tuple(param_types), return_type, lambda_effects)
             # Inferred Float results must also widen each returning branch at
             # runtime, even when no surrounding function annotation is present.
@@ -6642,7 +6872,9 @@ class TypeChecker(ExhaustivenessMixin):
 
         assert expr.body is not None
         body_type = self._check_expression(expr.body, lambda_env)
-        lambda_effects = frozenset(self._infer_expr_effects(expr.body, effect_env))
+        self._owned_names = self._record_unit_ownership(expr)
+        with self._effect_inference():
+            lambda_effects = frozenset(self._infer_expr_effects(expr.body, effect_env))
         return FuncType(tuple(param_types), body_type, lambda_effects)
 
     def _infer_lambda_param(
