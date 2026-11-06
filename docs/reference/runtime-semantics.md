@@ -134,11 +134,15 @@ both on all three backends, so a change to either shows up deliberately.
   that pushes onto a parameter's `Vec` is inferred pure. That is a known
   limitation of the checker, not the rule: spec 3.5 says such a write is a
   `mutation`, and a later checker may enforce it. Together with masking it
-  lets a write reach a caller in two narrow ways, both through such a store:
-  a builtin stores a closure over one of the function's variables into the
-  caller's collection (`vec_push(param_v, fn() -> n)`, then `n = 5`), or a
-  pure callback stores a closure like `peek` above. Declare `with mutation`
-  on a function that changes a caller's collection through a builtin.
+  lets a write reach a caller in three ways, each through such a store: a
+  builtin stores a closure over one of the function's variables into the
+  caller's collection (`vec_push(param_v, fn() -> n)`, then `n = 5`); a
+  pure callback stores a closure like `peek` above; or, most commonly, a
+  function writes its caller's collection with a builtin
+  (`array_set(array: grid, ...)`) and also updates a local loop counter,
+  which 0.6 charged and 0.7 masks, so the function is inferred pure. Declare
+  `with mutation` on a function that changes a caller's collection through a
+  builtin.
 
 Effects are inferred within a module. An importing module currently treats an
 imported function that declares no effects as pure, whatever its body does.

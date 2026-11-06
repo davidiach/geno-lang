@@ -359,9 +359,14 @@ These shapes also keep `mutation`, although they can look local:
   returned, or mentioning it in a lambda lets it escape, and every write to
   it is then charged. Builtins that use their collection argument without
   keeping it (`array_length`, `array_to_list`, `length`, `vec_push` on its
-  receiver) and the container of `in` do not count as escapes.
+  receiver), whether called directly or as a pipeline stage
+  (`counts |> array_to_list`), and the container of `in` do not count as
+  escapes.
 
 The current checker infers no effect for mutating builtins (`vec_push`,
 `array_set`, `set_add`, `mutable_map_set`), even on a parameter. That is a
 known limitation, not the rule, so declare `with mutation` on a function that
-changes a caller's collection through them.
+changes a caller's collection through them. This matters more in 0.7: a
+function such as `fill(grid: Array[Int]) -> Unit` that loops with a local
+`var i` and calls `array_set(array: grid, ...)` was charged in 0.6 because of
+the counter, and is now inferred pure unless it declares the effect.

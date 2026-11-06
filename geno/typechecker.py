@@ -988,6 +988,11 @@ class TypeChecker(ExhaustivenessMixin):
         self.binding_types: list[tuple[SourceLocation, str, Type]] | None = None
         # With ``binding_types``: each local's use and the binding it resolves to.
         self.binding_uses: list[tuple[SourceLocation, SourceLocation]] = []
+        # Set once every function's inferred effects have settled. They do
+        # not when an error stops checking before stabilization, so a tool
+        # (the language server's hover) must not report effects inferred
+        # then.
+        self.effects_settled: bool = False
         # The type of the expression statement checked last: a function body
         # that ends with one may be missing its `return`.
         self._last_expression_type: Type | None = None
@@ -1620,6 +1625,7 @@ class TypeChecker(ExhaustivenessMixin):
             TypeError: If any type errors are found
         """
         self.errors = []
+        self.effects_settled = False
         self._resolved_type_cache.clear()
         self._unit_owned_names.clear()
         self._write_classifications.clear()
@@ -1745,6 +1751,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         if not self.errors:
             self._stabilize_function_effects(program)
+            self.effects_settled = True
 
             for defn in program.definitions:
                 if isinstance(defn, FunctionDef):

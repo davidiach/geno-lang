@@ -26,7 +26,7 @@ func init() -> State
     return State(notes, 0, 50, 0 - 1)
 end func init
 
-func update(state: State, dt: Float) -> State
+func update(state: State, dt: Float) -> State with mutation
     let notes: Array[String] = state.notes
     var count: Int = state.note_count
     var selected: Int = state.selected

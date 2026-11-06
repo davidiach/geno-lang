@@ -183,6 +183,35 @@ class Analysis:
         result = _display(function_type.return_type)
         return f"{method}({', '.join(params)}) -> {result}", params
 
+    def inferred_function_effects(self, name: str, line: int) -> frozenset[str] | None:
+        """The effects the checker inferred for the function ``name`` at ``line``.
+
+        ``line`` is the 1-based line of a top-level ``func`` in this document.
+        ``None`` when that function declares its effects (they are in its
+        signature as written), when no such function is here, or when the
+        checker stopped before every function's effects settled, as it does
+        on a type error. Since proposal 0019 the inferred set is what tells a
+        function whose local writes are masked from one that keeps
+        ``mutation``.
+        """
+        if not self.checker.effects_settled:
+            return None
+        for defn in self.program.definitions:
+            if (
+                isinstance(defn, FunctionDef)
+                and defn.name == name
+                and defn.location is not None
+                and defn.location.line == line
+            ):
+                if defn.effects:
+                    return None
+                function_type = self.checker.global_env.lookup(name)
+                if not isinstance(function_type, FuncType):
+                    return None
+                effects: frozenset[str] = function_type.effects
+                return effects
+        return None
+
     def _scope_of(self, line: int) -> tuple[int, int] | None:
         for scope in self.scopes:
             if _within(scope, line):

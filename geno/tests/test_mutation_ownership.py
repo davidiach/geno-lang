@@ -200,6 +200,35 @@ class TestPermittedPositions:
             return set_size(u)
         """) == frozenset({"s1", "s2", "u", "i"})
 
+    def test_pipeline_value_passed_to_a_borrowing_builtin(self):
+        # `x |> f(args)` passes `x` as an argument of the call (spec 7.7), at
+        # each `_` or else first, so it takes that parameter's position.
+        assert _owned_in("""
+            var a = array_new(3, 0)
+            a[0] = 1
+            let xs = a |> array_to_list
+            let k = a |> array_length
+            let y = a |> array_get(_, 0)
+            let c = a |> array_copy |> array_length
+            var s1: Set[Int] = set_from_list([1, 2])
+            var s2: Set[Int] = set_new()
+            let u = s1 |> set_union(s2) |> set_size
+            let both = s1 |> set_intersection(_, s2)
+            return k + y + length(xs) + c + u + set_size(both)
+        """) == frozenset({"a", "s1", "s2"})
+
+    def test_pipeline_value_returned_through_a_borrowing_builtin(self):
+        assert _owned("""\
+func f(xs: List[Int]) -> List[Int]
+    example [0, 1, 1] -> [1, 2]
+    var counts = array_new(2, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return counts |> array_to_list
+end func
+""") == frozenset({"counts"})
+
     def test_membership_container(self):
         assert _owned_in("""
             var s: Set[Int] = set_new()
@@ -385,8 +414,15 @@ _ESCAPES = {
     "constructor not returned": "let bx = Box(items: a)",
     "map literal": 'let m = {"k": a}',
     "with update": "let bx = Box(items: param)\nlet b2 = bx with (items: a)",
-    "pipeline input": "let k = a |> array_length",
+    "pipeline input to a user function": "let k = a |> helper",
+    "pipeline input to a user function placeholder": "let k = a |> weigh(2, _)",
+    "pipeline input filling a parameter a builtin keeps": (
+        "let g = a |> array_new(2, _)"
+    ),
+    "pipeline input to a non-borrowed builtin parameter": "let s = a |> to_string",
     "pipeline stage argument": "let k = 2 |> weigh(_, a)",
+    "pipeline stage argument a builtin keeps": "let g = 2 |> array_new(_, a)",
+    "pipeline input inside a lambda": ("let g = fn() -> a |> array_length"),
     "match scrutinee": "let k = match a with\n| _ -> 0\nend match",
     "if expression value": "let b = if n > 0 then a else param end if",
     "branch passed to a borrowing builtin": (

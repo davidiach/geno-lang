@@ -16,9 +16,12 @@ same output.
 
 ``KNOWN_GAPS`` pins, as current behaviour, the places where a caller can
 observe a write the checker does not charge: the mutating-builtin known
-limitation, the two ways masking widens it, and the argument-passing alias
-(proposal 0019, section 6 and Unresolved Questions 1 and 7). Closing any of
-them must change these tests deliberately.
+limitation, the three ways masking widens it (a builtin writer that 0.6
+charged only for its local loop counter among them), and the
+argument-passing alias (proposal 0019, section 6 and Unresolved Questions 1
+and 7). Closing any of them must change these tests deliberately. The
+repository's own functions of the builtin-writer shape declare
+``with mutation``, which is pinned too.
 
 The local binding named after a builtin (``let array_new = ...``) is
 checker-only: compiled JavaScript refuses a local named after a runtime
@@ -28,6 +31,7 @@ builtin, while the interpreter and compiled Python accept it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -1276,6 +1280,46 @@ end func
         {"before_and_after": PURE, "main": IO},
         _lines("([0, 0], [9, 0])", "([0, 0], [9, 0])"),
     ),
+    # A pipeline passes its value as an argument of the stage call (spec 7.7),
+    # so piping an owned array into a builtin that only borrows it is not an
+    # escape; piping it into a user function is.
+    "pipeline-into-a-borrowing-builtin-is-masked": Case(
+        """
+func piped(n: Int) -> (List[Int], List[Int])
+    example 2 -> ([0, 0], [9, 0])
+    var a = array_new(n, 0)
+    let before = a |> array_to_list
+    let size = a |> array_length
+    a[0] = 9 + size - n
+    return (before, a |> array_copy |> array_to_list)
+end func
+
+func peek_first(a: Array[Int]) -> Int
+    example array_new(1, 4) -> 4
+    return a[0]
+end func
+
+func piped_to_user(n: Int) -> Int
+    example 1 -> 10
+    var a = array_new(1, n)
+    let before = a |> peek_first
+    a[0] = 9
+    return before + a[0]
+end func
+
+func main() -> Unit with io, mutation
+    print(piped(2))
+    print([1, 2].map(piped))
+    print(piped_to_user(1))
+end func
+""",
+        {"piped": PURE, "piped_to_user": MUTATION, "main": IO_MUTATION},
+        _lines(
+            "([0, 0], [9, 0])",
+            "[([0], [9]), ([0, 0], [9, 0])]",
+            10,
+        ),
+    ),
 }
 
 
@@ -1300,6 +1344,37 @@ end func
 """,
         {"push_param": PURE, "main": IO},
         _lines(1),
+    ),
+    # The same limitation, in the shape of tetris `lock_piece`/`clear_lines`
+    # and notetaker `update`: a function that writes its caller's array only
+    # through a mutating builtin. 0.6 charged it, but only because its loop
+    # counter is a local `var`; 0.7 masks the counter, so it is inferred pure
+    # and is accepted as a pure callback. The repository's own functions of
+    # this shape declare `with mutation`. Closing the limitation flips this.
+    "builtin-writer-with-a-local-counter": Case(
+        """
+@untested("writes its argument")
+func fill(grid: Array[Int]) -> Unit
+    var i = 0
+    while i < 2 do
+        array_set(array: grid, index: i, value: 9)
+        i = i + 1
+    end while
+end func
+
+@untested("calls back")
+func run_pure(f: (Array[Int]) -> Unit, a: Array[Int]) -> Unit
+    f(a)
+end func
+
+func main() -> Unit with io
+    let a: Array[Int] = array_new(2, 0)
+    run_pure(fill, a)
+    print(a[0])
+end func
+""",
+        {"fill": PURE, "run_pure": PURE, "main": IO},
+        _lines(9),
     ),
     # Section 6, widening 1: a builtin stores a closure over one of the
     # writer's cells into caller storage; the later masked write is seen.
@@ -1450,6 +1525,48 @@ def test_every_backend_prints_the_pinned_caller_state(
 def test_the_impl_method_with_a_record_copy_is_pure() -> None:
     checker = _checked(TYPES + CASES["impl-methods-and-recursion"].source)
     assert checker.impl_registry[("Tally", "Counter")]["tally"].effects == PURE
+
+
+# The repository's functions that write their caller's array only through a
+# mutating builtin (`builtin-writer-with-a-local-counter` above). 0.6 charged
+# each one because it also updates a local `var`; under 0.7 that alone would
+# leave them pure, so they declare `with mutation`, which restores their 0.6
+# types (and `mutation` on tetris `update`, which calls two of them).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_BUILTIN_WRITERS = {
+    "examples/apps/tetris.geno": {
+        "lock_piece": "func lock_piece(grid: Array[Int], px: Int, py: Int, "
+        "piece: Int, rot: Int) -> Unit with mutation\n",
+        "clear_lines": "func clear_lines(grid: Array[Int]) -> Int with mutation\n",
+    },
+    "examples/apps/notetaker.geno": {
+        "update": "func update(state: State, dt: Float) -> State with mutation\n",
+    },
+}
+
+
+@pytest.mark.parametrize("path", sorted(_BUILTIN_WRITERS))
+def test_repository_builtin_writers_declare_mutation(path: str) -> None:
+    source = (_REPO_ROOT / path).read_text(encoding="utf-8")
+    checker = _checked(source)
+    for name, header in _BUILTIN_WRITERS[path].items():
+        assert header in source, name
+        assert "mutation" in _effects(checker, name), name
+    if path.endswith("tetris.geno"):
+        assert _effects(checker, "update") == frozenset({"mutation", "random"})
+
+
+@pytest.mark.parametrize("path", sorted(_BUILTIN_WRITERS))
+def test_without_the_declaration_a_builtin_writer_infers_pure(path: str) -> None:
+    # The known limitation on real code: drop the declarations and the
+    # checker accepts these functions as pure. Closing the limitation flips
+    # this test deliberately; until then the declarations carry the effect.
+    source = (_REPO_ROOT / path).read_text(encoding="utf-8")
+    for header in _BUILTIN_WRITERS[path].values():
+        source = source.replace(header, header.replace(" with mutation", ""), 1)
+    checker = _checked(source)
+    for name in _BUILTIN_WRITERS[path]:
+        assert _effects(checker, name) == PURE, name
 
 
 # ---------------------------------------------------------------------------

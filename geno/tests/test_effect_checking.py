@@ -604,6 +604,22 @@ end func
         "histogram",
         frozenset(),
     ),
+    "owned array returned through a borrowing pipeline stage": (
+        """
+func piped_histogram(xs: List[Int]) -> List[Int]
+    example [0, 1, 1] -> [1, 2]
+    var counts = array_new(2, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    let n = counts |> array_length
+    let first = counts |> array_get(_, 0)
+    return [first, counts[n - 1]]
+end func
+""",
+        "piped_histogram",
+        frozenset(),
+    ),
     "field write into an owned array's element": (
         """
 func bumped(n: Int) -> Int
@@ -677,6 +693,24 @@ func lent(n: Int) -> Int
 end func
 """,
         "lent",
+        frozenset({"mutation"}),
+    ),
+    "array piped to a user function": (
+        """
+func first_of(a: Array[Int]) -> Int
+    example array_new(1, 7) -> 7
+    return a[0]
+end func
+
+func piped_lent(n: Int) -> Int
+    example 1 -> 0
+    var a = array_new(n, 0)
+    let seen = a |> first_of
+    a[0] = 1
+    return seen
+end func
+""",
+        "piped_lent",
         frozenset({"mutation"}),
     ),
     "array read by a closure": (

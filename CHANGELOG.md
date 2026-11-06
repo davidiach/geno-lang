@@ -426,20 +426,32 @@ package version stays 0.6.0, and the Draft
   `(List[Int]) -> Int` is expected (`apply(total, xs)`, `xs.map(total)`),
   where 0.6 reported E300 "expected (List[Int]) -> Int, got (List[Int]) ->
   Int with mutation", and `main() -> Unit with io` may use local `var`s, where
-  0.6 reported E310. Writes a caller can observe keep `mutation`: through a
-  parameter's collection or a copy of it, below a reference-typed field or
-  element (every `array_new(h, array_new(w, 0))` table), through a
-  collection that was stored, passed to a function or captured, and a
-  lambda's write to a captured variable, which charges the lambda and not the
-  function that creates it. Effects stay static: no backend, diagnostic code
-  or syntax changes, a declared `with mutation` stays legal, and
-  `geno test --properties` selects the same functions. Messages, local-binding
-  hover and the REPL's `:type` print the new inferred types. The checker
-  still does not charge mutating builtins (`vec_push`, `array_set`,
-  `set_add`, ...) on any receiver, as in 0.6; the spec now records that as a
-  known limitation, and closing it awaits a decision on the proposal's
-  Unresolved Question 1. `conformance/v0.7` adds `local-mutation-is-pure`
-  on all seven runtime lanes and two checker cases that stay E300.
+  0.6 reported E310. Index and field writes a caller can observe keep
+  `mutation`: through a parameter's collection or a copy of it, below a
+  reference-typed field or element (every `array_new(h, array_new(w, 0))`
+  table), through a collection that was stored, passed to a function or
+  captured, and a lambda's write to a captured variable, which charges the
+  lambda and not the function that creates it. A builtin that only uses an
+  owned collection (`array_to_list(counts)`, also as a pipeline stage,
+  `counts |> array_to_list`) is not an escape. Effects stay static: no
+  backend, diagnostic code or syntax changes, a declared `with mutation`
+  stays legal, and `geno test --properties` selects the same functions.
+  Messages, local-binding hover and the REPL's `:type` print the new
+  inferred types, and language-server hover on a function that declares no
+  effects now names the ones the checker settled on, `(function, inferred
+  `with mutation`)` or `(function, inferred pure)`, so a masked function can
+  be told from one that keeps `mutation`. The checker still does not charge
+  mutating builtins (`vec_push`, `array_set`, `set_add`, ...) on any
+  receiver, as in 0.6; the spec now records that as a known limitation, and
+  closing it awaits a decision on the proposal's Unresolved Question 1. As a
+  result, a function that writes its caller's collection only through such
+  builtins, and that 0.6 charged only because it also updates a local `var`
+  such as a loop counter, is now inferred pure; declare `with mutation` on
+  it to keep the 0.6 type. `lock_piece` and `clear_lines` in
+  `examples/apps/tetris.geno` and `update` in `examples/apps/notetaker.geno`
+  had this shape and now declare it. `conformance/v0.7` adds
+  `local-mutation-is-pure` on all seven runtime lanes and two checker cases
+  that stay E300.
 
 ### Fixed
 

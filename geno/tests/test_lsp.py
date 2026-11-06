@@ -1576,6 +1576,8 @@ _SETTLED_EFFECTS_SOURCE = (
     "    end fn\n"
     "    print(h(2))\n"
     "    print(local_sum(1))\n"
+    "    print(bump(2))\n"
+    "    print(total([2]))\n"
     "end func\n"
 )
 
@@ -1643,13 +1645,70 @@ class TestHoverShowsSettledEffects:
         assert "```\nh: (Int) -> Int\n```" in hover("let h", 4)
         assert "```\nacc: Int\n```" in hover("var acc", 4)
 
-    def test_function_hover_shows_declared_effects_only(self, settled_effects_hover):
-        hover = settled_effects_hover
-        declared = hover("print(local_sum(", 6)
-        assert "local_sum(n: Int) -> Int with mutation" in declared
-        inferred = hover("func bump", 5)
-        assert "bump(n: Int) -> Int" in inferred
-        assert "with mutation" not in inferred
+    @pytest.mark.parametrize("needle", ["func bump", "print(bump(", "= bump"])
+    def test_a_charged_function_hovers_with_its_inferred_mutation(
+        self, settled_effects_hover, needle: str
+    ):
+        hover = settled_effects_hover(needle, needle.index("bump") + 1)
+        # Before hover read the checker's settled type, this showed only the
+        # signature as written, the same as for the masked `total` below.
+        assert (
+            "```\nbump(n: Int) -> Int\n```\n(function, inferred `with mutation`)"
+            in (hover)
+        )
+
+    @pytest.mark.parametrize("needle", ["func total", "print(total(", "= total"])
+    def test_a_masked_function_hovers_as_inferred_pure(
+        self, settled_effects_hover, needle: str
+    ):
+        hover = settled_effects_hover(needle, needle.index("total") + 1)
+        assert "```\ntotal(xs: List[Int]) -> Int\n```\n(function, inferred pure)" in (
+            hover
+        )
+
+    @pytest.mark.parametrize("needle", ["func local_sum", "print(local_sum("])
+    def test_a_function_that_declares_effects_hovers_as_written(
+        self, settled_effects_hover, needle: str
+    ):
+        hover = settled_effects_hover(needle, needle.index("local_sum") + 1)
+        assert "```\nlocal_sum(n: Int) -> Int with mutation\n```\n(function)" in hover
+        assert "inferred" not in hover
+
+
+def test_function_hover_names_no_inferred_effects_before_they_settle(tmp_path):
+    # A type error stops the checker before it settles inferred effects, so
+    # hover shows the signature as written and claims nothing about them.
+    source = (
+        _SETTLED_EFFECTS_SOURCE.split("func main()")[0]
+        + "func broken() -> Int\n"
+        + "    example () -> 1\n"
+        + '    return "one"\n'
+        + "end func\n"
+    )
+    main_file = tmp_path / "Main.geno"
+    main_file.write_text(source)
+    server = create_server(diag_debounce_sec=0)
+    server.lsp._workspace = Workspace(None, sync_kind=types.TextDocumentSyncKind.Full)
+    server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=main_file.as_uri(), language_id="geno", version=1, text=source
+            )
+        )
+    )
+    handler = server.lsp._get_handler(types.TEXT_DOCUMENT_HOVER)
+    lines = source.split("\n")
+    for name in ("bump", "total"):
+        line = next(i for i, text in enumerate(lines) if f"func {name}" in text)
+        result = handler(
+            types.HoverParams(
+                text_document=types.TextDocumentIdentifier(uri=main_file.as_uri()),
+                position=types.Position(line=line, character=lines[line].index(name)),
+            )
+        )
+        assert result is not None
+        assert isinstance(result.contents, types.MarkupContent)
+        assert result.contents.value.endswith("```\n(function)"), name
 
 
 class TestSemanticSignatureHelp:

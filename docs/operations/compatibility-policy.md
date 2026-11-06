@@ -307,7 +307,24 @@ which restates the 0.6 text; the reference checker still does not enforce it
 (a known limitation), so that sentence rejects nothing. Programs that stay
 rejected keep their diagnostic codes. Only messages that print an inferred
 function type change, by leaving out a `mutation` that is now masked, and so
-do the local-binding hover and the REPL's `:type`.
+do the local-binding hover, function hover (which now names the inferred
+effects of a function that declares none) and the REPL's `:type`.
+
+One class of function loses `mutation` although its caller can observe its
+writes. A function that changes its caller's collection only through
+mutating builtins, such as `array_set(array: grid, ...)` on a parameter
+`grid`, was charged in 0.6 only because it also declares or assigns a local
+`var`, typically a loop counter. 0.7 masks the counter and, by the known
+limitation, does not charge the builtin, so the function is now inferred
+pure and is accepted where a pure function type is expected. It runs exactly
+as before; only its type is weaker. Declaring `with mutation` on it restores
+the 0.6 type. Three repository functions had this shape, `lock_piece` and
+`clear_lines` in `examples/apps/tetris.geno` and `update` in
+`examples/apps/notetaker.geno`, and now declare `with mutation` (which also
+gives tetris `update`, their caller, `mutation` again). The shape is pinned
+on all three backends as `builtin-writer-with-a-local-counter` in
+`geno/tests/test_local_mutation_soundness.py`, which also pins the three
+declarations and that removing them leaves the functions inferred pure.
 
 One class of program 0.6 accepted is rejected. Geno requires equal function
 types where a `var` is assigned, where a name is redeclared in the same block,
@@ -349,11 +366,12 @@ effects of their branches and elements, so they are unaffected.
 It meets the five conditions above:
 
 1. [proposal 0019](../proposals/0019-local-mutation-is-not-an-effect.md)
-   (Draft; it must be accepted before 0.7 is released, including the project
-   lead's decision on its Unresolved Question 1, the mutating-builtin
-   limitation) records the motivation, the soundness argument and the
-   alternatives, including charging mutating builtins on non-owned receivers
-   now, which it defers;
+   (Draft; it must be accepted before its implementation merges and before
+   0.7 is released, including the project lead's decision on its Unresolved
+   Question 1, the mutating-builtin limitation, which is not yet recorded)
+   records the motivation, the soundness argument and the alternatives,
+   including charging mutating builtins on non-owned receivers now, which it
+   defers;
 2. the impact is stated in `docs/spec/v0.7.md` sections 3.5, 6.2, 6.3 and
    7.6 and its "Changes from 0.6" list;
 3. `CHANGELOG.md` `[Unreleased]` carries the migration: restore the 0.6 type

@@ -23,7 +23,9 @@ The test is flow-insensitive and keyed by name. ``n`` is owned when:
     ``n[i].f = e``);
   - **P2.** the target of an index read ``n[i]``;
   - **P3.** an argument a builtin only borrows (``BORROWED_ARGUMENT_NAMES``),
-    matched by position or by parameter name;
+    matched by position or by parameter name; a pipeline passes its value as
+    an argument of the stage call (spec 7.7), so ``n |> array_to_list`` and
+    ``n |> array_get(_, 0)`` put ``n`` in the parameter it fills;
   - **P4.** the container operand of ``in`` (and so of ``not in``);
   - **P5.** the iterable of a ``for`` statement or a list comprehension;
   - **P6.** a return position: the operand of a ``return`` that ends the unit,
@@ -35,7 +37,8 @@ The test is flow-insensitive and keyed by name. ``n`` is owned when:
   Every other occurrence is an escape: an argument to a user function or to a
   builtin parameter that is not borrowed, an initializer, the right side of an
   assignment, a value stored by a write, an element of a literal or
-  constructor that is not returned, a pipeline value, a match scrutinee, an
+  constructor that is not returned, a pipeline value that fills a parameter
+  that is not borrowed (``n |> helper``), a match scrutinee, an
   f-string interpolation, an operand of any other operator, of ``?`` or of
   ``await``, a field access target, a callee, and so on.
 
@@ -105,6 +108,7 @@ from .ast_nodes import (
     Parameter,
     Pattern,
     Pipeline,
+    PipelineStage,
     PlaceholderExpr,
     PropagateExpr,
     RestPattern,
@@ -192,6 +196,42 @@ def _resolved_builtin(expr: FunctionCall) -> str | None:
     if name is None or not isinstance(callee, Identifier) or callee.name != name:
         return None
     return name
+
+
+def _stage_builtin(stage: PipelineStage) -> str | None:
+    """The builtin a pipeline stage calls, if the checker resolved it to one."""
+    callee = stage.function
+    if not isinstance(callee, Identifier):
+        return None
+    name: str | None = callee._resolved_builtin_name
+    if name is None or callee.name != name:
+        return None
+    return name
+
+
+def _stage_borrowed_positions(stage: PipelineStage) -> frozenset[int]:
+    """The parameter positions of a stage's builtin that only borrow."""
+    builtin = _stage_builtin(stage)
+    if builtin is None:
+        return frozenset()
+    positions: frozenset[int] = BORROWED_ARGUMENT_POSITIONS.get(builtin, frozenset())
+    return positions
+
+
+def _stage_placeholders(stage: PipelineStage) -> frozenset[int]:
+    """The parameter positions a stage's ``_`` placeholders fill."""
+    return frozenset(
+        index
+        for index, argument in enumerate(stage.arguments)
+        if isinstance(argument, PlaceholderExpr)
+    )
+
+
+def _stage_borrows_piped_value(stage: PipelineStage) -> bool:
+    """Does every parameter the piped value fills only borrow it?"""
+    borrowed = _stage_borrowed_positions(stage)
+    filled = _stage_placeholders(stage) or frozenset({0})
+    return bool(borrowed) and filled <= borrowed
 
 
 class _OwnershipWalker:
@@ -426,11 +466,26 @@ class _OwnershipWalker:
         self._value(expr.target)
 
     def _pipeline(self, expr: Pipeline, _returned: bool) -> None:
-        self._value(expr.initial)
-        for stage in expr.stages:
+        # `x |> f(args)` passes `x` as an argument of the stage call (spec
+        # 7.7): at each `_` placeholder, or else as the first argument. So the
+        # initial value and every written argument take the position of the
+        # parameter they fill, as in a call. Later stages receive the
+        # previous stage's result, which is no name of this unit.
+        stages = expr.stages
+        if stages and _stage_borrows_piped_value(stages[0]):
+            self._permitted(expr.initial)
+        else:
+            self._value(expr.initial)
+        for stage in stages:
             self._value(stage.function)
-            for argument in stage.arguments:
-                self._value(argument)
+            borrowed = _stage_borrowed_positions(stage)
+            piped_first = not _stage_placeholders(stage)
+            for index, argument in enumerate(stage.arguments):
+                position = index + 1 if piped_first else index
+                if position in borrowed:
+                    self._permitted(argument)
+                else:
+                    self._value(argument)
 
     def _lambda(self, expr: LambdaExpr, _returned: bool) -> None:
         # O4: every name a nested lambda mentions or declares is disqualified,

@@ -609,11 +609,14 @@ so leave them inferred or declare it:
   assigns a captured variable;
 - a collection the function allocated and then passed to a helper function,
   stored in another value, or mentioned in a lambda, before writing it.
+  Builtins that only read or fill it are fine, called directly or as a
+  pipeline stage: `array_to_list(counts)`, `counts |> array_to_list`.
 
 Mutating builtins (`vec_push`, `array_set`, `set_add`, `mutable_map_set`)
 add no effect in the current checker, even on a parameter. That is a known
 limitation, not the rule: declare `with mutation` on a function that changes
-a caller's collection through them.
+a caller's collection through them, even when it also has a local loop
+counter (0.6 charged the counter; 0.7 does not).
 
 ## Prompting Patterns
 

@@ -318,8 +318,8 @@ func main() -> Unit with io
 end func
 ```
 
-`main` declares only `io`, although it updates a local `var`. Writes that a
-caller could observe keep `mutation`:
+`main` declares only `io`, although it updates a local `var`. Index and
+field writes that a caller could observe keep `mutation`:
 
 - writing through a parameter's `Array`, `Vec` or `MutableMap`, or through a
   `var` copied from one, which copies the reference rather than the
@@ -327,9 +327,10 @@ caller could observe keep `mutation`:
 - writing below a reference-typed field or element, as in every
   two-dimensional table built with `array_new(h, array_new(w, 0))`, whose
   rows share storage;
-- writing a collection after storing it somewhere, passing it to a function,
-  copying it into a second variable (a rolling `prev = cur` buffer), or
-  mentioning it in a lambda;
+- writing a collection after storing it somewhere, passing it to a function
+  (a builtin that only uses it, such as `array_to_list(counts)` or
+  `counts |> array_length`, does not count), copying it into a second
+  variable (a rolling `prev = cur` buffer), or mentioning it in a lambda;
 - a lambda that assigns a variable of the function around it. The lambda
   carries `mutation`, because each call of the closure sees the last one's
   change; creating the lambda is not an effect.
@@ -337,8 +338,10 @@ caller could observe keep `mutation`:
 Mutating builtins such as `vec_push` and `array_set` add no effect in the
 current checker, even on a parameter; the spec records that as a known
 limitation, so declare `with mutation` on a function that changes its
-caller's collections with them. A declared `with mutation` is always allowed,
-even where it is no longer needed.
+caller's collections with them. That includes one that also updates a local
+loop counter: 0.6 charged such a function for the counter, and 0.7 does not.
+A declared `with mutation` is always allowed, even where it is no longer
+needed.
 
 ## Type Definitions (ADTs)
 
