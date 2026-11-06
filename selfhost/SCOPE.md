@@ -59,6 +59,18 @@ so a rounded expectation such as `22.85714286` for `160.0 / 7.0` passes there
 and fails here. Closing the gap needs a separate approximate comparator, since
 `==` itself must stay exact.
 
+## Runtime failure report gap
+
+The 0.7 draft specification (section 6.9.1, proposal 0018) makes every
+runtime failure report its Geno location and call stack, and makes contract
+failures name the function, the call's argument values and the clause text.
+The selfhost interpreter keeps its own `rt_error` output: a message without
+a location, a Geno stack or contract arguments; a failed `requires` reports
+only `Precondition failed`. Programs run under the selfhost compute the same
+results and fail in the same places; only the report is shorter. The
+canonical interpreter, compiled Python and compiled JavaScript cover the new
+report, and the selfhost tests are unchanged.
+
 ## What selfhost is NOT (yet)
 
 - **Not a compiler**: There is no code-generation backend. The selfhost does not

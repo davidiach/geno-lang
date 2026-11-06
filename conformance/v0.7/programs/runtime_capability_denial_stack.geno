@@ -1,0 +1,14 @@
+// Proposal 0018: a capability denial is located at the gated builtin's call
+// and carries the Geno stack that reached it. The case grants only `print`,
+// so `env_get` is denied on every lane.
+
+@untested("reads the environment")
+func home_directory() -> String with env
+    return unwrap_or(env_get("HOME"), "unknown")
+end func
+
+func main() -> Unit
+    print("looking up HOME")
+    print(home_directory())
+    return ()
+end func

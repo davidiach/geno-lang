@@ -350,9 +350,12 @@ same bound.
 **Paths.** A location's filename is the one the frontend assigned to the file
 (absolute paths on the CLI, `<api>`, `<module:Name>`, `<http>`, `<stdin>`),
 with one exception: a file inside the installed standard library is shown as
-`std/<Name>.geno` on every lane, so a frame inside `List.chunk` never prints
-the install path. The mapping is applied at display time (in
-`runtime_report.display_path` and its prelude copies). The AST keeps the
+`std/<Name>.geno` in every text report, on every lane, so a frame inside
+`List.chunk` never prints the install path there. The mapping is applied at
+display time (in `runtime_report.display_path` and its prelude copies). JSON
+`location` and `stack` entries keep the frontend's filename, so a failure
+inside the standard library names its installed file in an envelope (see
+Unresolved Questions, 9). The AST keeps the
 absolute filename that `stdlib_scope.is_stdlib_program` depends on. Compiled
 trace tables store paths relative to the entry file's directory (a basename
 when the file is elsewhere), `std/<Name>.geno` for the standard library, and
@@ -1245,9 +1248,14 @@ the lag.
     This changes only `# geno:` comments and table paths of frozen cases, never
     their pinned output.
   - Development (schema 2) manifests gain an optional `expected_diagnostic`
-    table on the `cli-json` lane: `code`, `location` (a `file:line:col` suffix
-    match), `stack` (a list of `file:line:col in name` suffix matches) and
-    `stack_omitted`. `load_manifest` accepts a failing envelope only with it.
+    table on the `cli-json` lane: `code`, `message_contains` (substrings of
+    the message), `location` (a `file:line:col` suffix match at a
+    path-component boundary), `stack` (the full list of kept frames, each a
+    `file:line:col in name` suffix match) and `stack_omitted` (0 means the
+    key is absent). `load_manifest` accepts a failing envelope only with it;
+    it replaces `expected_json_value`, the envelope must report exactly that
+    one diagnostic and no value, and the case's stderr fragments, which
+    describe the text report, are not applied to the `cli-json` lane.
     `conformance/v0.7` gains the cases in the Testing section.
 - **Migration:** a script that scraped `in <name>, <loc>` lines should read
   `--json` `stack` instead. A test that pinned the old contract message should
@@ -1268,7 +1276,8 @@ the lag.
   the worker and validated again in the parent, which drops malformed fields.
 - **No leaks.** Frames outside the program body are dropped by construction:
   the trusted worker, `isolated_host.py`, the sandbox, prelude helpers. Stdlib
-  paths display as `std/...`. Compiled artifacts carry entry-relative paths
+  paths display as `std/...` in text reports; JSON keeps the frontend's
+  filename (Unresolved Questions, 9). Compiled artifacts carry entry-relative paths
   only. Argument values are the program's own data, capped at 64 code points
   each, and diagnostics never render environment values. The default-lane
   parent reads snippets only from regular `.geno` files in the program's tree
@@ -1432,11 +1441,13 @@ Validation per package:
 ## Rollout And Observability
 
 No flag: the change is the 0.7 development line's behavior, specified by Draft
-spec v0.7 (sections 4.1.1, 5.1, 6.9, 7.14 and 9.11.1), with a "Changes from
-0.6" bullet linking this proposal and a `spec.json` `development_line.additions`
-entry. CHANGELOG `[Unreleased]` gets Added (stacks, locations, contract
-arguments, JSON fields, `GENO_TRACEBACK`) and Changed (contract wording,
-compiled artifacts' stderr, `geno test` runtime-error text). The docs that
+spec v0.7 (sections 4.1.1, 5.1, 5.2, 5.4, 6.9.1, 7.14 and 9.11.1), with a
+"Changes from 0.6" bullet linking this proposal and a `spec.json`
+`development_line.additions` entry. CHANGELOG `[Unreleased]` gets Added
+(stacks, locations, contract arguments, JSON fields, `GENO_TRACEBACK`, the
+runner field and the cases), Changed (breaking) (contract wording, as it
+changes `panics` matching) and Changed (stderr layout, compiled artifacts'
+stderr and Node's exit, `geno test` runtime-error text). The docs that
 change are:
 
 - `docs/reference/runtime-semantics.md`, which replaces "host traceback for a
@@ -1444,10 +1455,10 @@ change are:
 - `docs/llm-prompting.md`, which gains a new "Reading runtime failures"
   subsection after "Repair loop with fixes", using only ```text fences so that
   the indexed ```geno fences and `GENO_RULES` stay put;
-- `docs/embedding-api.md`;
+- `docs/reference/embedding-api.md`;
 - `docs/deploy/cli.md`, which adds `GENO_TRACEBACK` to the environment table;
 - `docs/deploy/hosted.md`;
-- the denial sample in `docs/capabilities.md`;
+- the denial sample in `docs/reference/capabilities.md`;
 - the compatibility policy's 0.7 (draft) notes.
 
 Rollback is a revert: there is no persisted format. The trace table is
@@ -1522,6 +1533,18 @@ versioned (`G 1`), so a later table format is detected rather than misread.
    the stack then reports a repeat count.
 8. **Step and timeout messages** still carry ` at <loc>` in their text, now
    duplicated by `location`. Should their wording be cleaned up separately?
+9. **Standard-library paths in JSON.** Text reports show `std/<Name>.geno`,
+   but JSON `location` and `stack` entries keep the frontend's filename. A
+   failure inside a standard-library function (`List.chunk([1, 2], 0)`)
+   therefore names the library's installed path in `geno run --json`, the
+   embedding API and the hosted server's `/run` response, which tells a
+   hosted client where Geno is installed on the server. 0.6 never located a
+   failure inside the standard library (its builtin failures carried no
+   location, and its library bodies hold no other failing operation), so
+   applying `display_path` to JSON filenames as well would change no 0.6
+   value. Recommended before acceptance: map them in the runtime-failure
+   diagnostic path (`api._make_diagnostic` and the limit handlers), keeping
+   the real path only where a host reads source.
 
 ## Implementation Plan
 
@@ -1627,19 +1650,19 @@ Five sequential packages; each leaves the tree green.
    - all retained conformance passes with `--require-node`.
 5. **Specification, documentation and conformance.**
    - Spec v0.7:
-     - sections 6.9 (the report, its sample pinned by
+     - section 6.9's new subsection 6.9.1 (the report, its sample pinned by
        `test_docs_snippets`, the frame-position convention including async
        frames and the JavaScript creation-site difference, and the
        `ensures` argument/`checked_values` rule), 4.1.1, 5.1, 5.4's
        `contract`/`stack` keys (its message sample already updated in P1),
-       7.14 and the 9.11.1 denial sample;
+       5.2's `ensures` note, 7.14 and the 9.11.1 denial sample;
      - the "Changes from 0.6" bullet linking this proposal.
    - `spec.json` `development_line.additions` (validated by
      `scripts/validate_spec.py`).
    - `docs/reference/runtime-semantics.md`, the `docs/llm-prompting.md`
-     subsection, `docs/embedding-api.md`, `docs/deploy/cli.md`,
-     `docs/deploy/hosted.md`, `docs/capabilities.md`, the compatibility-policy
-     0.7 notes and `selfhost/SCOPE.md`.
+     subsection, `docs/reference/embedding-api.md`, `docs/deploy/cli.md`,
+     `docs/deploy/hosted.md`, `docs/reference/capabilities.md`, the
+     compatibility-policy 0.7 notes and `selfhost/SCOPE.md`.
    - CHANGELOG `[Unreleased]`.
    - The runner's `expected_diagnostic` field with tests, and the six
      `conformance/v0.7` cases (formatted with `geno fmt`).

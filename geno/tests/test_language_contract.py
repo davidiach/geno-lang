@@ -174,6 +174,54 @@ def test_the_draft_records_property_checks() -> None:
     )
 
 
+def _runtime_report_section() -> str:
+    """Section 6.9.1 of the Draft spec (proposal 0018)."""
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+    start = text.index("\n#### 6.9.1 Runtime Failure Reports\n")
+    return text[start : text.index("\n### 6.10 ", start)]
+
+
+def test_the_draft_records_runtime_diagnostics() -> None:
+    """Proposal 0018 is in the Draft spec, its Changes list and spec.json."""
+    from geno import runtime_report
+
+    spec = _load_spec()
+    assert any(
+        "proposal 0018" in addition and "`stack`" in addition
+        for addition in spec["development_line"]["additions"]
+    )
+    (entry,) = [
+        entry
+        for entry in _draft_changes()
+        if "](../proposals/0018-runtime-failure-diagnostics.md)" in entry
+    ]
+    for section in ("4.1.1", "5.1", "5.2", "5.4", "6.9.1", "7.14", "9.11.1"):
+        assert section in entry, section
+
+    section = " ".join(_runtime_report_section().split())
+    # The bounds, the per-value cap and the clause-text cap the section states
+    # are the ones every runtime renders with.
+    head, tail = runtime_report.STACK_HEAD, runtime_report.STACK_TAIL
+    assert f"keeps its first {head} and its last {tail}" in section
+    assert f"cut to {runtime_report.ARGUMENT_DISPLAY_LIMIT} code points" in section
+    assert f"cut to {runtime_report.CLAUSE_TEXT_LIMIT} code points" in section
+    for topic in (
+        "**Async functions.**",
+        "creation call",
+        "when checked",
+        "`checked_values`",
+        "`stack_omitted`",
+        "`GENO_TRACEBACK=host`",
+    ):
+        assert topic in section, topic
+    # The compatibility note the Changes entry links exists.
+    policy = (ROOT / "docs/operations/compatibility-policy.md").read_text()
+    assert (
+        "\n### 0.7 (draft): runtime failures report a Geno stack, and contract "
+        "failures name their arguments\n"
+    ) in policy
+
+
 def _isolated_lane_section() -> str:
     """Section 9.11.1 of the Draft spec (proposal 0013)."""
     text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")

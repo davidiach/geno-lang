@@ -603,6 +603,60 @@ mistake that has a fix, without changing what any program computes; see
 `docs/benchmark/seeded-mistakes.md`. The experiment runner records the same
 repair as its "autofix" metric beside pass@1.
 
+### Reading runtime failures
+
+*0.7 development line (Draft
+[proposal 0018](proposals/0018-runtime-failure-diagnostics.md)).* When a
+program checks but fails while running, the report says what failed, where,
+how the program got there and with which values. Give the model the whole
+report, not just its last line:
+
+```text
+Stack trace (most recent call last):
+  demo.geno:21:21 in main
+  demo.geno:15:14 in safe_div
+      requires b != 0
+               ^
+Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
+```
+
+Read it bottom-up for the cause and top-down for the path:
+
+- The last line is the message: a panic's own text, a runtime error, a
+  capability denial, or a contract failure naming the function, the argument
+  values of the failing call and the clause as written. An `ensures` failure
+  adds `(result was ...)`.
+- Each frame is `file:line:col in function`, outermost first. The last frame
+  is where the failure happened: the `panic` call, the failing index or
+  division, or the failed clause. Every frame above it is positioned at the
+  call it was making, so the frame just above a failed `requires` is the
+  call that passed the bad arguments, which is usually the line to fix.
+- `<example>` as the first frame means the failure happened while an
+  `example` clause was being verified, at that clause's line.
+- `... N frames omitted ...` stands for the middle of a deep stack; the
+  first 10 and last 10 frames are kept.
+- The source line and caret appear on the `geno run` lanes. Standalone
+  compiled programs print the frames and the message without them, and the
+  same positions.
+
+For a repair loop, `geno run --json` gives the same facts as data: the
+diagnostic's `code`, `message` and `location`, a `stack` list of
+`{"function", "location"}` objects, `stack_omitted`, and, for a contract
+failure, a `contract` object with `function`, `clause_text`, the call's
+`arguments` as `{"name", "value"}` pairs and the `result`:
+
+```text
+{"code": "E499", "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+ "location": {"line": 15, "column": 14, "filename": "/work/demo.geno"},
+ "stack": [{"function": "main", "location": {"line": 21, "column": 21, ...}},
+           {"function": "safe_div", "location": {"line": 15, "column": 14, ...}}],
+ "contract": {"clause": "requires", "function": "safe_div", "clause_text": "b != 0",
+              "arguments": [{"name": "a", "value": "8"}, {"name": "b", "value": "0"}], ...}}
+```
+
+A `panics "substring"` example matches only the message, never a file name,
+position or frame name.
+
 ## Machine-Readable Specification
 
 A complete machine-readable language specification is available at

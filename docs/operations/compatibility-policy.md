@@ -197,6 +197,80 @@ It meets the five conditions above:
    lanes run with the same grant; and
 5. the release owner records it in release evidence when 0.7 is released.
 
+### 0.7 (draft): runtime failures report a Geno stack, and contract failures name their arguments
+
+Recorded for the unreleased 0.7 development line. Every runtime failure now
+reports its Geno location and call stack on every lane and backend, and a
+failed contract names the function, the call's arguments and the clause.
+Diagnostic wording and stderr layout are not compatibility surfaces, and exit
+statuses, codes and every existing JSON key are unchanged. Three changes are
+recorded anyway, because tests and scripts can observe them:
+
+- **What `panics "substring"` matches.** A panics example (section 5.3.1 of
+  `docs/spec/v0.7.md`) matches a substring of the failure's message, and the
+  contract message changes from
+  `Precondition failed for safe_div: requires clause evaluated to false` to
+  `Precondition failed: safe_div(a: 8, b: 0) requires b != 0`. Matching
+  changes in both directions:
+  - *Stops matching.* `panics "Precondition failed"` and
+    `panics "Postcondition failed"` still match. Substrings of the old wording
+    that the new one drops no longer match a contract failure:
+    `"Precondition failed for"`, `"Postcondition failed for"`, any
+    `"for <name>:"`, `"requires clause"`, `"ensures clause"` and
+    `"evaluated to false"`. No corpus in the repository uses one.
+  - *Starts matching.* The message now holds the argument values and the
+    clause text, so a substring such as `"b != 0"`, `"0)"`, a function name
+    followed by `(`, or a value that a panic's message also contains can
+    match a contract failure it did not match before. A panics example that
+    expected a different panic but now hits such a contract failure passes
+    where it failed. To mean one panic and not a contract failure, include
+    that panic's own words.
+
+  The location and the stack never enter the message, so no file name,
+  position or frame name can match.
+- **Standalone artifacts and the default lane print a Geno report.** A
+  standalone compiled Python or Node program prints the frames, mapped back
+  to Geno source, and the `Runtime Error:` line instead of a host traceback.
+  The first line of a failure's stderr is now `Stack trace (most recent call
+  last):` whenever a stack exists, so a script that read the first line as the
+  message should read the `Runtime Error:` line, which is always last before
+  any hint. `GENO_TRACEBACK=host` restores the host traceback, after the
+  report.
+- **Node exits at once.** A Node entry build ends with status 1 as soon as it
+  has printed the report, for an async `main` too: 0.6 let pending async work
+  continue after an async `main` rejected. A rejection of an `Async` nothing
+  awaits is reported the same way instead of with Node's raw stack, with the
+  same status 1. Like 0.6's synchronous fatal path, the immediate exit can
+  lose a tail of stdout still queued for a POSIX pipe beyond what the pipe
+  accepted (typically 64 KiB); 0.6's async `main` drained it.
+
+It meets the five conditions above:
+
+1. [proposal 0018](../proposals/0018-runtime-failure-diagnostics.md)
+   (Draft; it must be accepted before 0.7 is released) records the
+   motivation and the alternatives, including keeping the 0.6 frame
+   convention and putting the message first, which it rejects;
+2. the impact is stated in `docs/spec/v0.7.md` sections 4.1.1, 5.1, 5.2 and
+   6.9.1 and its "Changes from 0.6" list;
+3. `CHANGELOG.md` `[Unreleased]` carries the migration: match a contract
+   failure by its new prefix or by the structured fields,
+
+   ```geno
+   // before
+   example 1, 0 panics "Precondition failed for safe_div"
+   // after
+   example 1, 0 panics "Precondition failed: safe_div("
+   ```
+
+   read `geno run --json`'s `stack` and `contract` instead of scraping frame
+   lines, and set `GENO_TRACEBACK=host` where a host traceback is wanted;
+4. no frozen case depends on contract wording, frame lines or host
+   tracebacks, so `conformance/v0.5` and `conformance/v0.6` pass unchanged on
+   every target, and the development corpus adds six `runtime-*` cases that
+   pin the frames on `cli-process`, `cli-direct`, `python`, `js` and `js-esm`
+   and the JSON `stack` with `expected_diagnostic` on `cli-json`; and
+5. the release owner records it in release evidence when 0.7 is released.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It
@@ -240,6 +314,16 @@ compatibility promise. The runner refuses a corpus newer than `spec.json`'s
 more than one development corpus. When the minor is promoted, the promotion
 proposal carries the previous corpus's cases forward, drops the mark, and the
 corpus is frozen like the others.
+
+A schema 2 case may state a failing `geno run --json` envelope with an
+`expected_diagnostic` table (proposal
+[0018](../proposals/0018-runtime-failure-diagnostics.md)): the diagnostic's
+`code`, optional `message_contains` fragments, its `location` and its `stack`
+as `file:line:col` and `file:line:col in name` suffixes of the reported path,
+and `stack_omitted`. On the `cli-json` lane it takes the place of
+`expected_json_value` and of the stderr fragments, which describe the text
+report of the lanes that own a stderr. A retained corpus that does not use
+the field loads and runs unchanged.
 
 ## What Users Can Rely On
 

@@ -136,6 +136,46 @@ Response (error, HTTP 400):
 }
 ```
 
+A runtime failure is also an HTTP 400 with `"ok": false`. On the 0.7
+development line (Draft
+[proposal 0018](../proposals/0018-runtime-failure-diagnostics.md)) its
+diagnostic carries the failure `location` and the Geno `stack`, outermost
+frame first and each positioned inside its own function, plus
+`stack_omitted` when a stack of more than 20 frames kept only its first and
+last 10, and a `contract` object for a failed `requires` or `ensures`. A
+program whose `main` calls `half(3)` against `requires n % 2 == 0` gets:
+
+```json
+{
+  "code": "E499",
+  "message": "Precondition failed: half(n: 3) requires n % 2 == 0",
+  "severity": "error",
+  "location": {"line": 2, "column": 14, "filename": "<http>"},
+  "stack": [
+    {"function": "main", "location": {"line": 8, "column": 12, "filename": "<http>"}},
+    {"function": "half", "location": {"line": 2, "column": 14, "filename": "<http>"}}
+  ],
+  "contract": {
+    "clause": "requires",
+    "reason": "false",
+    "clause_index": 0,
+    "function": "half",
+    "clause_text": "n % 2 == 0",
+    "arguments": [{"name": "n", "value": "3"}],
+    "result": null
+  }
+}
+```
+
+The keys are additive, and the stack (at most 20 frames) and each argument
+value (at most 64 code points) are bounded, so responses stay within
+`GENO_MAX_RESPONSE_BODY_BYTES` as before. Frames are Geno functions of the
+submitted program's modules (`<http>`, `<module:Name>`) or of the standard
+library; a failure inside a standard-library function names that library
+file by the path the server's frontend gave it. No server, sandbox or worker
+frame and no host traceback reaches a client, and the server ignores
+`GENO_TRACEBACK`.
+
 ### POST /constrain
 
 ```bash

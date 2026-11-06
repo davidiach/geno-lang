@@ -239,3 +239,44 @@ def test_spec_property_check_sample_matches_the_engine():
     assert f"        {result.failure.summary}\n" in section
     assert f"        counterexample: {result.counterexample.arguments}\n" in section
     assert f'"trials_run": {result.trials_run},' in section
+
+
+def test_spec_runtime_report_sample_matches_the_engine(tmp_path):
+    """The 6.9.1 sample (proposal 0018) is what `geno run` prints.
+
+    The default lane runs `main` as compiled Python in the isolated worker and
+    maps the failure back to Geno source, so this also pins that lane to the
+    report the interpreter lanes give. Only the program's directory is
+    shortened, as the sample says.
+    """
+    import os
+    import subprocess
+    import sys
+
+    path = "docs/spec/v0.7.md"
+    heading = "#### 6.9.1 Runtime Failure Reports"
+    program = tmp_path / "panic.geno"
+    program.write_text(
+        _geno_snippet_after_heading(path, heading), encoding="utf-8", newline="\n"
+    )
+    section = _section(path, heading)
+    (expected,) = [
+        block
+        for block in re.findall(r"```text\n(.*?)```", section, re.S)
+        if block.startswith("Stack trace")
+    ]
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "geno", "run", str(program)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    stderr = completed.stderr
+    for directory in {os.path.realpath(tmp_path), str(tmp_path)}:
+        stderr = stderr.replace(directory + os.sep, "")
+    assert stderr == expected

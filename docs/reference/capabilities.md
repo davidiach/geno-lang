@@ -99,9 +99,14 @@ full:
   against `--max-output-length`. Their effects are real. Use
   `--no-check-examples` to skip them in an operational run.
 - **Hints stay isolated.** A denial of a capability the lane can grant ends
-  with the isolated command to rerun:
+  with the isolated command to rerun, after the report (0.7 line: the Geno
+  stack and the denied call's source line come first):
 
   ```text
+  Stack trace (most recent call last):
+    main.geno:2:11 in main
+        print(cli_args())
+              ^
   Runtime Error: Capability denied: 'cli_args' requires the 'env' capability
   Hint: grant it with --cap; the program stays process-isolated:
     geno run --cap clock,env,print,random main.geno -- hello
@@ -360,6 +365,25 @@ will see error **E412**:
 ```
 Error: Capability denied: 'fs_read_text' requires the 'fs' capability
 ```
+
+On the 0.7 development line (Draft
+[proposal 0018](../proposals/0018-runtime-failure-diagnostics.md)) the
+denial is reported like every runtime failure, at the gated call and with
+the Geno stack that reached it, on every lane and in compiled programs. In
+the default `geno run` lane:
+
+```text
+Stack trace (most recent call last):
+  myfile.geno:2:11 in main
+      match fs_read_text("notes.txt") with
+            ^
+Runtime Error: Capability denied: 'fs_read_text' requires the 'fs' capability
+Hint: grant it with --cap; the program stays process-isolated:
+  geno run --cap clock,fs,print,random myfile.geno
+```
+
+The JSON diagnostic (`geno run --json`, `geno.api.run()`) carries the same
+`location` and `stack`.
 
 **Fix:** Add `--cap fs` to your command, or include `"fs"` in your
 `RunConfig.capabilities` set. `--cap` replaces the default grant, so list

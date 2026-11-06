@@ -1,0 +1,22 @@
+// Proposal 0018: a panic three calls deep reports where it happened and the
+// Geno call stack, most recent call last, on every lane. Each frame is
+// positioned inside its own function: at the call it was making, or, for the
+// innermost frame, at the panic. Output printed before the panic is kept.
+
+func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+
+func scale(n: Int) -> Int
+    example 2 -> 4
+    return check(n * 2)
+end func
+
+func main() -> Int
+    print("scaling")
+    return scale(4)
+end func

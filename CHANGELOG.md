@@ -154,6 +154,78 @@ package version stays 0.6.0, and the Draft
     kill at `--timeout` still ends any request that cannot return in time.
     The HTTP client modules are loaded during the worker's trusted setup
     only with an `http` grant.
+- Runtime failures report their Geno location and call stack, from Draft
+  [proposal 0018](docs/proposals/0018-runtime-failure-diagnostics.md)
+  ([spec v0.7](docs/spec/v0.7.md) section 6.9.1). A panic, runtime error,
+  failed contract, capability denial or resource limit prints the Geno frames
+  that led to it, most recent call last, each as `file:line:col in name`
+  positioned inside its own function (at the call it was making, or at the
+  failure for the last frame), then the source line with a caret where the
+  host can read the source, then the `Runtime Error: <message>` line, which
+  stays last so hints still follow it:
+
+  ```text
+  Stack trace (most recent call last):
+    demo.geno:21:21 in main
+    demo.geno:15:14 in safe_div
+        requires b != 0
+                 ^
+  Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
+  ```
+
+  This holds on every `geno run` lane (the default isolated lane maps its
+  compiled `main` back to Geno source in the trusted worker), `--watch`,
+  `geno test -v`, and standalone compiled Python and Node CommonJS and ESM
+  entry builds, which map host frames through a compact `_GENO_TRACE` table
+  the compiler embeds and reads only when a failure escapes `main`: no call
+  does extra work and the artifact still runs without Geno installed. Frames
+  are named Geno functions (`f`, `Type.method`, `Module.f`, and `<example>`
+  while an example is verified); lambdas, builtins, runtime helpers and host
+  frames never appear, and standard-library files show as `std/<Name>.geno`.
+  A stack of more than 20 frames keeps its first 10 and last 10 and says how
+  many it left out. Recursion, step and cooperative-timeout limits, callbacks
+  started by builtins and `async` functions get stacks too. The location and
+  stack never enter the message, so `panics "substring"` examples and
+  property checks match what they matched before.
+- Contract failures name the function, the call's argument values and the
+  clause as written (`Precondition failed: safe_div(a: 8, b: 0) requires
+  b != 0`), and an `ensures` failure the result
+  (`Postcondition failed: shout(s: "hi") ensures length(result) > 10 (result
+  was "hi!")`), identically on the interpreter, compiled Python and compiled
+  JavaScript. Values are quoted where they are strings and cut to 64 code
+  points by bounded renderers that stop walking a large value early. The
+  arguments are always the call's: when the body rebound a parameter the
+  clause reads, the message adds `; n was 6 when checked`. The clause text is
+  captured at parse time (`RequiresClause.source_text`,
+  `EnsuresClause.source_text`, ignored by AST equality), which also fixes the
+  truncated clause of a multi-line `ensures` in property-check reports.
+  `ContractViolationError` and the compiled contract exceptions also carry
+  `function`, `clause_text`, `arguments` and `checked_values`.
+- `geno run --json`, `geno.api.run()`/`run_path()` and the hosted server's
+  `/run` report a runtime failure's `location`, a `stack` list of
+  `{"function", "location"}` objects, `stack_omitted` when frames were left
+  out, and a `contract` object for a failed `requires`/`ensures` (`clause`,
+  `reason`, `clause_index`, `function`, `clause_text`, `arguments`,
+  `result`, and `checked_values` when present); `geno test --json`
+  violations gain `location`, `stack` and `stack_omitted`. `Diagnostic`
+  gains `stack` (`GenoStack` of `StackFrame`s) and `contract`
+  (`ContractDetails`). The keys are additive: existing keys keep their
+  values, codes are unchanged (a contract failure stays E499), and the one
+  value that is new where it was absent is `location` on panics and other
+  builtin failures.
+- `GENO_TRACEBACK=host` also prints the host's own traceback after the Geno
+  report, under `Host traceback (GENO_TRACEBACK=host):`, on `geno run`
+  (the interpreter's or the isolated worker's), in standalone compiled
+  Python and in Node entry builds, for debugging Geno itself. `--json`, the
+  embedding API and the hosted server ignore it.
+- `scripts/run_conformance.py` accepts an `expected_diagnostic` table on a
+  schema 2 `cli-json` case, stating a failing envelope's `code`,
+  `message_contains`, `location`, `stack` and `stack_omitted` as path-suffix
+  matches, and `conformance/v0.7` adds six `runtime-*` cases (a panic three
+  calls deep, an index error, `requires` arguments, an `ensures` result,
+  recursion elision and a capability denial) on `cli-process`, `cli-direct`,
+  `cli-json`, `python`, `js` and `js-esm`. The compiled lanes now compile
+  with the case's file name.
 
 ### Changed (breaking)
 
@@ -196,6 +268,25 @@ package version stays 0.6.0, and the Draft
   exits 1. An empty `GENO_FS_ROOTS` stops an isolated run that grants `fs`
   before launch (`Error: GENO_FS_ROOTS must contain at least one filesystem
   root`); without `fs` the variable is not read.
+- Contract failure messages change from `Precondition failed for safe_div:
+  requires clause evaluated to false` to `Precondition failed:
+  safe_div(a: 8, b: 0) requires b != 0` (proposal 0018), which changes what
+  `panics "substring"` examples match in both directions. `panics
+  "Precondition failed"` and `panics "Postcondition failed"` still match;
+  substrings only the old wording had (`"Precondition failed for"`, `"for
+  <name>:"`, `"requires clause"`, `"ensures clause"`, `"evaluated to
+  false"`) no longer do, and a substring of an argument value or of the
+  clause text (`"b != 0"`) can now match a contract failure. No corpus in the
+  repository uses an old substring. Recorded in the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-runtime-failures-report-a-geno-stack-and-contract-failures-name-their-arguments).
+  To migrate, match the new prefix, or read the structured fields:
+
+  ```geno
+  // before (0.6)
+  example 1, 0 panics "Precondition failed for safe_div"
+  // after (0.7 draft)
+  example 1, 0 panics "Precondition failed: safe_div("
+  ```
 
 ### Changed
 
@@ -230,6 +321,34 @@ package version stays 0.6.0, and the Draft
   the violation's `clause` field, not its message. A program's own
   `panic("Precondition failed ...")` is therefore reported as an `example`
   failure, not a `requires` failure.
+- Runtime failure stderr (proposal 0018): the first line is `Stack trace
+  (most recent call last):` whenever a stack exists, and the `Runtime Error:`
+  line is last, before any hint; read that line, or `--json`, rather than the
+  first. `--unsafe` frames change from `  in <name>, <call site>` (with `main`
+  at its definition) to `  <file:line:col> in <name>`, the snippet moves above
+  the message, and the separate `at` line appears only when there is no
+  stack. Scripts that scraped frame lines should read `--json`'s `stack`.
+- Standalone compiled Python and Node entry builds print the Geno report
+  instead of a Python traceback into the generated file or a V8 stack of
+  generated JavaScript; the status stays 1. A Node entry build now exits as
+  soon as the report is printed, for an async `main` too (0.6 let pending
+  async work run after an async `main` rejected), and a rejected `Async` that
+  nothing awaits is reported the same way, with status 1. Like 0.6's
+  synchronous fatal path, that exit can lose a tail of stdout still queued for
+  a POSIX pipe. `Error.stackTraceLimit` and the `unhandledRejection` listener
+  are set only when the file runs as the entry point, so importing an ESM
+  build changes neither. The table and its anchor are the first two lines of
+  the program's code, so `--source-map` mappings move down by two lines; the
+  map format is unchanged. Browser builds and programs without `main` are
+  unchanged.
+- `geno test` records a runtime failure in an example as `Runtime error:
+  <message>`, without the doubled `Runtime Error:` and location prefix, and
+  `-v` prints the failure's frames under it.
+- A failure inside a builtin (`panic`, `unwrap`, `expect`, a denial) carries
+  the builtin call's location on the error itself, which the interpreter now
+  sets in place, keeping the error's type, code and trusted denial tags; its
+  `str()` includes the location, while `.message`, which `panics` examples
+  match, is unchanged.
 
 ### Fixed
 
@@ -254,8 +373,8 @@ package version stays 0.6.0, and the Draft
   is a panic in the compiled harness too, not the collection size limit.
 - A `?` that propagates `None` or `Err` inside a `requires` or `ensures`
   clause is a contract violation in compiled Python and JavaScript, as it is
-  in the interpreter ("Precondition failed for f: requires clause cannot use
-  '?' to propagate None/Err"). Compiled Python let its internal
+  in the interpreter (the message ends in `('?' propagated None/Err)`).
+  Compiled Python let its internal
   `_PropagateReturn` escape the function (and a caller that used `?` then
   returned the propagated value); compiled JavaScript returned from the
   function silently.
@@ -266,6 +385,11 @@ package version stays 0.6.0, and the Draft
   run time with a host error (`"s" + 1`); they are now type errors, and
   `let d = [None, Some(1), Some(2.5)]` infers `List[Option[Float]]` instead
   of asking for an annotation.
+- Compiled Python showed an `ensures` failure's result with the host `str()`
+  (`result was hi!`), where the interpreter and JavaScript showed `"hi!"`;
+  all three now render it the same way (proposal 0018).
+- `geno test --json` reported a runtime failure in an example as
+  `"Runtime error: Runtime Error: boom"`; it is now `"Runtime error: boom"`.
 
 ## [0.6.0] - 2026-10-25
 

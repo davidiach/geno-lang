@@ -208,7 +208,29 @@ class Diagnostic:
     message: str  # Human-readable description
     severity: Severity  # ERROR, WARNING, or INFO
     location: SourceLocation | None
+    fixes: tuple[Fix, ...] = ()  # Machine-applicable fixes (check diagnostics)
+    stack: GenoStack | None = None  # Runtime failures (0.7 line)
+    contract: ContractDetails | None = None  # Contract failures (0.7 line)
 ```
+
+On the 0.7 development line (Draft
+[proposal 0018](../proposals/0018-runtime-failure-diagnostics.md)), a
+runtime failure's diagnostic carries its failure `location` (the `panic` or
+failing builtin call, the failing expression, or the failed clause) and a
+`stack`: a `GenoStack` whose `frames` are `StackFrame(function, location)`
+pairs, outermost first, each positioned inside its own function at the call
+it was making (the last frame at the failure). A stack of more than 20 frames
+keeps its first 10 and last 10, and `stack.omitted` counts the frames left
+out between them. A failed `requires` or `ensures` also carries
+`contract`, a `ContractDetails` with `clause`, `reason`, `clause_index`,
+`function`, `clause_text`, `arguments` (the call's `(name, value)` pairs,
+values rendered with strings quoted and cut to 64 code points), `result`
+(`None` for `requires`) and `checked_values` (a rebound parameter's value at
+the check, only when it differs). `message` never contains the location or
+the stack. `Diagnostic.to_dict()` adds `"stack"`, `"stack_omitted"` (only
+when frames were omitted) and `"contract"` keys only when they are set, so
+existing keys and values are unchanged. In a multi-module program, frame
+locations name each module's file, as `location` does.
 
 ## Host Callbacks
 
@@ -281,6 +303,18 @@ if not result.ok:
         loc = f"{d.location.line}:{d.location.column}" if d.location else "?"
         print(f"[{d.code.value}] {loc}: {d.message}")
 ```
+
+A runtime failure's Geno stack is on the same diagnostic (0.7 line):
+
+```python
+for d in result.diagnostics:
+    for frame in d.stack.frames if d.stack else ():
+        where = f"{frame.location.line}:{frame.location.column}" if frame.location else "?"
+        print(f"  {where} in {frame.function}")
+```
+
+`GENO_TRACEBACK=host` has no effect on the embedding API: a diagnostic never
+carries a host traceback.
 
 Error codes follow the pattern `E<phase><number>`:
 - **E1xx**: Lexer errors (unexpected character, unterminated string)

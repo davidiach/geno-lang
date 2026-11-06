@@ -183,8 +183,55 @@ def test_the_repository_development_corpus_is_v07() -> None:
         "isolated-grant-regex",
         "isolated-grant-env-cli-args",
         "isolated-grant-is-exact",
+        *_RUNTIME_REPORT_CASES,
     }
     assert all(load_manifest(p).status is None for p in retained_manifest_paths())
+
+
+# Proposal 0018's v0.7 cases: a runtime failure's location and Geno stack on
+# every lane that reports one (the `interpreter` lane is an embedding boundary
+# and returns diagnostics as data).
+_RUNTIME_REPORT_CASES = (
+    "runtime-panic-stack",
+    "runtime-index-stack",
+    "runtime-requires-arguments",
+    "runtime-ensures-result",
+    "runtime-recursion-elision",
+    "runtime-capability-denial-stack",
+)
+_RUNTIME_REPORT_LANES = {
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+}
+
+
+@pytest.mark.parametrize("case_id", _RUNTIME_REPORT_CASES)
+def test_the_runtime_report_cases_run_on_every_reporting_lane(case_id: str) -> None:
+    """Every lane reports the same frames: the text lanes on stderr, `--json`
+    in its envelope's `expected_diagnostic` (backend parity, proposal 0018)."""
+    (path,) = development_manifest_paths()
+    manifest = load_manifest(path)
+    (case,) = [case for case in manifest.cases if case.id == case_id]
+
+    assert set(case.targets) == _RUNTIME_REPORT_LANES
+    assert case.expected_exit_class == "nonzero"
+    assert case.expected_diagnostic is not None
+    assert case.expected_diagnostic.stack
+    # Each frame fragment names the program by its file name only, so it holds
+    # for the CLI lanes' absolute paths and the compiled lanes' relative ones.
+    frames = [
+        fragment for fragment in case.expected_stderr_contains if " in " in fragment
+    ]
+    assert frames
+    assert all(fragment.startswith(case.path.name) for fragment in frames)
+    results = run_suite(manifest, case_ids=frozenset({case_id}), timeout=60.0)
+
+    assert {result.target for result in results} == {"checker", *case.targets}
+    _assert_lanes_passed(results)
 
 
 _ISOLATED_GRANT_CASES = {
@@ -336,6 +383,19 @@ def test_run_suite_rejects_an_unknown_id_for_a_single_manifest() -> None:
 
 _PRINTING_PROGRAM = 'func main() -> Unit\n    print("ok")\n    return ()\nend func\n'
 _INT_PROGRAM = "func main() -> Int\n    return 3\nend func\n"
+_PANIC_PROGRAM = (
+    "func check(n: Int) -> Int\n"
+    "    example 1 -> 1\n"
+    "    if n > 5 then\n"
+    '        panic("too large")\n'
+    "    end if\n"
+    "    return n\n"
+    "end func\n"
+    "\n"
+    "func main() -> Int\n"
+    "    return check(9)\n"
+    "end func\n"
+)
 _WRAPPING_PROGRAM = "func main() -> Int\n    return 258\nend func\n"
 # One valid value per schema 2 field, so the version gate below covers all of
 # them rather than only the one it was written for.
@@ -345,7 +405,20 @@ _SCHEMA_2_SAMPLES: dict[str, object] = {
     "expected_stderr": "",
     "expected_stderr_contains": ["boom"],
     "expected_json_value": "3",
+    "expected_diagnostic": {"code": "E414"},
 }
+
+
+def _toml_value(value: object) -> str:
+    """Render a manifest field: JSON spelling, except tables (inline TOML)."""
+    if isinstance(value, dict):
+        fields = ", ".join(
+            f"{key} = {_toml_value(item)}" for key, item in value.items()
+        )
+        return f"{{ {fields} }}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    return json.dumps(value)
 
 
 def _corpus(
@@ -361,7 +434,7 @@ def _corpus(
     (tmp_path / "programs").mkdir(parents=True, exist_ok=True)
     (tmp_path / "programs" / "case.geno").write_text(program, encoding="utf-8")
     fields = "\n".join(
-        f"{key} = {json.dumps(value)}" for key, value in case_fields.items()
+        f"{key} = {_toml_value(value)}" for key, value in case_fields.items()
     )
     manifest = tmp_path / "manifest.toml"
     manifest.write_text(
@@ -1089,3 +1162,235 @@ def test_v05_exit_status_cases_cover_every_executable_boundary() -> None:
     assert exit_cases
     for case in exit_cases:
         assert set(case.targets) == set(RUNTIME_TARGETS), case.id
+
+
+_PANIC_DIAGNOSTIC: dict[str, object] = {
+    "code": "E414",
+    "message_contains": ["too large"],
+    "location": "case.geno:4:9",
+    "stack": ["case.geno:10:12 in main", "case.geno:4:9 in check"],
+}
+
+
+def _failing_json_corpus(tmp_path: Path, **overrides: object) -> Path:
+    fields: dict[str, object] = {
+        "targets": ["cli-json"],
+        "expected_stdout": "",
+        "expected_exit_class": "nonzero",
+        "expected_stderr_contains": ["case.geno:4:9 in check"],
+        "expected_diagnostic": _PANIC_DIAGNOSTIC,
+    }
+    fields.update(overrides)
+    return _corpus(
+        tmp_path,
+        program=_PANIC_PROGRAM,
+        **{key: value for key, value in fields.items() if value is not None},
+    )
+
+
+def test_expected_diagnostic_states_a_failing_envelope(tmp_path: Path) -> None:
+    """Proposal 0018: `cli-json` checks a failure's diagnostic, location and stack."""
+    (case,) = load_manifest(_failing_json_corpus(tmp_path)).cases
+
+    assert case.expected_diagnostic is not None
+    assert case.expected_diagnostic.code == "E414"
+    assert case.expected_diagnostic.location == "case.geno:4:9"
+    assert case.expected_diagnostic.stack == (
+        "case.geno:10:12 in main",
+        "case.geno:4:9 in check",
+    )
+    assert case.expected_diagnostic.stack_omitted == 0
+    assert case.expected_json_value is None
+
+    results = run_suite(
+        load_manifest(_failing_json_corpus(tmp_path)), target="cli-json"
+    )
+
+    assert [result.status for result in results] == ["passed"], results
+
+
+def test_a_wrong_expected_frame_fails_the_json_lane(tmp_path: Path) -> None:
+    manifest = _failing_json_corpus(
+        tmp_path,
+        expected_diagnostic={
+            **_PANIC_DIAGNOSTIC,
+            "stack": ["case.geno:10:5 in main", "case.geno:4:9 in check"],
+        },
+    )
+
+    (result,) = run_suite(load_manifest(manifest), target="cli-json")
+
+    assert result.status == "failed"
+    assert "expected diagnostic stack" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "match"),
+    [
+        ({"location": "case.geno:4:9"}, "expected_diagnostic.code"),
+        ({"code": "E414", "where": "here"}, "unknown keys: where"),
+        ({"code": "E414", "location": "case.geno:4"}, "file:line:col"),
+        ({"code": "E414", "location": "case.geno:4:9 in check"}, "not a frame"),
+        ({"code": "E414", "stack": ["case.geno:4:9"]}, "'file:line:col in name'"),
+        ({"code": "E414", "stack": ["case.geno:x:9 in check"]}, "file:line:col"),
+        ({"code": "E414", "stack_omitted": 2}, "stack_omitted requires stack"),
+        ({"code": "E414", "stack": [], "stack_omitted": -1}, "non-negative"),
+        ({"code": "E414", "stack": [], "stack_omitted": True}, "must be an integer"),
+        ({"code": "E414", "message_contains": "too"}, "list of strings"),
+    ],
+    ids=[
+        "no-code",
+        "unknown-key",
+        "short-location",
+        "location-is-frame",
+        "frame-without-name",
+        "frame-bad-line",
+        "omitted-without-stack",
+        "negative-omitted",
+        "bool-omitted",
+        "message-not-list",
+    ],
+)
+def test_expected_diagnostic_is_validated(
+    tmp_path: Path, diagnostic: dict[str, object], match: str
+) -> None:
+    manifest = _failing_json_corpus(tmp_path, expected_diagnostic=diagnostic)
+
+    with pytest.raises(ManifestError, match=match):
+        load_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"targets": ["cli-direct"]}, "requires the cli-json target"),
+        ({"expected_json_value": "null"}, "mutually exclusive"),
+        (
+            {"expected_exit_class": None, "expected_exit_status": 0},
+            "requires a nonzero exit status",
+        ),
+        (
+            {
+                "expected_exit_class": None,
+                "expected_exit_status": 1,
+                "expected_stderr_contains": None,
+                "expected_stderr": "",
+            },
+            "cannot be combined with expected_stderr",
+        ),
+    ],
+    ids=["no-json-lane", "with-value", "zero-status", "exact-stderr"],
+)
+def test_expected_diagnostic_fits_only_a_failing_json_case(
+    tmp_path: Path, overrides: dict[str, object], match: str
+) -> None:
+    manifest = _failing_json_corpus(tmp_path, **overrides)
+
+    with pytest.raises(ManifestError, match=match):
+        load_manifest(manifest)
+
+
+def _failing_envelope(**diagnostic_overrides: object) -> dict[str, object]:
+    diagnostic: dict[str, object] = {
+        "code": "E414",
+        "message": "too large",
+        "severity": "error",
+        "location": {"line": 4, "column": 9, "filename": "/work/case.geno"},
+        "stack": [
+            {
+                "function": "main",
+                "location": {"line": 10, "column": 12, "filename": "/work/case.geno"},
+            },
+            {
+                "function": "check",
+                "location": {"line": 4, "column": 9, "filename": "/work/case.geno"},
+            },
+        ],
+    }
+    diagnostic.update(diagnostic_overrides)
+    return _envelope(ok=False, value=None, diagnostics=[diagnostic])
+
+
+def _failing_case(tmp_path: Path, **diagnostic: object) -> ConformanceCase:
+    expected = {**_PANIC_DIAGNOSTIC, **diagnostic}
+    manifest = _failing_json_corpus(tmp_path, expected_diagnostic=expected)
+    return load_manifest(manifest).cases[0]
+
+
+def test_a_matching_failing_envelope_has_no_mismatches(tmp_path: Path) -> None:
+    assert _envelope_mismatches(_failing_case(tmp_path), _failing_envelope()) == []
+
+
+def test_a_windows_path_matches_at_its_separator(tmp_path: Path) -> None:
+    location = {"line": 4, "column": 9, "filename": "C:\\work\\case.geno"}
+    envelope = _failing_envelope(location=location)
+
+    assert _envelope_mismatches(_failing_case(tmp_path), envelope) == []
+
+
+@pytest.mark.parametrize(
+    ("envelope", "match"),
+    [
+        (_envelope(ok=True, value=None, diagnostics=[]), "envelope ok false"),
+        (_failing_envelope(code="E401"), "diagnostic code 'E414'"),
+        (_failing_envelope(message="other"), "message to contain 'too large'"),
+        (
+            _failing_envelope(
+                location={"line": 4, "column": 9, "filename": "/work/other_case.geno"}
+            ),
+            "diagnostic location",
+        ),
+        (_failing_envelope(location=None), "diagnostic location"),
+        (_failing_envelope(stack=[]), "diagnostic stack"),
+        (_failing_envelope(stack_omitted=3), "stack_omitted 0, got 3"),
+        (_failing_envelope(stack_omitted=0), "positive integer"),
+        (
+            {**_failing_envelope(), "diagnostics": [{"code": "E414"}] * 2},
+            "one envelope diagnostic",
+        ),
+        ({**_failing_envelope(), "value": 3}, "no envelope value"),
+    ],
+    ids=[
+        "succeeded",
+        "code",
+        "message",
+        "file-name-boundary",
+        "no-location",
+        "no-frames",
+        "unexpected-omitted",
+        "zero-omitted-key",
+        "two-diagnostics",
+        "value",
+    ],
+)
+def test_a_failing_envelope_is_checked_field_by_field(
+    tmp_path: Path, envelope: dict[str, object], match: str
+) -> None:
+    mismatches = _envelope_mismatches(_failing_case(tmp_path), envelope)
+
+    assert any(match in mismatch for mismatch in mismatches), mismatches
+
+
+def test_an_expected_omitted_count_is_checked(tmp_path: Path) -> None:
+    case = _failing_case(tmp_path, stack_omitted=4)
+
+    assert _envelope_mismatches(case, _failing_envelope(stack_omitted=4)) == []
+    assert any(
+        "stack_omitted 4" in mismatch
+        for mismatch in _envelope_mismatches(case, _failing_envelope())
+    )
+
+
+def test_the_stderr_fragments_are_not_applied_to_the_json_envelope(
+    tmp_path: Path,
+) -> None:
+    """`--json` reports a failure in the envelope, so its stderr stays unread."""
+    from scripts.run_conformance import TargetOutcome, _channel_mismatches
+
+    case = _failing_case(tmp_path)
+    outcome = TargetOutcome("", "", 1, _failing_envelope())
+
+    assert _channel_mismatches(case, outcome) == []
+    assert _channel_mismatches(case, TargetOutcome("", "", 1)) == [
+        "expected stderr to contain 'case.geno:4:9 in check', got ''"
+    ]

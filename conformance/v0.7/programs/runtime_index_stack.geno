@@ -1,0 +1,17 @@
+// Proposal 0018: an index error three frames deep (main -> outer -> inner)
+// reports every frame, not only the innermost one, and is located at the
+// failing index expression.
+
+func inner(xs: List[Int], i: Int) -> Int
+    example [1, 2, 3], 0 -> 1
+    return xs[i]
+end func
+
+func outer(xs: List[Int], i: Int) -> Int
+    example [1, 2, 3], 0 -> 2
+    return inner(xs, i + 1)
+end func
+
+func main() -> Int
+    return outer([1, 2, 3], 2)
+end func
