@@ -516,7 +516,7 @@ end func
             """
 func tricky(x: Int) -> Int
     example 1 -> 1
-    panic("user says: Precondition failed for demo")
+    panic("user says: Precondition failed: demo(x: 1) requires x > 0")
 end func
 
 func main() -> Int
@@ -539,7 +539,7 @@ end func
             """
 func prefixed(x: Int) -> Int
     example 1 -> 1
-    panic("Precondition failed for prefixed: requires clause evaluated to false")
+    panic("Precondition failed: prefixed(x: 1) requires x > 0")
 end func
 
 func main() -> Int
@@ -870,8 +870,10 @@ class TestRejectionExampleExplanation:
 
         assert harness_result.failed == 1
         message = harness_result.violations[0].message
-        assert "expects Err" in message
-        assert "requires clause evaluated to false" not in message
+        assert (
+            "Precondition failed: to_roman(n: 0) requires n >= 1: "
+            "this example expects Err"
+        ) in message
 
     def test_violation_is_still_classified_as_a_requires_failure(self, tmp_path):
         """The explanation is re-raised with the violation's structured fields
@@ -899,7 +901,9 @@ class TestRejectionExampleExplanation:
 
         violation = harness_result.violations[0]
         assert violation.kind == "requires"
-        assert "requires clause evaluated to false" in violation.message
+        assert violation.message.endswith(
+            "Precondition failed: half(n: 2) requires n >= 10"
+        )
 
 
 class TestPropertyChecks:
