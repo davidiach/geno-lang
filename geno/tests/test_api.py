@@ -6,6 +6,7 @@ Tests geno.run(), geno.check(), RunResult, CheckResult,
 step counting, timing, capabilities, error codes, and JSON serialization.
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -1893,3 +1894,65 @@ class TestRuntimeStacks:
         assert Path(helper_frame.location.filename).resolve() == utils.resolve()
         assert (helper_frame.location.line, helper_frame.location.column) == (4, 5)
         assert diagnostic.location == helper_frame.location
+
+    STDLIB_FAILURE = (
+        "import List\n"
+        "\n"
+        "func main() -> Int\n"
+        "    let parts = List.chunk([1, 2], 0)\n"
+        "    return length(parts)\n"
+        "end func\n"
+    )
+
+    @staticmethod
+    def _filenames(payload: dict) -> list[str]:
+        names = [payload["location"]["filename"]]
+        names.extend(frame["location"]["filename"] for frame in payload["stack"])
+        return names
+
+    def test_a_stdlib_failure_names_std_not_the_install_path(self) -> None:
+        (diagnostic,) = run(self.STDLIB_FAILURE, "<http>").diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["location"]["filename"] == "std/List.geno"
+        assert [frame["function"] for frame in payload["stack"]] == [
+            "main",
+            "List.chunk",
+        ]
+        assert self._filenames(payload) == ["std/List.geno", "<http>", "std/List.geno"]
+        std_dir = str(Path(__file__).resolve().parents[1] / "std")
+        assert std_dir not in json.dumps(payload)
+
+    def test_run_path_shows_std_for_a_stdlib_frame(self, tmp_path) -> None:
+        app = tmp_path / "app.geno"
+        app.write_text(self.STDLIB_FAILURE)
+
+        (diagnostic,) = run_path(str(app)).diagnostics
+
+        payload = diagnostic.to_dict()
+        filenames = self._filenames(payload)
+        assert filenames[0] == "std/List.geno"
+        assert Path(filenames[1]).resolve() == app.resolve()
+        assert filenames[2] == "std/List.geno"
+
+    def test_a_step_limit_inside_the_stdlib_names_std(self) -> None:
+        source = (
+            "import List\n"
+            "\n"
+            "func main() -> Int\n"
+            "    let xs = range(0, 3000)\n"
+            "    return length(List.flatten([xs, xs, xs]))\n"
+            "end func\n"
+        )
+
+        (diagnostic,) = run(
+            source, "<http>", config=RunConfig(max_steps=50)
+        ).diagnostics
+
+        payload = diagnostic.to_dict()
+        assert payload["code"] == ErrorCode.SANDBOX_STEP_LIMIT.value
+        assert payload["location"]["filename"] == "std/List.geno"
+        # Neither the message text nor any structured field names the
+        # installed library's host directory.
+        std_dir = str(Path(__file__).resolve().parents[1] / "std")
+        assert std_dir not in json.dumps(payload)

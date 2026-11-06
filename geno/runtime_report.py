@@ -233,6 +233,36 @@ def display_path(filename: str) -> str:
     return filename
 
 
+def display_location(location: SourceLocation | None) -> SourceLocation | None:
+    """*location* with its filename as reports show it (``std/<Name>.geno``).
+
+    Structured envelopes (``geno run --json``, the embedding API, the hosted
+    server, ``geno test --json``) use this so a failure inside the standard
+    library never names the installed library's host path.
+    """
+    if location is None:
+        return None
+    filename = display_path(location.filename)
+    if filename == location.filename:
+        return location
+    return SourceLocation(location.line, location.column, filename)
+
+
+def display_stack(stack: GenoStack | None) -> GenoStack | None:
+    """*stack* with every frame location passed through ``display_location``."""
+    if stack is None:
+        return None
+    frames: list[StackFrame] = []
+    changed = False
+    for frame in stack.frames:
+        location = display_location(frame.location)
+        if location is not frame.location:
+            frame = StackFrame(frame.function, location)
+            changed = True
+        frames.append(frame)
+    return GenoStack(tuple(frames), stack.omitted) if changed else stack
+
+
 def format_position(location: SourceLocation) -> str:
     """``file:line:col`` with the ``std/`` display."""
     return f"{display_path(location.filename)}:{location.line}:{location.column}"

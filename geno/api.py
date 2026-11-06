@@ -407,13 +407,32 @@ def _make_diagnostic(exc, default_code: ErrorCode) -> Diagnostic:
     )
 
 
+def _runtime_diagnostic(exc: BaseException, default_code: ErrorCode) -> Diagnostic:
+    """A runtime-failure diagnostic, with ``std/`` display paths.
+
+    A failure inside the standard library is located as
+    ``std/<Name>.geno``, as text reports show it, so an envelope never names
+    the installed library's host path (proposal 0018).
+    """
+    from .runtime_report import display_location
+
+    diagnostic = _make_diagnostic(exc, default_code)
+    location = display_location(diagnostic.location)
+    if location is diagnostic.location:
+        return diagnostic
+    return replace(diagnostic, location=location)
+
+
 def _runtime_stack(exc: BaseException) -> GenoStack | None:
-    """The bounded Geno stack a runtime failure captured, if any."""
+    """The bounded Geno stack a runtime failure captured, if any.
+
+    Frame locations use the ``std/<Name>.geno`` display, as text reports do.
+    """
     if getattr(exc, "geno_stack", None) is None:
         return None
-    from .runtime_report import stack_of
+    from .runtime_report import display_stack, stack_of
 
-    return stack_of(exc)
+    return display_stack(stack_of(exc))
 
 
 def _contract_details(exc: BaseException) -> ContractDetails | None:
@@ -438,12 +457,16 @@ def _contract_details(exc: BaseException) -> ContractDetails | None:
 
 def _limit_diagnostic(exc: BaseException, code: ErrorCode, message: str) -> Diagnostic:
     """A resource-limit diagnostic, with the location and stack it carries."""
+    from .runtime_report import display_location
+
     location = getattr(exc, "location", None)
     return Diagnostic(
         code=code,
         message=message,
         severity=Severity.ERROR,
-        location=location if isinstance(location, SourceLocation) else None,
+        location=display_location(location)
+        if isinstance(location, SourceLocation)
+        else None,
         stack=_runtime_stack(exc),
     )
 
@@ -681,11 +704,17 @@ def _remap_module_diagnostic_locations(
         location = remap(diagnostic.location)
         stack = diagnostic.stack
         if stack is not None:
+            from .runtime_report import display_location, display_stack
+
             frames = tuple(
                 replace(frame, location=remap(frame.location)) for frame in stack.frames
             )
             if frames != stack.frames:
                 stack = replace(stack, frames=frames)
+            # A runtime failure keeps the ``std/<Name>.geno`` display for a
+            # module that resolved to the standard library.
+            location = display_location(location)
+            stack = display_stack(stack)
         if location is diagnostic.location and stack is diagnostic.stack:
             remapped.append(diagnostic)
         else:
@@ -999,7 +1028,7 @@ def run(
 
     except GenoRuntimeError as e:
         _finalize_timing(timing, "run_ms", t_run, t0)
-        diagnostics.append(_make_diagnostic(e, ErrorCode.RUNTIME_UNKNOWN))
+        diagnostics.append(_runtime_diagnostic(e, ErrorCode.RUNTIME_UNKNOWN))
         return _emit_monitoring_hook(
             cfg,
             RunResult(

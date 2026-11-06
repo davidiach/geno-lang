@@ -486,9 +486,21 @@ class REPL:
 
         except GenoRuntimeError as e:
             self._flush_output()
-            print(f"Runtime Error: {e.message}")
-            if e.location:
-                print(f"  at {e.location}")
+            # The shared runtime report (proposal 0018): the Geno stack (or
+            # ``  at <location>``), a snippet when the source is a file, then
+            # ``Runtime Error: <message>`` last. The expression wrapper shows
+            # as the ``<repl>`` input, not as a function the user wrote.
+            from .cli._util import runtime_report_lines
+            from .runtime_report import CapturedStack
+
+            captured = getattr(e, "geno_stack", None)
+            if isinstance(captured, CapturedStack):
+                captured.entries = [
+                    ("<repl>" if name == "__repl_eval__" else name, site)
+                    for name, site in captured.entries
+                ]
+            for line in runtime_report_lines(e):
+                print(line)
 
         except Exception as e:
             self._flush_output()

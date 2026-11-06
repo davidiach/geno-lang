@@ -230,7 +230,8 @@ the check, only when it differs). `message` never contains the location or
 the stack. `Diagnostic.to_dict()` adds `"stack"`, `"stack_omitted"` (only
 when frames were omitted) and `"contract"` keys only when they are set, so
 existing keys and values are unchanged. In a multi-module program, frame
-locations name each module's file, as `location` does.
+locations name each module's file, as `location` does; a standard-library
+file is named `std/<Name>.geno`, never by its installed path.
 
 ## Host Callbacks
 

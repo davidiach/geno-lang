@@ -477,18 +477,25 @@ def _violation_dict(violation: SpecViolation) -> dict:
 
     ``location``, ``stack`` and ``stack_omitted`` appear only for a runtime
     failure that has them (proposal 0018), so other entries are unchanged.
+    A standard-library file shows as ``std/<Name>.geno``, as in text reports.
     """
     entry: dict = {
         "kind": violation.kind,
         "function": violation.function,
         "message": violation.message,
     }
-    if violation.location is not None:
-        entry["location"] = location_to_dict(violation.location)
-    if violation.stack is not None:
-        entry["stack"] = violation.stack.to_dicts()
-        if violation.stack.omitted > 0:
-            entry["stack_omitted"] = violation.stack.omitted
+    if violation.location is None and violation.stack is None:
+        return entry
+    from .runtime_report import display_location, display_stack
+
+    location = display_location(violation.location)
+    if location is not None:
+        entry["location"] = location_to_dict(location)
+    stack = display_stack(violation.stack)
+    if stack is not None:
+        entry["stack"] = stack.to_dicts()
+        if stack.omitted > 0:
+            entry["stack_omitted"] = stack.omitted
     return entry
 
 

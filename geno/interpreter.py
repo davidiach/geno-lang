@@ -103,6 +103,7 @@ from .runtime_report import (
     EXAMPLE_ORIGIN,
     CapturedStack,
     contract_message,
+    format_position,
 )
 from .sandbox import (
     RecursionLimitError,
@@ -1879,7 +1880,9 @@ class Interpreter:
         if time.perf_counter() <= self._deadline:
             return
 
-        loc_str = f" at {location}" if location else ""
+        # ``format_position`` shows a standard-library file as ``std/...``, so
+        # the message never names the installed library's host path.
+        loc_str = f" at {format_position(location)}" if location else ""
         error = SandboxTimeout(
             f"Execution timed out after {self.sandbox_config.timeout} seconds{loc_str}"
         )
@@ -2196,7 +2199,7 @@ class Interpreter:
         if self._interrupted:
             raise KeyboardInterrupt
         if self.max_steps is not None and self.steps > self.max_steps:
-            loc_str = f" at {location}" if location else ""
+            loc_str = f" at {format_position(location)}" if location else ""
             error = StepLimitExceeded(
                 f"Step limit exceeded ({self.max_steps} steps){loc_str}"
             )

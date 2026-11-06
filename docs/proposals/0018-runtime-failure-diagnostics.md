@@ -350,12 +350,18 @@ same bound.
 **Paths.** A location's filename is the one the frontend assigned to the file
 (absolute paths on the CLI, `<api>`, `<module:Name>`, `<http>`, `<stdin>`),
 with one exception: a file inside the installed standard library is shown as
-`std/<Name>.geno` in every text report, on every lane, so a frame inside
-`List.chunk` never prints the install path there. The mapping is applied at
-display time (in `runtime_report.display_path` and its prelude copies). JSON
-`location` and `stack` entries keep the frontend's filename, so a failure
-inside the standard library names its installed file in an envelope (see
-Unresolved Questions, 9). The AST keeps the
+`std/<Name>.geno` in every report, text and JSON, on every lane, so a frame
+inside `List.chunk` never prints the install path. The mapping is applied at
+display time: by `runtime_report.display_path` (and its prelude copies) for
+text, and by `runtime_report.display_location` / `display_stack` where a
+runtime failure's diagnostic is built for `geno run --json`, the embedding
+API, the hosted server (`api._runtime_diagnostic`, `api._limit_diagnostic`,
+the module remap) and `geno test --json` (`test_runner._violation_dict`).
+The exception and its captured stack keep the real path, so a host that reads
+the source for a snippet still can. The step-limit and timeout messages, which
+still end in ` at <file:line:col>` (Unresolved Questions, 8), use the same
+display (`runtime_report.format_position`); in 0.6 they named the installed
+path. The AST keeps the
 absolute filename that `stdlib_scope.is_stdlib_program` depends on. Compiled
 trace tables store paths relative to the entry file's directory (a basename
 when the file is elsewhere), `std/<Name>.geno` for the standard library, and
@@ -1094,7 +1100,9 @@ that. The module-project parity case runs as CommonJS.
 
 - **`geno run --unsafe`, `geno run --watch`, the REPL:** the shared renderer,
   with a snippet. With `GENO_TRACEBACK=host` the interpreter's Python traceback
-  follows the report.
+  follows the report on `geno run`. The REPL shows its expression wrapper
+  (`__repl_eval__`) as the `<repl>` frame and prints the report on stdout, as
+  it prints every other result.
 - **`geno run --json`, `geno.api.run`/`run_path`:**
   - `_make_diagnostic` copies `geno_stack` and, for a
     `ContractViolationError`, `ContractDetails`;
@@ -1102,6 +1110,8 @@ that. The module-project parity case runs as CommonJS.
     exceptions now carry;
   - `_remap_module_diagnostic_locations` remaps stack-frame locations too and
     rebuilds with `dataclasses.replace`, so new fields survive;
+  - a runtime failure's `location` and frames show a standard-library file as
+    `std/<Name>.geno` (section 2, Paths);
   - `GENO_TRACEBACK` has no effect on envelopes.
 - **Hosted server:** `_serialize_run_result` emits the same keys, which pickle
   across its worker pipe. The bounded stack and arguments keep responses inside
@@ -1276,9 +1286,9 @@ the lag.
   the worker and validated again in the parent, which drops malformed fields.
 - **No leaks.** Frames outside the program body are dropped by construction:
   the trusted worker, `isolated_host.py`, the sandbox, prelude helpers. Stdlib
-  paths display as `std/...` in text reports; JSON keeps the frontend's
-  filename (Unresolved Questions, 9). Compiled artifacts carry entry-relative paths
-  only. Argument values are the program's own data, capped at 64 code points
+  paths display as `std/...` in text and JSON reports, so a hosted client never
+  learns where Geno is installed on the server. Compiled artifacts carry
+  entry-relative paths only. Argument values are the program's own data, capped at 64 code points
   each, and diagnostics never render environment values. The default-lane
   parent reads snippets only from regular `.geno` files in the program's tree
   or the standard library, with a bounded read (section 4).
@@ -1395,8 +1405,11 @@ Existing tests updated, with the old pins replaced by the new shape:
   - `test_module_constant_contracts.py:124-128`;
 - `test_panic_examples.py`, which adds a test that `panics "substring"` and
   property-check matching never see location or stack text;
-- `test_api.py` and `test_server.py` (envelope keys, pickling, remapped
-  module locations);
+- `test_api.py`, `test_server.py` and `test_test_runner.py` (envelope keys,
+  pickling, remapped module locations, and `std/<Name>.geno` for a
+  standard-library frame with no install path in the envelope);
+- `test_repl.py` (the REPL prints the shared report, with the input as the
+  `<repl>` frame);
 - `test_js_source_maps.py`, unchanged and green (its main-call lines stay
   unmapped); `test_trace_table.py` adds that the anchor, table and entry lines
   have no mappings and the source map keeps its keys;
@@ -1533,18 +1546,6 @@ versioned (`G 1`), so a later table format is detected rather than misread.
    the stack then reports a repeat count.
 8. **Step and timeout messages** still carry ` at <loc>` in their text, now
    duplicated by `location`. Should their wording be cleaned up separately?
-9. **Standard-library paths in JSON.** Text reports show `std/<Name>.geno`,
-   but JSON `location` and `stack` entries keep the frontend's filename. A
-   failure inside a standard-library function (`List.chunk([1, 2], 0)`)
-   therefore names the library's installed path in `geno run --json`, the
-   embedding API and the hosted server's `/run` response, which tells a
-   hosted client where Geno is installed on the server. 0.6 never located a
-   failure inside the standard library (its builtin failures carried no
-   location, and its library bodies hold no other failing operation), so
-   applying `display_path` to JSON filenames as well would change no 0.6
-   value. Recommended before acceptance: map them in the runtime-failure
-   diagnostic path (`api._make_diagnostic` and the limit handlers), keeping
-   the real path only where a host reads source.
 
 ## Implementation Plan
 

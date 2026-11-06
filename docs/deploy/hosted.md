@@ -172,9 +172,9 @@ value (at most 64 code points) are bounded, so responses stay within
 `GENO_MAX_RESPONSE_BODY_BYTES` as before. Frames are Geno functions of the
 submitted program's modules (`<http>`, `<module:Name>`) or of the standard
 library; a failure inside a standard-library function names that library
-file by the path the server's frontend gave it. No server, sandbox or worker
-frame and no host traceback reaches a client, and the server ignores
-`GENO_TRACEBACK`.
+file as `std/<Name>.geno`, never by the server's install path. No server,
+sandbox or worker frame and no host traceback reaches a client, and the
+server ignores `GENO_TRACEBACK`.
 
 ### POST /constrain
 

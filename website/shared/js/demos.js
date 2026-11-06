@@ -205,7 +205,12 @@
         } else if (got === null) {
           st.className = "ex-status is-fail";
           st.textContent = "requires failed";
-          fails.push("score_label: Runtime error: score.geno:2:14: Runtime Error: Precondition failed for score_label: requires clause evaluated to false");
+          fails.push(
+            "score_label: Runtime error: Precondition failed: score_label(score: " + input + ") requires score >= 0\n" +
+              "          Stack trace (most recent call last):\n" +
+              "            score.geno:" + exLine["ex" + i] + ":5 in <example>\n" +
+              "            score.geno:2:14 in score_label"
+          );
         } else {
           st.className = "ex-status is-fail";
           st.textContent = 'got "' + got + '"';

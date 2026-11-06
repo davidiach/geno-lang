@@ -4106,3 +4106,28 @@ def test_run_request_worker_pickles_a_bounded_stack(monkeypatch):
     # 400 frames deep, the envelope stays small: 20 frames are kept.
     assert len(body) < 8192
     assert json.loads(body)["diagnostics"][0]["stack_omitted"] == 382
+
+
+def test_run_envelope_names_std_not_the_server_install_path():
+    from geno.api import run
+    from geno.server import _serialize_run_result
+
+    source = """import List
+
+func main() -> Int
+    let parts = List.chunk([1, 2], 0)
+    return length(parts)
+end func
+"""
+    payload = _serialize_run_result(run(source, "<http>"))
+
+    (diagnostic,) = payload["diagnostics"]
+    assert diagnostic["location"]["filename"] == "std/List.geno"
+    assert [frame["location"]["filename"] for frame in diagnostic["stack"]] == [
+        "<http>",
+        "std/List.geno",
+    ]
+    # The installed standard library's host directory never appears.
+    from geno.runtime_report import STDLIB_DIR
+
+    assert str(STDLIB_DIR) not in json.dumps(payload)

@@ -1158,11 +1158,9 @@ end func
 
         frames = diagnostic.stack.frames
         assert [frame.function for frame in frames] == ["main", "List.chunk"]
-        # The envelope keeps the real filename; the text shows std/.
-        assert (
-            Path(frames[1].location.filename).resolve()
-            == (GENO_DIR / "std" / "List.geno").resolve()
-        )
+        # The envelope shows std/ as the text does, never the install path.
+        assert frames[1].location.filename == "std/List.geno"
+        assert diagnostic.location.filename == "std/List.geno"
         lines = runtime_report.report_lines(
             "Runtime Error", diagnostic.message, stack=diagnostic.stack
         )

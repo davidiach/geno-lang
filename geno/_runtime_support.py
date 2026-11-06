@@ -6002,10 +6002,10 @@ def cli_args():
 # =============================================================================
 #
 # A compiled program with a `main` defines `_GENO_TRACE`, a table that maps
-# host lines back to Geno source (geno/compiler.py's _TraceRecorder documents
-# the records), and `_geno_trace_anchor`, whose `def` line is the table's host
-# line 0. When a failure escapes `main`, the standalone guard calls
-# `_geno_report_uncaught`; the default `geno run` lane's trusted worker
+# host lines back to Geno source (geno/runtime_report.py's TraceRecorder
+# documents the records), and `_geno_trace_anchor`, whose `def` line is the
+# table's host line 0. When a failure escapes `main`, the standalone guard
+# calls `_geno_report_uncaught`; the default `geno run` lane's trusted worker
 # imports `_geno_failure_report` from this module and never uses the copy in
 # the program's namespace. Mapping reads only host objects (the traceback,
 # its frames and code objects) and the table, which it treats as untrusted

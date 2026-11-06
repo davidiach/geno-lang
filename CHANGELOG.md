@@ -207,7 +207,10 @@ package version stays 0.6.0, and the Draft
   out, and a `contract` object for a failed `requires`/`ensures` (`clause`,
   `reason`, `clause_index`, `function`, `clause_text`, `arguments`,
   `result`, and `checked_values` when present); `geno test --json`
-  violations gain `location`, `stack` and `stack_omitted`. `Diagnostic`
+  violations gain `location`, `stack` and `stack_omitted`. A
+  standard-library file is named `std/<Name>.geno` in these fields, as in
+  text reports, so a hosted client never sees the server's install path.
+  `Diagnostic`
   gains `stack` (`GenoStack` of `StackFrame`s) and `contract`
   (`ContractDetails`). The keys are additive: existing keys keep their
   values, codes are unchanged (a contract failure stays E499), and the one
@@ -344,6 +347,10 @@ package version stays 0.6.0, and the Draft
 - `geno test` records a runtime failure in an example as `Runtime error:
   <message>`, without the doubled `Runtime Error:` and location prefix, and
   `-v` prints the failure's frames under it.
+- The REPL prints the same runtime report for a failing input: its frames,
+  with the typed input itself shown as the `<repl>` frame, then the
+  `Runtime Error: <message>` line last (0.6 printed the message, then an
+  `at` line).
 - A failure inside a builtin (`panic`, `unwrap`, `expect`, a denial) carries
   the builtin call's location on the error itself, which the interpreter now
   sets in place, keeping the error's type, code and trusted denial tags; its
@@ -390,6 +397,11 @@ package version stays 0.6.0, and the Draft
   all three now render it the same way (proposal 0018).
 - `geno test --json` reported a runtime failure in an example as
   `"Runtime error: Runtime Error: boom"`; it is now `"Runtime error: boom"`.
+- A step-limit or cooperative-timeout message raised inside a
+  standard-library function ended in the library's installed host path
+  (`... at /usr/lib/.../geno/std/List.geno:20:40`), which the hosted
+  server passed on to clients; it now ends in `std/List.geno:20:40`, as
+  every runtime report names the standard library (proposal 0018).
 
 ## [0.6.0] - 2026-10-25
 

@@ -1102,6 +1102,31 @@ class TestRuntimeFailureReports:
         ]
         assert "stack_omitted" not in violation
 
+    def test_json_shows_std_for_a_stdlib_frame(self, tmp_path):
+        path = tmp_path / "case.geno"
+        path.write_text(
+            "import List\n"
+            "\n"
+            "func split(n: Int) -> Int\n"
+            "    example 0 -> 0\n"
+            "    return length(List.chunk([1, 2], n))\n"
+            "end func\n",
+            encoding="utf-8",
+        )
+
+        payload = run_test_suite([path]).to_dict()
+
+        (violation,) = payload["files"][0]["violations"]
+        assert violation["location"]["filename"] == "std/List.geno"
+        assert [
+            (frame["function"], frame["location"]["filename"])
+            for frame in violation["stack"]
+        ] == [
+            ("<example>", str(path)),
+            ("split", str(path)),
+            ("List.chunk", "std/List.geno"),
+        ]
+
     def test_other_violations_are_unchanged(self, tmp_path):
         path = tmp_path / "case.geno"
         path.write_text(
