@@ -512,7 +512,7 @@
   },
 
   "capabilities": {
-    "description": "Builtins in this capability map are gated behind named capabilities. Direct embedding and CLI execution leave gating disabled when capabilities are omitted; explicit capability sets restrict access. Hosted `/run` requests default omitted capabilities to the server's configured allowed set.",
+    "description": "Builtins in this capability map are gated behind named capabilities. Every execution surface enforces the gates. With capabilities omitted, a surface grants exactly its `default_grants` entry, and an empty entry grants no gated builtins; a surface that accepts capabilities grants exactly the listed set when they are given, never adding its default. `default_grants` is normative and `surfaces` describes each surface.",
     "map": {
       "print": ["print"],
       "clock": ["datetime_now", "datetime_format", "datetime_parse", "datetime_elapsed", "clock_now", "clock_format", "clock_parse", "clock_elapsed", "sleep_ms"],
@@ -526,9 +526,24 @@
       "serve": ["http_listen", "http_route", "http_respond"]
     },
     "surfaces": {
-      "embedding_api": "RunConfig(capabilities=None) leaves capability gating disabled",
-      "cli": "Omitting --cap leaves capability gating disabled",
-      "hosted_server": "Omitting capabilities in /run requests defaults to the server's allowed capability set"
+      "embedding_api": "RunConfig(capabilities=None) grants no gated builtins (fail-closed); an explicit set grants exactly that set",
+      "cli": "Default `geno run` (process-isolated lane): `clock`, `print` and `random` for examples and `main`; --cap is not accepted in this lane and is rejected before launch with an error naming --unsafe and --json. `geno run --unsafe`: `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise. `geno run --json`: no gated builtins without --cap, and exactly the --cap list otherwise",
+      "compiled_programs": "`geno compile` output, Python or JavaScript, grants no gated builtins without --cap, and exactly the --cap list otherwise; JavaScript run outside Node has no --cap and grants no gated builtins",
+      "browser_builds": "Browser builds from `geno build` and `geno dev` take no --cap: every page grants the browser target profile's capabilities, `clock`, `http`, `print`, `random` and `regex`",
+      "geno_test": "`geno test` runs examples and test blocks with `clock`, `print` and `random`; it takes no --cap",
+      "repl": "`geno repl` evaluates input with `clock`, `print` and `random`; it takes no --cap",
+      "hosted_server": "A /run request that omits capabilities gets the server's default request set: no gated builtins unless the embedding configures `default_request_capabilities` (a subset of the allowed set); a request may list only allowed capabilities"
+    },
+    "default_grants": {
+      "embedding_api": [],
+      "geno_run": ["clock", "print", "random"],
+      "geno_run_unsafe": ["clock", "print", "random"],
+      "geno_run_json": [],
+      "compiled_programs": [],
+      "browser_builds": ["clock", "http", "print", "random", "regex"],
+      "geno_test": ["clock", "print", "random"],
+      "repl": ["clock", "print", "random"],
+      "hosted_server": []
     }
   }
 }

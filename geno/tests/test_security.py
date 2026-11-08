@@ -2945,6 +2945,291 @@ class TestProcessSandboxResultChannel:
             )
 
 
+class TestProcessSandboxCaptureFailure:
+    """#254: a stdout/stderr reader failure in the parent must surface as a
+    capture error, never as success with empty or partial output."""
+
+    SUCCESS_ENVELOPE = '{"result": 42, "success": true, "error": null}\n'
+
+    class FailingPipe(io.StringIO):
+        """A text pipe that yields ``prefix`` and then fails on read."""
+
+        def __init__(self, prefix: str, error: BaseException):
+            import threading
+
+            super().__init__(prefix)
+            self._error = error
+            self.failed = threading.Event()
+
+        def read(self, size: int | None = -1) -> str:
+            chunk = super().read(size)
+            if chunk:
+                return chunk
+            self.failed.set()
+            raise self._error
+
+    class FakeProcess:
+        def __init__(self, stdout: io.StringIO, stderr: io.StringIO):
+            self.stdin = io.StringIO()
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = 0
+            self.kills = 0
+
+        @property
+        def pid(self):
+            # No real PID: a supervision path the test forgot to stub must
+            # fail here, never reach os.kill/killpg with a placeholder such
+            # as -1 (which would signal every process the user owns).
+            raise AssertionError("FakeProcess has no PID; stub the kill path")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.kills += 1
+
+    @staticmethod
+    def _reaped_wait(process, lifecycle_lock, exit_observed, finished, *_args):
+        # Mirror _wait_for_worker_tree: the worker is reaped and marked
+        # finished, so cleanup must not try to kill it again.
+        returncode = process.wait()
+        with lifecycle_lock:
+            exit_observed.set()
+            finished.set()
+        return returncode
+
+    def _run(self, monkeypatch, stdout, stderr, *, timeout=1.0, wait=None):
+        import threading
+
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        process = self.FakeProcess(stdout, stderr)
+        timers: list[threading.Timer] = []
+        group_kills: list[object] = []
+        real_timer = threading.Timer
+
+        def recording_timer(*args, **kwargs):
+            timer = real_timer(*args, **kwargs)
+            timers.append(timer)
+            return timer
+
+        sandbox = ProcessSandbox(ProcessSandboxConfig(timeout=timeout, strict=False))
+        monkeypatch.setattr(subprocess, "Popen", lambda _cmd, **_kwargs: process)
+        monkeypatch.setattr(threading, "Timer", recording_timer)
+        monkeypatch.setattr(sandbox, "_create_windows_job", lambda _process: None)
+        monkeypatch.setattr(
+            sandbox, "_create_posix_exit_observer", lambda _process: None
+        )
+        monkeypatch.setattr(sandbox, "_wait_for_worker_tree", wait or self._reaped_wait)
+        monkeypatch.setattr(
+            sandbox,
+            "_kill_posix_process_group",
+            lambda proc, **_kwargs: group_kills.append(proc),
+        )
+        outcome: dict[str, Any] = {}
+        try:
+            outcome["result"] = sandbox.execute(
+                "print('expected output'); __result__ = 42"
+            )
+        except Exception as exc:  # pytest's own BaseExceptions must propagate
+            outcome["error"] = exc
+        outcome["process"] = process
+        outcome["timers"] = timers
+        outcome["group_kills"] = group_kills
+        return outcome
+
+    @staticmethod
+    def _assert_cleaned_up(outcome):
+        process = outcome["process"]
+        assert process.stdin.closed
+        assert process.stdout.closed
+        assert process.stderr.closed
+        assert outcome["timers"], "the hard-timeout watchdog should have started"
+        assert all(timer.finished.is_set() for timer in outcome["timers"])
+        # The reaped worker is not killed a second time.
+        assert process.kills == 0
+        assert outcome["group_kills"] == []
+
+    @pytest.mark.parametrize("prefix", ["", "expected out"], ids=["before", "partial"])
+    def test_stdout_read_failure_is_not_reported_as_success(
+        self, monkeypatch, caplog, prefix
+    ):
+        failure = OSError("simulated stdout pipe read failure")
+        with caplog.at_level("WARNING", logger="geno.sandbox"):
+            outcome = self._run(
+                monkeypatch,
+                self.FailingPipe(prefix, failure),
+                io.StringIO(self.SUCCESS_ENVELOPE),
+            )
+
+        assert "result" not in outcome, outcome.get("result")
+        error = outcome["error"]
+        assert type(error) is SandboxError
+        assert "Failed to capture sandbox worker stdout (" in str(error)
+        assert "simulated stdout pipe read failure" in str(error)
+        assert "stderr" not in str(error)
+        assert error.__cause__ is failure
+        # The capture failure is the reported error; it is not logged again
+        # as a superseded one.
+        assert not [r for r in caplog.records if "instead" in r.getMessage()]
+        self._assert_cleaned_up(outcome)
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["", SUCCESS_ENVELOPE],
+        ids=["before", "after-success-envelope"],
+    )
+    def test_stderr_read_failure_is_not_reported_as_success(self, monkeypatch, prefix):
+        failure = OSError("simulated stderr pipe read failure")
+        outcome = self._run(
+            monkeypatch,
+            io.StringIO("expected output\n"),
+            self.FailingPipe(prefix, failure),
+        )
+
+        assert "result" not in outcome, outcome.get("result")
+        error = outcome["error"]
+        assert type(error) is SandboxError
+        assert "Failed to capture sandbox worker stderr (" in str(error)
+        assert "stdout" not in str(error)
+        assert error.__cause__ is failure
+        self._assert_cleaned_up(outcome)
+
+    def test_both_channels_failing_names_both(self, monkeypatch):
+        stdout_failure = OSError("stdout gone")
+        stderr_failure = ValueError("stderr gone")
+        outcome = self._run(
+            monkeypatch,
+            self.FailingPipe("partial", stdout_failure),
+            self.FailingPipe(self.SUCCESS_ENVELOPE, stderr_failure),
+        )
+
+        error = outcome["error"]
+        assert type(error) is SandboxError
+        message = str(error)
+        assert "Failed to capture sandbox worker stdout and stderr" in message
+        assert "stdout: OSError: stdout gone" in message
+        assert "stderr: ValueError: stderr gone" in message
+        assert error.__cause__ is stdout_failure
+        self._assert_cleaned_up(outcome)
+
+    def test_pipe_close_failure_after_full_read_is_a_capture_failure(self, monkeypatch):
+        class UnclosableStdout(io.StringIO):
+            def close(self):
+                super().close()
+                raise OSError("simulated stdout close failure")
+
+        outcome = self._run(
+            monkeypatch,
+            UnclosableStdout("expected output\n"),
+            io.StringIO(self.SUCCESS_ENVELOPE),
+        )
+
+        error = outcome["error"]
+        assert type(error) is SandboxError
+        assert "stdout" in str(error)
+        assert "simulated stdout close failure" in str(error)
+
+    def test_timeout_takes_precedence_over_capture_failure(self, monkeypatch, caplog):
+        """A hard timeout still reports as a timeout when a reader also failed,
+        and keeps the capture failure as its cause and in the log."""
+        import threading
+
+        from geno.sandbox import ProcessSandbox
+        from geno.sandbox import TimeoutError as SandboxTimeoutError
+
+        killed = threading.Event()
+
+        def fake_terminate(
+            _self,
+            _process,
+            lifecycle_lock,
+            exit_observed,
+            finished,
+            timed_out,
+            *_args,
+        ):
+            with lifecycle_lock:
+                timed_out.set()
+            killed.set()
+
+        def wait_until_killed(process, lifecycle_lock, exit_observed, finished, *_a):
+            assert killed.wait(timeout=5.0)
+            return self._reaped_wait(process, lifecycle_lock, exit_observed, finished)
+
+        monkeypatch.setattr(
+            ProcessSandbox, "_terminate_worker_on_timeout", fake_terminate
+        )
+        failure = OSError("simulated stdout pipe read failure")
+        with caplog.at_level("WARNING", logger="geno.sandbox"):
+            outcome = self._run(
+                monkeypatch,
+                self.FailingPipe("", failure),
+                io.StringIO(self.SUCCESS_ENVELOPE),
+                timeout=0.01,
+                wait=wait_until_killed,
+            )
+
+        error = outcome["error"]
+        assert isinstance(error, SandboxTimeoutError)
+        assert "Failed to capture" not in str(error)
+        assert error.partial_output == ""
+        # TimeoutError <- TimeoutExpired <- the reader's OSError: the empty
+        # partial output is attributable to the failed capture.
+        assert isinstance(error.__cause__, subprocess.TimeoutExpired)
+        assert error.__cause__.__cause__ is failure
+        assert [
+            record.exc_info[1]
+            for record in caplog.records
+            if "stdout capture failed; reporting TimeoutExpired instead"
+            in record.getMessage()
+        ] == [failure]
+
+    def test_supervision_failure_logs_superseded_capture_failure(
+        self, monkeypatch, caplog
+    ):
+        """A supervision error after a reader failure is reported as itself,
+        and the capture failure it supersedes is logged, not dropped."""
+        stdout = self.FailingPipe("", OSError("simulated stdout pipe read failure"))
+        supervision_error = SandboxError("simulated supervision failure")
+
+        def fail_after_reader(process, lifecycle_lock, exit_observed, finished, *_a):
+            assert stdout.failed.wait(timeout=5.0)
+            self._reaped_wait(process, lifecycle_lock, exit_observed, finished)
+            raise supervision_error
+
+        with caplog.at_level("WARNING", logger="geno.sandbox"):
+            outcome = self._run(
+                monkeypatch,
+                stdout,
+                io.StringIO(self.SUCCESS_ENVELOPE),
+                wait=fail_after_reader,
+            )
+
+        assert outcome["error"] is supervision_error
+        messages = [record.getMessage() for record in caplog.records]
+        assert (
+            "Sandbox worker stdout capture failed; reporting SandboxError instead"
+            in (messages)
+        )
+        self._assert_cleaned_up(outcome)
+
+    def test_successful_capture_is_unchanged(self, monkeypatch):
+        outcome = self._run(
+            monkeypatch,
+            io.StringIO("expected output\n"),
+            io.StringIO(self.SUCCESS_ENVELOPE),
+        )
+
+        assert "error" not in outcome, outcome.get("error")
+        assert outcome["result"] == (42, "expected output\n", None)
+        self._assert_cleaned_up(outcome)
+
+
 class TestProcessSandboxWorkerErrorDetail:
     """M-19: an unexpected exception type from the worker (an internal
     toolchain/codegen defect) must be tagged with its exception type, and a

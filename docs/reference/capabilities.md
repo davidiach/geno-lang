@@ -1,8 +1,13 @@
 # Capability Reference
 
-Geno uses a capability-based security model. By default, sandboxed execution
-blocks all I/O operations. You grant specific capabilities to unlock the
-builtins your program needs.
+Geno uses a capability-based security model: a gated builtin works only when
+its capability is granted. Every execution surface has a fixed default grant.
+`geno run` (with or without `--unsafe`), `geno test` and `geno repl` grant
+`print`, `clock` and `random`. `geno run --json`, the embedding API, compiled
+programs and hosted `/run` requests grant none. Browser builds grant the browser
+target profile's set. You grant specific capabilities to unlock the other
+builtins your program needs. The normative per-surface list is
+`capabilities.default_grants` in `spec.json`.
 
 ## Quick Reference
 
@@ -78,8 +83,9 @@ geno run myfile.geno --unsafe --cap fs --cap print
 geno run myfile.geno --unsafe --cap print,fs,http
 ```
 
-If you omit `--cap` entirely with `--unsafe`, the trusted direct interpreter
-keeps its legacy ungated behavior. Use `--cap` to restrict it.
+If you omit `--cap` with `--unsafe`, the interpreter grants the same defaults
+as the default lane: `clock`, `print` and `random`. No lane leaves capability
+gating disabled.
 
 ### JSON mode (`geno run --json`)
 
