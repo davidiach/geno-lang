@@ -3647,8 +3647,9 @@ def compile_and_exec(
 
         With ``sandboxed=True`` and a non-None ``timeout``, if the sandbox
         worker's result channel is lost (it exits 0 without emitting a
-        parseable result), ``geno.sandbox.SandboxError`` propagates out of
-        this function rather than the usual ``RuntimeError``. ``SandboxError``
+        parseable result) or the parent fails to read the worker's stdout or
+        stderr, ``geno.sandbox.SandboxError`` propagates out of this function
+        rather than the usual ``RuntimeError``. ``SandboxError``
         does not subclass ``RuntimeError``, so callers that catch execution
         failures should catch both (or ``SandboxError``'s common base).
     """

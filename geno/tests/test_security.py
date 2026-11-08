@@ -2955,13 +2955,17 @@ class TestProcessSandboxCaptureFailure:
         """A text pipe that yields ``prefix`` and then fails on read."""
 
         def __init__(self, prefix: str, error: BaseException):
+            import threading
+
             super().__init__(prefix)
             self._error = error
+            self.failed = threading.Event()
 
         def read(self, size: int | None = -1) -> str:
             chunk = super().read(size)
             if chunk:
                 return chunk
+            self.failed.set()
             raise self._error
 
     class FakeProcess:
@@ -2970,8 +2974,14 @@ class TestProcessSandboxCaptureFailure:
             self.stdout = stdout
             self.stderr = stderr
             self.returncode = 0
-            self.pid = -1
             self.kills = 0
+
+        @property
+        def pid(self):
+            # No real PID: a supervision path the test forgot to stub must
+            # fail here, never reach os.kill/killpg with a placeholder such
+            # as -1 (which would signal every process the user owns).
+            raise AssertionError("FakeProcess has no PID; stub the kill path")
 
         def wait(self, timeout=None):
             return self.returncode
@@ -3025,7 +3035,7 @@ class TestProcessSandboxCaptureFailure:
             outcome["result"] = sandbox.execute(
                 "print('expected output'); __result__ = 42"
             )
-        except BaseException as exc:  # asserted by each test
+        except Exception as exc:  # pytest's own BaseExceptions must propagate
             outcome["error"] = exc
         outcome["process"] = process
         outcome["timers"] = timers
@@ -3045,13 +3055,16 @@ class TestProcessSandboxCaptureFailure:
         assert outcome["group_kills"] == []
 
     @pytest.mark.parametrize("prefix", ["", "expected out"], ids=["before", "partial"])
-    def test_stdout_read_failure_is_not_reported_as_success(self, monkeypatch, prefix):
+    def test_stdout_read_failure_is_not_reported_as_success(
+        self, monkeypatch, caplog, prefix
+    ):
         failure = OSError("simulated stdout pipe read failure")
-        outcome = self._run(
-            monkeypatch,
-            self.FailingPipe(prefix, failure),
-            io.StringIO(self.SUCCESS_ENVELOPE),
-        )
+        with caplog.at_level("WARNING", logger="geno.sandbox"):
+            outcome = self._run(
+                monkeypatch,
+                self.FailingPipe(prefix, failure),
+                io.StringIO(self.SUCCESS_ENVELOPE),
+            )
 
         assert "result" not in outcome, outcome.get("result")
         error = outcome["error"]
@@ -3060,6 +3073,9 @@ class TestProcessSandboxCaptureFailure:
         assert "simulated stdout pipe read failure" in str(error)
         assert "stderr" not in str(error)
         assert error.__cause__ is failure
+        # The capture failure is the reported error; it is not logged again
+        # as a superseded one.
+        assert not [r for r in caplog.records if "instead" in r.getMessage()]
         self._assert_cleaned_up(outcome)
 
     @pytest.mark.parametrize(
@@ -3118,8 +3134,9 @@ class TestProcessSandboxCaptureFailure:
         assert "stdout" in str(error)
         assert "simulated stdout close failure" in str(error)
 
-    def test_timeout_takes_precedence_over_capture_failure(self, monkeypatch):
-        """A hard timeout still reports as a timeout when a reader also failed."""
+    def test_timeout_takes_precedence_over_capture_failure(self, monkeypatch, caplog):
+        """A hard timeout still reports as a timeout when a reader also failed,
+        and keeps the capture failure as its cause and in the log."""
         import threading
 
         from geno.sandbox import ProcessSandbox
@@ -3147,18 +3164,59 @@ class TestProcessSandboxCaptureFailure:
         monkeypatch.setattr(
             ProcessSandbox, "_terminate_worker_on_timeout", fake_terminate
         )
-        outcome = self._run(
-            monkeypatch,
-            self.FailingPipe("", OSError("simulated stdout pipe read failure")),
-            io.StringIO(self.SUCCESS_ENVELOPE),
-            timeout=0.01,
-            wait=wait_until_killed,
-        )
+        failure = OSError("simulated stdout pipe read failure")
+        with caplog.at_level("WARNING", logger="geno.sandbox"):
+            outcome = self._run(
+                monkeypatch,
+                self.FailingPipe("", failure),
+                io.StringIO(self.SUCCESS_ENVELOPE),
+                timeout=0.01,
+                wait=wait_until_killed,
+            )
 
         error = outcome["error"]
         assert isinstance(error, SandboxTimeoutError)
         assert "Failed to capture" not in str(error)
         assert error.partial_output == ""
+        # TimeoutError <- TimeoutExpired <- the reader's OSError: the empty
+        # partial output is attributable to the failed capture.
+        assert isinstance(error.__cause__, subprocess.TimeoutExpired)
+        assert error.__cause__.__cause__ is failure
+        assert [
+            record.exc_info[1]
+            for record in caplog.records
+            if "stdout capture failed; reporting TimeoutExpired instead"
+            in record.getMessage()
+        ] == [failure]
+
+    def test_supervision_failure_logs_superseded_capture_failure(
+        self, monkeypatch, caplog
+    ):
+        """A supervision error after a reader failure is reported as itself,
+        and the capture failure it supersedes is logged, not dropped."""
+        stdout = self.FailingPipe("", OSError("simulated stdout pipe read failure"))
+        supervision_error = SandboxError("simulated supervision failure")
+
+        def fail_after_reader(process, lifecycle_lock, exit_observed, finished, *_a):
+            assert stdout.failed.wait(timeout=5.0)
+            self._reaped_wait(process, lifecycle_lock, exit_observed, finished)
+            raise supervision_error
+
+        with caplog.at_level("WARNING", logger="geno.sandbox"):
+            outcome = self._run(
+                monkeypatch,
+                stdout,
+                io.StringIO(self.SUCCESS_ENVELOPE),
+                wait=fail_after_reader,
+            )
+
+        assert outcome["error"] is supervision_error
+        messages = [record.getMessage() for record in caplog.records]
+        assert (
+            "Sandbox worker stdout capture failed; reporting SandboxError instead"
+            in (messages)
+        )
+        self._assert_cleaned_up(outcome)
 
     def test_successful_capture_is_unchanged(self, monkeypatch):
         outcome = self._run(

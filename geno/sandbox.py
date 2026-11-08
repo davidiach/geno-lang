@@ -1881,6 +1881,12 @@ class ProcessSandbox:
         finished = threading.Event()
         timed_out = threading.Event()
         termination_errors: list[SandboxError] = []
+        # A reader that fails leaves its default capture fields behind, and an
+        # empty stdout is indistinguishable from a program that printed
+        # nothing. Readers record failures here so the supervisor can refuse
+        # to report success, and report them on every other exit path (#254).
+        reader_errors: dict[str, BaseException] = {}
+        capture_error: SandboxError | None = None
         self._require_posix_worker_supervision()
         started_at = time.monotonic()
         process = subprocess.Popen(
@@ -1915,11 +1921,6 @@ class ProcessSandbox:
                 "text": "",
                 "truncated": False,
             }
-            # A reader that fails leaves its default capture fields behind,
-            # and an empty stdout is indistinguishable from a program that
-            # printed nothing. Record the failure so the supervisor can
-            # refuse to report the run as a success (#254).
-            reader_errors: dict[str, BaseException] = {}
 
             def reader(
                 channel: str,
@@ -2026,21 +2027,34 @@ class ProcessSandbox:
                 partial_stdout = (
                     "" if stdout_thread.is_alive() else str(stdout_result["text"])
                 )
-                raise subprocess.TimeoutExpired(cmd, timeout, output=partial_stdout)
+                timeout_error = subprocess.TimeoutExpired(
+                    cmd, timeout, output=partial_stdout
+                )
+                # The timeout still wins, but a failed stdout capture is why
+                # the partial output is empty: chain it so callers can tell
+                # that apart from a program that printed nothing.
+                timeout_error.__cause__ = reader_errors.get("stdout")
+                raise timeout_error
 
             stdout_thread.join()
             stderr_thread.join()
             if reader_errors:
-                raise self._capture_failure(reader_errors)
+                capture_error = self._capture_failure(reader_errors)
+                raise capture_error
             return (
                 returncode,
                 str(stdout_result["text"]),
                 str(stderr_result["text"]),
                 bool(stderr_result["truncated"]),
             )
-        except BaseException:
+        except BaseException as run_error:
             if watchdog is not None:
                 watchdog.cancel()
+            if reader_errors and run_error is not capture_error:
+                # A timeout, termination failure or interruption takes
+                # precedence, but must not erase a capture failure. Snapshot
+                # before cleanup closes pipes under any reader still running.
+                self._log_superseded_reader_errors(dict(reader_errors), run_error)
             cleanup_error: BaseException | None = None
             with lifecycle_lock:
                 if not finished.is_set():
@@ -2123,6 +2137,21 @@ class ProcessSandbox:
         )
         error.__cause__ = reader_errors[channels[0]]
         return error
+
+    @staticmethod
+    def _log_superseded_reader_errors(
+        reader_errors: Mapping[str, BaseException], superseded_by: BaseException
+    ) -> None:
+        """Log capture failures that another run error took precedence over."""
+        for name in ("stdout", "stderr"):
+            error = reader_errors.get(name)
+            if error is not None:
+                logger.warning(
+                    "Sandbox worker %s capture failed; reporting %s instead",
+                    name,
+                    type(superseded_by).__name__,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
 
     def _format_truncated_stderr(self, stderr: str) -> str:
         limit = self._stderr_capture_limit()
@@ -3538,8 +3567,8 @@ def run_in_process(
     Raises:
         TimeoutError: If execution exceeds time limit
         SecurityViolation: If code fails safety validation
-        SandboxError: If the worker's result channel is lost (never silently
-            reported as success)
+        SandboxError: If the worker's result channel is lost, or reading its
+            stdout or stderr failed (never silently reported as success)
         RuntimeError: If execution fails
     """
     sandbox = ProcessSandbox(config)
