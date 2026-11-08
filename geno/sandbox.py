@@ -27,7 +27,7 @@ import types as _types
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Collection
+from typing import Any, Callable, Collection, Mapping
 
 from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
@@ -1915,8 +1915,14 @@ class ProcessSandbox:
                 "text": "",
                 "truncated": False,
             }
+            # A reader that fails leaves its default capture fields behind,
+            # and an empty stdout is indistinguishable from a program that
+            # printed nothing. Record the failure so the supervisor can
+            # refuse to report the run as a success (#254).
+            reader_errors: dict[str, BaseException] = {}
 
             def reader(
+                channel: str,
                 pipe: Any,
                 limit: int,
                 keep_tail: bool,
@@ -1928,12 +1934,18 @@ class ProcessSandbox:
                     )
                     target["text"] = text
                     target["truncated"] = truncated
+                except BaseException as exc:
+                    reader_errors[channel] = exc
                 finally:
-                    pipe.close()
+                    try:
+                        pipe.close()
+                    except BaseException as exc:
+                        reader_errors.setdefault(channel, exc)
 
             stdout_thread = threading.Thread(
                 target=reader,
                 args=(
+                    "stdout",
                     process.stdout,
                     self.config.max_output_length,
                     False,
@@ -1944,6 +1956,7 @@ class ProcessSandbox:
             stderr_thread = threading.Thread(
                 target=reader,
                 args=(
+                    "stderr",
                     process.stderr,
                     self._stderr_capture_limit(),
                     True,
@@ -2017,6 +2030,8 @@ class ProcessSandbox:
 
             stdout_thread.join()
             stderr_thread.join()
+            if reader_errors:
+                raise self._capture_failure(reader_errors)
             return (
                 returncode,
                 str(stdout_result["text"]),
@@ -2090,6 +2105,25 @@ class ProcessSandbox:
             self._close_posix_exit_observer(posix_timeout_observer)
             self._close_windows_job(job_handle)
 
+    @staticmethod
+    def _capture_failure(reader_errors: Mapping[str, BaseException]) -> SandboxError:
+        """Describe a failed stdout/stderr capture as a SandboxError.
+
+        Raised after both readers are joined and the worker is reaped, so a
+        success envelope on the surviving channel can never stand in for
+        output that the parent failed to read.
+        """
+        channels = [name for name in ("stdout", "stderr") if name in reader_errors]
+        details = "; ".join(
+            f"{name}: {type(reader_errors[name]).__name__}: {reader_errors[name]}"
+            for name in channels
+        )
+        error = SandboxError(
+            f"Failed to capture sandbox worker {' and '.join(channels)} ({details})"
+        )
+        error.__cause__ = reader_errors[channels[0]]
+        return error
+
     def _format_truncated_stderr(self, stderr: str) -> str:
         limit = self._stderr_capture_limit()
         marker = f"{self._STDERR_TRUNCATION_MARKER}: kept last {limit} characters"
@@ -2113,7 +2147,8 @@ class ProcessSandbox:
             SecurityViolation: If code fails safety validation
             SandboxError: If the worker exits 0 without a parseable result
                 (the result channel was lost — never silently reported as
-                success)
+                success), or if reading the worker's stdout or stderr failed
+                (the message names the failed channel)
         """
         # Validate code safety first (if strict mode)
         if self.config.strict:
