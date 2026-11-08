@@ -505,6 +505,45 @@ def _validate_capability_map(spec: dict[str, Any], errors: list[str]) -> None:
         )
 
 
+_CAPABILITY_SURFACES = frozenset(
+    {"embedding_api", "cli", "compiled_programs", "hosted_server"}
+)
+
+
+def _validate_capability_surfaces(spec: dict[str, Any], errors: list[str]) -> None:
+    """Keep spec.json from claiming a surface runs with gating disabled (#248).
+
+    Every execution surface enforces capability gates; omitting capabilities
+    selects that surface's fixed default grant, never an ungated run.
+    """
+    raw = spec.get("capabilities", {})
+    if not isinstance(raw, dict):
+        return
+
+    texts: dict[str, object] = {"capabilities.description": raw.get("description")}
+    surfaces = raw.get("surfaces")
+    if not isinstance(surfaces, dict):
+        errors.append("'capabilities.surfaces' must be an object in spec.json")
+    else:
+        _record_set_mismatch(
+            errors,
+            "'capabilities.surfaces' mismatch",
+            set(_CAPABILITY_SURFACES),
+            set(surfaces),
+        )
+        for name, text in surfaces.items():
+            texts[f"capabilities.surfaces.{name}"] = text
+
+    for path, text in texts.items():
+        if not isinstance(text, str):
+            errors.append(f"'{path}' must be a string in spec.json")
+        elif "gating disabled" in text.lower():
+            errors.append(
+                f"'{path}' must not claim that omitting capabilities disables "
+                "capability gating"
+            )
+
+
 def _validate_language_contract(spec: dict[str, Any], errors: list[str]) -> None:
     from geno._version import __version__
 
@@ -763,6 +802,7 @@ def validate_spec(spec: dict[str, Any]) -> list[str]:
         _spec_capabilities(spec, errors),
     )
     _validate_capability_map(spec, errors)
+    _validate_capability_surfaces(spec, errors)
     _record_set_mismatch(
         errors,
         "Browser lifecycle mismatch",

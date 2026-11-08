@@ -78,8 +78,9 @@ geno run myfile.geno --unsafe --cap fs --cap print
 geno run myfile.geno --unsafe --cap print,fs,http
 ```
 
-If you omit `--cap` entirely with `--unsafe`, the trusted direct interpreter
-keeps its legacy ungated behavior. Use `--cap` to restrict it.
+If you omit `--cap` with `--unsafe`, the interpreter grants the same defaults
+as the default lane: `clock`, `print` and `random`. No lane leaves capability
+gating disabled.
 
 ### JSON mode (`geno run --json`)
 

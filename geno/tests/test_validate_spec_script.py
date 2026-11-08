@@ -274,3 +274,53 @@ def test_capability_map_value_drift_is_reported():
         and "sleep_ms" in error
         for error in errors
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("description",),
+        ("surfaces", "cli"),
+        ("surfaces", "embedding_api"),
+    ],
+    ids=["description", "cli", "embedding_api"],
+)
+def test_stale_ungated_capability_claim_is_reported(path):
+    """#248: no surface may claim that omitting capabilities disables gating."""
+    spec = _load_spec()
+    target = spec["capabilities"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = "Omitting --cap leaves capability gating disabled"
+
+    errors = validate_spec(spec)
+
+    dotted = ".".join(("capabilities", *path))
+    assert (
+        f"'{dotted}' must not claim that omitting capabilities disables "
+        "capability gating"
+    ) in errors
+
+
+def test_capability_surfaces_must_cover_each_surface():
+    spec = _load_spec()
+    del spec["capabilities"]["surfaces"]["compiled_programs"]
+
+    errors = validate_spec(spec)
+
+    assert "'capabilities.surfaces' mismatch: missing ['compiled_programs']" in errors
+
+
+def test_cli_surface_states_each_run_lane_default():
+    """The prose matches the 0.6 lanes: two grant the defaults, `--json` nothing."""
+    from geno.capabilities import DEFAULT_ALLOWED_CAPABILITIES
+
+    names = [f"`{name}`" for name in sorted(DEFAULT_ALLOWED_CAPABILITIES)]
+    default_grant = ", ".join(names[:-1]) + f" and {names[-1]}"
+    cli = _load_spec()["capabilities"]["surfaces"]["cli"]
+
+    for lane in ("Default `geno run`", "`geno run --unsafe`", "`geno run --json`"):
+        assert lane in cli
+    assert cli.count(default_grant) == 2
+    assert "--cap is not accepted in this lane" in cli
+    assert "`geno run --json`: no gated builtins without --cap" in cli
