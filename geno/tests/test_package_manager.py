@@ -3457,7 +3457,9 @@ real_write_journal = package_manager._write_transaction_journal
 def write_journal(journal_path, payload):
     if crash_point == "before-journal":
         os._exit(73)
-    return real_write_journal(journal_path, payload)
+    real_write_journal(journal_path, payload)
+    if crash_point == "after-journal":
+        os._exit(73)
 
 
 def replace(source, destination):
@@ -3499,7 +3501,12 @@ class TestAddManifestTransaction:
     # A comment and a CRLF: only the saved bytes can restore these, a manifest
     # written back from its parsed form could not.
     NEW_MANIFEST = b'name = "example"  # keep me\r\nversion = "0.1.0"\n'
-    ROLLED_BACK = ("before-journal", "after-manifest-publish", "before-lock-commit")
+    ROLLED_BACK = (
+        "before-journal",
+        "after-journal",
+        "after-manifest-publish",
+        "before-lock-commit",
+    )
 
     def _project(self, tmp_path: Path, scenario: str) -> tuple[Path, bytes, str]:
         """A project for *scenario*, its manifest bytes and the tag to add."""
