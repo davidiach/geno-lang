@@ -304,7 +304,7 @@ class TestTestBlockCompilation:
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
         assert "double works" not in js_code
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         # `main` returns 42, which is its exit status from 0.5 on and is no
         # longer printed (spec 4.1.1). The test block is still absent above.
         assert result.stderr == "", result.stderr

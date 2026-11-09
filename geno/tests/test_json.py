@@ -356,7 +356,7 @@ class TestJsonCompiledJS:
 
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip() == "42"
 
@@ -374,7 +374,7 @@ class TestJsonCompiledJS:
 
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip() == "true"
 
@@ -388,7 +388,7 @@ class TestJsonCompiledJS:
 
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip() == "99"
 
@@ -411,7 +411,7 @@ try {
     console.log(String(error.message).includes("safe integer range"));
 }
 """
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip().splitlines()[-1] == "true"
 
@@ -436,7 +436,7 @@ for (const value of [Infinity, -Infinity, NaN]) {
     }
 }
 """
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip().splitlines()[-3:] == ["true", "true", "true"]
 
@@ -589,7 +589,7 @@ class TestJsonToStringCompiled:
 
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip() == "[1,2,3]"
 
@@ -614,7 +614,7 @@ for (const value of [Infinity, -Infinity, NaN]) {
     }
 }
 """
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert result.stdout.strip().splitlines()[-3:] == ["true", "true", "true"]
 

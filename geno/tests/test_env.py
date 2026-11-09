@@ -5,6 +5,7 @@ import subprocess
 
 from geno.api import RunConfig, run
 from geno.diagnostics import ErrorCode
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 
 
 class TestEnvGetInterpreter:
@@ -356,7 +357,7 @@ class TestEnvCompiledJS:
             ["node", str(js_file), "--cap", "env"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert result.stdout.strip() == "js_val"
@@ -377,7 +378,7 @@ class TestEnvCompiledJS:
             ["node", str(js_file), "--cap", "env"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert result.stdout.strip() == "js_default"

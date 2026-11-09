@@ -57,7 +57,6 @@ def _run(source: str, lane: str, limit: int) -> tuple[bool, str, str]:
             f"globalThis.__GENO_MAX_COLLECTION_SIZE = {limit};\n"
             + str(compile_to_js(source)),
             args=["--cap", "print"],
-            timeout=10,
         )
     return completed.returncode == 0, completed.stdout, completed.stderr
 
@@ -288,7 +287,6 @@ console.log(JSON.stringify({visits, largestPart, error}));
 """
     completed = run_node_code(
         "globalThis.__GENO_MAX_COLLECTION_SIZE = 32;\n" + JS_RUNTIME_PRELUDE + probe,
-        timeout=10,
     )
     assert completed.returncode == 0, completed.stderr
     observed = json.loads(completed.stdout)

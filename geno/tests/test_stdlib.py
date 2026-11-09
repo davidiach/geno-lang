@@ -224,6 +224,8 @@ class TestStdStringImport:
         assert run_result.stdout == "", run_result.stdout
 
     def test_compiled_js_executes_wrapper_imports(self, tmp_path):
+        from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
+
         (tmp_path / "geno.toml").write_text('entrypoint = "Main"\nfiles = ["Main"]\n')
         (tmp_path / "Main.geno").write_text(
             "import String\n"
@@ -266,7 +268,7 @@ class TestStdStringImport:
             ["node", str(outfile)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         # `main` returns the list length, 2, which an `Int` main reports as
         # its exit status from 0.5 on rather than printing (spec 4.1.1).

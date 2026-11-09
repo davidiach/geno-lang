@@ -32,7 +32,11 @@ from geno.compiler import Compiler, compile_to_python
 from geno.dependency_graph import DependencyGraph
 from geno.js_compiler import JSCompiler, compile_to_js
 from geno.project_graph import ProjectGraph
-from geno.tests._script_runner import run_node_code, run_python_code
+from geno.tests._script_runner import (
+    GENERATED_PROGRAM_TIMEOUT,
+    run_node_code,
+    run_python_code,
+)
 from geno.tests.fuzzing.arith import (
     ArithmeticExpr,
     IntPredicateSpec,
@@ -697,7 +701,7 @@ def _compiled_js_output(
             ["node", tmp_path, *_cap_args(capabilities)],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -763,7 +767,7 @@ def _compiled_js_project_output(
         dg = DependencyGraph.resolve(ProjectGraph.discover(root))
         TypeChecker().check_project_graph(dg)
         js_code = JSCompiler().compile_project(dg)
-        proc = run_node_code(js_code, args=_cap_args(capabilities), timeout=10)
+        proc = run_node_code(js_code, args=_cap_args(capabilities))
         if proc.returncode != 0:
             raise RuntimeError(
                 f"Compiled JS project failed (rc={proc.returncode}):\n{proc.stderr}"
