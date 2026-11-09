@@ -4,8 +4,10 @@ Tests for the package manager (manifest, lockfile, install/add/update)
 """
 
 import contextlib
+import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -879,7 +881,7 @@ class TestDependencyCommands:
         with mock.patch.object(
             package_manager,
             "_install_locked",
-            side_effect=lambda root: installed.append(root),
+            side_effect=lambda root, manifest_change=None: installed.append(root),
         ):
             with pytest.raises(ValueError, match="Invalid dependency name"):
                 package_manager.add(
@@ -893,14 +895,22 @@ class TestDependencyCommands:
 
     def test_add_tag_dependency_writes_tag(self, tmp_path):
         (tmp_path / "geno.toml").write_text('entrypoint = "Main"\n')
-        installed: list[Path] = []
+        cloned_refs: list[str] = []
 
         from geno import package_manager
 
-        with mock.patch.object(
-            package_manager,
-            "_install_locked",
-            side_effect=lambda root: installed.append(root),
+        def clone(_url, destination, ref, depth=1):
+            cloned_refs.append(ref)
+            destination.mkdir(parents=True)
+            (destination / "Utils.geno").write_text(
+                "func value() -> Int\n  return 1\nend func\n"
+            )
+
+        with (
+            mock.patch.object(package_manager, "_git_clone", side_effect=clone),
+            mock.patch.object(
+                package_manager, "_git_head_commit", return_value="a" * 40
+            ),
         ):
             package_manager.add(
                 "utils",
@@ -912,7 +922,10 @@ class TestDependencyCommands:
         text = (tmp_path / "geno.toml").read_text()
         reloaded = parse_manifest(tmp_path / "geno.toml")
         dep = reloaded.dependencies["utils"]
-        assert installed == [tmp_path.resolve()]
+        assert cloned_refs == ["v0.1.0"]
+        assert parse_lockfile(tmp_path / "geno.lock").dependencies["utils"].tag == (
+            "v0.1.0"
+        )
         assert 'tag = "v0.1.0"' in text
         assert "branch =" not in text
         assert dep.git == "https://example.com/utils.git"
@@ -3411,3 +3424,408 @@ class TestAddRollback:
 
         manifest = (tmp_path / "geno.toml").read_text(encoding="utf-8")
         assert "utils" in manifest
+
+
+# The child process of the crash tests below. It runs a real `add` with only
+# Git replaced, and ends with os._exit at one point of the transaction, which
+# skips every `except` and `finally` the way a killed process does.
+_ADD_CRASH_CHILD = r"""
+import os
+import sys
+from pathlib import Path
+from unittest import mock
+
+from geno import package_manager
+
+root = Path(sys.argv[1])
+crash_point = sys.argv[2]
+tag = sys.argv[3] or None
+COMMIT = "abcdef1234567890abcdef1234567890abcdef12"
+
+
+def clone(_url, destination, _ref, depth=1):
+    destination.mkdir(parents=True)
+    (destination / "Lib.geno").write_text(
+        "func value() -> Int\n  return 2\nend func\n"
+    )
+
+
+real_replace = os.replace
+real_write_journal = package_manager._write_transaction_journal
+
+
+def write_journal(journal_path, payload):
+    if crash_point == "before-journal":
+        os._exit(73)
+    return real_write_journal(journal_path, payload)
+
+
+def replace(source, destination):
+    target = Path(destination)
+    if crash_point == "before-lock-commit" and target == root / "geno.lock":
+        os._exit(73)
+    result = real_replace(source, destination)
+    if crash_point == "after-manifest-publish" and target == root / "geno.toml":
+        os._exit(73)
+    if crash_point == "after-lock-commit" and target == root / "geno.lock":
+        os._exit(73)
+    return result
+
+
+with (
+    mock.patch.object(package_manager, "_git_clone", clone),
+    mock.patch.object(package_manager, "_git_head_commit", lambda _repo: COMMIT),
+    mock.patch.object(package_manager, "_write_transaction_journal", write_journal),
+    mock.patch.object(os, "replace", replace),
+):
+    package_manager.add(
+        "lib", "https://example.invalid/lib.git", tag=tag, project_root=root
+    )
+os._exit(0)
+"""
+
+
+class TestAddManifestTransaction:
+    """#251: geno.toml changes with the checkout and the lockfile, or not at all.
+
+    `geno add` publishes the new manifest inside its journaled transaction, so
+    a process that dies at any point leaves a project whose manifest, lockfile
+    and checkout agree, once the next command has run recovery.
+    """
+
+    COMMIT = "abcdef1234567890abcdef1234567890abcdef12"
+    URL = "https://example.invalid/lib.git"
+    OLD_SOURCE = "func value() -> Int\n  return 1\nend func\n"
+    # A comment and a CRLF: only the saved bytes can restore these, a manifest
+    # written back from its parsed form could not.
+    NEW_MANIFEST = b'name = "example"  # keep me\r\nversion = "0.1.0"\n'
+    ROLLED_BACK = ("before-journal", "after-manifest-publish", "before-lock-commit")
+
+    def _project(self, tmp_path: Path, scenario: str) -> tuple[Path, bytes, str]:
+        """A project for *scenario*, its manifest bytes and the tag to add."""
+        root = tmp_path.resolve()
+        if scenario == "new":
+            (root / "geno.toml").write_bytes(self.NEW_MANIFEST)
+            return root, self.NEW_MANIFEST, ""
+        # "replace": `lib` is declared, locked and installed from a branch, and
+        # the add re-declares it with a tag.
+        manifest = (
+            b'name = "example"  # keep me\n\n'
+            b"[dependencies.lib]\n"
+            b'git = "https://example.invalid/lib.git"\n'
+        )
+        (root / "geno.toml").write_bytes(manifest)
+        checkout = root / "geno_modules" / "lib"
+        checkout.mkdir(parents=True)
+        (checkout / "Lib.geno").write_text(self.OLD_SOURCE)
+        save_lockfile(
+            Lockfile(
+                dependencies={
+                    "lib": LockedDependency(
+                        name="lib",
+                        git=self.URL,
+                        commit="1" * 40,
+                        content_hash=compute_content_hash(checkout),
+                        content_hash_version=2,
+                    )
+                }
+            ),
+            root / "geno.lock",
+        )
+        return root, manifest, "v2"
+
+    @staticmethod
+    def _crash_add(root: Path, crash_point: str, tag: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", _ADD_CRASH_CHILD, str(root), crash_point, tag],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert result.returncode == 73, result.stderr[-2000:]
+
+    @staticmethod
+    def _recover(root: Path) -> None:
+        from geno.package_manager import _project_transaction_lock
+
+        with _project_transaction_lock(root, timeout=5):
+            pass
+
+    @staticmethod
+    def _journal(root: Path) -> Path:
+        from geno.package_manager import _project_state_paths
+
+        return _project_state_paths(root)[1]
+
+    @staticmethod
+    def _leftovers(root: Path) -> list[str]:
+        modules = root / "geno_modules"
+        found = [path.name for path in root.glob(".geno-package-txn-*")]
+        found += [path.name for path in root.glob(".geno.toml.*")]
+        if modules.exists():
+            found += [path.name for path in modules.glob(".geno-package-txn-*")]
+        return found
+
+    def _assert_rolled_back(self, root: Path, scenario: str, manifest: bytes) -> None:
+        assert (root / "geno.toml").read_bytes() == manifest
+        locked = parse_lockfile(root / "geno.lock").dependencies
+        checkout = root / "geno_modules" / "lib"
+        if scenario == "new":
+            assert locked == {}
+            assert not checkout.exists()
+        else:
+            assert locked["lib"].commit == "1" * 40
+            assert locked["lib"].tag == ""
+            assert (checkout / "Lib.geno").read_text() == self.OLD_SOURCE
+        assert not self._journal(root).exists()
+        assert self._leftovers(root) == []
+
+    @pytest.mark.parametrize("scenario", ["new", "replace"])
+    @pytest.mark.parametrize("crash_point", ROLLED_BACK)
+    def test_process_death_before_commit_restores_the_manifest(
+        self, tmp_path, scenario, crash_point
+    ):
+        root, manifest, tag = self._project(tmp_path, scenario)
+
+        self._crash_add(root, crash_point, tag)
+        self._recover(root)
+
+        self._assert_rolled_back(root, scenario, manifest)
+
+    @pytest.mark.parametrize("scenario", ["new", "replace"])
+    def test_process_death_after_commit_keeps_the_added_dependency(
+        self, tmp_path, scenario
+    ):
+        root, _manifest, tag = self._project(tmp_path, scenario)
+
+        self._crash_add(root, "after-lock-commit", tag)
+        assert self._journal(root).is_file()
+        self._recover(root)
+
+        declared = parse_manifest(root / "geno.toml").dependencies["lib"]
+        assert declared.git == self.URL
+        assert (declared.tag or "") == tag
+        locked = parse_lockfile(root / "geno.lock").dependencies["lib"]
+        assert locked.commit == self.COMMIT
+        assert locked.tag == tag
+        checkout = root / "geno_modules" / "lib"
+        assert "return 2" in (checkout / "Lib.geno").read_text()
+        assert locked.content_hash == compute_content_hash(checkout)
+        assert not self._journal(root).exists()
+        assert self._leftovers(root) == []
+
+    def test_manifest_is_untouched_until_the_journal_exists(self, tmp_path):
+        """Before the journal there is nothing to recover from, so nothing changes."""
+        root, manifest, tag = self._project(tmp_path, "new")
+
+        self._crash_add(root, "before-journal", tag)
+
+        assert (root / "geno.toml").read_bytes() == manifest
+        assert not self._journal(root).exists()
+
+    def test_recovery_keeps_a_manifest_edited_after_the_crash(self, tmp_path, caplog):
+        root, _manifest, tag = self._project(tmp_path, "replace")
+        self._crash_add(root, "before-lock-commit", tag)
+        edited = b'name = "edited-by-hand"\n'
+        (root / "geno.toml").write_bytes(edited)
+
+        with caplog.at_level("WARNING", logger="geno.package_manager"):
+            self._recover(root)
+
+        assert (root / "geno.toml").read_bytes() == edited
+        assert "geno.toml" in caplog.text
+        locked = parse_lockfile(root / "geno.lock").dependencies["lib"]
+        assert locked.commit == "1" * 40
+        checkout = root / "geno_modules" / "lib" / "Lib.geno"
+        assert checkout.read_text() == self.OLD_SOURCE
+        assert not self._journal(root).exists()
+        assert self._leftovers(root) == []
+
+    def test_recovery_fails_closed_without_the_saved_manifest(self, tmp_path):
+        root, _manifest, tag = self._project(tmp_path, "replace")
+        self._crash_add(root, "before-lock-commit", tag)
+        published = (root / "geno.toml").read_bytes()
+        (saved,) = root.glob(".geno-package-txn-*.toml.orig")
+        saved.unlink()
+
+        with pytest.raises(RuntimeError, match=r"cannot restore geno\.toml"):
+            self._recover(root)
+
+        # Nothing is guessed: the journal stays for a later, repaired attempt.
+        assert self._journal(root).is_file()
+        assert (root / "geno.toml").read_bytes() == published
+        self._journal(root).unlink()
+
+    @pytest.mark.parametrize("mode", [0o640, 0o440])
+    def test_failed_publication_restores_the_manifest_bytes(self, tmp_path, mode):
+        root, manifest, _tag = self._project(tmp_path, "new")
+        if os.name == "posix":
+            os.chmod(root / "geno.toml", mode)
+        original_rename = Path.rename
+
+        def fail_to_publish(path, target):
+            if Path(path).parent.name == "staged":
+                raise OSError("rename failed")
+            return original_rename(path, target)
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone",
+                side_effect=TestPackageTransactions._clone_with_source,
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch.object(Path, "rename", fail_to_publish),
+        ):
+            with pytest.raises(OSError, match="rename failed"):
+                add("lib", self.URL, project_root=root)
+
+        self._assert_rolled_back(root, "new", manifest)
+        if os.name == "posix":
+            assert stat.S_IMODE((root / "geno.toml").stat().st_mode) == mode
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    @pytest.mark.parametrize("mode", [0o640, 0o440])
+    def test_add_keeps_the_manifest_file_mode(self, tmp_path, mode):
+        root, _manifest, _tag = self._project(tmp_path, "new")
+        os.chmod(root / "geno.toml", mode)
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone",
+                side_effect=TestPackageTransactions._clone_with_source,
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+        ):
+            add("lib", self.URL, project_root=root)
+
+        assert "lib" in parse_manifest(root / "geno.toml").dependencies
+        assert stat.S_IMODE((root / "geno.toml").stat().st_mode) == mode
+        assert self._leftovers(root) == []
+
+    def test_add_refuses_a_manifest_changed_during_the_fetch(self, tmp_path):
+        """A concurrent edit is never overwritten by the manifest add computed."""
+        root, _manifest, _tag = self._project(tmp_path, "new")
+        concurrent = b'name = "renamed-meanwhile"\n'
+
+        def clone_while_the_user_edits(url, destination, ref, depth=1):
+            TestPackageTransactions._clone_with_source(url, destination, ref, depth)
+            (root / "geno.toml").write_bytes(concurrent)
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone",
+                side_effect=clone_while_the_user_edits,
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+        ):
+            with pytest.raises(RuntimeError, match=r"geno\.toml changed"):
+                add("lib", self.URL, project_root=root)
+
+        assert (root / "geno.toml").read_bytes() == concurrent
+        assert parse_lockfile(root / "geno.lock").dependencies == {}
+        assert not (root / "geno_modules" / "lib").exists()
+        assert not self._journal(root).exists()
+        assert self._leftovers(root) == []
+
+    def test_add_with_nothing_to_install_still_declares_the_dependency(self, tmp_path):
+        """`lib` is locked and installed already; only geno.toml lacks it."""
+        root, _manifest, _tag = self._project(tmp_path, "replace")
+        (root / "geno.toml").write_bytes(b'name = "example"\n')
+
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone",
+                side_effect=AssertionError("nothing should be fetched"),
+            ),
+            mock.patch("geno.package_manager._git_head_commit", return_value="1" * 40),
+        ):
+            add("lib", self.URL, project_root=root)
+
+        assert parse_manifest(root / "geno.toml").dependencies["lib"].git == self.URL
+        assert parse_lockfile(root / "geno.lock").dependencies["lib"].commit == "1" * 40
+        assert self._leftovers(root) == []
+
+    def test_only_a_manifest_change_uses_the_newer_journal_version(self, tmp_path):
+        """Install and update journals stay readable by releases before #251."""
+        from geno import package_manager
+
+        payloads: list[dict] = []
+        real_write = package_manager._write_transaction_journal
+
+        def record(journal_path, payload):
+            payloads.append(payload)
+            return real_write(journal_path, payload)
+
+        root, manifest, _tag = self._project(tmp_path, "new")
+        with (
+            mock.patch(
+                "geno.package_manager._git_clone",
+                side_effect=TestPackageTransactions._clone_with_source,
+            ),
+            mock.patch(
+                "geno.package_manager._git_head_commit", return_value=self.COMMIT
+            ),
+            mock.patch.object(package_manager, "_write_transaction_journal", record),
+            mock.patch("geno.package_manager._git_checkout_commit"),
+        ):
+            add("lib", self.URL, project_root=root)
+            shutil.rmtree(root / "geno_modules" / "lib")
+            install(root)
+
+        added, installed = payloads
+        assert added["version"] == 3
+        assert added["manifest"]["old_sha256"] == hashlib.sha256(manifest).hexdigest()
+        assert (
+            added["manifest"]["new_sha256"]
+            == hashlib.sha256((root / "geno.toml").read_bytes()).hexdigest()
+        )
+        assert installed["version"] == 2
+        assert "manifest" not in installed
+
+    @pytest.mark.parametrize(
+        "manifest_record",
+        [
+            None,
+            "0" * 64,
+            {},
+            {"new_sha256": "0" * 64},
+            {"new_sha256": "0" * 64, "old_sha256": "not-a-digest"},
+            {"new_sha256": "Z" * 64, "old_sha256": "0" * 64},
+        ],
+    )
+    def test_journal_rejects_an_invalid_manifest_record(self, manifest_record):
+        from geno.package_manager import _validated_journal_records
+
+        payload = {
+            "checkouts": [],
+            "lockfile_sha256": "0" * 64,
+            "manifest": manifest_record,
+            "transaction": ".geno-package-txn-abc123",
+            "version": 3,
+        }
+
+        with pytest.raises(RuntimeError, match="invalid manifest record"):
+            _validated_journal_records(payload)
+
+    def test_project_lock_scavenges_orphan_manifest_files(self, tmp_path):
+        orphans = [
+            tmp_path / ".geno-package-txn-orphan123.toml.next",
+            tmp_path / ".geno-package-txn-orphan123.toml.orig",
+        ]
+        for orphan in orphans:
+            orphan.write_text("orphan")
+        unrelated = tmp_path / "notes.toml.orig"
+        unrelated.write_text("keep")
+
+        self._recover(tmp_path)
+
+        assert [orphan.exists() for orphan in orphans] == [False, False]
+        assert unrelated.read_text() == "keep"
