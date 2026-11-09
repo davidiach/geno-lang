@@ -159,6 +159,45 @@ def test_every_draft_change_links_its_proposal() -> None:
             assert (ROOT / "docs/proposals" / link).is_file(), link
 
 
+def _proposal_status(number: str) -> str:
+    """The ``Status`` a proposal's own header records."""
+    (path,) = (ROOT / "docs/proposals").glob(f"{number}-*.md")
+    match = re.search(r"^- Status: (\w+)$", path.read_text(encoding="utf-8"), re.M)
+    assert match is not None, path.name
+    return match.group(1)
+
+
+def test_proposal_status_labels_match_the_proposals() -> None:
+    """A status written beside a 0.7 proposal is the one that proposal records.
+
+    Acceptance is recorded in each proposal. The Draft spec, ``spec.json`` and
+    the development corpus repeat it, so they must not drift from it.
+    """
+    text = (ROOT / "docs/spec/v0.7.md").read_text(encoding="utf-8")
+    labelled = re.findall(
+        r"\]\(\.\./proposals/(\d{4})-[a-z0-9-]+\.md\)(?:\s+\(|,\s+)"
+        r"(Draft|Accepted|Rejected|Withdrawn|Superseded)\)",
+        text,
+    )
+    assert labelled
+    for number, label in labelled:
+        assert label == _proposal_status(number), f"proposal {number} in the spec"
+
+    # Each change in the 0.7 list states the status of the proposal behind it.
+    for entry in _draft_changes():
+        for number in set(re.findall(r"\]\(\.\./proposals/(\d{4})-", entry)):
+            assert f"({_proposal_status(number)})" in entry, entry[:80]
+
+    for addition in _load_spec()["development_line"]["additions"]:
+        match = re.match(r"[^(]*\(proposal (\d{4}), (\w+)", addition)
+        assert match is not None, addition[:80]
+        assert match.group(2) == _proposal_status(match.group(1)), addition[:80]
+
+    manifest = (ROOT / "conformance/v0.7/manifest.toml").read_text(encoding="utf-8")
+    for number, label in re.findall(r"^# Proposal (\d{4}) \((\w+)\)", manifest, re.M):
+        assert label == _proposal_status(number), f"proposal {number} in the corpus"
+
+
 def test_the_draft_records_accepted_cold_write_forms() -> None:
     """The accepted 0026 additions coexist with the other 0.7 proposals."""
     additions = [

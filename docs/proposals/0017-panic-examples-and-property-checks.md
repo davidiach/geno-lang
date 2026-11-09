@@ -1,14 +1,38 @@
 # Proposal 0017: Panic Examples and Contract-Driven Property Checks
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-09 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-05
-- Discussion: https://github.com/davidiach/geno-lang/pulls (branch
-  `claude/friendly-mccarthy-ot2dc6`)
+- Discussion: https://github.com/davidiach/geno-lang/pull/233
 - Supersedes: None
-- Review: None yet; awaiting project lead acceptance under `GOVERNANCE.md`.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: the authoring tool's own automated review-and-fix rounds, local
+  validation, and GitHub CI, Release Gate and External Apps on #233. These
+  are not independent approval.
 - Target: the 0.7 development line, which this proposal opens
   (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-09 the project lead, David Iach, accepted this proposal as
+implemented on #233. Asked in the Claude Code session that finished that pull
+request whether to record proposals 0017, 0018 and 0019 as accepted on the
+as-implemented basis, the project lead chose "Accept and mark ready". This
+records acceptance for the 0.7 development line. Merging #233 remains the
+project lead's own step.
+
+The decision settles the one open question that needed explicit
+confirmation: a host refusal (E412, E413, E500) does not satisfy a `panics`
+example, and neither does a resource limit. The other Unresolved Questions
+stay open as follow-ups and do not block acceptance.
+
+The proposal opened on 2026-11-05. The usual seven-day review period in
+`docs/proposals/README.md` would have ended on 2026-11-12; the project lead's
+explicit acceptance on November 9 is recorded here as an exception to that
+waiting period. It does not imply that seven days elapsed or that independent
+human review occurred.
 
 ## Summary
 
@@ -1214,12 +1238,13 @@ corpus, and no published contract depends on either.
   only exception. This design also excludes E412, E413 and E500 because
   whether they occur depends on the host's grants, not on the input: in
   `geno test` every `env` read is denied, so an `env`-using function's panics
-  example would pass vacuously. This departs from a fixed decision and needs
-  the project lead's explicit confirmation before P1 lands. Until then the
-  behaviour sits behind the single `_refusal_satisfies_panics()` predicate in
-  `geno/panic_outcome.py`, the v0.7 spec names the three codes as an explicit
-  exception, and the security corpus case is the one expectation that would
-  flip with it.
+  example would pass vacuously. This departs from a fixed decision and needed
+  the project lead's explicit confirmation. **Decided (2026-11-09):** the
+  project lead confirmed it; a host refusal does not satisfy a panics
+  example. The behaviour sits behind the single
+  `_refusal_satisfies_panics()` predicate in `geno/panic_outcome.py`, the
+  v0.7 spec names the three codes as an explicit exception, and the security
+  corpus case is the one expectation that would flip with it.
 - **Case-insensitive matching.** Chosen so the natural `"division"` matches;
   Rust's precedent is case-sensitive. Runtime messages are not a stable
   contract (the compatibility policy excludes exact diagnostic prose, and F3
@@ -1308,8 +1333,8 @@ Five sequential packages; each leaves the tree green.
    `spec.json` `development_line` and its validator; the conformance runner's
    development corpus and `conformance/v0.7` with the run cases;
    `docs/INDEX.md`, the compatibility policy, `selfhost/SCOPE.md`, the three
-   security corpus cases, and a CHANGELOG entry. Before P1 lands, the project
-   lead confirms or reverses the refusal carve-out.
+   security corpus cases, and a CHANGELOG entry. The project lead confirmed
+   the refusal carve-out on 2026-11-09 (Acceptance Decision).
 2. **Diagnostics and fixes, and panics documentation.** E330 and its fixes,
    the source positions they need, the E201/E202 targeted parse errors,
    `spec.json` codes, spec 10.4, the checker conformance case, the 0.7

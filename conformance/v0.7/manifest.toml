@@ -142,7 +142,7 @@ expected_stdout = ""
 expected_exit_class = "nonzero"
 expected_stderr_contains = ["Capability denied: 'print' requires the 'print' capability"]
 
-# Proposal 0018 (Draft): every runtime failure reports where it happened in
+# Proposal 0018 (Accepted): every runtime failure reports where it happened in
 # Geno source and the Geno call stack that reached it, on every lane and
 # backend: the interpreter lanes, the default isolated lane (compiled Python in
 # the worker, mapped back to Geno source), and standalone compiled Python and
@@ -331,7 +331,7 @@ stack = [
     "runtime_capability_denial_stack.geno:7:22 in home_directory",
 ]
 
-# Proposal 0019 (Draft): local mutation is not an effect. A function or lambda
+# Proposal 0019 (Accepted): local mutation is not an effect. A function or lambda
 # that changes only state its own call created (its own `var`s, value-typed
 # content they hold, and arrays it allocated and never let escape) does not
 # carry `mutation`, so it can be passed where a pure function type is

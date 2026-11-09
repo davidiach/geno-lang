@@ -1,4 +1,4 @@
-"""Runtime failure diagnostics (draft proposal 0018).
+"""Runtime failure diagnostics (proposal 0018).
 
 This file covers the contract-failure half that every backend shares (the
 clause text the parser captures, the bounded value renderers, the message

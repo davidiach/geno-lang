@@ -1,12 +1,47 @@
 # Proposal 0018: Runtime Failures With Geno Locations, Stacks and Contract Arguments
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-09 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-05
 - Discussion: https://github.com/davidiach/geno-lang/pull/233
 - Supersedes: None
-- Review: None yet; awaiting project lead acceptance under `GOVERNANCE.md`.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: the authoring tool's own automated review-and-fix rounds, local
+  validation, and GitHub CI, Release Gate and External Apps on #233. These
+  are not independent approval.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-09 the project lead, David Iach, accepted this proposal as
+implemented on #233. Asked in the Claude Code session that finished that pull
+request whether to record proposals 0017, 0018 and 0019 as accepted on the
+as-implemented basis, the project lead chose "Accept and mark ready". This
+records acceptance for the 0.7 development line. Merging #233 remains the
+project lead's own step.
+
+The decision settles the questions put to the project lead:
+
+- String arguments in a contract message are quoted, as in `f(s: "0")`
+  (Unresolved Question 1).
+- A failed `requires` keeps `location` at the clause, with the call site in
+  the caller's frame (Unresolved Question 2).
+- Compiled backends locate a failure in an ambiguous statement at the
+  statement's start. That is accepted for 0.7; expression-level positions
+  stay a possible follow-up in #246 (Unresolved Question 4).
+- The CI/DX broad-exception handler budget rises from 55 to 56 for
+  `_geno_report_uncaught`.
+
+The remaining Unresolved Questions stay open as follow-ups in #246, and the
+tail-call interaction is for #237. None blocks acceptance.
+
+The proposal opened on 2026-11-05. The usual seven-day review period in
+`docs/proposals/README.md` would have ended on 2026-11-12; the project lead's
+explicit acceptance on November 9 is recorded here as an exception to that
+waiting period. It does not imply that seven days elapsed or that independent
+human review occurred.
 
 ## Summary
 
@@ -1617,18 +1652,21 @@ versioned (`G 1`), so a later table format is detected rather than misread.
 1. **"Rendered like `to_string`" (decision 2).** This design quotes top-level
    string arguments (`f(s: "0")`). `to_string` would print them bare
    (`f(s: 0)`), which is ambiguous, so the design uses the diagnostic rendering
-   that `ensures`' `result was` already uses. The project lead should confirm
-   this reading.
+   that `ensures`' `result was` already uses. **Decided (2026-11-09):** the
+   project lead confirmed this reading; string arguments are quoted.
 2. **Where a `requires` failure is located (decisions 2 and 4).** The brief's
    example (`at main.geno:7:12`) suggests the call site. Decision 4 keeps
    existing values, so `location` stays the clause and the call site is the
    caller frame. If the lead prefers the call site as `location`, that is a
    one-line change in each backend, but it changes an envelope value.
+   **Decided (2026-11-09):** `location` stays the clause.
 3. **E407/E408.** Should a later proposal start emitting them for contract
    failures, as a recorded value change?
 4. **Compiled positions in ambiguous statements.** Is statement-level
    precision acceptable long term, or should a follow-up add expression-level
    host columns (JS has them, and Python has them from 3.11 on)?
+   **Decided (2026-11-09):** statement-level precision is accepted for 0.7;
+   expression-level positions stay a possible follow-up (#246).
 5. **Message unification.** Should compiled index and division messages adopt
    the interpreter's wording in a separate change, with its code impact
    assessed?

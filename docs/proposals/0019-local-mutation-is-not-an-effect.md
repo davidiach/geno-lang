@@ -1,12 +1,47 @@
 # Proposal 0019: Local Mutation Is Not an Effect
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-09 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-05
 - Discussion: https://github.com/davidiach/geno-lang/pull/233
 - Supersedes: None
-- Review: None yet; awaiting project lead acceptance under `GOVERNANCE.md`.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: the authoring tool's own automated review-and-fix rounds, local
+  validation, and GitHub CI, Release Gate and External Apps on #233. These
+  are not independent approval.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-09 the project lead, David Iach, accepted this proposal as
+implemented on #233. Asked in the Claude Code session that finished that pull
+request whether to record proposals 0017, 0018 and 0019 as accepted on the
+as-implemented basis, the project lead chose "Accept and mark ready". This
+records acceptance for the 0.7 development line. Merging #233 remains the
+project lead's own step.
+
+The decision settles the two questions put to the project lead:
+
+- **Mutating builtins (Unresolved Question 1).** The reinterpretation is
+  accepted. The spec states the rule normatively, and the reference
+  checker's failure to charge mutating builtins is a recorded known
+  limitation for the 0.7 line, pinned by tests. #244 stays open as the
+  follow-up that would charge mutators on receivers a function does not own.
+- **The breaking class (Unresolved Question 3).** The recorded break is
+  accepted, with the `with mutation` annotation as its migration. The checker
+  does not join effects for `var` function types.
+
+The remaining Unresolved Questions stay open as follow-ups in #247, and the
+runtime bugs under Unresolved Question 7 are #241, #242 and #243. None blocks
+acceptance.
+
+The proposal opened on 2026-11-05. The usual seven-day review period in
+`docs/proposals/README.md` would have ended on 2026-11-12; the project lead's
+explicit acceptance on November 9 is recorded here as an exception to that
+waiting period. It does not imply that seven days elapsed or that independent
+human review occurred.
 
 ## Summary
 
@@ -54,8 +89,8 @@ that writes it), writes through a parameter's reference collection, writes
 below a reference-typed field or element, and writes to a collection that has
 been stored, passed or captured elsewhere. The reference checker still does
 not charge mutating builtins such as `vec_push` on any receiver, as in 0.6.
-The spec keeps that as a non-normative known limitation, and closing it
-needs the project lead's decision (Unresolved Question 1).
+The spec keeps that as a non-normative known limitation. The project lead
+accepted it for the 0.7 line, and closing it is #244 (Unresolved Question 1).
 
 Effects stay a static property. No backend changes, no syntax changes, no
 diagnostic code changes, and declared `with mutation` annotations stay legal.
@@ -503,12 +538,12 @@ local are masked, and that mutation of parameters and other non-fresh values
 "keeps `mutation`". In 0.6 no builtin carries `mutation` on any receiver, so
 the first half holds trivially. The second half would be a new charge, not a
 kept one. **This proposal does not start charging builtins in the reference
-checker.** That reinterprets a fixed decision of the brief, so it needs the
+checker.** That reinterprets a fixed decision of the brief, so it needed the
 project lead's explicit sign-off before the typechecker package (Package 2)
-is accepted and merges. Package 2 is implemented on the Discussion pull
-request's draft branch so that the decision can be made against working
-code; Unresolved Question 1 asks for it, and the sign-off is not yet
-recorded.
+could be accepted and merge. Package 2 was implemented on the Discussion pull
+request's draft branch so that the decision could be made against working
+code. The project lead gave that sign-off on 2026-11-09 (Acceptance Decision;
+Unresolved Question 1).
 
 The language rule and the implementation are kept apart:
 
@@ -1262,12 +1297,17 @@ list of causes explains.
      O0) is designed to be reused for it;
    - the narrower cell-capture and argument restrictions listed under
      Alternatives.
+
+   **Decided (2026-11-09):** the project lead accepted the reinterpretation
+   and the first option. The limitation is accepted for the 0.7 line as
+   recorded, and #244 stays open as the follow-up.
 2. **Calls of local closures.** These are charged conservatively. If models
    write `let add = fn(x: Int) do total = total + x ... end fn` inside
    functions often enough, masking such calls is worth a follow-up.
 3. **The breaking class.** Is a recorded break with an annotation migration
    acceptable, or should the checker join effects for `var` function types?
-   The corpora suggest the break is acceptable.
+   The corpora suggest the break is acceptable. **Decided (2026-11-09):** the
+   recorded break is accepted; the checker does not join effects there.
 4. **Inferred effects in `geno doc`.** Function hover now names the
    inferred effects of a function that declares none (section 7), because
    that is where an editor user checks what masking decided. `geno doc`
@@ -1335,7 +1375,8 @@ previous one.
    (branch values of `if` and `match` expressions take the expression's
    position; `length(list)` is borrowed).
 2. **Typechecker masking.** Changes to `geno/typechecker.py`:
-   - gate: the project lead's sign-off on Unresolved Question 1;
+   - gate: the project lead's sign-off on Unresolved Question 1, given on
+     2026-11-09;
    - write classification in `_check_assign_statement`,
      `_check_index_assign_statement` and `_check_field_assign_statement`,
      recorded per statement node in a checker table (section 2). It records
@@ -1354,11 +1395,9 @@ previous one.
      recomputes it (section 2, "Write classification").
 
    Status: implemented on the draft branch of the Discussion pull request,
-   ahead of the sign-off, so that Unresolved Question 1 can be decided
-   against working code. The sign-off is not yet recorded. Until it is, this
-   package is not accepted, the pull request does not merge, and the
-   proposal stays Draft; if the project lead chooses another option, this
-   package changes before it merges.
+   ahead of the sign-off, so that Unresolved Question 1 could be decided
+   against working code. The project lead gave the sign-off on 2026-11-09
+   and chose the first option, so this package stands as implemented.
 
    Tests: update `geno/tests/test_effect_checking.py` (the unannotated-`var`
    case, and the new `TestLocalMutationMasking`) and

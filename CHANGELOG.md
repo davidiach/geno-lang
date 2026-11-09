@@ -37,7 +37,7 @@ package version stays 0.6.0, and the Draft
   for a reassigned variable, and now repair the missing return type: 828 of
   907 mutants repaired, none misrepaired.
 
-- Panic examples, from Draft
+- Panic examples, from accepted
   [proposal 0017](docs/proposals/0017-panic-examples-and-property-checks.md):
   `example 1, 0 panics "division"` states that a call must panic, optionally
   with a substring of the panic's message (compared ignoring case), and
@@ -178,7 +178,7 @@ package version stays 0.6.0, and the Draft
     kill at `--timeout` still ends any request that cannot return in time.
     The HTTP client modules are loaded during the worker's trusted setup
     only with an `http` grant.
-- Runtime failures report their Geno location and call stack, from Draft
+- Runtime failures report their Geno location and call stack, from accepted
   [proposal 0018](docs/proposals/0018-runtime-failure-diagnostics.md)
   ([spec v0.7](docs/spec/v0.7.md) section 6.9.1). A panic, runtime error,
   failed contract, capability denial or resource limit prints the Geno frames
@@ -438,7 +438,7 @@ package version stays 0.6.0, and the Draft
   sets in place, keeping the error's type, code and trusted denial tags; its
   `str()` includes the location, while `.message`, which `panics` examples
   match, is unchanged.
-- Local mutation is not an effect, from Draft
+- Local mutation is not an effect, from accepted
   [proposal 0019](docs/proposals/0019-local-mutation-is-not-an-effect.md)
   ([spec v0.7](docs/spec/v0.7.md) sections 3.5, 6.2, 6.3 and 7.6). A
   function or lambda that changes only state its own call created is pure:
