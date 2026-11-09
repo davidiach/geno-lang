@@ -6721,6 +6721,180 @@ class TestDebouncedDiagnostics:
         assert len(published) > 0
 
 
+class TestDebounceOwnership:
+    """#253: each document owns at most one current pending refresh. An
+    obsolete timer callback cannot refresh or drop a newer registration, and
+    an immediate refresh retires the pending one."""
+
+    SOURCE = "func foo() -> Int\n  example () -> 1\n  return 1\nend func\n"
+    CHANGED = "func foo() -> Int\n  example () -> 2\n  return 2\nend func\n"
+
+    @staticmethod
+    def _server(monkeypatch):
+        server = create_server(diag_debounce_sec=3600.0)  # never fires by itself
+        server.lsp._workspace = Workspace(
+            None, sync_kind=types.TextDocumentSyncKind.Full
+        )
+        published: list[str] = []
+        monkeypatch.setattr(
+            server, "publish_diagnostics", lambda u, _d: published.append(u)
+        )
+        return server, server._geno_language_server, published
+
+    @staticmethod
+    def _open(server, uri, text, version=1):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri, language_id="geno", version=version, text=text
+                )
+            )
+        )
+
+    @staticmethod
+    def _change(server, uri, text, version):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_CHANGE)(
+            types.DidChangeTextDocumentParams(
+                text_document=types.VersionedTextDocumentIdentifier(
+                    uri=uri, version=version
+                ),
+                content_changes=[types.TextDocumentContentChangeEvent_Type2(text=text)],
+            )
+        )
+
+    @staticmethod
+    def _save(server, uri):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_SAVE)(
+            types.DidSaveTextDocumentParams(
+                text_document=types.TextDocumentIdentifier(uri=uri)
+            )
+        )
+
+    @staticmethod
+    def _close(server, uri):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_CLOSE)(
+            types.DidCloseTextDocumentParams(
+                text_document=types.TextDocumentIdentifier(uri=uri)
+            )
+        )
+
+    @staticmethod
+    def _dispatch(timer):
+        """Run a timer's callback as an already-dispatched timer thread would:
+        cancelling a timer cannot retract a callback that has started."""
+        timer.function(*timer.args, **timer.kwargs)
+
+    def _opened(self, tmp_path, monkeypatch):
+        file_path = tmp_path / "doc.geno"
+        file_path.write_text(self.SOURCE)
+        uri = file_path.as_uri()
+        server, wrapper, published = self._server(monkeypatch)
+        self._open(server, uri, self.SOURCE)
+        published.clear()
+        return server, wrapper, published, uri
+
+    def test_current_timer_refreshes_once_and_unregisters(self, tmp_path, monkeypatch):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        timer = wrapper._debounce_timers[uri]
+
+        self._dispatch(timer)
+
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+        assert uri not in wrapper._debounce_project_paths
+
+    def test_save_retires_the_pending_refresh(self, tmp_path, monkeypatch):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        pending = wrapper._debounce_timers[uri]
+
+        self._save(server, uri)
+
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+        assert uri not in wrapper._debounce_project_paths
+        assert pending.finished.is_set()  # cancelled
+        # Even if its callback had already been dispatched, it does nothing.
+        self._dispatch(pending)
+        assert published == [uri]
+
+    def test_repeated_open_retires_the_pending_refresh(self, tmp_path, monkeypatch):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        pending = wrapper._debounce_timers[uri]
+
+        self._open(server, uri, self.CHANGED, version=3)
+
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+        assert uri not in wrapper._debounce_project_paths
+        self._dispatch(pending)
+        assert published == [uri]
+
+    def test_obsolete_dispatched_callback_keeps_newer_registration(
+        self, tmp_path, monkeypatch
+    ):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        old_timer = wrapper._debounce_timers[uri]
+        # The old callback is dispatched and waits for the state lock while a
+        # newer change replaces its timer; cancelling cannot retract it.
+        self._change(server, uri, self.SOURCE, version=3)
+        new_timer = wrapper._debounce_timers[uri]
+        assert new_timer is not old_timer
+
+        self._dispatch(old_timer)
+
+        assert published == []
+        assert wrapper._debounce_timers.get(uri) is new_timer
+        wrapper._cancel_debounce(uri)
+        assert new_timer.finished.is_set()
+        assert uri not in wrapper._debounce_timers
+
+    def test_obsolete_callback_waiting_on_the_lock_loses_ownership(
+        self, tmp_path, monkeypatch
+    ):
+        """The issue's interleaving with a real thread blocked on the lock."""
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        old_timer = wrapper._debounce_timers[uri]
+
+        with wrapper._state_lock:
+            waiter = threading.Thread(target=self._dispatch, args=(old_timer,))
+            waiter.start()
+            # The waiter cannot enter its critical section until we release.
+            self._change(server, uri, self.SOURCE, version=3)
+            new_timer = wrapper._debounce_timers[uri]
+        waiter.join(timeout=10)
+
+        assert not waiter.is_alive()
+        assert published == []
+        assert wrapper._debounce_timers.get(uri) is new_timer
+        wrapper._cancel_debounce(uri)
+        assert new_timer.finished.is_set()
+
+    def test_callback_from_before_close_ignores_reopened_document(
+        self, tmp_path, monkeypatch
+    ):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        before_close = wrapper._debounce_timers[uri]
+        self._close(server, uri)
+        self._open(server, uri, self.SOURCE, version=1)
+        self._change(server, uri, self.CHANGED, version=2)
+        after_reopen = wrapper._debounce_timers[uri]
+        published.clear()
+
+        self._dispatch(before_close)
+
+        assert published == []
+        assert wrapper._debounce_timers.get(uri) is after_reopen
+        self._dispatch(after_reopen)
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+
+
 class TestCompletionFreshnessBeforeDebounce:
     """#252: completion reflects the latest accepted revision before the
     debounced diagnostic refresh runs, while diagnostics stay debounced."""

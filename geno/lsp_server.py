@@ -1029,7 +1029,11 @@ class GenoLanguageServer:
         # the line being typed does not.
         self._analyses: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
         self._parsed_analyses: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
+        # The pending debounced refresh per URI. The registered Timer object is
+        # the refresh's identity: only the callback of the timer still
+        # registered may run it (#253).
         self._debounce_timers: dict[str, threading.Timer] = {}
+        self._debounce_project_paths: dict[str, frozenset[str]] = {}
         self._register_handlers()
 
     def to_pygls_server(self) -> LanguageServer:
@@ -1825,15 +1829,27 @@ class GenoLanguageServer:
         uri = params.text_document.uri
         source = params.text_document.text
         version = self._document_lsp_version(params.text_document)
+        # The immediate refresh below supersedes any pending one.
+        pending_project_paths = self._cancel_debounce(uri)
         self._set_open_document_source(uri, source, lsp_version=version)
         self._refresh_document_metadata(uri)
-        self._refresh_open_documents(focus_uri=uri)
+        self._refresh_open_documents(
+            focus_uri=uri, previous_project_paths=pending_project_paths
+        )
 
-    def _cancel_debounce(self, uri: str) -> None:
-        """Cancel any pending debounce timer for a URI."""
+    def _cancel_debounce(self, uri: str) -> frozenset[str]:
+        """Cancel and retire any pending debounced refresh for a URI.
+
+        Returns the previous project paths the retired refresh would have
+        used, so an immediate refresh that supersedes it can cover them. A
+        callback that was already dispatched still runs, but finds its timer
+        no longer registered and does nothing.
+        """
         timer = self._debounce_timers.pop(uri, None)
+        project_paths = self._debounce_project_paths.pop(uri, frozenset())
         if timer is not None:
             timer.cancel()
+        return project_paths
 
     def _schedule_debounced_refresh(
         self, uri: str, previous_project_paths: frozenset[str]
@@ -1849,9 +1865,17 @@ class GenoLanguageServer:
             )
             return
 
+        timer: threading.Timer
+
         def _do_refresh() -> None:
             with self._state_lock:
-                self._debounce_timers.pop(uri, None)
+                # Cancelling a timer cannot retract a callback that already
+                # started; such an obsolete callback must neither refresh nor
+                # remove a newer timer's registration (#253).
+                if self._debounce_timers.get(uri) is not timer:
+                    return
+                del self._debounce_timers[uri]
+                self._debounce_project_paths.pop(uri, None)
                 self._refresh_open_documents(
                     focus_uri=uri,
                     previous_project_paths=previous_project_paths,
@@ -1860,6 +1884,7 @@ class GenoLanguageServer:
         timer = threading.Timer(self._diag_debounce_sec, _do_refresh)
         timer.daemon = True
         self._debounce_timers[uri] = timer
+        self._debounce_project_paths[uri] = previous_project_paths
         timer.start()
 
     @staticmethod
@@ -1895,7 +1920,12 @@ class GenoLanguageServer:
     def did_save(self, params: types.DidSaveTextDocumentParams) -> None:
         uri = params.text_document.uri
         doc = self.server.workspace.get_text_document(uri)
-        previous_project_paths = self._project_view_for_uri(uri).project_paths
+        # Save refreshes immediately, so it retires the pending refresh and
+        # covers the project paths that refresh would have used (#253).
+        pending_project_paths = self._cancel_debounce(uri)
+        previous_project_paths = (
+            self._project_view_for_uri(uri).project_paths | pending_project_paths
+        )
         self._set_open_document_source(
             uri,
             doc.source,
