@@ -961,6 +961,26 @@ _SYMBOL_TABLE_CACHE_MAX = 256
 _DIAG_DEBOUNCE_SEC = 0.3
 
 
+class _DebouncedRefresh(threading.Timer):
+    """One pending debounced diagnostic refresh (#253).
+
+    The object is the refresh's identity: only the callback of the refresh
+    still registered for its URI may run. ``project_paths`` are the previous
+    project paths it must cover, so a refresh that replaces or supersedes it
+    covers them too.
+    """
+
+    def __init__(
+        self,
+        interval: float,
+        function: Callable[[], None],
+        project_paths: frozenset[str],
+    ) -> None:
+        super().__init__(interval, function)
+        self.project_paths = project_paths
+        self.daemon = True
+
+
 def _completion_symbols_for_uri(
     uri: str,
     doc_cache: MutableMapping[str, tuple[str, list[_CompletionSymbol]]],
@@ -1029,11 +1049,8 @@ class GenoLanguageServer:
         # the line being typed does not.
         self._analyses: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
         self._parsed_analyses: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
-        # The pending debounced refresh per URI. The registered Timer object is
-        # the refresh's identity: only the callback of the timer still
-        # registered may run it (#253).
-        self._debounce_timers: dict[str, threading.Timer] = {}
-        self._debounce_project_paths: dict[str, frozenset[str]] = {}
+        # The pending debounced refresh per URI (#253).
+        self._debounce_timers: dict[str, _DebouncedRefresh] = {}
         self._register_handlers()
 
     def to_pygls_server(self) -> LanguageServer:
@@ -1432,10 +1449,14 @@ class GenoLanguageServer:
         self,
         focus_uri: str | None,
         previous_project_paths: frozenset[str],
-    ) -> list[str]:
-        """Return open documents whose project views overlap the changed project."""
+    ) -> tuple[list[str], frozenset[str] | None]:
+        """Return open documents whose project views overlap the changed project.
+
+        Also returns the project paths whose documents are covered, or None
+        when every open document is affected.
+        """
         if focus_uri is None:
-            return list(self._open_docs)
+            return list(self._open_docs), None
 
         focus_paths = set(previous_project_paths)
         if focus_uri in self._open_docs:
@@ -1447,7 +1468,8 @@ class GenoLanguageServer:
             focus_paths.update(self._project_view_for_uri(focus_uri).project_paths)
 
         if not focus_paths:
-            return [focus_uri] if focus_uri in self._open_docs else []
+            focus_only = [focus_uri] if focus_uri in self._open_docs else []
+            return focus_only, frozenset()
 
         affected: list[str] = []
         for open_uri in self._open_docs:
@@ -1456,7 +1478,7 @@ class GenoLanguageServer:
                 continue
             if self._project_view_for_uri(open_uri).project_paths & focus_paths:
                 affected.append(open_uri)
-        return affected
+        return affected, frozenset(focus_paths)
 
     def _refresh_document_metadata(self, uri: str) -> None:
         """Refresh cached names and project view for one open document."""
@@ -1485,7 +1507,7 @@ class GenoLanguageServer:
             self._symbol_table_cache.clear()
             return
 
-        affected_uris = self._affected_open_document_uris(
+        affected_uris, covered_paths = self._affected_open_document_uris(
             focus_uri, previous_project_paths
         )
         if not affected_uris:
@@ -1523,6 +1545,29 @@ class GenoLanguageServer:
             self._publish_diagnostics(
                 representative_uri, self._open_docs[representative_uri]
             )
+        self._retire_covered_refreshes(affected_uris, covered_paths)
+
+    def _retire_covered_refreshes(
+        self, affected_uris: list[str], covered_paths: frozenset[str] | None
+    ) -> None:
+        """Retire pending refreshes that the refresh just performed covered.
+
+        An affected document's pending refresh would re-check its current
+        source, which this refresh just did. It is redundant when every path
+        it would cover (its previous project paths and its current project)
+        was covered here; ``None`` means every open document was refreshed.
+        Otherwise it stays pending, so nothing it alone covers is skipped
+        (#253).
+        """
+        for uri in affected_uris:
+            pending = self._debounce_timers.get(uri)
+            if pending is None:
+                continue
+            if covered_paths is None or (
+                pending.project_paths | self._project_view_for_uri(uri).project_paths
+                <= covered_paths
+            ):
+                self._cancel_debounce(uri)
 
     def _publish_diagnostics(self, uri: str, source: str) -> None:
         """Run geno.check() and publish diagnostics."""
@@ -1845,17 +1890,18 @@ class GenoLanguageServer:
         callback that was already dispatched still runs, but finds its timer
         no longer registered and does nothing.
         """
-        timer = self._debounce_timers.pop(uri, None)
-        project_paths = self._debounce_project_paths.pop(uri, frozenset())
-        if timer is not None:
-            timer.cancel()
-        return project_paths
+        pending = self._debounce_timers.pop(uri, None)
+        if pending is None:
+            return frozenset()
+        pending.cancel()
+        return pending.project_paths
 
     def _schedule_debounced_refresh(
         self, uri: str, previous_project_paths: frozenset[str]
     ) -> None:
         """Schedule a debounced diagnostic refresh for a URI."""
-        self._cancel_debounce(uri)
+        # The replaced refresh's paths stay covered by its replacement.
+        previous_project_paths = previous_project_paths | self._cancel_debounce(uri)
 
         if self._diag_debounce_sec <= 0:
             # No debounce — refresh immediately (useful for tests)
@@ -1865,27 +1911,26 @@ class GenoLanguageServer:
             )
             return
 
-        timer: threading.Timer
+        refresh: _DebouncedRefresh
 
         def _do_refresh() -> None:
             with self._state_lock:
                 # Cancelling a timer cannot retract a callback that already
                 # started; such an obsolete callback must neither refresh nor
-                # remove a newer timer's registration (#253).
-                if self._debounce_timers.get(uri) is not timer:
+                # remove a newer refresh's registration (#253).
+                if self._debounce_timers.get(uri) is not refresh:
                     return
                 del self._debounce_timers[uri]
-                self._debounce_project_paths.pop(uri, None)
                 self._refresh_open_documents(
                     focus_uri=uri,
-                    previous_project_paths=previous_project_paths,
+                    previous_project_paths=refresh.project_paths,
                 )
 
-        timer = threading.Timer(self._diag_debounce_sec, _do_refresh)
-        timer.daemon = True
-        self._debounce_timers[uri] = timer
-        self._debounce_project_paths[uri] = previous_project_paths
-        timer.start()
+        refresh = _DebouncedRefresh(
+            self._diag_debounce_sec, _do_refresh, previous_project_paths
+        )
+        self._debounce_timers[uri] = refresh
+        refresh.start()
 
     @staticmethod
     def _is_full_document_change(change: Any) -> bool:
@@ -1938,8 +1983,10 @@ class GenoLanguageServer:
 
     def did_close(self, params: types.DidCloseTextDocumentParams) -> None:
         uri = params.text_document.uri
-        self._cancel_debounce(uri)
-        previous_project_paths = self._project_view_for_uri(uri).project_paths
+        pending_project_paths = self._cancel_debounce(uri)
+        previous_project_paths = (
+            self._project_view_for_uri(uri).project_paths | pending_project_paths
+        )
         file_path = self._open_doc_paths.get(uri)
         if file_path is not None:
             path_str = str(file_path)
