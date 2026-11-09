@@ -44,7 +44,7 @@ def compile_and_run_js(source: str) -> str:
     """
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
-    result = run_node_code(js_out, args=("--cap", "print"), timeout=10)
+    result = run_node_code(js_out, args=("--cap", "print"))
     if result.stderr:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
     return entrypoint_observation(result, int_main=declares_int_main(source))
@@ -83,7 +83,7 @@ def run_js_runtime_script(
         + f"{JS_RUNTIME_PRELUDE}\n"
         f"{script}"
     )
-    result = run_node_code(js_code, timeout=10)
+    result = run_node_code(js_code)
     if result.returncode != 0:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
     return cast(str, result.stdout).strip()
@@ -99,7 +99,7 @@ def run_compiled_js_with_limit(
         )
         + f"{compile_to_js(source)}"
     )
-    return run_node_code(js_code, timeout=10)
+    return run_node_code(js_code)
 
 
 def _slow_tree_shake_prelude(user_code: str) -> str:
@@ -552,7 +552,7 @@ console.log("ok");
             compiled = compile_to_js(source)
             assert isinstance(compiled, str)
             js_code = _limit_globals(max_collection_size=2) + compiled
-            result = run_node_code(js_code, args=("--cap", "clock"), timeout=10)
+            result = run_node_code(js_code, args=("--cap", "clock"))
             assert result.returncode != 0
             assert "String size exceeds limit" in result.stderr
 
@@ -2020,7 +2020,7 @@ for (const thunk of [
 }
 console.log(JSON.stringify(checks));
 """
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().splitlines()[-1] == "[true,true,true,true]"
 
@@ -2625,7 +2625,7 @@ console.log(unwrap(r1));
 console.log(is_none(r2));
 """
 
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0, result.stderr
         lines = result.stdout.strip().split("\n")
         # Skip the "0" from main()
@@ -3510,7 +3510,7 @@ try {
 }
 """
         )
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "blocked"
 

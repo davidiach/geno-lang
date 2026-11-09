@@ -20,6 +20,7 @@ from geno.sandbox import (
     SecurityViolation,
     run_sandboxed,
 )
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 
 
 def _create_server_or_skip(*args, **kwargs):
@@ -381,7 +382,7 @@ class TestCompiledCapabilityEnforcement:
             ["node", str(js_file)],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
 
         assert result.returncode != 0

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import geno
 from geno.compiler import compile_to_python
 from geno.js_compiler import compile_to_js
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 from geno.values import ConstructorValue
 
 
@@ -126,7 +127,7 @@ def _skip_if_node_child_process_unavailable() -> None:
             ["node", "-e", probe],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
     except FileNotFoundError:
         pytest.skip("Node.js not available")
@@ -305,7 +306,7 @@ end func
             ["node", str(js_file), "--cap", "process"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert "ok" in result.stdout.lower()
@@ -337,7 +338,7 @@ end func
             ["node", str(js_file), "--cap", "process"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
 
         assert result.returncode == 0
@@ -373,7 +374,7 @@ end func
             ["node", str(js_file), "--cap", "process"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
 
         assert result.returncode == 0

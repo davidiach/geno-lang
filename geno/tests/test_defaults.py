@@ -48,7 +48,7 @@ def _compile_js_and_run(source: str) -> str:
     """
     js_out = compile_to_js(source)
     assert isinstance(js_out, str)
-    result = run_node_code(js_out, timeout=10)
+    result = run_node_code(js_out)
     if result.stderr:
         raise RuntimeError(f"JS execution failed: {result.stderr}")
     return entrypoint_observation(result, int_main=declares_int_main(source))

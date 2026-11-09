@@ -482,6 +482,13 @@ package version stays 0.6.0, and the Draft
 - A tuple pattern matched against a value that is not a tuple is one error:
   the names it binds no longer add "Undefined variable" errors, one of which
   carried a rename fix to an unrelated variable.
+- `geno add` no longer leaves `geno.toml` declaring a dependency that was not
+  installed when its process is killed partway. The new manifest is now
+  published inside the journaled install transaction, after the journal that
+  can restore it, so the next package command puts the previous `geno.toml`
+  back, byte for byte, unless the add had committed. If `geno.toml` is edited
+  while the dependency is being fetched, the add stops and changes nothing
+  (#251).
 
 - A nullary constructor of a generic ADT nested in another constructor call
   type-checks. With `type Tree[T] = Leaf | Node(left: Tree[T], value: T,

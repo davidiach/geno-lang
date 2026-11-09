@@ -10,6 +10,7 @@ import pytest
 from geno.api import RunConfig, run
 from geno.diagnostics import ErrorCode
 from geno.parser import ParseError, ParseErrors, parse
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 from geno.tests.test_backend_parity import (
     HAS_NODE,
     _assert_expected_backend_outputs,
@@ -284,7 +285,7 @@ def test_fs_builtins_return_results_in_compiled_javascript(tmp_path: Path) -> No
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
         check=False,
     )
     assert result.returncode == 0, result.stderr

@@ -38,8 +38,10 @@ from .lockfile import (
 )
 from .manifest import (
     Dependency,
+    Manifest,
     atomic_write_text,
     parse_manifest,
+    read_manifest_bytes,
     save_manifest,
     validate_dependency_name,
 )
@@ -91,11 +93,23 @@ _PACKAGE_LOCK_TIMEOUT_SECONDS = 30.0
 _PROJECT_THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _PROJECT_THREAD_LOCKS_GUARD = threading.Lock()
 _PROJECT_LOCK_DEPTHS = threading.local()
-_PUBLICATION_OUTCOMES = threading.local()
 _LOGGER = logging.getLogger(__name__)
 _TRANSACTION_JOURNAL_VERSION = 2
+# Version 3 adds the ``manifest`` record of a transaction that also replaces
+# geno.toml (``geno add``). A transaction that leaves geno.toml alone still
+# writes version 2, which releases without that record can recover.
+_MANIFEST_JOURNAL_VERSION = 3
 _TRANSACTION_NAME_RE = re.compile(r"^\.geno-package-txn-[A-Za-z0-9_-]+$")
 _TRANSACTION_LOCKFILE_SUFFIX = ".lock.next"
+# Beside geno.toml while a transaction replaces it: the manifest to publish,
+# and a copy of the one it replaces for recovery to put back.
+_TRANSACTION_MANIFEST_SUFFIX = ".toml.next"
+_TRANSACTION_MANIFEST_BACKUP_SUFFIX = ".toml.orig"
+_TRANSACTION_ROOT_SUFFIXES = (
+    _TRANSACTION_LOCKFILE_SUFFIX,
+    _TRANSACTION_MANIFEST_SUFFIX,
+    _TRANSACTION_MANIFEST_BACKUP_SUFFIX,
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -365,8 +379,15 @@ class _PreparedCheckout:
 
 
 @dataclass
-class _PublicationOutcome:
-    committed: bool = False
+class _ManifestChange:
+    """The geno.toml a transaction publishes together with its checkouts.
+
+    ``original`` is the file's bytes when ``manifest`` was derived from it.
+    """
+
+    manifest: Manifest
+    path: Path
+    original: bytes
 
 
 def _remove_checkout_tree(path: Path) -> None:
@@ -507,11 +528,76 @@ def _write_transaction_journal(journal_path: Path, payload: dict[str, Any]) -> N
     _fsync_directory(journal_path.parent)
 
 
+def _manifest_is_unchanged(change: _ManifestChange) -> bool:
+    """Whether geno.toml still holds the bytes the change was derived from."""
+    try:
+        return read_manifest_bytes(change.path) == change.original
+    except ValueError:
+        return False
+
+
+def _manifest_changed_error(change: _ManifestChange) -> RuntimeError:
+    return RuntimeError(
+        f"{change.path.name} changed while the dependency was being fetched, so "
+        "it was left as it is and nothing was installed. Run the command again."
+    )
+
+
+def _write_file_durably(path: Path, data: bytes, mode: int) -> None:
+    """Create ``path`` with ``data``, flushed to disk; it must not exist."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, mode)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(path, mode)
+
+
+def _replace_keeping_mode(source: Path, destination: Path) -> None:
+    """Rename ``source`` over ``destination``, which keeps its own permissions."""
+    mode = stat.S_IMODE(destination.stat().st_mode)
+    os.replace(source, destination)
+    if stat.S_IMODE(destination.stat().st_mode) != mode:
+        os.chmod(destination, mode)
+
+
+def _stage_manifest_change(
+    change: _ManifestChange, transaction_name: str
+) -> dict[str, str]:
+    """Stage the new geno.toml and a copy of the current one beside it.
+
+    Returns the journal record that lets recovery tell the two apart. Neither
+    file replaces geno.toml here: that happens only once the journal is durable.
+    """
+    root = change.path.parent
+    staged = root / (transaction_name + _TRANSACTION_MANIFEST_SUFFIX)
+    backup = root / (transaction_name + _TRANSACTION_MANIFEST_BACKUP_SUFFIX)
+    if not _manifest_is_unchanged(change):
+        raise _manifest_changed_error(change)
+    # geno.toml's own permissions, so neither file is readable by anyone the
+    # manifest is not, plus owner write, so both can always be replaced and
+    # removed. Publication gives geno.toml back its exact permissions.
+    mode = stat.S_IMODE(change.path.stat().st_mode) | stat.S_IWUSR
+    _write_file_durably(staged, b"", mode)
+    save_manifest(change.manifest, staged)
+    # A copy, not a rename: geno.toml stays in place for readers until the
+    # staged manifest replaces it in one step.
+    _write_file_durably(backup, change.original, mode)
+    return {
+        "new_sha256": _hash_file(staged),
+        "old_sha256": hashlib.sha256(change.original).hexdigest(),
+    }
+
+
 def _begin_transaction_journal(
     prepared: list[_PreparedCheckout],
     lockfile: Lockfile,
     lockfile_path: Path,
     transaction_root: Path,
+    manifest_change: _ManifestChange | None = None,
 ) -> tuple[Path, Path]:
     """Durably describe a transaction before the first checkout rename."""
     checkouts: list[dict[str, Any]] = []
@@ -552,14 +638,19 @@ def _begin_transaction_journal(
         transaction_root.name + _TRANSACTION_LOCKFILE_SUFFIX
     )
     save_lockfile(lockfile, next_lockfile)
-    _fsync_directory(lockfile_path.parent)
-    _lock_path, journal_path = _project_state_paths(lockfile_path.parent)
-    payload = {
+    payload: dict[str, Any] = {
         "checkouts": checkouts,
         "lockfile_sha256": _hash_file(next_lockfile),
         "transaction": transaction_root.name,
         "version": _TRANSACTION_JOURNAL_VERSION,
     }
+    if manifest_change is not None:
+        payload["manifest"] = _stage_manifest_change(
+            manifest_change, transaction_root.name
+        )
+        payload["version"] = _MANIFEST_JOURNAL_VERSION
+    _fsync_directory(lockfile_path.parent)
+    _lock_path, journal_path = _project_state_paths(lockfile_path.parent)
     _write_transaction_journal(journal_path, payload)
     return journal_path, next_lockfile
 
@@ -591,11 +682,35 @@ def _read_transaction_journal(journal_path: Path) -> dict[str, Any]:
     return payload
 
 
+def _validated_manifest_record(payload: dict[str, Any]) -> tuple[str, str] | None:
+    """The (new, old) geno.toml digests of a version 3 journal, else ``None``."""
+    if payload["version"] != _MANIFEST_JOURNAL_VERSION:
+        return None
+    record = payload.get("manifest")
+    if isinstance(record, dict):
+        new_sha256 = record.get("new_sha256")
+        old_sha256 = record.get("old_sha256")
+        if (
+            isinstance(new_sha256, str)
+            and isinstance(old_sha256, str)
+            and _SHA256_RE.fullmatch(new_sha256)
+            and _SHA256_RE.fullmatch(old_sha256)
+        ):
+            return new_sha256, old_sha256
+    raise RuntimeError("Package transaction journal has an invalid manifest record")
+
+
 def _validated_journal_records(
     payload: dict[str, Any],
-) -> tuple[str, str, list[tuple[int, str, bool, str, str | None]]]:
-    if type(payload.get("version")) is not int or payload["version"] != 2:
+) -> tuple[
+    str, str, list[tuple[int, str, bool, str, str | None]], tuple[str, str] | None
+]:
+    if type(payload.get("version")) is not int or payload["version"] not in (
+        _TRANSACTION_JOURNAL_VERSION,
+        _MANIFEST_JOURNAL_VERSION,
+    ):
         raise RuntimeError("Unsupported package transaction journal version")
+    manifest_record = _validated_manifest_record(payload)
     transaction = payload.get("transaction")
     lockfile_sha256 = payload.get("lockfile_sha256")
     raw_checkouts = payload.get("checkouts")
@@ -645,7 +760,7 @@ def _validated_journal_records(
             raise RuntimeError("Package transaction journal has unexpected old hash")
         names.add(name)
         records.append((index, name, had_destination, content_hash, old_content_hash))
-    return transaction, lockfile_sha256, records
+    return transaction, lockfile_sha256, records, manifest_record
 
 
 def _safe_transaction_root(root: Path, transaction_name: str) -> Path | None:
@@ -669,9 +784,17 @@ def _scavenge_orphan_transactions(root: Path) -> None:
     uid = _current_uid()
     changed_root = False
     for candidate in root.iterdir():
-        if not candidate.name.endswith(_TRANSACTION_LOCKFILE_SUFFIX):
+        suffix = next(
+            (
+                suffix
+                for suffix in _TRANSACTION_ROOT_SUFFIXES
+                if candidate.name.endswith(suffix)
+            ),
+            None,
+        )
+        if suffix is None:
             continue
-        transaction_name = candidate.name[: -len(_TRANSACTION_LOCKFILE_SUFFIX)]
+        transaction_name = candidate.name[: -len(suffix)]
         if not _TRANSACTION_NAME_RE.fullmatch(transaction_name):
             continue
         if candidate.is_symlink() or not candidate.is_file():
@@ -704,12 +827,61 @@ def _scavenge_orphan_transactions(root: Path) -> None:
         _fsync_directory(root)
 
 
+def _restore_manifest(
+    manifest_path: Path, backup: Path, new_sha256: str, old_sha256: str
+) -> None:
+    """Put back the geno.toml that an uncommitted transaction replaced.
+
+    Only the manifest the transaction published is replaced. Anything else is
+    the previous manifest already, or an edit made since, and is kept.
+    """
+    if new_sha256 == old_sha256:
+        return
+    current = (
+        _hash_file(manifest_path)
+        if manifest_path.is_file() and not manifest_path.is_symlink()
+        else None
+    )
+    if current != new_sha256:
+        if current != old_sha256:
+            _LOGGER.warning(
+                "%s changed after an interrupted package transaction; keeping "
+                "it as it is. Check its dependencies.",
+                manifest_path,
+            )
+        return
+    if backup.is_symlink() or not backup.is_file() or _hash_file(backup) != old_sha256:
+        raise RuntimeError(
+            f"Package transaction cannot restore {manifest_path.name}: its saved "
+            "copy is missing or corrupt"
+        )
+    _replace_keeping_mode(backup, manifest_path)
+    _fsync_directory(manifest_path.parent)
+
+
+def _remove_transaction_root_files(root: Path, transaction_name: str) -> None:
+    """Remove what a finished transaction left beside geno.toml, best effort."""
+    try:
+        for suffix in _TRANSACTION_ROOT_SUFFIXES:
+            (root / (transaction_name + suffix)).unlink(missing_ok=True)
+        _fsync_directory(root)
+    except OSError as exc:
+        _LOGGER.warning(
+            "Could not clean package transaction files %s in %s: %s",
+            transaction_name,
+            root,
+            exc,
+        )
+
+
 def _recover_project_transaction(root: Path, journal_path: Path) -> bool:
     """Roll back an uncommitted publish or finalize a committed one."""
     if not journal_path.exists() and not journal_path.is_symlink():
         return False
     payload = _read_transaction_journal(journal_path)
-    transaction_name, target_digest, records = _validated_journal_records(payload)
+    transaction_name, target_digest, records, manifest_record = (
+        _validated_journal_records(payload)
+    )
     transaction_root = _safe_transaction_root(root, transaction_name)
     next_lockfile = root / (transaction_name + _TRANSACTION_LOCKFILE_SUFFIX)
     lockfile_path = root / "geno.lock"
@@ -749,6 +921,9 @@ def _recover_project_transaction(root: Path, journal_path: Path) -> bool:
         _fsync_directory(modules_dir)
         _fsync_directory(root)
         _remove_transaction_journal(journal_path)
+        # geno.toml was replaced before the commit point, so it is already the
+        # committed one; only the saved copy of its predecessor is left over.
+        _remove_transaction_root_files(root, transaction_name)
         if transaction_root is not None:
             _cleanup_transaction(transaction_root)
         return True
@@ -809,16 +984,16 @@ def _recover_project_transaction(root: Path, journal_path: Path) -> bool:
                 )
             _remove_checkout(destination)
     _fsync_directory(modules_dir)
-    _remove_transaction_journal(journal_path)
-    try:
-        next_lockfile.unlink(missing_ok=True)
-        _fsync_directory(root)
-    except OSError as exc:
-        _LOGGER.warning(
-            "Could not clean package transaction marker %s: %s",
-            next_lockfile,
-            exc,
+    if manifest_record is not None:
+        new_sha256, old_sha256 = manifest_record
+        _restore_manifest(
+            root / "geno.toml",
+            root / (transaction_name + _TRANSACTION_MANIFEST_BACKUP_SUFFIX),
+            new_sha256,
+            old_sha256,
         )
+    _remove_transaction_journal(journal_path)
+    _remove_transaction_root_files(root, transaction_name)
     _cleanup_transaction(transaction_root)
     return False
 
@@ -887,26 +1062,39 @@ def _publish_transaction(
     lockfile: Lockfile,
     lockfile_path: Path,
     transaction_root: Path,
-    publication_outcome: _PublicationOutcome | None = None,
+    manifest_change: _ManifestChange | None = None,
 ) -> None:
+    """Publish staged checkouts, the lockfile and, for an add, geno.toml.
+
+    Replacing geno.lock is the commit point. Everything before it, including
+    the new geno.toml, is undone by recovery from the journal, whether this
+    call fails or the process dies.
+    """
     for checkout in prepared:
         lockfile.dependencies[checkout.name] = checkout.locked
 
     backups = transaction_root / "backups"
     backups.mkdir(parents=True, exist_ok=True)
-    _lock_path, journal_path = _project_state_paths(lockfile_path.parent)
-    next_lockfile = lockfile_path.parent / (
-        transaction_root.name + _TRANSACTION_LOCKFILE_SUFFIX
-    )
+    root = lockfile_path.parent
+    _lock_path, journal_path = _project_state_paths(root)
+    next_lockfile = root / (transaction_root.name + _TRANSACTION_LOCKFILE_SUFFIX)
     try:
         returned_journal_path, returned_next_lockfile = _begin_transaction_journal(
             prepared,
             lockfile,
             lockfile_path,
             transaction_root,
+            manifest_change,
         )
         assert returned_journal_path == journal_path
         assert returned_next_lockfile == next_lockfile
+        if manifest_change is not None:
+            # The journal is durable, so recovery can now put the old one back.
+            _replace_keeping_mode(
+                root / (transaction_root.name + _TRANSACTION_MANIFEST_SUFFIX),
+                manifest_change.path,
+            )
+            _fsync_directory(root)
         for index, checkout in enumerate(prepared):
             if checkout.had_destination:
                 assert checkout.backup == backups / f"{index}-{checkout.name}"
@@ -916,30 +1104,23 @@ def _publish_transaction(
         _fsync_directory(transaction_root / "staged")
         _fsync_directory(lockfile_path.parent / "geno_modules")
         os.replace(next_lockfile, lockfile_path)
-        _fsync_directory(lockfile_path.parent)
-        if publication_outcome is not None:
-            publication_outcome.committed = True
+        _fsync_directory(root)
     except BaseException:
         if journal_path.exists() or journal_path.is_symlink():
             try:
-                committed = _recover_project_transaction(
-                    lockfile_path.parent, journal_path
-                )
-                if publication_outcome is not None and committed:
-                    publication_outcome.committed = True
+                _recover_project_transaction(root, journal_path)
             except BaseException as recovery_error:
                 raise RuntimeError(
                     "Package transaction failed and automatic recovery could not "
                     f"complete; recovery data remains in {transaction_root}"
                 ) from recovery_error
         else:
-            try:
-                next_lockfile.unlink(missing_ok=True)
-                _fsync_directory(lockfile_path.parent)
-            finally:
-                _cleanup_transaction(transaction_root)
+            # No journal, so geno.toml and the checkouts were never touched.
+            _remove_transaction_root_files(root, transaction_root.name)
+            _cleanup_transaction(transaction_root)
         raise
     _remove_transaction_journal(journal_path)
+    _remove_transaction_root_files(root, transaction_root.name)
     _cleanup_transaction(transaction_root)
 
 
@@ -953,8 +1134,19 @@ def install(project_root: Path | None = None) -> list[str]:
         return _install_locked(root)
 
 
-def _install_locked(root: Path) -> list[str]:
-    manifest = parse_manifest(root / "geno.toml")
+def _install_locked(
+    root: Path, manifest_change: _ManifestChange | None = None
+) -> list[str]:
+    """Install what geno.toml declares, or what ``manifest_change`` would declare.
+
+    With a ``manifest_change``, geno.toml is replaced as part of the same
+    transaction as the checkouts and the lockfile.
+    """
+    manifest = (
+        manifest_change.manifest
+        if manifest_change is not None
+        else parse_manifest(root / "geno.toml")
+    )
     lockfile = parse_lockfile(root / "geno.lock")
     modules_dir = root / "geno_modules"
 
@@ -1030,15 +1222,20 @@ def _install_locked(root: Path) -> list[str]:
         raise
 
     if transaction_root is None:
+        if manifest_change is not None:
+            # Nothing was staged: every declared dependency already matches its
+            # lock entry and checkout, so one atomic write is the whole change.
+            if not _manifest_is_unchanged(manifest_change):
+                raise _manifest_changed_error(manifest_change)
+            save_manifest(manifest_change.manifest, manifest_change.path)
         save_lockfile(lockfile, root / "geno.lock")
     else:
-        publication_outcome = getattr(_PUBLICATION_OUTCOMES, "outcome", None)
         _publish_transaction(
             prepared,
             lockfile,
             root / "geno.lock",
             transaction_root,
-            publication_outcome,
+            manifest_change,
         )
     return installed
 
@@ -1067,43 +1264,21 @@ def _add_locked(
         if branch != "main":
             raise ValueError("Dependency cannot specify both a branch and a tag")
     manifest_path = root / "geno.toml"
+    # Read the bytes first: if the file changes before it is parsed, the check
+    # at publication sees the difference and refuses, instead of overwriting it.
+    original = read_manifest_bytes(manifest_path)
     manifest = parse_manifest(manifest_path)
-    # Snapshot the manifest so a failed install can be rolled back — otherwise
-    # geno.toml is left pointing at an uninstalled dependency and every
-    # subsequent command fails (M-16).
-    original_manifest = (
-        manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else None
-    )
-
     manifest.dependencies[name] = Dependency(
         name=name,
         git=git_url,
         branch=branch,
         tag=tag,
     )
-    save_manifest(manifest, manifest_path)
-
-    publication_outcome = _PublicationOutcome()
-    previous_outcome = getattr(_PUBLICATION_OUTCOMES, "outcome", None)
-    _PUBLICATION_OUTCOMES.outcome = publication_outcome
-    try:
-        try:
-            _install_locked(root)
-        except BaseException:
-            if not publication_outcome.committed:
-                if original_manifest is None:
-                    manifest_path.unlink(missing_ok=True)
-                else:
-                    atomic_write_text(manifest_path, original_manifest)
-            raise
-    finally:
-        if previous_outcome is None:
-            try:
-                del _PUBLICATION_OUTCOMES.outcome
-            except AttributeError:
-                pass
-        else:
-            _PUBLICATION_OUTCOMES.outcome = previous_outcome
+    # geno.toml is not written here. The install transaction publishes it after
+    # the journal that can restore it is durable, so neither a failure nor a
+    # killed process leaves it declaring a dependency that was rolled back
+    # (M-16, #251).
+    _install_locked(root, _ManifestChange(manifest, manifest_path, original))
 
 
 def update(name: str | None = None, project_root: Path | None = None) -> list[str]:

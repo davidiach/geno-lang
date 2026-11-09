@@ -130,7 +130,7 @@ def test_compiled_python_denies_gated_builtins_without_capability(
 def test_compiled_js_denies_gated_builtins_without_capability(
     capability: str, builtin_name: str, source: str
 ) -> None:
-    result = run_node_code(compile_to_js(source), timeout=10)
+    result = run_node_code(compile_to_js(source))
 
     assert result.returncode != 0
     assert (
@@ -177,7 +177,6 @@ end func
     result = run_node_code(
         compile_to_js(source),
         args=("--cap", "clock"),
-        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr

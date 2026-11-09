@@ -15,7 +15,11 @@ from geno.api import RunConfig, run
 from geno.compiler import compile_to_python
 from geno.js_compiler import compile_to_js
 from geno.target_profile import TargetProfile
-from geno.tests._script_runner import run_node_code, run_python_code
+from geno.tests._script_runner import (
+    GENERATED_PROGRAM_TIMEOUT,
+    run_node_code,
+    run_python_code,
+)
 
 _NODE = shutil.which("node")
 
@@ -259,7 +263,10 @@ def test_compiled_node_esm_runs_directly_but_is_inert_when_imported(
     compiled.write_text(js_code, encoding="utf-8")
 
     direct = subprocess.run(
-        [_NODE or "node", str(compiled)], capture_output=True, text=True, timeout=10
+        [_NODE or "node", str(compiled)],
+        capture_output=True,
+        text=True,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
     assert direct.returncode == 2
     assert direct.stdout == ""
@@ -273,7 +280,10 @@ def test_compiled_node_esm_runs_directly_but_is_inert_when_imported(
         encoding="utf-8",
     )
     imported = subprocess.run(
-        [_NODE or "node", str(importer)], capture_output=True, text=True, timeout=10
+        [_NODE or "node", str(importer)],
+        capture_output=True,
+        text=True,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
     assert imported.returncode == 0
     assert imported.stdout == "imported\n2\n"
@@ -412,7 +422,7 @@ def test_compiled_node_esm_runs_main_through_symlink(tmp_path: Path) -> None:
         [_NODE or "node", str(link_path)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
 
     assert result.returncode == 2
@@ -439,7 +449,7 @@ def test_compiled_node_esm_eval_import_ignores_matching_host_argv(
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
 
     assert result.returncode == 0
@@ -464,7 +474,7 @@ def test_compiled_node_esm_runs_main_with_non_eval_runtime_flag(
         [_NODE or "node", runtime_flag, str(module_path)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
 
     assert result.returncode == 2
@@ -490,7 +500,7 @@ def test_compiled_node_esm_runs_main_through_package_directory(
         [_NODE or "node", str(package_path)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
 
     assert result.returncode == 2

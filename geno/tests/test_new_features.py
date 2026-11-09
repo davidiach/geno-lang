@@ -2448,7 +2448,7 @@ class TestCompiledJSRegexValidation:
             + '; console.log("NO_ERROR"); }'
             + " catch (e) { console.log(e.message); }\n"
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         return result.returncode, result.stdout.strip()
 
@@ -2546,7 +2546,7 @@ class TestCompiledJSRegexValidation:
             + "\nString.prototype.replace = function() { throw new Error('native replace'); };\n"
             + 'console.log(regex_replace("(a)", "X\\\\1", "a"));\n'
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "Xa"
 
@@ -2557,7 +2557,7 @@ class TestCompiledJSRegexValidation:
             + '\nconst r = regex_match("\\\\(a\\\\|a\\\\)\\\\+", "prefix (a|a)+ suffix");\n'
             + "console.log(r._tag + ':' + (r.value || ''));\n"
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "Some:(a|a)+"
 
@@ -2625,7 +2625,7 @@ class TestCompiledPadValidation:
             + '\nconsole.log(string_pad_left("7", 3, "0"));\n'
             + 'console.log(string_pad_right("7", 3, "-"));\n'
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().splitlines() == ["007", "7--"]
 
@@ -2708,7 +2708,7 @@ class TestMathDomainParity:
         from geno.js_runtime_prelude import JS_RUNTIME_PRELUDE
 
         script = JS_RUNTIME_PRELUDE + "\nconsole.log(math_sqrt(9.0));\n"
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "3"
 
@@ -2855,7 +2855,7 @@ class TestDateTimeFmtParity:
             + '\nconsole.log(datetime_format(0, "%Y-%m-%d %H:%M:%S"));\n'
             + 'console.log(datetime_format(0, "%%Y-%m-%d"));\n'
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().splitlines() == [
             "1970-01-01 00:00:00",
@@ -2868,7 +2868,7 @@ class TestDateTimeFmtParity:
             + '\nconst r = datetime_parse("1970-01-02", "%Y-%m-%d");\n'
             + "console.log(r._tag + ':' + (r._tag === 'Some' ? r.value : ''));\n"
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         # 1970-01-02 UTC == 86400 seconds past epoch.
         assert result.stdout.strip() == "Some:86400"
@@ -2879,7 +2879,7 @@ class TestDateTimeFmtParity:
             + '\nconsole.log(clock_parse("2024-13-01", "%Y-%m-%d")._tag);\n'
             + 'console.log(clock_parse("2024-02-30", "%Y-%m-%d")._tag);\n'
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().splitlines() == ["None", "None"]
 
@@ -2888,7 +2888,7 @@ class TestDateTimeFmtParity:
             _js_runtime_prelude_with_caps("clock")
             + '\nconsole.log(datetime_parse("2024-13-01", "%Y-%m-%d")._tag);\n'
         )
-        result = run_node_code(script, timeout=10)
+        result = run_node_code(script)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "None"
 
@@ -3604,7 +3604,7 @@ class TestTraitJSCompiler:
         end func
         """
         js_code = compile_js(source)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "[Label]"
 
@@ -4557,7 +4557,7 @@ class TestTypeInferenceCompiled:
         """
         js_code = compile_to_js(source)
         assert isinstance(js_code, str)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.stderr == "", result.stderr
         assert result.returncode == 50
         assert result.stdout == ""

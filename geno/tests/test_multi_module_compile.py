@@ -278,7 +278,7 @@ class TestJSMultiModule:
         compiler = JSCompiler()
         js_code = compiler.compile_project(dg)
 
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.stderr == "", result.stderr
         assert entrypoint_observation(result, int_main=True) == "10"
 
@@ -311,7 +311,7 @@ class TestJSMultiModule:
         compiler = JSCompiler()
         js_code = compiler.compile_project(dg)
 
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert "green" in result.stdout
 
@@ -347,7 +347,7 @@ class TestJSMultiModule:
         compiler = JSCompiler()
         js_code = compiler.compile_project(dg)
 
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.stderr == "", result.stderr
         assert entrypoint_observation(result, int_main=True) == "12"
 
@@ -499,7 +499,7 @@ def test_js_module_name_does_not_shadow_host_global(tmp_path):
 
     graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
     TypeChecker().check_project_graph(graph)
-    result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
+    result = run_node_code(JSCompiler().compile_project(graph))
 
     assert result.stderr == "", result.stderr
     assert entrypoint_observation(result, int_main=True) == "2"
@@ -511,7 +511,7 @@ def test_js_lowercase_standalone_entry_module_executes(tmp_path):
 
     graph = DependencyGraph.resolve(ProjectGraph.discover(entry))
     TypeChecker().check_project_graph(graph)
-    result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
+    result = run_node_code(JSCompiler().compile_project(graph))
 
     assert result.stderr == "", result.stderr
     assert entrypoint_observation(result, int_main=True) == "2"
@@ -593,7 +593,7 @@ def test_js_project_app_lifecycle_uses_private_entry_namespace(tmp_path):
         "  }\n"
         "};\n"
     )
-    result = run_node_code(runner + js_code, timeout=10)
+    result = run_node_code(runner + js_code)
 
     assert result.returncode == 0
     assert "['init']()" in js_code
@@ -623,7 +623,7 @@ def test_project_main_does_not_collide_with_trait_dispatcher(tmp_path):
     py_result = run_python_code(
         Compiler().compile_project(graph), python_executable=sys.executable, timeout=10
     )
-    js_result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
+    js_result = run_node_code(JSCompiler().compile_project(graph))
 
     assert py_result.stderr == "", py_result.stderr
     assert js_result.stderr == "", js_result.stderr
@@ -654,7 +654,7 @@ def test_duplicate_import_alias_uses_last_module_without_redeclaration(tmp_path)
     py_result = run_python_code(
         Compiler().compile_project(graph), python_executable=sys.executable, timeout=10
     )
-    js_result = run_node_code(JSCompiler().compile_project(graph), timeout=10)
+    js_result = run_node_code(JSCompiler().compile_project(graph))
 
     assert py_result.stderr == "", py_result.stderr
     assert js_result.stderr == "", js_result.stderr

@@ -15,7 +15,7 @@ from typing import cast
 
 import pytest
 
-from geno.tests._script_runner import run_node_code
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT, run_node_code
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -904,7 +904,7 @@ class TestEsmOutput:
             input=esm_code,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0, (
             f"Node.js failed to parse ESM output:\n{result.stderr}"
@@ -961,7 +961,7 @@ def _run_browser_like_js(js_code: str) -> subprocess.CompletedProcess[str]:
     )
     return cast(
         subprocess.CompletedProcess[str],
-        run_node_code(harness, node_executable=node, timeout=10),
+        run_node_code(harness, node_executable=node),
     )
 
 

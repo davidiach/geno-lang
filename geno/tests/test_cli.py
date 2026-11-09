@@ -17,6 +17,7 @@ from typing import Literal
 import pytest
 
 from geno.execution_limits import DEFAULT_INTERPRETER_MAX_STEPS
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 from geno.tests.project_resolution_fixture_helpers import (
     write_dependency_collision_fixture,
 )
@@ -2100,7 +2101,7 @@ end func double
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert run_result.returncode == 0, run_result.stderr
         assert '<a href="#bad&quot;id">bad"id</a>' in run_result.stdout
@@ -2574,7 +2575,7 @@ class TestReferenceApps:
                 capture_output=True,
                 text=True,
                 cwd=repo_root,
-                timeout=15,
+                timeout=GENERATED_PROGRAM_TIMEOUT,
             )
             assert node_result.returncode == 0, node_result.stderr
             assert node_result.stdout == expected

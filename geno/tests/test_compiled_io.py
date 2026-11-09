@@ -23,7 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from geno.compiler import compile_to_python
 from geno.js_compiler import compile_to_js
-from geno.tests._script_runner import run_node_code, run_python_code
+from geno.tests._script_runner import (
+    GENERATED_PROGRAM_TIMEOUT,
+    run_node_code,
+    run_python_code,
+)
 
 
 def _run_compiled_python(
@@ -330,7 +334,7 @@ end func
             ["node", str(js_file), "--cap", "fs"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert "hello from node" in result.stdout
@@ -352,7 +356,7 @@ end func
         result = subprocess.run(
             ["node", str(js_file), "--cap", "fs"],
             capture_output=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert b"one\ntwo\nthree\n" in result.stdout
@@ -376,7 +380,7 @@ end func
             ["node", str(js_file), "--cap", "fs"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert out_file.read_text() == "written by geno js"
@@ -398,7 +402,7 @@ end func
             ["node", str(js_file), "--cap", "fs"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode == 0
         assert "true" in result.stdout.lower()
@@ -432,7 +436,7 @@ end func
             ["node", str(js_file), "--cap", "fs"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
             cwd=tmp_path,
         )
         assert js_result.returncode == 0
@@ -455,7 +459,7 @@ end func
             ["node", str(js_file), "--cap", "print"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert result.returncode != 0
         assert "Capability denied" in result.stderr
@@ -489,7 +493,7 @@ end func
             ["node", str(js_file), "--cap", "http"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
 
         assert result.returncode != 0
@@ -519,7 +523,7 @@ end func
             ["node", str(js_file), "--cap", "http"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
 
         assert result.returncode == 0
@@ -664,7 +668,7 @@ end func
                 ["node", str(js_file), "--cap", "http"],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=GENERATED_PROGRAM_TIMEOUT,
                 env=env,
             )
 
@@ -693,7 +697,7 @@ end func
                 ["node", str(js_file), "--cap", "http"],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=GENERATED_PROGRAM_TIMEOUT,
                 env=env,
             )
 
@@ -718,7 +722,7 @@ end func
                 ["node", str(js_file), "--cap", "http"],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=GENERATED_PROGRAM_TIMEOUT,
                 env=env,
             )
 
@@ -759,7 +763,6 @@ end func
             node_result = run_node_code(
                 node_code,
                 args=("--cap", "http"),
-                timeout=15,
             )
 
         for result in (python_result, node_result):
@@ -832,7 +835,6 @@ end func
             node_result = run_node_code(
                 cast(str, compile_to_js(source)),
                 args=("--cap", "http"),
-                timeout=15,
             )
 
             from geno._serve import install_http_callbacks
@@ -914,7 +916,6 @@ end func
             node_result = run_node_code(
                 cast(str, compile_to_js(source)),
                 args=("--cap", "http"),
-                timeout=15,
             )
 
             from geno._serve import install_http_callbacks

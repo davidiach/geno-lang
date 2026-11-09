@@ -7,6 +7,14 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
+# Seconds a test waits for one generated program: compiled JavaScript under
+# Node, or compiled Python. It bounds a program that hangs and is not a
+# start-up budget. A loaded CI runner has taken more than 10 seconds to start
+# `node` on a trivial program (#249), so call sites take this default and
+# direct `node` launches pass it, instead of a shorter literal of their own.
+# geno/tests/test_script_runner.py enforces that.
+GENERATED_PROGRAM_TIMEOUT: float = 60
+
 
 def _run_generated_script(
     executable: str,
@@ -14,7 +22,7 @@ def _run_generated_script(
     *,
     suffix: str,
     args: Sequence[str] = (),
-    timeout: float | None = 10,
+    timeout: float | None = GENERATED_PROGRAM_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run generated source from a temp file to avoid Windows argv limits."""
@@ -42,7 +50,7 @@ def run_node_code(
     *,
     node_executable: str = "node",
     args: Sequence[str] = (),
-    timeout: float | None = 10,
+    timeout: float | None = GENERATED_PROGRAM_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return _run_generated_script(
@@ -60,7 +68,7 @@ def run_python_code(
     *,
     python_executable: str,
     args: Sequence[str] = (),
-    timeout: float | None = 10,
+    timeout: float | None = GENERATED_PROGRAM_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return _run_generated_script(
