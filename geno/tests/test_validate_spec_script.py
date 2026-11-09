@@ -305,18 +305,138 @@ def test_isolated_run_contract_is_required():
     assert "'capabilities.isolated_run' must be an object in spec.json" in errors
 
 
-def test_stale_ungated_cli_capability_claim_is_reported():
+STALE_UNGATED_CLAIM = "Omitting --cap leaves capability gating disabled"
+
+
+@pytest.mark.parametrize(
+    ("surface", "expected"),
+    [
+        (
+            "cli",
+            [
+                "'capabilities.surfaces.cli' must name `clock` from "
+                "'capabilities.default_grants.geno_run'",
+                "'capabilities.surfaces.cli' must say 'no gated builtins' for the "
+                "empty 'capabilities.default_grants.geno_run_json'",
+            ],
+        ),
+        (
+            "embedding_api",
+            [
+                "'capabilities.surfaces.embedding_api' must say 'no gated builtins' "
+                "for the empty 'capabilities.default_grants.embedding_api'"
+            ],
+        ),
+        (
+            "browser_builds",
+            [
+                "'capabilities.surfaces.browser_builds' must name `http` from "
+                "'capabilities.default_grants.browser_builds'"
+            ],
+        ),
+    ],
+)
+def test_stale_ungated_surface_prose_is_reported(surface, expected):
+    """#248: prose that claims gating is disabled names no real grant."""
     spec = _load_spec()
-    spec["capabilities"]["surfaces"]["cli"] = (
-        "Omitting --cap leaves capability gating disabled"
+    spec["capabilities"]["surfaces"][surface] = STALE_UNGATED_CLAIM
+
+    errors = validate_spec(spec)
+
+    for message in expected:
+        assert message in errors
+
+
+def test_main_hosted_server_claim_is_reported():
+    """The 0.6.0 hosted text said omitted capabilities get the allowed set."""
+    spec = _load_spec()
+    spec["capabilities"]["surfaces"]["hosted_server"] = (
+        "Omitting capabilities in /run requests defaults to the server's allowed "
+        "capability set"
     )
 
     errors = validate_spec(spec)
 
     assert (
-        "'capabilities.surfaces.cli' must not claim omitting --cap disables "
-        "capability gating"
+        "'capabilities.surfaces.hosted_server' must say 'no gated builtins' for the "
+        "empty 'capabilities.default_grants.hosted_server'"
     ) in errors
+
+
+def test_true_sentence_mentioning_gating_disabled_is_accepted():
+    """No keyword ban: a correct sentence may say no lane disables gating."""
+    spec = _load_spec()
+    spec["capabilities"]["description"] += (
+        " No surface leaves capability gating disabled."
+    )
+
+    assert validate_spec(spec) == []
+
+
+def test_default_grant_drift_is_reported():
+    spec = _load_spec()
+    grants = spec["capabilities"]["default_grants"]
+    grants["geno_run_unsafe"] = ["clock", "fs", "print", "random"]
+    grants["browser_builds"].remove("regex")
+
+    errors = validate_spec(spec)
+
+    assert (
+        "'capabilities.default_grants.geno_run_unsafe' mismatch: extra ['fs']" in errors
+    )
+    assert (
+        "'capabilities.default_grants.browser_builds' mismatch: missing ['regex']"
+        in errors
+    )
+
+
+def test_default_grants_must_cover_each_lane():
+    spec = _load_spec()
+    del spec["capabilities"]["default_grants"]["repl"]
+
+    errors = validate_spec(spec)
+
+    assert "'capabilities.default_grants' mismatch: missing ['repl']" in errors
+
+
+def test_stale_capability_description_is_reported():
+    spec = _load_spec()
+    spec["capabilities"]["description"] = (
+        "Direct embedding and CLI execution leave gating disabled when "
+        "capabilities are omitted."
+    )
+
+    errors = validate_spec(spec)
+
+    assert (
+        "'capabilities.description' must be a string that points to `default_grants`"
+    ) in errors
+
+
+def test_capability_surfaces_must_cover_each_surface():
+    spec = _load_spec()
+    del spec["capabilities"]["surfaces"]["compiled_programs"]
+
+    errors = validate_spec(spec)
+
+    assert "'capabilities.surfaces' mismatch: missing ['compiled_programs']" in errors
+
+
+def test_source_default_grants_follow_the_shared_defaults():
+    """The run, unsafe, test and REPL lanes share DEFAULT_ALLOWED_CAPABILITIES."""
+    from geno.capabilities import DEFAULT_ALLOWED_CAPABILITIES
+    from scripts.validate_spec import get_source_default_grants
+
+    grants = get_source_default_grants()
+    for lane in ("geno_run", "geno_run_unsafe", "geno_test", "repl"):
+        assert grants[lane] == set(DEFAULT_ALLOWED_CAPABILITIES)
+    for lane in (
+        "embedding_api",
+        "geno_run_json",
+        "compiled_programs",
+        "hosted_server",
+    ):
+        assert grants[lane] == set()
 
 
 def test_cli_surface_states_each_run_lane_default():

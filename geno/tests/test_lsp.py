@@ -6893,6 +6893,216 @@ class TestDebouncedDiagnostics:
         assert len(published) > 0
 
 
+class TestCompletionFreshnessBeforeDebounce:
+    """#252: completion reflects the latest accepted revision before the
+    debounced diagnostic refresh runs, while diagnostics stay debounced."""
+
+    OLD = "func old_name() -> Int\n  example () -> 1\n  return 1\nend func\n"
+    NEW = "func new_name() -> Int\n  example () -> 1\n  return 1\nend func\n"
+    THIRD = "func third_name() -> Int\n  example () -> 1\n  return 1\nend func\n"
+
+    @staticmethod
+    def _server(monkeypatch):
+        server = create_server(diag_debounce_sec=3600.0)  # never fires by itself
+        server.lsp._workspace = Workspace(
+            None, sync_kind=types.TextDocumentSyncKind.Full
+        )
+        published: list[str] = []
+        monkeypatch.setattr(
+            server, "publish_diagnostics", lambda u, _d: published.append(u)
+        )
+        return server, published
+
+    @staticmethod
+    def _open(server, uri, text, version=1):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri, language_id="geno", version=version, text=text
+                )
+            )
+        )
+
+    @staticmethod
+    def _change(server, uri, text, version):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_CHANGE)(
+            types.DidChangeTextDocumentParams(
+                text_document=types.VersionedTextDocumentIdentifier(
+                    uri=uri, version=version
+                ),
+                content_changes=[types.TextDocumentContentChangeEvent_Type2(text=text)],
+            )
+        )
+
+    @staticmethod
+    def _close(server, uri):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_CLOSE)(
+            types.DidCloseTextDocumentParams(
+                text_document=types.TextDocumentIdentifier(uri=uri)
+            )
+        )
+
+    @staticmethod
+    def _labels(server, uri):
+        result = server.lsp._get_handler(types.TEXT_DOCUMENT_COMPLETION)(
+            types.CompletionParams(
+                text_document=types.TextDocumentIdentifier(uri=uri),
+                position=types.Position(line=0, character=0),
+            )
+        )
+        return {item.label: item for item in result.items}, result.is_incomplete
+
+    @staticmethod
+    def _dispatch_debounce(server, uri):
+        """Run the pending refresh now, as the timer would."""
+        timer = server._geno_language_server._debounce_timers[uri]
+        timer.cancel()
+        timer.function(*timer.args, **timer.kwargs)
+
+    def test_completion_between_change_and_debounce_uses_latest_revision(
+        self, tmp_path, monkeypatch
+    ):
+        file_path = tmp_path / "doc.geno"
+        file_path.write_text(self.OLD)
+        uri = file_path.as_uri()
+        server, published = self._server(monkeypatch)
+        self._open(server, uri, self.OLD)
+        assert "old_name" in self._labels(server, uri)[0]
+        published.clear()
+
+        self._change(server, uri, self.NEW, version=2)
+
+        labels, is_incomplete = self._labels(server, uri)
+        assert "new_name" in labels
+        assert "old_name" not in labels
+        assert is_incomplete is False
+        # Completion freshness does not pull the diagnostic refresh forward.
+        assert published == []
+        assert uri in server._geno_language_server._debounce_timers
+
+        self._dispatch_debounce(server, uri)
+        labels, _ = self._labels(server, uri)
+        assert "new_name" in labels and "old_name" not in labels
+        assert published == [uri]
+
+    def test_successive_revisions_before_debounce(self, tmp_path, monkeypatch):
+        file_path = tmp_path / "doc.geno"
+        file_path.write_text(self.OLD)
+        uri = file_path.as_uri()
+        server, _published = self._server(monkeypatch)
+        self._open(server, uri, self.OLD)
+
+        self._change(server, uri, self.NEW, version=2)
+        assert "new_name" in self._labels(server, uri)[0]
+        self._change(server, uri, self.THIRD, version=3)
+
+        labels, _ = self._labels(server, uri)
+        assert "third_name" in labels
+        assert "new_name" not in labels
+        assert "old_name" not in labels
+
+    def test_stale_change_is_still_rejected(self, tmp_path, monkeypatch):
+        """An older didChange after a newer one leaves completion on the newer."""
+        file_path = tmp_path / "doc.geno"
+        file_path.write_text(self.OLD)
+        uri = file_path.as_uri()
+        server, _published = self._server(monkeypatch)
+        self._open(server, uri, self.OLD)
+
+        self._change(server, uri, self.THIRD, version=3)
+        self._change(server, uri, self.NEW, version=2)
+
+        labels, _ = self._labels(server, uri)
+        assert "third_name" in labels
+        assert "new_name" not in labels
+
+    def test_close_and_reopen_uses_reopened_source(self, tmp_path, monkeypatch):
+        file_path = tmp_path / "doc.geno"
+        file_path.write_text(self.OLD)
+        uri = file_path.as_uri()
+        server, _published = self._server(monkeypatch)
+        self._open(server, uri, self.OLD)
+        self._change(server, uri, self.NEW, version=2)
+        self._close(server, uri)
+
+        self._open(server, uri, self.THIRD, version=1)
+        self._change(server, uri, self.NEW, version=2)
+
+        labels, _ = self._labels(server, uri)
+        assert "new_name" in labels
+        assert "third_name" not in labels
+        assert "old_name" not in labels
+
+    def test_imported_module_edit_before_debounce(self, tmp_path, monkeypatch):
+        """Editing an imported module refreshes that module's own completion
+        and leaves the importer's current-document names intact."""
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils"]\n'
+        )
+        main_file = tmp_path / "Main.geno"
+        utils_file = tmp_path / "Utils.geno"
+        main_source = (
+            "import Utils\nfunc main_local() -> Int\n  example () -> 1\n"
+            "  return 1\nend func\n"
+        )
+        old_utils = (
+            "export func old_helper() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        )
+        new_utils = (
+            "export func new_helper() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        )
+        main_file.write_text(main_source)
+        utils_file.write_text(old_utils)
+        server, _published = self._server(monkeypatch)
+        self._open(server, main_file.as_uri(), main_source)
+        self._open(server, utils_file.as_uri(), old_utils)
+
+        self._change(server, utils_file.as_uri(), new_utils, version=2)
+
+        utils_labels, _ = self._labels(server, utils_file.as_uri())
+        assert "new_helper" in utils_labels
+        assert "old_helper" not in utils_labels
+        main_labels, _ = self._labels(server, main_file.as_uri())
+        assert "main_local" in main_labels
+        # The importer sees the module's current exports, not the indexed ones.
+        assert main_labels["new_helper"].detail == "(from Utils)"
+        assert "old_helper" not in main_labels
+
+    def test_completion_does_not_reparse_unchanged_documents(
+        self, tmp_path, monkeypatch
+    ):
+        """After a refresh indexes the current revision, completion reuses it."""
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils"]\n'
+        )
+        main_file = tmp_path / "Main.geno"
+        utils_file = tmp_path / "Utils.geno"
+        main_source = "import Utils\nfunc main() -> Int\n  return 1\nend func\n"
+        utils = "export func helper() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        main_file.write_text(main_source)
+        utils_file.write_text(utils)
+        server, _published = self._server(monkeypatch)
+        self._open(server, main_file.as_uri(), main_source)
+        self._open(server, utils_file.as_uri(), utils)
+        self._change(server, utils_file.as_uri(), utils + "\n", version=2)
+        self._dispatch_debounce(server, utils_file.as_uri())
+
+        calls: list[str] = []
+        real_extract = lsp_server._extract_completion_symbols
+
+        def counting_extract(source):
+            calls.append(source)
+            return real_extract(source)
+
+        monkeypatch.setattr(lsp_server, "_extract_completion_symbols", counting_extract)
+        main_labels, _ = self._labels(server, main_file.as_uri())
+        utils_labels, _ = self._labels(server, utils_file.as_uri())
+
+        assert main_labels["helper"].detail == "(from Utils)"
+        assert "helper" in utils_labels
+        assert calls == []
+
+
 class TestEffectCompletions:
     """Verify effect name completions after 'with' in function signatures."""
 

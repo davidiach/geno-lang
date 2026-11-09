@@ -19,7 +19,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import (
@@ -579,6 +579,14 @@ class _IndexedProjectModule:
     exported_completion_symbols: list[_CompletionSymbol]
     scope: str | None
     owner_package: str | None
+    # Fingerprint of the source these symbols came from, so completion can
+    # tell when an open module changed after this view was indexed (#252).
+    source_fingerprint: tuple[int, int] | None = field(default=None, compare=False)
+
+
+def _source_fingerprint(source: str) -> tuple[int, int]:
+    """Cheap identity for one source revision (``str`` caches its hash)."""
+    return (len(source), hash(source))
 
 
 _ROOT_PROJECT_SCOPE = "<root-project>"
@@ -843,6 +851,7 @@ def _project_view_from_graph(
                 exported_completion_symbols=exported_completion_symbols,
                 scope=scope,
                 owner_package=resolved_file.package_name,
+                source_fingerprint=_source_fingerprint(module_source),
             )
         )
     return _ProjectView({}, {}, {}, project_paths, tuple(indexed_modules))
@@ -957,13 +966,20 @@ def _completion_symbols_for_uri(
     doc_cache: MutableMapping[str, tuple[str, list[_CompletionSymbol]]],
     open_docs: Mapping[str, str],
 ) -> list[_CompletionSymbol] | None:
-    """Return current-document completion symbols, rebuilding on cache miss."""
+    """Return current-document completion symbols, rebuilding when stale.
+
+    The diagnostic refresh that rewrites the cached entry is debounced, so a
+    completion between an accepted ``didChange`` and that refresh would see
+    the previous revision's names (#252). An entry is used only while its
+    stored source is still the open document's source.
+    """
+    source = open_docs.get(uri)
     cached = doc_cache.get(uri)
     if cached is not None:
-        _, symbols = cached
-        return cast(list[_CompletionSymbol], symbols)
+        cached_source, symbols = cached
+        if source is None or cached_source == source:
+            return cast(list[_CompletionSymbol], symbols)
 
-    source = open_docs.get(uri)
     if source is None:
         return None
 
@@ -996,6 +1012,9 @@ class GenoLanguageServer:
         # Cache of document source -> top-level completion symbols.
         # Maps URI -> (source text, list of user-defined completion symbols).
         self._doc_cache: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
+        # Path -> (source, all, exported) for open modules edited since their
+        # project view was indexed; validated by source on every read.
+        self._open_module_symbol_cache: _BoundedDict = _BoundedDict(_DOC_CACHE_MAX)
         self._open_docs: dict[str, str] = {}
         self._open_doc_paths: dict[str, Path] = {}
         self._open_doc_versions: dict[str, int] = {}
@@ -2715,7 +2734,7 @@ class GenoLanguageServer:
         # --- Default flat completions ---
         items: list[types.CompletionItem] = []
         project_view = self._project_view_for_uri(uri)
-        completion_modules = project_view.completion_modules
+        completion_modules = self._current_completion_modules(project_view)
 
         # Keywords
         for kw in _KEYWORDS:
@@ -2762,6 +2781,43 @@ class GenoLanguageServer:
                     seen.add(symbol.name)
 
         return types.CompletionList(is_incomplete=False, items=items)
+
+    def _current_completion_modules(
+        self, project_view: _ProjectView
+    ) -> dict[str, tuple[str, list[_CompletionSymbol], list[_CompletionSymbol]]]:
+        """Return the view's completion modules with open edits applied.
+
+        A project view is rebuilt only by the debounced refresh. An open module
+        whose source changed since the view was indexed (including the
+        document being completed, which lists its own module) gets symbols
+        from its current source instead of the indexed revision (#252).
+        """
+        fingerprints = {
+            module.path: module.source_fingerprint
+            for module in project_view.indexed_modules
+        }
+        open_sources = {
+            str(path): self._open_docs[open_uri]
+            for open_uri, path in self._open_doc_paths.items()
+            if open_uri in self._open_docs
+        }
+        current: dict[
+            str, tuple[str, list[_CompletionSymbol], list[_CompletionSymbol]]
+        ] = {}
+        for name, entry in project_view.completion_modules.items():
+            path = entry[0]
+            source = open_sources.get(path)
+            if source is not None and fingerprints.get(path) != _source_fingerprint(
+                source
+            ):
+                cached = self._open_module_symbol_cache.get(path)
+                if cached is None or cached[0] != source:
+                    all_symbols, exported_symbols = _extract_completion_symbols(source)
+                    cached = (source, all_symbols, exported_symbols)
+                    self._open_module_symbol_cache[path] = cached
+                entry = (path, cached[1], cached[2])
+            current[name] = entry
+        return current
 
     def signature_help(
         self,

@@ -505,10 +505,145 @@ def _validate_capability_map(spec: dict[str, Any], errors: list[str]) -> None:
         )
 
 
+_CAPABILITY_SURFACES = frozenset(
+    {
+        "embedding_api",
+        "cli",
+        "compiled_programs",
+        "browser_builds",
+        "geno_test",
+        "repl",
+        "hosted_server",
+    }
+)
+
+# The `surfaces` prose entry that describes each `default_grants` lane.
+_DEFAULT_GRANT_PROSE: dict[str, str] = {
+    "embedding_api": "embedding_api",
+    "geno_run": "cli",
+    "geno_run_unsafe": "cli",
+    "geno_run_json": "cli",
+    "compiled_programs": "compiled_programs",
+    "browser_builds": "browser_builds",
+    "geno_test": "geno_test",
+    "repl": "repl",
+    "hosted_server": "hosted_server",
+}
+
+
+def get_source_default_grants() -> dict[str, set[str]]:
+    """Capabilities each surface grants when capabilities are omitted.
+
+    Derived from the constants and defaults each surface uses; the runtime
+    behavior itself is pinned by geno/tests/test_capability_default_grants.py.
+    """
+    import inspect
+
+    from geno.api import RunConfig
+    from geno.capabilities import DEFAULT_ALLOWED_CAPABILITIES
+    from geno.server import create_handler
+    from geno.target_profile import TargetProfile
+
+    defaults = set(DEFAULT_ALLOWED_CAPABILITIES)
+    embedding = RunConfig().capabilities
+    hosted = (
+        inspect.signature(create_handler)
+        .parameters["default_request_capabilities"]
+        .default
+    )
+    return {
+        "embedding_api": set(embedding or ()),
+        "geno_run": defaults,
+        "geno_run_unsafe": defaults,
+        "geno_run_json": set(embedding or ()),
+        "compiled_programs": set(),
+        "browser_builds": set(TargetProfile.load("browser").capabilities),
+        "geno_test": defaults,
+        "repl": defaults,
+        "hosted_server": set(hosted or ()),
+    }
+
+
+def _validate_capability_surfaces(spec: dict[str, Any], errors: list[str]) -> None:
+    """Keep each surface's omitted-capabilities grant in step with source (#248).
+
+    ``default_grants`` is the normative per-surface default and must match the
+    source. Each ``surfaces`` entry must name every capability its lanes grant,
+    or say "no gated builtins" for a lane that grants none, so the prose cannot
+    drift back to claiming that omitting capabilities disables gating.
+    """
+    raw = spec.get("capabilities", {})
+    if not isinstance(raw, dict):
+        return
+
+    description = raw.get("description")
+    if not isinstance(description, str) or "`default_grants`" not in description:
+        errors.append(
+            "'capabilities.description' must be a string that points to "
+            "`default_grants`"
+        )
+
+    surfaces = raw.get("surfaces")
+    if not isinstance(surfaces, dict):
+        errors.append("'capabilities.surfaces' must be an object in spec.json")
+        surfaces = {}
+    else:
+        _record_set_mismatch(
+            errors,
+            "'capabilities.surfaces' mismatch",
+            set(_CAPABILITY_SURFACES),
+            set(surfaces),
+        )
+        for name, text in surfaces.items():
+            if not isinstance(text, str):
+                errors.append(f"'capabilities.surfaces.{name}' must be a string")
+
+    grants = raw.get("default_grants")
+    if not isinstance(grants, dict):
+        errors.append("'capabilities.default_grants' must be an object in spec.json")
+        return
+
+    expected_grants = get_source_default_grants()
+    _record_set_mismatch(
+        errors,
+        "'capabilities.default_grants' mismatch",
+        set(expected_grants),
+        set(grants),
+    )
+    for lane, expected in sorted(expected_grants.items()):
+        if lane not in grants:
+            continue
+        path = f"capabilities.default_grants.{lane}"
+        actual = _unique_string_set(grants[lane], path=path, errors=errors)
+        if actual is None:
+            continue
+        _record_set_mismatch(errors, f"'{path}' mismatch", expected, actual)
+
+        prose_key = _DEFAULT_GRANT_PROSE[lane]
+        prose = surfaces.get(prose_key)
+        if not isinstance(prose, str):
+            continue
+        if not actual and "no gated builtins" not in prose:
+            errors.append(
+                f"'capabilities.surfaces.{prose_key}' must say 'no gated builtins' "
+                f"for the empty '{path}'"
+            )
+        for capability in sorted(actual):
+            if f"`{capability}`" not in prose:
+                errors.append(
+                    f"'capabilities.surfaces.{prose_key}' must name `{capability}` "
+                    f"from '{path}'"
+                )
+
+
 def _validate_isolated_run_capabilities(
     spec: dict[str, Any], errors: list[str]
 ) -> None:
-    """Keep spec.json's isolated `geno run` grant contract on geno.capabilities."""
+    """Keep spec.json's isolated `geno run` grant contract on geno.capabilities.
+
+    The ``surfaces`` prose, including the ``cli`` entry that describes this
+    lane, is checked by ``_validate_capability_surfaces``.
+    """
     from geno.capabilities import (
         DEFAULT_ALLOWED_CAPABILITIES,
         ISOLATED_RUN_REFUSED_CAPABILITIES,
@@ -519,15 +654,6 @@ def _validate_isolated_run_capabilities(
     raw = spec.get("capabilities", {})
     if not isinstance(raw, dict):
         return
-    surfaces = raw.get("surfaces", {})
-    cli_text = surfaces.get("cli") if isinstance(surfaces, dict) else None
-    if not isinstance(cli_text, str):
-        errors.append("'capabilities.surfaces.cli' must be a string in spec.json")
-    elif "gating disabled" in cli_text:
-        errors.append(
-            "'capabilities.surfaces.cli' must not claim omitting --cap disables "
-            "capability gating"
-        )
     lane = raw.get("isolated_run")
     if not isinstance(lane, dict):
         errors.append("'capabilities.isolated_run' must be an object in spec.json")
@@ -808,6 +934,7 @@ def validate_spec(spec: dict[str, Any]) -> list[str]:
         _spec_capabilities(spec, errors),
     )
     _validate_capability_map(spec, errors)
+    _validate_capability_surfaces(spec, errors)
     _validate_isolated_run_capabilities(spec, errors)
     _record_set_mismatch(
         errors,
