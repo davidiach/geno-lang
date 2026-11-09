@@ -24,6 +24,40 @@ Importing generated Python or Node ESM does not invoke `main` or terminate the
 importing process. Embedding through `geno.api.run()` returns the value to the
 host instead of applying executable behavior.
 
+## Runtime failures (0.7 development line)
+
+On the 0.7 development line (Draft
+[proposal 0018](../proposals/0018-runtime-failure-diagnostics.md)), an
+uncaught runtime failure in a standalone Python artifact or a Node entry
+build prints a Geno report, not a host traceback: the Geno frames, mapped
+back to `.geno` positions through a table the compiler embeds, and the
+`Runtime Error:` line last. Paths are relative to the entry file's
+directory, and the artifact still needs no Geno install. The status stays 1.
+
+```text
+Stack trace (most recent call last):
+  Main.geno:15:12 in main
+  Main.geno:11:12 in scale
+  Main.geno:4:9 in check
+Runtime Error: value too large
+```
+
+A Node entry build exits as soon as the report is printed, for an async
+`main` too, so pending asynchronous work does not run after it. Its stdout
+and stderr are blocking, as they are for compiled Python, so everything the
+program printed before failing reaches a full or slow pipe before that exit
+(0.6's synchronous fatal errors could lose the tail). The table and its anchor are the
+first two lines of the program's code, after the runtime prelude, so
+`--source-map` mappings move down by those two lines; the map format is
+unchanged. Libraries without `main` and browser builds carry no table.
+
+## Environment variables
+
+| Variable | Read by | Effect |
+| --- | --- | --- |
+| `GENO_TRACEBACK=host` | `geno run`, standalone Python artifacts, Node entry builds (0.7 line) | Also print the host's own traceback after the Geno report, under `Host traceback (GENO_TRACEBACK=host):`: the interpreter's or the isolated worker's Python traceback on `geno run`, the generated code's on Python, the V8 stack on Node. For debugging Geno itself; `--json`, the embedding API and `geno serve` ignore it. |
+| `GENO_HTTP_ALLOW_PRIVATE=1` | compiled Python and Node output with `--cap http` | Allow loopback, private and other non-public HTTP targets (trusted local deployments only). |
+
 ## Compilation profiles
 
 When a project manifest declares an execution profile compatible with the

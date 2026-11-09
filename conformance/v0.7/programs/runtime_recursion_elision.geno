@@ -1,0 +1,15 @@
+// Proposal 0018: a deep stack keeps its first 10 and last 10 frames and says
+// how many it left out. The failure has 42 frames (`main` and 41
+// `count_down`s), so 22 are omitted.
+
+func count_down(n: Int) -> Int
+    example 0 panics "bottom"
+    if n == 0 then
+        panic("bottom")
+    end if
+    return count_down(n - 1)
+end func
+
+func main() -> Int
+    return count_down(40)
+end func

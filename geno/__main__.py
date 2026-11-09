@@ -20,7 +20,12 @@ import math
 import os
 from typing import Any, cast
 
-from .capabilities import CapabilityParseError, normalize_capability_values
+from .capabilities import (
+    CapabilityParseError,
+    isolated_env_name_error,
+    isolated_run_cap_help,
+    normalize_capability_values,
+)
 from .cli._util import (
     _check_python_version,
 )
@@ -40,8 +45,11 @@ from .execution_limits import (
     DEFAULT_INTERPRETER_MAX_STEPS,
     DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
+    DEFAULT_PROPERTY_SEED,
+    DEFAULT_PROPERTY_TRIALS,
     DEFAULT_TEST_MAX_STEPS,
     DEFAULT_TEST_TIMEOUT,
+    MAX_PROPERTY_TRIALS,
 )
 
 # Subcommand implementations are imported lazily: eagerly importing every
@@ -120,6 +128,24 @@ def _non_negative_int_arg(value: str) -> int:
         raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
+def _allow_env_name_arg(value: str) -> str:
+    problem = isolated_env_name_error(value)
+    if problem is not None:
+        raise argparse.ArgumentTypeError(problem)
+    return value
+
+
+def _property_trials_arg(value: str) -> int:
+    message = f"must be an integer from 1 to {MAX_PROPERTY_TRIALS}"
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(message) from exc
+    if not 1 <= parsed <= MAX_PROPERTY_TRIALS:
+        raise argparse.ArgumentTypeError(message)
     return parsed
 
 
@@ -215,8 +241,22 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-file-size-bytes",
         type=_non_negative_int_arg,
-        default=0,
-        help="Process sandbox file-size limit in bytes (default: 0)",
+        default=None,
+        help=(
+            "Process sandbox per-file write limit in bytes, enforced by the "
+            "isolated fs facade and RLIMIT_FSIZE where available; 0 disables "
+            "file writes (default: 0, or 64 MiB with --cap fs)"
+        ),
+    )
+    run_parser.add_argument(
+        "--max-total-write-bytes",
+        type=_non_negative_int_arg,
+        default=None,
+        help=(
+            "Process sandbox limit on the bytes fs_write_text may write in one "
+            "run, examples and main together; 0 disables file writes "
+            "(default: 0, or 64 MiB with --cap fs)"
+        ),
     )
     run_parser.add_argument(
         "--max-processes",
@@ -234,9 +274,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="capabilities",
         metavar="CAPABILITY",
+        help=isolated_run_cap_help(),
+    )
+    run_parser.add_argument(
+        "--allow-env",
+        action="append",
+        dest="allow_env",
+        metavar="NAME",
+        type=_allow_env_name_arg,
         help=(
-            "Grant a capability (e.g. --cap print or --cap fs,print). "
-            "Repeatable and comma-separable. Requires --unsafe or --json."
+            "Let an isolated run granted --cap env read environment variable "
+            "NAME with env_get/env_get_or (exact name, repeatable; default: "
+            "none). cli_args() needs no allowed name. Default process-isolated "
+            "mode only."
         ),
     )
     run_parser.add_argument(
@@ -362,7 +412,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Run example clauses and test blocks through the interpreter. "
             "--target applies platform availability checks; it does not select "
-            "a compiled backend."
+            "a compiled backend. --properties also checks each eligible "
+            "function against its own requires/ensures on generated inputs "
+            "(experimental)."
         ),
     )
     test_parser.add_argument(
@@ -413,6 +465,36 @@ def build_parser() -> argparse.ArgumentParser:
         "-w",
         action="store_true",
         help="Re-run tests on file changes",
+    )
+    test_parser.add_argument(
+        "--properties",
+        action="store_true",
+        help=(
+            "Also run contract-driven property checks (experimental): call each "
+            "eligible function on generated arguments; inputs its requires "
+            "rejects are discarded, and an ensures violation, any other panic "
+            "(unless it has a panics example) or a resource limit fails it"
+        ),
+    )
+    test_parser.add_argument(
+        "--trials",
+        type=_property_trials_arg,
+        default=None,
+        metavar="N",
+        help=(
+            "Generated inputs per function for --properties "
+            f"(1-{MAX_PROPERTY_TRIALS}, default: {DEFAULT_PROPERTY_TRIALS})"
+        ),
+    )
+    test_parser.add_argument(
+        "--seed",
+        type=_non_negative_int_arg,
+        default=None,
+        metavar="S",
+        help=(
+            "Random seed for --properties (default: "
+            f"{DEFAULT_PROPERTY_SEED}); a failure prints the seed that reproduces it"
+        ),
     )
 
     # Fmt command
@@ -645,11 +727,13 @@ def dispatch_args(
             ),
             max_cpu_time=args.max_cpu_time,
             max_file_size_bytes=args.max_file_size_bytes,
+            max_total_write_bytes=args.max_total_write_bytes,
             max_processes=args.max_processes,
             capabilities=caps,
             target=getattr(args, "target", None),
             json_output=args.json_output,
             program_args=program_args,
+            allow_env=args.allow_env,
         )
         # `_command` resolves lazily, so the return type is not visible here.
         return cast("int | None", run_status)
@@ -695,6 +779,11 @@ def dispatch_args(
         init_project = _command("init_project")
         init_project(args.name, template=args.template)
     elif args.command == "test":
+        if not args.properties:
+            # Silently ignoring them would hide a misconfigured CI job.
+            for flag, value in (("--trials", args.trials), ("--seed", args.seed)):
+                if value is not None:
+                    parser.error(f"argument {flag}: requires --properties")
         run_tests = _command("run_tests")
         run_tests(
             args.path,
@@ -706,6 +795,9 @@ def dispatch_args(
             fail_on_untested=args.fail_on_untested,
             timeout=args.timeout,
             max_steps=args.max_steps,
+            properties=args.properties,
+            trials=args.trials,
+            seed=args.seed,
         )
     elif args.command == "fmt":
         format_files = _command("format_files")

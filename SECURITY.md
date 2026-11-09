@@ -234,6 +234,34 @@ config = geno.RunConfig(
 )
 ```
 
+### Granting Capabilities on the Command Line
+
+`geno run --cap ...` grants exactly the listed capabilities while the program
+stays in the process sandbox, with its hard wall-clock kill and memory, CPU,
+file-size and process limits
+([proposal 0013](docs/proposals/0013-isolated-run-capabilities.md)):
+
+```bash
+geno run --cap env,fs,print report.geno -- data/input.csv
+```
+
+- The worker binds host access only for granted capabilities, through trusted
+  bindings that compiled program code cannot name; the capability check and
+  the binding's presence are independent gates.
+- `process` and `serve` are refused before launch, because started programs
+  and listeners would escape the sandbox's limits; they need `--unsafe`.
+  `stdin` stays refused until its platform gate passes, and `http` is refused
+  on Windows for now.
+- `env` exposes only the program arguments and the variables named with
+  `--allow-env NAME`. An allowed variable is real data: a program granted
+  `http` too, or one of its examples, can send it over the network, so allow
+  only names the program needs.
+- `fs` and `http` give real host access within the documented roots,
+  read-only mode, write quotas and network policy. There is no
+  operating-system filesystem or network confinement: the worker runs as the
+  invoking user, and the Python-level sandbox and these policies are the
+  boundary.
+
 ## Host Callback Trust Model
 
 High-risk builtins (`fs_read_text`, `http_fetch`) are **not implemented by Geno**. Instead,
@@ -492,7 +520,8 @@ When serving `compile_to_html` output or embedding `compile_to_js` output in a w
 
 ### For Users
 
-1. **Never run untrusted code with `--unsafe`**
+1. **Never run untrusted code with `--unsafe`**; grant what it needs with
+   `geno run --cap ...`, which keeps the process sandbox
 2. **Use ProcessSandbox for untrusted code** for hard resource limits
 3. Review code before execution, especially from LLM outputs
 4. Use appropriate resource limits for your use case

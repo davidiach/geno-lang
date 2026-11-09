@@ -3673,6 +3673,280 @@ class TestJSCompilerSourceMapTracking:
             no_map_compiler.generate_source_map()
 
 
+# Records every call that makes stdout or stderr blocking (proposal 0018:
+# only a build that runs as the entry point does).
+_BLOCKING_SPY = (
+    "const blocked = [];\n"
+    "for (const [name, stream] of [['stdout', process.stdout], "
+    "['stderr', process.stderr]]) {\n"
+    "  const handle = stream._handle;\n"
+    "  if (handle && typeof handle.setBlocking === 'function') {\n"
+    "    const original = handle.setBlocking.bind(handle);\n"
+    "    handle.setBlocking = (flag) => { blocked.push(name); "
+    "return original(flag); };\n"
+    "  }\n"
+    "}\n"
+)
+
+
+_REPORT_PANIC = """
+func check(n: Int) -> Int
+    example 1 -> 1
+    if n > 5 then
+        panic("value too large")
+    end if
+    return n
+end func
+
+func main() -> Int
+    return check(9)
+end func
+"""
+
+
+class TestJSRuntimeFailureReporter:
+    """Proposal 0018: the reporter lives only on a Node entry build's entry path."""
+
+    def test_tree_shaking_keeps_the_reporter_only_in_entry_builds(self):
+        from geno.target_profile import TargetProfile
+
+        entry = compile_to_js(_REPORT_PANIC)
+        library = compile_to_js(_REPORT_PANIC.split("func main", 1)[0])
+        browser = compile_to_js(
+            _REPORT_PANIC, target_profile=TargetProfile.load("browser")
+        )
+        assert isinstance(entry, str)
+        assert isinstance(library, str)
+        assert isinstance(browser, str)
+        reporter = (
+            "function _genoReportUncaught(",
+            "function _genoInstallReporter(",
+            "function _genoFailureReport(",
+            "const _GENO_STACK_HEADER = ",
+        )
+        for definition in reporter:
+            assert definition in entry
+            assert definition not in library
+            assert definition not in browser
+
+    def test_the_trace_table_does_not_drive_tree_shaking(self):
+        # The table names the source file; only real references pull a
+        # prelude section in.
+        entry = compile_to_js(_REPORT_PANIC, filename="option_flatten.geno")
+        assert isinstance(entry, str)
+        assert "option_flatten.geno" in entry
+        assert "function option_flatten(" not in entry
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("node"), reason="Node.js is not installed"
+    )
+    def test_importing_an_esm_build_changes_no_process_setting(self, tmp_path):
+        esm = compile_to_js(_REPORT_PANIC, esm=True)
+        assert isinstance(esm, str)
+        (tmp_path / "lib.mjs").write_text(esm, encoding="utf-8")
+        (tmp_path / "importer.mjs").write_text(
+            _BLOCKING_SPY + "const before = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "const lib = await import('./lib.mjs');\n"
+            "const after = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "console.log(JSON.stringify({before, after, blocked, "
+            "exports: Object.keys(lib).sort(), value: lib.check(1)}));\n",
+            encoding="utf-8",
+        )
+        import subprocess
+
+        result = subprocess.run(
+            ["node", str(tmp_path / "importer.mjs")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert observed["after"] == observed["before"]
+        assert observed["blocked"] == []
+        assert observed["exports"] == ["check", "main"]
+        assert observed["value"] == 1
+
+    def test_the_entry_path_installs_the_reporter_before_main(self):
+        cjs = compile_to_js(_REPORT_PANIC)
+        esm = compile_to_js(_REPORT_PANIC, esm=True)
+        assert isinstance(cjs, str)
+        assert isinstance(esm, str)
+        for code in (cjs, esm):
+            install = code.index("_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);")
+            call = code.index("const _main_result = main();")
+            report = code.index("_genoReportUncaught(_temp_")
+            assert install < call < report
+        guard = esm.index("import.meta.main === true")
+        assert guard < esm.index("_genoInstallReporter(_GENO_TRACE, _genoTraceAnchor);")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "_GENO_TRACE",
+            "_genoTraceAnchor",
+            "_genoReportUncaught",
+            "_genoInstallReporter",
+        ],
+    )
+    def test_the_table_and_reporter_names_are_reserved(self, name):
+        source = (
+            f"func {name}() -> Int\n    example () -> 1\n    return 1\nend func\n\n"
+            "func main() -> Int\n    return 0\nend func\n"
+        )
+        with pytest.raises(JSCompileError, match="reserved runtime name"):
+            compile_to_js(source)
+
+    def test_an_async_main_reports_through_its_catch(self):
+        source = """
+        async func main() -> Int
+            return 0
+        end func
+        """
+        code = compile_to_js(source)
+        esm = compile_to_js(source, esm=True)
+        assert isinstance(code, str)
+        assert isinstance(esm, str)
+        assert re.search(
+            r"\}\)\(\)\.catch\((_temp_\d+) => _genoReportUncaught\(\1, "
+            r"_GENO_TRACE, _genoTraceAnchor\)\);",
+            esm,
+        )
+        # CommonJS reports only as the entry module; a require()d build keeps
+        # 0.6's handler.
+        assert re.search(
+            r"\}\)\(\)\.catch\((_temp_\d+) => \{\n\s*if \((_temp_\d+)\) "
+            r"_genoReportUncaught\(\1, _GENO_TRACE, _genoTraceAnchor\);\n"
+            r"\s*else \{ console\.error\(\1\); process\.exitCode = 1; \}\n\s*\}\);",
+            code,
+        )
+        assert "console.error(e)" not in code
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("node"), reason="Node.js is not installed"
+    )
+    @pytest.mark.parametrize("fails", [True, False], ids=["failing", "succeeding"])
+    def test_requiring_a_commonjs_build_leaves_the_host_in_charge(
+        self, tmp_path, fails
+    ):
+        """A require()d CommonJS build does not own the process.
+
+        Its failure propagates to the requirer as in 0.6, and neither the
+        stack trace limit nor an `unhandledRejection` listener changes, so a
+        later rejection in the host is the host's own business.
+        """
+        source = _REPORT_PANIC if fails else _REPORT_PANIC.replace("check(9)", "0")
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        (tmp_path / "lib.js").write_text(code, encoding="utf-8")
+        (tmp_path / "host.js").write_text(
+            _BLOCKING_SPY + "process.on('unhandledRejection', (r) => "
+            "console.log('host handled: ' + r.message));\n"
+            "const before = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "let caught = null;\n"
+            "try { require('./lib.js'); } catch (e) { caught = e.message; }\n"
+            "const after = [Error.stackTraceLimit, "
+            "process.listenerCount('unhandledRejection')];\n"
+            "console.log(JSON.stringify({before, after, blocked, caught}));\n"
+            "Promise.reject(new Error('host rejection'));\n"
+            "setTimeout(() => console.log('host still running'), 20);\n",
+            encoding="utf-8",
+        )
+        import subprocess
+
+        result = subprocess.run(
+            ["node", str(tmp_path / "host.js")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Runtime Error" not in result.stderr
+        lines = result.stdout.splitlines()
+        observed = json.loads(lines[0])
+        assert observed["after"] == observed["before"]
+        assert observed["blocked"] == []
+        assert observed["caught"] == ("value too large" if fails else None)
+        assert lines[1:] == ["host handled: host rejection", "host still running"]
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("node"), reason="Node.js is not installed"
+    )
+    def test_builtins_build_host_errors_without_stacks(self, tmp_path):
+        """A host failure a builtin turns into `Err` captures no stack.
+
+        An entry build lifts `Error.stackTraceLimit`, so such an Error would
+        cost time in proportion to the stack's depth on a success path. The
+        host work runs with the limit at 0, which is restored afterwards.
+        """
+        source = (
+            "func main() -> Int\n"
+            '    let missing = fs_read_text("no-such-file.txt")\n'
+            '    match json_parse("[\\"a\\", }") with\n'
+            "        | Ok(_) -> return 1\n"
+            "        | Err(_) -> return 0\n"
+            "    end match\n"
+            "end func\n"
+        )
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        (tmp_path / "lib.js").write_text(code, encoding="utf-8")
+        (tmp_path / "host.js").write_text(
+            "const fs = require('fs');\n"
+            "const seen = [];\n"
+            "const parse = JSON.parse;\n"
+            "JSON.parse = function (text) {\n"
+            "  seen.push(['JSON.parse', Error.stackTraceLimit]);\n"
+            "  return parse.call(JSON, text);\n"
+            "};\n"
+            "const read = fs.readFileSync;\n"
+            "fs.readFileSync = function (...args) {\n"
+            "  seen.push(['readFileSync', Error.stackTraceLimit]);\n"
+            "  return read.apply(fs, args);\n"
+            "};\n"
+            "process.argv.push('--cap', 'fs');\n"
+            "Error.stackTraceLimit = Infinity;\n"
+            "require('./lib.js');\n"
+            "console.log(JSON.stringify({seen, after: String(Error.stackTraceLimit), "
+            "status: process.exitCode}));\n",
+            encoding="utf-8",
+        )
+        import subprocess
+
+        result = subprocess.run(
+            ["node", str(tmp_path / "host.js")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert ["readFileSync", 0] in observed["seen"]
+        assert ["JSON.parse", 0] in observed["seen"]
+        assert observed["after"] == "Infinity"
+        assert observed["status"] == 0
+
+    def test_module_is_a_host_name(self):
+        """A Geno `module` is renamed, so it cannot hide CommonJS's `module`."""
+        source = (
+            "func module(n: Int) -> Int\n    example 1 -> 1\n    return n\n"
+            "end func\n\nfunc main() -> Int\n    return module(0)\nend func\n"
+        )
+        code = compile_to_js(source)
+        assert isinstance(code, str)
+        assert "function module(" not in code
+        assert "require.main === module" in code
+
+
 class TestJSCompilerPreludeTreeShaking:
     @pytest.mark.parametrize(
         "user_code",

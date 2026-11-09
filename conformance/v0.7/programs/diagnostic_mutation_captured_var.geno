@@ -1,0 +1,19 @@
+// Proposal 0019 (0.7 draft): a lambda that assigns a variable captured from
+// an enclosing function carries `mutation`, because successive calls of the
+// closure observe the change. `make_counter` itself is pure, but its declared
+// return type must say `() -> Int with mutation`; `() -> Int` stays E300
+// ("Return type mismatch"), as in 0.6.
+@untested("returns a closure")
+func make_counter() -> () -> Int
+    var n = 0
+    return fn() do
+        n = n + 1
+        return n
+    end fn
+end func
+
+func main() -> Unit with io, mutation
+    let next = make_counter()
+    print(next())
+    print(next())
+end func

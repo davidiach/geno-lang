@@ -636,6 +636,46 @@ def _validate_capability_surfaces(spec: dict[str, Any], errors: list[str]) -> No
                 )
 
 
+def _validate_isolated_run_capabilities(
+    spec: dict[str, Any], errors: list[str]
+) -> None:
+    """Keep spec.json's isolated `geno run` grant contract on geno.capabilities.
+
+    The ``surfaces`` prose, including the ``cli`` entry that describes this
+    lane, is checked by ``_validate_capability_surfaces``.
+    """
+    from geno.capabilities import (
+        DEFAULT_ALLOWED_CAPABILITIES,
+        ISOLATED_RUN_REFUSED_CAPABILITIES,
+        KNOWN_CAPABILITIES,
+        isolated_run_capabilities,
+    )
+
+    raw = spec.get("capabilities", {})
+    if not isinstance(raw, dict):
+        return
+    lane = raw.get("isolated_run")
+    if not isinstance(lane, dict):
+        errors.append("'capabilities.isolated_run' must be an object in spec.json")
+        return
+
+    grantable = isolated_run_capabilities("posix")
+    expected = {
+        "default_grant": set(DEFAULT_ALLOWED_CAPABILITIES),
+        "grantable": set(grantable),
+        "refused": set(ISOLATED_RUN_REFUSED_CAPABILITIES),
+        "unavailable": set(
+            KNOWN_CAPABILITIES - grantable - ISOLATED_RUN_REFUSED_CAPABILITIES
+        ),
+        "unavailable_on_windows": set(grantable - isolated_run_capabilities("nt")),
+    }
+    for field, expected_names in expected.items():
+        path = f"capabilities.isolated_run.{field}"
+        actual = _unique_string_set(lane.get(field), path=path, errors=errors)
+        if actual is not None:
+            _record_set_mismatch(errors, f"'{path}' mismatch", expected_names, actual)
+
+
 def _validate_language_contract(spec: dict[str, Any], errors: list[str]) -> None:
     from geno._version import __version__
 
@@ -895,6 +935,7 @@ def validate_spec(spec: dict[str, Any]) -> list[str]:
     )
     _validate_capability_map(spec, errors)
     _validate_capability_surfaces(spec, errors)
+    _validate_isolated_run_capabilities(spec, errors)
     _record_set_mismatch(
         errors,
         "Browser lifecycle mismatch",

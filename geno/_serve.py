@@ -11,7 +11,7 @@ argument parsing and dispatch.
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 logger = logging.getLogger(__name__)
@@ -418,6 +418,61 @@ def _validate_process_argv(
     return [resolved, *argv[1:]], None
 
 
+def file_kind_name(mode: int) -> str:
+    """Classify a stat mode as ``"file"``, ``"directory"``, ``"symlink"`` or ``"other"``.
+
+    The isolated ``geno run`` facade (``geno.isolated_host.IsolatedFs``) uses
+    this too, so the worker's runtime prelude receives an already-classified
+    kind and never needs the ``stat`` module itself.
+    """
+    import stat
+
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    return "other"
+
+
+_FILE_KIND_CONSTRUCTORS = {
+    "file": "FileKindFile",
+    "directory": "FileKindDirectory",
+    "symlink": "FileKindSymlink",
+    "other": "FileKindOther",
+}
+
+
+def _metadata_value_from_parts(
+    kind: str, size: int, mtime_ns: int, fn_name: str
+) -> Any:
+    """Build the interpreter's ``FileMetadata`` from a classified stat result.
+
+    *kind* is a :func:`file_kind_name` result. Sizes and times outside
+    JavaScript's safe integer range are rejected, as on every backend.
+    """
+    from .values import ConstructorValue
+
+    kind_name = _FILE_KIND_CONSTRUCTORS[kind]
+    modified_ms = mtime_ns // 1_000_000
+    max_safe_int = 2**53 - 1
+    if not (-max_safe_int <= size <= max_safe_int):
+        raise RuntimeError(f"{fn_name} size exceeds JavaScript safe integer range")
+    if not (-max_safe_int <= modified_ms <= max_safe_int):
+        raise RuntimeError(
+            f"{fn_name} modified_ms exceeds JavaScript safe integer range"
+        )
+    return ConstructorValue(
+        "FileMetadata",
+        {
+            "kind": ConstructorValue(kind_name, {}),
+            "size": size,
+            "modified_ms": modified_ms,
+        },
+    )
+
+
 def install_fs_callbacks(
     interpreter,
     *,
@@ -484,33 +539,11 @@ def install_fs_callbacks(
         return os.path.exists(path)
 
     def _metadata_value(stat_result: Any, fn_name: str) -> Any:
-        import stat
-
-        mode = stat_result.st_mode
-        if stat.S_ISREG(mode):
-            kind_name = "FileKindFile"
-        elif stat.S_ISDIR(mode):
-            kind_name = "FileKindDirectory"
-        elif stat.S_ISLNK(mode):
-            kind_name = "FileKindSymlink"
-        else:
-            kind_name = "FileKindOther"
-        size = stat_result.st_size
-        modified_ms = stat_result.st_mtime_ns // 1_000_000
-        max_safe_int = 2**53 - 1
-        if not (-max_safe_int <= size <= max_safe_int):
-            raise RuntimeError(f"{fn_name} size exceeds JavaScript safe integer range")
-        if not (-max_safe_int <= modified_ms <= max_safe_int):
-            raise RuntimeError(
-                f"{fn_name} modified_ms exceeds JavaScript safe integer range"
-            )
-        return ConstructorValue(
-            "FileMetadata",
-            {
-                "kind": ConstructorValue(kind_name, {}),
-                "size": size,
-                "modified_ms": modified_ms,
-            },
+        return _metadata_value_from_parts(
+            file_kind_name(stat_result.st_mode),
+            stat_result.st_size,
+            stat_result.st_mtime_ns,
+            fn_name,
         )
 
     def _fs_metadata(path: Any) -> Any:
@@ -581,13 +614,38 @@ def install_fs_callbacks(
     )
 
 
-def install_http_callbacks(
-    interpreter, *, allow_private_networks: bool | None = None
-) -> None:
-    """Install real HTTP implementations for --cap http."""
+# The per-operation timeout of an outgoing HTTP request: each connection
+# attempt (one per redirect hop) and each blocking socket operation. The
+# isolated `geno run` lane also bounds it by the time the run has left.
+HTTP_REQUEST_TIMEOUT_SECONDS = 30.0
+
+
+def _default_http_timeout() -> float:
+    return HTTP_REQUEST_TIMEOUT_SECONDS
+
+
+def _open_validated_http_request(
+    req: Any,
+    fn_name: str,
+    *,
+    allow_private_networks: bool,
+    timeout: Callable[[], float] = _default_http_timeout,
+) -> Any:
+    """Open *req* through the validated client and return the response.
+
+    Every connection, including each redirect hop's, resolves and validates
+    its destination and connects only to the validated addresses
+    (``_create_validated_http_connection``); every redirect target passes the
+    same scheme and destination checks, at most ten redirects are followed,
+    and caller headers are dropped across origins. ``ProxyHandler({})`` keeps
+    proxy variables from routing a request anywhere else, and TLS keeps its
+    certificate and hostname checks. *timeout* returns the longest the next
+    connection attempt may take; it is called again for every hop, so a
+    caller can bound each hop by the time it has left. ``HTTPError`` (a
+    response with an error status) propagates to the caller.
+    """
     import http.client
     import ssl
-    from urllib.error import HTTPError
     from urllib.parse import urljoin
     from urllib.request import (
         HTTPHandler,
@@ -598,6 +656,191 @@ def install_http_callbacks(
         build_opener,
     )
 
+    def _connection_timeout(current: Any) -> Any:
+        bound = timeout()
+        if isinstance(current, (int, float)) and not isinstance(current, bool):
+            return min(current, bound)
+        return bound
+
+    class _ValidatedHTTPConnection(http.client.HTTPConnection):
+        def connect(self) -> None:
+            self.sock = _create_validated_http_connection(
+                self.host,
+                self.port,
+                _connection_timeout(self.timeout),
+                getattr(self, "source_address", None),
+                fn_name,
+                allow_private_networks=allow_private_networks,
+            )
+
+    class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
+        def connect(self) -> None:
+            self.sock = _create_validated_http_connection(
+                self.host,
+                self.port,
+                _connection_timeout(self.timeout),
+                getattr(self, "source_address", None),
+                fn_name,
+                allow_private_networks=allow_private_networks,
+            )
+            server_hostname = self.host
+            context = getattr(self, "_context", None) or ssl.create_default_context()
+            self.sock = context.wrap_socket(
+                self.sock,
+                server_hostname=server_hostname,
+            )
+
+    class _ValidatedHTTPHandler(HTTPHandler):
+        def http_open(self, request: Any) -> Any:
+            return self.do_open(_ValidatedHTTPConnection, request)
+
+    class _ValidatedHTTPSHandler(HTTPSHandler):
+        def https_open(self, request: Any) -> Any:
+            return self.do_open(_ValidatedHTTPSConnection, request)
+
+    class _HttpOnlyRedirectHandler(HTTPRedirectHandler):
+        max_repeats = 11
+        max_redirections = 11
+
+        def http_error_308(
+            self,
+            request: Any,
+            fp: Any,
+            code: int,
+            msg: str,
+            headers: Any,
+        ) -> Any:
+            # Python 3.10 does not register 308 as a redirect status.
+            return self.http_error_302(request, fp, code, msg, headers)
+
+        def redirect_request(
+            self,
+            request: Any,
+            fp: Any,
+            code: int,
+            msg: str,
+            headers: Any,
+            newurl: str,
+        ) -> Any:
+            redirect_count = getattr(request, "_geno_redirect_count", 0)
+            if redirect_count >= 10:
+                raise RuntimeError(f"{fn_name}: too many redirects")
+            target_url = urljoin(request.full_url, newurl)
+            _validate_http_target(
+                target_url, fn_name, allow_private_networks=allow_private_networks
+            )
+            source_method = request.get_method().upper()
+            redirected_method = source_method
+            if (code == 303 and source_method != "HEAD") or (
+                code in {301, 302} and source_method == "POST"
+            ):
+                redirected_method = "GET"
+
+            redirected_data = getattr(request, "data", None)
+            if redirected_method != source_method or (
+                redirected_method in {"GET", "HEAD"}
+                and redirected_data
+                in {
+                    "",
+                    b"",
+                }
+            ):
+                redirected_data = None
+
+            redirected_headers: dict[str, str] = {}
+            if _http_origin(request.full_url) == _http_origin(target_url):
+                redirected_headers = dict(request.headers)
+                if redirected_method != source_method:
+                    redirected_headers = {
+                        key: value
+                        for key, value in redirected_headers.items()
+                        if key.lower()
+                        not in {
+                            "content-length",
+                            "content-type",
+                            "transfer-encoding",
+                        }
+                    }
+
+            redirected = Request(
+                target_url,
+                data=redirected_data,
+                headers=redirected_headers,
+                origin_req_host=request.origin_req_host,
+                unverifiable=True,
+                method=redirected_method,
+            )
+            cast(Any, redirected)._geno_redirect_count = redirect_count + 1
+            return redirected
+
+    return build_opener(
+        ProxyHandler({}),
+        _ValidatedHTTPHandler,
+        _ValidatedHTTPSHandler,
+        _HttpOnlyRedirectHandler,
+    ).open(req, timeout=timeout())
+
+
+def _http_request_data(method: str, body: str | None) -> tuple[str, bytes | None]:
+    """``http_request``'s method and request body: none for an empty GET/HEAD."""
+    normalized_method = method.upper()
+    data = (
+        None
+        if normalized_method in {"GET", "HEAD"} and body == ""
+        else body.encode("utf-8")
+        if body is not None
+        else None
+    )
+    return normalized_method, data
+
+
+def _send_http_request(
+    method: str,
+    url: str,
+    headers: Any,
+    data: bytes | None,
+    fn_name: str,
+    *,
+    allow_private_networks: bool,
+    timeout: Callable[[], float] = _default_http_timeout,
+) -> Any:
+    """Send one request through the validated client; return its response.
+
+    The caller has validated *url* (``_validate_http_target``). *headers* is
+    an iterable of ``(name, value)`` pairs. A response with an error status is
+    still a response: its ``HTTPError`` is returned as the response handle.
+    The caller reads and closes the handle.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    req = Request(url, data=data, method=method)
+    for key, value in headers:
+        req.add_header(key, value)
+    try:
+        return _open_validated_http_request(
+            req,
+            fn_name,
+            allow_private_networks=allow_private_networks,
+            timeout=timeout,
+        )
+    except HTTPError as http_error:
+        return http_error
+
+
+def install_http_callbacks(
+    interpreter,
+    *,
+    allow_private_networks: bool | None = None,
+    timeout: Callable[[], float] | None = None,
+) -> None:
+    """Install real HTTP implementations for --cap http.
+
+    *allow_private_networks* defaults to ``GENO_HTTP_ALLOW_PRIVATE``.
+    *timeout* bounds each connection attempt (see
+    ``_open_validated_http_request``); it defaults to
+    ``HTTP_REQUEST_TIMEOUT_SECONDS``.
+    """
     from .values import BuiltinFunction, ConstructorValue
 
     private_networks_ok = (
@@ -605,140 +848,24 @@ def install_http_callbacks(
         if allow_private_networks is None
         else allow_private_networks
     )
+    request_timeout = _default_http_timeout if timeout is None else timeout
 
     def _check_scheme(url, fn_name):
         _validate_http_target(url, fn_name, allow_private_networks=private_networks_ok)
-
-    def _open_request(req, fn_name):
-        class _ValidatedHTTPConnection(http.client.HTTPConnection):
-            def connect(self) -> None:
-                self.sock = _create_validated_http_connection(
-                    self.host,
-                    self.port,
-                    self.timeout,
-                    getattr(self, "source_address", None),
-                    fn_name,
-                    allow_private_networks=private_networks_ok,
-                )
-
-        class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
-            def connect(self) -> None:
-                self.sock = _create_validated_http_connection(
-                    self.host,
-                    self.port,
-                    self.timeout,
-                    getattr(self, "source_address", None),
-                    fn_name,
-                    allow_private_networks=private_networks_ok,
-                )
-                server_hostname = self.host
-                context = (
-                    getattr(self, "_context", None) or ssl.create_default_context()
-                )
-                self.sock = context.wrap_socket(
-                    self.sock,
-                    server_hostname=server_hostname,
-                )
-
-        class _ValidatedHTTPHandler(HTTPHandler):
-            def http_open(self, request: Any) -> Any:
-                return self.do_open(_ValidatedHTTPConnection, request)
-
-        class _ValidatedHTTPSHandler(HTTPSHandler):
-            def https_open(self, request: Any) -> Any:
-                return self.do_open(_ValidatedHTTPSConnection, request)
-
-        class _HttpOnlyRedirectHandler(HTTPRedirectHandler):
-            max_repeats = 11
-            max_redirections = 11
-
-            def http_error_308(
-                self,
-                request: Any,
-                fp: Any,
-                code: int,
-                msg: str,
-                headers: Any,
-            ) -> Any:
-                # Python 3.10 does not register 308 as a redirect status.
-                return self.http_error_302(request, fp, code, msg, headers)
-
-            def redirect_request(
-                self,
-                request: Any,
-                fp: Any,
-                code: int,
-                msg: str,
-                headers: Any,
-                newurl: str,
-            ) -> Any:
-                redirect_count = getattr(request, "_geno_redirect_count", 0)
-                if redirect_count >= 10:
-                    raise RuntimeError(f"{fn_name}: too many redirects")
-                target_url = urljoin(request.full_url, newurl)
-                _check_scheme(target_url, fn_name)
-                source_method = request.get_method().upper()
-                redirected_method = source_method
-                if (code == 303 and source_method != "HEAD") or (
-                    code in {301, 302} and source_method == "POST"
-                ):
-                    redirected_method = "GET"
-
-                redirected_data = getattr(request, "data", None)
-                if redirected_method != source_method or (
-                    redirected_method in {"GET", "HEAD"}
-                    and redirected_data
-                    in {
-                        "",
-                        b"",
-                    }
-                ):
-                    redirected_data = None
-
-                redirected_headers: dict[str, str] = {}
-                if _http_origin(request.full_url) == _http_origin(target_url):
-                    redirected_headers = dict(request.headers)
-                    if redirected_method != source_method:
-                        redirected_headers = {
-                            key: value
-                            for key, value in redirected_headers.items()
-                            if key.lower()
-                            not in {
-                                "content-length",
-                                "content-type",
-                                "transfer-encoding",
-                            }
-                        }
-
-                redirected = Request(
-                    target_url,
-                    data=redirected_data,
-                    headers=redirected_headers,
-                    origin_req_host=request.origin_req_host,
-                    unverifiable=True,
-                    method=redirected_method,
-                )
-                cast(Any, redirected)._geno_redirect_count = redirect_count + 1
-                return redirected
-
-        return build_opener(
-            ProxyHandler({}),
-            _ValidatedHTTPHandler,
-            _ValidatedHTTPSHandler,
-            _HttpOnlyRedirectHandler,
-        ).open(req, timeout=30)
 
     def _http_body(method: str, url: str, body: bytes | None, fn_name: str) -> Any:
         """One request whose body is the result; see ``_http_request``."""
         try:
             _check_scheme(url, fn_name)
-            req = Request(url, data=body, method=method)
-            if body is not None:
-                req.add_header("Content-Type", "application/json")
-            try:
-                response_handle = _open_request(req, fn_name)
-            except HTTPError as http_error:
-                response_handle = http_error
+            response_handle = _send_http_request(
+                method,
+                url,
+                [] if body is None else [("Content-Type", "application/json")],
+                body,
+                fn_name,
+                allow_private_networks=private_networks_ok,
+                timeout=request_timeout,
+            )
             with response_handle as resp:
                 result = _read_limited_utf8_stream(interpreter, resp, fn_name)
         except (OSError, ValueError, TypeError, RuntimeError) as e:
@@ -756,21 +883,16 @@ def install_http_callbacks(
     def _http_request(method, url, headers, body):
         try:
             _check_scheme(url, "http_request")
-            normalized_method = method.upper()
-            data = (
-                None
-                if normalized_method in {"GET", "HEAD"} and body == ""
-                else body.encode("utf-8")
-                if body is not None
-                else None
+            normalized_method, data = _http_request_data(method, body)
+            response_handle = _send_http_request(
+                normalized_method,
+                url,
+                headers,
+                data,
+                "http_request",
+                allow_private_networks=private_networks_ok,
+                timeout=request_timeout,
             )
-            req = Request(url, data=data, method=normalized_method)
-            for key, value in headers:
-                req.add_header(key, value)
-            try:
-                response_handle = _open_request(req, "http_request")
-            except HTTPError as http_error:
-                response_handle = http_error
             with response_handle as resp:
                 resp_headers = [(k, v) for k, v in resp.getheaders()]
                 body_text = _read_limited_utf8_stream(interpreter, resp, "http_request")

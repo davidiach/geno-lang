@@ -1,0 +1,12 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print
+# STDERR: Capability denied: 'stdin_read_all' requires the 'stdin' capability
+# An isolated run without the stdin grant inherits no program-input handle,
+# and the builtin is denied before anything is read.
+func main() -> Unit
+    match stdin_read_all() with
+        | Ok(text) -> print("ESCAPED " + text)
+        | Err(error) -> print("ESCAPED " + error)
+    end match
+end func

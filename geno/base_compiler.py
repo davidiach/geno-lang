@@ -151,6 +151,15 @@ class BaseCompiler(ABC):
         self._reserved_temp_names: set[str] = set()
         self._shadowed_runtime_names: frozenset[str] = frozenset()
         self._module_constant_names: set[str] = set()
+        # Runtime reports name functions as written (proposal 0018): a
+        # function of a non-entry module is `Module.function`, and an impl
+        # method `Type.method`. See _function_display_name.
+        self._display_module: str | None = None
+        self._display_name_override: str | None = None
+        # The function a trace table is being recorded for, and the names it
+        # binds anywhere (computed on first use). See _is_indirect_callee.
+        self._trace_scope: FunctionDef | None = None
+        self._trace_scope_names: frozenset[str] | None = None
         self._definition_index = DefinitionIndex(
             type_defs=self.type_defs,
             type_aliases=self.type_aliases,
@@ -945,15 +954,24 @@ class BaseCompiler(ABC):
     @staticmethod
     def _uses_propagate(defn: FunctionDef | LambdaExpr) -> bool:
         """Check if a function body contains a ? (propagate) expression."""
-        from .ast_nodes import PropagateExpr
-
-        field_cache: dict[type, tuple[str, ...]] = {}
         body = (
             defn.block_body
             if isinstance(defn, LambdaExpr) and defn.block_body is not None
             else defn.body
         )
-        stack: list[object] = [body]
+        return BaseCompiler._contains_propagate(body)
+
+    @staticmethod
+    def _contains_propagate(root: object) -> bool:
+        """Whether *root* (a node or a list of them) contains a ``?`` of its own.
+
+        A ``?`` inside a nested lambda belongs to that lambda, so it is not
+        counted.
+        """
+        from .ast_nodes import PropagateExpr
+
+        field_cache: dict[type, tuple[str, ...]] = {}
+        stack: list[object] = [root]
 
         while stack:
             node = stack.pop()
@@ -1043,7 +1061,119 @@ class BaseCompiler(ABC):
                 closing_name=None,
                 effects=method.effects,
             )
-            self._compile_function_def(mangled_def)
+            self._display_name_override = f"{defn.target_type}.{method.name}"
+            try:
+                self._compile_function_def(mangled_def)
+            finally:
+                self._display_name_override = None
+
+    def _function_display_name(self, defn: FunctionDef) -> str:
+        """The name runtime reports give *defn* (proposal 0018, section 2).
+
+        Matches the interpreter's ``Closure.display_name``: the name as
+        written, ``Type.method`` for an impl method, and ``Module.function``
+        for a function of a module other than the entry module. Host-name
+        mangling is never shown.
+        """
+        if self._display_name_override is not None:
+            return self._display_name_override
+        if self._display_module is not None:
+            return f"{self._display_module}.{defn.name}"
+        return defn.name
+
+    @contextmanager
+    def _trace_function_scope(self, defn: FunctionDef) -> Iterator[None]:
+        """Record trace candidates for *defn*'s body (see _is_indirect_callee)."""
+        saved = (self._trace_scope, self._trace_scope_names)
+        self._trace_scope, self._trace_scope_names = defn, None
+        try:
+            yield
+        finally:
+            self._trace_scope, self._trace_scope_names = saved
+
+    def _trace_bound_names(self) -> frozenset[str]:
+        """Every name the function being traced binds, anywhere in it."""
+        names = self._trace_scope_names
+        if names is None:
+            scope = self._trace_scope
+            names = (
+                frozenset() if scope is None else frozenset(self._names_bound_in(scope))
+            )
+            self._trace_scope_names = names
+        return names
+
+    @staticmethod
+    def _names_bound_in(defn: FunctionDef) -> set[str]:
+        """The names *defn* binds anywhere: its parameters, and every `let`,
+        `var`, destructuring, loop, comprehension and pattern variable and
+        lambda parameter in its contracts and body.
+
+        Scopes are ignored, so this is a superset of the names bound where
+        any one call is made.
+        """
+        names = {param.name for param in defn.params}
+        field_cache: dict[type, tuple[str, ...]] = {}
+        stack: list[object] = [defn.specs, defn.body]
+        while stack:
+            node = stack.pop()
+            node_type = type(node)
+            if node_type is list or node_type is tuple:
+                stack.extend(cast(Sequence[object], node))
+                continue
+            if not hasattr(node, "__dict__"):
+                continue
+            if isinstance(node, (LetStatement, VarStatement)):
+                names.add(node.name)
+            elif isinstance(node, TupleDestructureStatement):
+                names.update(node.names)
+            elif isinstance(node, (ForStatement, ListComprehension)):
+                names.add(node.variable)
+            elif isinstance(node, (VariablePattern, RestPattern)):
+                if node.name is not None:
+                    names.add(node.name)
+            elif isinstance(node, LambdaExpr):
+                names.update(param.name for param in node.params)
+            field_names = field_cache.get(node_type)
+            if field_names is None:
+                field_names = tuple(
+                    name
+                    for name in vars(node)
+                    if not name.startswith("_") and name != "location"
+                )
+                field_cache[node_type] = field_names
+            for field_name in field_names:
+                child = getattr(node, field_name)
+                if child is not None and not isinstance(child, (str, int, float, bool)):
+                    stack.append(child)
+        return names
+
+    def _is_indirect_callee(self, function: Expression) -> bool:
+        """Whether a call's callee is a function value, not a named function.
+
+        A call through a parameter, a local or any other expression reaches
+        a Geno function whose host name the call site does not spell, so the
+        trace table also records it under ``TRACE_CALL_KEY`` (proposal 0018,
+        section 8). A named function, method, builtin, constructor or module
+        function is direct. A name the traced function binds (a parameter or
+        local that shadows a function or builtin name, such as a callback
+        parameter called ``format``) is a function value too; the test
+        ignores scopes, so it errs only towards an extra candidate, which
+        can cost a column but never names a call that was not made.
+        """
+        if isinstance(function, TypeIdentifier):
+            return False
+        if isinstance(function, Identifier):
+            name = function.name
+            if name not in self.func_param_names and name not in all_builtin_names():
+                return True
+            return name in self._trace_bound_names()
+        # A module function (`Helper.scale`) is direct; anything else is a
+        # value.
+        return not (
+            isinstance(function, FieldAccess)
+            and isinstance(function.target, (Identifier, TypeIdentifier))
+            and function.target.name in self._module_param_names
+        )
 
     def _record_impl_def_location(self, defn: ImplDef) -> None:
         """Record the impl block's source location.  No-op by default

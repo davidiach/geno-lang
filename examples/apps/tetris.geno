@@ -155,7 +155,7 @@ func collides(grid: Array[Int], px: Int, py: Int, piece: Int, rot: Int) -> Bool
     return false
 end func collides
 
-func lock_piece(grid: Array[Int], px: Int, py: Int, piece: Int, rot: Int) -> Unit
+func lock_piece(grid: Array[Int], px: Int, py: Int, piece: Int, rot: Int) -> Unit with mutation
     var i: Int = 0
     while i < 4 do
         let cx: Int = px + piece_dx(piece: piece, rot: rot, cell: i)
@@ -167,7 +167,7 @@ func lock_piece(grid: Array[Int], px: Int, py: Int, piece: Int, rot: Int) -> Uni
     end while
 end func lock_piece
 
-func clear_lines(grid: Array[Int]) -> Int
+func clear_lines(grid: Array[Int]) -> Int with mutation
     var cleared: Int = 0
     var y: Int = 19
     while y >= 0 do

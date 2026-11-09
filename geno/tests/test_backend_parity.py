@@ -16,7 +16,9 @@ double-quoted escaped representation on every backend.
 """
 # mypy: disable-error-code="no-redef"
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,7 +30,7 @@ from typing import Any, cast
 import pytest
 
 from geno.api import RunConfig, run
-from geno.compiler import Compiler, compile_to_python
+from geno.compiler import Compiler, compile_and_exec, compile_to_python
 from geno.dependency_graph import DependencyGraph
 from geno.js_compiler import JSCompiler, compile_to_js
 from geno.project_graph import ProjectGraph
@@ -2273,6 +2275,103 @@ end func
 """,
         id="float_print_whole_values",
     ),
+    pytest.param(
+        # --- proposal 0019: local mutation is not an effect ---
+        # Each function below infers no `mutation`, and `main` declares only
+        # `io`. The state each caller passed in prints unchanged afterwards on
+        # every backend, which is what makes the masking sound.
+        """\
+type P = P(x: Int)
+type Bag = Bag(pts: List[P])
+
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func apply(f: (List[Int]) -> Int, xs: List[Int]) -> Int
+    example fn(ys: List[Int]) -> length(ys), [4, 5] -> 2
+    return f(xs)
+end func
+
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+
+func moved(p: P, dx: Int) -> P
+    example P(x: 1), 3 -> P(x: 4)
+    var q = p
+    q.x = q.x + dx
+    return q
+end func
+
+func shifted(b: Bag) -> Bag
+    example Bag(pts: [P(x: 1)]) -> Bag(pts: [P(x: 2)])
+    var c = b
+    c.pts[0].x = c.pts[0].x + 1
+    return c
+end func
+
+func doubled_copy(a: Array[Int]) -> List[Int]
+    example array_from_list([1, 2]) -> [2, 4]
+    var b = array_copy(a)
+    var i = 0
+    while i < array_length(b) do
+        b[i] = b[i] * 2
+        i = i + 1
+    end while
+    return array_to_list(b)
+end func
+
+func word_count(words: List[String]) -> Int
+    example ["a", "b", "a"] -> 2
+    var seen: MutableMap[String, Int] = mutable_map_new()
+    for w in words do
+        seen[w] = 1
+    end for
+    return mutable_map_size(seen)
+end func
+
+func main() -> Unit with io
+    let xs = [4, 5, 6]
+    print(apply(total, xs))
+    print([[1, 2], [3]].map(total))
+    print([[1], [2, 3]].map(fn(ys: List[Int]) do
+        var n = 0
+        for y in ys do
+            n = n + y * 10
+        end for
+        return n
+    end fn))
+    print(xs)
+    print(histogram([0, 1, 1, 2], 3))
+    let p = P(x: 1)
+    print(moved(p, 3))
+    print(moved(p, 3))
+    print(p)
+    let b = Bag(pts: [P(x: 1)])
+    print(shifted(b))
+    print(b)
+    let a = array_from_list([1, 2, 3])
+    print(doubled_copy(a))
+    print(array_to_list(a))
+    print(word_count(["a", "b", "a"]))
+    var label = "done: "
+    label = label + to_string(total(xs))
+    print(label)
+end func
+""",
+        id="local_mutation_masking",
+    ),
 ]
 
 
@@ -4450,3 +4549,461 @@ class TestBackendParityProperties:
             py_out=py_out,
             js_out=js_out,
         )
+
+
+_PANICS_EXAMPLE_PROGRAM = """
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func
+
+func checked_root(n: Int) -> Int
+    requires n >= 0
+    example 9 -> 3
+    example -4 panics "precondition"
+    var root = 0
+    while (root + 1) * (root + 1) <= n do
+        root = root + 1
+    end while
+    return root
+end func
+
+func usage() -> String
+    example () panics "not implemented"
+    panic("not implemented")
+end func
+
+func panics(n: Int) -> Int
+    example 1 -> 2
+    return n * 2
+end func
+
+func main() -> Unit
+    print(safe_div(9, 2))
+    print(checked_root(17))
+    print(panics(21))
+    return ()
+end func
+"""
+
+
+class TestPanicsExampleParity:
+    """A program with panics examples (proposal 0017) runs `main` identically.
+
+    The interpreter checks the examples before `main`; compiled Python and
+    JavaScript never evaluate examples, so the observable contract is the same
+    output on all three.
+    """
+
+    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+    def test_same_output_on_every_backend(self) -> None:
+        _assert_expected_backend_outputs(
+            label="panics examples",
+            context="",
+            expected="4\n4\n42\n",
+            interp_out=_interpreter_output(_PANICS_EXAMPLE_PROGRAM),
+            py_out=_compiled_python_output(_PANICS_EXAMPLE_PROGRAM),
+            js_out=_compiled_js_output(_PANICS_EXAMPLE_PROGRAM),
+        )
+
+    def test_the_interpreter_checks_them(self) -> None:
+        failing = _PANICS_EXAMPLE_PROGRAM.replace(
+            'example 1, 0 panics "division"', "example 1, 1 panics"
+        )
+        result = run(failing, config=RunConfig(capabilities={"print"}))
+
+        assert not result.ok
+        assert "expected a panic, but it returned 1" in result.diagnostics[0].message
+
+
+# A `?` that propagates inside a contract clause is a contract violation on
+# every backend (proposal 0017): compiled Python used to let the internal
+# `_PropagateReturn` escape the function, and compiled JavaScript caught it in
+# the function's (or a caller's) `?` handler and silently returned.
+_PROPAGATING_CONTRACT_PROGRAM = """
+func first_positive(o: Option[Int]) -> Option[Int]
+    requires o? > 0
+    example Some(1) -> Some(1)
+    let n = o?
+    return Some(n)
+end func
+
+func bounded(o: Option[Int]) -> Option[Int]
+    ensures o? < 10
+    example Some(1) -> Some(1)
+    return o
+end func
+
+func relay(o: Option[Int]) -> Option[Int]
+    example Some(2) -> Some(2)
+    let n = CALL?
+    return Some(n)
+end func
+
+func main() -> Unit
+    print(relay(Some(3)))
+    print(relay(None))
+    print("after")
+    return ()
+end func
+"""
+
+
+def _failing_backend_runs(source: str) -> dict[str, tuple[str, str, bool]]:
+    """``(stdout, error text, failed)`` of *source* on every backend."""
+    interpreted = run(source, config=RunConfig(timeout=10.0, capabilities={"print"}))
+    runs = {
+        "interpreter": (
+            cast(str, interpreted.output),
+            " ".join(d.message for d in interpreted.diagnostics),
+            not interpreted.ok,
+        )
+    }
+    py = run_python_code(
+        compile_to_python(source),
+        python_executable=sys.executable,
+        args=["--cap", "print"],
+    )
+    runs["python"] = (py.stdout, py.stderr, py.returncode != 0)
+    if HAS_NODE:
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+        js = run_node_code(js_code, args=["--cap", "print"])
+        runs["js"] = (js.stdout, js.stderr, js.returncode != 0)
+    return runs
+
+
+class TestPropagatingContractParity:
+    @pytest.mark.parametrize(
+        ("call", "message"),
+        [
+            (
+                "first_positive(o)",
+                "Precondition failed: first_positive(o: None) requires o? > 0 "
+                "('?' propagated None/Err)",
+            ),
+            (
+                "bounded(o)",
+                "Postcondition failed: bounded(o: None) ensures o? < 10 "
+                "('?' propagated None/Err; result was None)",
+            ),
+        ],
+    )
+    def test_a_propagating_clause_fails_the_call_on_every_backend(
+        self, call: str, message: str
+    ) -> None:
+        source = _PROPAGATING_CONTRACT_PROGRAM.replace("CALL", call)
+
+        runs = _failing_backend_runs(source)
+
+        for backend, (stdout, error, failed) in runs.items():
+            # The caller's own `?` must not swallow the violation and return.
+            assert stdout == "Some(value: 3)\n", backend
+            assert failed, backend
+            assert message in error, backend
+
+
+# Contract failures name the function, the call's arguments and the clause
+# (proposal 0018), identically on every backend. JavaScript cannot tell 2.0
+# from 2 or a tuple from a list at run time, so it renders with the static
+# display shape the compiler records.
+_CONTRACT_FAILURE_PROGRAMS: dict[str, tuple[str, str]] = {
+    "requires": (
+        """
+func safe_div(a: Int, b: Int) -> Int
+    requires b != 0
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Unit
+    print(to_string(safe_div(a: 8, b: 0)))
+    return ()
+end func
+""",
+        "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+    ),
+    "ensures-string-result": (
+        """
+func shout(s: String) -> String
+    ensures length(result) > 10
+    example "0123456789" -> "0123456789!"
+    return s + "!"
+end func
+
+func main() -> Unit
+    print(shout("hi"))
+    return ()
+end func
+""",
+        'Postcondition failed: shout(s: "hi") ensures length(result) > 10 '
+        '(result was "hi!")',
+    ),
+    "ensures-top-level-rebinding": (
+        """
+func g(n: Int) -> Int
+    ensures n > 10
+    example 7 -> 12
+    let n = n + 5
+    return n
+end func
+
+func main() -> Unit
+    print(to_string(g(1)))
+    return ()
+end func
+""",
+        "Postcondition failed: g(n: 1) ensures n > 10 "
+        "(result was 6; n was 6 when checked)",
+    ),
+    "ensures-nested-shadow": (
+        """
+func g(n: Int) -> Int
+    ensures n > 10
+    example 11 -> 16
+    if n > 0 then
+        let n = n + 5
+        return n
+    end if
+    return n
+end func
+
+func main() -> Unit
+    print(to_string(g(1)))
+    return ()
+end func
+""",
+        "Postcondition failed: g(n: 1) ensures n > 10 (result was 6)",
+    ),
+    "typed-arguments": (
+        """
+type Point = Point(x: Float, y: Int)
+
+func t(p: (Int, String), o: Option[Float], xs: List[Float], q: Point, f: (Int) -> Int) -> Float
+    requires p.0 > 5
+    example (6, "a"), None, [1.0], Point(x: 1.0, y: 2), fn(x: Int) -> x -> 1.0
+    return 1.0
+end func
+
+func main() -> Unit
+    print(to_string(t(p: (1, "x"), o: Some(2), xs: [1, 2.5], q: Point(x: 3, y: 4), f: fn(x: Int) -> x + 1)))
+    return ()
+end func
+""",
+        'Precondition failed: t(p: (1, "x"), o: Some(value: 2.0), '
+        "xs: [1.0, 2.5], q: Point(x: 3.0, y: 4), f: <function>) requires p.0 > 5",
+    ),
+    "float-result-and-method": (
+        """
+type Account = Account(balance: Float)
+
+trait Bank
+    func withdraw(self: Self, amount: Float) -> Float
+end trait
+
+impl Bank for Account
+    func withdraw(self: Account, amount: Float) -> Float
+        ensures result > 100.0
+        example Account(balance: 300.0), 5.0 -> 295.0
+        return self.balance - amount
+    end func
+end impl
+
+func main() -> Unit
+    print(to_string(Account(balance: 10).withdraw(4)))
+    return ()
+end func
+""",
+        "Postcondition failed: Account.withdraw(self: Account(balance: 10.0), "
+        "amount: 4.0) ensures result > 100.0 (result was 6.0)",
+    ),
+    "multi-line-clause-and-long-argument": (
+        """
+func bounded(lo: Int, hi: Int, xs: List[Int]) -> Int
+    requires lo <= length(xs) and // lower bound
+        length(xs) <= hi /* upper
+        bound */
+    example 0, 10, [1] -> 1
+    return length(xs)
+end func
+
+func main() -> Unit
+    print(to_string(bounded(lo: 0, hi: 3, xs: range(0, 400))))
+    return ()
+end func
+""",
+        "Precondition failed: bounded(lo: 0, hi: 3, xs: [0, 1, 2, 3, 4, 5, "
+        "6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17...) requires "
+        "lo <= length(xs) and length(xs) <= hi",
+    ),
+    "clause-text-with-template-characters": (
+        """
+func tag(label: String, items: List[String]) -> String
+    requires label != "{bad}" and label != "${x}`"
+    example "ok", ["a"] -> "ok"
+    return label
+end func
+
+func main() -> Unit
+    print(tag("${x}`", ["\\"q\\"", "back\\\\slash", "tab\\there", "😀"]))
+    return ()
+end func
+""",
+        'Precondition failed: tag(label: "${x}`", items: ["\\"q\\"", '
+        '"back\\\\slash", "tab\\there", "😀"]) requires label != "{bad}" '
+        'and label != "${x}`"',
+    ),
+}
+
+_CONTRACT_MESSAGE_RE = re.compile(r"((?:Pre|Post)condition failed: .*)$", re.M)
+
+
+class TestContractFailureParity:
+    @pytest.mark.parametrize(
+        "case", sorted(_CONTRACT_FAILURE_PROGRAMS), ids=lambda case: case
+    )
+    def test_the_message_is_identical_on_every_backend(self, case: str) -> None:
+        source, expected = _CONTRACT_FAILURE_PROGRAMS[case]
+
+        runs = _failing_backend_runs(source)
+
+        assert runs["interpreter"][1] == expected
+        for backend, (stdout, error, failed) in runs.items():
+            assert stdout == "", backend
+            assert failed, backend
+            found = _CONTRACT_MESSAGE_RE.findall(error)
+            assert found == [expected], (backend, error)
+
+    # (program, function, arguments, expected fields) of each library call.
+    # JavaScript spells the fields in camelCase; the probe maps them back.
+    _STRUCTURED_CASES = [
+        (
+            "requires",
+            "safe_div",
+            (8, 0),
+            {
+                "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+                "clause": "requires",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "safe_div",
+                "clause_text": "b != 0",
+                "arguments": [["a", "8"], ["b", "0"]],
+                "result_display": None,
+                "checked_values": [],
+            },
+        ),
+        (
+            "ensures-string-result",
+            "shout",
+            ("hi",),
+            {
+                "message": 'Postcondition failed: shout(s: "hi") ensures '
+                'length(result) > 10 (result was "hi!")',
+                "clause": "ensures",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "shout",
+                "clause_text": "length(result) > 10",
+                "arguments": [["s", '"hi"']],
+                "result_display": '"hi!"',
+                "checked_values": [],
+            },
+        ),
+        (
+            "ensures-top-level-rebinding",
+            "g",
+            (1,),
+            {
+                "message": "Postcondition failed: g(n: 1) ensures n > 10 "
+                "(result was 6; n was 6 when checked)",
+                "clause": "ensures",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "g",
+                "clause_text": "n > 10",
+                "arguments": [["n", "1"]],
+                "result_display": "6",
+                "checked_values": [["n", "6"]],
+            },
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        ("case", "function", "args", "expected"),
+        _STRUCTURED_CASES,
+        ids=[case[0] for case in _STRUCTURED_CASES],
+    )
+    def test_compiled_python_carries_the_structured_fields(
+        self, case: str, function: str, args: tuple, expected: dict
+    ) -> None:
+        source = _CONTRACT_FAILURE_PROGRAMS[case][0].split("func main")[0]
+        namespace = compile_and_exec(source, timeout=None)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            namespace[function](*args)
+
+        violation = exc_info.value
+        assert type(violation).__name__ == "_GenoContractViolation"
+        fields: dict[str, Any] = {"message": str(violation)}
+        for name in expected:
+            if name != "message":
+                value = getattr(violation, name)
+                fields[name] = (
+                    [list(pair) for pair in value]
+                    if isinstance(value, tuple)
+                    else value
+                )
+        assert fields == expected
+        assert violation.call_depth is None
+
+    @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+    @pytest.mark.parametrize(
+        ("case", "function", "args", "expected"),
+        _STRUCTURED_CASES,
+        ids=[case[0] for case in _STRUCTURED_CASES],
+    )
+    def test_compiled_javascript_carries_the_structured_fields(
+        self, case: str, function: str, args: tuple, expected: dict
+    ) -> None:
+        source = _CONTRACT_FAILURE_PROGRAMS[case][0].split("func main")[0]
+        probe = f"""
+try {{
+    {function}(...{json.dumps(list(args))});
+}} catch (e) {{
+    console.log(JSON.stringify({{
+        name: e.name, message: e.message, clause: e.clause, reason: e.reason,
+        clause_index: e.clauseIndex, function: e.function,
+        clause_text: e.clauseText, arguments: e.arguments,
+        result_display: e.resultDisplay, checked_values: e.checkedValues,
+    }}));
+}}
+"""
+        js_code = compile_to_js(source)
+        assert isinstance(js_code, str)
+
+        result = run_node_code(js_code + probe)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "name": "_GenoContractViolation",
+            **expected,
+        }
+
+    def test_only_a_rebinding_function_keeps_its_call_arguments(self) -> None:
+        """The snapshot of the call's arguments costs one statement, emitted
+        only where a top-level `let` rebinds a parameter that `ensures` can
+        see; every other function renders its parameters at failure time."""
+        rebinding = _CONTRACT_FAILURE_PROGRAMS["ensures-top-level-rebinding"][0]
+        shadowing = _CONTRACT_FAILURE_PROGRAMS["ensures-nested-shadow"][0]
+        js_rebinding = compile_to_js(rebinding)
+        js_shadowing = compile_to_js(shadowing)
+        assert isinstance(js_rebinding, str) and isinstance(js_shadowing, str)
+
+        py_snapshot = re.compile(r"^    (_temp_\d+) = \(n,\)$", re.M)
+        js_snapshot = re.compile(r"^    const (_temp_\d+) = \[n\];$", re.M)
+        assert len(py_snapshot.findall(compile_to_python(rebinding))) == 1
+        assert py_snapshot.findall(compile_to_python(shadowing)) == []
+        assert len(js_snapshot.findall(js_rebinding)) == 1
+        assert js_snapshot.findall(js_shadowing) == []

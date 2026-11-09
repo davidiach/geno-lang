@@ -1,0 +1,20 @@
+// Proposal 0019 (0.7 draft): mutation a caller can observe stays an effect.
+// `var alias = counter` copies the reference, not the array, so the write
+// reaches the caller's array and `bump` is
+// `(Array[Int]) -> Int with mutation`. Passing it where a pure function type
+// is expected stays E300, as in 0.6.
+func bump(counter: Array[Int]) -> Int
+    example array_new(1, 0) -> 1
+    var alias = counter
+    alias[0] = alias[0] + 1
+    return alias[0]
+end func
+
+func apply(f: (Array[Int]) -> Int, cells: Array[Int]) -> Int
+    example fn(a: Array[Int]) -> array_length(a), array_new(2, 0) -> 2
+    return f(cells)
+end func
+
+func main() -> Unit with io
+    print(apply(bump, array_new(1, 0)))
+end func

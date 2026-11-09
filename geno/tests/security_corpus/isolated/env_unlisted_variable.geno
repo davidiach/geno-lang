@@ -1,0 +1,14 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap env,print --allow-env HOME
+# STDERR: environment variable 'PATH' is not allowed by the host env policy
+# An env grant exposes only the variables named with --allow-env. An unlisted
+# name is a host env-policy denial, never a fallback to its value or to the
+# default.
+func main() -> Unit
+    match env_get("PATH") with
+        | Some(value) -> print("ESCAPED " + value)
+        | None -> print("ESCAPED none")
+    end match
+    print("ESCAPED " + env_get_or("PATH", "default"))
+end func

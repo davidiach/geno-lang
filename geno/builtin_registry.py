@@ -4,6 +4,9 @@ Shared builtin metadata for capabilities, completion, and named arguments.
 ``BUILTIN_PARAM_NAMES``, ``CAPABILITY_MAP``, and ``ALWAYS_AVAILABLE_BUILTINS``
 are **derived** from the canonical manifest in ``builtin_manifest``.  Do not
 edit them directly — update ``builtin_manifest.BUILTIN_MANIFEST`` instead.
+The collection-ownership views (``FRESH_COLLECTION_BUILTINS``,
+``BORROWED_ARGUMENT_NAMES`` and ``BORROWED_ARGUMENT_POSITIONS``) are derived
+the same way from the manifest's ownership tables.
 """
 
 from __future__ import annotations
@@ -13,7 +16,9 @@ from typing import Collection
 
 from .builtin_manifest import (
     manifest_always_available,
+    manifest_borrowed_collection_params,
     manifest_capability_map,
+    manifest_fresh_collection_builtins,
     manifest_param_names,
 )
 from .capabilities import (
@@ -66,6 +71,16 @@ CAPABILITY_MAP: dict[str, list[str]] = manifest_capability_map(
 
 ALWAYS_AVAILABLE_BUILTINS: frozenset[str] = manifest_always_available(
     SOURCE_BUILTIN_NAME_OVERRIDES
+)
+
+# Collection ownership (proposal 0019), keyed by source name. Positions index
+# the source-level parameter list, as positional arguments are written.
+FRESH_COLLECTION_BUILTINS: frozenset[str] = manifest_fresh_collection_builtins(
+    SOURCE_BUILTIN_NAME_OVERRIDES
+)
+
+BORROWED_ARGUMENT_NAMES: dict[str, frozenset[str]] = (
+    manifest_borrowed_collection_params(SOURCE_BUILTIN_NAME_OVERRIDES)
 )
 
 # DEFAULT_ALLOWED_CAPABILITIES now lives in geno.capabilities (kept light
@@ -818,6 +833,27 @@ def capability_for_source_builtin(name: str) -> str | None:
     return _CAPABILITY_BY_SOURCE_BUILTIN.get(name)
 
 
+def _borrowed_argument_positions() -> dict[str, frozenset[int]]:
+    """Map each borrowing builtin to the positions of its borrowed parameters."""
+    specs = source_builtin_specs()
+    positions: dict[str, frozenset[int]] = {}
+    for source_name, borrowed in BORROWED_ARGUMENT_NAMES.items():
+        param_names = specs[source_name].source_param_names
+        missing = sorted(borrowed - set(param_names))
+        if missing:
+            raise ValueError(
+                f"Borrowed parameters of '{source_name}' are not source-level "
+                "parameters: " + ", ".join(missing)
+            )
+        positions[source_name] = frozenset(
+            index for index, name in enumerate(param_names) if name in borrowed
+        )
+    return positions
+
+
+BORROWED_ARGUMENT_POSITIONS: dict[str, frozenset[int]] = _borrowed_argument_positions()
+
+
 def all_builtin_names() -> list[str]:
     """Return the sorted public builtin name list used for completion."""
     return sorted({spec.source_name for spec in BUILTIN_REGISTRY.values()})
@@ -825,10 +861,13 @@ def all_builtin_names() -> list[str]:
 
 __all__ = [
     "ALWAYS_AVAILABLE_BUILTINS",
+    "BORROWED_ARGUMENT_NAMES",
+    "BORROWED_ARGUMENT_POSITIONS",
     "BUILTIN_PARAM_NAMES",
     "BUILTIN_REGISTRY",
     "CAPABILITY_MAP",
     "DEFAULT_ALLOWED_CAPABILITIES",
+    "FRESH_COLLECTION_BUILTINS",
     "JS_BACKEND_BUILTIN_NAME_OVERRIDES",
     "PYTHON_BACKEND_BUILTIN_NAME_OVERRIDES",
     "SOURCE_BUILTIN_NAME_OVERRIDES",

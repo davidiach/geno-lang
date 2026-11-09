@@ -794,3 +794,69 @@ class TestCanonicalSpacing:
         assert format_source(source) == (
             "func main() -> Unit\n    print(1 - 2)\nend func\n"
         )
+
+
+class TestPanicsExamples:
+    """`example <inputs> panics "m"` (proposal 0017) formats like any example."""
+
+    MESSY = (
+        "type Box = MkBox(n: Int)\n"
+        "\n"
+        "trait Checked\n"
+        "func check(self: Self) -> Int\n"
+        "end trait\n"
+        "\n"
+        "impl Checked for Box\n"
+        "func check(self: Box) -> Int\n"
+        'example   MkBox( 0 )   panics   "zero"\n'
+        "return 10 / self.n\n"
+        "end func\n"
+        "end impl\n"
+        "\n"
+        "func div(a:Int,b:Int)->Int\n"
+        "  example 6,3 -> 2\n"
+        '      example 1 ,0    panics\t"division"   // the zero case\n'
+        "example (1,0)panics\n"
+        '  example -1 , 0 panics """by "zero" """\n'
+        "return a/b\n"
+        "end func\n"
+        "\n"
+        "func usage() -> String\n"
+        "example ()   panics\n"
+        'panic("usage")\n'
+        "end func\n"
+    )
+
+    def test_messy_lines_are_canonicalized(self):
+        formatted = format_source(self.MESSY)
+        lines = formatted.splitlines()
+
+        assert '        example MkBox(0) panics "zero"' in lines
+        assert '    example 1, 0 panics "division"   // the zero case' in lines
+        assert "    example (1, 0) panics" in lines
+        assert '    example -1, 0 panics """by "zero" """' in lines
+        assert "    example () panics" in lines
+
+    def test_round_trip_keeps_the_program(self):
+        from geno.formatter import _ast_key
+        from geno.parser import parse
+
+        formatted = format_source(self.MESSY)
+
+        assert _ast_key(parse(formatted)) == _ast_key(parse(self.MESSY))
+
+    def test_idempotent(self):
+        once = format_source(self.MESSY)
+
+        assert format_source(once) == once
+
+    def test_a_changed_message_is_a_different_program(self):
+        from geno.formatter import _ast_key
+        from geno.parser import parse
+
+        source = (
+            'func f(n: Int) -> Int\n    example 1 panics "a"\n    return n\nend func\n'
+        )
+        other = source.replace('"a"', '"b"')
+
+        assert _ast_key(parse(source)) != _ast_key(parse(other))

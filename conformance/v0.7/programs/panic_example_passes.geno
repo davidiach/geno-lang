@@ -1,0 +1,37 @@
+// A panics example passes when the call panics: a division by zero, a
+// failed `requires`, or the function's own `panic`. The message is matched
+// as a substring, ignoring case. Compiled backends never run examples, so on
+// every lane the observable result is `main`'s output.
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func
+
+func checked_sqrt(n: Int) -> Int
+    requires n >= 0
+    example 9 -> 3
+    example -1 panics "precondition"
+    var root = 0
+    while (root + 1) * (root + 1) <= n do
+        root = root + 1
+    end while
+    return root
+end func
+
+func first_word(text: String) -> String
+    example "hello world" -> "hello"
+    example "" panics "EMPTY INPUT"
+    if text == "" then
+        panic("empty input")
+    end if
+    let words = split(text, " ")
+    return words[0]
+end func
+
+func main() -> Unit
+    print(safe_div(6, 3))
+    print(checked_sqrt(10))
+    print(first_word("panics are examples"))
+    return ()
+end func

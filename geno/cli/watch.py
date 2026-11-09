@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 from .._cli_format import dim as _dim
+
+if TYPE_CHECKING:
+    from ..property_check import PropertyConfig
 
 
 def _resolve_watch_files(path: Union[str, Path]) -> list[Path]:
@@ -86,16 +89,23 @@ def watch_run(
     filter_pattern: str | None = None,
     verbose: bool = False,
     unsafe: bool = False,
+    properties: PropertyConfig | None = None,
 ):
     """Watch .geno files and re-run on changes.
 
-    In test mode (--test), re-runs ``geno test`` on changes.
-    Otherwise, re-runs ``geno run`` on the target file/project.
+    In test mode (--test), re-runs ``geno test`` on changes, with property
+    checks when *properties* is given (as ``geno test --watch --properties``
+    does). Otherwise, re-runs ``geno run`` on the target file/project.
     """
     if test_mode:
         from .test import _run_tests_watch
 
-        _run_tests_watch(path, filter_pattern=filter_pattern, verbose=verbose)
+        _run_tests_watch(
+            path,
+            filter_pattern=filter_pattern,
+            verbose=verbose,
+            properties=properties,
+        )
         return
 
     import time

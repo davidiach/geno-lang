@@ -1610,6 +1610,15 @@ class _GenoContractViolation extends Error {
     constructor(message) {
         super(message);
         this.name = "_GenoContractViolation";
+        // Structured fields (proposal 0018), set by the contract-failure factory.
+        this.clause = null;
+        this.reason = null;
+        this.clauseIndex = null;
+        this.function = null;
+        this.clauseText = null;
+        this.arguments = null;
+        this.resultDisplay = null;
+        this.checkedValues = [];
     }
 }
 function _propagate(val) {
@@ -1635,6 +1644,552 @@ function panic(message) {
 function unwrap_or(opt, def) {
     if (isConstructor(opt) && opt._tag === 'Some') return opt.value;
     return def;
+}
+
+// =============================================================================
+// Contract Failures
+// =============================================================================
+
+// The longest rendering of one value in a contract failure, in code points
+// (geno/runtime_report.py ARGUMENT_DISPLAY_LIMIT; a test pins the copies).
+const _GENO_ARGUMENT_DISPLAY_LIMIT = 64;
+
+// Prelude tree-shaking treats every line-leading declaration as a name this
+// section defines, so the locals below have names no other section uses;
+// otherwise every program would pull the section in.
+
+class _GenoDisplayLimitReached {}
+
+// The f-string writer with a display budget instead of the collection
+// limit: it stops (throws _GenoDisplayLimitReached) once more than its
+// limit of code points is written, and shows functions as "<function>".
+class _GenoBoundedDisplay extends _GenoFString {
+    constructor(displayLimit) {
+        super();
+        this.displayLimit = displayLimit;
+    }
+
+    append(part) {
+        for (const _character of part) this.size += 1;
+        if (part) this.parts.push(part);
+        if (this.size > this.displayLimit) throw new _GenoDisplayLimitReached();
+    }
+
+    appendValue(value, shape = null, topLevel = true) {
+        if (typeof value === "function") {
+            this.append("<function>");
+            return;
+        }
+        super.appendValue(value, shape, topLevel);
+    }
+}
+
+// The diagnostic rendering of `value` (strings quoted at every depth),
+// truncated to `displayLimit` code points: equal to rendering it whole and
+// keeping its first `displayLimit - 3` code points plus "...", but the walk
+// stops once more than `displayLimit` code points are written. `shape` is the
+// static display shape the compiler records (Float and tuple positions, as
+// for f-strings), since JavaScript values cannot tell 2.0 from 2 or a tuple
+// from a list.
+function _formatValueBounded(value, displayLimit, shape = null) {
+    const _boundedWriter = new _GenoBoundedDisplay(displayLimit);
+    try {
+        _boundedWriter.appendValue(value, shape, false);
+    } catch (e) {
+        if (!(e instanceof _GenoDisplayLimitReached)) throw e;
+    }
+    if (_boundedWriter.size <= displayLimit) return _boundedWriter.finish();
+    return _stringCodePoints(_boundedWriter.finish())
+        .slice(0, _GENO_MATH.max(displayLimit - 3, 0)).join("") + "...";
+}
+
+// Copy of geno/runtime_report.py contract_message (a test pins it).
+function _genoContractMessage(clause, reason, fn, clauseText, clauseIndex, shownArgs, shownResult, checked) {
+    const _contractNotes = [];
+    if (reason === "propagate") _contractNotes.push("'?' propagated None/Err");
+    if (shownResult !== null) _contractNotes.push("result was " + shownResult);
+    if (checked.length) {
+        _contractNotes.push(checked.map(([name, value]) => name + " was " + value).join(", ") + " when checked");
+    }
+    return (clause === "requires" ? "Precondition failed" : "Postcondition failed")
+        + ": " + fn + "(" + shownArgs.map(([name, value]) => name + ": " + value).join(", ") + ") "
+        + clause + " " + (clauseText ? clauseText : "clause #" + _GENO_STRING(clauseIndex + 1))
+        + (_contractNotes.length ? " (" + _contractNotes.join("; ") + ")" : "");
+}
+
+// The error a failed contract clause throws (the caller throws it). `values`
+// are the call's arguments as [value, shape] pairs; `checked`, when given,
+// are the parameters' values at an ensures check in a function whose body
+// rebound a parameter, and those that render differently are reported too.
+function _genoContractViolation(clause, reason, clauseIndex, fn, clauseText, names, values, hasResult = false, result = undefined, resultShape = null, checked = null) {
+    const _shownArgs = names.map((name, index) => [
+        name, _formatValueBounded(values[index][0], _GENO_ARGUMENT_DISPLAY_LIMIT, values[index][1]),
+    ]);
+    const _shownChecked = checked === null ? [] : names
+        .map((name, index) => [
+            name, _formatValueBounded(checked[index][0], _GENO_ARGUMENT_DISPLAY_LIMIT, checked[index][1]),
+        ])
+        .filter((pair, index) => pair[1] !== _shownArgs[index][1]);
+    const _shownResult = hasResult
+        ? _formatValueBounded(result, _GENO_ARGUMENT_DISPLAY_LIMIT, resultShape)
+        : null;
+    const _violation = new _GenoContractViolation(_genoContractMessage(
+        clause, reason, fn, clauseText, clauseIndex, _shownArgs, _shownResult, _shownChecked,
+    ));
+    _violation.clause = clause;
+    _violation.reason = reason;
+    _violation.clauseIndex = clauseIndex;
+    _violation.function = fn;
+    _violation.clauseText = clauseText;
+    _violation.arguments = _shownArgs;
+    _violation.resultDisplay = _shownResult;
+    _violation.checkedValues = _shownChecked;
+    return _violation;
+}
+
+// =============================================================================
+// Host Error Capture
+// =============================================================================
+
+// A Node entry build lifts Error.stackTraceLimit (proposal 0018), so building
+// an Error costs time in proportion to the stack's depth. A builtin that turns
+// a host failure into a Geno Err or None builds one on a success path, so it
+// runs that host work through `_genoQuietly`, with stack capture off. The work
+// must not run Geno code, whose failures need their stacks. An error the
+// builtin rethrows as a real failure (a collection limit) gets a stack again
+// from `_genoRestack`, captured where it is rethrown.
+function _genoQuietly(work) {
+    const _genoSavedStackLimit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    try {
+        return work();
+    } finally {
+        Error.stackTraceLimit = _genoSavedStackLimit;
+    }
+}
+
+function _genoRestack(error) {
+    if (error instanceof Error && typeof Error.captureStackTrace === "function") {
+        Error.captureStackTrace(error, _genoRestack);
+    }
+    return error;
+}
+
+// =============================================================================
+// Runtime Failure Reports
+// =============================================================================
+
+// Proposal 0018. A Node entry build defines `_GENO_TRACE`, a table that maps
+// host lines back to Geno source (geno/runtime_report.py documents the
+// records), and `_genoTraceAnchor`, whose definition line is the table's host
+// line 0. Only the entry path calls `_genoInstallReporter`, before `main`, so
+// importing an ES module build changes no process-wide setting. When a
+// failure escapes `main`, or an Async nothing awaits rejects,
+// `_genoReportUncaught` prints the Geno report and ends the process at once.
+// Mapping reads V8's structured call sites (or, when the error's stack was
+// already formatted, its text) and the table, which it treats as untrusted
+// data: anything malformed throws, and the report is then the message line
+// alone. These copies of geno/runtime_report.py's constants and text layout
+// keep compiled output standalone; geno/tests/test_runtime_report_parity.py
+// pins that they agree. Locals have names no other section uses, because the
+// prelude tree-shaker reads every line-leading declaration as a name the
+// section defines.
+
+const _GENO_STACK_HEAD = 10;
+const _GENO_STACK_TAIL = 10;
+const _GENO_STACK_HEADER = "Stack trace (most recent call last):";
+const _GENO_TRACE_AWAIT_KEY = "<await>";
+const _GENO_TRACE_CALL_KEY = "<call>";
+const _GENO_HOST_TRACEBACK_HEADER = "Host traceback (GENO_TRACEBACK=host):";
+const _GENO_TRACE_INTEGER = /^-?[0-9]+$/;
+
+// Undo the trace table's escaping of one text field.
+function _genoTraceText(field) {
+    if (!field.includes("\\")) return field;
+    let _grText = "";
+    for (let index = 0; index < field.length; index += 1) {
+        const _grChar = field[index];
+        if (_grChar === "\\" && index + 1 < field.length) {
+            const _grEscaped = field[index + 1];
+            _grText += _grEscaped === "t" ? "\t" : _grEscaped === "n" ? "\n" : _grEscaped;
+            index += 1;
+        } else {
+            _grText += _grChar;
+        }
+    }
+    return _grText;
+}
+
+function _genoTraceInteger(field) {
+    if (!_GENO_TRACE_INTEGER.test(field)) throw new Error("malformed runtime trace number");
+    return _GENO_NUMBER(field);
+}
+
+// Parse a version-1 trace table; throws when it is malformed.
+function _genoParseTrace(table) {
+    if (typeof table !== "string") throw new Error("unsupported runtime trace table");
+    const _grRecords = table.split("\n");
+    if (_grRecords[0] !== "G\t1") throw new Error("unsupported runtime trace table");
+    const _grFiles = new _GENO_MAP();
+    const _grFunctions = [];
+    const _grStatements = new _GENO_MAP();
+    const _grMarks = [];
+    const _grCandidates = new _GENO_MAP();
+    let _grEnd = null;
+    for (let index = 1; index < _grRecords.length; index += 1) {
+        const _grFields = _grRecords[index].split("\t");
+        const _grKind = _grFields[0];
+        if (_grKind === "F" && _grFields.length === 3) {
+            _grFiles.set(_genoTraceInteger(_grFields[1]), _genoTraceText(_grFields[2]));
+        } else if (_grKind === "D" && _grFields.length === 5) {
+            _grFunctions.push([
+                _genoTraceInteger(_grFields[1]),
+                _genoTraceInteger(_grFields[2]),
+                _genoTraceText(_grFields[3]),
+                _genoTraceText(_grFields[4]),
+            ]);
+        } else if (_grKind === "T" && _grFields.length === 5) {
+            const _grFileIndex = _genoTraceInteger(_grFields[2]);
+            if (!_grFiles.has(_grFileIndex)) throw new Error("malformed runtime trace record");
+            _grStatements.set(_genoTraceInteger(_grFields[1]), [
+                _grFiles.get(_grFileIndex),
+                _genoTraceInteger(_grFields[3]),
+                _genoTraceInteger(_grFields[4]),
+            ]);
+        } else if (_grKind === "S" && _grFields.length === 3) {
+            _grMarks.push([_genoTraceInteger(_grFields[1]), _genoTraceInteger(_grFields[2])]);
+        } else if (_grKind === "C" && _grFields.length === 5) {
+            const _grStatementId = _genoTraceInteger(_grFields[1]);
+            if (!_grCandidates.has(_grStatementId)) _grCandidates.set(_grStatementId, []);
+            _grCandidates.get(_grStatementId).push([
+                _genoTraceText(_grFields[2]),
+                _genoTraceInteger(_grFields[3]),
+                _genoTraceInteger(_grFields[4]),
+            ]);
+        } else if (_grKind === "E" && _grFields.length === 2) {
+            _grEnd = _genoTraceInteger(_grFields[1]);
+        } else {
+            throw new Error("malformed runtime trace record");
+        }
+    }
+    if (_grEnd === null) throw new Error("runtime trace table has no end record");
+    return [_grFunctions, _grStatements, _grMarks, _grCandidates, _grEnd];
+}
+
+// The innermost function range containing host `line`, if any.
+function _genoTraceFunction(functions, line) {
+    let _grFound = null;
+    for (const _grRange of functions) {
+        if (_grRange[0] <= line && line < _grRange[1] && (_grFound === null || _grRange[0] >= _grFound[0])) {
+            _grFound = _grRange;
+        }
+    }
+    return _grFound;
+}
+
+// The statement host `line` belongs to (-1: none).
+function _genoTraceStatement(marks, line) {
+    let _grLow = 0;
+    let _grHigh = marks.length;
+    while (_grLow < _grHigh) {
+        const _grMiddle = (_grLow + _grHigh) >> 1;
+        if (marks[_grMiddle][0] <= line) _grLow = _grMiddle + 1;
+        else _grHigh = _grMiddle;
+    }
+    return _grLow ? marks[_grLow - 1][1] : -1;
+}
+
+// The one position all of `sites` share, or null.
+function _genoTraceSite(path, sites) {
+    if (!sites.length) return null;
+    for (const _grSite of sites) {
+        if (_grSite[1] !== sites[0][1] || _grSite[2] !== sites[0][2]) return null;
+    }
+    return [path, sites[0][1], sites[0][2]];
+}
+
+// Where execution was in `statement`: a call site, or its start. A position
+// is chosen only when exactly one site of the statement can have made the
+// call: a candidate whose key names the callee, and every call through a
+// function value ("<call>") when the callee is something a function value
+// holds, a Geno function (one of `functionNames`, the table's host names) or
+// a builtin. Runtime helpers, prelude names that start with "_" and that no
+// Geno function has, are never function values (no builtin name starts with
+// "_"). Several possible sites leave the statement's start.
+function _genoTracePosition(statement, sites, key, direct, functionNames) {
+    if (statement === undefined) return null;
+    if (key !== null) {
+        const _grMatches = sites.filter((site) => site[0] === key);
+        const _grCalls = sites.filter((site) => site[0] === _GENO_TRACE_CALL_KEY);
+        if (_grMatches.length) {
+            // The callee may have been reached through a function value as
+            // well as by name.
+            const _grPossible = functionNames.has(key) || !key.startsWith("_")
+                ? _grMatches.concat(_grCalls)
+                : _grMatches;
+            const _grSite = _genoTraceSite(statement[0], _grPossible);
+            return _grSite === null ? statement : _grSite;
+        }
+        // A callee no candidate names was reached through a function value
+        // (a parameter or a local): the statement's one indirect call.
+        const _grIndirect = _genoTraceSite(statement[0], _grCalls);
+        if (_grIndirect !== null) return _grIndirect;
+    }
+    if (direct) {
+        // An awaited Async made elsewhere: positioned at the `await`.
+        const _grAwaits = sites.filter((site) => site[0] === _GENO_TRACE_AWAIT_KEY);
+        if (_grAwaits.length === 1) return [statement[0], _grAwaits[0][1], _grAwaits[0][2]];
+    }
+    return statement;
+}
+
+// One frame of a formatted V8 stack line ("    at name (file:line:col)").
+function _genoParseStackLine(text) {
+    const _grAt = /^\s*at (.*)$/.exec(text);
+    if (_grAt === null) return null;
+    let _grName = null;
+    let _grWhere = _grAt[1];
+    const _grCall = /^(.*?) \((.*)\)$/.exec(_grWhere);
+    if (_grCall !== null) {
+        _grName = _grCall[1].replace(/^(?:async |new )/, "").replace(/ \[as [^\]]*\]$/, "");
+        _grName = _grName.slice(_grName.lastIndexOf(".") + 1);
+        _grWhere = _grCall[2];
+    }
+    const _grPlace = /^(.*):([0-9]+):([0-9]+)$/.exec(_grWhere);
+    return {
+        name: _grName,
+        file: _grPlace === null ? null : _grPlace[1],
+        line: _grPlace === null ? null : _GENO_NUMBER(_grPlace[2]),
+        enclosing: null,
+    };
+}
+
+// The frames of `error`'s stack, innermost first, as {name, file, line,
+// enclosing} records: from V8's structured call sites when the stack has not
+// been formatted yet (V8 formats it lazily, on first access, through
+// Error.prepareStackTrace, which this temporarily replaces; under
+// `node --enable-source-maps` that also bypasses Node's rewriting), else
+// parsed from its text, whose first lines are the error's own message.
+function _genoStackRecords(error) {
+    if (error === null || (typeof error !== "object" && typeof error !== "function")) return [];
+    const _grPrevious = Error.prepareStackTrace;
+    let _grStack;
+    try {
+        Error.prepareStackTrace = (_unused, callSites) => callSites;
+        _grStack = error.stack;
+    } finally {
+        Error.prepareStackTrace = _grPrevious;
+    }
+    if (Array.isArray(_grStack)) {
+        return _grStack.map((site) => ({
+            name: site.getFunctionName(),
+            file: site.getFileName(),
+            line: site.getLineNumber(),
+            enclosing: typeof site.getEnclosingLineNumber === "function"
+                ? site.getEnclosingLineNumber()
+                : null,
+        }));
+    }
+    if (typeof _grStack !== "string") return [];
+    let _grFrames = _grStack;
+    const _grHead = _GENO_STRING(error);
+    if (_grFrames.startsWith(_grHead)) _grFrames = _grFrames.slice(_grHead.length);
+    return _grFrames.split("\n").map(_genoParseStackLine).filter((record) => record !== null);
+}
+
+// Map `error`'s stack through the trace `table` (proposal 0018). Returns
+// [frames, omitted, location]: the Geno frames outermost first, each
+// [name, position] with position a [path, line, column] array or null,
+// bounded to the first _GENO_STACK_HEAD and the last _GENO_STACK_TAIL frames
+// with `omitted` frames left out between them; and the failure location,
+// the innermost frame's position.
+//
+// A frame is program code when its file is the anchor's and its line lies
+// inside a Geno function's range; prelude frames lie before the anchor and
+// the entry code after the table's end. Of those body frames, a Geno frame
+// is one whose function is the one the range names (its name, and its
+// definition line when V8 reports it); arrows, IIFEs and the ensures body
+// helper are transparent. Frame i is positioned where its last body frame
+// before frame i+1 was: at the candidate site of the callee it was calling
+// there, or at the start of the statement.
+function _genoFailureReport(error, table, anchor) {
+    const [functions, statements, marks, candidates, end] = _genoParseTrace(table);
+    const _grAnchorSite = _genoStackRecords(anchor())[0];
+    if (_grAnchorSite === undefined || !_GENO_NUMBER.isInteger(_grAnchorSite.line)) {
+        throw new Error("no runtime trace anchor");
+    }
+    const _grBase = _grAnchorSite.line;
+    // Each body frame: its host line, function name, the callee it was
+    // calling (undefined: none that is not program code), range and
+    // definition line.
+    const _grBody = [];
+    let _grPreviousWasBody = false;
+    for (const _grSite of _genoStackRecords(error).reverse()) {
+        let _grOwner = null;
+        const _grLine = _GENO_NUMBER.isInteger(_grSite.line) ? _grSite.line - _grBase : -1;
+        if (_grSite.file === _grAnchorSite.file && _grSite.file !== null && 0 <= _grLine && _grLine < end) {
+            _grOwner = _genoTraceFunction(functions, _grLine);
+        }
+        if (_grOwner !== null) {
+            _grBody.push({
+                line: _grLine,
+                name: _grSite.name,
+                callee: undefined,
+                owner: _grOwner,
+                enclosing: _GENO_NUMBER.isInteger(_grSite.enclosing) ? _grSite.enclosing - _grBase : null,
+            });
+            _grPreviousWasBody = true;
+        } else {
+            if (_grPreviousWasBody) _grBody[_grBody.length - 1].callee = _grSite.name;
+            _grPreviousWasBody = false;
+        }
+    }
+    const _grGeno = [];
+    _grBody.forEach((entry, index) => {
+        if (entry.owner[2] === entry.name && (entry.enclosing === null || entry.enclosing === entry.owner[0])) {
+            _grGeno.push(index);
+        }
+    });
+    const _grFunctionNames = new _GENO_SET(functions.map((range) => range[2]));
+    const _grFrames = [];
+    for (let number = 0; number < _grGeno.length; number += 1) {
+        let _grEntry;
+        let _grDirect = false;
+        let _grKey;
+        if (number + 1 < _grGeno.length) {
+            _grEntry = _grBody[_grGeno[number + 1] - 1];
+            _grDirect = _grEntry.callee === undefined;
+            _grKey = _grDirect ? _grBody[_grGeno[number + 1]].name : _grEntry.callee;
+        } else {
+            _grEntry = _grBody[_grBody.length - 1];
+            _grKey = _grEntry.callee;
+        }
+        const _grStatementId = _genoTraceStatement(marks, _grEntry.line);
+        _grFrames.push([
+            _grBody[_grGeno[number]].owner[3],
+            _genoTracePosition(
+                statements.get(_grStatementId),
+                candidates.get(_grStatementId) || [],
+                _grKey === undefined ? null : _grKey,
+                _grDirect,
+                _grFunctionNames,
+            ),
+        ]);
+    }
+    const _grLocation = _grFrames.length ? _grFrames[_grFrames.length - 1][1] : null;
+    const _grTotal = _grFrames.length;
+    if (_grTotal <= _GENO_STACK_HEAD + _GENO_STACK_TAIL) return [_grFrames, 0, _grLocation];
+    return [
+        _grFrames.slice(0, _GENO_STACK_HEAD).concat(_grFrames.slice(_grTotal - _GENO_STACK_TAIL)),
+        _grTotal - _GENO_STACK_HEAD - _GENO_STACK_TAIL,
+        _grLocation,
+    ];
+}
+
+// The frame block of a runtime report, as geno/runtime_report.py renders it.
+function _genoReportLines(frames, omitted, location) {
+    const _grLines = [];
+    if (frames.length) {
+        _grLines.push(_GENO_STACK_HEADER);
+        for (const [name, position] of frames) {
+            _grLines.push(position === null ? "  in " + name : "  " + position.join(":") + " in " + name);
+        }
+        if (omitted > 0) {
+            _grLines.splice(
+                1 + _GENO_MATH.min(_GENO_STACK_HEAD, frames.length),
+                0,
+                "  ... " + omitted + (omitted === 1 ? " frame" : " frames") + " omitted ...",
+            );
+        }
+    } else if (location !== null) {
+        _grLines.push("  at " + location.join(":"));
+    }
+    return _grLines;
+}
+
+// An uncaught failure's message: the Python worker's rule for compiled code
+// (a plain Error, or a contract violation, shows its message; any other
+// error type is named before it).
+function _genoUncaughtMessage(error) {
+    if (error instanceof Error) {
+        const _grDetail = _GENO_STRING(error.message) || error.name;
+        if (error.name === "Error" || error.name === "_GenoContractViolation") return _grDetail;
+        return error.name + ": " + _grDetail;
+    }
+    return _GENO_STRING(error);
+}
+
+// The host stack of `error`, as V8 formats it (GENO_TRACEBACK=host).
+function _genoHostTraceback(error) {
+    try {
+        const _grHostStack = error !== null && typeof error === "object" ? error.stack : undefined;
+        if (typeof _grHostStack === "string") return _grHostStack;
+        if (Array.isArray(_grHostStack)) {
+            return [_GENO_STRING(error)]
+                .concat(_grHostStack.map((site) => "    at " + _GENO_STRING(site)))
+                .join("\n");
+        }
+    } catch (_unused) {
+        // Fall through to the error's own text.
+    }
+    return _GENO_STRING(error);
+}
+
+// Print the Geno report of a failure that escaped `main` and end the process
+// with status 1 at once, so no pending asynchronous work runs after it (the
+// interpreter and compiled Python never run an Async nothing awaits). The
+// entry path made stdout and stderr blocking, so the output printed before
+// the failure and the report are complete when the process ends. When the
+// table or the mapping fails, the report is the message line alone, never a
+// host traceback unless GENO_TRACEBACK=host asks for one.
+function _genoReportUncaught(error, table, anchor) {
+    let _grMessage;
+    try {
+        _grMessage = _genoUncaughtMessage(error);
+    } catch (_unused) {
+        _grMessage = "Error";
+    }
+    let _grReport;
+    try {
+        _grReport = _genoReportLines(..._genoFailureReport(error, table, anchor));
+    } catch (_unused) {
+        _grReport = [];
+    }
+    _grReport.push("Runtime Error: " + _grMessage);
+    if (process.env.GENO_TRACEBACK === "host") {
+        _grReport.push(_GENO_HOST_TRACEBACK_HEADER, _genoHostTraceback(error));
+    }
+    process.stderr.write(_grReport.join("\n") + "\n");
+    process.exit(1);
+}
+
+// The entry path's process-wide settings (never made when an ES module
+// build is imported): an unlimited stack trace limit, since V8 keeps only
+// the innermost frames of a deeper stack and a report shows the outermost
+// too; the reporter for an Async that rejects with nothing awaiting it; and
+// blocking writes to stdout and stderr when they are pipes, as compiled
+// Python and the interpreter have. The reporter ends the process at once,
+// which would drop anything still queued for a slow or full pipe: what a
+// program printed before failing, or the report itself. A blocking write
+// returns once the pipe has taken it, so nothing is queued at the exit
+// (files and POSIX terminals are written synchronously already). It is set
+// before `main` runs, because libuv keeps no order between writes queued
+// before and after the mode changes. None of these is restored: errors
+// raised later by asynchronous work still need them, and the entry path
+// owns the process.
+function _genoInstallReporter(table, anchor) {
+    Error.stackTraceLimit = Infinity;
+    for (const _grStream of [process.stdout, process.stderr]) {
+        const _grHandle = _grStream === undefined || _grStream === null ? undefined : _grStream._handle;
+        if (_grHandle !== undefined && _grHandle !== null && typeof _grHandle.setBlocking === "function") {
+            try {
+                _grHandle.setBlocking(true);
+            } catch (_unused) {
+                // A handle that cannot block keeps Node's default.
+            }
+        }
+    }
+    process.on("unhandledRejection", (reason) => _genoReportUncaught(reason, table, anchor));
 }
 
 // =============================================================================
@@ -2370,7 +2925,7 @@ function fs_read_text(path) {
     const fs = require("fs");
     let result;
     try {
-        result = fs.readFileSync(path, "utf-8").replace(/\r\n?/g, "\n");
+        result = _genoQuietly(() => fs.readFileSync(path, "utf-8")).replace(/\r\n?/g, "\n");
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -2385,7 +2940,7 @@ function fs_write_text(path, content) {
     }
     const fs = require("fs");
     try {
-        fs.writeFileSync(path, content, "utf-8");
+        _genoQuietly(() => fs.writeFileSync(path, content, "utf-8"));
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -2400,7 +2955,7 @@ function fs_list_dir(path) {
     const fs = require("fs");
     let entries;
     try {
-        entries = fs.readdirSync(path).sort(_comparePythonStrings);
+        entries = _genoQuietly(() => fs.readdirSync(path)).sort(_comparePythonStrings);
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -2442,7 +2997,7 @@ function fs_metadata(path) {
     const fs = require("fs");
     let stats;
     try {
-        stats = fs.statSync(path, { bigint: true });
+        stats = _genoQuietly(() => fs.statSync(path, { bigint: true }));
     } catch (e) {
         return Err(e.message);
     }
@@ -2457,7 +3012,7 @@ function fs_symlink_metadata(path) {
     const fs = require("fs");
     let stats;
     try {
-        stats = fs.lstatSync(path, { bigint: true });
+        stats = _genoQuietly(() => fs.lstatSync(path, { bigint: true }));
     } catch (e) {
         return Err(e.message);
     }
@@ -2474,7 +3029,7 @@ function fs_canonicalize(path) {
     const fs = require("fs");
     let canonical;
     try {
-        canonical = fs.realpathSync(path).replace(/\\/g, "/");
+        canonical = _genoQuietly(() => fs.realpathSync(path)).replace(/\\/g, "/");
     } catch (e) {
         return Err(e.message);
     }
@@ -3971,10 +4526,13 @@ function _escapeJsonAscii(text) {
 
 function json_parse(text) {
     try {
-        _ensureJsonNestingLimit(text);
-        return _checkCollectionSize({ _tag: "Ok", value: _jsonParseText(text) });
+        const value = _genoQuietly(() => {
+            _ensureJsonNestingLimit(text);
+            return _jsonParseText(text);
+        });
+        return _checkCollectionSize({ _tag: "Ok", value });
     } catch (e) {
-        if (String(e.message).includes("size exceeds limit")) throw e;
+        if (String(e.message).includes("size exceeds limit")) throw _genoRestack(e);
         return _checkCollectionSize(Err(e.message));
     }
 }
@@ -4349,7 +4907,7 @@ function _runProcessArgv(cp, argv, stdin = null) {
         options.input = stdin;
     }
 
-    const result = cp.spawnSync(argv[0], argv.slice(1), options);
+    const result = _genoQuietly(() => cp.spawnSync(argv[0], argv.slice(1), options));
     if (result.error) {
         if (result.error.code === "ETIMEDOUT") {
             return { _tag: "Err", error: "Process timed out" };
@@ -4367,7 +4925,7 @@ function exec(command) {
     const cp = require("child_process");
     let argv;
     try {
-        argv = _splitProcessCommand(command);
+        argv = _genoQuietly(() => _splitProcessCommand(command));
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
@@ -4382,7 +4940,7 @@ function exec_with_input(command, stdin) {
     const cp = require("child_process");
     let argv;
     try {
-        argv = _splitProcessCommand(command);
+        argv = _genoQuietly(() => _splitProcessCommand(command));
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }

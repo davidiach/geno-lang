@@ -1,0 +1,20 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print --no-check-examples
+# STDERR: main.geno:3:11 in load
+# A denial in the isolated lane's compiled `main` reports its Geno call site
+# and stack (proposal 0018), mapped by the trusted worker: never a worker,
+# sandbox or runtime-prelude frame, no `<string>` file, and no path outside
+# the program's own file. Comment lines are stripped before the run, so the
+# positions count from `func load`.
+func load(path: String) -> String
+    example "x" -> "x"
+    match fs_read_text(path) with
+        | Ok(text) -> return "ESCAPED " + text
+        | Err(error) -> return "ESCAPED " + error
+    end match
+end func
+
+func main() -> Unit
+    print(load("main.geno"))
+end func

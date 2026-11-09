@@ -328,26 +328,36 @@ def test_geno_run_does_not_treat_imported_main_as_entrypoint(
         assert result.stdout == ""
 
 
-def test_compiled_python_uncaught_runtime_error_keeps_traceback() -> None:
+def test_compiled_python_uncaught_runtime_error_prints_the_geno_report() -> None:
+    """Proposal 0018: a Geno report, mapped to Geno source, replaces the
+    host traceback; the status is still nonzero."""
     result = run_python_code(
         compile_to_python(_source("Int", "return 1 / 0")),
         python_executable=sys.executable,
     )
 
-    assert result.returncode != 0
-    assert "Traceback" in result.stderr
-    assert "zero" in result.stderr.lower()
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    lines = result.stderr.splitlines()
+    assert lines[0] == "Stack trace (most recent call last):"
+    assert lines[1].endswith(" in main")
+    assert lines[-1] == "Runtime Error: Division by zero"
 
 
 @pytest.mark.skipif(_NODE is None, reason="Node.js is not installed")
-def test_compiled_node_uncaught_runtime_error_keeps_diagnostic() -> None:
+def test_compiled_node_uncaught_runtime_error_prints_the_geno_report() -> None:
+    """Proposal 0018: a Geno report, mapped to Geno source, replaces the V8
+    stack of generated code; the status is still 1."""
     js_code = compile_to_js(_source("Int", "return 1 / 0"))
     assert isinstance(js_code, str)
     result = run_node_code(js_code, node_executable=_NODE or "node")
 
-    assert result.returncode != 0
-    assert result.stderr
-    assert "zero" in result.stderr.lower()
+    assert result.returncode == 1
+    assert "    at " not in result.stderr
+    lines = result.stderr.splitlines()
+    assert lines[0] == "Stack trace (most recent call last):"
+    assert lines[1].endswith(" in main")
+    assert lines[-1] == "Runtime Error: Division by zero"
 
 
 def test_browser_targeted_esm_does_not_import_node_runtime() -> None:
