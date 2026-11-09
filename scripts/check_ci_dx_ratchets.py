@@ -28,7 +28,11 @@ UNTYPED_FUNCTION_BUDGET = 423
 # +1 for the compiled http_listen handler boundary (H-03): a compiled Geno
 # route handler can raise anything, so a broad `except Exception` that returns
 # a generic 500 (and never leaks a traceback to the client) is required.
-BROAD_EXCEPTION_HANDLER_BUDGET = 55
+# +1 for the compiled Python uncaught-failure reporter (proposal 0018):
+# `_geno_report_uncaught` formats the message and the Geno frames under two
+# broad handlers so a failure in either still prints the report, never a host
+# traceback; one fit within the previous slack.
+BROAD_EXCEPTION_HANDLER_BUDGET = 56
 WINDOWS_PACKAGE_POLICY_TEST = (
     "geno/tests/test_package_manager.py::TestManifestParse::"
     "test_manifest_filesystem_sensitive_dependency_name_raises"

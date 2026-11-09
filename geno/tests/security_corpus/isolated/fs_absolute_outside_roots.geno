@@ -1,0 +1,16 @@
+# EXPECT: E414
+# LANE: isolated
+# RUN: --cap fs,print
+# STDERR: confined: fs_read_text: path escapes configured filesystem roots
+# Absolute paths are allowed only inside the run's filesystem roots; any other
+# absolute path is refused before the host is touched.
+func main() -> Unit
+    match fs_canonicalize("/") with
+        | Ok(path) -> print("ESCAPED " + path)
+        | Err(_) -> ()
+    end match
+    match fs_read_text("/etc/passwd") with
+        | Ok(text) -> print("ESCAPED " + text)
+        | Err(error) -> panic("confined: " + error)
+    end match
+end func

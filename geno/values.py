@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .ast_nodes import Parameter, SpecBlock, Statement
 from .diagnostics import runtime_error_code_for_message
@@ -24,7 +24,14 @@ class GenoRuntimeError(Exception):
 
     Named ``GenoRuntimeError`` to avoid shadowing Python's built-in
     ``RuntimeError``.
+
+    ``geno_stack`` is the raw Geno call stack the interpreter captured when
+    the error first unwound a Geno frame (a ``runtime_report.CapturedStack``),
+    or ``None``. Reports build the bounded stack from it (proposal 0018). It
+    never enters ``message`` or ``str()``.
     """
+
+    geno_stack: Any = None
 
     def __init__(
         self,
@@ -35,19 +42,59 @@ class GenoRuntimeError(Exception):
         self.message = message
         self.location = location
         self.error_code = error_code or runtime_error_code_for_message(message)
+        super().__init__(self._text(message, location))
+
+    @staticmethod
+    def _text(message: str, location: SourceLocation | None) -> str:
         if location:
-            super().__init__(f"{location}: Runtime Error: {message}")
-        else:
-            super().__init__(f"Runtime Error: {message}")
+            return f"{location}: Runtime Error: {message}"
+        return f"Runtime Error: {message}"
+
+    def set_location(self, location: SourceLocation | None) -> None:
+        """Locate this error in place at *location*.
+
+        The object keeps its type, its error code, its ``message`` and any
+        trusted host tags set on it, because it stays the same object; only
+        ``location`` and the ``str()`` that shows it change.
+        """
+        self.location = location
+        self.args = (self._text(self.message, location),)
+
+
+ContractClause = Literal["requires", "ensures"]
+# Why a contract clause failed: it evaluated to false, or it used ``?`` and
+# propagated a None/Err instead of producing a Bool.
+ContractFailureReason = Literal["false", "propagate"]
 
 
 class ContractViolationError(GenoRuntimeError):
     """Uncatchable contract violation from requires/ensures clauses.
 
-    ``call_depth`` is the interpreter call depth the violation was raised at,
-    when the raiser knows it. Example verification uses it to tell a
-    precondition that rejected the example's own input (depth 1) from one a
-    nested call tripped, which are different authoring mistakes.
+    The structured fields say what failed, so tools never parse the message
+    (proposal 0017); a rewrite of the message text must keep them:
+
+    - ``clause``: ``"requires"`` or ``"ensures"``;
+    - ``reason``: ``"false"`` (the clause evaluated to false) or
+      ``"propagate"`` (it used ``?`` and propagated None/Err);
+    - ``clause_index``: the clause's index in ``specs.requires`` or
+      ``specs.ensures``;
+    - ``call_depth``: the interpreter call depth the violation was raised at,
+      where 1 is the call a tool made with an empty call stack. Example
+      verification uses it to tell a precondition that rejected the example's
+      own input (depth 1) from one a nested call tripped, which are different
+      authoring mistakes;
+    - ``result_display``: for an ``ensures`` clause, the interpreter's display
+      of the value the function returned (bounded, proposal 0018);
+    - ``function``: the failing function's display name (``f``,
+      ``Type.method``, ``Module.f``);
+    - ``clause_text``: the clause's source text, as the parser captured it;
+    - ``arguments``: the call's arguments as ``(name, rendered value)``
+      pairs, each value bounded;
+    - ``checked_values``: for an ``ensures`` clause, the parameters the body
+      rebound to a value that renders differently from the argument, as the
+      clause saw them (empty otherwise).
+
+    Each is ``None`` when the raiser does not know it.
     """
 
     def __init__(
@@ -56,9 +103,75 @@ class ContractViolationError(GenoRuntimeError):
         location: SourceLocation | None = None,
         error_code: Any | None = None,
         call_depth: int | None = None,
+        *,
+        clause: ContractClause | None = None,
+        reason: ContractFailureReason | None = None,
+        clause_index: int | None = None,
+        result_display: str | None = None,
+        function: str | None = None,
+        clause_text: str | None = None,
+        arguments: tuple[tuple[str, str], ...] | None = None,
+        checked_values: tuple[tuple[str, str], ...] = (),
     ) -> None:
         super().__init__(message, location, error_code)
         self.call_depth = call_depth
+        self.clause: ContractClause | None = clause
+        self.reason: ContractFailureReason | None = reason
+        self.clause_index = clause_index
+        self.result_display = result_display
+        self.function = function
+        self.clause_text = clause_text
+        self.arguments = arguments
+        self.checked_values = checked_values
+
+    def with_message(
+        self, message: str, location: SourceLocation | None
+    ) -> ContractViolationError:
+        """The same violation, explained by *message* at *location*.
+
+        Every structured field and the captured Geno stack carry over.
+        """
+        explained = ContractViolationError(
+            message,
+            location,
+            call_depth=self.call_depth,
+            clause=self.clause,
+            reason=self.reason,
+            clause_index=self.clause_index,
+            result_display=self.result_display,
+            function=self.function,
+            clause_text=self.clause_text,
+            arguments=self.arguments,
+            checked_values=self.checked_values,
+        )
+        explained.geno_stack = self.geno_stack
+        return explained
+
+
+RuntimeLimitKind = Literal["collection size", "integer size", "numeric range", "output"]
+
+
+class RuntimeLimitError(GenoRuntimeError):
+    """A runtime resource limit was exceeded: not a panic of the program.
+
+    Raised where the interpreter and the builtins enforce a limit set by the
+    host's ``SandboxConfig`` (``max_collection_size``, ``max_integer_bits``,
+    ``max_output_length``), and for a numeric result outside the host's range.
+    The message and error code are those of the ``GenoRuntimeError`` it
+    replaces; the type is what lets a ``panics`` example (proposal 0017) tell a
+    limit from a panic without reading the message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        location: SourceLocation | None = None,
+        error_code: Any | None = None,
+        *,
+        limit: RuntimeLimitKind,
+    ) -> None:
+        super().__init__(message, location, error_code)
+        self.limit: RuntimeLimitKind = limit
 
 
 # Backward-compatible alias — existing code can still import RuntimeError
@@ -107,6 +220,11 @@ class Closure:
     name: str | None = None
     specs: SpecBlock | None = None  # requires/ensures clauses
     is_async: bool = False
+    # The name runtime reports show (proposal 0018): the function's name, or
+    # ``Type.method`` for an impl method and ``Module.function`` for a
+    # function of an imported module. Set when the definition creates the
+    # closure; ``None`` for a lambda.
+    display_name: str | None = None
 
     def __repr__(self) -> str:
         return f"<function {self.name or 'anonymous'}>"

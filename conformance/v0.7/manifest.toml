@@ -1,7 +1,378 @@
 schema_version = 2
 language_version = "0.7"
 status = "development"
-description = "Geno 0.7 development corpus: cold-write forms (accepted proposal 0026)"
+description = "Geno 0.7 development cases, including accepted proposal 0026 (unreleased; not frozen)"
+
+# The development corpus of the unreleased 0.7 line, opened by proposal 0017
+# (`docs/proposals/0017-panic-examples-and-property-checks.md`) and specified
+# by the Draft `docs/spec/v0.7.md`. It holds only cases new in 0.7: the v0.6
+# corpus keeps running unchanged as the preceding minor, and
+# `scripts/run_conformance.py --all-retained` runs this corpus after the
+# retained ones. Unlike them it is not frozen, and `status = "development"`
+# says so. When 0.7 is promoted, the promotion proposal carries the v0.6 cases
+# forward, drops `status`, and moves `spec.json`'s `language_series`.
+#
+# Panic examples are evaluated only where examples run: the interpreter lanes
+# (`interpreter`, `cli-process`, `cli-direct`, `cli-json`) check them before
+# `main`. Compiled Python and JavaScript never evaluate examples, so on those
+# lanes a program with panics examples must simply compile and run `main`
+# identically.
+
+[[cases]]
+id = "panic-example-passes"
+path = "programs/panic_example_passes.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "2\n3\npanics\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "panic-example-zero-arg"
+path = "programs/panic_example_zero_arg.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "2 panics\nno panics\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "panic-example-no-panic-fails"
+path = "programs/panic_example_no_panic_fails.geno"
+kind = "run"
+# Only the process lanes that own a stderr and run examples before `main`. The
+# `interpreter` lane returns its diagnostics as data and `cli-json` reports
+# them inside the envelope; compiled backends never run examples.
+targets = ["cli-process", "cli-direct"]
+capabilities = ["print"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["expected a panic"]
+
+[[cases]]
+id = "diagnostic-panic-example-arrow-form"
+path = "programs/diagnostic_panic_example_arrow_form.geno"
+kind = "diagnostic"
+# 0.6 accepted `-> panic("m")` (`panic` returns `Never`) although the example
+# could never pass; the 0.7 draft rejects it with E330, a recorded breaking
+# change (docs/operations/compatibility-policy.md), whose fix writes
+# `example 1, 0 panics "division"`.
+targets = ["checker"]
+expected_diagnostics = ["E330"]
+
+# Proposal 0013 (Accepted): the default isolated `geno run` lane grants
+# capabilities with `--cap`, exactly the listed ones, for examples and `main`.
+# The `cli-process` lane passes the case's `capabilities` as `--cap`, like the
+# other CLI lanes, and the compiled lanes pass it to the compiled program, so
+# each case also pins the isolated lane's output to the compiled backends'.
+# These cases use only capabilities the lane grants on every platform; program
+# arguments, the environment allowlist, stdin, fs and http are covered by the
+# pytest suite, since a manifest has no argument or environment fields.
+
+[[cases]]
+id = "isolated-grant-regex"
+path = "programs/isolated_grant_regex.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print", "regex"]
+expected_stdout = "101\nc_p_b_l_t__s\n3\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "isolated-grant-env-cli-args"
+path = "programs/isolated_grant_env_cli_args.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["env", "print"]
+expected_stdout = "[]\nno arguments\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "isolated-grant-is-exact"
+path = "programs/isolated_grant_regex.geno"
+kind = "run"
+# `--cap regex` is not added to the default grant: the examples call only the
+# regex engine and pass, and `main`'s first `print` is denied. The interpreter
+# and `--json` lanes report the denial as data, so only the lanes that own a
+# stderr state it. Compiled programs never run examples, and their `main` is
+# denied at the same `print` with the same message.
+targets = ["cli-process", "cli-direct", "python", "js", "js-esm"]
+capabilities = ["regex"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = ["Capability denied: 'print' requires the 'print' capability"]
+
+# Proposal 0018 (Accepted): every runtime failure reports where it happened in
+# Geno source and the Geno call stack that reached it, on every lane and
+# backend: the interpreter lanes, the default isolated lane (compiled Python in
+# the worker, mapped back to Geno source), and standalone compiled Python and
+# JavaScript (mapped through the trace table they embed). Each frame is
+# `file:line:col in name`, positioned inside that function: at the call it was
+# making, or, for the innermost frame, at the failure.
+#
+# The fragments name the program by its file name, so they hold whatever
+# absolute path a lane prints: the CLI lanes print the frontend's absolute
+# path, and compiled artifacts print the path relative to the entry file. Only
+# the CLI lanes can read the source, so only they print the snippet between
+# the last frame and the message; fragments therefore never span lines. The
+# `cli-json` lane reports the failure inside its envelope, which
+# `expected_diagnostic` describes; the stderr fragments are not applied to it.
+# The `interpreter` lane is an embedding boundary that returns diagnostics as
+# data, which the API tests cover.
+
+[[cases]]
+id = "runtime-panic-stack"
+path = "programs/runtime_panic_stack.geno"
+kind = "run"
+targets = ["cli-process", "cli-direct", "cli-json", "python", "js", "js-esm"]
+capabilities = ["print"]
+expected_stdout = "scaling\n"
+expected_exit_class = "nonzero"
+expected_stderr_contains = [
+    "Stack trace (most recent call last):",
+    "runtime_panic_stack.geno:21:12 in main",
+    "runtime_panic_stack.geno:16:12 in scale",
+    "runtime_panic_stack.geno:9:9 in check",
+    "Runtime Error: value too large",
+]
+
+[cases.expected_diagnostic]
+code = "E414"
+message_contains = ["value too large"]
+location = "runtime_panic_stack.geno:9:9"
+stack = [
+    "runtime_panic_stack.geno:21:12 in main",
+    "runtime_panic_stack.geno:16:12 in scale",
+    "runtime_panic_stack.geno:9:9 in check",
+]
+
+[[cases]]
+id = "runtime-index-stack"
+path = "programs/runtime_index_stack.geno"
+kind = "run"
+# The interpreter's message adds the list's length; compiled backends keep
+# 0.6's shorter wording (proposal 0018, Backend And Target Parity), so the
+# fragment is the shared prefix.
+targets = ["cli-process", "cli-direct", "cli-json", "python", "js", "js-esm"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = [
+    "runtime_index_stack.geno:16:12 in main",
+    "runtime_index_stack.geno:12:12 in outer",
+    "runtime_index_stack.geno:7:12 in inner",
+    "Runtime Error: Index 3 out of bounds",
+]
+
+[cases.expected_diagnostic]
+code = "E401"
+message_contains = ["Index 3 out of bounds"]
+location = "runtime_index_stack.geno:7:12"
+stack = [
+    "runtime_index_stack.geno:16:12 in main",
+    "runtime_index_stack.geno:12:12 in outer",
+    "runtime_index_stack.geno:7:12 in inner",
+]
+
+[[cases]]
+id = "runtime-requires-arguments"
+path = "programs/runtime_requires_arguments.geno"
+kind = "run"
+# The failure is located at the clause; the call site is the caller's frame.
+targets = ["cli-process", "cli-direct", "cli-json", "python", "js", "js-esm"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = [
+    "runtime_requires_arguments.geno:13:12 in main",
+    "runtime_requires_arguments.geno:6:14 in safe_div",
+    "Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+]
+
+[cases.expected_diagnostic]
+code = "E499"
+message_contains = ["Precondition failed: safe_div(a: 8, b: 0) requires b != 0"]
+location = "runtime_requires_arguments.geno:6:14"
+stack = [
+    "runtime_requires_arguments.geno:13:12 in main",
+    "runtime_requires_arguments.geno:6:14 in safe_div",
+]
+
+[[cases]]
+id = "runtime-ensures-result"
+path = "programs/runtime_ensures_result.geno"
+kind = "run"
+targets = ["cli-process", "cli-direct", "cli-json", "python", "js", "js-esm"]
+capabilities = ["print"]
+expected_stdout = "hello world!\n"
+expected_exit_class = "nonzero"
+expected_stderr_contains = [
+    "runtime_ensures_result.geno:13:11 in main",
+    "runtime_ensures_result.geno:6:13 in shout",
+    'Runtime Error: Postcondition failed: shout(s: "hi") ensures length(result) > 10 (result was "hi!")',
+]
+
+[cases.expected_diagnostic]
+code = "E499"
+message_contains = [
+    'Postcondition failed: shout(s: "hi") ensures length(result) > 10 (result was "hi!")',
+]
+location = "runtime_ensures_result.geno:6:13"
+stack = [
+    "runtime_ensures_result.geno:13:11 in main",
+    "runtime_ensures_result.geno:6:13 in shout",
+]
+
+[[cases]]
+id = "runtime-recursion-elision"
+path = "programs/runtime_recursion_elision.geno"
+kind = "run"
+# 42 frames: the first 10 and the last 10 are kept on every lane.
+targets = ["cli-process", "cli-direct", "cli-json", "python", "js", "js-esm"]
+expected_stdout = ""
+expected_exit_class = "nonzero"
+expected_stderr_contains = [
+    "runtime_recursion_elision.geno:14:12 in main",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "  ... 22 frames omitted ...",
+    "runtime_recursion_elision.geno:8:9 in count_down",
+    "Runtime Error: bottom",
+]
+
+[cases.expected_diagnostic]
+code = "E414"
+message_contains = ["bottom"]
+location = "runtime_recursion_elision.geno:8:9"
+stack_omitted = 22
+stack = [
+    "runtime_recursion_elision.geno:14:12 in main",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:10:12 in count_down",
+    "runtime_recursion_elision.geno:8:9 in count_down",
+]
+
+[[cases]]
+id = "runtime-capability-denial-stack"
+path = "programs/runtime_capability_denial_stack.geno"
+kind = "run"
+# Every lane withholds `env` when the case grants only `print`. The compiled
+# backends add their own `--cap` advice to the message, and the default lane
+# prints its grant hint after the report, so the fragment is the shared text.
+targets = ["cli-process", "cli-direct", "cli-json", "python", "js", "js-esm"]
+capabilities = ["print"]
+expected_stdout = "looking up HOME\n"
+expected_exit_class = "nonzero"
+expected_stderr_contains = [
+    "runtime_capability_denial_stack.geno:12:11 in main",
+    "runtime_capability_denial_stack.geno:7:22 in home_directory",
+    "Runtime Error: Capability denied: 'env_get' requires the 'env' capability",
+]
+
+[cases.expected_diagnostic]
+code = "E412"
+message_contains = ["Capability denied: 'env_get' requires the 'env' capability"]
+location = "runtime_capability_denial_stack.geno:7:22"
+stack = [
+    "runtime_capability_denial_stack.geno:12:11 in main",
+    "runtime_capability_denial_stack.geno:7:22 in home_directory",
+]
+
+# Proposal 0019 (Accepted): local mutation is not an effect. A function or lambda
+# that changes only state its own call created (its own `var`s, value-typed
+# content they hold, and arrays it allocated and never let escape) does not
+# carry `mutation`, so it can be passed where a pure function type is
+# expected, and `main` declares only `io`. 0.6 rejected the first case with
+# E300 and E310. Effects are static, so every lane runs the program as 0.6
+# would have; the compiled lanes pin that no backend reads effects. Mutation a
+# caller can observe keeps the effect: writing through a copy of a
+# parameter's array, and a lambda assigning a captured variable, stay E300.
+
+[[cases]]
+id = "local-mutation-is-pure"
+path = "programs/local_mutation_is_pure.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "15\ntotals: [3, 3]\n[1, 0, 2]\n[0, 2, 2]\n[9, 7]\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'
+
+[[cases]]
+id = "diagnostic-mutation-parameter-alias"
+path = "programs/diagnostic_mutation_parameter_alias.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]
+
+[[cases]]
+id = "diagnostic-mutation-captured-var"
+path = "programs/diagnostic_mutation_captured_var.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E300"]
 
 # Unreleased additions to the retained v0.5 and v0.6 corpora. --all-retained
 # runs those unchanged corpora first, then this one. This corpus is not frozen.

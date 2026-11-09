@@ -113,7 +113,7 @@ def resolve_modules(
         source = resolved.source
         if resolved.package_name is not None:
             parsed = Parser(
-                Lexer(source, str(resolved.path)).tokenize()
+                Lexer(source, str(resolved.path)).tokenize(), source
             ).parse_program()
             _, _, source = _rewrite_dependency_imports(
                 parsed, source, package_modules[resolved.package_name]
@@ -304,7 +304,7 @@ def _resolve_imports(
             # Use the resolved file's directory as base_dir so dependency-internal
             # imports resolve relative to the dependency, not the caller's project
             tokens = Lexer(source, str(file_path)).tokenize()
-            mod_program = Parser(tokens).parse_program()
+            mod_program = Parser(tokens, source).parse_program()
             mod_base_dir = resolved_file.parent
             pending.append((iter(mod_program.definitions), mod_base_dir, storage_key))
 

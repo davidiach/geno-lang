@@ -435,7 +435,8 @@ end func
 
 The rule of thumb: a function that returns `Result` validates its own input, so
 it takes no `requires`. A helper that assumes valid input takes the `requires`
-and is never called with anything else.
+and is never called with anything else. To state that the helper rejects an
+input, write a panics example, `example (0) panics` (section 20).
 
 ### 19. Multi-file projects still need `import`
 
@@ -464,6 +465,160 @@ end func
 A plain `import Lib` puts the module's functions in scope unqualified, so
 `double(4)` works. The qualified form `Lib.double(4)` is also valid and is worth
 preferring when two modules define the same name.
+
+### 20. Examples that expect a panic, and `requires` as the domain
+
+*0.7 development line ([spec v0.7](spec/v0.7.md), section 5.3.1).* An example
+can state that a call panics. Write `panics` after the inputs, with no arrow,
+optionally followed by a string the panic's message must contain (compared
+ignoring case). Models trained on Rust's `#[should_panic]` or pytest's
+`raises` tend to write a panic as the expected value instead; that is an error.
+
+Wrong -- a panic is not a value an example can expect (E330):
+```
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 -> panic("division")
+    example 1, 0 -> panics
+    return a / b
+end func
+```
+
+Correct:
+```
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 panics "division"
+    return a / b
+end func
+
+func usage() -> String
+    example () panics "not implemented"
+    panic("not implemented")
+end func
+```
+
+`geno check --fix` rewrites every arrow form (`-> panics`, `-> panics "m"`,
+`-> panic`, `-> panic("m")`) to the `panics` form. A zero-argument function
+writes `example () panics`, never `example panics`.
+
+`requires` states the function's domain: the inputs it is written for. Put a
+`requires` on every precondition the body assumes, instead of leaving it to
+callers, and document an input outside the domain with a panics example. Leave
+out the message there: the text of a failed `requires` is not a stable
+contract, while the text of the function's own `panic` is. The domain also
+excludes inputs the body cannot finish in reasonable time: this `isqrt` counts
+up to the root, so it bounds `n`.
+```
+func isqrt(n: Int) -> Int
+    requires n >= 0
+    requires n <= 1000000
+    example 10 -> 3
+    example 0 -> 0
+    example -1 panics
+    var r = 0
+    while (r + 1) * (r + 1) <= n do
+        r = r + 1
+    end while
+    return r
+end func
+```
+
+A panics example passes on `panic(...)` or any runtime error, including a
+failed `requires` or `ensures`. It fails when the call returns, panics with a
+message that does not contain the text, or runs out of a resource limit (an
+infinite loop hitting the step limit or the timeout, or a collection, integer
+or output limit): a limit is not a panic.
+
+`geno test --properties` (experimental; spec v0.7 section 5.4) relies on these
+clauses. It calls each function that has no effects but mutation on generated
+inputs and discards the inputs its `requires` rejects. It fails the function
+when an `ensures` breaks, when the function panics without a panics example,
+or when a call runs out of a resource limit. The failing input is shrunk and
+printed in the form that follows `example` (`counterexample: -1`), with the
+seed that reproduces it. Without `requires n <= 1000000`, `isqrt` fails it: a
+generated `n` near `2^53` runs out of the step limit. So write every
+precondition the body assumes as a `requires`, and a panics example for every
+panic the function means to raise. Fix a reported counterexample by correcting
+the body, adding the missing `requires`, or adding the panics example.
+
+### 21. Declaring `with mutation` for a local accumulator
+
+*0.7 development line ([spec v0.7](spec/v0.7.md), section 3.5).* Changing
+state that only the function's own call can see is not an effect: a local
+`var`, the fields of a record held in one, and an `Array`, `Vec` or
+`MutableMap` the function allocates and keeps to itself. Do not declare
+`with mutation` for them. A declared effect is part of the function's type,
+so it stops the function from being passed where a pure function is
+expected.
+
+Wrong -- the declared effect makes `rows.map(total)` an error (E300):
+```
+func total(xs: List[Int]) -> Int with mutation
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func totals(rows: List[List[Int]]) -> List[Int]
+    example [[1, 2], [3]] -> [3, 3]
+    return rows.map(total)
+end func
+```
+
+Correct -- leave the effect out, and keep a 1-D working array local:
+```
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func totals(rows: List[List[Int]]) -> List[Int]
+    example [[1, 2], [3]] -> [3, 3]
+    return rows.map(total)
+end func
+
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+```
+
+`main() -> Unit with io` likewise needs no `mutation` for its own `var`s.
+These shapes still carry `mutation`, because a caller can observe the write,
+so leave them inferred or declare it:
+
+- writing through a parameter's `Array`, `Vec` or `MutableMap`, or through a
+  `var` copied from one (`var a = param` copies the reference);
+- a two-dimensional table written as `g[i][j] = v`, even with fresh rows:
+  the write goes below a reference-typed element, and in
+  `array_new(h, array_new(w, 0))` every row is the same array;
+- a rolling buffer (`prev = cur` then `cur = array_new(n, 0)`), because
+  `prev = cur` copies the reference;
+- an accumulator updated through a user higher-order function, such as a
+  lambda passed to your own `each` that does `total = total + x`: the lambda
+  assigns a captured variable;
+- a collection the function allocated and then passed to a helper function,
+  stored in another value, or mentioned in a lambda, before writing it.
+  Builtins that only read or fill it are fine, called directly or as a
+  pipeline stage: `array_to_list(counts)`, `counts |> array_to_list`.
+
+Mutating builtins (`vec_push`, `array_set`, `set_add`, `mutable_map_set`)
+add no effect in the current checker, even on a parameter. That is a known
+limitation, not the rule: declare `with mutation` on a function that changes
+a caller's collection through them, even when it also has a local loop
+counter (0.6 charged the counter; 0.7 does not).
 
 ## Prompting Patterns
 
@@ -527,6 +682,61 @@ reported on the line they are on, and the fixes repair every mutant of every
 mistake that has a fix, without changing what any program computes; see
 `docs/benchmark/seeded-mistakes.md`. The experiment runner records the same
 repair as its "autofix" metric beside pass@1.
+
+### Reading runtime failures
+
+*0.7 development line (Draft
+[proposal 0018](proposals/0018-runtime-failure-diagnostics.md)).* When a
+program checks but fails while running, the report says what failed, where,
+how the program got there and with which values. Give the model the whole
+report, not just its last line:
+
+```text
+Stack trace (most recent call last):
+  demo.geno:21:21 in main
+  demo.geno:15:14 in safe_div
+      requires b != 0
+               ^
+Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
+```
+
+Read it bottom-up for the cause and top-down for the path:
+
+- The last line is the message: a panic's own text, a runtime error, a
+  capability denial, or a contract failure naming the function, the argument
+  values of the failing call and the clause as written. An `ensures` failure
+  adds `(result was ...)`.
+- Each frame is `file:line:col in function`, outermost first. The last frame
+  is where the failure happened: the `panic` call, the failing index or
+  division, or the failed clause. Every frame above it is positioned at the
+  call it was making, so the frame just above a failed `requires` is the
+  call that passed the bad arguments, which is usually the line to fix.
+- `<example>` as the first frame means the failure happened while an
+  `example` clause was being verified, at that clause's line; `<test>` means
+  a call made by a `test` block, at that call.
+- `... N frames omitted ...` stands for the middle of a deep stack; the
+  first 10 and last 10 frames are kept.
+- The source line and caret appear on the `geno run` lanes. Standalone
+  compiled programs print the frames and the message without them, and the
+  same positions.
+
+For a repair loop, `geno run --json` gives the same facts as data: the
+diagnostic's `code`, `message` and `location`, a `stack` list of
+`{"function", "location"}` objects, `stack_omitted`, and, for a contract
+failure, a `contract` object with `function`, `clause_text`, the call's
+`arguments` as `{"name", "value"}` pairs and the `result`:
+
+```text
+{"code": "E499", "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+ "location": {"line": 15, "column": 14, "filename": "/work/demo.geno"},
+ "stack": [{"function": "main", "location": {"line": 21, "column": 21, ...}},
+           {"function": "safe_div", "location": {"line": 15, "column": 14, ...}}],
+ "contract": {"clause": "requires", "function": "safe_div", "clause_text": "b != 0",
+              "arguments": [{"name": "a", "value": "8"}, {"name": "b", "value": "0"}], ...}}
+```
+
+A `panics "substring"` example matches only the message, never a file name,
+position or frame name.
 
 ## Machine-Readable Specification
 

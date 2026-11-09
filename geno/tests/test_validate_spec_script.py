@@ -276,6 +276,35 @@ def test_capability_map_value_drift_is_reported():
     )
 
 
+def test_isolated_run_grant_drift_is_reported():
+    spec = _load_spec()
+    lane = spec["capabilities"]["isolated_run"]
+    lane["grantable"] = [name for name in lane["grantable"] if name != "regex"]
+    lane["refused"].append("stdin")
+
+    errors = validate_spec(spec)
+
+    assert any(
+        "'capabilities.isolated_run.grantable' mismatch" in error
+        and "missing ['regex']" in error
+        for error in errors
+    )
+    assert any(
+        "'capabilities.isolated_run.refused' mismatch" in error
+        and "extra ['stdin']" in error
+        for error in errors
+    )
+
+
+def test_isolated_run_contract_is_required():
+    spec = _load_spec()
+    del spec["capabilities"]["isolated_run"]
+
+    errors = validate_spec(spec)
+
+    assert "'capabilities.isolated_run' must be an object in spec.json" in errors
+
+
 STALE_UNGATED_CLAIM = "Omitting --cap leaves capability gating disabled"
 
 
@@ -408,3 +437,20 @@ def test_source_default_grants_follow_the_shared_defaults():
         "hosted_server",
     ):
         assert grants[lane] == set()
+
+
+def test_cli_surface_states_each_run_lane_default():
+    """The prose matches the lanes: two grant the defaults, `--json` nothing."""
+    from geno.capabilities import DEFAULT_ALLOWED_CAPABILITIES
+
+    capabilities = _load_spec()["capabilities"]
+    cli = capabilities["surfaces"]["cli"]
+
+    assert sorted(capabilities["isolated_run"]["default_grant"]) == sorted(
+        DEFAULT_ALLOWED_CAPABILITIES
+    )
+    for lane in ("Default `geno run`", "`geno run --unsafe`", "`geno run --json`"):
+        assert lane in cli
+    assert cli.count("`clock`, `print` and `random` without --cap") == 2
+    assert "`geno run --json`: no gated builtins without --cap" in cli
+    assert "gating disabled" not in capabilities["description"]

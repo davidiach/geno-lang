@@ -1,0 +1,13 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print,process
+# STDERR: --cap process is not available in the process-isolated run mode
+# The isolated lane refuses process before launch: nothing runs, not even the
+# first print, and the message names --unsafe.
+func main() -> Unit
+    print("ESCAPED")
+    match exec(command: "echo ESCAPED") with
+        | Ok(result) -> print(result.stdout)
+        | Err(error) -> print(error)
+    end match
+end func

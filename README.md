@@ -53,6 +53,11 @@ $ geno run score.geno
 - `example` clauses are executable specifications.
 - `requires` states a checked precondition.
 - Explicit `end` tokens make generated block boundaries unambiguous.
+- On the 0.7 development line, `example 1, 0 panics "division"` states that a
+  call must panic, and `geno test --properties` (experimental) checks
+  `requires`/`ensures` on generated inputs and prints a failing input, shrunk,
+  in the form that follows `example` ([spec v0.7](docs/spec/v0.7.md) sections
+  5.3.1 and 5.4).
 
 ## Quickstart
 
@@ -142,7 +147,16 @@ More release-gated applications are listed in
 
 Geno separates pure computation from effects. Builtins that touch the
 filesystem, network, process execution, environment, clock, random values,
-output, or regex require explicit capabilities.
+output, or regex require explicit capabilities. Plain `geno run` grants
+`print`, `clock` and `random`; `--cap` grants exactly the capabilities it
+lists, and the program keeps its process isolation and limits:
+
+```bash
+geno run --cap env,fs,print report.geno -- data/input.csv
+```
+
+Only `process`, `serve` and, for now, `stdin` (and `http` on Windows) need
+`--unsafe`, which is for trusted code.
 
 The CLI and hosted runtime use sandboxed execution with process isolation. The
 in-process embedding API has cooperative limits, and generated JavaScript is

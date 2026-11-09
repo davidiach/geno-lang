@@ -1,0 +1,14 @@
+// Proposal 0018: a failed `requires` names the function, the call's argument
+// values and the clause's source text. The failure is located at the clause,
+// and the caller's frame is positioned at the call.
+
+func safe_div(a: Int, b: Int) -> Int
+    requires b != 0
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Int
+    let total = 8
+    return safe_div(a: total, b: total - 8)
+end func

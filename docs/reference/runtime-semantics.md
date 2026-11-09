@@ -70,6 +70,109 @@ with `?` returns from that lambda and requires its inferred return type to be
 the corresponding `Option` or `Result`; it cannot borrow the enclosing
 function's return contract or escape to an enclosing loop.
 
+## Effects and local state
+
+*0.7 development line (Draft
+[proposal 0019](../proposals/0019-local-mutation-is-not-an-effect.md); the
+contract is [spec v0.7 section 3.5](../spec/v0.7.md#35-function-effects)).*
+Effects are a static property. No backend reads them, so the rule below
+changes how no program runs; it relies on the copy rules above. A write that
+only the writing function or lambda can observe is not a `mutation`:
+
+- Assigning one of its own variables. Each call has its own variables, and
+  only closures created during the call share them. A closure that assigns
+  such a variable is charged `mutation` itself, because its later calls see
+  the change.
+- Writing a field or element of a value its own variable holds. Binding,
+  assigning, destructuring and storing a constructor value take a snapshot,
+  so no other variable or collection shares it (passing it as an argument,
+  and on compiled JavaScript a `for` loop over an `Array`, are the
+  exceptions described below).
+- Writing the elements of an `Array`, `Vec` or `MutableMap` held by an
+  *owned* variable: one initialized and reassigned only from allocating
+  builtins (`array_new`, `vec_new`, `mutable_map_new`, `array_copy` and the
+  others spec 3.5 lists), whose collection is never stored, passed to a
+  function that is not a borrowing builtin, copied into another variable or
+  mentioned in a lambda. Returning it hands the caller a new object.
+
+A write below a reference-typed element is still charged, owned root or not:
+`array_new(h, array_new(w, 0))` puts the same row array in every slot, so
+`g[i][j] = v` changes every row on every backend.
+
+Three current behaviours sit at the edge of that argument. The test suite
+pins each one on all three backends, recording compiled JavaScript's output
+separately where it differs, so a change to any of them shows up
+deliberately.
+
+- **Argument passing does not snapshot.** Passing a `var`-held constructor
+  value to a function hands the callee the same object, so a closure the
+  callee builds over that parameter sees later in-place writes through the
+  caller's `var`:
+
+  ```geno
+  type P = P(x: Int)
+
+  @untested("returns a closure")
+  func keep(q: P) -> () -> Int
+      return fn() -> q.x
+  end func
+
+  func main() -> Unit with io
+      var s = P(x: 1)
+      let peek = keep(s)
+      s.x = 7
+      print(peek())
+  end func
+  ```
+
+  This prints `7` on every backend, which departs from the snapshot rule of
+  spec section 3.2.1; it is a known runtime deviation (proposal 0019,
+  Unresolved Question 7). Masking `s.x = 7` is still sound: the alias changes
+  only what `main` itself computes, and the closure can reach storage a
+  caller sees only through a write that is charged or through an uncharged
+  builtin store.
+
+  A whole variable passed as an argument (`keep(s)`, or `keep_list(ys)` for
+  a `List` of records) aliases on every backend. An element or field read
+  passed as an argument (`keep(a[0])`, `keep(ys[0])`, `keep(b.p)`, then
+  `a[0].x = 5`) aliases only on compiled JavaScript: the closure returns `5`
+  there and `0` on the interpreter and compiled Python, which pass an
+  independent value. Binding the same read first (`let q = a[0]`) takes a
+  snapshot on every backend. The JavaScript behaviour is a runtime parity
+  bug, older than 0.7.
+- **Compiled JavaScript iterates an `Array` live.** A `for` loop over an
+  `Array` reads each element on JavaScript only when it reaches it, and
+  binds the element without a copy. A write the loop body makes to a later
+  slot (`a[2] = 99`) or to a field of an element (`a[1].x = n`) therefore
+  shows up in the loop on JavaScript. The interpreter and compiled Python
+  iterate a snapshot of the elements and bind each one independently. This
+  is also a JavaScript runtime parity bug, older than 0.7. Masking stays
+  sound, because the writes still reach no caller. A function that iterates
+  an array it owns while writing it is inferred pure, but it can return a
+  different result on JavaScript. Its `example` clauses, which `geno test`
+  checks on the interpreter, do not cover that backend. Until the runtime is
+  fixed, do not write an `Array` while a `for` loop iterates it.
+- **Mutating builtins carry no effect.** As in 0.6, the checker does not
+  charge `vec_push`, `vec_set`, `array_set`, `array_fill`, `set_add`,
+  `mutable_map_set` or the other mutators on any receiver, so a function
+  that pushes onto a parameter's `Vec` is inferred pure. That is a known
+  limitation of the checker, not the rule: spec 3.5 says such a write is a
+  `mutation`, and a later checker may enforce it. Together with masking it
+  lets a write reach a caller in three ways, each through such a store: a
+  builtin stores a closure over one of the function's variables into the
+  caller's collection (`vec_push(param_v, fn() -> n)`, then `n = 5`); a
+  pure callback stores a closure like `peek` above; or, most commonly, a
+  function writes its caller's collection with a builtin
+  (`array_set(array: grid, ...)`) and also updates a local loop counter,
+  which 0.6 charged and 0.7 masks, so the function is inferred pure. Declare
+  `with mutation` on a function that changes a caller's collection through a
+  builtin.
+
+Effects are inferred within a module. An importing module currently treats an
+imported function that declares no effects as pure, whatever its body does.
+That is an existing checker limitation, independent of this rule, so declare
+the effects of exported functions that have any.
+
 ## Maps
 
 Maps retain insertion order for `map_entries` and other ordered traversal.
@@ -102,8 +205,9 @@ Node script and directly executed Node ESM all agree. `main() -> Unit` succeeds
 with status 0 and displays nothing, and every other declared return type keeps
 its displayed result and status 0. Output emitted before a returned result is
 preserved, and a normal nonzero status carries no traceback and no diagnostic. A
-genuine uncaught runtime error instead exits nonzero and emits a diagnostic (or a
-host traceback for a standalone generated artifact).
+genuine uncaught runtime error instead exits nonzero and emits a diagnostic: in
+the 0.6 releases, a host traceback for a standalone generated artifact, and on
+the 0.7 development line the runtime failure report below on every boundary.
 
 Browser-targeted ESM has no process boundary, so it keeps displaying an `Int`
 result. That choice is made from the compile target's profile, not by looking for
@@ -123,6 +227,85 @@ program without invoking `main` or exiting the importer.
 The self-hosted CLI in `selfhost/Main.geno` applies the same normalization at its
 own boundary: an inner program's `Int` result becomes the status that CLI returns,
 and every other result kind is success with the value left unprinted.
+
+## Runtime failure reports
+
+*0.7 development line (Draft
+[proposal 0018](../proposals/0018-runtime-failure-diagnostics.md); the
+contract is [spec v0.7 section 6.9.1](../spec/v0.7.md#691-runtime-failure-reports)).*
+A runtime failure is a panic, a runtime error (index, key, division,
+overflow and similar), a failed `requires` or `ensures`, a capability or
+host-policy denial, or a resource limit. Every one reports where it happened
+and the Geno calls that led there, in the same shape on the interpreter, in
+compiled Python and in compiled JavaScript:
+
+```text
+Stack trace (most recent call last):
+  demo.geno:21:21 in main
+  demo.geno:15:14 in safe_div
+      requires b != 0
+               ^
+Runtime Error: Precondition failed: safe_div(a: 8, b: 0) requires b != 0
+```
+
+- Frames are named Geno functions (`f`, `Type.method`, `Module.f`), outermost
+  first, after a `<example>` or `<test>` origin when an example or a `test`
+  block made the failing call. Each is positioned inside its own function: at the call it was
+  making, or, for the last frame, at the failure. Lambdas, builtins and the
+  host are never frames. A stack of more than 20 frames keeps its first 10
+  and last 10 and says how many it left out.
+- The source line and caret appear where the host can read the program's
+  source: the `geno run` lanes. Standalone compiled artifacts carry no source
+  and print the frames and the message only.
+- The `Runtime Error: <message>` line is always last. The message never
+  contains the location or the stack, so no file name, position or frame name
+  from the report can satisfy a `panics "substring"` example or a property
+  check. Contract failure messages themselves changed in this line (see the
+  [compatibility policy](../operations/compatibility-policy.md#07-draft-runtime-failures-report-a-geno-stack-and-contract-failures-name-their-arguments)):
+  a substring only the 0.6 wording had (`"Precondition failed for"`,
+  `"requires clause"`, `"evaluated to false"`) no longer matches, and an
+  argument value or the clause text (`"b != 0"`) can now match.
+- A contract failure names the function, the call's argument values (strings
+  quoted, each cut to 64 code points) and the clause as written; an `ensures`
+  failure adds the result, and the value a rebound parameter had when the
+  clause was checked when that differs from the argument.
+- `geno run --json`, `geno.api.run()` and `geno serve` report the same facts
+  as `location`, `stack`, `stack_omitted` and, for a contract failure,
+  `contract`; `geno test --json` violations carry `location`, `stack` and
+  `stack_omitted`. These keys are additive. A `geno test` violation's
+  message no longer starts with the location (0.6 put
+  `<file:line:col>: ` before a located failure's `Runtime Error:`).
+- An `Err` returned from `main` is a result, not a failure: it stays
+  `Error: <value>` with no location or stack.
+
+Compiled Python and JavaScript map host frames back to Geno source through a
+compact table that the compiler embeds in every program with a `main`. It is
+read only when a failure escapes `main`, so successful calls do no extra work
+and the generated file still needs no Geno install. The mapping is
+statement-precise where the interpreter is expression-precise in one case: a
+statement in which two operations could have made the failing call reports
+its start rather than guess. That is two operations of the same kind
+(`xs[i] + ys[j]`, or two calls through function values), or a call of a
+function or builtin by name next to a call through a function value that
+could hold it (`check(1) + f(9)`). A parameter or local that shadows a
+function or builtin name, such as a callback parameter called `format`,
+counts as a function value. A host stack overflow's
+depth, message and innermost frame are the host's: that frame is where the
+host ran out of stack, at the recursive call or inside the callee's first
+operation, and every other kept frame is the same on every backend. Compiled index and division messages keep their shorter 0.6
+wording. A Node entry build exits with status 1 as soon as the report is
+printed, for an async `main` too, so pending async work does not run after
+it; its stdout and stderr are blocking, as compiled Python's are, so no
+output printed before the failure is lost to a full pipe. JavaScript starts an async function at its call, so
+an `Async` created in one statement and awaited in another can position its
+caller at the creation call; write `await f(...)` as one expression where the
+position matters. Browser builds and programs without `main` are unchanged.
+
+Set `GENO_TRACEBACK=host` to also print the host's own traceback after the
+report: the interpreter's or the worker's Python traceback on `geno run`, the
+generated code's traceback in standalone Python, and the V8 stack in Node.
+It is for debugging Geno itself; envelopes, the embedding API and the hosted
+server ignore it.
 
 ## Runtime implementations
 

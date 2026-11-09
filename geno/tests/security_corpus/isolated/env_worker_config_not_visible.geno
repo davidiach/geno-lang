@@ -1,0 +1,16 @@
+# EXPECT: E414
+# LANE: isolated
+# RUN: --cap env,print --allow-env GENO_SANDBOX_CONFIG --allow-env GENO_MAX_COLLECTION_SIZE
+# STDERR: confined: the worker's own environment is not visible
+# Even explicitly allowed, a name reads only the caller's snapshot, never the
+# worker's own environment (its sandbox configuration and limits).
+func main() -> Unit
+    match env_get("GENO_SANDBOX_CONFIG") with
+        | Some(value) -> print("ESCAPED " + value)
+        | None -> ()
+    end match
+    match env_get("GENO_MAX_COLLECTION_SIZE") with
+        | Some(value) -> print("ESCAPED " + value)
+        | None -> panic("confined: the worker's own environment is not visible")
+    end match
+end func

@@ -43,6 +43,9 @@ selfhost parser does not yet implement:
   destructuring is also outside the current selfhost parser subset.
 - Generic functions (`func first_or[T](xs: List[T], fallback: T) -> T`), from
   the 0.6 draft specification.
+- Panic examples (`example 1, 0 panics "division"`, `example () panics`), from
+  the 0.7 draft specification (proposal 0017). The selfhost parser still
+  requires `->` in every example, and no selfhost file uses the form.
 - The forms of accepted proposal 0026: compound assignment (`x += 1`), tuple
   patterns in `for` loops and comprehensions, string literals inside f-string
   interpolations, and a trait or impl method receiver written `self` alone.
@@ -58,6 +61,33 @@ exactly. Canonical `geno test` accepts a relative tolerance of `1e-9` (#111),
 so a rounded expectation such as `22.85714286` for `160.0 / 7.0` passes there
 and fails here. Closing the gap needs a separate approximate comparator, since
 `==` itself must stay exact.
+
+## Runtime failure report gap
+
+The 0.7 draft specification (section 6.9.1, proposal 0018) makes every
+runtime failure report its Geno location and call stack, and makes contract
+failures name the function, the call's argument values and the clause text.
+The selfhost interpreter keeps its own `rt_error` output: a message without
+a location, a Geno stack or contract arguments; a failed `requires` reports
+only `Precondition failed`. Programs run under the selfhost compute the same
+results and fail in the same places; only the report is shorter. The
+canonical interpreter, compiled Python and compiled JavaScript cover the new
+report, and the selfhost tests are unchanged.
+
+## Effect inference gap
+
+The selfhost frontend has no effects. Its parser does not accept an effect
+annotation (`-> Int with io` on a function, or `with mutation` in a function
+type) and builds every function type with an empty effect list; its type
+checker registers every builtin with no effects, `format_gtype` leaves
+effects out, and nothing infers or compares them. No selfhost source uses an
+effect annotation. That gap predates the 0.7 draft. The 0.7 draft
+specification (section 3.5, proposal 0019) changes which writes contribute
+`mutation`: state that only the writing function or lambda can observe no
+longer does. The selfhost has nothing to change for it: it never rejects a
+program for its effects, and it cannot parse one that writes an effect
+annotation. The canonical type checker covers the rule, and the selfhost
+tests are unchanged.
 
 ## What selfhost is NOT (yet)
 

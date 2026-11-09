@@ -681,12 +681,36 @@ end func
 
 
 def test_pure_assignment_positions_remain_pure_and_mutation_is_recorded() -> None:
+    # The write goes through a copy of a parameter's array, which its caller
+    # sees, so it stays a mutation under proposal 0019.
     source = """
 func offset() -> Int
     example () -> 0
     return 0
 end func
+func store(cells: Array[Int]) -> Int with mutation
+    example array_new(1, 0) -> 1
+    var (x, y): (Int, Int) = (0, 1)
+    var xs = cells
+    xs[offset()] = y
+    return xs[x]
+end func
 func main() -> Int with mutation
+    return store(array_new(1, 0))
+end func
+"""
+    _value(source, 1)
+    _reject(source.replace("with mutation", "with io"), "undeclared effects: mutation")
+
+
+def test_writes_into_a_fresh_local_array_are_not_a_mutation() -> None:
+    """Proposal 0019: the same write into an array the function allocated."""
+    source = """
+func offset() -> Int
+    example () -> 0
+    return 0
+end func
+func main() -> Int with io
     var (x, y): (Int, Int) = (0, 1)
     var xs = array_new(1, 0)
     xs[offset()] = y
@@ -694,7 +718,13 @@ func main() -> Int with mutation
 end func
 """
     _value(source, 1)
-    _reject(source.replace("with mutation", "with io"), "undeclared effects: mutation")
+    # Effect checking still runs on the function: only `io` is undeclared.
+    _reject(
+        source.replace("with io", "with fs").replace(
+            "return xs[x]", 'print("hi")\n    return xs[x]'
+        ),
+        "undeclared effects: io. Declared effects: fs",
+    )
 
 
 @pytest.mark.parametrize("explicit_default", [False, True])

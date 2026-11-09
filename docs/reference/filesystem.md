@@ -44,15 +44,21 @@ All three functions require the `fs` capability and are unavailable on the
 browser target. Embedding through `geno.api.run()` never grants ambient
 filesystem access: the host must explicitly provide callbacks for these names.
 Hosted and compiled Python execution apply the same configured filesystem-root
-policy as the existing `fs_*` operations. Final links may be inspected inside a
+policy as the existing `fs_*` operations, and so does the default
+process-isolated `geno run` lane with `--cap fs`, through a trusted facade in
+its worker that uses the `--unsafe` lane's validators (spec v0.7 section
+9.11.1). Final links may be inspected inside a
 root, but followed metadata and canonicalization reject links that resolve
 outside it. Compiled Node artifacts retain Geno's existing trusted-runtime
 filesystem model; the `fs` capability grants host filesystem access there.
 
 Missing paths, inaccessible paths, dangling canonicalization targets, and
 filesystem-root policy rejections return `Err(message)`. Capability denial and
-portable integer or resource-limit violations remain runtime errors. Existing
-`fs_exists` behavior is unchanged.
+portable integer or resource-limit violations remain runtime errors. The one
+exception is `fs_write_text` in the default `geno run` lane, whose per-file
+(`--max-file-size-bytes`) and per-run (`--max-total-write-bytes`) quotas,
+64 MiB each by default with `fs`, return `Err` and leave the file unchanged.
+Existing `fs_exists` behavior is unchanged.
 
 Canonical paths use the portable Path string format. `path_parent`,
 `path_filename`, and `path_extension` therefore compose with them, and

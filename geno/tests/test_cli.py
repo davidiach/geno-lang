@@ -560,8 +560,8 @@ end func main
             finally:
                 os.unlink(f.name)
 
-    def test_cap_without_explicit_mode_fails_fast(self):
-        """--cap must not silently downgrade process isolation."""
+    def test_cap_in_default_mode_runs_process_isolated(self):
+        """Proposal 0013: a supported --cap grant runs in the isolated lane."""
         with _closed_temp_geno() as f:
             f.write("""
 func main() -> Unit
@@ -584,14 +584,228 @@ end func main
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=30,
                 )
-                assert result.returncode != 0
-                assert result.stdout == ""
-                assert "--cap is not supported" in result.stderr
-                assert "--unsafe --cap" in result.stderr
+                assert result.returncode == 0, result.stderr
+                assert result.stdout == "hello from cap test\n"
+                assert result.stderr == ""
             finally:
                 os.unlink(f.name)
+
+    @pytest.mark.parametrize(
+        ("capability", "reason"),
+        [
+            ("process", "programs it starts would run outside the sandbox"),
+            (
+                "serve",
+                "a listener would outlive the run's wall-clock limit and "
+                "buffered output",
+            ),
+        ],
+    )
+    def test_cap_process_and_serve_fail_fast_naming_unsafe(self, capability, reason):
+        """--cap must not silently downgrade process isolation."""
+        with _closed_temp_geno() as f:
+            f.write("""
+func main() -> Unit
+    print("ESCAPED")
+    return ()
+end func main
+""")
+            f.flush()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "geno",
+                        "run",
+                        "--cap",
+                        f"print,{capability}",
+                        f.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert result.returncode == 1
+                assert result.stdout == ""
+                assert result.stderr == (
+                    f"Error: --cap {capability} is not available in the "
+                    f"process-isolated run mode: {reason}. Use --unsafe --cap "
+                    "... for trusted code.\n"
+                )
+            finally:
+                os.unlink(f.name)
+
+    def test_cap_refusals_are_reported_together_and_sorted(self):
+        with _closed_temp_geno() as f:
+            f.write("func main() -> Unit\n    return ()\nend func main\n")
+            f.flush()
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "geno",
+                        "run",
+                        "--cap",
+                        "serve",
+                        "--cap",
+                        "process,print",
+                        f.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert result.returncode == 1
+                lines = result.stderr.splitlines()
+                assert [line.split(" is ")[0] for line in lines] == [
+                    "Error: --cap process",
+                    "Error: --cap serve",
+                ]
+            finally:
+                os.unlink(f.name)
+
+    def test_unknown_cap_is_rejected_by_the_parser(self):
+        with _closed_temp_geno() as f:
+            f.write("func main() -> Unit\n    return ()\nend func main\n")
+            f.flush()
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "geno", "run", "--cap", "regx", f.name],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert result.returncode == 2
+                assert "Unknown capability 'regx'" in result.stderr
+                assert "Did you mean 'regex'?" in result.stderr
+            finally:
+                os.unlink(f.name)
+
+    @pytest.mark.parametrize(
+        ("flags", "message"),
+        [
+            # --allow-env never grants env, so the grant must name it.
+            (
+                ["--cap", "print"],
+                "Error: --allow-env requires an explicit --cap env grant in the "
+                "process-isolated run mode\n",
+            ),
+            (
+                [],
+                "Error: --allow-env requires an explicit --cap env grant in the "
+                "process-isolated run mode\n",
+            ),
+            # Only the isolated lane takes an environment allowlist.
+            (
+                ["--unsafe", "--cap", "env,print"],
+                "Error: --allow-env only applies to the default process-isolated "
+                "run mode.\n",
+            ),
+            (
+                ["--json", "--cap", "env,print"],
+                "Error: --allow-env only applies to the default process-isolated "
+                "run mode.\n",
+            ),
+        ],
+        ids=["without-cap-env", "without-cap", "unsafe", "json"],
+    )
+    def test_allow_env_is_refused_before_launch(self, tmp_path, flags, message):
+        """Proposal 0013: invalid --allow-env combinations fail fast."""
+        app = tmp_path / "main.geno"
+        app.write_text(
+            'func main() -> Unit\n    print("ESCAPED")\nend func\n', encoding="utf-8"
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                *flags,
+                "--allow-env",
+                "HOME",
+                str(app),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == message
+
+    @pytest.mark.parametrize("name", ["", "A=B"])
+    def test_allow_env_rejects_invalid_names(self, tmp_path, name):
+        app = tmp_path / "main.geno"
+        app.write_text("func main() -> Unit\n    return ()\nend func\n")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                "--cap",
+                "env",
+                "--allow-env",
+                name,
+                str(app),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 2
+        assert "argument --allow-env:" in result.stderr
+
+    def test_allow_env_rejects_invalid_names_from_the_api(self, tmp_path, capsys):
+        from geno.cli.run import run_file
+
+        app = tmp_path / "main.geno"
+        app.write_text("func main() -> Unit\n    return ()\nend func\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            run_file(str(app), capabilities={"env"}, allow_env=["A\x00B"])
+
+        assert excinfo.value.code == 1
+        assert capsys.readouterr().err == (
+            "Error: --allow-env 'A\\x00B' must not contain a NUL character\n"
+        )
+
+    def test_allow_env_is_repeatable_and_reaches_run_file(self, monkeypatch):
+        import geno.__main__ as cli_main
+
+        calls = []
+        parser = cli_main.build_parser()
+        args, extra = parser.parse_known_args(
+            [
+                "run",
+                "--cap",
+                "env",
+                "--allow-env",
+                "HOME",
+                "--allow-env",
+                "LANG",
+                "App.geno",
+            ]
+        )
+        monkeypatch.setattr(
+            cli_main, "run_file", lambda *a, **kw: calls.append((a, kw))
+        )
+
+        cli_main.dispatch_args(parser, args, extra)
+
+        assert calls[0][1]["allow_env"] == ["HOME", "LANG"]
+        no_allow, no_extra = parser.parse_known_args(["run", "App.geno"])
+        cli_main.dispatch_args(parser, no_allow, no_extra)
+        assert calls[1][1]["allow_env"] is None
 
     def test_unsafe_cap_enforces_capabilities(self):
         """Explicit --unsafe keeps capability-gated interpreter behavior."""
@@ -734,6 +948,8 @@ class TestGenoRunResourceLimits:
                 "1.5",
                 "--max-file-size-bytes",
                 "222",
+                "--max-total-write-bytes",
+                "333",
                 "--max-processes",
                 "3",
                 str(app),
@@ -751,7 +967,29 @@ class TestGenoRunResourceLimits:
         assert kwargs["max_memory_bytes"] is None
         assert kwargs["max_cpu_time"] == 1.5
         assert kwargs["max_file_size_bytes"] == 222
+        assert kwargs["max_total_write_bytes"] == 333
         assert kwargs["max_processes"] == 3
+
+    def test_run_write_limit_flags_default_to_the_lane_default(
+        self, tmp_path, monkeypatch
+    ):
+        # `None` lets the isolated lane choose: 0 without fs, 64 MiB with it.
+        import geno.__main__ as cli_main
+        from geno.__main__ import main
+
+        app = tmp_path / "App.geno"
+        app.write_text("func main() -> Int\n    return 1\nend func\n")
+        calls = []
+        monkeypatch.setattr(
+            cli_main, "run_file", lambda *args, **kwargs: calls.append(kwargs)
+        )
+        monkeypatch.setattr(sys, "argv", ["geno", "run", "--cap", "fs", str(app)])
+
+        main()
+
+        (kwargs,) = calls
+        assert kwargs["max_file_size_bytes"] is None
+        assert kwargs["max_total_write_bytes"] is None
 
     def test_run_phase_helpers_are_testable(self, tmp_path):
         import json
@@ -1527,6 +1765,18 @@ class TestDidYouMean:
                 os.unlink(f.name)
 
 
+def _run_geno_cli(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "geno", "run", *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+
+
 class TestRuntimeStackTrace:
     """Runtime errors should include a stack trace."""
 
@@ -1547,12 +1797,112 @@ class TestRuntimeStackTrace:
                     timeout=10,
                 )
                 assert result.returncode != 0
-                assert "Stack trace" in result.stderr
-                assert "in main" in result.stderr
-                assert "in outer" in result.stderr
-                assert "in inner" in result.stderr
+                # Reports name the resolved path, as compile errors do: on
+                # Windows the temp directory can be an 8.3 short name
+                # (RUNNER~1) that resolution expands.
+                path = os.path.realpath(f.name)
+                # Each frame is positioned inside its own function: the call
+                # it was making, or the failure (proposal 0018).
+                assert result.stderr == (
+                    "Stack trace (most recent call last):\n"
+                    f"  {path}:10:12 in main\n"
+                    f"  {path}:7:12 in outer\n"
+                    f"  {path}:3:12 in inner\n"
+                    "      return 10 / x\n"
+                    "             ^\n"
+                    "Runtime Error: Division by zero: cannot compute 10 / 0\n"
+                )
             finally:
                 os.unlink(f.name)
+
+    def test_unsafe_prints_the_proposal_reports(self, tmp_path: Path) -> None:
+        from geno.tests.test_runtime_diagnostics import DEMO_PROGRAM, PANIC_PROGRAM
+
+        panic = tmp_path / "panic.geno"
+        panic.write_text(PANIC_PROGRAM, encoding="utf-8")
+        demo = tmp_path / "demo.geno"
+        demo.write_text(DEMO_PROGRAM, encoding="utf-8")
+
+        panicked = _run_geno_cli("--unsafe", str(panic))
+        failed = _run_geno_cli("--unsafe", str(demo))
+
+        assert panicked.returncode == 1
+        assert panicked.stderr == (
+            "Stack trace (most recent call last):\n"
+            f"  {panic}:15:12 in main\n"
+            f"  {panic}:11:12 in scale\n"
+            f"  {panic}:4:9 in check\n"
+            '      panic("value too large")\n'
+            "      ^\n"
+            "Runtime Error: value too large\n"
+        )
+        assert failed.returncode == 1
+        assert failed.stderr == (
+            "Stack trace (most recent call last):\n"
+            f"  {demo}:21:21 in main\n"
+            f"  {demo}:15:14 in safe_div\n"
+            "      requires b != 0\n"
+            "               ^\n"
+            "Runtime Error: Precondition failed: safe_div(a: 8, b: 0) "
+            "requires b != 0\n"
+        )
+
+    def test_json_carries_location_stack_and_contract(self, tmp_path: Path) -> None:
+        import json
+
+        from geno.tests.test_runtime_diagnostics import DEMO_PROGRAM
+
+        demo = tmp_path / "demo.geno"
+        demo.write_text(DEMO_PROGRAM, encoding="utf-8")
+
+        result = _run_geno_cli("--json", str(demo))
+
+        assert result.returncode == 1
+        (diagnostic,) = json.loads(result.stdout)["diagnostics"]
+
+        def at(line: int, column: int) -> dict:
+            return {"line": line, "column": column, "filename": str(demo)}
+
+        assert diagnostic == {
+            "code": "E499",
+            "message": "Precondition failed: safe_div(a: 8, b: 0) requires b != 0",
+            "severity": "error",
+            "location": at(15, 14),
+            "stack": [
+                {"function": "main", "location": at(21, 21)},
+                {"function": "safe_div", "location": at(15, 14)},
+            ],
+            "contract": {
+                "clause": "requires",
+                "reason": "false",
+                "clause_index": 0,
+                "function": "safe_div",
+                "clause_text": "b != 0",
+                "arguments": [
+                    {"name": "a", "value": "8"},
+                    {"name": "b", "value": "0"},
+                ],
+                "result": None,
+            },
+        }
+
+    def test_host_traceback_follows_the_report(self, tmp_path: Path) -> None:
+        from geno.tests.test_runtime_diagnostics import PANIC_PROGRAM
+
+        panic = tmp_path / "panic.geno"
+        panic.write_text(PANIC_PROGRAM, encoding="utf-8")
+        env = {**os.environ, "GENO_TRACEBACK": "host"}
+
+        unsafe = _run_geno_cli("--unsafe", str(panic), env=env)
+        as_json = _run_geno_cli("--json", str(panic), env=env)
+
+        report, _, host = unsafe.stderr.partition("Runtime Error: value too large\n")
+        assert report.startswith("Stack trace (most recent call last):\n")
+        assert host.startswith("Host traceback (GENO_TRACEBACK=host):\n")
+        assert "Traceback (most recent call last):" in host
+        assert "interpreter.py" in host
+        # Envelopes never carry it.
+        assert "Traceback" not in as_json.stdout + as_json.stderr
 
 
 class TestGenoCompile:
@@ -1947,6 +2297,78 @@ class TestGenoTestJson:
         assert data["failed"] == 1
         assert "Step limit exceeded" in data["files"][0]["violations"][0]["message"]
 
+    # A function whose `ensures` is false for negative inputs: plain `geno
+    # test` must report it exactly as before property checks existed.
+    _ABS_BUG = (
+        "func abs_val(n: Int) -> Int\n"
+        "    ensures result >= 0\n"
+        "    example 3 -> 3\n"
+        "    if n >= 0 then\n"
+        "        return n\n"
+        "    end if\n"
+        "    return n\n"
+        "end func\n"
+    )
+
+    def test_plain_geno_test_output_is_unchanged_by_property_checks(self, tmp_path):
+        import re
+
+        (tmp_path / "abs.geno").write_text(self._ABS_BUG)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "abs.geno"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert re.fullmatch(
+            r"  PASS  abs\.geno \(1/1\)( \d+ms| \d+\.\d\ds)?\n"
+            r"\n"
+            r"1 passed, 0 failed, in \d+\.\d\ds\n",
+            result.stdout,
+        ), result.stdout
+
+    def test_plain_geno_test_json_is_unchanged_by_property_checks(self, tmp_path):
+        import json
+
+        (tmp_path / "abs.geno").write_text(self._ABS_BUG)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "--json", "abs.geno"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert isinstance(data["files"][0].pop("elapsed_ms"), float)
+        assert data == {
+            "files": [
+                {
+                    "path": "abs.geno",
+                    "total": 1,
+                    "passed": 1,
+                    "failed": 0,
+                    "untested": [],
+                    "violations": [],
+                }
+            ],
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "errors": 0,
+            "untested": 0,
+            "success": True,
+        }
+        # Byte layout: the same `indent=2` dump, with no trailing keys.
+        assert result.stdout.endswith('  "success": true\n}\n')
+
 
 class TestGenoHelp:
     """Test help and version commands."""
@@ -1989,6 +2411,59 @@ class TestGenoHelp:
         assert "--timeout" in result.stdout
         assert "--max-steps" in result.stdout
 
+    def test_test_help_lists_the_property_flags(self):
+        """Proposal 0017: `--properties`, `--trials N` and `--seed S`."""
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "test", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0
+        help_text = " ".join(result.stdout.split())
+        assert "Typecheck availability" in help_text
+        assert "--properties" in help_text
+        assert "--trials N" in help_text
+        assert "--seed S" in help_text
+        assert "experimental" in help_text
+        assert "default: 100" in help_text
+        assert "1-10000" in help_text
+
+    def test_run_help_lists_the_isolated_lane_capabilities(self):
+        """Proposal 0013: --cap help comes from the lane's own rules."""
+        from geno.capabilities import (
+            ISOLATED_RUN_CAPABILITIES,
+            ISOLATED_RUN_WINDOWS_UNAVAILABLE,
+            isolated_run_cap_help,
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "run", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0
+
+        def normalized(text: str) -> str:
+            # argparse may wrap at a hyphen, leaving "process- isolated".
+            return " ".join(text.split()).replace("- ", "-")
+
+        help_text = normalized(result.stdout)
+        assert normalized(isolated_run_cap_help()) in help_text
+        assert ", ".join(sorted(ISOLATED_RUN_CAPABILITIES)) in isolated_run_cap_help()
+        # The lane refuses http before launch on Windows (proposal 0013's
+        # HTTP gate), so the help must not claim it everywhere.
+        not_on_windows = ", ".join(
+            sorted(ISOLATED_RUN_CAPABILITIES & ISOLATED_RUN_WINDOWS_UNAVAILABLE)
+        )
+        assert "http" in not_on_windows
+        assert f"({not_on_windows} not yet on Windows)" in help_text
+        assert "Requires --unsafe or --json" not in help_text
+        assert "--allow-env NAME" in help_text
+
     def test_run_help_lists_resource_limit_flags(self):
         result = subprocess.run(
             [sys.executable, "-m", "geno", "run", "--help"],
@@ -2003,6 +2478,7 @@ class TestGenoHelp:
         assert "--max-memory-bytes" in result.stdout
         assert "--max-cpu-time" in result.stdout
         assert "--max-file-size-bytes" in result.stdout
+        assert "--max-total-write-bytes" in result.stdout
         assert "--max-processes" in result.stdout
 
     def test_version(self):

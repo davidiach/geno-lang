@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import sys
+from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .._serve import (
     install_clock_callbacks as _install_clock_callbacks,
@@ -26,7 +28,14 @@ from .._serve import (
 from .._serve import (
     install_stdin_callbacks as _install_stdin_callbacks,
 )
-from ..capabilities import DEFAULT_ALLOWED_CAPABILITIES, KNOWN_CAPABILITIES
+from ..capabilities import (
+    DEFAULT_ALLOWED_CAPABILITIES,
+    ISOLATED_RUN_FS_WRITE_LIMIT_BYTES,
+    KNOWN_CAPABILITIES,
+    isolated_env_name_error,
+    isolated_run_capabilities,
+    isolated_run_refusals,
+)
 from ..execution_limits import (
     DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
@@ -42,8 +51,13 @@ from ._util import (
     _format_source_snippet,
     _print_error,
     _print_runtime_error,
+    host_traceback_requested,
     report_deep_nesting_error,
+    runtime_report_lines,
 )
+
+if TYPE_CHECKING:
+    from ..isolated_host import IsolatedRunClock, IsolatedRunPolicy
 
 RunMode = Literal["json", "unsafe", "process"]
 
@@ -294,15 +308,32 @@ def _read_process_run_envelope(
     )
 
 
+# `_explicit_fs_roots_for_run` reads GENO_FS_ROOTS itself unless told otherwise.
+_ROOTS_FROM_ENVIRON: Any = object()
+
+
 def _explicit_fs_roots_for_run(
     filename: str,
     project_root,
     program_args: list[str] | None,
+    *,
+    configured_roots: Any = _ROOTS_FROM_ENVIRON,
 ) -> list[str]:
-    """Honor configured roots, otherwise grant the CLI's explicit input scope."""
-    configured_roots = os.environ.get("GENO_FS_ROOTS")
+    """Honor configured roots, otherwise grant the CLI's explicit input scope.
+
+    ``--unsafe`` reads the configured roots from ``GENO_FS_ROOTS`` here. The
+    isolated worker passes *configured_roots* instead: the parent's split of
+    that variable from the trusted run policy, or ``None`` when it was unset.
+    """
+    if configured_roots is _ROOTS_FROM_ENVIRON:
+        raw_roots = os.environ.get("GENO_FS_ROOTS")
+        configured_roots = (
+            None
+            if raw_roots is None
+            else [root for root in raw_roots.split(os.pathsep) if root]
+        )
     if configured_roots is not None:
-        roots = [root for root in configured_roots.split(os.pathsep) if root]
+        roots = list(configured_roots)
         if not roots:
             raise RuntimeError(
                 "GENO_FS_ROOTS must contain at least one filesystem root"
@@ -340,6 +371,7 @@ _PROCESS_RUN_SUPPORT_MODULES = (
     "geno.dependency_graph",
     "geno.diagnostics",
     "geno.interpreter",
+    "geno.isolated_host",
     "geno.lexer",
     "geno.manifest",
     "geno.module_resolver",
@@ -370,8 +402,43 @@ def _preload_process_run_support() -> None:
         importlib.import_module(module_name)
 
 
-def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
-    """Compile a validated default-run request inside the sandbox worker."""
+def _prepare_process_run(
+    request: dict[str, Any],
+    policy: IsolatedRunPolicy | None = None,
+    clock: IsolatedRunClock | None = None,
+    *,
+    max_file_size_bytes: int = 0,
+) -> dict[str, Any]:
+    """Compile a validated default-run request inside the sandbox worker.
+
+    *policy* is the trusted grant the worker validated from its parent-set
+    configuration (the default grant when omitted) and *clock* the run's one
+    deadline. Examples run with exactly that grant, under that deadline, and
+    the output they use is returned so ``main`` cannot get a fresh allowance.
+    *max_file_size_bytes* is the per-file write limit from that configuration
+    (the worker's ``RLIMIT_FSIZE``), which an ``fs`` grant's facade enforces
+    on every platform.
+    """
+    from ..isolated_host import (
+        IsolatedRunClock,
+        IsolatedRunPolicy,
+        build_example_interpreter,
+        build_host_table,
+    )
+
+    if policy is None:
+        policy = IsolatedRunPolicy.default()
+    if not isinstance(policy, IsolatedRunPolicy):
+        raise TypeError("invalid process-run policy")
+    if clock is None:
+        clock = IsolatedRunClock(policy.deadline_seconds)
+    if (
+        not isinstance(max_file_size_bytes, int)
+        or isinstance(max_file_size_bytes, bool)
+        or max_file_size_bytes < 0
+    ):
+        raise TypeError("invalid process-run file size limit")
+
     expected_keys = {
         "filename",
         "target",
@@ -382,13 +449,16 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         "max_collection_size",
         "max_integer_bits",
     }
-    if set(request) - {"render_result"} != expected_keys:
+    optional_keys = {"render_result", "program_args", "env_snapshot"}
+    if set(request) - optional_keys != expected_keys:
         raise ValueError("invalid process-run request fields")
 
     filename = request["filename"]
     target = request["target"]
     check_examples = request["check_examples"]
     render_result = request.get("render_result", False)
+    program_args = request.get("program_args", [])
+    env_snapshot = request.get("env_snapshot")
     if not isinstance(filename, str) or not filename or "\x00" in filename:
         raise ValueError("invalid process-run filename")
     if target is not None and not isinstance(target, str):
@@ -397,6 +467,22 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid process-run example setting")
     if not isinstance(render_result, bool):
         raise ValueError("invalid process-run result rendering setting")
+    if not isinstance(program_args, list) or any(
+        not isinstance(arg, str) for arg in program_args
+    ):
+        raise ValueError("invalid process-run program arguments")
+    # The snapshot holds only the caller's allowed, present variables, and
+    # crosses only with an `env` grant; the trusted policy decides both.
+    if env_snapshot is not None:
+        if "env" not in policy.capabilities:
+            raise ValueError("invalid process-run environment snapshot")
+        if not isinstance(env_snapshot, dict) or any(
+            not isinstance(key, str)
+            or not isinstance(value, str)
+            or key not in policy.env_allowed_names
+            for key, value in env_snapshot.items()
+        ):
+            raise ValueError("invalid process-run environment snapshot")
 
     from ..ast_nodes import FunctionDef
     from ..compiler import (
@@ -414,10 +500,32 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
     parsed_modules = resolved_run.parsed_modules
     _typecheck_run_graph(dependency_graph, resolved_run.check_targets)
 
+    # The fs roots are computed here, in trusted setup, exactly as --unsafe
+    # computes them, but from the parent's GENO_FS_ROOTS in the policy. The
+    # program arguments count even when `cli_args` itself is not granted.
+    fs_roots = (
+        _explicit_fs_roots_for_run(
+            filename,
+            resolved_run.project_root,
+            program_args,
+            configured_roots=policy.fs_configured_roots,
+        )
+        if "fs" in policy.capabilities
+        else None
+    )
+    host_table = build_host_table(
+        policy,
+        program_args=program_args,
+        env_snapshot=env_snapshot,
+        fs_roots=fs_roots,
+        max_file_size_bytes=max_file_size_bytes,
+        clock=clock,
+    )
+    example_output_length = 0
     if check_examples and _program_has_example_clauses(program, parsed_modules):
-        from ..api import _apply_capabilities as _apply_example_capabilities
-        from ..interpreter import Interpreter
-
+        # The displayed timeout stays the run's --timeout; the time already
+        # spent is charged through the outer deadline below, which the
+        # interpreter's own deadline nests inside (it takes the minimum).
         example_config = SandboxConfig(
             timeout=request["timeout"],
             max_recursion_depth=request["max_recursion_depth"],
@@ -425,17 +533,20 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
             max_collection_size=request["max_collection_size"],
             max_integer_bits=request["max_integer_bits"],
         )
-        interpreter = Interpreter(
-            check_examples=True,
-            sandbox_config=example_config,
-        )
-        _apply_example_capabilities(
-            interpreter,
-            set(DEFAULT_ALLOWED_CAPABILITIES),
-        )
-        interpreter.run(program, modules=parsed_modules, execute_main=False)
+        interpreter = build_example_interpreter(policy, example_config, host_table)
+        remaining = clock.remaining()
+        with interpreter._execution_deadline(
+            None if remaining is None else max(remaining, 0.001)
+        ):
+            interpreter.run(program, modules=parsed_modules, execute_main=False)
+        # Example output is never shown, but it is counted: the run has one
+        # output budget across examples and `main`.
+        example_output_length = interpreter.example_output_length
 
     compiler = Compiler()
+    # The parent prints the worker's mapped stack with the frontend's paths,
+    # exactly as `--unsafe` prints them (proposal 0018).
+    compiler.trace_absolute_paths = True
     if parsed_modules:
         python_code = compiler.compile_project(dependency_graph)
     else:
@@ -461,46 +572,136 @@ def _prepare_process_run(request: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "python_code": python_code,
-        "runtime_capabilities": sorted(DEFAULT_ALLOWED_CAPABILITIES),
+        "runtime_capabilities": sorted(policy.capabilities),
         "trusted_prelude_line_count": trusted_prelude_line_count,
+        "host_table": host_table,
+        "example_output_length": example_output_length,
     }
+
+
+# A variable name the environment-policy hint may echo. The name is chosen by
+# the program, so anything but a short plain identifier gets no hint at all
+# rather than a terminal or shell injection.
+_ENV_HINT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 def _default_lane_capability_hint(
     capability: str | None,
     filename: str,
     program_args: list[str] | None = None,
+    *,
+    grant: Collection[str] | None = None,
+    allow_env: Collection[str] = (),
+    env_name: str | None = None,
+    os_name: str | None = None,
 ) -> str | None:
     """Explain how to grant a capability the default process lane denied.
 
-    The default lane rejects ``--cap``, so the runtime's denial alone is not
-    actionable there. ``capability`` must come from the worker's structured
-    denial tag (``ProcessSandbox.last_capability_denied``), never from the
-    error text: a program can panic with any message, and this hint recommends
-    leaving process isolation.
+    ``capability`` must come from the worker's structured denial tag
+    (``ProcessSandbox.last_capability_denied``), never from the error text: a
+    program can panic with any message, and the hint for a capability the
+    isolated lane cannot grant recommends leaving process isolation.
+
+    ``grant`` is the run's grant (``None`` for the default one); the hinted
+    command grants it plus the missing capability, because ``--cap`` is exact.
+    A capability the isolated lane supports keeps the program isolated.
+
+    ``env_name`` comes from the worker's environment-policy tag
+    (``ProcessSandbox.last_env_policy_denied``): ``env`` was granted but the
+    variable is not in the ``--allow-env`` allowlist, so the hint names that
+    option instead of ``--cap env``. ``allow_env`` holds the names the run
+    already allowed, repeated so that the hinted command is complete. A hint
+    never includes a variable's value.
     """
-    if capability is None or capability not in KNOWN_CAPABILITIES:
-        return None
-    if capability in DEFAULT_ALLOWED_CAPABILITIES:
-        return None
-    caps = ",".join(sorted(DEFAULT_ALLOWED_CAPABILITIES | {capability}))
-    defaults = ", ".join(sorted(DEFAULT_ALLOWED_CAPABILITIES))
-    command = f"geno run --unsafe --cap {caps} {shlex.quote(filename)}"
+    granted = frozenset(DEFAULT_ALLOWED_CAPABILITIES if grant is None else grant)
+    target = shlex.quote(filename)
     if program_args:
-        command += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
+        target += " -- " + " ".join(shlex.quote(arg) for arg in program_args)
+    env_flags = "".join(
+        f" --allow-env {shlex.quote(name)}" for name in dict.fromkeys(allow_env)
+    )
+    if capability is None:
+        if (
+            env_name is None
+            or "env" not in granted
+            or _ENV_HINT_NAME.fullmatch(env_name) is None
+        ):
+            return None
+        return (
+            f"Hint: '{env_name}' is not in this run's environment allowlist; "
+            "allow it with --allow-env (the program can then read its value):\n"
+            f"  geno run --cap {','.join(sorted(granted))}{env_flags} "
+            f"--allow-env {env_name} {target}"
+        )
+    if capability not in KNOWN_CAPABILITIES or capability in granted:
+        return None
+    caps = ",".join(sorted(granted | {capability}))
+    if capability in isolated_run_capabilities(os_name):
+        return (
+            "Hint: grant it with --cap; the program stays process-isolated:\n"
+            f"  geno run --cap {caps}{env_flags} {target}"
+        )
     return (
-        f"Hint: the default 'geno run' lane grants only {defaults} and does "
-        "not accept --cap.\n"
-        f"  To grant '{capability}', rerun without process isolation "
-        "(trusted code only):\n"
-        f"  {command}"
+        f"Hint: the process-isolated 'geno run' lane cannot grant '{capability}'.\n"
+        "  To grant it, rerun without process isolation (trusted code only):\n"
+        f"  geno run --unsafe --cap {caps} {target}"
     )
 
 
-def _format_process_frontend_error(filename: str, error: BaseException) -> str:
-    """Format a frontend failure without leaking a worker traceback."""
-    from io import StringIO
+def _snippet_roots(filename: str) -> list[str]:
+    """Where the default lane's parent may read a snippet from: the program.
 
+    The worker's locations are untrusted, so the parent reads only regular
+    ``.geno`` files inside the entry file's directory tree (or the project
+    directory) and the installed standard library
+    (``runtime_report.read_snippet_line``).
+    """
+    path = os.path.abspath(filename)
+    return [path if os.path.isdir(path) else os.path.dirname(path)]
+
+
+def _print_default_lane_runtime_error(
+    error: str, process_sandbox: Any, filename: str
+) -> None:
+    """Print a failure in the default lane's compiled ``main`` (proposal 0018).
+
+    The worker mapped the failure through the program's trace table and the
+    sandbox validated what it sent; without that, the report is the message
+    line alone, as in 0.6. The message line is last, so a capability hint
+    printed after it still follows ``Runtime Error: <message>`` directly.
+    """
+    from ..runtime_report import read_snippet_line, report_lines, snippet_location
+
+    stack = getattr(process_sandbox, "last_failure_stack", None)
+    location = getattr(process_sandbox, "last_failure_location", None)
+    where = snippet_location(stack, location)
+    source_line = (
+        read_snippet_line(where, allowed_roots=_snippet_roots(filename))
+        if where is not None
+        else None
+    )
+    lines = report_lines(
+        "Runtime Error",
+        error,
+        stack=stack,
+        location=location,
+        source_line=source_line,
+        omitted_at=getattr(process_sandbox, "last_failure_omitted_at", None),
+    )
+    print("\n".join(lines), file=sys.stderr)
+
+
+def _format_process_frontend_error(
+    filename: str, error: BaseException, *, limit: int | None = None
+) -> str:
+    """Format a frontend failure without leaking a worker traceback.
+
+    A runtime failure (an example's panic, contract failure, denial or
+    limit) is formatted as the Geno runtime report. With *limit* that report
+    is fitted into *limit* characters by ``runtime_report.fit_report_text``,
+    which keeps its final ``<Label>: <message>`` line; other text is returned
+    whole, for the caller to truncate.
+    """
     from ..compiler import CompileError
     from ..dependency_graph import (
         CircularDependencyError,
@@ -555,23 +756,29 @@ def _format_process_frontend_error(filename: str, error: BaseException) -> str:
         return f"Compile Error: {error}"
     if isinstance(error, SecurityViolation):
         return f"Security Error: {error}"
-    if isinstance(error, (TimeoutError, StepLimitExceeded)):
-        return f"Limit Error: {error}"
-    if isinstance(error, SandboxError):
-        return f"Sandbox Error: {error}"
     if isinstance(error, RecursionError):
         return (
             f"Error: expression nesting is too deep to process in {filename} "
             "(exceeded the interpreter's recursion limit). Simplify deeply "
             "nested expressions such as very long operator chains."
         )
-    if isinstance(error, (GenoRuntimeError, RuntimeError)):
-        buffer = StringIO()
-        _print_runtime_error(error, file=buffer)
-        return buffer.getvalue().rstrip()
-    return (
-        f"Compiler Error: the isolated frontend failed safely ({type(error).__name__})"
-    )
+    if isinstance(error, (TimeoutError, StepLimitExceeded)):
+        label = "Limit Error"
+    elif isinstance(error, SandboxError):
+        label = "Sandbox Error"
+    elif isinstance(error, (GenoRuntimeError, RuntimeError)):
+        label = "Runtime Error"
+    else:
+        return (
+            "Compiler Error: the isolated frontend failed safely "
+            f"({type(error).__name__})"
+        )
+    lines = runtime_report_lines(error, label)
+    if limit is None:
+        return "\n".join(lines)
+    from ..runtime_report import fit_report_text
+
+    return fit_report_text(lines, limit)
 
 
 def run_file(
@@ -586,18 +793,27 @@ def run_file(
     max_integer_bits: int = 33_219,
     max_memory_bytes: int | None = DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     max_cpu_time: float | None = None,
-    max_file_size_bytes: int = 0,
+    max_file_size_bytes: int | None = None,
     max_processes: int = 1,
     capabilities: set[str] | None = None,
     target: str | None = None,
     json_output: bool = False,
     program_args: list[str] | None = None,
+    allow_env: Collection[str] | None = None,
+    max_total_write_bytes: int | None = None,
 ) -> int | None:
     """Run a Geno source file.
 
     By default, compiles to Python and runs in ProcessSandbox for hard timeouts.
     Use --unsafe to run with the direct interpreter (no process isolation).
     Use --json to get structured JSON output via the embedding API.
+
+    ``allow_env`` holds the ``--allow-env`` names: the environment variables
+    an isolated run granted ``env`` may read. Only that lane accepts them.
+
+    ``max_file_size_bytes`` and ``max_total_write_bytes`` are the isolated
+    lane's per-file and total write limits; ``None`` means the lane default:
+    0 without an ``fs`` grant, 64 MiB with one. Only that lane accepts them.
 
     Returns the process exit status a declared ``Int`` ``main`` asks for, or
     ``None`` when there is nothing to say and the process should exit 0. A
@@ -622,26 +838,50 @@ def run_file(
         else:
             os.environ["GENO_CLI_ARGS"] = previous_cli_args
 
-    # --cap is currently supported by the interpreter/embedding paths only.
-    # Require the user to choose that execution mode explicitly so capability
-    # grants cannot silently downgrade process isolation.
+    # The isolated lane grants exactly --cap (proposal 0013), but only the
+    # capabilities it implements. Anything else fails here, before a worker
+    # starts, so a grant can never silently downgrade process isolation.
     if run_mode == "process" and capabilities is not None:
-        print(
-            "Error: --cap is not supported in the default process-isolated "
-            "run mode. Use --unsafe --cap ... to run with capability callbacks "
-            "in the direct interpreter, or use --json --cap ... for embedding "
-            "API execution.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        refusals = isolated_run_refusals(capabilities)
+        if refusals:
+            for message in refusals:
+                print(f"Error: {message}", file=sys.stderr)
+            sys.exit(1)
+
+    # `--allow-env` names variables an isolated `env` grant may read. It never
+    # grants `env` itself, and the other lanes do not take it: failing here
+    # beats ignoring a policy the user thinks is in force.
+    allowed_env = tuple(dict.fromkeys(allow_env or ()))
+    if allowed_env:
+        if run_mode != "process":
+            print(
+                "Error: --allow-env only applies to the default process-isolated "
+                "run mode.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        for name in allowed_env:
+            problem = isolated_env_name_error(name)
+            if problem is not None:
+                print(f"Error: --allow-env {name!r} {problem}", file=sys.stderr)
+                sys.exit(1)
+        if capabilities is None or "env" not in capabilities:
+            print(
+                "Error: --allow-env requires an explicit --cap env grant in the "
+                "process-isolated run mode",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     process_only_overrides = []
     if max_memory_bytes not in (DEFAULT_PROCESS_MAX_MEMORY_BYTES,):
         process_only_overrides.append("--max-memory-bytes")
     if max_cpu_time is not None:
         process_only_overrides.append("--max-cpu-time")
-    if max_file_size_bytes != 0:
+    if max_file_size_bytes is not None:
         process_only_overrides.append("--max-file-size-bytes")
+    if max_total_write_bytes is not None:
+        process_only_overrides.append("--max-total-write-bytes")
     if max_processes != 1:
         process_only_overrides.append("--max-processes")
     if run_mode != "process" and process_only_overrides:
@@ -720,6 +960,12 @@ def run_file(
         # bind exception names this path cannot raise, duplicating imports the
         # worker pays for again in the child. So this branch stays above the
         # frontend import block and imports the sandbox alone.
+        from ..isolated_host import (
+            IsolatedRunPolicyError,
+            isolated_env_snapshot,
+            isolated_run_policy_for,
+            with_program_stdin,
+        )
         from ..sandbox import (
             ProcessSandbox,
             ProcessSandboxConfig,
@@ -729,8 +975,46 @@ def run_file(
             TimeoutError,
         )
 
+        # Both write limits default by grant: nothing can be written without
+        # `fs`, and 64 MiB per file and per run with it. An explicit value
+        # never grants `fs` or lifts read-only mode.
+        fs_granted = capabilities is not None and "fs" in capabilities
+        for flag, value in (
+            ("--max-file-size-bytes", max_file_size_bytes),
+            ("--max-total-write-bytes", max_total_write_bytes),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                print(f"Error: {flag} must be a non-negative integer", file=sys.stderr)
+                sys.exit(1)
+        file_size_limit = (
+            max_file_size_bytes
+            if max_file_size_bytes is not None
+            else (ISOLATED_RUN_FS_WRITE_LIMIT_BYTES if fs_granted else 0)
+        )
         try:
-            request = {
+            # Host policy is read here only for the capability it configures:
+            # GENO_FS_* for an `fs` grant, GENO_HTTP_ALLOW_PRIVATE for `http`
+            # (never through the program's own --allow-env names).
+            run_policy = isolated_run_policy_for(
+                capabilities,
+                timeout=timeout,
+                allow_env=allowed_env,
+                max_total_write_bytes=max_total_write_bytes,
+            )
+        except IsolatedRunPolicyError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        # Only the allowed variables the caller actually has cross to the
+        # worker, read before GENO_CLI_ARGS is set below, and only with `env`.
+        env_snapshot = (
+            isolated_env_snapshot(allowed_env)
+            if "env" in run_policy.capabilities
+            else None
+        )
+        try:
+            request: dict[str, Any] = {
                 "filename": filename,
                 "target": target,
                 "check_examples": check_examples,
@@ -740,12 +1024,17 @@ def run_file(
                 "max_output_length": max_output_length,
                 "max_collection_size": max_collection_size,
                 "max_integer_bits": max_integer_bits,
+                # Trusted setup always receives the program arguments; only
+                # the program-visible `cli_args` binding is gated (by `env`).
+                "program_args": list(program_args or []),
             }
+            if env_snapshot is not None:
+                request["env_snapshot"] = env_snapshot
             process_config = ProcessSandboxConfig(
                 timeout=timeout,
                 max_memory_bytes=max_memory_bytes,
                 max_cpu_time=max_cpu_time,
-                max_file_size_bytes=max_file_size_bytes,
+                max_file_size_bytes=file_size_limit,
                 max_processes=max_processes,
                 max_recursion_depth=max_recursion_depth,
                 max_output_length=max_output_length,
@@ -758,8 +1047,15 @@ def run_file(
             _set_cli_args_env()
             try:
                 process_sandbox = ProcessSandbox(process_config)
+                # Only a `stdin` grant duplicates this process's standard
+                # input, for the worker alone to inherit; nothing reads it
+                # until the program asks, and execute_geno_request owns and
+                # closes this copy, so nothing may come between the two.
+                host_traceback = host_traceback_requested()
+                # Asked for only under GENO_TRACEBACK=host (proposal 0018).
+                debug_options = {"host_traceback": True} if host_traceback else {}
                 result, run_output, error = process_sandbox.execute_geno_request(
-                    request
+                    request, with_program_stdin(run_policy), **debug_options
                 )
             finally:
                 _restore_cli_args_env()
@@ -776,14 +1072,25 @@ def run_file(
                         file=sys.stderr,
                     )
                 else:
-                    _print_runtime_error(RuntimeError(error))
-                    hint = _default_lane_capability_hint(
-                        process_sandbox.last_capability_denied,
-                        filename,
-                        program_args,
-                    )
-                    if hint:
-                        print(hint, file=sys.stderr)
+                    _print_default_lane_runtime_error(error, process_sandbox, filename)
+                worker_traceback = getattr(
+                    process_sandbox, "last_worker_traceback", None
+                )
+                if host_traceback and isinstance(worker_traceback, str):
+                    print("Host traceback (GENO_TRACEBACK=host):", file=sys.stderr)
+                    print(worker_traceback.rstrip(), file=sys.stderr)
+                # A denial in an example (frontend phase) is as actionable as
+                # one in `main`; both come with the worker's structured tag.
+                hint = _default_lane_capability_hint(
+                    process_sandbox.last_capability_denied,
+                    filename,
+                    program_args,
+                    grant=run_policy.capabilities,
+                    allow_env=allowed_env,
+                    env_name=process_sandbox.last_env_policy_denied,
+                )
+                if hint:
+                    print(hint, file=sys.stderr)
                 sys.exit(1)
             # Captured output is printed before the status is returned, so a
             # nonzero exit never costs the program its output.
@@ -982,24 +1289,28 @@ def run_file(
         print(f"Security Error: {e}", file=sys.stderr)
         sys.exit(1)
     except (TimeoutError, StepLimitExceeded) as e:
-        print(f"Limit Error: {e}", file=sys.stderr)
+        # Interpreter limits carry the Geno stack they unwound (proposal 0018).
+        _print_runtime_error(
+            e, label="Limit Error", host_traceback=host_traceback_requested()
+        )
         sys.exit(1)
     except SandboxError as e:
-        # Infrastructure failure inside the process sandbox (e.g. the worker's
-        # result channel was lost) — not a user-program error.
-        print(f"Sandbox Error: {e}", file=sys.stderr)
+        # A recursion limit or another sandbox refusal of the interpreter.
+        _print_runtime_error(
+            e, label="Sandbox Error", host_traceback=host_traceback_requested()
+        )
         sys.exit(1)
     except RecursionError:
         report_deep_nesting_error(filename)
     except GenoRuntimeError as e:
         # Must precede builtin RuntimeError since GenoRuntimeError
         # (geno.values.RuntimeError) extends Exception, not builtin RuntimeError.
-        # Use e.message to avoid "Runtime Error: Runtime Error: ..." duplication
-        # since str(e) already includes the "Runtime Error:" prefix.
-        _print_runtime_error(e)
+        # The report prints e.message, never str(e), which already carries a
+        # location and the "Runtime Error:" label.
+        _print_runtime_error(e, host_traceback=host_traceback_requested())
         sys.exit(1)
     except RuntimeError as e:
-        _print_runtime_error(e)
+        _print_runtime_error(e, host_traceback=host_traceback_requested())
         sys.exit(1)
 
     # Only `report_deep_nesting_error` reaches here without returning, and it
