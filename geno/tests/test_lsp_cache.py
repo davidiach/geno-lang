@@ -50,6 +50,26 @@ class TestCompletionSymbolCache:
         assert uri in doc_cache
         assert "file:///tmp/Other.geno" not in doc_cache
 
+    def test_completion_symbols_rebuild_when_cached_source_is_stale(self):
+        """#252: an entry from an older revision is rebuilt, not returned."""
+        uri = "file:///tmp/Doc0.geno"
+        old = "func old_name() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        new = "func new_name() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        doc_cache = lsp_server._BoundedDict(maxsize=4)
+        old_symbols, _ = extract_completion_symbols(old)
+        doc_cache[uri] = (old, old_symbols)
+
+        symbols = lsp_server._completion_symbols_for_uri(uri, doc_cache, {uri: new})
+
+        assert symbols is not None
+        assert [symbol.name for symbol in symbols] == ["new_name"]
+        assert doc_cache[uri][0] == new
+        # A current entry is returned as is.
+        assert (
+            lsp_server._completion_symbols_for_uri(uri, doc_cache, {uri: new})
+            is (doc_cache[uri][1])
+        )
+
 
 class TestDocumentVersionState:
     def test_document_lsp_version_accepts_real_integer_versions(self):
