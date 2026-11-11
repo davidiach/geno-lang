@@ -484,7 +484,7 @@ kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E201"]
 
-# Proposal 0023 (Draft): f-string format specs, slices, named-field patterns
+# Proposal 0023 (Accepted): f-string format specs, slices, named-field patterns
 # and if let. Each form was a parse error before. The spec grid against
 # Python's format, the rejected forms and formatter spacing are covered by
 # geno/tests/test_fstring_format_specs.py, test_slicing.py,

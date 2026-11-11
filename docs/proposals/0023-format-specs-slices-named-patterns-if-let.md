@@ -1,12 +1,37 @@
 # Proposal 0023: Format Specs, Slices, Named-Field Patterns and If Let
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-11 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-11
 - Discussion: https://github.com/davidiach/geno-lang/issues/238
 - Supersedes: None
-- Review: None yet; awaiting project lead acceptance under `GOVERNANCE.md`.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: local validation, and GitHub CI, Release Gate and External Apps on
+  #260. The automated Codex review did not run. These are not independent
+  approval.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-11 the project lead, David Iach, accepted this proposal as
+implemented on #260. In the Claude Code session that built it, offered the
+choice between "Accept proposal 0023 as written, then merge" and merging with
+the proposal still a draft, the project lead chose the first. This records
+acceptance for the 0.7 development line and authorization to merge #260
+after green CI.
+
+The decision accepts the choices listed under Reference Design as written:
+a spec starts at the first top-level `:`; the spec subset and its limits; a
+Float without a type is padded text; `if let` takes no guard; and `..` goes
+with named fields only. The Unresolved Questions stay open and do not block
+acceptance.
+
+The proposal was created on 2026-11-11 and accepted the same day. The usual
+seven-day review period in `docs/proposals/README.md` did not elapse; the
+project lead's explicit acceptance is recorded here as an exception to it. It
+does not imply that independent human review occurred.
 
 ## Summary
 

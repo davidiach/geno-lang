@@ -13,7 +13,7 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
-- Four more forms models write, from Draft
+- Four more forms models write, from accepted
   [proposal 0023](docs/proposals/0023-format-specs-slices-named-patterns-if-let.md).
   Each was a parse error before, so every accepted program keeps its meaning:
   - F-string format specs: `f"{price:.2f}"`, `f"{n:05d}"`, `f"{total:,}"`,
