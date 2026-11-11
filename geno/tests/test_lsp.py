@@ -6759,6 +6759,42 @@ class TestIsInCommentOrString:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def cancel_debounce_timers(monkeypatch):
+    """Cancel every debounce timer a test starts, so none outlives the test."""
+    started: list = []
+    real_start = lsp_server._DebouncedRefresh.start
+
+    def recording_start(self):
+        started.append(self)
+        real_start(self)
+
+    monkeypatch.setattr(lsp_server._DebouncedRefresh, "start", recording_start)
+    yield started
+    for refresh in started:
+        refresh.cancel()
+
+
+class _SignallingLock:
+    """Wrap a lock and signal when a thread other than its creator waits on it."""
+
+    def __init__(self, lock):
+        self._lock = lock
+        self._owner = threading.get_ident()
+        self.other_thread_waiting = threading.Event()
+
+    def __enter__(self):
+        if threading.get_ident() != self._owner:
+            self.other_thread_waiting.set()
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._lock.release()
+        return False
+
+
+@pytest.mark.usefixtures("cancel_debounce_timers")
 class TestDebouncedDiagnostics:
     """Verify that did_change debounces diagnostics."""
 
@@ -6893,6 +6929,298 @@ class TestDebouncedDiagnostics:
         assert len(published) > 0
 
 
+@pytest.mark.usefixtures("cancel_debounce_timers")
+class TestDebounceOwnership:
+    """#253: each document owns at most one current pending refresh. An
+    obsolete timer callback cannot refresh or drop a newer registration, and
+    an immediate refresh retires the pending one."""
+
+    SOURCE = "func foo() -> Int\n  example () -> 1\n  return 1\nend func\n"
+    CHANGED = "func foo() -> Int\n  example () -> 2\n  return 2\nend func\n"
+
+    @staticmethod
+    def _server(monkeypatch):
+        server = create_server(diag_debounce_sec=3600.0)  # never fires by itself
+        server.lsp._workspace = Workspace(
+            None, sync_kind=types.TextDocumentSyncKind.Full
+        )
+        published: list[str] = []
+        monkeypatch.setattr(
+            server, "publish_diagnostics", lambda u, _d: published.append(u)
+        )
+        return server, server._geno_language_server, published
+
+    @staticmethod
+    def _open(server, uri, text, version=1):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri, language_id="geno", version=version, text=text
+                )
+            )
+        )
+
+    @staticmethod
+    def _change(server, uri, text, version):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_CHANGE)(
+            types.DidChangeTextDocumentParams(
+                text_document=types.VersionedTextDocumentIdentifier(
+                    uri=uri, version=version
+                ),
+                content_changes=[types.TextDocumentContentChangeEvent_Type2(text=text)],
+            )
+        )
+
+    @staticmethod
+    def _save(server, uri):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_SAVE)(
+            types.DidSaveTextDocumentParams(
+                text_document=types.TextDocumentIdentifier(uri=uri)
+            )
+        )
+
+    @staticmethod
+    def _close(server, uri):
+        server.lsp._get_handler(types.TEXT_DOCUMENT_DID_CLOSE)(
+            types.DidCloseTextDocumentParams(
+                text_document=types.TextDocumentIdentifier(uri=uri)
+            )
+        )
+
+    @staticmethod
+    def _dispatch(timer):
+        """Run a timer's callback as an already-dispatched timer thread would:
+        cancelling a timer cannot retract a callback that has started."""
+        timer.function(*timer.args, **timer.kwargs)
+
+    def _opened(self, tmp_path, monkeypatch):
+        file_path = tmp_path / "doc.geno"
+        file_path.write_text(self.SOURCE)
+        uri = file_path.as_uri()
+        server, wrapper, published = self._server(monkeypatch)
+        self._open(server, uri, self.SOURCE)
+        published.clear()
+        return server, wrapper, published, uri
+
+    def test_current_timer_refreshes_once_and_unregisters(self, tmp_path, monkeypatch):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        timer = wrapper._debounce_timers[uri]
+
+        self._dispatch(timer)
+
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+
+    def test_save_retires_the_pending_refresh(self, tmp_path, monkeypatch):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        pending = wrapper._debounce_timers[uri]
+
+        self._save(server, uri)
+
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+        assert pending.finished.is_set()  # cancelled
+        # Even if its callback had already been dispatched, it does nothing.
+        self._dispatch(pending)
+        assert published == [uri]
+
+    def test_repeated_open_retires_the_pending_refresh(self, tmp_path, monkeypatch):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        pending = wrapper._debounce_timers[uri]
+
+        self._open(server, uri, self.CHANGED, version=3)
+
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+        self._dispatch(pending)
+        assert published == [uri]
+
+    def test_obsolete_dispatched_callback_keeps_newer_registration(
+        self, tmp_path, monkeypatch
+    ):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        old_timer = wrapper._debounce_timers[uri]
+        # The old callback is dispatched and waits for the state lock while a
+        # newer change replaces its timer; cancelling cannot retract it.
+        self._change(server, uri, self.SOURCE, version=3)
+        new_timer = wrapper._debounce_timers[uri]
+        assert new_timer is not old_timer
+
+        self._dispatch(old_timer)
+
+        assert published == []
+        assert wrapper._debounce_timers.get(uri) is new_timer
+        wrapper._cancel_debounce(uri)
+        assert new_timer.finished.is_set()
+        assert uri not in wrapper._debounce_timers
+
+    def test_obsolete_callback_waiting_on_the_lock_loses_ownership(
+        self, tmp_path, monkeypatch
+    ):
+        """The issue's interleaving: the old callback has dispatched and is
+        blocked on the state lock while a newer change replaces its timer."""
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        lock = _SignallingLock(wrapper._state_lock)
+        monkeypatch.setattr(wrapper, "_state_lock", lock)
+        self._change(server, uri, self.CHANGED, version=2)
+        old_timer = wrapper._debounce_timers[uri]
+
+        with lock:
+            waiter = threading.Thread(target=self._dispatch, args=(old_timer,))
+            waiter.start()
+            # Proceed only once the old callback is waiting on the lock.
+            assert lock.other_thread_waiting.wait(timeout=10)
+            self._change(server, uri, self.SOURCE, version=3)
+            new_timer = wrapper._debounce_timers[uri]
+        waiter.join(timeout=10)
+
+        assert not waiter.is_alive()
+        assert published == []
+        assert wrapper._debounce_timers.get(uri) is new_timer
+        wrapper._cancel_debounce(uri)
+        assert new_timer.finished.is_set()
+
+    def test_callback_from_before_close_ignores_reopened_document(
+        self, tmp_path, monkeypatch
+    ):
+        server, wrapper, published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        before_close = wrapper._debounce_timers[uri]
+        self._close(server, uri)
+        self._open(server, uri, self.SOURCE, version=1)
+        self._change(server, uri, self.CHANGED, version=2)
+        after_reopen = wrapper._debounce_timers[uri]
+        published.clear()
+
+        self._dispatch(before_close)
+
+        assert published == []
+        assert wrapper._debounce_timers.get(uri) is after_reopen
+        self._dispatch(after_reopen)
+        assert published == [uri]
+        assert uri not in wrapper._debounce_timers
+
+    SENTINEL = "/retired-refresh/Old.geno"
+
+    @pytest.mark.parametrize("transition", ["save", "open", "replace", "close"])
+    def test_retired_refresh_paths_reach_the_next_refresh(
+        self, tmp_path, monkeypatch, transition
+    ):
+        """Whatever retires a pending refresh covers its previous project paths."""
+        server, wrapper, _published, uri = self._opened(tmp_path, monkeypatch)
+        self._change(server, uri, self.CHANGED, version=2)
+        wrapper._debounce_timers[uri].project_paths = frozenset({self.SENTINEL})
+        calls: list[frozenset[str]] = []
+        real_refresh = wrapper._refresh_open_documents
+
+        def recording_refresh(*args, **kwargs):
+            calls.append(kwargs.get("previous_project_paths", frozenset()))
+            return real_refresh(*args, **kwargs)
+
+        monkeypatch.setattr(wrapper, "_refresh_open_documents", recording_refresh)
+
+        if transition == "save":
+            self._save(server, uri)
+        elif transition == "open":
+            self._open(server, uri, self.CHANGED, version=3)
+        elif transition == "replace":
+            self._change(server, uri, self.SOURCE, version=3)
+            assert calls == []  # still debounced
+            self._dispatch(wrapper._debounce_timers[uri])
+        else:
+            self._close(server, uri)
+
+        assert len(calls) == 1
+        assert self.SENTINEL in calls[0]
+
+    def _project(self, tmp_path, monkeypatch):
+        (tmp_path / "geno.toml").write_text(
+            'entrypoint = "Main"\nfiles = ["Main", "Utils"]\n'
+        )
+        main_file = tmp_path / "Main.geno"
+        utils_file = tmp_path / "Utils.geno"
+        main_source = "import Utils\nfunc main() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        utils_source = (
+            "export func helper() -> Int\n  example () -> 1\n  return 1\nend func\n"
+        )
+        main_file.write_text(main_source)
+        utils_file.write_text(utils_source)
+        server, wrapper, published = self._server(monkeypatch)
+        self._open(server, main_file.as_uri(), main_source)
+        self._open(server, utils_file.as_uri(), utils_source)
+        published.clear()
+        return server, wrapper, published, main_file.as_uri(), utils_file.as_uri()
+
+    def test_sibling_refresh_retires_a_covered_pending_refresh(
+        self, tmp_path, monkeypatch
+    ):
+        """Saving Utils refreshes Main too, so Main's pending refresh is
+        redundant and must not run a second check."""
+        server, wrapper, published, main_uri, utils_uri = self._project(
+            tmp_path, monkeypatch
+        )
+        self._change(
+            server,
+            main_uri,
+            "import Utils\nfunc main() -> Int\n  example () -> 2\n  return 2\nend func\n",
+            version=2,
+        )
+        main_pending = wrapper._debounce_timers[main_uri]
+
+        self._save(server, utils_uri)
+
+        assert main_uri not in wrapper._debounce_timers
+        assert main_pending.finished.is_set()
+        published_after_save = list(published)
+        assert published_after_save
+        self._dispatch(main_pending)
+        assert published == published_after_save
+
+    def test_sibling_refresh_keeps_a_pending_refresh_it_does_not_cover(
+        self, tmp_path, monkeypatch
+    ):
+        server, wrapper, _published, main_uri, utils_uri = self._project(
+            tmp_path, monkeypatch
+        )
+        self._change(
+            server,
+            main_uri,
+            "import Utils\nfunc main() -> Int\n  example () -> 2\n  return 2\nend func\n",
+            version=2,
+        )
+        main_pending = wrapper._debounce_timers[main_uri]
+        # Main's pending refresh also covers a path outside this project.
+        main_pending.project_paths = frozenset({self.SENTINEL})
+
+        self._save(server, utils_uri)
+
+        assert wrapper._debounce_timers.get(main_uri) is main_pending
+
+    def test_closing_a_sibling_retires_every_pending_refresh(
+        self, tmp_path, monkeypatch
+    ):
+        """Closing a document refreshes every open document."""
+        server, wrapper, _published, main_uri, utils_uri = self._project(
+            tmp_path, monkeypatch
+        )
+        self._change(
+            server,
+            main_uri,
+            "import Utils\nfunc main() -> Int\n  example () -> 2\n  return 2\nend func\n",
+            version=2,
+        )
+        wrapper._debounce_timers[main_uri].project_paths = frozenset({self.SENTINEL})
+
+        self._close(server, utils_uri)
+
+        assert main_uri not in wrapper._debounce_timers
+
+
+@pytest.mark.usefixtures("cancel_debounce_timers")
 class TestCompletionFreshnessBeforeDebounce:
     """#252: completion reflects the latest accepted revision before the
     debounced diagnostic refresh runs, while diagnostics stay debounced."""
