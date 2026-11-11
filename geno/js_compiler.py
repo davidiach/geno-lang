@@ -34,6 +34,7 @@ from ._js_generics import (
     substitute_type_params,
 )
 from .ast_nodes import (
+    FORMAT_OPERATOR,
     SLICE_OPERATOR,
     AssignStatement,
     AwaitExpr,
@@ -103,6 +104,7 @@ from .entrypoint import (
     is_async_execution_form,
     visible_type_aliases,
 )
+from .format_spec import FormatSpecError, parse_format_spec
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -518,6 +520,7 @@ _JS_LOCAL_RESERVED_NAMES = (
             "_genoOwnField",
             "_genoOwnIndex",
             "_genoSlice",
+            "_genoFormatSpec",
             "_divZero",
             "_safe_index",
             "_safe_index_set",
@@ -3618,6 +3621,25 @@ class JSCompiler(BaseCompiler):
                 for bound in slice_bounds(expr)
             )
             return f"_genoSlice({target}, {start}, {stop})"
+        if expr.operator == FORMAT_OPERATOR:
+            spec_text = cast(StringLiteral, expr.right).value
+            try:
+                spec = parse_format_spec(spec_text)
+            except FormatSpecError as error:
+                raise JSCompileError(str(error)) from error
+            arguments = [
+                self._compile_expr(expr.left),
+                _json.dumps(expr._resolved_builtin_name),
+                self._js_string_literal(spec.fill),
+                _json.dumps(spec.align),
+                _json.dumps(spec.sign),
+                _json.dumps(spec.zero),
+                str(spec.width),
+                _json.dumps(spec.comma),
+                _json.dumps(spec.precision),
+                _json.dumps(spec.type),
+            ]
+            return f"_genoFormatSpec({', '.join(arguments)})"
         left = self._compile_expr(expr.left)
         right = self._compile_expr(expr.right)
         if expr.operator == "in":

@@ -20,6 +20,7 @@ from typing import Any, TypeVar, cast
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
+    FORMAT_OPERATOR,
     SLICE_OPERATOR,
     AssertStatement,
     AssignStatement,
@@ -98,6 +99,7 @@ from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
 from .float_promotion import float_shape
+from .format_spec import format_value, runtime_kind
 from .harness import example_call_args, example_numbers_match
 from .panic_outcome import evaluate_panics_call
 from .runtime_report import (
@@ -2361,6 +2363,16 @@ class Interpreter:
             # end and one past either end is clamped. Strings slice by code
             # point, like indexing.
             return target[start:stop]
+        if operator == FORMAT_OPERATOR:
+            value = self.eval_expr(expr.left, env)
+            spec_text = cast(StringLiteral, expr.right).value
+            kind = expr._resolved_builtin_name or runtime_kind(spec_text, value)
+            if kind == "text" and not isinstance(value, str):
+                value = self._builtin_stringify_value(value)
+            try:
+                return format_value(value, spec_text, kind)
+            except ValueError as error:
+                raise RuntimeError(str(error), expr.location) from error
         if operator == "and":
             left = self.eval_expr(expr.left, env)
             if not left:

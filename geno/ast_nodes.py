@@ -288,6 +288,9 @@ class AwaitExpr(Expression):
 
 # The operator of a slice, `xs[a:b]`. No source operator is spelled this way.
 SLICE_OPERATOR = "[:]"
+# The operator of an f-string interpolation with a format spec, `{x:.2f}`:
+# the value on the left, the spec's text as a string literal on the right.
+FORMAT_OPERATOR = "{:}"
 
 
 def slice_bounds(expr: "BinaryOp") -> tuple["Expression | None", "Expression | None"]:
@@ -308,7 +311,8 @@ class BinaryOp(Expression):
 
     A slice ``xs[a:b]`` is the operator ``SLICE_OPERATOR`` with ``xs`` on the
     left and the two-element tuple of its bounds on the right; a bound that
-    was left out is the empty tuple.
+    was left out is the empty tuple. An f-string interpolation with a format
+    spec is ``FORMAT_OPERATOR``, the value and then the spec's text.
     """
 
     operator: str

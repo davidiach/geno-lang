@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import NoReturn, Union
 
 from .ast_nodes import (
+    FORMAT_OPERATOR,
     SLICE_OPERATOR,
     AwaitExpr,
     BinaryOp,
@@ -48,10 +49,34 @@ from .ast_nodes import (
     WithExpr,
 )
 from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
-from .lexer import Lexer, LexerError
+from .lexer import Lexer, LexerError, string_literal_end
 from .parser_base import REMOVED_THROW, ParseError, ParserBase
 from .parser_patterns import first_await
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
+
+
+def _format_spec_start(expr_text: str) -> int | None:
+    """Where an interpolation's format spec starts, or None without one.
+
+    The spec follows the first ``:`` that is outside every bracket and string
+    literal: a named argument or a slice is inside brackets, so its colon is
+    not that one. Everything after it is the spec, a ``:`` fill included.
+    """
+    depth = 0
+    index = 0
+    while index < len(expr_text):
+        char = expr_text[index]
+        if char == '"':
+            index = string_literal_end(expr_text, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ":" and depth == 0:
+            return index
+        index += 1
+    return None
 
 
 class ExpressionParserMixin(ParserBase):
@@ -474,9 +499,21 @@ class ExpressionParserMixin(ParserBase):
             if expr_start - 1 > text_start:
                 parts.append(raw[text_start : expr_start - 1])
             expr_text = raw[expr_start:expr_end]
+            spec_at = _format_spec_start(expr_text)
+            spec_text = None
+            if spec_at is not None:
+                expr_text, spec_text = expr_text[:spec_at], expr_text[spec_at + 1 :]
             if not expr_text.strip():
                 raise ParseError("Empty expression in f-string", expr_location)
-            parts.append(self._parse_fstring_expr(expr_text, expr_location))
+            value = self._parse_fstring_expr(expr_text, expr_location)
+            if spec_text is not None:
+                value = BinaryOp(
+                    location=value.location,
+                    operator=FORMAT_OPERATOR,
+                    left=value,
+                    right=StringLiteral(location=expr_location, value=spec_text),
+                )
+            parts.append(value)
             text_start = expr_end + 1  # past the closing `}`
         if text_start < len(raw):
             parts.append(raw[text_start:])

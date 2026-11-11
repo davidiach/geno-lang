@@ -42,6 +42,7 @@ from ._definition_index import collect_definitions
 from ._prelude_bindings import PRELUDE_BINDING_NAMES, PRELUDE_SOURCE_SHA256
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
+    FORMAT_OPERATOR,
     SLICE_OPERATOR,
     AssignStatement,
     ASTVisitor,
@@ -263,6 +264,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_geno_own_field",
             "_geno_own_index",
             "_geno_slice",
+            "_geno_format_spec",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -2992,6 +2994,13 @@ class Compiler(BaseCompiler, ASTVisitor):
                 for bound in slice_bounds(expr)
             )
             return f"_geno_slice({target}, {start}, {stop})"
+        if expr.operator == FORMAT_OPERATOR:
+            value = self._compile_expr(expr.left)
+            spec = self._emit_python_string_literal(
+                cast(StringLiteral, expr.right).value
+            )
+            kind = repr(expr._resolved_builtin_name)
+            return f"_geno_format_spec({value}, {spec}, {kind})"
         if expr._resolved_builtin_name == "concat":
             # List + List: concat's arguments, widened like any Int list
             # passed where a Float list is expected.
