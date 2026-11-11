@@ -385,6 +385,13 @@ package version stays 0.6.0, and the Draft
 
 ### Changed
 
+- A tail recursion that never ends is now a loop that never ends: the step
+  limit or the timeout stops it, where 0.6 reported "maximum recursion depth
+  exceeded", and its failure reports show one frame for the function (see
+  self tail calls under Added, and the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-a-self-tail-call-does-not-nest)).
+  A recursion whose result is still used reaches the recursion limit as
+  before.
 - A capability denial in the default `geno run` lane, in `main` or in an
   example, now ends with the isolated command when the lane can grant the
   capability (`Hint: grant it with --cap; the program stays

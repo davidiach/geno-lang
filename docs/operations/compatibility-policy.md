@@ -400,6 +400,25 @@ It meets the five conditions above:
    assigns a captured variable, returned as `() -> Int`); and
 5. the release owner records it in release evidence when 0.7 is released.
 
+### 0.7 (draft): a self tail call does not nest
+
+Recorded for the unreleased 0.7 development line. A function's call to itself
+in tail position replaces the running call (section 4.1.4 of
+`docs/spec/v0.7.md`). No program that ran to completion in 0.6 changes its
+result or its output. Two observable things change:
+
+- **A tail recursion that never ends.** In 0.6 it failed with "maximum
+  recursion depth exceeded" (E502) after about 10,000 calls. In 0.7 it is a
+  loop: the step limit (E503) or the timeout stops it, as they stop
+  `while true`, and a compiled program run on its own runs until it is
+  stopped. A recursion whose result is still used (`return 1 + f(n - 1)`)
+  reaches the recursion limit as before.
+- **Runtime failure reports.** A failure inside a tail-recursive function
+  shows one frame for the function where 0.6 would have shown one per call.
+
+A tail-recursive program that reached the recursion limit on a large input now
+runs to completion.
+
 ## Frozen Conformance Corpus
 
 `conformance/v0.4/manifest.toml` is the first frozen compatibility baseline. It

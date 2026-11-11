@@ -784,3 +784,99 @@ def test_a_default_is_evaluated_for_each_logical_call_that_omits_it(backend):
     """Calls with n = 3, 2 and 0 take the default; the one with n = 1 is
     given its argument."""
     assert backend(DEFAULTS) == "default\ndefault\ndefault\n0\n"
+
+
+MIXED = f"""
+func check(n: Int) -> Result[Int, String]
+    example (1) -> Ok(1)
+    if n == 13 then
+        return Err("unlucky")
+    end if
+    return Ok(1)
+end func
+
+func tally(n: Int, acc: Int) -> Result[Int, String]
+    example (0, 0) -> Ok(0)
+    if n == 0 then
+        return Ok(acc)
+    end if
+    let v = check(n)?
+    return tally(n - 1, acc + v)
+end func
+
+func build(n: Int, acc: List[Int]) -> List[Int]
+    example (0, []) -> []
+    return if n == 0 then acc else build(n - 1, append(acc, n)) end if
+end func
+
+func text(n: Int, acc: String) -> String
+    example (0, "") -> ""
+    return match n with
+        | 0 -> acc
+        | _ -> text(n - 1, acc + "x")
+    end match
+end func
+
+func widen(n: Int, acc: Float) -> Float
+    example (0, 1.0) -> 1.0
+    if n == 0 then
+        return acc
+    end if
+    return widen(n - 1, n)
+end func
+
+func unit_closure(n: Int, out: Vec[() -> Int]) -> Unit
+    example (0, vec_new()) -> ()
+    if n > 0 then
+        vec_push(out, fn() -> n)
+        unit_closure(n - 1, out)
+    end if
+end func
+
+func loops(n: Int, acc: Int) -> Int
+    example (0, 0) -> 3
+    var total = acc
+    var i = 0
+    while i < 3 do
+        total = total + 1
+        i = i + 1
+    end while
+    if n == 0 then
+        return total
+    end if
+    return loops(n - 1, total)
+end func
+
+func main() -> Unit with io, mutation
+    print(tally({DEEP}, 0))
+    print(tally(5, 0))
+    print(tally(20, 0))
+    print(length(build(3000, [])))
+    print(build(3, []))
+    print(length(text(3000, "")))
+    print(widen({DEEP}, 0.5))
+    let out: Vec[() -> Int] = vec_new()
+    unit_closure(3, out)
+    print(vec_get(out, 0)() + vec_get(out, 2)())
+    print(loops({DEEP}, 0))
+end func
+"""
+
+MIXED_OUTPUT = f"""Err(error: "unlucky")
+Ok(value: 5)
+Err(error: "unlucky")
+3000
+[3, 2, 1]
+3000
+1.0
+4
+{3 * DEEP + 3}
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_tail_calls_beside_propagation_collections_widening_and_loops(backend):
+    """`?` in the body, a List or String result through an expression, an Int
+    argument for a Float parameter, a `Unit` function that makes closures,
+    and a body with its own loop."""
+    assert backend(MIXED) == MIXED_OUTPUT
