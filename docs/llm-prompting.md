@@ -62,6 +62,12 @@ Key syntax rules:
   `xs.count(pred)`, `xs.unique()`. Strings: `s.index_of(t)` (Option),
   `s.reverse()`, `s.lines()`, `s.words()`, `c.is_digit()`, `c.is_alpha()`.
   `min(a, b)`, `max(a, b)`, `range(n)`, `n.to_float()`, `f.to_int()`
+- Formatting: `f"{x:.2f}"`, `f"{n:05d}"`, `f"{total:,}"`, `f"{name:>10}"`
+  (Python's format specs; types `d x X o b f e % s`)
+- Slices: `xs[1:3]`, `xs[:2]`, `xs[-2:]`, `s[1:-1]` on a List or a String;
+  bounds clamp, no step
+- `if let Some(x) = value then ... else ... end if`; patterns may name
+  fields: `Cfg(port: p, ..)`
 - Comments: `// line` or `/* block */`
 - Doc comments: `/// text`
 - Any ordinary name works, including host names such as `len`, `id`, `list`,
