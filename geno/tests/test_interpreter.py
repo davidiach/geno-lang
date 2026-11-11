@@ -1421,8 +1421,8 @@ if __name__ == "__main__":
 
 class TestRejectionExampleDiagnostics:
     """A `requires` clause runs before the body, so it also rejects the
-    example that documents the rejection path. 'requires clause evaluated to
-    false' reads as a broken example rather than as that design conflict."""
+    example that documents the rejection path. A bare precondition failure
+    reads as a broken example rather than as that design conflict."""
 
     _ROMAN = (
         "func to_roman(n: Int) -> Result[String, String]\n"
@@ -1442,17 +1442,19 @@ class TestRejectionExampleDiagnostics:
 
         message = str(exc_info.value)
         assert "expects Err" in message
-        assert "requires clause" in message
-        assert "requires clause evaluated to false" not in message
+        assert "but a requires clause rejected the input" in message
 
     def test_explanation_keeps_the_precondition_prefix(self):
-        """``geno test`` classifies a violation as a ``requires`` failure from
-        the 'Precondition failed for X:' prefix, so the explanation replaces
-        the rest of the message and not the prefix."""
+        """The explanation follows the violation's own message (proposal
+        0018: function, arguments and clause), so it still reads as a
+        precondition failure; tools classify it by its structured fields."""
         with pytest.raises(GenoRuntimeError) as exc_info:
             run_program(self._ROMAN, check_examples=True)
 
-        assert "Precondition failed for to_roman:" in str(exc_info.value)
+        assert exc_info.value.message.startswith(
+            "Precondition failed: to_roman(n: 0) requires n >= 1: "
+            "this example expects Err"
+        )
 
     def test_none_example_blocked_by_requires_is_explained_too(self):
         source = (
@@ -1483,7 +1485,9 @@ class TestRejectionExampleDiagnostics:
         with pytest.raises(GenoRuntimeError) as exc_info:
             run_program(source, check_examples=True)
 
-        assert "requires clause evaluated to false" in str(exc_info.value)
+        assert exc_info.value.message == (
+            "Precondition failed: half(n: 2) requires n >= 10"
+        )
 
     def test_nested_rejection_is_not_blamed_on_the_example(self):
         """A recursive call tripping the contract is a different mistake: the
@@ -1502,8 +1506,8 @@ class TestRejectionExampleDiagnostics:
         with pytest.raises(GenoRuntimeError) as exc_info:
             run_program(source, check_examples=True)
 
-        message = str(exc_info.value)
-        assert "requires clause evaluated to false" in message
+        message = exc_info.value.message
+        assert message == "Precondition failed: countdown(n: 0) requires n >= 1"
         assert "expects Err" not in message
 
     def test_propagation_variant_keeps_its_own_message(self):
@@ -1512,10 +1516,12 @@ class TestRejectionExampleDiagnostics:
         from geno.values import ConstructorValue, ContractViolationError
 
         violation = ContractViolationError(
-            "Precondition failed for f: requires clause cannot use '?' to "
-            "propagate None/Err",
+            "Precondition failed: f(o: None) requires o? > 0 ('?' propagated None/Err)",
             None,
             call_depth=1,
+            clause="requires",
+            reason="propagate",
+            clause_index=0,
         )
         expected = ConstructorValue("Err", {"error": "x"})
         assert _explain_rejection_example("f", expected, violation) is None

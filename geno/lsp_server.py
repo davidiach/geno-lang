@@ -1285,7 +1285,7 @@ class GenoLanguageServer:
 
     def _semantic_hover_info(self, uri: str, word: str, defn) -> str | None:
         """Build hover markdown for one semantic symbol definition."""
-        _symbol_path, symbol_source = self._read_symbol_source(
+        symbol_path, symbol_source = self._read_symbol_source(
             uri, defn.location.filename
         )
         if symbol_source is None:
@@ -1295,7 +1295,10 @@ class GenoLanguageServer:
             sig = _extract_user_func_sig(defn.name, symbol_source)
             if sig is not None:
                 label, _params = sig
-                return _format_hover_block(label, "function")
+                kind = "function"
+                if symbol_path == _uri_to_path(uri):
+                    kind = self._function_hover_kind(uri, symbol_source, defn)
+                return _format_hover_block(label, kind)
         elif defn.kind == "type":
             decl = _extract_user_type_decl(defn.name, symbol_source)
             if decl is not None:
@@ -1329,6 +1332,24 @@ class GenoLanguageServer:
         if line is not None:
             return _format_hover_block(line.strip(), defn.kind)
         return None
+
+    def _function_hover_kind(self, uri: str, source: str, defn: SymbolDef) -> str:
+        """``function``, with the settled effects of one that declares none.
+
+        A function written without `with` has the effects the checker
+        inferred, which since proposal 0019 leave out writes only the function
+        can see. Hover names them, or says the function is pure, so a masked
+        function can be told from one that keeps `mutation`.
+        """
+        analysis = self._analysis(uri, source)
+        if analysis is None:
+            return "function"
+        effects = analysis.inferred_function_effects(defn.name, defn.location.line)
+        if effects is None:
+            return "function"
+        if not effects:
+            return "function, inferred pure"
+        return f"function, inferred `with {', '.join(sorted(effects))}`"
 
     def _set_open_document_source(
         self,

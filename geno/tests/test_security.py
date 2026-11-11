@@ -9,6 +9,7 @@ import ctypes
 import errno
 import importlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -2348,6 +2349,266 @@ class TestProcessSandbox:
         assert output == ""
         assert result == 1
         assert not marker.exists()
+
+    @staticmethod
+    def _geno_cli_request(tmp_path, config):
+        source = tmp_path / "main.geno"
+        source.write_text(
+            'func main() -> Int\n    print("ESCAPED")\n    return 1\nend func main\n',
+            encoding="utf-8",
+        )
+        return {
+            "filename": str(source),
+            "target": None,
+            "check_examples": False,
+            "timeout": config.timeout,
+            "max_recursion_depth": config.max_recursion_depth,
+            "max_output_length": config.max_output_length,
+            "max_collection_size": config.max_collection_size,
+            "max_integer_bits": config.max_integer_bits,
+        }
+
+    @pytest.mark.parametrize(
+        ("policy_overrides", "detail"),
+        [
+            ({"capabilities": ["print", "process"]}, "not available"),
+            ({"capabilities": ["serve"]}, "not available"),
+            ({"capabilities": ["regx"]}, "unknown capability"),
+            ({"capabilities": "print"}, "must be a list"),
+            ({"fs_read_only": True}, "'fs' capability"),
+            ({"fs_configured_roots": ["/"]}, "'fs' capability"),
+            ({"max_total_write_bytes": 1}, "'fs' capability"),
+            ({"env_allowed_names": ["HOME"]}, "'env' capability"),
+            ({"env_case_insensitive": True}, "'env' capability"),
+            (
+                {"capabilities": ["env", "print"], "env_allowed_names": ["A=B"]},
+                "must not contain '='",
+            ),
+            (
+                {
+                    "capabilities": ["env", "print"],
+                    "env_allowed_names": ["Path"],
+                    "env_case_insensitive": True,
+                },
+                # Folding is Windows-only, and the names arrive folded there.
+                "upper-case" if os.name == "nt" else "only on Windows",
+            ),
+            ({"http_allow_private": True}, "'http' capability"),
+            ({"http_ca_file": "/etc/ca.pem"}, "'http' capability"),
+            ({"http_ca_dir": "/etc/certs"}, "'http' capability"),
+            ({"stdin_fd": 3}, "'stdin' capability"),
+            ({"grant_everything": True}, "unexpected grant_everything"),
+            (None, "the policy is missing"),
+        ],
+    )
+    def test_geno_worker_rejects_bad_run_policy_before_running(
+        self, tmp_path, policy_overrides, detail
+    ):
+        """Proposal 0013: the worker validates its grant before any input."""
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        request = self._geno_cli_request(tmp_path, config)
+        overrides: dict[str, Any] = {
+            "worker_mode": "geno_cli",
+            "prelude_blob_sha256": None,
+            "trusted_prelude_line_count": 0,
+        }
+        if policy_overrides is not None:
+            overrides["run_policy"] = {
+                **IsolatedRunPolicy.default().to_config(),
+                **policy_overrides,
+            }
+
+        sandbox = ProcessSandbox(config)
+        result, output, error = sandbox._execute_worker_payload(
+            json.dumps(request), overrides
+        )
+
+        assert result is None
+        assert output == ""
+        assert error is not None
+        assert error.startswith("startup_error: invalid isolated run policy: ")
+        assert detail in error
+
+    def test_geno_worker_runs_the_policy_grant(self, tmp_path):
+        """The grant in the parent-set policy is the program's grant."""
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        request = self._geno_cli_request(tmp_path, config)
+        sandbox = ProcessSandbox(config)
+
+        result, output, error = sandbox.execute_geno_request(
+            request, IsolatedRunPolicy(capabilities=frozenset({"regex"}))
+        )
+
+        assert result is None
+        assert output == ""
+        assert error is not None
+        assert "Capability denied: 'print' requires the 'print' capability" in error
+        assert sandbox.last_capability_denied == "print"
+
+    @pytest.mark.parametrize(
+        ("capabilities", "snapshot"),
+        [
+            # Only allowed names may cross, and only with `env`.
+            (["env", "print"], {"SECRET": "ESCAPED"}),
+            (["print"], {}),
+        ],
+    )
+    def test_geno_worker_rejects_an_environment_snapshot_it_did_not_allow(
+        self, tmp_path, capabilities, snapshot
+    ):
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        request = {
+            **self._geno_cli_request(tmp_path, config),
+            "env_snapshot": snapshot,
+        }
+        sandbox = ProcessSandbox(config)
+
+        result, output, error = sandbox.execute_geno_request(
+            request,
+            IsolatedRunPolicy(
+                capabilities=frozenset(capabilities),
+                env_allowed_names=(
+                    frozenset({"HOME"}) if "env" in capabilities else frozenset()
+                ),
+            ),
+        )
+
+        assert result is None
+        assert output == ""
+        assert error is not None
+        assert "invalid process-run environment snapshot" in error
+
+    @pytest.mark.parametrize(
+        ("capabilities", "bound"),
+        [
+            (["clock", "print", "random"], ""),
+            (["print", "regex"], ""),
+            (["env", "print"], "env"),
+            (["http", "print"], "http"),
+        ],
+    )
+    def test_geno_worker_binds_host_access_only_for_granted_capabilities(
+        self, tmp_path, monkeypatch, capabilities, bound
+    ):
+        """In-worker probe: the host table holds only the granted bindings."""
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        injection = (
+            "globals_dict['_GENO_HOST'] = _sandbox_types.MappingProxyType(\n"
+            "            _geno_host_table\n"
+            "        )"
+        )
+        worker_script = ProcessSandbox._WORKER_SCRIPT
+        assert worker_script.count(injection) == 1
+        monkeypatch.setattr(
+            ProcessSandbox,
+            "_WORKER_SCRIPT",
+            worker_script.replace(
+                injection,
+                "_emit_worker_error('probe:' + ','.join(sorted(_geno_host_table)), "
+                "'probe')\n        sys.exit(1)",
+                1,
+            ),
+        )
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        sandbox = ProcessSandbox(config)
+
+        _result, output, error = sandbox.execute_geno_request(
+            self._geno_cli_request(tmp_path, config),
+            IsolatedRunPolicy(capabilities=frozenset(capabilities)),
+        )
+
+        assert output == ""
+        assert error == f"probe:{bound}"
+
+    def test_geno_worker_preloads_http_support_only_for_a_validated_grant(self):
+        """The http client modules join the trusted baseline, and only with http."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        validate = script.index("_IsolatedRunPolicy.from_config(")
+        preload = script.index("_preload_isolated_support(_run_policy.capabilities)")
+        assert script.index("_preload_process_run_support()") < validate < preload
+        assert preload < script.index("memory_ceiling = (")
+        assert preload < script.index("code = sys.stdin.read()")
+        assert script.count("_preload_isolated_support(") == 1
+
+    @pytest.mark.parametrize(
+        ("capabilities", "loaded"),
+        [
+            (["clock", "print", "random"], ""),
+            (["env", "fs", "print"], ""),
+            (["http", "print"], "http.client,socket,ssl,urllib.request"),
+        ],
+    )
+    def test_geno_worker_loads_http_modules_only_with_the_grant(
+        self, tmp_path, monkeypatch, capabilities, loaded
+    ):
+        """In-worker probe of the modules loaded before the Darwin baseline."""
+        from geno.isolated_host import IsolatedRunPolicy
+        from geno.sandbox import ProcessSandbox, ProcessSandboxConfig
+
+        anchor = '    memory_limit = config.get("max_memory_bytes", 0)\n'
+        worker_script = ProcessSandbox._WORKER_SCRIPT
+        assert worker_script.count(anchor) == 1
+        probe = (
+            "    _emit_worker_error('probe:' + ','.join(sorted(_m for _m in "
+            "('http.client', 'socket', 'ssl', 'urllib.request') "
+            "if _m in sys.modules)), 'probe')\n"
+            "    sys.exit(1)\n"
+        )
+        monkeypatch.setattr(
+            ProcessSandbox,
+            "_WORKER_SCRIPT",
+            worker_script.replace(anchor, probe + anchor),
+        )
+        config = ProcessSandboxConfig(
+            timeout=15.0, strict=False, compiled_runtime_prelude=True
+        )
+        sandbox = ProcessSandbox(config)
+
+        _result, output, error = sandbox.execute_geno_request(
+            self._geno_cli_request(tmp_path, config),
+            IsolatedRunPolicy(capabilities=frozenset(capabilities)),
+        )
+
+        assert output == ""
+        assert error == f"probe:{loaded}"
+
+    def test_geno_worker_validates_policy_before_reading_input(self):
+        """Policy validation is trusted setup: before the Darwin baseline."""
+        from geno.sandbox import ProcessSandbox
+
+        script = ProcessSandbox._WORKER_SCRIPT
+        validate = script.index("_IsolatedRunPolicy.from_config(")
+        assert script.index("_preload_process_run_support()") < validate
+        assert validate < script.index("memory_ceiling = (")
+        assert validate < script.index("code = sys.stdin.read()")
+        # geno_cli-only steps after the AST marker use the precomputed flag,
+        # so the frontend slice above stays the geno_cli block.
+        marker = script.index("# ---- Worker-side AST validation")
+        assert 'if _worker_mode == "geno_cli"' not in script[marker:]
+        assert script.index("globals_dict['_GENO_HOST']") > script.index(
+            "sys.modules['__sandbox__'] = _fake_mod"
+        )
 
     def test_process_sandbox_worker_has_structured_startup_error_envelope(self):
         """Pre-exec worker failures should be reported as JSON categories."""

@@ -471,3 +471,58 @@ def test_std_path_check_ignores_in_memory_names():
     assert is_std_module_path(STD_DIR / "Math.geno")
     assert not is_std_module_path("<module:Math>")
     assert not is_std_module_path("")
+
+
+# Proposal 0019: W300 is syntactic, so masking local mutation leaves it alone.
+# Ownership merges every declaration of a name, so a redeclared array is owned
+# only when each of its declarations is a fresh `var`.
+REDECLARED_ARRAY = {
+    "nested block": (
+        """\
+        func f(param: Array[Int]) -> Int
+            example array_new(1, 0) -> 0
+            var a = array_new(1, 0)
+            if true then
+                var a = {inner}
+                a[0] = 1
+            end if
+            return a[0]
+        end func
+        """,
+        5,
+    ),
+    "same block": (
+        """\
+        func f(param: Array[Int]) -> Int
+            example array_new(1, 0) -> 1
+            var a = array_new(1, 0)
+            var a = {inner}
+            a[0] = 1
+            return a[0]
+        end func
+        """,
+        4,
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(REDECLARED_ARRAY))
+@pytest.mark.parametrize(
+    ("inner", "effects"),
+    [("array_new(1, 0)", frozenset()), ("param", frozenset({"mutation"}))],
+)
+def test_a_redeclared_name_is_owned_only_if_every_declaration_is_fresh(
+    shape, inner, effects
+):
+    from geno.typechecker import TypeChecker
+    from geno.types import FuncType
+
+    template, line = REDECLARED_ARRAY[shape]
+    source = template.replace("{inner}", inner)
+    (warning,) = _warnings(source)
+    assert warning.location.line == line
+    checker = TypeChecker()
+    checker.check_program(_parse(source))
+    func_type = checker.global_env.lookup("f")
+    assert isinstance(func_type, FuncType)
+    assert func_type.effects == effects

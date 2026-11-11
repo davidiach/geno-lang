@@ -1,0 +1,16 @@
+# EXPECT: E503
+# A panics example cannot be satisfied by exhausting the step budget: an
+# infinite loop behind `example 0 panics` must still report the step limit.
+# (Run with max_steps=50.)
+func spin(n: Int) -> Int
+    example 0 panics
+    var x: Int = n
+    while true do
+        x = x + 1
+    end while
+    return x
+end func
+
+func main() -> Int
+    return 0
+end func

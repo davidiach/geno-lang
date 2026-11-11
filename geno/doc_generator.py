@@ -422,6 +422,13 @@ def _render_func_html(func: FuncDoc) -> str:
         parts.append("<h4>Examples</h4>")
         for ex in func.examples:
             inp = _esc(_render_expr(ex.input_expr))
+            if ex.output_expr is None:
+                # A panics example (proposal 0017): `1, 0 panics "division"`.
+                expectation = "panics"
+                if ex.panic_message is not None:
+                    expectation += f' "{ex.panic_message}"'
+                parts.append(f'<div class="example">{inp} {_esc(expectation)}</div>')
+                continue
             out = _esc(_render_expr(ex.output_expr))
             parts.append(f'<div class="example">{inp} &rarr; {out}</div>')
 

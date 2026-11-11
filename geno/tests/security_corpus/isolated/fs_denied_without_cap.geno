@@ -1,0 +1,13 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print
+# STDERR: Capability denied: 'fs_read_text' requires the 'fs' capability
+# An isolated run without the fs grant has no filesystem binding: the builtin
+# is denied before any path is resolved, and the denial hint keeps the
+# program process-isolated.
+func main() -> Unit
+    match fs_read_text("main.geno") with
+        | Ok(text) -> print("ESCAPED " + text)
+        | Err(error) -> print("ESCAPED " + error)
+    end match
+end func

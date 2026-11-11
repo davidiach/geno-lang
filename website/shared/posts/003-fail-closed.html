@@ -12,9 +12,8 @@ summary: A Geno program cannot read a file, open a socket or start a process unl
 
 <pre><code data-lang="sh">$ geno run notes.geno
 Runtime Error: Capability denied: 'fs_read_text' requires the 'fs' capability
-Hint: the default 'geno run' lane grants only clock, print, random and does not accept --cap.
-  To grant 'fs', rerun without process isolation (trusted code only):
-  geno run --unsafe --cap clock,fs,print,random notes.geno</code></pre>
+Hint: grant it with --cap; the program stays process-isolated:
+  geno run --cap clock,fs,print,random notes.geno</code></pre>
 
 <h2>The ten capabilities</h2>
 
@@ -40,7 +39,9 @@ Hint: the default 'geno run' lane grants only clock, print, random and does not 
 
 <p><strong><code>geno run</code></strong> compiles to Python and runs it in a separate, resource-limited process. <code>print</code>, <code>clock</code> and <code>random</code> work; everything else is denied.</p>
 
-<p><strong><code>geno run --unsafe --cap fs,print</code></strong> uses the direct interpreter with exactly the capabilities you list and nothing implicit.</p>
+<p><strong><code>geno run --cap fs,print</code></strong> grants exactly the capabilities you list and nothing implicit, in that same process and under the same limits. With <code>env</code>, the program sees its arguments but only the environment variables named with <code>--allow-env</code>. <code>process</code> and <code>serve</code> are refused before the program starts, because what they start would outlive the process's limits.</p>
+
+<p><strong><code>geno run --unsafe --cap process,print</code></strong> uses the direct interpreter with exactly the capabilities you list, without process isolation. It is for trusted code, and for the capabilities the isolated process does not grant.</p>
 
 <p><strong><code>geno run --json</code></strong> and the embedding API grant nothing unless asked. They run in your process with cooperative limits, so use the hosted server or your own worker process for untrusted code.</p>
 
@@ -52,8 +53,10 @@ Hint: the default 'geno run' lane grants only clock, print, random and does not 
 
 <h2>Granted does not mean unlimited</h2>
 
-<p>Granting <code>fs</code>, <code>http</code> or <code>process</code> still applies scoped policies in the interpreter and in compiled Python: filesystem roots, read-only modes, blocked private network addresses, redirect limits and response-size caps. The <a href="../docs/reference/capabilities.html">capability reference</a> lists them per surface.</p>
+<p>Granting <code>fs</code>, <code>http</code> or <code>process</code> still applies scoped policies in the isolated <code>geno run</code> process, in the interpreter and in compiled Python: filesystem roots, read-only modes, blocked private network addresses, redirect limits and response-size caps. The isolated process also caps file writes, at 64&nbsp;MiB per file and per run by default. The <a href="../docs/reference/capabilities.html">capability reference</a> lists them per surface.</p>
 
 <h2>Why the command line?</h2>
 
 <p>Because that is where a person decides to run something. A model can write <code>fs_read_text("/etc/passwd")</code>. It cannot also grant itself the right to execute it, and the line that would grant it is short enough to read before pressing Enter.</p>
+
+<p><em>Updated 2026-11-05 for the 0.7 development line: the default <code>geno run</code> lane now accepts <code>--cap</code> and keeps its process isolation (<a href="https://github.com/davidiach/geno-lang/blob/main/docs/proposals/0013-isolated-run-capabilities.md">proposal 0013</a>). Before, it refused every <code>--cap</code>, and the hint above sent you to <code>--unsafe</code>.</em></p>

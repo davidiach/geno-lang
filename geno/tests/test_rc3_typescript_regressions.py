@@ -12,6 +12,7 @@ import pytest
 
 from geno.js_compiler import generate_dts
 from geno.parser import parse
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[2]
 LIBRARY = """
@@ -152,7 +153,7 @@ def _typecheck(directory, node, tsc, filename):
         cwd=directory,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
 
 
@@ -208,7 +209,7 @@ if (list._tag === "Some") {
         cwd=directory,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=GENERATED_PROGRAM_TIMEOUT,
     )
     assert executed.returncode == 0, executed.stderr
     assert executed.stderr == ""

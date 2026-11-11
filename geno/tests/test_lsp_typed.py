@@ -275,6 +275,64 @@ def test_a_fix_becomes_a_quick_fix_over_the_misspelled_name() -> None:
     assert (edit.range.start.character, edit.range.end.character) == (14, 20)
 
 
+_PANICS = (
+    "func safe_div(a: Int, b: Int) -> Int\n"
+    "    example 6, 3 -> 2\n"
+    "    {example}\n"
+    "    return a / b\n"
+    "end func\n\n"
+    "func usage() -> String\n"
+    "    example () panics\n"
+    '    panic("not implemented")\n'
+    "end func\n\n"
+    "func main() -> Unit\n"
+    "    print(safe_div(6, 3))\n"
+    "end func\n"
+)
+
+
+def test_panics_examples_publish_no_diagnostics() -> None:
+    """Panic examples (0.7 draft, proposal 0017) are a valid program."""
+    editor = _Editor(_PANICS.format(example='example 1, 0 panics "division"'))
+    assert editor.published[URI] == []
+
+
+def test_an_expected_panic_gets_a_quick_fix_to_the_panics_form() -> None:
+    source = _PANICS.format(example='example 1, 0 -> panic("division")')
+    editor = _Editor(source)
+    [diagnostic] = editor.published[URI]
+    assert diagnostic.code == "E330"
+    # The range is the text the fix replaces: ` -> panic(`.
+    start, end = diagnostic.range.start, diagnostic.range.end
+    assert (start.line, start.character, end.line, end.character) == (2, 16, 2, 26)
+    actions = editor._handler(types.TEXT_DOCUMENT_CODE_ACTION)(
+        types.CodeActionParams(
+            text_document=editor.document,
+            range=diagnostic.range,
+            context=types.CodeActionContext(diagnostics=[diagnostic]),
+        )
+    )
+    fix = next(action for action in actions if action.title.startswith("Write"))
+    assert fix.title == "Write 'panics \"division\"'"
+    assert fix.is_preferred
+    lines = source.split("\n")
+    for edit in sorted(
+        fix.edit.changes[URI],
+        key=lambda e: (e.range.start.line, e.range.start.character),
+        reverse=True,
+    ):
+        assert edit.range.start.line == edit.range.end.line == 2
+        text = lines[2]
+        lines[2] = (
+            text[: edit.range.start.character]
+            + edit.new_text
+            + text[edit.range.end.character :]
+        )
+    assert lines[2] == '    example 1, 0 panics "division"'
+    editor.edit("\n".join(lines))
+    assert editor.published[URI] == []
+
+
 def test_a_local_may_be_renamed_to_or_from_a_builtins_name(tmp_path) -> None:
     """A local shadows a builtin only in its scope (proposals 0011, 0012)."""
     source = (

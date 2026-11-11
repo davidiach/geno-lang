@@ -20,6 +20,10 @@ geno run --unsafe --cap serve,env examples/apps/geno-snap
 GENO_PORT=3000 geno run --unsafe --cap serve,env examples/apps/geno-snap
 ```
 
+The server needs `--unsafe`: the default process-isolated `geno run` lane
+refuses `serve`, because a listener would outlive the run's wall-clock limit.
+Run it only as trusted code.
+
 ## Endpoints
 
 | Method | Path         | Description                              |

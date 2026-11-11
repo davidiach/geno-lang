@@ -772,9 +772,17 @@ class AssertStatement(Statement):
 
 @dataclass
 class RequiresClause(ASTNode):
-    """Precondition: requires P"""
+    """Precondition: requires P
+
+    ``source_text`` is the clause's condition as written (comments removed,
+    line breaks collapsed, capped; see ``parser_base.contract_clause_text``),
+    captured at parse time for runtime contract-failure messages (proposal
+    0018). It takes no part in equality, so ``geno fmt``'s round-trip check
+    stays blind to spacing.
+    """
 
     condition: Expression
+    source_text: str | None = field(default=None, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_requires_clause(self)
@@ -782,9 +790,13 @@ class RequiresClause(ASTNode):
 
 @dataclass
 class EnsuresClause(ASTNode):
-    """Postcondition: ensures Q"""
+    """Postcondition: ensures Q
+
+    ``source_text`` is as for ``RequiresClause``.
+    """
 
     condition: Expression
+    source_text: str | None = field(default=None, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_ensures_clause(self)
@@ -792,10 +804,38 @@ class EnsuresClause(ASTNode):
 
 @dataclass
 class ExampleClause(ASTNode):
-    """Example: example input -> output"""
+    """Example: ``example input -> output`` or ``example input panics "m"``.
+
+    ``output_expr`` is ``None`` for a panics example (0.7 draft, proposal
+    0017): the call must end in a panic, whose message contains
+    ``panic_message`` (ignoring case) when one is given.  The locations are
+    for diagnostics and fixes only, so they take no part in equality.
+    """
 
     input_expr: Expression
-    output_expr: Expression
+    output_expr: Expression | None
+    panic_message: str | None = None
+    # The `->` token, the first token of the expectation (the expected value,
+    # or the word `panics`), and the clause's last token.
+    arrow_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
+    expectation_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
+    end_location: SourceLocation | None = field(default=None, repr=False, compare=False)
+    # Just after the code before the `->` (the last input, or `example` in the
+    # bare-arrow form), when it shares the arrow's line and the parser had
+    # the source text; a fix that removes the arrow starts here, so it leaves
+    # exactly one space whatever spacing surrounded the arrow.
+    inputs_end_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    @property
+    def expects_panic(self) -> bool:
+        """Whether this example states that the call panics."""
+        return self.output_expr is None
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_example_clause(self)

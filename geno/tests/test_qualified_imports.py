@@ -19,6 +19,7 @@ from geno.js_compiler import JSCompiler
 from geno.lexer import Lexer
 from geno.parser import Parser
 from geno.project_graph import ProjectGraph
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 from geno.typechecker import TypeChecker
 from geno.typechecker import TypeError as GenoTypeError
 
@@ -552,7 +553,7 @@ class TestQualifiedAccess:
             ["node", str(js_out)],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         assert js_result.returncode == 7, js_result.stderr
         assert js_result.stdout == "", js_result.stdout

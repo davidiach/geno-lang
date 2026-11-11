@@ -66,6 +66,21 @@ from geno.diagnostics import ErrorCode
             'func main() -> Unit with fs\n    print("x")\nend func\n',
             ErrorCode.EFFECT_VIOLATION,
         ),
+        (
+            "func div(a: Int, b: Int) -> Int\n"
+            '    example 1, 0 -> panic("division")\n'
+            "    return a / b\n"
+            "end func\n",
+            ErrorCode.TYPE_EXAMPLE_PANIC_FORM,
+        ),
+        (
+            # Without E330, `panics` would be E301 ("Did you mean 'panic'?").
+            "func div(a: Int, b: Int) -> Int\n"
+            "    example 1, 0 -> panics\n"
+            "    return a / b\n"
+            "end func\n",
+            ErrorCode.TYPE_EXAMPLE_PANIC_FORM,
+        ),
     ],
 )
 def test_static_error_uses_owning_code(source: str, expected: ErrorCode) -> None:

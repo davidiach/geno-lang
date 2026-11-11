@@ -501,14 +501,14 @@ $ geno run Main.geno
           </tbody>
         </table>
       </div>
-      <p class="fn">(1) <code>geno run app.geno</code> compiles to Python and runs it in an isolated process with <code>print</code>, <code>clock</code> and <code>random</code>. Every other call is refused where it happens: this default lane names the <code>--cap</code> to grant, while <code>--unsafe</code>, <code>--json</code> and the embedding API name the refused builtin (code <code>E412</code>).</p>
+      <p class="fn">(1) <code>geno run app.geno</code> compiles to Python and runs it in an isolated process with <code>print</code>, <code>clock</code> and <code>random</code>. Every other call is refused where it happens: this default lane names the <code>--cap</code> to grant, while <code>--unsafe</code>, <code>--json</code> and the embedding API name the refused builtin (code <code>E412</code>). The same lane grants every capability but <code>process</code> and <code>serve</code> with <code>--cap</code>; <code>stdin</code>, and <code>http</code> on Windows, follow once their platform checks pass.</p>
       <div class="grant">
         <p class="grant-h">Granting a capability</p>
-<pre class="term term-static"><code data-lang="sh">$ geno run --unsafe --cap print,fs app.geno   # direct interpreter
+<pre class="term term-static"><code data-lang="sh">$ geno run --cap print,fs app.geno            # isolated process, as plain geno run
 $ geno run --json --cap print,env app.geno    # embedding API, JSON result
 $ python app.py --cap print,fs                # compiled Python</code></pre>
-        <p><code>--cap</code> grants exactly the capabilities it lists, so name <code>print</code> too if the program prints. The default lane refuses <code>--cap</code>, so a grant can never quietly switch off process isolation. <code>--unsafe</code> means no process isolation; capability checks and step limits still apply.</p>
-        <p class="fn">Granted is not unlimited. With <code>fs</code>, paths resolve inside the project&rsquo;s filesystem roots and absolute paths are rejected; with <code>http</code>, loopback and private-network addresses are refused and responses are read through size limits. Generated JavaScript is trusted code, not a sandbox. See the <a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">security policy</a>.</p>
+        <p><code>--cap</code> grants exactly the capabilities it lists, so name <code>print</code> too if the program prints. A grant never switches off process isolation: the default lane keeps its wall-clock kill and its memory, CPU and process limits, and refuses <code>process</code> and <code>serve</code> before the program starts. Only <code>geno run --unsafe</code> grants those, with no process isolation; capability checks and step limits still apply.</p>
+        <p class="fn">Granted is not unlimited. With <code>fs</code>, paths resolve inside the run&rsquo;s filesystem roots (the project, the working directory and path arguments) and isolated writes are capped at 64&nbsp;MiB; with <code>env</code>, an isolated run sees only the variables named with <code>--allow-env</code>; with <code>http</code>, loopback and private-network addresses are refused and responses are read through size limits. Generated JavaScript is trusted code, not a sandbox. See the <a href="https://github.com/davidiach/geno-lang/blob/main/SECURITY.md">security policy</a>.</p>
       </div>
 
       <div class="demo demo-caps" data-demo="caps" data-granted="print">

@@ -183,6 +183,35 @@ class Analysis:
         result = _display(function_type.return_type)
         return f"{method}({', '.join(params)}) -> {result}", params
 
+    def inferred_function_effects(self, name: str, line: int) -> frozenset[str] | None:
+        """The effects the checker inferred for the function ``name`` at ``line``.
+
+        ``line`` is the 1-based line of a top-level ``func`` in this document.
+        ``None`` when that function declares its effects (they are in its
+        signature as written), when no such function is here, or when the
+        checker stopped before every function's effects settled, as it does
+        on a type error. Since proposal 0019 the inferred set is what tells a
+        function whose local writes are masked from one that keeps
+        ``mutation``.
+        """
+        if not self.checker.effects_settled:
+            return None
+        for defn in self.program.definitions:
+            if (
+                isinstance(defn, FunctionDef)
+                and defn.name == name
+                and defn.location is not None
+                and defn.location.line == line
+            ):
+                if defn.effects:
+                    return None
+                function_type = self.checker.global_env.lookup(name)
+                if not isinstance(function_type, FuncType):
+                    return None
+                effects: frozenset[str] = function_type.effects
+                return effects
+        return None
+
     def _scope_of(self, line: int) -> tuple[int, int] | None:
         for scope in self.scopes:
             if _within(scope, line):
@@ -216,7 +245,8 @@ def display_type(type_: Type) -> str:
 def _display(type_: Type) -> str:
     from .typechecker import _display_type
 
-    return _display_type(type_)
+    label: str = _display_type(type_)
+    return label
 
 
 def _within(scope: tuple[int, int], line: int) -> bool:
@@ -339,13 +369,20 @@ def _collect_facts(
 ) -> dict[int, list[Fact]]:
     lines = source.splitlines()
     facts: dict[int, list[Fact]] = {}
-    seen: set[tuple[int, int, str, str]] = set()
+    # Where each recorded fact sits in its line's list, by (line, column,
+    # name, kind).
+    slots: dict[tuple[int, int, str, str], int] = {}
 
-    def add(fact: Fact) -> None:
+    def add(fact: Fact, replace: bool = False) -> None:
+        """Record *fact*; an earlier one for the same key stays unless *replace*."""
         key = (fact.line, fact.column, fact.name, fact.kind)
-        if key not in seen:
-            seen.add(key)
-            facts.setdefault(fact.line, []).append(fact)
+        line_facts = facts.setdefault(fact.line, [])
+        slot = slots.get(key)
+        if slot is None:
+            slots[key] = len(line_facts)
+            line_facts.append(fact)
+        elif replace:
+            line_facts[slot] = fact
 
     parameters = {
         (param.location.line, param.location.column)
@@ -362,7 +399,12 @@ def _collect_facts(
         kind = (
             "parameter" if (location.line, location.column) in parameters else "local"
         )
-        add(Fact(location.line, column, name, type_, kind))
+        # The checker binds each local once per pass, and its final pass knows
+        # the most: by then every function's inferred effects are settled
+        # (proposal 0019), where an earlier pass still took them to be pure.
+        # A later record for the same binding therefore replaces an earlier
+        # one; a final pass that stopped early leaves the earlier fact.
+        add(Fact(location.line, column, name, type_, kind), replace=True)
 
     rewritten: set[int] = set()
     for node in _walk(program):

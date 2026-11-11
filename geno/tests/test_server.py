@@ -1121,6 +1121,34 @@ class TestPostRun:
         assert status == 200, body
         assert json.loads(body)["ok"] is True
 
+    def test_check_examples_runs_panics_examples(self, client):
+        """`check_examples` covers `example ... panics` (proposal 0017)."""
+        _skip_if_worker_processes_unavailable()
+        passing = (
+            "func safe_div(a: Int, b: Int) -> Int\n"
+            '    example 1, 0 panics "division"\n'
+            "    return a / b\nend func\n\n"
+            "func main() -> Int\n    return safe_div(6, 3)\nend func\n"
+        )
+
+        status, body = client.post("/run", {"source": passing, "check_examples": True})
+        data = json.loads(body)
+
+        assert status == 200, body
+        assert data["ok"] is True
+        assert data["value"] == 2
+
+        failing = passing.replace(
+            'example 1, 0 panics "division"', "example 1, 1 panics"
+        )
+        status, body = client.post("/run", {"source": failing, "check_examples": True})
+        data = json.loads(body)
+
+        assert data["ok"] is False, body
+        (diagnostic,) = data["diagnostics"]
+        assert diagnostic["code"] == "E409"
+        assert "expected a panic, but it returned 1" in diagnostic["message"]
+
     def test_syntax_error(self, client):
         _skip_if_worker_processes_unavailable()
 
@@ -3988,3 +4016,118 @@ class TestGenoServeOptIn:
         assert len(called) == 1
         _args, kwargs = called[0]
         assert kwargs["api_key"] is None
+
+
+# Runtime failure envelopes (proposal 0018): stacks and contract details are
+# additive keys, pickle across the worker pipe and stay bounded.
+_DEEP_PANIC_SOURCE = """func count_down(n: Int) -> Int
+    example 0 panics "bottom"
+    if n == 0 then
+        panic("bottom")
+    end if
+    return count_down(n - 1)
+end func
+
+func main() -> Int
+    return count_down(400)
+end func
+"""
+
+
+def test_run_envelope_carries_stack_and_contract_keys():
+    from geno.api import run
+    from geno.server import _serialize_run_result
+
+    source = """func safe_div(a: Int, b: Int) -> Int
+    requires b != 0
+    example 6, 3 -> 2
+    return a / b
+end func
+
+func main() -> Int
+    return safe_div(a: 8, b: 0)
+end func
+"""
+    payload = _serialize_run_result(run(source, "<http>"))
+
+    (diagnostic,) = payload["diagnostics"]
+    assert set(diagnostic) == {
+        "code",
+        "message",
+        "severity",
+        "location",
+        "stack",
+        "contract",
+    }
+    assert [frame["function"] for frame in diagnostic["stack"]] == [
+        "main",
+        "safe_div",
+    ]
+    assert diagnostic["stack"][0]["location"] == {
+        "line": 8,
+        "column": 12,
+        "filename": "<http>",
+    }
+    assert diagnostic["contract"]["arguments"] == [
+        {"name": "a", "value": "8"},
+        {"name": "b", "value": "0"},
+    ]
+    # Every existing key keeps its value.
+    assert diagnostic["code"] == "E499"
+    assert diagnostic["location"] == {"line": 2, "column": 14, "filename": "<http>"}
+
+
+def test_run_request_worker_pickles_a_bounded_stack(monkeypatch):
+    import geno.server as server_mod
+    from geno.api import run
+
+    monkeypatch.setattr(server_mod, "_apply_worker_resource_limits", tuple)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    conn = _PicklingConnection()
+
+    _run_request_worker(
+        cast(Any, conn),
+        _DEEP_PANIC_SOURCE,
+        RunConfig(timeout=10.0),
+        "<http>",
+        runner=run,
+    )
+
+    status, result = conn.messages[1]
+    assert status == "result"
+    (diagnostic,) = result.diagnostics
+    assert diagnostic.stack is not None
+    assert len(diagnostic.stack.frames) == 20
+    assert diagnostic.stack.omitted == 382
+    assert pickle.loads(pickle.dumps(diagnostic)) == diagnostic
+    body = server_mod._bounded_json_response_body(
+        server_mod._serialize_run_result(result)
+    )
+    # 400 frames deep, the envelope stays small: 20 frames are kept.
+    assert len(body) < 8192
+    assert json.loads(body)["diagnostics"][0]["stack_omitted"] == 382
+
+
+def test_run_envelope_names_std_not_the_server_install_path():
+    from geno.api import run
+    from geno.server import _serialize_run_result
+
+    source = """import List
+
+func main() -> Int
+    let parts = List.chunk([1, 2], 0)
+    return length(parts)
+end func
+"""
+    payload = _serialize_run_result(run(source, "<http>"))
+
+    (diagnostic,) = payload["diagnostics"]
+    assert diagnostic["location"]["filename"] == "std/List.geno"
+    assert [frame["location"]["filename"] for frame in diagnostic["stack"]] == [
+        "<http>",
+        "std/List.geno",
+    ]
+    # The installed standard library's host directory never appears.
+    from geno.runtime_report import STDLIB_DIR
+
+    assert str(STDLIB_DIR) not in json.dumps(payload)

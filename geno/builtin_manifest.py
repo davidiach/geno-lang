@@ -9,6 +9,11 @@ elsewhere.
 Convention:
     capability = None   →  always available (pure computation, no side effects)
     capability = "fs"   →  requires the ``fs`` capability grant
+
+``FRESH_COLLECTION_BUILTINS`` and ``BORROWED_COLLECTION_PARAMS`` declare, once,
+which builtins allocate a collection and which parameters only borrow one; the
+registry derives ``FRESH_COLLECTION_BUILTINS``, ``BORROWED_ARGUMENT_NAMES`` and
+``BORROWED_ARGUMENT_POSITIONS`` from them (proposal 0019).
 """
 
 from __future__ import annotations
@@ -327,6 +332,74 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
 
 
 # ---------------------------------------------------------------------------
+# Collection ownership (proposal 0019)
+# ---------------------------------------------------------------------------
+# The effect checker does not charge `mutation` for writes into a collection
+# that a function allocated and never let escape (``geno.mutation_ownership``).
+# These two tables are the builtin facts that analysis relies on.
+# ``geno/tests/test_builtin_metadata.py`` checks them against the signatures.
+# ---------------------------------------------------------------------------
+
+# Builtins whose result is a reference collection (Array, Vec, Set or
+# MutableMap) that no other storage refers to: each call allocates it. Only the
+# result is new; `array_new(n, row)` still stores `row` in every slot.
+# `array_fill` mutates its argument and returns Unit, so it is not listed.
+FRESH_COLLECTION_BUILTINS: frozenset[str] = frozenset(
+    {
+        "array_new",
+        "array_from_list",
+        "array_copy",
+        "vec_new",
+        "vec_from_list",
+        "set_new",
+        "set_from_list",
+        "set_union",
+        "set_intersection",
+        "mutable_map_new",
+    }
+)
+
+# For each builtin, the parameters that take a reference collection, use it
+# during the call, and neither retain it nor return it. A parameter of type `T`
+# is never borrowed: `vec_push(vec, item)` stores `item`. Every parameter whose
+# declared type is a reference collection must be listed (a test enforces it),
+# so a new builtin that keeps a collection has to be classified deliberately.
+# `length` is declared over `List[T]`, but the checker also accepts an Array
+# there (spec section 9.3: "`length()` accepts every collection"; the other
+# collections are rewritten to their own size builtin); it only reads the size.
+BORROWED_COLLECTION_PARAMS: dict[str, tuple[str, ...]] = {
+    "length": ("list",),
+    "array_get": ("array",),
+    "array_set": ("array",),
+    "array_length": ("array",),
+    "array_to_list": ("array",),
+    "array_fill": ("array",),
+    "array_copy": ("array",),
+    "mutable_map_set": ("map",),
+    "mutable_map_get": ("map",),
+    "mutable_map_contains": ("map",),
+    "mutable_map_delete": ("map",),
+    "mutable_map_size": ("map",),
+    "mutable_map_is_empty": ("map",),
+    "mutable_map_keys": ("map",),
+    "vec_push": ("vec",),
+    "vec_get": ("vec",),
+    "vec_set": ("vec",),
+    "vec_length": ("vec",),
+    "vec_pop": ("vec",),
+    "vec_to_list": ("vec",),
+    "set_add": ("set",),
+    "set_remove": ("set",),
+    "set_contains": ("set",),
+    "set_size": ("set",),
+    "set_is_empty": ("set",),
+    "set_to_list": ("set",),
+    "set_union": ("a", "b"),
+    "set_intersection": ("a", "b"),
+}
+
+
+# ---------------------------------------------------------------------------
 # Derived helpers — used by builtin_registry to stay in sync
 # ---------------------------------------------------------------------------
 
@@ -369,3 +442,40 @@ def manifest_always_available(
         for runtime_name, (_params, cap) in BUILTIN_MANIFEST.items()
         if cap is None
     )
+
+
+def manifest_fresh_collection_builtins(
+    source_name_overrides: dict[str, str],
+) -> frozenset[str]:
+    """Return the source names of the builtins that allocate a collection."""
+    unknown = sorted(FRESH_COLLECTION_BUILTINS - set(BUILTIN_MANIFEST))
+    if unknown:
+        raise ValueError(
+            "FRESH_COLLECTION_BUILTINS names unknown builtins: " + ", ".join(unknown)
+        )
+    return frozenset(
+        source_name_overrides.get(runtime_name, runtime_name)
+        for runtime_name in FRESH_COLLECTION_BUILTINS
+    )
+
+
+def manifest_borrowed_collection_params(
+    source_name_overrides: dict[str, str],
+) -> dict[str, frozenset[str]]:
+    """Return ``{source_name: borrowed_param_names}`` derived from the manifest."""
+    borrowed: dict[str, frozenset[str]] = {}
+    for runtime_name, param_names in BORROWED_COLLECTION_PARAMS.items():
+        entry = BUILTIN_MANIFEST.get(runtime_name)
+        if entry is None:
+            raise ValueError(
+                f"BORROWED_COLLECTION_PARAMS names unknown builtin '{runtime_name}'"
+            )
+        unknown = sorted(set(param_names) - set(entry[0]))
+        if unknown:
+            raise ValueError(
+                f"BORROWED_COLLECTION_PARAMS['{runtime_name}'] names unknown "
+                "parameters: " + ", ".join(unknown)
+            )
+        source_name = source_name_overrides.get(runtime_name, runtime_name)
+        borrowed[source_name] = frozenset(param_names)
+    return borrowed

@@ -1,0 +1,13 @@
+# EXPECT: E499
+# A panics example cannot be satisfied by the integer-size limit: the
+# exponentiation pre-check behind `example 2, 100000 panics` must still be
+# reported as the limit it is, not accepted as the expected panic.
+func power(a: Int, b: Int) -> Int
+    example 2, 3 -> 8
+    example 2, 100000 panics
+    return a ** b
+end func
+
+func main() -> Int
+    return power(a: 2, b: 3)
+end func

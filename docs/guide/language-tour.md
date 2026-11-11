@@ -171,14 +171,53 @@ let msg2: String = greet("Bob", "Hi")         // "Hi, Bob"
 ```geno
 func factorial(n: Int) -> Int
     requires n >= 0
+    requires n <= 18
     ensures result >= 1
     example 5 -> 120
     example 0 -> 1
+    example -1 panics
 
     if n <= 1 then return 1 end if
     return n * factorial(n - 1)
 end func
 ```
+
+`requires` states the function's domain: a call outside it fails before the
+body runs. Here the domain is 0 to 18, because `18!` is the largest factorial
+an `Int` holds on every backend. `ensures` states what every result satisfies,
+and `result` names the returned value. Both are checked on every call,
+including the examples'.
+
+`example -1 panics` states that a call ends in a panic; it is new in the 0.7
+development line ([spec v0.7](../spec/v0.7.md), section 5.3.1). There is no
+arrow, because a panic is not a value: `example -1 -> panic("...")` is
+rejected (E330) with a fix that writes the `panics` form. A message after
+`panics` must be part of the panic's message, compared ignoring case:
+`example 1, 0 panics "division"`. A zero-argument function writes
+`example () panics`. Running out of a resource limit, such as an infinite loop
+hitting the step limit, is not a panic and fails the example.
+
+Examples check the contracts on the inputs you wrote. `geno test --properties`
+(experimental, also new in the 0.7 line; spec v0.7 section 5.4) checks them on
+generated inputs too. It calls each function that has no effects but mutation
+on a hundred generated inputs, discarding the ones its `requires` rejects. A
+call fails the check when an `ensures` breaks, when the function panics
+without a panics example saying it may, or when it runs out of a resource
+limit. A failing input is shrunk to a small counterexample. Without
+`requires n <= 18`, `factorial` passes plain `geno test`, but the property
+check reports:
+
+```text
+Properties (seed 0, 100 trials per function)
+  FAIL  factorial  factorial.geno:1
+        hit the integer size limit
+        counterexample: 3249  (shrunk from 9007199254740991 in 5 steps)
+        reproduce: geno test --properties --seed 0 --filter factorial factorial.geno
+```
+
+The fix is one of three: correct the body; add the `requires` that states the
+domain, as here; or add a panics example that says the panic is intended. The
+seed is fixed (0 unless you pass `--seed`), so a run reproduces exactly.
 
 ### Generic Functions
 
@@ -235,6 +274,76 @@ allows arithmetic and is met by `Int` and `Float`. `Hash` allows use as a
 `Map` key or `Set` element. A trait name works as a bound too: `[T: Shape]`
 lets the function call `Shape`'s methods on a `T`. Calling `largest([true],
 false)` is rejected, because `Bool` is not ordered.
+
+### Effects
+
+A function type says which effects a call can have, after `with`:
+`-> Unit with io` prints, `with fs` uses files, and `with mutation` changes
+state the caller can see. A function that declares no effects has them
+inferred; a declared set must include every effect the body has, and may
+list more. A function with an effect cannot be passed where a function type
+without it is expected.
+
+Changing state that only the function's own call can see is not an effect
+(new in the 0.7 development line, [spec v0.7](../spec/v0.7.md) section 3.5).
+A local `var`, the fields of a record it holds, and an `Array`, `Vec` or
+`MutableMap` the function allocates and keeps to itself are private to the
+call. So these functions are pure, and `map` accepts them:
+
+```geno
+func total(xs: List[Int]) -> Int
+    example [1, 2, 3] -> 6
+    var sum = 0
+    for x in xs do
+        sum = sum + x
+    end for
+    return sum
+end func
+
+func histogram(xs: List[Int], buckets: Int) -> List[Int]
+    example [0, 1, 1], 3 -> [1, 2, 0]
+    var counts = array_new(buckets, 0)
+    for x in xs do
+        counts[x] = counts[x] + 1
+    end for
+    return array_to_list(counts)
+end func
+
+func main() -> Unit with io
+    var rows = 0
+    for row in [[1, 2], [3], [4, 5]] do
+        rows = rows + 1
+    end for
+    print([[1, 2], [3], [4, 5]].map(total))
+    print(histogram([0, 2, 2], 3))
+    print(rows)
+end func
+```
+
+`main` declares only `io`, although it updates a local `var`. Index and
+field writes that a caller could observe keep `mutation`:
+
+- writing through a parameter's `Array`, `Vec` or `MutableMap`, or through a
+  `var` copied from one, which copies the reference rather than the
+  collection;
+- writing below a reference-typed field or element, as in every
+  two-dimensional table built with `array_new(h, array_new(w, 0))`, whose
+  rows share storage;
+- writing a collection after storing it somewhere, passing it to a function
+  (a builtin that only uses it, such as `array_to_list(counts)` or
+  `counts |> array_length`, does not count), copying it into a second
+  variable (a rolling `prev = cur` buffer), or mentioning it in a lambda;
+- a lambda that assigns a variable of the function around it. The lambda
+  carries `mutation`, because each call of the closure sees the last one's
+  change; creating the lambda is not an effect.
+
+Mutating builtins such as `vec_push` and `array_set` add no effect in the
+current checker, even on a parameter; the spec records that as a known
+limitation, so declare `with mutation` on a function that changes its
+caller's collections with them. That includes one that also updates a local
+loop counter: 0.6 charged such a function for the counter, and 0.7 does not.
+A declared `with mutation` is always allowed, even where it is no longer
+needed.
 
 ## Type Definitions (ADTs)
 
@@ -471,6 +580,7 @@ panics when `i` is out of range.
 ```geno
 func half(n: Int) -> Int
     example 4 -> 2
+    example 3 panics "even number"
     if n % 2 != 0 then
         panic("half expects an even number")
     end if
@@ -482,6 +592,11 @@ end func
 zero, an index out of range, a failed `requires`). Geno code cannot catch a
 panic. Use `r.unwrap()` or `r.expect("why")` when an `Err` can only mean a bug.
 Geno 0.6 removed `throw`, `try` and `catch`.
+
+A panics example (`example 3 panics "even number"`, see
+[Contracts](#contracts)) documents and checks the panic. Match the text of the
+function's own `panic` message: runtime error messages differ between the
+interpreter and the compiled backends, and are not a stable contract.
 
 ### Async/Await
 

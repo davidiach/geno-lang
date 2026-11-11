@@ -1,0 +1,22 @@
+// A zero-argument function writes its panics example `example () panics`.
+// `panics` stays an ordinary name everywhere else.
+func usage() -> String
+    example () panics "not implemented"
+    panic("not implemented")
+end func
+
+func panics(count: Int) -> String
+    example 0 -> "no panics"
+    example 2 -> "2 panics"
+    if count == 0 then
+        return "no panics"
+    end if
+    return f"{count} panics"
+end func
+
+func main() -> Unit
+    let panics_seen = panics(2)
+    print(panics_seen)
+    print(panics(0))
+    return ()
+end func

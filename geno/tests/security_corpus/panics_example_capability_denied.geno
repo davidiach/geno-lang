@@ -1,0 +1,11 @@
+# EXPECT: E412
+# A capability denial is a host refusal, not a panic: a panics example on a
+# function whose call is refused must report the denial instead of passing.
+func home_dir(fallback: String) -> String with env
+    example "/" panics
+    return unwrap_or(env_get(name: "HOME"), fallback)
+end func
+
+func main() -> Int
+    return 0
+end func

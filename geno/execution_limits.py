@@ -23,6 +23,33 @@ DEFAULT_PROCESS_MAX_MEMORY_BYTES = (
 DEFAULT_TEST_TIMEOUT = 5.0
 DEFAULT_TEST_MAX_STEPS = DEFAULT_INTERPRETER_MAX_STEPS
 
+# `geno test --properties` (proposal 0017). Budgets are counted in
+# interpreter steps, which are deterministic; wall time is only a safety stop.
+# The interpreter runs about 1.3 million steps a second, so a property call's
+# allowance is about 0.15 s of work: generated inputs are small, and a call
+# that needs more is unbounded work a `requires` should exclude.
+DEFAULT_PROPERTY_TRIALS = 100
+DEFAULT_PROPERTY_SEED = 0
+MAX_PROPERTY_TRIALS = 10_000
+# Per call: a step allowance (clipped to --max-steps when that is smaller)
+# and a wall-clock deadline (clipped to --timeout). The deadline is a safety
+# stop, like the per-function one: a call that reaches it has not used up its
+# steps, so it ends the checks as incomplete instead of failing them, and it
+# is far enough past the allowance (about 0.15 s) that a loop on a slow or
+# busy machine still runs out of steps first.
+PROPERTY_CALL_MAX_STEPS = 200_000
+PROPERTY_CALL_MAX_SECONDS = DEFAULT_TEST_TIMEOUT
+# Per function: the trial phase, then a separate shrink phase, so a failure
+# found late always leaves room to shrink it.
+PROPERTY_TRIAL_STEP_BUDGET = 5_000_000
+PROPERTY_SHRINK_STEP_BUDGET = 4_000_000
+PROPERTY_MAX_SHRINK_CALLS = 500
+# Generated argument sets per function, as a multiple of --trials (the
+# attempts a `requires` discards count too).
+PROPERTY_MAX_ATTEMPTS_PER_TRIAL = 10
+# Wall-clock safety stop per function, as a multiple of --timeout.
+PROPERTY_SAFETY_STOP_TIMEOUTS = 2
+
 # Python recursion a caller's own thread can hold without exhausting its C
 # stack. CPython 3.10 spends up to ~1 KiB of C stack per Python frame, and
 # 3.11 still does for recursion through C slots such as `__eq__`; an 8 MiB

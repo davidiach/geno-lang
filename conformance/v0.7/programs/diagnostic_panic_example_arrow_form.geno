@@ -1,0 +1,9 @@
+func safe_div(a: Int, b: Int) -> Int
+    example 6, 3 -> 2
+    example 1, 0 -> panic("division")
+    return a / b
+end func
+
+func main() -> Unit
+    print(safe_div(6, 3))
+end func

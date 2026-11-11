@@ -12,6 +12,8 @@ import sys
 
 import pytest
 
+from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
+
 
 @pytest.fixture()
 def project(tmp_path):
@@ -98,7 +100,7 @@ class TestMultiModuleE2E:
             ["node", str(out)],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         if r2.returncode != 0:
             pytest.skip("Node.js execution failed")

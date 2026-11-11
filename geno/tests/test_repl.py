@@ -775,7 +775,36 @@ class TestReplShowsProgramBehaviour:
     def test_runtime_error_points_at_the_typed_input(self):
         out = repl_execute(make_repl(), "1 + (2 / 0)")
         assert "Division by zero" in out
-        assert "at <repl>:1:6" in out
+        # The shared runtime report (proposal 0018): the input is the
+        # ``<repl>`` frame, and the message line comes last.
+        assert out.splitlines() == [
+            "Stack trace (most recent call last):",
+            "  <repl>:1:6 in <repl>",
+            "Runtime Error: Division by zero: cannot compute 2 / 0",
+        ]
+
+    def test_runtime_error_shows_the_geno_stack(self):
+        repl = make_repl()
+        repl_execute(
+            repl,
+            "func inner(n: Int) -> Int\n    example 1 -> 1\n    if n > 5 then\n"
+            '        panic("too big")\n    end if\n    return n\nend func\n',
+        )
+        repl_execute(
+            repl,
+            "func outer(n: Int) -> Int\n    example 1 -> 1\n"
+            "    return inner(n)\nend func\n",
+        )
+
+        out = repl_execute(repl, "outer(9)")
+
+        assert out.splitlines() == [
+            "Stack trace (most recent call last):",
+            "  <repl>:1:1 in <repl>",
+            "  <repl>:3:12 in outer",
+            "  <repl>:4:9 in inner",
+            "Runtime Error: too big",
+        ]
 
     def test_expression_type_errors_use_geno_diagnostics(self):
         out = repl_execute(make_repl(), '"a" + 1')

@@ -196,6 +196,6 @@ end func
 end func
 """
         js_code = compile_to_js(source)
-        result = run_node_code(js_code, timeout=10)
+        result = run_node_code(js_code)
         assert result.returncode == 0
         assert "1" in result.stdout

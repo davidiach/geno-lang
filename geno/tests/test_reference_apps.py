@@ -134,11 +134,66 @@ def test_geno_form_stacks_its_fields(tmp_path, monkeypatch, capsys):
     assert field_rows == sorted(set(field_rows)), field_rows
 
 
+def _readme_lane_problems(text: str) -> list[str]:
+    """Return each `geno run --cap` line that names the wrong lane.
+
+    The default process-isolated lane grants the capabilities in
+    ``ISOLATED_RUN_CAPABILITIES`` (proposal 0013), so a command granting only
+    those must not leave it for `--unsafe`, and one granting anything else
+    (`process`, `serve`, ...) must say `--unsafe` or `--json`.
+    """
+    from geno.capabilities import ISOLATED_RUN_CAPABILITIES
+
+    problems: list[str] = []
+    for line in text.splitlines():
+        command = re.search(r"\bgeno run\b.*", line)
+        if command is None or not re.search(r"--cap\b", command.group(0)):
+            continue
+        command_text = command.group(0).split("`")[0]
+        granted = {
+            name
+            for value in re.findall(r"--cap[= ]+([A-Za-z_,]+)", command_text)
+            for name in value.split(",")
+            if name
+        }
+        isolated = granted <= ISOLATED_RUN_CAPABILITIES
+        other_lane = "--unsafe" in command_text or "--json" in command_text
+        if isolated and "--unsafe" in command_text:
+            problems.append(f"leaves process isolation needlessly: {line}")
+        elif not isolated and not other_lane:
+            problems.append(f"the default lane refuses this grant: {line}")
+    return problems
+
+
 @pytest.mark.parametrize(
     "readme", sorted(APPS.glob("*/README.md")), ids=lambda p: p.parent.name
 )
 def test_app_readmes_grant_capabilities_in_a_supported_lane(readme):
-    # The default `geno run` lane refuses --cap; it needs --unsafe or --json.
-    for line in readme.read_text(encoding="utf-8").splitlines():
-        if re.search(r"\bgeno run\b.*--cap\b", line):
-            assert "--unsafe" in line or "--json" in line, line
+    assert _readme_lane_problems(readme.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "fragment"),
+    [
+        ("geno run --cap serve examples/apps/x", "refuses this grant"),
+        ("geno run --cap print,process x.geno", "refuses this grant"),
+        ("geno run --unsafe --cap fs,print x.geno", "needlessly"),
+    ],
+)
+def test_the_readme_lane_rule_flags_a_wrong_lane(line: str, fragment: str) -> None:
+    (problem,) = _readme_lane_problems(f"```bash\n{line}\n```\n")
+
+    assert fragment in problem
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "geno run --cap env,fs,print examples/apps/x -- input.csv",
+        "geno run --unsafe --cap serve,env examples/apps/x",
+        "geno run --json --cap process x.geno",
+        "`geno run --cap print,env x` also works; `--unsafe` is for trusted code.",
+    ],
+)
+def test_the_readme_lane_rule_accepts_a_supported_lane(line: str) -> None:
+    assert _readme_lane_problems(line) == []

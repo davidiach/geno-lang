@@ -1,4 +1,9 @@
-"""Explicit filesystem policy must take precedence over automatic CLI grants."""
+"""Explicit filesystem policy must take precedence over automatic CLI grants.
+
+Every case runs in both lanes that grant ``fs``: ``--unsafe`` and, since
+proposal 0013's milestone 4, the default process-isolated lane, whose
+facade applies the same roots, absolute-path and read-only rules.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,14 @@ import sys
 from pathlib import Path
 
 import pytest
+
+# The `geno run` flags that grant `fs` in each lane.
+LANE_FLAGS = {"unsafe": ("--unsafe", "--cap", "fs"), "isolated": ("--cap", "fs")}
+
+
+@pytest.fixture(params=sorted(LANE_FLAGS))
+def lane(request: pytest.FixtureRequest) -> str:
+    return str(request.param)
 
 
 @pytest.fixture
@@ -28,6 +41,7 @@ def _run_fs_program(
     path: str,
     policy: dict[str, str],
     *,
+    lane: str,
     program_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     argument = json.dumps(path.replace("\\", "/"))
@@ -58,9 +72,7 @@ def _run_fs_program(
             "geno",
             "run",
             str(source),
-            "--unsafe",
-            "--cap",
-            "fs",
+            *LANE_FLAGS[lane],
             "--",
             *program_args,
         ],
@@ -75,7 +87,7 @@ def _run_fs_program(
 @pytest.mark.parametrize("operation", ["read", "write"])
 @pytest.mark.parametrize("absolute", [False, True])
 def test_explicit_roots_reject_access_outside_policy_even_with_path_argument(
-    fs_layout, operation, absolute
+    fs_layout, operation, absolute, lane
 ):
     target = fs_layout["cwd"] / "marker.txt"
     path = str(target) if absolute else "../cwd/marker.txt"
@@ -84,6 +96,7 @@ def test_explicit_roots_reject_access_outside_policy_even_with_path_argument(
         operation,
         path,
         {"GENO_FS_ROOTS": str(fs_layout["allowed"]), "GENO_FS_ALLOW_ABSOLUTE": "1"},
+        lane=lane,
         program_args=(str(target),),
     )
 
@@ -94,12 +107,13 @@ def test_explicit_roots_reject_access_outside_policy_even_with_path_argument(
 
 
 @pytest.mark.parametrize("operation", ["read", "write"])
-def test_explicit_roots_allow_relative_access_inside_policy(fs_layout, operation):
+def test_explicit_roots_allow_relative_access_inside_policy(fs_layout, operation, lane):
     result = _run_fs_program(
         fs_layout,
         operation,
         "marker.txt",
         {"GENO_FS_ROOTS": str(fs_layout["allowed"])},
+        lane=lane,
     )
 
     assert result.returncode == 0, result.stderr
@@ -110,12 +124,12 @@ def test_explicit_roots_allow_relative_access_inside_policy(fs_layout, operation
 
 
 @pytest.mark.parametrize("absolute_flag", [None, "0", "false", "", "1", "true"])
-def test_explicit_roots_apply_absolute_path_policy(fs_layout, absolute_flag):
+def test_explicit_roots_apply_absolute_path_policy(fs_layout, absolute_flag, lane):
     target = fs_layout["allowed"] / "marker.txt"
     policy = {"GENO_FS_ROOTS": str(fs_layout["allowed"])}
     if absolute_flag is not None:
         policy["GENO_FS_ALLOW_ABSOLUTE"] = absolute_flag
-    result = _run_fs_program(fs_layout, "read", str(target), policy)
+    result = _run_fs_program(fs_layout, "read", str(target), policy, lane=lane)
 
     assert result.returncode == 0, result.stderr
     if absolute_flag in {"1", "true"}:
@@ -125,10 +139,10 @@ def test_explicit_roots_apply_absolute_path_policy(fs_layout, absolute_flag):
 
 
 @pytest.mark.parametrize("root_list", ["", os.pathsep, os.pathsep * 2])
-def test_empty_explicit_roots_fail_closed(fs_layout, root_list):
+def test_empty_explicit_roots_fail_closed(fs_layout, root_list, lane):
     target = fs_layout["cwd"] / "marker.txt"
     result = _run_fs_program(
-        fs_layout, "write", str(target), {"GENO_FS_ROOTS": root_list}
+        fs_layout, "write", str(target), {"GENO_FS_ROOTS": root_list}, lane=lane
     )
 
     assert result.returncode == 1
@@ -138,19 +152,21 @@ def test_empty_explicit_roots_fail_closed(fs_layout, root_list):
 
 
 @pytest.mark.parametrize("location", ["cwd", "source", "external"])
-def test_default_cli_preserves_automatic_input_scope(fs_layout, location):
+def test_default_cli_preserves_automatic_input_scope(fs_layout, location, lane):
     target = fs_layout[location] / "marker.txt"
     args = (str(target),) if location == "external" else ()
-    result = _run_fs_program(fs_layout, "read", str(target), {}, program_args=args)
+    result = _run_fs_program(
+        fs_layout, "read", str(target), {}, lane=lane, program_args=args
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "=> ORIGINAL\n"
 
 
-def test_explicit_false_absolute_flag_applies_to_automatic_roots(fs_layout):
+def test_explicit_false_absolute_flag_applies_to_automatic_roots(fs_layout, lane):
     target = fs_layout["cwd"] / "marker.txt"
     result = _run_fs_program(
-        fs_layout, "read", str(target), {"GENO_FS_ALLOW_ABSOLUTE": "0"}
+        fs_layout, "read", str(target), {"GENO_FS_ALLOW_ABSOLUTE": "0"}, lane=lane
     )
 
     assert result.returncode == 0, result.stderr

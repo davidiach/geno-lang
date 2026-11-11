@@ -61,9 +61,7 @@ def _run_js(source: str) -> str:
     js_code = compile_to_js(source)
     if isinstance(js_code, tuple):
         js_code = js_code[0]
-    result = run_node_code(
-        js_code, node_executable=node, args=("--cap", "print"), timeout=10
-    )
+    result = run_node_code(js_code, node_executable=node, args=("--cap", "print"))
     if result.returncode != 0:
         raise RuntimeError(f"JS backend failed: {result.stderr}")
     stdout = result.stdout

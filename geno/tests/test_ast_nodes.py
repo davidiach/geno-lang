@@ -818,6 +818,44 @@ class TestSpecNodes:
 
         node.accept(V())
         assert len(visited) == 1
+        assert not node.expects_panic
+        assert node.panic_message is None
+
+    def test_panics_example_clause(self):
+        """A panics example has no output; its message is compared."""
+        node = ExampleClause(
+            location=LOC,
+            input_expr=int_lit(1),
+            output_expr=None,
+            panic_message="division",
+        )
+        assert node.expects_panic
+        assert node.output_expr is None
+        same = ExampleClause(
+            location=LOC,
+            input_expr=int_lit(1),
+            output_expr=None,
+            panic_message="division",
+        )
+        other = ExampleClause(
+            location=LOC, input_expr=int_lit(1), output_expr=None, panic_message="zero"
+        )
+        assert node == same
+        assert node != other
+
+    def test_example_clause_fix_locations_are_not_compared(self):
+        elsewhere = SourceLocation(9, 9, "<test>")
+        plain = ExampleClause(location=LOC, input_expr=int_lit(1), output_expr=None)
+        located = ExampleClause(
+            location=LOC,
+            input_expr=int_lit(1),
+            output_expr=None,
+            arrow_location=elsewhere,
+            expectation_location=elsewhere,
+            end_location=elsewhere,
+        )
+        assert plain == located
+        assert "end_location" not in repr(located)
 
     def test_spec_block_defaults(self):
         spec = SpecBlock()

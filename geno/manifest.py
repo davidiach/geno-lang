@@ -90,6 +90,18 @@ def _read_bounded_regular_text(
     allow_symlink: bool = False,
 ) -> str:
     """Read a small UTF-8 config from a regular file without unsafe following."""
+    return _read_bounded_regular_bytes(
+        path, label=label, allow_symlink=allow_symlink
+    ).decode("utf-8")
+
+
+def _read_bounded_regular_bytes(
+    path: Path,
+    *,
+    label: str,
+    allow_symlink: bool = False,
+) -> bytes:
+    """Read a small config's bytes from a regular file without unsafe following."""
     if path.is_symlink() and not allow_symlink:
         raise ValueError(f"{label} must not be a symbolic link: {path}")
     flags = os.O_RDONLY
@@ -114,7 +126,7 @@ def _read_bounded_regular_text(
             data = handle.read(_MAX_PROJECT_CONFIG_BYTES + 1)
         if len(data) > _MAX_PROJECT_CONFIG_BYTES:
             raise ValueError(f"{label} is too large: {path}")
-        return data.decode("utf-8")
+        return data
     finally:
         if fd >= 0:
             os.close(fd)
@@ -199,6 +211,15 @@ class Manifest:
     targets: list[str] = field(default_factory=list)
     exports: list[str] = field(default_factory=list)  # exported module names
     _raw: dict = field(default_factory=dict, repr=False)
+
+
+def read_manifest_bytes(path: Path) -> bytes:
+    """Return geno.toml's exact bytes, read as safely as ``parse_manifest`` reads it.
+
+    The package manager keeps these to tell whether the file changed under it
+    and to put the same bytes back when it rolls a change back.
+    """
+    return _read_bounded_regular_bytes(path, label="Geno manifest")
 
 
 def parse_manifest(path: Path, *, allow_symlink: bool = False) -> Manifest:

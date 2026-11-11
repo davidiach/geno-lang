@@ -1,0 +1,12 @@
+# EXPECT: E414
+# LANE: isolated
+# RUN: --cap fs,print --max-file-size-bytes 4
+# STDERR: confined: fs_write_text: writing 8 bytes exceeds the per-file limit of 4 bytes
+# The isolated fs facade checks both write limits before it opens the
+# destination: an oversized write returns Err and leaves the file alone.
+func main() -> Unit
+    match fs_write_text("quota.txt", "ESCAPED!") with
+        | Ok(_) -> print("ESCAPED")
+        | Err(error) -> panic("confined: " + error)
+    end match
+end func

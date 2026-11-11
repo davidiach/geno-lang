@@ -30,6 +30,8 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
+    EnsuresClause,
+    ExampleClause,
     Expression,
     ExpressionStatement,
     FieldAccess,
@@ -61,6 +63,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     PlaceholderExpr,
     Program,
     PropagateExpr,
+    RequiresClause,
     RestPattern,
     ReturnStatement,
     SimpleType,
@@ -94,6 +97,15 @@ from .diagnostics import ErrorCode
 from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
 from .float_promotion import float_shape
 from .harness import example_call_args, example_numbers_match
+from .panic_outcome import evaluate_panics_call
+from .runtime_report import (
+    ARGUMENT_DISPLAY_LIMIT,
+    EXAMPLE_ORIGIN,
+    TEST_ORIGIN,
+    CapturedStack,
+    contract_message,
+    format_position,
+)
 from .sandbox import (
     RecursionLimitError,
     SandboxConfig,
@@ -116,6 +128,8 @@ from .values import (
     Closure,
     ConstructorValue,
     ContinueException,
+    ContractClause,
+    ContractFailureReason,
     ContractViolationError,
     Environment,
     GenoRuntimeError,
@@ -123,6 +137,7 @@ from .values import (
     PropagateException,
     ReturnException,
     RuntimeError,
+    RuntimeLimitError,
     SetValue,
     VecValue,
 )
@@ -167,6 +182,9 @@ def _raised_recursion_limit(needed: int) -> Generator[None, None, None]:
 
 # Sentinel for unfilled argument slots (not None — that's Geno's Unit value)
 _UNFILLED = object()
+
+# A requires failure has no result (None is Geno's Unit, a valid result).
+_NO_RESULT = object()
 
 # These builtins mutate a validated reference container in place. Their own
 # implementations enforce top-level growth; the interpreter only needs to
@@ -382,20 +400,20 @@ def _explain_rejection_example(
     evaluated to false" reads as a broken example rather than as the design
     conflict it is, which costs a repair loop to work out.
 
-    The replacement keeps the "Precondition failed for X:" prefix the
-    contract checks raise with: ``geno test`` classifies a violation as a
-    ``requires`` failure from that prefix, so dropping it would trade the
-    explanation for a report that no longer says which clause was violated.
+    The violation is recognized by its structured fields (``clause``,
+    ``reason``, ``call_depth``), never by its message (proposal 0017). The
+    replacement starts with the violation's own message
+    (``Precondition failed: f(...) requires ...``, proposal 0018), so the
+    report still reads as a precondition failure;
+    the caller re-raises it with ``violation.with_message`` so the fields,
+    which ``geno test`` classifies by, carry over.
 
     Returns the replacement message, or ``None`` to leave *violation*
     untouched — this only claims the case it can actually explain.
     """
-    expected_message = (
-        f"Precondition failed for {name}: requires clause evaluated to false"
-    )
-    if violation.message != expected_message:
-        # A different precondition failure — a nested call's, or the '?'
-        # propagation variant — is not this conflict.
+    if violation.clause != "requires" or violation.reason != "false":
+        # A postcondition failure, or the '?' propagation variant of a
+        # precondition, is not this conflict.
         return None
     if violation.call_depth != 1:
         # Depth 1 is the call this example made. Deeper means the body ran and
@@ -406,8 +424,10 @@ def _explain_rejection_example(
     if expected.constructor not in _REJECTION_CONSTRUCTORS:
         return None
 
+    # The violation's own message names the function, its arguments and the
+    # clause (proposal 0018): ``Precondition failed: f(a: 0) requires a > 0``.
     return (
-        f"Precondition failed for {name}: this example expects "
+        f"{violation.message}: this example expects "
         f"{expected.constructor}, but a requires clause "
         f"rejected the input before the body ran, so the example "
         f"can never reach it. Either drop the requires clause and validate in "
@@ -491,7 +511,9 @@ class Interpreter:
             or self.MAX_RECURSION_DEPTH
         )
         self.call_depth = 0
-        self._call_stack: list[tuple[str, SourceLocation | None]] = []
+        # One (display name, call site) entry per active Geno call; the name is
+        # None for a lambda, which reports do not show as a frame (0018).
+        self._call_stack: list[tuple[str | None, SourceLocation | None]] = []
 
         # Step counter for execution budgeting
         self.steps: int = 0
@@ -505,6 +527,9 @@ class Interpreter:
         # Output capture for sandboxed execution
         self.output_buffer: list[str] = []
         self._output_length = 0
+        # Output the last example check printed before it was discarded. The
+        # isolated `geno run` lane charges it to `main` (one budget per run).
+        self.example_output_length = 0
         self._deadline: float | None = None
         self._interrupted = False
 
@@ -537,16 +562,20 @@ class Interpreter:
         allowed_gated = allowed_gated_builtins(capabilities)
 
         def _make_denied_stub(builtin_name: str):
-            message = capability_denied_message(
-                builtin_name, capability_for_source_builtin(builtin_name)
-            )
+            capability = capability_for_source_builtin(builtin_name)
+            message = capability_denied_message(builtin_name, capability)
 
             def denied(*args):
                 # No location here: _call_function attaches the call site.
-                raise RuntimeError(
+                error: Any = RuntimeError(
                     message,
                     error_code=ErrorCode.RUNTIME_CAPABILITY_DENIED,
                 )
+                if capability is not None:
+                    # Provenance for the isolated `geno run` hint: only this
+                    # stub sets it, so a panic with the same text gets none.
+                    error._geno_capability_denied = capability
+                raise error
 
             return denied
 
@@ -1280,7 +1309,10 @@ class Interpreter:
                 raise RuntimeError("flat_map: function must return a list")
             expected = len(result) + len(mapped)
             if expected > limit:
-                raise RuntimeError(f"List size exceeds limit ({expected} > {limit})")
+                raise RuntimeLimitError(
+                    f"List size exceeds limit ({expected} > {limit})",
+                    limit="collection size",
+                )
             result.extend(mapped)
         return result
 
@@ -1295,8 +1327,9 @@ class Interpreter:
             if isinstance(acc, (str, list)):
                 if len(acc) > limit:
                     kind = "String" if isinstance(acc, str) else "List"
-                    raise RuntimeError(
-                        f"{kind} size exceeds limit ({len(acc)} > {limit})"
+                    raise RuntimeLimitError(
+                        f"{kind} size exceeds limit ({len(acc)} > {limit})",
+                        limit="collection size",
                     )
         return acc
 
@@ -1462,8 +1495,9 @@ class Interpreter:
         # Check output limit
         self._output_length += len(output)
         if self._output_length > self.sandbox_config.max_output_length:
-            raise RuntimeError(
-                f"Output limit exceeded ({self.sandbox_config.max_output_length} characters)"
+            raise RuntimeLimitError(
+                f"Output limit exceeded ({self.sandbox_config.max_output_length} characters)",
+                limit="output",
             )
 
         self.output_buffer.append(output)
@@ -1593,6 +1627,7 @@ class Interpreter:
                         name=defn.name,
                         specs=defn.specs,
                         is_async=defn.is_async,
+                        display_name=defn.name,
                     )
                     self.global_env.bind(defn.name, closure)
                     self._function_closures[defn.name] = closure
@@ -1608,6 +1643,7 @@ class Interpreter:
                             env=self.global_env,
                             name=method.name,
                             specs=method.specs,
+                            display_name=f"{defn.target_type}.{method.name}",
                         )
                     self.trait_impls[(defn.trait_name, defn.target_type)] = (
                         method_closures
@@ -1631,6 +1667,7 @@ class Interpreter:
                     # Example output is never program output, even when
                     # verification fails and callers report what was
                     # printed so far (#130).
+                    self.example_output_length = self._output_length
                     self.output_buffer.clear()
                     self._output_length = 0
 
@@ -1729,6 +1766,7 @@ class Interpreter:
                     name=defn.name,
                     specs=defn.specs,
                     is_async=defn.is_async,
+                    display_name=f"{name}.{defn.name}",
                 )
                 module_env.bind(defn.name, closure)
                 if has_exports and not defn.exported:
@@ -1748,6 +1786,7 @@ class Interpreter:
                         env=module_env,
                         name=method.name,
                         specs=method.specs,
+                        display_name=f"{defn.target_type}.{method.name}",
                     )
                 self.trait_impls[(defn.trait_name, defn.target_type)] = method_closures
                 for method in defn.methods:
@@ -1809,6 +1848,32 @@ class Interpreter:
         finally:
             self._deadline = previous_deadline
 
+    @contextmanager
+    def step_allowance(self, steps: int) -> Generator[None, None, None]:
+        """Run with a budget of *steps* interpreter steps of its own.
+
+        The step counter starts at 0 and both ``max_steps`` and the cached
+        ``_step_limit`` become *steps*, so a step-limit error reports this
+        allowance ("Step limit exceeded (200000 steps)"), not an absolute
+        count. On exit the previous limits come back and the counter becomes
+        the previous count plus the steps used, so ``self.steps`` read before
+        and after gives the steps the block used. Property checks give every
+        generated call one (proposal 0017).
+        """
+        saved_steps = self.steps
+        saved_max_steps = self.max_steps
+        saved_step_limit = self._step_limit
+        self.steps = 0
+        self.max_steps = steps
+        self._step_limit = steps
+        try:
+            yield
+        finally:
+            used = self.steps
+            self.steps = saved_steps + used
+            self.max_steps = saved_max_steps
+            self._step_limit = saved_step_limit
+
     def _check_timeout(self, location: SourceLocation | None = None) -> None:
         """Raise when cooperative execution exceeds the configured deadline."""
         if self._deadline is None:
@@ -1816,10 +1881,14 @@ class Interpreter:
         if time.perf_counter() <= self._deadline:
             return
 
-        loc_str = f" at {location}" if location else ""
-        raise SandboxTimeout(
+        # ``format_position`` shows a standard-library file as ``std/...``, so
+        # the message never names the installed library's host path.
+        loc_str = f" at {format_position(location)}" if location else ""
+        error = SandboxTimeout(
             f"Execution timed out after {self.sandbox_config.timeout} seconds{loc_str}"
         )
+        error.location = location
+        raise error
 
     def call_function(
         self,
@@ -1855,29 +1924,30 @@ class Interpreter:
                         func.env if isinstance(func, Closure) else self.global_env
                     )
                     input_val = self.eval_expr(example.input_expr, example_env)
+                    call_args = example_call_args(
+                        input_val,
+                        param_count=len(func_def.params),
+                        required_count=sum(
+                            1
+                            for param in func_def.params
+                            if param.default_value is None
+                        ),
+                    )
+                    if example.output_expr is None:
+                        self._verify_panics_example(name, func, call_args, example)
+                        continue
                     expected = self.eval_expr(example.output_expr, example_env)
 
                     # Call function with input
                     try:
-                        actual = self._call_function(
-                            func,
-                            example_call_args(
-                                input_val,
-                                param_count=len(func_def.params),
-                                required_count=sum(
-                                    1
-                                    for param in func_def.params
-                                    if param.default_value is None
-                                ),
-                            ),
-                        )
+                        actual = self._call_function(func, call_args)
                     except ContractViolationError as violation:
                         explained = _explain_rejection_example(
                             name, expected, violation
                         )
                         if explained is None:
                             raise
-                        raise ContractViolationError(
+                        raise violation.with_message(
                             explained, example.location
                         ) from None
 
@@ -1897,6 +1967,65 @@ class Interpreter:
                         "Unexpected return in example expression",
                         example.location,
                     )
+                except (RuntimeError, SandboxError) as e:
+                    self.mark_example_origin(e, example.location)
+                    raise
+
+    def mark_example_origin(
+        self, error: BaseException, location: SourceLocation | None
+    ) -> None:
+        """Mark *error*'s stack as raised while verifying the example at *location*.
+
+        The report's outermost frame becomes ``<example>``, positioned at the
+        example clause (proposal 0018, section 2). Only a failure of a call
+        the example made from the top level has a stack to mark.
+        """
+        self._mark_origin(error, location, EXAMPLE_ORIGIN)
+
+    def mark_test_origin(self, error: BaseException) -> None:
+        """Mark *error*'s stack as raised by a call a ``test`` block made.
+
+        The report's outermost frame becomes ``<test>``, positioned at that
+        call in the test body (proposal 0018, section 2). A failure raised
+        directly in the test body has no stack, only its location.
+        """
+        self._mark_origin(error, None, TEST_ORIGIN)
+
+    def _mark_origin(
+        self, error: BaseException, location: SourceLocation | None, origin: str
+    ) -> None:
+        captured = getattr(error, "geno_stack", None)
+        if not isinstance(captured, CapturedStack) or self._call_stack:
+            return
+        captured.locate_entry(0, location)
+        if captured.origin is None:
+            captured.origin = origin
+
+    def _verify_panics_example(
+        self,
+        name: str,
+        func: Any,
+        call_args: list[Any],
+        example: ExampleClause,
+    ) -> None:
+        """Check ``example <inputs> panics "m"``: the call must panic.
+
+        A limit or a host refusal is not a panic: it propagates unchanged, so
+        ``geno run`` still reports it with its own code (E501-E503, E499,
+        E412). A call that returns, or panics with another message, is E409.
+        """
+        reason = evaluate_panics_call(
+            lambda: self._call_function(func, call_args),
+            example.panic_message,
+            render=self._format_value,
+            reraise_unsatisfying=True,
+        )
+        if reason is not None:
+            raise RuntimeError(
+                f"Example verification failed for {name}: {reason}",
+                example.location,
+                ErrorCode.RUNTIME_EXAMPLE_FAILED,
+            )
 
     def _values_equal(
         self,
@@ -2085,10 +2214,12 @@ class Interpreter:
         if self._interrupted:
             raise KeyboardInterrupt
         if self.max_steps is not None and self.steps > self.max_steps:
-            loc_str = f" at {location}" if location else ""
-            raise StepLimitExceeded(
+            loc_str = f" at {format_position(location)}" if location else ""
+            error = StepLimitExceeded(
                 f"Step limit exceeded ({self.max_steps} steps){loc_str}"
             )
+            error.location = location
+            raise error
 
     # =========================================================================
     # Expression Evaluation
@@ -2149,9 +2280,10 @@ class Interpreter:
                 part = self._builtin_stringify_value(value)
             size += len(part)
             if size > limit:
-                raise RuntimeError(
+                raise RuntimeLimitError(
                     f"String size exceeds limit ({size} > {limit})",
                     expr.location,
+                    limit="collection size",
                 )
             if part:
                 parts.append(part)
@@ -2261,8 +2393,15 @@ class Interpreter:
                 expr.location,
             )
         except OverflowError as e:
-            message = "Exponentiation result too large" if operator == "**" else str(e)
-            raise RuntimeError(message, expr.location)
+            if operator == "**":
+                # A Float power outside the host's range: JavaScript gives
+                # Infinity here, so it is a limit of the host, not a panic.
+                raise RuntimeLimitError(
+                    "Exponentiation result too large",
+                    expr.location,
+                    limit="numeric range",
+                )
+            raise RuntimeError(str(e), expr.location)
         except (TypeError, ValueError) as e:
             raise RuntimeError(str(e), expr.location)
 
@@ -2274,9 +2413,10 @@ class Interpreter:
                 expr.location,
             )
         if isinstance(result, int) and result.bit_length() > max_bits:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"Integer exceeds maximum size ({result.bit_length()} bits)",
                 expr.location,
+                limit="integer size",
             )
 
         return result
@@ -2616,18 +2756,20 @@ class Interpreter:
         """Raise when a known collection size exceeds the sandbox limit."""
         limit = self.sandbox_config.max_collection_size
         if size > limit:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({size} > {limit})",
                 location,
+                limit="collection size",
             )
 
     def _check_integer_bits(self, value: int, location: SourceLocation | None) -> None:
         """Raise when an integer value exceeds the sandbox bit-length limit."""
         limit = self.sandbox_config.max_integer_bits
         if value.bit_length() > limit:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"Integer exceeds maximum size ({value.bit_length()} bits)",
                 location,
+                limit="integer size",
             )
 
     def _call_function(
@@ -2643,10 +2785,7 @@ class Interpreter:
             if self.call_depth >= self.max_recursion_depth:
                 # RecursionLimitError is a SandboxError rather than a
                 # GenoRuntimeError: hosts report it as a resource limit.
-                raise RecursionLimitError(
-                    f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
-                    f"Check for infinite recursion or increase the limit."
-                )
+                raise self._recursion_limit_error(location)
             self.call_depth += 1
             try:
                 # Fill in default values while this invocation counts toward the
@@ -2659,7 +2798,9 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            filled_args.append(self._eval_argument(default, func.env))
+                            filled_args.append(
+                                self._eval_default_argument(func, default, location)
+                            )
                         else:
                             break
                     args = filled_args
@@ -2669,7 +2810,9 @@ class Interpreter:
                         if func.params[i].default_value is not None:
                             default = func.params[i].default_value
                             assert default is not None
-                            args[i] = self._eval_argument(default, func.env)
+                            args[i] = self._eval_default_argument(
+                                func, default, location
+                            )
                         else:
                             raise RuntimeError(
                                 f"Missing argument for parameter '{func.params[i].name}'",
@@ -2699,7 +2842,9 @@ class Interpreter:
                 if func.is_async:
                     return AsyncValue(func, list(args))
 
-                self._call_stack.append((func.name or "<anonymous>", location))
+                # A lambda's entry has no name: it is not a report frame
+                # (proposal 0018), but it keeps the stack depth honest.
+                self._call_stack.append((func.display_name or func.name, location))
                 try:
                     # Create new environment with parameters bound
                     # (immutable binds are plain dict entries, so build the
@@ -2714,7 +2859,7 @@ class Interpreter:
                     # spec-free functions skip the check call entirely.
                     specs = func.specs
                     if specs is not None and specs.requires:
-                        self._check_requires(func, call_env)
+                        self._check_requires(func, call_env, args)
 
                     # Execute body
                     try:
@@ -2734,14 +2879,18 @@ class Interpreter:
                     # clause list — _check_ensures allocates an environment
                     # even when there is nothing to check.
                     if specs is not None and specs.ensures:
-                        self._check_ensures(func, call_env, result)
+                        self._check_ensures(func, call_env, result, args)
 
                     self._check_collection_limits([result], location)
                     self._check_timeout(location)
                     return result
-                except RuntimeError as e:
-                    if not hasattr(e, "_geno_stack"):
-                        e._geno_stack = list(self._call_stack)  # type: ignore[attr-defined]
+                except (RuntimeError, SandboxError) as e:
+                    # The first Geno frame a failure unwinds captures the
+                    # stack, once per failure (proposal 0018). Reports bound
+                    # and name it later; outer handlers may still locate a
+                    # callback's entry (see the builtin branch below).
+                    if e.geno_stack is None:
+                        e.geno_stack = CapturedStack(list(self._call_stack), e.location)
                     raise
                 finally:
                     self._call_stack.pop()
@@ -2760,22 +2909,18 @@ class Interpreter:
             self._step()
             try:
                 result = func.func(*args)
-            except SandboxError:
+            # These arms run only once a builtin has failed, so a successful
+            # call pays nothing for them (proposal 0018).
+            except SandboxError as e:
+                self._locate_builtin_failure(e, location)
                 raise
-            except (RuntimeError, GenoRuntimeError) as e:
-                if (
-                    e.location is None
-                    and e.error_code is ErrorCode.RUNTIME_CAPABILITY_DENIED
-                    and location is not None
-                ):
-                    # Denial stubs and host policy wrappers do not know the
-                    # call site; report the call instead of letting the trace
-                    # fall back to the enclosing function's definition.
-                    raise RuntimeError(
-                        e.message,
-                        location,
-                        error_code=e.error_code,
-                    ) from None
+            except RuntimeError as e:
+                # A builtin (panic, unwrap, a denial stub, a host policy
+                # wrapper) does not know its call site: report the call.
+                # Locating in place keeps the error's type, code, message and
+                # the trusted denial tags the isolated `geno run` hint reads
+                # (proposal 0013).
+                self._locate_builtin_failure(e, location)
                 raise
             except _EXPECTED_BUILTIN_ERRORS as e:
                 # Ordinary user-facing error from a builtin (bad argument,
@@ -2805,48 +2950,155 @@ class Interpreter:
                 f"Cannot call non-function: {type(func).__name__}", location
             )
 
-    def _check_requires(self, func: Closure, env: Environment) -> None:
+    def _eval_default_argument(
+        self, func: Closure, default: Expression, location: SourceLocation | None
+    ) -> Any:
+        """Evaluate one of *func*'s default parameter values for a call at *location*.
+
+        The default belongs to the callee (both compiled backends evaluate
+        it inside the callee's body), so it runs inside the callee's stack
+        entry: a failure reports the caller at the call and the callee at
+        the default expression (proposal 0018, section 2). Only a call that
+        omits an argument with a default pays for the entry.
+        """
+        self._call_stack.append((func.display_name or func.name, location))
+        try:
+            return self._eval_argument(default, func.env)
+        except (RuntimeError, SandboxError) as e:
+            if e.geno_stack is None:
+                e.geno_stack = CapturedStack(list(self._call_stack), e.location)
+            raise
+        finally:
+            self._call_stack.pop()
+
+    def _recursion_limit_error(
+        self, location: SourceLocation | None
+    ) -> RecursionLimitError:
+        """The limit error for a call at *location* that would go too deep."""
+        error = RecursionLimitError(
+            f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
+            f"Check for infinite recursion or increase the limit."
+        )
+        error.location = location
+        return error
+
+    def _locate_builtin_failure(
+        self, error: GenoRuntimeError | SandboxError, location: SourceLocation | None
+    ) -> None:
+        """Locate a failure that left the builtin called at *location*.
+
+        Failure-only code (proposal 0018): an error raised without a location
+        gets the builtin call's, and a callback the builtin started, whose
+        stack entry sits at the current depth with no call site, is
+        positioned at the builtin call too. Nested builtins inside callbacks
+        each locate their own depth, innermost first.
+        """
+        if location is None:
+            return
+        if error.location is None:
+            if isinstance(error, GenoRuntimeError):
+                error.set_location(location)
+            else:
+                error.location = location
+        captured = error.geno_stack
+        if isinstance(captured, CapturedStack):
+            captured.locate_entry(len(self._call_stack), location)
+
+    def _check_requires(self, func: Closure, env: Environment, args: list[Any]) -> None:
         """Check all requires (precondition) clauses."""
         assert func.specs is not None
-        for req in func.specs.requires:
+        for index, req in enumerate(func.specs.requires):
             try:
                 condition = self.eval_expr(req.condition, env)
             except PropagateException:
-                raise ContractViolationError(
-                    f"Precondition failed for {func.name or 'function'}: "
-                    f"requires clause cannot use '?' to propagate None/Err",
-                    req.condition.location,
+                raise self._contract_violation(
+                    func, "requires", "propagate", index, req, args
                 ) from None
             if not condition:
-                raise ContractViolationError(
-                    f"Precondition failed for {func.name or 'function'}: "
-                    f"requires clause evaluated to false",
-                    req.condition.location,
-                    call_depth=len(self._call_stack),
+                raise self._contract_violation(
+                    func, "requires", "false", index, req, args
                 )
 
-    def _check_ensures(self, func: Closure, env: Environment, result: Any) -> None:
+    def _check_ensures(
+        self, func: Closure, env: Environment, result: Any, args: list[Any]
+    ) -> None:
         """Check all ensures (postcondition) clauses."""
         assert func.specs is not None
         # Create environment with 'result' bound to the return value
         ensures_env = env.child()
         ensures_env.bind("result", result)
 
-        for ens in func.specs.ensures:
+        for index, ens in enumerate(func.specs.ensures):
             try:
                 condition = self.eval_expr(ens.condition, ensures_env)
             except PropagateException:
-                raise ContractViolationError(
-                    f"Postcondition failed for {func.name or 'function'}: "
-                    f"ensures clause cannot use '?' to propagate None/Err",
-                    ens.condition.location,
+                raise self._contract_violation(
+                    func, "ensures", "propagate", index, ens, args, env, result
                 ) from None
             if not condition:
-                raise ContractViolationError(
-                    f"Postcondition failed for {func.name or 'function'}: "
-                    f"ensures clause evaluated to false (result was {self._format_value(result)})",
-                    ens.condition.location,
+                raise self._contract_violation(
+                    func, "ensures", "false", index, ens, args, env, result
                 )
+
+    def _contract_violation(
+        self,
+        func: Closure,
+        clause: ContractClause,
+        reason: ContractFailureReason,
+        index: int,
+        spec: RequiresClause | EnsuresClause,
+        args: list[Any],
+        env: Environment | None = None,
+        result: Any = _NO_RESULT,
+    ) -> ContractViolationError:
+        """The violation for a failed clause (proposal 0018, section 6).
+
+        Runs only once a clause has failed. The arguments shown are the
+        call's (*args*, after defaults and Float widening); for ``ensures``
+        a parameter the body rebound in *env* to a value that renders
+        differently is reported as a checked value too.
+        """
+        limit = ARGUMENT_DISPLAY_LIMIT
+        names = [param.name for param in func.params]
+        arguments = tuple(
+            (name, _builtins.format_value_bounded(value, limit))
+            for name, value in zip(names, args)
+        )
+        checked: list[tuple[str, str]] = []
+        if env is not None:
+            for name, argument in arguments:
+                shown = _builtins.format_value_bounded(env.lookup(name), limit)
+                if shown != argument:
+                    checked.append((name, shown))
+        result_display = (
+            None
+            if result is _NO_RESULT
+            else _builtins.format_value_bounded(result, limit)
+        )
+        function = func.display_name or func.name or "function"
+        message = contract_message(
+            clause=clause,
+            reason=reason,
+            function=function,
+            clause_text=spec.source_text,
+            clause_index=index,
+            arguments=arguments,
+            result=result_display,
+            checked_values=checked,
+        )
+        return ContractViolationError(
+            message,
+            spec.condition.location,
+            call_depth=len(self._call_stack),
+            clause=clause,
+            reason=reason,
+            clause_index=index,
+            result_display=result_display,
+            function=function,
+            clause_text=spec.source_text,
+            arguments=arguments,
+            checked_values=tuple(checked),
+        )
 
     def _eval_index_access(self, expr: IndexAccess, env: Environment) -> Any:
         """Evaluate index access."""
@@ -2989,9 +3241,16 @@ class Interpreter:
         return result
 
     def _eval_await(self, expr: AwaitExpr, env: Environment) -> Any:
-        """Evaluate an await expression — execute the async value synchronously."""
+        """Evaluate an await expression — execute the async value synchronously.
+
+        The awaited body runs here, so its frame's call site is the awaited
+        call when ``await`` wraps the call directly (``await f(x)``), and the
+        ``await`` itself otherwise (proposal 0018, section 2).
+        """
         value = self.eval_expr(expr.expr, env)
-        return self._execute_async_value(value, expr.location)
+        awaited = expr.expr
+        site = awaited.location if isinstance(awaited, FunctionCall) else expr.location
+        return self._execute_async_value(value, site)
 
     def _execute_async_value(self, value: Any, location: SourceLocation | None) -> Any:
         """Execute a deferred async closure, or return a synchronous value.
@@ -3019,22 +3278,24 @@ class Interpreter:
     def _run_async_value(
         self, value: AsyncValue, location: SourceLocation | None
     ) -> Any:
-        """Run an async closure's body."""
-        # Execute the async closure's body directly (bypass is_async check)
+        """Run an async closure's body, as a frame started at *location*.
+
+        The body bypasses ``_call_function`` (its call only created the
+        ``Async``), so this pushes, captures and pops the stack entry the same
+        way (proposal 0018).
+        """
         func = value.closure
-        call_env = func.env.child()
-        for param, arg in zip(func.params, value.args):
-            call_env.bind(param.name, arg)
-        if func.specs:
-            self._check_requires(func, call_env)
         if self.call_depth >= self.max_recursion_depth:
             # See _call_function for why this is a RecursionLimitError.
-            raise RecursionLimitError(
-                f"Maximum recursion depth exceeded ({self.max_recursion_depth}). "
-                f"Check for infinite recursion or increase the limit."
-            )
+            raise self._recursion_limit_error(location)
         self.call_depth += 1
+        self._call_stack.append((func.display_name or func.name, location))
         try:
+            call_env = func.env.child()
+            for param, arg in zip(func.params, value.args):
+                call_env.bind(param.name, arg)
+            if func.specs:
+                self._check_requires(func, call_env, value.args)
             try:
                 for stmt in func.body:
                     self.exec_stmt(stmt, call_env)
@@ -3048,10 +3309,15 @@ class Interpreter:
             except ContinueException:
                 raise RuntimeError("'continue' outside of loop", location)
             if func.specs:
-                self._check_ensures(func, call_env, result)
+                self._check_ensures(func, call_env, result, value.args)
             self._check_collection_limits([result], location)
             return result
+        except (RuntimeError, SandboxError) as e:
+            if e.geno_stack is None:
+                e.geno_stack = CapturedStack(list(self._call_stack), e.location)
+            raise
         finally:
+            self._call_stack.pop()
             self.call_depth -= 1
 
     def _eval_pipeline(self, expr: Pipeline, env: Environment) -> Any:
@@ -3625,9 +3891,10 @@ def _binop_add(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
             kind = "String" if isinstance(a, str) else "List"
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,
+                limit="collection size",
             )
     return a + b
 
@@ -3643,18 +3910,20 @@ def _binop_mul(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
             kind = "String" if isinstance(a, str) else "List"
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,
+                limit="collection size",
             )
     elif isinstance(b, (str, list)) and isinstance(a, int):
         expected = len(b) * max(a, 0)
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
             kind = "String" if isinstance(b, str) else "List"
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,
+                limit="collection size",
             )
     return a * b
 
@@ -3702,9 +3971,10 @@ def _binop_pow(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
             # Estimate result bits: roughly |a|.bit_length() * b
             est_bits = max(a.bit_length(), 1) * b
             if est_bits > interp.sandbox_config.max_integer_bits:
-                raise RuntimeError(
+                raise RuntimeLimitError(
                     f"Exponentiation result too large (estimated {est_bits} bits)",
                     expr.location,
+                    limit="integer size",
                 )
     return a**b
 
@@ -3725,9 +3995,10 @@ def _check_shift_amount(
         if b < 0:
             raise RuntimeError("Negative shift count", expr.location)
         if b > interp.sandbox_config.max_integer_bits:
-            raise RuntimeError(
+            raise RuntimeLimitError(
                 f"{direction} shift amount too large ({b} bits)",
                 expr.location,
+                limit="integer size",
             )
 
 
@@ -3861,7 +4132,7 @@ def interpret(
     tokens = lexer.tokenize()
 
     # Parse
-    parser = Parser(tokens)
+    parser = Parser(tokens, source)
     program = parser.parse_program()
 
     # Type check
