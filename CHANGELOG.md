@@ -490,6 +490,12 @@ package version stays 0.6.0, and the Draft
   while the dependency is being fetched, the add stops and changes nothing
   (#251).
 
+- Compiled JavaScript agrees with the interpreter and compiled Python in two
+  more places. A `for` loop over an `Array` iterates a snapshot, so a write
+  the body makes to a later element no longer shows up in the same loop
+  (#241). A field write through an element or field (`ys[0].x = 5`,
+  `b.p.x = 5`) no longer changes a value that was read from the same place
+  earlier and passed to a function (#242).
 - A nullary constructor of a generic ADT nested in another constructor call
   type-checks. With `type Tree[T] = Leaf | Node(left: Tree[T], value: T,
   right: Tree[T])`, `Node(Leaf, 1, Leaf)` was rejected ("expected Tree[T], got

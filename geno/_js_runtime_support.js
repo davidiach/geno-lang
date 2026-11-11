@@ -557,7 +557,9 @@ class GenoArray {
     get length() {
         return this._elements.length;
     }
-    *[Symbol.iterator]() { yield* this._elements; }
+    // A snapshot, like the interpreter and compiled Python: a write the loop
+    // body makes to a later slot must not show up in the same loop (#241).
+    [Symbol.iterator]() { return this._elements.slice()[Symbol.iterator](); }
 }
 
 function array_new(size, def_val) {
@@ -1010,6 +1012,46 @@ function _deepCopy(val) {
         return Object.isFrozen(val) ? Object.freeze(copy) : copy;
     }
     return val;
+}
+
+// Copy one level of a value-type container that is about to be written.
+function _genoUnsharedPart(val) {
+    if (val === null || typeof val !== 'object') return val;
+    if (Array.isArray(val)) return val.slice();
+    if (val instanceof _GENO_MAP) return new _GENO_MAP(val);
+    // A frozen record cannot be written, so it needs no copy of its own.
+    if (val instanceof GenoArray || !('_tag' in val) || Object.isFrozen(val)) return val;
+    const copy = {};
+    for (const key of Object.keys(val)) copy[key] = val[key];
+    const formatter = val[_GENO_FORMATTER];
+    if (typeof formatter === "function") _withGenoFormatter(copy, formatter);
+    return copy;
+}
+
+// Read a field on the way to a field write, replacing it with its own copy
+// first. Whatever was handed the stored value before the write (an argument,
+// a loop variable) keeps the value it was given, as on the interpreter and
+// compiled Python (#242).
+function _genoOwnField(parent, fieldName) {
+    const child = get_field(parent, fieldName);
+    const unshared = _genoUnsharedPart(child);
+    if (unshared !== child) parent[fieldName] = unshared;
+    return unshared;
+}
+
+// Index on the way to a field write, replacing the element with its own copy.
+function _genoOwnIndex(container, index) {
+    const child = _safe_index(container, index);
+    if (
+        !Array.isArray(container) &&
+        !(container instanceof GenoArray) &&
+        !(container instanceof _GENO_MAP)
+    ) {
+        return child;
+    }
+    const unshared = _genoUnsharedPart(child);
+    if (unshared !== child) _safe_index_set(container, index, unshared);
+    return unshared;
 }
 
 // =============================================================================

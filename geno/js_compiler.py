@@ -513,6 +513,8 @@ _JS_LOCAL_RESERVED_NAMES = (
             "Ok",
             "Err",
             "get_field",
+            "_genoOwnField",
+            "_genoOwnIndex",
             "_divZero",
             "_safe_index",
             "_safe_index_set",
@@ -3203,7 +3205,29 @@ class JSCompiler(BaseCompiler):
             stmt.field_name,
             context="in field assignment",
         )
-        super()._compile_field_assign_statement(stmt)
+        target = self._compile_write_target(stmt.target)
+        value = self._snapshot_value(self._compile_expr(stmt.value))
+        self._writeln(f"{target}.{stmt.field_name} = {value};")
+
+    def _compile_write_target(self, expr: Expression) -> str:
+        """Compile the value a field write lands in, unsharing its path.
+
+        Each field or element on the path is replaced by its own copy before
+        the write, as compiled Python does, so a value that was read from the
+        same place earlier and handed to a callee or a loop variable does not
+        change under it (#242).
+        """
+        if isinstance(expr, FieldAccess):
+            _validate_js_record_field_name(
+                expr.field_name, context="in field assignment"
+            )
+            parent = self._compile_write_target(expr.target)
+            return f"_genoOwnField({parent}, {expr.field_name!r})"
+        if isinstance(expr, IndexAccess):
+            parent = self._compile_write_target(expr.target)
+            index = self._compile_expr(expr.index)
+            return f"_genoOwnIndex({parent}, {index})"
+        return self._compile_expr(expr)
 
     def _compile_match_statement(self, stmt: MatchStatement) -> None:
         scrutinee = self._compile_expr(stmt.scrutinee)
