@@ -30,6 +30,7 @@ from .ast_nodes import (
     LetStatement,
     MatchArm,
     MatchStatement,
+    Pattern,
     ReturnStatement,
     Statement,
     StringLiteral,
@@ -39,6 +40,7 @@ from .ast_nodes import (
     UnaryOp,
     VarStatement,
     WhileStatement,
+    WildcardPattern,
 )
 from .diagnostics import ErrorCode, replace_fix
 from .parser_base import REMOVED_TRY, ParseError, ParserBase
@@ -267,14 +269,38 @@ class StatementParserMixin(ParserBase):
             value=value,
         )
 
-    def _parse_if_statement(self, consume_end: bool = True) -> IfStatement:
-        """Parse: if cond then ... [else ...] end if [label]"""
+    def _parse_if_statement(
+        self, consume_end: bool = True
+    ) -> IfStatement | MatchStatement:
+        """Parse: if cond then ... [else ...] end if [label]
+
+        ``if let PATTERN = value then ...`` is the two-arm match
+        ``match value with | PATTERN -> ... | _ -> <else branch> end match``,
+        which every later pass and backend already handles.
+        """
         location = self._current().location
         self._expect(TokenType.IF)
-        condition = self._parse_expression()
+        if_let: tuple[list[Pattern], Expression] | None = None
+        condition: Expression | None = None
+        if self._match(TokenType.LET):
+            patterns = self._parse_arm_patterns()
+            if not self._check(TokenType.ASSIGN):
+                raise self._error(
+                    "Expected '=' after the pattern: if let PATTERN = value then"
+                )
+            self._advance()
+            if_let = (patterns, self._parse_expression())
+            if self._check(TokenType.IDENTIFIER) and self._current().value == "when":
+                raise self._error(
+                    "if let takes no guard. Test the condition inside the branch, "
+                    "or write a match, whose arms take `when`"
+                )
+        else:
+            condition = self._parse_expression()
         self._expect(TokenType.THEN)
         then_body = self._parse_statement_list()
 
+        else_location = self._current().location
         else_body: list[Statement] = []
         if self._check(TokenType.ELSE):
             else_token = self._advance()
@@ -300,6 +326,30 @@ class StatementParserMixin(ParserBase):
         else:
             label = None
 
+        if if_let is not None:
+            patterns, scrutinee = if_let
+            # An arm needs a statement; with no else branch it does nothing.
+            nothing: list[Statement] = [
+                ExpressionStatement(
+                    location=else_location,
+                    expression=TupleExpr(location=else_location, elements=[]),
+                )
+            ]
+            arms = self._or_pattern_arms(
+                patterns, None, then_body or copy.deepcopy(nothing), location
+            )
+            arms.append(
+                MatchArm(
+                    pattern=WildcardPattern(location=else_location),
+                    body=else_body or nothing,
+                    location=else_location,
+                )
+            )
+            return MatchStatement(
+                location=location, scrutinee=scrutinee, arms=arms, label=label
+            )
+
+        assert condition is not None
         return IfStatement(
             location=location,
             condition=condition,

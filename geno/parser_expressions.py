@@ -31,6 +31,7 @@ from .ast_nodes import (
     MapLiteral,
     MatchArm,
     MatchExpr,
+    Pattern,
     Pipeline,
     PipelineStage,
     PlaceholderExpr,
@@ -42,6 +43,7 @@ from .ast_nodes import (
     TypedHole,
     TypeIdentifier,
     UnaryOp,
+    WildcardPattern,
     WithExpr,
 )
 from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
@@ -860,7 +862,26 @@ class ExpressionParserMixin(ParserBase):
     def _parse_if_expression_chain(self) -> MatchExpr:
         location = self._current().location
         self._expect(TokenType.IF)
+        if_let_patterns: list[Pattern] | None = None
+        if self._match(TokenType.LET):
+            # `if let PATTERN = value then a else b end if`: a match on the
+            # pattern, with the else branch as the arm for everything else.
+            if_let_patterns = self._parse_arm_patterns()
+            if not self._check(TokenType.ASSIGN):
+                raise self._error(
+                    "Expected '=' after the pattern: if let PATTERN = value then"
+                )
+            self._advance()
         condition = self._parse_expression()
+        if (
+            if_let_patterns is not None
+            and self._check(TokenType.IDENTIFIER)
+            and self._current().value == "when"
+        ):
+            raise self._error(
+                "if let takes no guard. Test the condition inside the branch, "
+                "or write a match, whose arms take `when`"
+            )
         self._expect(TokenType.THEN)
         then_value = self._parse_expression()
         if not self._match(TokenType.ELSE):
@@ -872,6 +893,25 @@ class ExpressionParserMixin(ParserBase):
             else_value: Expression = self._parse_if_expression_chain()
         else:
             else_value = self._parse_expression()
+        if if_let_patterns is not None:
+            then_body: list[Statement] = [
+                ReturnStatement(location=then_value.location, value=then_value)
+            ]
+            let_arms = self._or_pattern_arms(
+                if_let_patterns, None, then_body, then_value.location
+            )
+            let_arms.append(
+                MatchArm(
+                    pattern=WildcardPattern(location=else_value.location),
+                    body=[
+                        ReturnStatement(location=else_value.location, value=else_value)
+                    ],
+                    location=else_value.location,
+                )
+            )
+            let_expr = MatchExpr(location=location, scrutinee=condition, arms=let_arms)
+            let_expr.from_if_let = True
+            return let_expr
         arms = [
             MatchArm(
                 pattern=LiteralPattern(location=then_value.location, value=True),

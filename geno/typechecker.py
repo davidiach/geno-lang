@@ -7220,7 +7220,9 @@ class TypeChecker(ExhaustivenessMixin):
             else:
                 merged_type = self._merge_match_expr_result_types(result_type, arm_type)
                 if merged_type is None:
-                    what = "If branch" if expr.from_if else "Match arm"
+                    what = (
+                        "If branch" if expr.from_if or expr.from_if_let else "Match arm"
+                    )
                     self._error(
                         f"{what} type mismatch: expected "
                         f"{_display_type(result_type)}, got {_display_type(arm_type)}",

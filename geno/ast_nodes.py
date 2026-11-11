@@ -428,6 +428,8 @@ class MatchExpr(Expression):
     arms: list["MatchArm"]
     # Written as `if c then a else b end if`: a match on the Bool `c`.
     from_if: bool = field(default=False, compare=False)
+    # Written as `if let PATTERN = x then a else b end if`.
+    from_if_let: bool = field(default=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_match_expr(self)
