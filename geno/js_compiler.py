@@ -71,6 +71,7 @@ from .ast_nodes import (
     MatchExpr,
     MatchStatement,
     ModuleConstant,
+    Parameter,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -130,6 +131,7 @@ from .runtime_report import (
     TraceRecorder,
 )
 from .stdlib_scope import binds_unqualified
+from .tail_calls import TailCallPlan, plan_tail_calls
 from .tokens import SourceLocation
 from .types import (
     AnyType,
@@ -521,6 +523,7 @@ _JS_LOCAL_RESERVED_NAMES = (
             "_genoOwnIndex",
             "_genoSlice",
             "_genoFormatSpec",
+            "_GenoTailCall",
             "_divZero",
             "_safe_index",
             "_safe_index_set",
@@ -713,6 +716,15 @@ class JSCompiler(BaseCompiler):
         self._current_module: str | None = None
         self._type_subst: dict[str, Type] = {}
         self._function_name_override: str | None = None
+        # Proposal 0022: the self tail calls of the function being compiled,
+        # by node identity, and that function's parameters. A call in the
+        # first set assigns the parameters and continues the labelled body
+        # loop; one in the second returns a `_GenoTailCall` to the trampoline.
+        self._tail_loop_calls: dict[int, FunctionCall] = {}
+        self._tail_trampoline_calls: set[int] = set()
+        self._tail_params: list[Parameter] = []
+        self._tail_label = ""
+        self._tail_carriers: list[str] = []
         # Proposal 0018: the runtime trace table of a Node entry build (a
         # program with a `main` compiled for a host with a process).
         self._trace: TraceRecorder | None = None
@@ -1984,16 +1996,126 @@ class JSCompiler(BaseCompiler):
             # checks a frame's enclosing-function line against it.
             self._write(self._trace.marker("D0", trace_index))
             self._write(self._trace.marker("S", -1))
+        tail_plan = self._tail_call_plan(defn, func_name)
+        tail_form = self._tail_call_form(defn, tail_plan)
+        # The trampoline's inner function takes the defaults: it runs every
+        # logical call, and the outer function only passes arguments on.
+        outer_params = (
+            ", ".join(self._mangle_name(p.name) for p in defn.params)
+            if tail_form == "trampoline"
+            else params
+        )
         if self._emit_function_assignments:
             self._writeln(
-                f"var {func_name} = {async_prefix}function {func_name}({params}) {{"
+                f"var {func_name} = {async_prefix}function {func_name}({outer_params}) {{"
             )
         else:
-            self._writeln(f"{async_prefix}function {func_name}({params}) {{")
-        if traced_default and trace is not None:
+            self._writeln(f"{async_prefix}function {func_name}({outer_params}) {{")
+        if traced_default and trace is not None and tail_form != "trampoline":
             # The body's lines belong to no default value.
             self._write(trace.marker("S", -1))
         self._indent()
+
+        saved_tail = (
+            self._tail_loop_calls,
+            self._tail_trampoline_calls,
+            self._tail_params,
+            self._tail_label,
+            self._tail_carriers,
+        )
+        self._tail_loop_calls = {}
+        self._tail_trampoline_calls = set()
+        self._tail_params = defn.params
+        self._tail_label = ""
+        try:
+            self._compile_function_interior(
+                defn, tail_plan, tail_form, params, traced_default
+            )
+        finally:
+            (
+                self._tail_loop_calls,
+                self._tail_trampoline_calls,
+                self._tail_params,
+                self._tail_label,
+                self._tail_carriers,
+            ) = saved_tail
+        self._dedent()
+        self._writeln("};" if self._emit_function_assignments else "}")
+
+    def _tail_call_plan(self, defn: FunctionDef, func_name: str) -> TailCallPlan | None:
+        """The self tail calls of *defn* this backend runs in constant stack.
+
+        An impl method is called through its trait's dispatcher, never by its
+        own name. A call inside a specialized copy of a generic function that
+        resolves to a different copy is an ordinary call of that copy.
+        """
+        if self._display_name_override is not None:
+            return None
+        plan = plan_tail_calls(defn)
+        if plan is None:
+            return None
+        if any(self._compile_expr(call.function) != func_name for call in plan.calls):
+            return None
+        return plan
+
+    @staticmethod
+    def _tail_call_form(defn: FunctionDef, plan: TailCallPlan | None) -> str | None:
+        """``"loop"``, ``"trampoline"`` or ``None`` (see TailCallPlan.form).
+
+        A JavaScript default value is evaluated by the function's own
+        parameter list, which the loop form enters once, so a tail call that
+        leaves an argument to its default takes the trampoline.
+        """
+        if plan is None:
+            return None
+        if plan.form == "loop" and any(
+            p.default_value is not None for p in defn.params
+        ):
+            names = [p.name for p in defn.params]
+            for call in plan.calls:
+                given = {arg.name for arg in call.arguments if arg.name}
+                positional = sum(1 for arg in call.arguments if not arg.name)
+                given.update([name for name in names if name not in given][:positional])
+                if len(given) < len(names):
+                    return "trampoline"
+        return plan.form
+
+    def _compile_function_interior(
+        self,
+        defn: FunctionDef,
+        tail_plan: TailCallPlan | None,
+        tail_form: str | None,
+        params: str,
+        traced_default: bool,
+    ) -> None:
+        """Emit everything of *defn* inside its `function` braces."""
+        trace = self._trace
+        async_prefix = "async " if is_async_execution_form(defn) else ""
+        step = ""
+        if tail_plan is not None and tail_form == "loop":
+            # Nothing can observe that the parameters are reused: the body
+            # is a loop, and a tail call assigns them and continues it.
+            # The next call's arguments travel in variables of their own: a
+            # `let` or a pattern inside the body may shadow a parameter's
+            # name, and an assignment there would miss the parameter.
+            self._tail_loop_calls = {id(call): call for call in tail_plan.calls}
+            self._tail_label = self._fresh_temp()
+            self._tail_carriers = [self._fresh_temp() for _ in defn.params]
+            for carrier, param in zip(self._tail_carriers, defn.params):
+                self._writeln(f"let {carrier} = {self._mangle_name(param.name)};")
+            self._writeln(f"{self._tail_label}: while (true) {{")
+            self._indent()
+            for carrier, param in zip(self._tail_carriers, defn.params):
+                self._writeln(f"{self._mangle_name(param.name)} = {carrier};")
+        elif tail_plan is not None:
+            # Each logical call is one call of this inner function, with its
+            # own bindings; the loop below it runs them one after another.
+            self._tail_trampoline_calls = {id(call) for call in tail_plan.calls}
+            step = self._fresh_temp()
+            self._writeln(f"function {step}({params}) {{")
+            if traced_default and trace is not None:
+                self._write(trace.marker("S", -1))
+            self._indent()
 
         # Contract failures name the function, its parameters and the call's
         # argument values (proposal 0018); the values are rendered only once
@@ -2079,6 +2201,20 @@ class JSCompiler(BaseCompiler):
             await_body = "await " if is_async_execution_form(defn) else ""
             result_name = self._fresh_temp()
             self._writeln(f"const {result_name} = {await_body}{body_helper}();")
+            check = ""
+            if tail_plan is not None and tail_plan.snapshots:
+                # Each logical call has its own check (TailCallPlan.snapshots):
+                # a call that ends in a tail call is checked later, with the
+                # result.
+                check = self._fresh_temp()
+                self._writeln(f"function {check}({result_name}) {{")
+                self._indent()
+            elif tail_plan is not None:
+                # Every call's check would compute the same thing: the last
+                # call's check stands for those a tail call replaced.
+                self._writeln(
+                    f"if ({result_name} instanceof _GenoTailCall) return {result_name};"
+                )
             result_shape = self._contract_display_shape(
                 None
                 if defn.type_params
@@ -2114,10 +2250,104 @@ class JSCompiler(BaseCompiler):
                         shown_result,
                         checked,
                     )
+            if check:
+                self._dedent()
+                self._writeln("}")
+                self._writeln(f"if ({result_name} instanceof _GenoTailCall) {{")
+                self._indent()
+                self._writeln(f"{result_name}.ensures = {check};")
+                self._writeln(f"return {result_name};")
+                self._dedent()
+                self._writeln("}")
+                self._writeln(f"{check}({result_name});")
             self._writeln(f"return {result_name};")
 
-        self._dedent()
-        self._writeln("};" if self._emit_function_assignments else "}")
+        if tail_plan is not None and tail_form == "loop":
+            # A body that ends without a tail call ends the function.
+            self._writeln("return;")
+            self._dedent()
+            self._writeln("}")
+        elif tail_plan is not None:
+            self._dedent()
+            self._writeln("}")
+            outcome = self._fresh_temp()
+            arguments = ", ".join(self._mangle_name(p.name) for p in defn.params)
+            self._writeln(f"let {outcome} = {step}({arguments});")
+            waiting = ""
+            if tail_plan.snapshots:
+                waiting = self._fresh_temp()
+                self._writeln(f"const {waiting} = [];")
+            self._writeln(f"while ({outcome} instanceof _GenoTailCall) {{")
+            self._indent()
+            if waiting:
+                self._writeln(f"{waiting}.push({outcome}.ensures);")
+            self._writeln(f"{outcome} = {step}(...{outcome}.arguments);")
+            self._dedent()
+            self._writeln("}")
+            if waiting:
+                # Every replaced call returns this result: innermost first.
+                self._writeln(
+                    f"while ({waiting}.length > 0) {waiting}.pop()({outcome});"
+                )
+            self._writeln(f"return {outcome};")
+
+    def _tail_call_values(self, call: FunctionCall) -> tuple[list[str], list[str]]:
+        """A self tail call's arguments, bound in the order they are written.
+
+        Returns ``(bindings, values)``: ``name = value`` pairs in source
+        order, and for each parameter in order the binding's name, or
+        ``undefined`` for one the call leaves to its default.
+        """
+        names = [p.name for p in self._tail_params]
+        if any(arg.name for arg in call.arguments):
+            ordered = self._reorder_call_args_for_compile(call.arguments, names)
+        else:
+            ordered = list(call.arguments)
+        ordered += [None] * (len(names) - len(ordered))
+        temporaries = {id(arg): self._fresh_temp() for arg in call.arguments}
+        bindings = [
+            f"{temporaries[id(arg)]} = {self._compile_expr(arg.value)}"
+            for arg in call.arguments
+        ]
+        values = [
+            "undefined" if arg is None else temporaries[id(arg)] for arg in ordered
+        ]
+        return bindings, values
+
+    def _compile_tail_loop_call(self, call: FunctionCall) -> None:
+        """Assign the parameters for the next logical call and start it."""
+        bindings, values = self._tail_call_values(call)
+        carriers = dict(zip(values, self._tail_carriers))
+        # In the order written; each value still reads this call's bindings.
+        for binding in bindings:
+            name, value = binding.split(" = ", 1)
+            self._writeln(f"{carriers[name]} = {value};")
+        self._writeln(f"continue {self._tail_label};")
+
+    def _compile_tail_trampoline_call(self, call: FunctionCall) -> str:
+        """The `_GenoTailCall` that asks the trampoline for the next call."""
+        concrete = [arg for arg in call.arguments]
+        names = [p.name for p in self._tail_params]
+        if any(arg.name for arg in call.arguments):
+            ordered = self._reorder_call_args_for_compile(call.arguments, names)
+        else:
+            ordered = list(call.arguments)
+        in_order = all(
+            a is b
+            for a, b in zip(concrete, [arg for arg in ordered if arg is not None])
+        )
+        if in_order:
+            values = [
+                "undefined" if arg is None else self._compile_expr(arg.value)
+                for arg in ordered
+            ]
+            return f"new _GenoTailCall({', '.join(values)})"
+        bindings, values = self._tail_call_values(call)
+        while values and values[-1] == "undefined":
+            values.pop()
+        parameters = ", ".join(binding.split(" = ", 1)[0] for binding in bindings)
+        sources = ", ".join(binding.split(" = ", 1)[1] for binding in bindings)
+        return f"(({parameters}) => new _GenoTailCall({', '.join(values)}))({sources})"
 
     def _compile_requires_check(
         self,
@@ -2349,6 +2579,24 @@ class JSCompiler(BaseCompiler):
 
     def _compile_statement_untraced(self, stmt: Statement) -> None:
         self._record_mapping(stmt.location)
+        if self._tail_loop_calls:
+            value: Expression | None = None
+            if isinstance(stmt, ReturnStatement):
+                value = stmt.value
+            elif isinstance(stmt, ExpressionStatement):
+                value = stmt.expression
+            tail_call = self._tail_loop_calls.get(id(value))
+            if tail_call is not None:
+                self._compile_tail_loop_call(tail_call)
+                return
+        elif (
+            self._tail_trampoline_calls
+            and isinstance(stmt, ExpressionStatement)
+            and id(stmt.expression) in self._tail_trampoline_calls
+        ):
+            # The call a `Unit` function ends with: hand it to the trampoline.
+            self._writeln(f"return {self._compile_expr(stmt.expression)};")
+            return
         if isinstance(stmt, LetStatement):
             self._compile_let_statement(stmt)
         elif isinstance(stmt, VarStatement):
@@ -3748,6 +3996,8 @@ class JSCompiler(BaseCompiler):
         return operand
 
     def _compile_function_call(self, expr: FunctionCall) -> str:
+        if id(expr) in self._tail_trampoline_calls:
+            return self._compile_tail_trampoline_call(expr)
         has_named_args = any(arg.name for arg in expr.arguments)
         func_name = (
             expr.function.name if isinstance(expr.function, Identifier) else None

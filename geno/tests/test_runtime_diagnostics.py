@@ -886,7 +886,7 @@ func count_down(n: Int) -> Int
     if n == 0 then
         panic("bottom")
     end if
-    return count_down(n - 1)
+    return count_down(n - 1) + 0
 end func
 
 func main() -> Int
@@ -1384,7 +1384,7 @@ func forever(n: Int) -> Int
     if n == 0 then
         return 0
     end if
-    return forever(n + 1)
+    return forever(n + 1) + 0
 end func
 
 func main() -> Int

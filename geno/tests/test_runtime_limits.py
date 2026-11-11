@@ -182,7 +182,7 @@ def test_runaway_recursion_still_stops_at_the_limit() -> None:
         "    if n == 0 then\n"
         "        return 0\n"
         "    end if\n"
-        "    return loop(n + 1)\n"
+        "    return loop(n + 1) + 0\n"
         "end func\n"
         "func main() -> Int\n"
         "    return loop(1)\n"

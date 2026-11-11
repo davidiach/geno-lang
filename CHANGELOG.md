@@ -13,6 +13,16 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- Self tail calls run in constant stack on the interpreter, compiled Python
+  and compiled JavaScript, from Draft
+  [proposal 0022](docs/proposals/0022-self-tail-calls.md). A function that
+  ends with a call to itself (`return go(rest, acc + 1)`, a branch of an `if`
+  or `match` in return position, or the last statement of a `Unit` function)
+  no longer reaches "maximum recursion depth exceeded" on a large input.
+  Argument order, defaults, `requires`, `ensures` for every logical call and
+  closure captures are kept. A runtime failure report shows one frame for the
+  calls a tail call replaced. Calls whose result is still used, mutual
+  recursion and `impl` methods nest as before.
 - Four more forms models write, from accepted
   [proposal 0023](docs/proposals/0023-format-specs-slices-named-patterns-if-let.md).
   Each was a parse error before, so every accepted program keeps its meaning:

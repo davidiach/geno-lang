@@ -49,6 +49,9 @@ selfhost parser does not yet implement:
 - The forms of accepted proposal 0023: f-string format specs (`f"{x:.2f}"`),
   slices (`xs[1:3]`), named-field patterns (`Cfg(port: p, ..)`) and `if let`.
   No selfhost file uses them.
+- Self tail calls in constant stack (Draft proposal 0022). The self-hosted
+  interpreter nests every call, so a deep tail recursion it interprets is
+  bounded by its host's stack.
 - The forms of accepted proposal 0026: compound assignment (`x += 1`), tuple
   patterns in `for` loops and comprehensions, string literals inside f-string
   interpolations, and a trait or impl method receiver written `self` alone.

@@ -1,0 +1,58 @@
+// Proposal 0022: a function's call to itself in tail position replaces the
+// running call, so each of these is as deep as a loop is long. The depths fit
+// the corpus's step budget; 30,000 nested calls is past the interpreter's
+// recursion limit and Node's stack. geno/tests/test_tail_calls.py goes past
+// compiled Python's too.
+
+func count(n: Int, acc: Int) -> Int
+    example (3, 0) -> 3
+    if n == 0 then
+        return acc
+    end if
+    return count(n - 1, acc + 1)
+end func
+
+func sum_to(n: Int, acc: Int = 0) -> Int
+    requires n >= 0
+    ensures result >= acc
+    example (3) -> 6
+    return if n == 0 then acc else sum_to(n - 1, acc + n) end if
+end func
+
+func last_of(xs: List[Int], n: Int, fallback: Int) -> Int
+    example ([4, 5], 1, 0) -> 5
+    match n with
+        | 0 -> return fallback
+        | _ -> return last_of(fallback: xs[length(xs) - 1], xs: xs, n: n - 1)
+    end match
+end func
+
+func makers(n: Int, made: List[() -> Int]) -> List[() -> Int]
+    example (0, []) -> []
+    if n == 0 then
+        return made
+    end if
+    return makers(n - 1, append(made, fn() -> n * 10))
+end func
+
+func drain(n: Int, seen: Vec[Int]) -> Unit
+    example (0, vec_new()) -> ()
+    if n > 0 then
+        if n <= 2 then
+            vec_push(seen, n)
+        end if
+        drain(n - 1, seen)
+    end if
+end func
+
+func main() -> Unit with io
+    print(count(30000, 0))
+    print(sum_to(2000))
+    print(last_of(xs: [4, 5], n: 2000, fallback: 0))
+    for make in makers(3, []) do
+        print(make())
+    end for
+    let seen: Vec[Int] = vec_new()
+    drain(2000, seen)
+    print(vec_to_list(seen))
+end func

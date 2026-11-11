@@ -136,6 +136,22 @@ class _GenoMissing:
 _GENO_MISSING = _GenoMissing()
 
 
+class _GenoTailCall:
+    """A self tail call's request for the next logical call (proposal 0022).
+
+    A function whose tail calls need their own bindings runs each logical
+    call as an inner function. That function returns one of these instead of
+    calling itself, and the loop around it makes the call, so the stack does
+    not grow. ``ensures`` is the returning call's postcondition check, when
+    it has to wait for the result.
+    """
+
+    __slots__ = ("arguments", "ensures")
+
+    def __init__(self, *arguments: Any) -> None:
+        self.arguments = arguments
+
+
 # The default ``object.__hash__`` is derived from identity. It keys the tables
 # below and is never shown to a program, so it discloses nothing; ``id`` stays
 # out of the sandbox.

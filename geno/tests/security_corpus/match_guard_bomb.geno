@@ -1,7 +1,10 @@
-# EXPECT: E502
+# EXPECT: E503
 # Use match guards with expensive recursive predicates
 # to attempt resource exhaustion.  Each match guard
-# triggers a deep recursive call, multiplying work.
+# triggers a long recursive call, multiplying work.  Both
+# functions end in self tail calls, which do not nest
+# (proposal 0022), so the step limit is what stops the
+# quadratic work.
 func expensive(n: Int) -> Bool
     example 0 -> true
     if n <= 0 then

@@ -186,6 +186,18 @@ class ReturnException(BaseException):
         self.value = value
 
 
+class TailCallException(BaseException):
+    """A self tail call: the running call of the function restarts with *arguments*.
+
+    Raised where the call is evaluated and caught by the frame of the function
+    it is in (proposal 0022), so the stack does not grow.
+    """
+
+    def __init__(self, arguments: list[Any], location: Any = None) -> None:
+        self.arguments = arguments
+        self.location = location
+
+
 class BreakException(BaseException):
     """Used to implement break statement control flow."""
 
@@ -225,6 +237,9 @@ class Closure:
     # function of an imported module. Set when the definition creates the
     # closure; ``None`` for a lambda.
     display_name: str | None = None
+    # Each self tail call keeps its bindings until the result is known, for
+    # its own ``ensures`` check (proposal 0022; see TailCallPlan.snapshots).
+    tail_snapshots: bool = False
 
     def __repr__(self) -> str:
         return f"<function {self.name or 'anonymous'}>"

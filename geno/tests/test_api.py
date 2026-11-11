@@ -1832,7 +1832,7 @@ class TestRuntimeStacks:
             "    if n == 0 then\n"
             "        return 0\n"
             "    end if\n"
-            "    return forever(n + 1)\n"
+            "    return forever(n + 1) + 0\n"
             "end func\n"
             "\n"
             "func main() -> Int\n"

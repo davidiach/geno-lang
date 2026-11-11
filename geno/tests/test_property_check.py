@@ -439,7 +439,7 @@ class TestLimits:
             if n == 0 then
                 return 0
             end if
-            return down(n)
+            return down(n) + 0
         end func
         """
         result = check(source, sandbox_config=SandboxConfig(max_recursion_depth=40))[

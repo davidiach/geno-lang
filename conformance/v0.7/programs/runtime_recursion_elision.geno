@@ -1,13 +1,13 @@
-// Proposal 0018: a deep stack keeps its first 10 and last 10 frames and says
-// how many it left out. The failure has 42 frames (`main` and 41
-// `count_down`s), so 22 are omitted.
+// Proposal 0018: a deep stack keeps its first 10 and last 10 frames and omits
+// the 22 between (`main` and 41 `count_down`s). `+ 0` uses the call's result:
+// a self tail call (proposal 0022) would leave no frame.
 
 func count_down(n: Int) -> Int
     example 0 panics "bottom"
     if n == 0 then
         panic("bottom")
     end if
-    return count_down(n - 1)
+    return count_down(n - 1) + 0
 end func
 
 func main() -> Int

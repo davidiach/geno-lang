@@ -1,11 +1,12 @@
 # EXPECT: E502
-# Higher-order function recursion to test recursion depth.
+# Higher-order function recursion to test recursion depth. The call's result
+# is used, so it is not a self tail call (proposal 0022) and each call nests.
 func apply_n(f: (Int) -> Int, n: Int, x: Int) -> Int
     example fn(a: Int) -> a, 0, 5 -> 5
     if n <= 0 then
         return x
     end if
-    return apply_n(f: f, n: n - 1, x: f(x))
+    return 0 + apply_n(f: f, n: n - 1, x: f(x))
 end func
 
 func main() -> Int

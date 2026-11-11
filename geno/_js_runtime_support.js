@@ -1777,6 +1777,17 @@ function int_to_float(x) { return x; }
 class _PropagateReturn {
     constructor(value) { this.value = value; }
 }
+// A self tail call's request for the next logical call (proposal 0022). A
+// function whose tail calls need their own bindings runs each logical call as
+// an inner function, which returns one of these instead of calling itself;
+// the loop around it makes the call, so the stack does not grow. `ensures`
+// is the returning call's postcondition check, when it waits for the result.
+class _GenoTailCall {
+    constructor(...values) {
+        this.arguments = values;
+        this.ensures = null;
+    }
+}
 // End the program with `message`: Geno code cannot recover from a panic.
 function _genoPanic(message) {
     throw new Error(message);
