@@ -34,6 +34,7 @@ from ._js_generics import (
     substitute_type_params,
 )
 from .ast_nodes import (
+    SLICE_OPERATOR,
     AssignStatement,
     AwaitExpr,
     BinaryOp,
@@ -93,6 +94,7 @@ from .ast_nodes import (
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 from .entrypoint import (
     EntrypointResultKind,
@@ -515,6 +517,7 @@ _JS_LOCAL_RESERVED_NAMES = (
             "get_field",
             "_genoOwnField",
             "_genoOwnIndex",
+            "_genoSlice",
             "_divZero",
             "_safe_index",
             "_safe_index_set",
@@ -3604,6 +3607,13 @@ class JSCompiler(BaseCompiler):
         raise JSCompileError(f"Unsupported expression type: {type(expr).__name__}")
 
     def _compile_binary_op(self, expr: BinaryOp) -> str:
+        if expr.operator == SLICE_OPERATOR:
+            target = self._compile_expr(expr.left)
+            start, stop = (
+                "undefined" if bound is None else self._compile_expr(bound)
+                for bound in slice_bounds(expr)
+            )
+            return f"_genoSlice({target}, {start}, {stop})"
         left = self._compile_expr(expr.left)
         right = self._compile_expr(expr.right)
         if expr.operator == "in":

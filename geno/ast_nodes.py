@@ -8,7 +8,7 @@ Uses dataclasses for clean, immutable node definitions.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any, Union, cast
 
 from .tokens import SourceLocation
 
@@ -286,9 +286,30 @@ class AwaitExpr(Expression):
         return visitor.visit_await_expr(self)
 
 
+# The operator of a slice, `xs[a:b]`. No source operator is spelled this way.
+SLICE_OPERATOR = "[:]"
+
+
+def slice_bounds(expr: "BinaryOp") -> tuple["Expression | None", "Expression | None"]:
+    """The start and stop of a slice, ``None`` for a bound that was left out."""
+    start, stop = cast("TupleExpr", expr.right).elements
+
+    def bound(element: "Expression") -> "Expression | None":
+        if isinstance(element, TupleExpr) and not element.elements:
+            return None
+        return element
+
+    return bound(start), bound(stop)
+
+
 @dataclass
 class BinaryOp(Expression):
-    """Binary operation: a + b, x and y"""
+    """Binary operation: a + b, x and y
+
+    A slice ``xs[a:b]`` is the operator ``SLICE_OPERATOR`` with ``xs`` on the
+    left and the two-element tuple of its bounds on the right; a bound that
+    was left out is the empty tuple.
+    """
 
     operator: str
     left: Expression

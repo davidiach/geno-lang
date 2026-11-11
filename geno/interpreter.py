@@ -20,6 +20,7 @@ from typing import Any, TypeVar, cast
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
+    SLICE_OPERATOR,
     AssertStatement,
     AssignStatement,
     AwaitExpr,
@@ -83,6 +84,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 from .builtin_registry import (
     ALWAYS_AVAILABLE_BUILTINS,
@@ -2347,6 +2349,18 @@ class Interpreter:
     def _eval_binary_op(self, expr: BinaryOp, env: Environment) -> Any:
         """Evaluate a binary operation."""
         operator = expr.operator
+        if operator == SLICE_OPERATOR:
+            target = self.eval_expr(expr.left, env)
+            start, stop = (
+                None if bound is None else self.eval_expr(bound, env)
+                for bound in slice_bounds(expr)
+            )
+            if not isinstance(target, (list, str)):
+                raise RuntimeError("A slice takes a List or a String", expr.location)
+            # Python's slicing is the rule: a negative bound counts from the
+            # end and one past either end is clamped. Strings slice by code
+            # point, like indexing.
+            return target[start:stop]
         if operator == "and":
             left = self.eval_expr(expr.left, env)
             if not left:

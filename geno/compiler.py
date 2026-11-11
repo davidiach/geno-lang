@@ -42,6 +42,7 @@ from ._definition_index import collect_definitions
 from ._prelude_bindings import PRELUDE_BINDING_NAMES, PRELUDE_SOURCE_SHA256
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
+    SLICE_OPERATOR,
     AssignStatement,
     ASTVisitor,
     AwaitExpr,
@@ -104,6 +105,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 
 if TYPE_CHECKING:
@@ -260,6 +262,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "get_field",
             "_geno_own_field",
             "_geno_own_index",
+            "_geno_slice",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -2978,6 +2981,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         """Compile a binary operation."""
+        if expr.operator == SLICE_OPERATOR:
+            target = self._compile_expr(expr.left)
+            start, stop = (
+                "None" if bound is None else self._compile_expr(bound)
+                for bound in slice_bounds(expr)
+            )
+            return f"_geno_slice({target}, {start}, {stop})"
         if expr._resolved_builtin_name == "concat":
             # List + List: concat's arguments, widened like any Int list
             # passed where a Float list is expected.

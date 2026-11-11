@@ -715,6 +715,21 @@ def contains(lst: list[Any], item: Any) -> bool:
     return item in lst
 
 
+def _geno_slice(target: Any, start: Any, stop: Any) -> Any:
+    """``target[start:stop]`` on a List or a String.
+
+    A bound is ``None`` when the slice left it out. A negative bound counts
+    from the end and one past either end is clamped, so this never fails for
+    Int bounds. Strings slice by code point.
+    """
+    if not isinstance(target, (list, str)):
+        raise RuntimeError("A slice takes a List or a String")
+    for bound in (start, stop):
+        if bound is not None and type(bound) is not int:
+            raise RuntimeError("A slice bound must be an integer")
+    return target[start:stop]
+
+
 def _geno_in(element: Any, container: Any, member: Any = None) -> bool:
     """``element in container``, the operands evaluated in source order.
 

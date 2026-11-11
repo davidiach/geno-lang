@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .target_profile import TargetProfile
 
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program; Visitor
+    SLICE_OPERATOR,
     AssertStatement,
     AssignStatement,
     AwaitExpr,
@@ -96,6 +97,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .constructor_args import constructor_argument_order
@@ -5411,8 +5413,35 @@ class TypeChecker(ExhaustivenessMixin):
         expr._resolved_builtin_name = "concat"
         return result
 
+    def _check_slice(self, expr: BinaryOp, env: TypeEnv) -> Type:
+        """``xs[a:b]``: part of a List or a String, with Int bounds.
+
+        A bound may be left out or negative, and one past either end is
+        clamped, so a slice never fails at run time.
+        """
+        target_type = self._check_expression(expr.left, env)
+        for name, bound in zip(("start", "stop"), slice_bounds(expr)):
+            if bound is None:
+                continue
+            bound_type = self._check_expression(bound, env)
+            if not isinstance(bound_type, (IntType, AnyType, NeverType)):
+                self._error(
+                    f"Slice {name} must be Int, got {_display_type(bound_type)}",
+                    bound.location,
+                )
+        if isinstance(target_type, (ListType, StringType, AnyType)):
+            return target_type
+        self._error(
+            f"Cannot slice {_display_type(target_type)}: a slice takes part of "
+            "a List or a String",
+            expr.location,
+        )
+        return _ANY_TYPE
+
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""
+        if expr.operator == SLICE_OPERATOR:
+            return self._check_slice(expr, env)
         left_type = self._check_expression(expr.left, env)
         right_type = self._check_expression(expr.right, env)
 

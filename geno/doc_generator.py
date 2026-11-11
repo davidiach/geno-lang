@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from .ast_nodes import (
+    SLICE_OPERATOR,
     FunctionDef,
     FunctionType,
     ImplDef,
@@ -23,6 +24,7 @@ from .ast_nodes import (
     TypeAlias,
     TypeAnnotation,
     TypeDef,
+    slice_bounds,
 )
 from .lexer import Lexer
 from .parser import Parser
@@ -175,6 +177,12 @@ def _render_expr(expr) -> str:
         )
         return f"{fn_name}({args})"
     if isinstance(expr, BinaryOp):
+        if expr.operator == SLICE_OPERATOR:
+            start, stop = (
+                "" if bound is None else _render_expr(bound)
+                for bound in slice_bounds(expr)
+            )
+            return f"{_render_expr(expr.left)}[{start}:{stop}]"
         return f"{_render_expr(expr.left)} {expr.operator} {_render_expr(expr.right)}"
     if isinstance(expr, UnaryOp):
         return f"{expr.operator}{_render_expr(expr.operand)}"

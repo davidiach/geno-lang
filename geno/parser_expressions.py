@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import NoReturn, Union
 
 from .ast_nodes import (
+    SLICE_OPERATOR,
     AwaitExpr,
     BinaryOp,
     BooleanLiteral,
@@ -361,9 +362,15 @@ class ExpressionParserMixin(ParserBase):
                     location=expr.location, function=expr, arguments=args
                 )
             elif current_type is TokenType.LBRACKET:
-                self._advance()
+                bracket = self._advance()
+                if self._current_type is TokenType.COLON:
+                    expr = self._parse_slice(expr, None, bracket.location)
+                    continue
                 # Index access
                 index = self._parse_expression()
+                if self._current_type is TokenType.COLON:
+                    expr = self._parse_slice(expr, index, bracket.location)
+                    continue
                 self._expect(TokenType.RBRACKET)
                 expr = IndexAccess(location=expr.location, target=expr, index=index)
             elif current_type is TokenType.DOT:
@@ -398,6 +405,41 @@ class ExpressionParserMixin(ParserBase):
             else:
                 break
         return expr
+
+    def _parse_slice(
+        self,
+        target: Expression,
+        start: Expression | None,
+        bracket: SourceLocation,
+    ) -> BinaryOp:
+        """Parse the rest of ``target[start:stop]`` from its ``:``.
+
+        Either bound may be left out. The slice is a binary operation on the
+        target and the pair of bounds, so every pass that walks operands
+        reaches all three.
+        """
+        self._expect(TokenType.COLON)
+        stop: Expression | None = None
+        if self._current_type not in (TokenType.RBRACKET, TokenType.COLON):
+            stop = self._parse_expression()
+        if self._current_type is TokenType.COLON:
+            raise self._error(
+                "A slice takes no step: write xs[start:stop]. Use reverse(xs) "
+                "to reverse, or a comprehension to take every nth element"
+            )
+        self._expect(TokenType.RBRACKET)
+
+        def bound(value: Expression | None) -> Expression:
+            return (
+                value if value is not None else TupleExpr(location=bracket, elements=[])
+            )
+
+        return BinaryOp(
+            location=target.location,
+            operator=SLICE_OPERATOR,
+            left=target,
+            right=TupleExpr(location=bracket, elements=[bound(start), bound(stop)]),
+        )
 
     def _parse_with_expr(self, target: Expression) -> WithExpr:
         """Parse: expr with (field1: val1, field2: val2, ...)"""

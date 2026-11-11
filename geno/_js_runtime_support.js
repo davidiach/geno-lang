@@ -1247,6 +1247,22 @@ function _safe_index(target, index) {
     throw new Error("Cannot index into " + typeof target);
 }
 
+// `target[start:stop]` on a List or a String. A bound is undefined when the
+// slice left it out. As in Python, a negative bound counts from the end and
+// one past either end is clamped. Strings slice by code point.
+function _genoSlice(target, start, stop) {
+    for (const bound of [start, stop]) {
+        if (bound !== undefined && !_GENO_NUMBER.isInteger(bound)) {
+            throw new Error("A slice bound must be an integer");
+        }
+    }
+    if (Array.isArray(target)) return target.slice(start, stop);
+    if (typeof target === 'string') {
+        return _stringCodePoints(target).slice(start, stop).join("");
+    }
+    throw new Error("A slice takes a List or a String");
+}
+
 function _safe_index_set(target, index, value) {
     _checkCollectionSize(index);
     _checkCollectionSize(value);
