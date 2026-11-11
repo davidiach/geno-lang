@@ -4,8 +4,7 @@ Masking removes ``mutation`` from a function or lambda whose writes only it can
 observe. Each case below is an adversarial program: the checker's inferred
 effects for the functions it names are pinned, and the program runs on the
 interpreter, compiled Python and compiled JavaScript, which must print the
-same output (the only exceptions are the ``KNOWN_GAPS`` cases that pin a
-separate ``js_output``; see below).
+same output.
 
 - A *masked* function (no ``mutation``) is called and the caller then prints
   the state it passed in or holds: it must be unchanged. Where a function is
@@ -24,15 +23,11 @@ and 7). Closing any of them must change these tests deliberately. The
 repository's own functions of the builtin-writer shape declare
 ``with mutation``, which is pinned too.
 
-Two of the ``KNOWN_GAPS`` cases pin a pre-existing compiled-JavaScript parity
-bug instead (Unresolved Question 7): a ``for`` loop over an ``Array`` iterates
-it live and binds its elements without a copy, and an element or field read
-passed as an argument (``keep(a[0])``, ``keep(b.p)``) hands the callee the
-stored object. The interpreter and compiled Python snapshot both. The masked
-writes in those cases stay private on every backend (the effect is sound),
-but what the writing function itself computes differs on JavaScript, so the
-case records that backend's output separately. A JavaScript runtime fix
-flips them deliberately.
+Two cases cover shapes on which compiled JavaScript used to differ (#241,
+#242): a ``for`` loop over an ``Array`` the body writes, and an element or
+field read passed as an argument (``keep(a[0])``, ``keep(b.p)``) before a
+field write through the same place. Every backend now iterates a snapshot and
+gives the callee a value that the later write does not change.
 
 The local binding named after a builtin (``let array_new = ...``) is
 checker-only: compiled JavaScript refuses a local named after a runtime
@@ -88,15 +83,12 @@ type Wrap[T] = Wrap(v: T)
 class Case:
     """One adversarial program, the effects it infers, and what it prints.
 
-    ``output`` is what every backend prints. ``js_output``, when set, is what
-    compiled JavaScript prints instead: a pinned pre-existing JS runtime
-    parity bug, never a masking decision.
+    ``output`` is what every backend prints.
     """
 
     source: str
     effects: dict[str, frozenset[str]]
     output: str
-    js_output: str | None = None
 
 
 def _lines(*values: object) -> str:
@@ -1337,13 +1329,120 @@ end func
             10,
         ),
     ),
+    # An element or field read passed as an argument gives the callee a value
+    # that a later field write through the same slot does not change, as
+    # binding the read with `let` does. Compiled JavaScript used to hand over
+    # the stored object, so the callee's closure saw the write (#242).
+    "element-and-field-arguments-do-not-alias": Case(
+        """
+@untested("returns a closure")
+func keep(q: P) -> () -> Int
+    return fn() -> q.x
+end func
+
+func array_element(n: Int) -> Int
+    example 5 -> 0
+    var a = array_new(1, P(x: 0))
+    let peek = keep(a[0])
+    a[0].x = n
+    return peek()
+end func
+
+func list_element(n: Int) -> Int
+    example 5 -> 0
+    var ys = [P(x: 0)]
+    let peek = keep(ys[0])
+    ys[0].x = n
+    return peek()
+end func
+
+func field_read(n: Int) -> Int
+    example 5 -> 0
+    var b = Box(p: P(x: 0))
+    let peek = keep(b.p)
+    b.p.x = n
+    return peek()
+end func
+
+func let_snapshot(n: Int) -> Int
+    example 5 -> 0
+    var a = array_new(1, P(x: 0))
+    let q = a[0]
+    a[0].x = n
+    return q.x
+end func
+
+func main() -> Unit with io
+    print(array_element(5))
+    print(list_element(5))
+    print(field_read(5))
+    print(let_snapshot(5))
+    var ys = [P(x: 0)]
+    let peek = keep(ys[0])
+    ys[0].x = 5
+    print(peek())
+end func
+""",
+        {
+            "array_element": PURE,
+            "list_element": PURE,
+            "field_read": PURE,
+            "let_snapshot": PURE,
+            "main": IO,
+        },
+        _lines(0, 0, 0, 0, 0),
+    ),
+    # A `for` loop over an `Array` iterates a snapshot of its elements, so a
+    # write the body makes to a later slot, or to a field of a later element,
+    # does not show up in the same loop. Compiled JavaScript used to iterate
+    # the live array (#241). Iterating and writing an owned array is masked
+    # (the iterable position and the value-hop writes), so `seen` passes as a
+    # pure callback.
+    "array-for-loop-iterates-a-snapshot": Case(
+        """
+func seen(xs: List[Int]) -> List[Int]
+    example [1, 2, 3] -> [1, 2, 3]
+    var a = array_from_list(xs)
+    var out: List[Int] = []
+    for x in a do
+        a[2] = 99
+        out = out + [x]
+    end for
+    return out
+end func
+
+func seen_fields(n: Int) -> List[P]
+    example 5 -> [P(x: 0), P(x: 0)]
+    var a = array_new(2, P(x: 0))
+    var out: List[P] = []
+    for p in a do
+        a[1].x = n
+        out = out + [p]
+    end for
+    return out
+end func
+
+func apply(f: (List[Int]) -> List[Int], xs: List[Int]) -> List[Int]
+    example fn(ys: List[Int]) -> ys, [1] -> [1]
+    return f(xs)
+end func
+
+func main() -> Unit with io
+    let xs = [1, 2, 3]
+    print(apply(seen, xs))
+    print(seen_fields(5))
+    print(xs)
+end func
+""",
+        {"seen": PURE, "seen_fields": PURE, "apply": PURE, "main": IO},
+        _lines("[1, 2, 3]", "[P(x: 0), P(x: 0)]", "[1, 2, 3]"),
+    ),
 }
 
 
 # Writes a caller can observe although the checker infers no `mutation` for
 # the writing function, and runtime aliases that change what a masked function
-# computes. Each is current behaviour; all three backends agree unless the
-# case pins a separate `js_output` (a pre-existing JS runtime parity bug).
+# computes. Each is current behaviour, and all three backends agree on it.
 KNOWN_GAPS: dict[str, Case] = {
     # Spec 3.5 known limitation: mutating builtins are not charged on any
     # receiver (Unresolved Question 1).
@@ -1502,120 +1601,6 @@ end func
         {"alias_record": PURE, "alias_list": PURE, "main": IO},
         _lines(7, 7, 5),
     ),
-    # Unresolved Question 7, compiled-JavaScript parity bug: an element or
-    # field read passed as an argument hands the callee the stored object on
-    # JS only, so the callee's closure sees a later in-place write through
-    # the slot. The interpreter and compiled Python pass an independent value
-    # (binding the same read with `let` snapshots it on every backend). Each
-    # writer is pure on every backend; on JS it computes a different result,
-    # and its `example` (checked on the interpreter) does not hold there.
-    "js-element-and-field-argument-alias": Case(
-        """
-@untested("returns a closure")
-func keep(q: P) -> () -> Int
-    return fn() -> q.x
-end func
-
-func array_element(n: Int) -> Int
-    example 5 -> 0
-    var a = array_new(1, P(x: 0))
-    let peek = keep(a[0])
-    a[0].x = n
-    return peek()
-end func
-
-func list_element(n: Int) -> Int
-    example 5 -> 0
-    var ys = [P(x: 0)]
-    let peek = keep(ys[0])
-    ys[0].x = n
-    return peek()
-end func
-
-func field_read(n: Int) -> Int
-    example 5 -> 0
-    var b = Box(p: P(x: 0))
-    let peek = keep(b.p)
-    b.p.x = n
-    return peek()
-end func
-
-func let_snapshot(n: Int) -> Int
-    example 5 -> 0
-    var a = array_new(1, P(x: 0))
-    let q = a[0]
-    a[0].x = n
-    return q.x
-end func
-
-func main() -> Unit with io
-    print(array_element(5))
-    print(list_element(5))
-    print(field_read(5))
-    print(let_snapshot(5))
-    var ys = [P(x: 0)]
-    let peek = keep(ys[0])
-    ys[0].x = 5
-    print(peek())
-end func
-""",
-        {
-            "array_element": PURE,
-            "list_element": PURE,
-            "field_read": PURE,
-            "let_snapshot": PURE,
-            "main": IO,
-        },
-        _lines(0, 0, 0, 0, 0),
-        js_output=_lines(5, 5, 5, 0, 5),
-    ),
-    # Unresolved Question 7, compiled-JavaScript parity bug: a `for` loop over
-    # an `Array` iterates it live on JS and binds each element without a
-    # copy. The interpreter and compiled Python iterate a snapshot of the
-    # elements and bind each one independently. Iterating and writing an
-    # owned array is masked (the iterable position and the value-hop writes),
-    # so `seen` passes as a pure callback on every backend, and its writes
-    # stay private, but on JS it returns a different list.
-    "js-array-for-loop-iterates-live": Case(
-        """
-func seen(xs: List[Int]) -> List[Int]
-    example [1, 2, 3] -> [1, 2, 3]
-    var a = array_from_list(xs)
-    var out: List[Int] = []
-    for x in a do
-        a[2] = 99
-        out = out + [x]
-    end for
-    return out
-end func
-
-func seen_fields(n: Int) -> List[P]
-    example 5 -> [P(x: 0), P(x: 0)]
-    var a = array_new(2, P(x: 0))
-    var out: List[P] = []
-    for p in a do
-        a[1].x = n
-        out = out + [p]
-    end for
-    return out
-end func
-
-func apply(f: (List[Int]) -> List[Int], xs: List[Int]) -> List[Int]
-    example fn(ys: List[Int]) -> ys, [1] -> [1]
-    return f(xs)
-end func
-
-func main() -> Unit with io
-    let xs = [1, 2, 3]
-    print(apply(seen, xs))
-    print(seen_fields(5))
-    print(xs)
-end func
-""",
-        {"seen": PURE, "seen_fields": PURE, "apply": PURE, "main": IO},
-        _lines("[1, 2, 3]", "[P(x: 0), P(x: 0)]", "[1, 2, 3]"),
-        js_output=_lines("[1, 2, 99]", "[P(x: 0), P(x: 5)]", "[1, 2, 3]"),
-    ),
 }
 
 
@@ -1652,23 +1637,7 @@ def test_every_backend_prints_the_pinned_caller_state(
     case_id: str, backend: Callable[[str], str]
 ) -> None:
     case = ALL_CASES[case_id]
-    expected = case.output
-    if backend is _compiled_js_output and case.js_output is not None:
-        expected = case.js_output
-    assert backend(TYPES + case.source) == expected
-
-
-def test_only_known_gaps_pin_a_separate_javascript_output() -> None:
-    # A masked shape in CASES must print the same on every backend; a
-    # JavaScript-only result belongs with the pinned runtime parity bugs.
-    assert all(case.js_output is None for case in CASES.values())
-    pinned = {case_id for case_id, case in KNOWN_GAPS.items() if case.js_output}
-    assert pinned == {
-        "js-array-for-loop-iterates-live",
-        "js-element-and-field-argument-alias",
-    }
-    for case_id in pinned:
-        assert KNOWN_GAPS[case_id].js_output != KNOWN_GAPS[case_id].output
+    assert backend(TYPES + case.source) == case.output
 
 
 def test_the_impl_method_with_a_record_copy_is_pure() -> None:

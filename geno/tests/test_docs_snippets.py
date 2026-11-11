@@ -405,8 +405,8 @@ def test_runtime_semantics_argument_alias_is_current_behaviour():
     assert result.ok, [d.message for d in result.diagnostics]
     assert result.output == "7\n"
     assert "This prints `7` on every backend" in section
-    # The two compiled-JavaScript parity bugs masked shapes can reach, pinned
-    # in test_local_mutation_soundness's KNOWN_GAPS with their JS output.
+    # The two shapes compiled JavaScript used to diverge on (#241, #242) are
+    # documented as agreeing; test_write_path_parity runs them on each backend.
     prose = " ".join(section.split())
-    assert "aliases only on compiled JavaScript" in prose
-    assert "**Compiled JavaScript iterates an `Array` live.**" in prose
+    assert "does not alias on any backend" in prose
+    assert "**A `for` loop over an `Array` iterates a snapshot.**" in prose

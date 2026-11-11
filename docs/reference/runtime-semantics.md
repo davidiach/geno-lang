@@ -135,23 +135,14 @@ deliberately.
   A whole variable passed as an argument (`keep(s)`, or `keep_list(ys)` for
   a `List` of records) aliases on every backend. An element or field read
   passed as an argument (`keep(a[0])`, `keep(ys[0])`, `keep(b.p)`, then
-  `a[0].x = 5`) aliases only on compiled JavaScript: the closure returns `5`
-  there and `0` on the interpreter and compiled Python, which pass an
-  independent value. Binding the same read first (`let q = a[0]`) takes a
-  snapshot on every backend. The JavaScript behaviour is a runtime parity
-  bug, older than 0.7.
-- **Compiled JavaScript iterates an `Array` live.** A `for` loop over an
-  `Array` reads each element on JavaScript only when it reaches it, and
-  binds the element without a copy. A write the loop body makes to a later
-  slot (`a[2] = 99`) or to a field of an element (`a[1].x = n`) therefore
-  shows up in the loop on JavaScript. The interpreter and compiled Python
-  iterate a snapshot of the elements and bind each one independently. This
-  is also a JavaScript runtime parity bug, older than 0.7. Masking stays
-  sound, because the writes still reach no caller. A function that iterates
-  an array it owns while writing it is inferred pure, but it can return a
-  different result on JavaScript. Its `example` clauses, which `geno test`
-  checks on the interpreter, do not cover that backend. Until the runtime is
-  fixed, do not write an `Array` while a `for` loop iterates it.
+  `a[0].x = 5`) does not alias on any backend: the closure returns `0`,
+  because the field write first gives the slot its own copy of the record.
+  Binding the same read first (`let q = a[0]`) takes a snapshot as well.
+  Compiled JavaScript returned `5` here before this was fixed.
+- **A `for` loop over an `Array` iterates a snapshot.** A write the loop
+  body makes to a later slot (`a[2] = 99`) or to a field of an element
+  (`a[1].x = n`) does not show up in the same loop, on any backend. Compiled
+  JavaScript iterated the live array before this was fixed.
 - **Mutating builtins carry no effect.** As in 0.6, the checker does not
   charge `vec_push`, `vec_set`, `array_set`, `array_fill`, `set_add`,
   `mutable_map_set` or the other mutators on any receiver, so a function
