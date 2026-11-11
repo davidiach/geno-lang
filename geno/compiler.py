@@ -2305,7 +2305,11 @@ class Compiler(BaseCompiler, ASTVisitor):
             # Handle subpatterns
             for i, subpat in enumerate(pattern.subpatterns):
                 # Get field name from type definition
-                field_name = self._get_constructor_field_name(pattern.constructor, i)
+                field_name = (
+                    pattern.field_names[i]
+                    if pattern.field_names is not None
+                    else self._get_constructor_field_name(pattern.constructor, i)
+                )
                 field_access = f"get_field({scrutinee}, {field_name!r})"
 
                 sub_cond, sub_bindings = self._compile_pattern_condition(

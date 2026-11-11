@@ -552,10 +552,18 @@ class VariablePattern(Pattern):
 
 @dataclass
 class ConstructorPattern(Pattern):
-    """Constructor pattern: Some(x), Cons(h, t)"""
+    """Constructor pattern: Some(x), Cons(h, t)
+
+    A pattern written with field names, ``Cfg(port: p, ..)``, carries them in
+    ``field_names``, one per subpattern, and ``ignores_rest`` for its ``..``.
+    The type checker, which knows the constructor's fields, rewrites it to
+    the positional form and clears both, so every later pass sees one shape.
+    """
 
     constructor: str
     subpatterns: list[Pattern]
+    field_names: list[str] | None = field(default=None, compare=False)
+    ignores_rest: bool = field(default=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_constructor_pattern(self)

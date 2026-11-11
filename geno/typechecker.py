@@ -5438,6 +5438,46 @@ class TypeChecker(ExhaustivenessMixin):
         )
         return _ANY_TYPE
 
+    def _order_named_fields(
+        self, pattern: ConstructorPattern, declared: list[str]
+    ) -> bool:
+        """Rewrite ``Cfg(port: p, ..)`` to the positional pattern it means.
+
+        Each declared field takes the subpattern written for it, or ``_``
+        when ``..`` left it out. The names are then cleared, so exhaustiveness
+        and every backend see an ordinary constructor pattern. Returns False,
+        after reporting why, when the names do not fit the constructor.
+        """
+        assert pattern.field_names is not None
+        written = dict(zip(pattern.field_names, pattern.subpatterns))
+        unknown = [name for name in pattern.field_names if name not in declared]
+        if unknown:
+            known = ", ".join(declared) if declared else "none"
+            self._error(
+                f"Constructor {pattern.constructor} has no field "
+                f"'{unknown[0]}'; its fields are: {known}",
+                written[unknown[0]].location,
+                ErrorCode.TYPE_PATTERN_MISMATCH,
+            )
+            return False
+        missing = [name for name in declared if name not in written]
+        if missing and not pattern.ignores_rest:
+            self._error(
+                f"This {pattern.constructor} pattern leaves out "
+                f"{', '.join(missing)}; name each field or end the pattern "
+                "with '..' to ignore the rest",
+                pattern.location,
+                ErrorCode.TYPE_PATTERN_MISMATCH,
+            )
+            return False
+        pattern.subpatterns = [
+            written.get(name) or WildcardPattern(location=pattern.location)
+            for name in declared
+        ]
+        pattern.field_names = None
+        pattern.ignores_rest = False
+        return True
+
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""
         if expr.operator == SLICE_OPERATOR:
@@ -7426,6 +7466,10 @@ class TypeChecker(ExhaustivenessMixin):
                     type_param_map[param] = arg
 
             fields = type_info.variants[pattern.constructor]
+            if pattern.field_names is not None and not self._order_named_fields(
+                pattern, [name for name, _type in fields]
+            ):
+                return
             if len(pattern.subpatterns) != len(fields):
                 self._error(
                     f"Constructor {pattern.constructor} expects {len(fields)} fields, got {len(pattern.subpatterns)}",

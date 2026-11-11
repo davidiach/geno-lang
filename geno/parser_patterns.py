@@ -233,6 +233,61 @@ class PatternParserMixin(ParserBase):
             )
         return arms
 
+    def _rest_of_fields_starts(self) -> bool:
+        """Whether the next tokens are ``..``, written with two or three dots."""
+        return self._check(TokenType.DOT) and self._peek(1).type is TokenType.DOT
+
+    def _named_field_pattern_starts(self) -> bool:
+        """Whether a constructor pattern continues with ``name: pattern`` or ``..``."""
+        if self._rest_of_fields_starts():
+            return True
+        return (
+            self._check(TokenType.IDENTIFIER) and self._peek(1).type is TokenType.COLON
+        )
+
+    def _parse_named_field_patterns(
+        self, constructor: str
+    ) -> tuple[list[str], list[Pattern], bool]:
+        """Parse ``port: p, host: _, ..`` up to the closing parenthesis.
+
+        Fields may come in any order, each at most once. ``..`` ignores the
+        fields that are not named and must come last.
+        """
+        names: list[str] = []
+        patterns: list[Pattern] = []
+        while True:
+            if self._rest_of_fields_starts():
+                self._advance()
+                self._advance()
+                self._match(TokenType.DOT)  # `...` is accepted as well
+                if not self._check(TokenType.RPAREN):
+                    raise self._error(
+                        "'..' ignores the remaining fields, so it comes last "
+                        f"in a {constructor} pattern"
+                    )
+                return names, patterns, True
+            if not (
+                self._check(TokenType.IDENTIFIER)
+                and self._peek(1).type is TokenType.COLON
+            ):
+                raise self._error(
+                    f"A {constructor} pattern names all of its fields or none: "
+                    "write every field as name: pattern, or list them all in order"
+                )
+            name_token = self._advance()
+            if name_token.value in names:
+                raise ParseError(
+                    f"Field '{name_token.value}' appears twice in this "
+                    f"{constructor} pattern",
+                    name_token.location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
+                )
+            self._expect(TokenType.COLON)
+            names.append(name_token.value)
+            patterns.append(self._parse_pattern())
+            if not self._match(TokenType.COMMA):
+                return names, patterns, False
+
     def _parse_pattern_element(self) -> Pattern:
         """Parse a pattern element, including rest patterns (...)."""
         location = self._current().location
@@ -306,14 +361,30 @@ class PatternParserMixin(ParserBase):
         if self._check(TokenType.TYPE_IDENTIFIER):
             constructor = self._advance().value
             subpatterns: list[Pattern] = []
+            field_names: list[str] | None = None
+            ignores_rest = False
             if self._match(TokenType.LPAREN):
-                if not self._check(TokenType.RPAREN):
+                if self._named_field_pattern_starts():
+                    field_names, subpatterns, ignores_rest = (
+                        self._parse_named_field_patterns(constructor)
+                    )
+                elif not self._check(TokenType.RPAREN):
                     subpatterns.append(self._parse_pattern())
                     while self._match(TokenType.COMMA):
+                        if self._named_field_pattern_starts():
+                            raise self._error(
+                                f"A {constructor} pattern names all of its fields "
+                                "or none: write every field as name: pattern, or "
+                                "list them all in order"
+                            )
                         subpatterns.append(self._parse_pattern())
                 self._expect(TokenType.RPAREN)
             return ConstructorPattern(
-                location=location, constructor=constructor, subpatterns=subpatterns
+                location=location,
+                constructor=constructor,
+                subpatterns=subpatterns,
+                field_names=field_names,
+                ignores_rest=ignores_rest,
             )
 
         # Variable pattern: x

@@ -3494,11 +3494,18 @@ class Interpreter:
                 return None
             if value.constructor != pattern.constructor:
                 return None
-            if len(pattern.subpatterns) != len(value.fields):
+            if pattern.field_names is not None:
+                # Only a program that skipped type checking still names its
+                # fields here; match them by name.
+                if any(name not in value.fields for name in pattern.field_names):
+                    return None
+                field_values = [value.fields[name] for name in pattern.field_names]
+            elif len(pattern.subpatterns) != len(value.fields):
                 return None
+            else:
+                field_values = list(value.fields.values())
 
             bindings = {}
-            field_values = list(value.fields.values())
             for subpat, field_val in zip(pattern.subpatterns, field_values):
                 sub_bindings = self._match_pattern(subpat, field_val)
                 if sub_bindings is None:

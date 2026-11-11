@@ -321,6 +321,7 @@ _NO_SPACE_BEFORE = {
 _NO_SPACE_AFTER = {_T.LPAREN, _T.LBRACKET, _T.LBRACE, _T.DOT, _T.AT, _T.TILDE}
 _SIGNS = {_T.PLUS, _T.MINUS}
 _ELLIPSIS = "..."
+_REST_OF_FIELDS = ".."  # ends a named-field pattern: Cfg(port: p, ..)
 
 
 @dataclass
@@ -377,11 +378,13 @@ def _normalize_spacing(stripped: str) -> str:
         if (
             token.type is _T.DOT
             and previous is not None
-            and previous.kind in (_T.DOT, _ELLIPSIS)
+            and previous.kind in (_T.DOT, _REST_OF_FIELDS, _ELLIPSIS)
             and start == previous.start + len(previous.text)
             and len(previous.text) < 3
         ):
             previous.text += text
+            if previous.text == _REST_OF_FIELDS:
+                previous.kind = _REST_OF_FIELDS
             if previous.text == _ELLIPSIS:
                 previous.kind = _ELLIPSIS
                 previous.prefix = True
