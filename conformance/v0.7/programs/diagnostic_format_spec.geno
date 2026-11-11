@@ -1,0 +1,4 @@
+func main() -> Unit with io
+    let name = "a"
+    print(f"{name:.2f}")
+end func

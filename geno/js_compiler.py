@@ -34,6 +34,8 @@ from ._js_generics import (
     substitute_type_params,
 )
 from .ast_nodes import (
+    FORMAT_OPERATOR,
+    SLICE_OPERATOR,
     AssignStatement,
     AwaitExpr,
     BinaryOp,
@@ -93,6 +95,7 @@ from .ast_nodes import (
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 from .entrypoint import (
     EntrypointResultKind,
@@ -101,6 +104,7 @@ from .entrypoint import (
     is_async_execution_form,
     visible_type_aliases,
 )
+from .format_spec import FormatSpecError, parse_format_spec
 
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
@@ -515,6 +519,8 @@ _JS_LOCAL_RESERVED_NAMES = (
             "get_field",
             "_genoOwnField",
             "_genoOwnIndex",
+            "_genoSlice",
+            "_genoFormatSpec",
             "_divZero",
             "_safe_index",
             "_safe_index_set",
@@ -3346,7 +3352,11 @@ class JSCompiler(BaseCompiler):
                 cond = f"{scrutinee}._tag === '{pattern.constructor}'"
 
             for i, subpat in enumerate(pattern.subpatterns):
-                field_name = self._get_constructor_field_name(pattern.constructor, i)
+                field_name = (
+                    pattern.field_names[i]
+                    if pattern.field_names is not None
+                    else self._get_constructor_field_name(pattern.constructor, i)
+                )
                 field_access = f"get_field({scrutinee}, {field_name!r})"
                 sub_cond, sub_bindings = self._compile_pattern_condition(
                     subpat, field_access
@@ -3604,6 +3614,32 @@ class JSCompiler(BaseCompiler):
         raise JSCompileError(f"Unsupported expression type: {type(expr).__name__}")
 
     def _compile_binary_op(self, expr: BinaryOp) -> str:
+        if expr.operator == SLICE_OPERATOR:
+            target = self._compile_expr(expr.left)
+            start, stop = (
+                "undefined" if bound is None else self._compile_expr(bound)
+                for bound in slice_bounds(expr)
+            )
+            return f"_genoSlice({target}, {start}, {stop})"
+        if expr.operator == FORMAT_OPERATOR:
+            spec_text = cast(StringLiteral, expr.right).value
+            try:
+                spec = parse_format_spec(spec_text)
+            except FormatSpecError as error:
+                raise JSCompileError(str(error)) from error
+            arguments = [
+                self._compile_expr(expr.left),
+                _json.dumps(expr._resolved_builtin_name),
+                self._js_string_literal(spec.fill),
+                _json.dumps(spec.align),
+                _json.dumps(spec.sign),
+                _json.dumps(spec.zero),
+                str(spec.width),
+                _json.dumps(spec.comma),
+                _json.dumps(spec.precision),
+                _json.dumps(spec.type),
+            ]
+            return f"_genoFormatSpec({', '.join(arguments)})"
         left = self._compile_expr(expr.left)
         right = self._compile_expr(expr.right)
         if expr.operator == "in":

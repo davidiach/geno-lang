@@ -1,0 +1,35 @@
+type Shape = Circle(r: Int) | Square(side: Int) | Dot
+
+func first_or(xs: List[Int], fallback: Int) -> Int
+    example [], 7 -> 7
+    example [3, 4], 7 -> 3
+    return if let [x, ...] = xs then x else fallback end if
+end func
+
+func describe(o: Option[Int]) -> String
+    example Some(2) -> "small"
+    example Some(9) -> "some 9"
+    example None -> "none"
+    if let Some(2) | Some(3) = o then
+        return "small"
+    else if let Some(n) = o then
+        return f"some {n}"
+    else
+        return "none"
+    end if
+end func
+
+func main() -> Unit with io
+    print(first_or([], 7))
+    print(first_or([3, 4], 7))
+    print(describe(Some(3)))
+    print(describe(Some(9)))
+    print(describe(None))
+    let shape = Square(side: 3)
+    if let Circle(r) = shape then
+        print(r)
+    end if
+    if let Square(side) = shape then
+        print(side * side)
+    end if
+end func

@@ -20,6 +20,8 @@ from typing import Any, TypeVar, cast
 from . import builtins as _builtins
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specifications; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
+    FORMAT_OPERATOR,
+    SLICE_OPERATOR,
     AssertStatement,
     AssignStatement,
     AwaitExpr,
@@ -83,6 +85,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Specificat
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 from .builtin_registry import (
     ALWAYS_AVAILABLE_BUILTINS,
@@ -96,6 +99,7 @@ from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
 from .float_promotion import float_shape
+from .format_spec import format_value, runtime_kind
 from .harness import example_call_args, example_numbers_match
 from .panic_outcome import evaluate_panics_call
 from .runtime_report import (
@@ -2347,6 +2351,28 @@ class Interpreter:
     def _eval_binary_op(self, expr: BinaryOp, env: Environment) -> Any:
         """Evaluate a binary operation."""
         operator = expr.operator
+        if operator == SLICE_OPERATOR:
+            target = self.eval_expr(expr.left, env)
+            start, stop = (
+                None if bound is None else self.eval_expr(bound, env)
+                for bound in slice_bounds(expr)
+            )
+            if not isinstance(target, (list, str)):
+                raise RuntimeError("A slice takes a List or a String", expr.location)
+            # Python's slicing is the rule: a negative bound counts from the
+            # end and one past either end is clamped. Strings slice by code
+            # point, like indexing.
+            return target[start:stop]
+        if operator == FORMAT_OPERATOR:
+            value = self.eval_expr(expr.left, env)
+            spec_text = cast(StringLiteral, expr.right).value
+            kind = expr._resolved_builtin_name or runtime_kind(spec_text, value)
+            if kind == "text" and not isinstance(value, str):
+                value = self._builtin_stringify_value(value)
+            try:
+                return format_value(value, spec_text, kind)
+            except ValueError as error:
+                raise RuntimeError(str(error), expr.location) from error
         if operator == "and":
             left = self.eval_expr(expr.left, env)
             if not left:
@@ -3480,11 +3506,18 @@ class Interpreter:
                 return None
             if value.constructor != pattern.constructor:
                 return None
-            if len(pattern.subpatterns) != len(value.fields):
+            if pattern.field_names is not None:
+                # Only a program that skipped type checking still names its
+                # fields here; match them by name.
+                if any(name not in value.fields for name in pattern.field_names):
+                    return None
+                field_values = [value.fields[name] for name in pattern.field_names]
+            elif len(pattern.subpatterns) != len(value.fields):
                 return None
+            else:
+                field_values = list(value.fields.values())
 
             bindings = {}
-            field_values = list(value.fields.values())
             for subpat, field_val in zip(pattern.subpatterns, field_values):
                 sub_bindings = self._match_pattern(subpat, field_val)
                 if sub_bindings is None:

@@ -1,0 +1,22 @@
+type Cfg = Cfg(host: String, port: Int, debug: Bool)
+
+func describe(c: Cfg) -> String
+    example Cfg(host: "a", port: 80, debug: true) -> "debug a"
+    example Cfg(host: "b", port: 443, debug: false) -> "secure"
+    example Cfg(host: "c", port: 1, debug: false) -> "c:1"
+    match c with
+        | Cfg(debug: true, host: h, ..) -> return f"debug {h}"
+        | Cfg(port: 443, ..) -> return "secure"
+        | Cfg(debug: _, port: p, host: h) -> return f"{h}:{p}"
+    end match
+end func
+
+func main() -> Unit with io
+    let c = Cfg(host: "x", port: 8080, debug: false)
+    print(describe(c))
+    print(describe(Cfg(host: "y", port: 443, debug: false)))
+    print(describe(Cfg(host: "z", port: 1, debug: true)))
+    if let Cfg(host: h, ..) = c then
+        print(h)
+    end if
+end func

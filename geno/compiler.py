@@ -42,6 +42,8 @@ from ._definition_index import collect_definitions
 from ._prelude_bindings import PRELUDE_BINDING_NAMES, PRELUDE_SOURCE_SHA256
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program
     FLOAT_PROMOTION_UNKNOWN,
+    FORMAT_OPERATOR,
+    SLICE_OPERATOR,
     AssignStatement,
     ASTVisitor,
     AwaitExpr,
@@ -104,6 +106,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 
 if TYPE_CHECKING:
@@ -260,6 +263,8 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "get_field",
             "_geno_own_field",
             "_geno_own_index",
+            "_geno_slice",
+            "_geno_format_spec",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -2302,7 +2307,11 @@ class Compiler(BaseCompiler, ASTVisitor):
             # Handle subpatterns
             for i, subpat in enumerate(pattern.subpatterns):
                 # Get field name from type definition
-                field_name = self._get_constructor_field_name(pattern.constructor, i)
+                field_name = (
+                    pattern.field_names[i]
+                    if pattern.field_names is not None
+                    else self._get_constructor_field_name(pattern.constructor, i)
+                )
                 field_access = f"get_field({scrutinee}, {field_name!r})"
 
                 sub_cond, sub_bindings = self._compile_pattern_condition(
@@ -2978,6 +2987,20 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_binary_op(self, expr: BinaryOp) -> str:
         """Compile a binary operation."""
+        if expr.operator == SLICE_OPERATOR:
+            target = self._compile_expr(expr.left)
+            start, stop = (
+                "None" if bound is None else self._compile_expr(bound)
+                for bound in slice_bounds(expr)
+            )
+            return f"_geno_slice({target}, {start}, {stop})"
+        if expr.operator == FORMAT_OPERATOR:
+            value = self._compile_expr(expr.left)
+            spec = self._emit_python_string_literal(
+                cast(StringLiteral, expr.right).value
+            )
+            kind = repr(expr._resolved_builtin_name)
+            return f"_geno_format_spec({value}, {spec}, {kind})"
         if expr._resolved_builtin_name == "concat":
             # List + List: concat's arguments, widened like any Int list
             # passed where a Float list is expected.

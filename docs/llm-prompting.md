@@ -69,6 +69,12 @@ Key syntax rules:
   names beginning with `_` that the runtime uses are reserved
 ```
 
+Four forms need no rule in the prompt, because they are what models already
+write (0.7 development line, proposal 0023): format specs in f-strings
+(`f"{x:.2f}"`, `f"{n:05d}"`, `f"{total:,}"`, `f"{name:>10}"`), slices of a
+List or a String (`xs[1:3]`, `xs[-2:]`, `s[1:-1]`), patterns that name fields
+(`Cfg(port: p, ..)`) and `if let Some(x) = value then ... end if`.
+
 ## Common LLM Mistakes
 
 ### 1. Using `let mut` instead of `var`

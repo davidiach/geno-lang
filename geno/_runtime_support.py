@@ -715,6 +715,55 @@ def contains(lst: list[Any], item: Any) -> bool:
     return item in lst
 
 
+def _geno_slice(target: Any, start: Any, stop: Any) -> Any:
+    """``target[start:stop]`` on a List or a String.
+
+    A bound is ``None`` when the slice left it out. A negative bound counts
+    from the end and one past either end is clamped, so this never fails for
+    Int bounds. Strings slice by code point.
+    """
+    if not isinstance(target, (list, str)):
+        raise RuntimeError("A slice takes a List or a String")
+    for bound in (start, stop):
+        if bound is not None and type(bound) is not int:
+            raise RuntimeError("A slice bound must be an integer")
+    return target[start:stop]
+
+
+def _geno_format_spec(value: Any, spec: str, kind: Any = None) -> str:
+    """``f"{value:spec}"``: format one interpolation under its spec.
+
+    The compiler checked ``spec`` and chose ``kind``: ``"int"``, ``"float"``
+    or ``"text"``, for which ``value`` is already the string to pad. Python's
+    format mini-language defines what each spec writes; it is applied through
+    an f-string because the sandbox worker has no ``format`` builtin. A program that skipped type
+    checking passes no kind, and the value's own type picks it.
+    """
+    if kind is None:
+        type_ = spec[-1:]
+        if type_ and type_ in "dxXob":
+            kind = "int"
+        elif type_ and type_ in "fe%":
+            kind = "float"
+        elif type_ != "s" and type(value) is int:
+            kind = "int"
+        else:
+            kind = "text"
+            if not isinstance(value, str):
+                value = to_string(value)
+    if kind == "int":
+        if type(value) is not int:
+            raise RuntimeError(f"Format spec '{spec}' needs an Int")
+        return f"{value:{spec}}"
+    if kind == "float":
+        if type(value) not in (int, float):
+            raise RuntimeError(f"Format spec '{spec}' needs an Int or a Float")
+        return f"{float(value):{spec}}"
+    if not isinstance(value, str):
+        raise RuntimeError(f"Format spec '{spec}' needs a String here")
+    return f"{value:{spec}}"
+
+
 def _geno_in(element: Any, container: Any, member: Any = None) -> bool:
     """``element in container``, the operands evaluated in source order.
 

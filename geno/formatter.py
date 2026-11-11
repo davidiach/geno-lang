@@ -321,6 +321,7 @@ _NO_SPACE_BEFORE = {
 _NO_SPACE_AFTER = {_T.LPAREN, _T.LBRACKET, _T.LBRACE, _T.DOT, _T.AT, _T.TILDE}
 _SIGNS = {_T.PLUS, _T.MINUS}
 _ELLIPSIS = "..."
+_REST_OF_FIELDS = ".."  # ends a named-field pattern: Cfg(port: p, ..)
 
 
 @dataclass
@@ -331,13 +332,15 @@ class _Piece:
     text: str
     start: int
     prefix: bool = False  # a sign, ``?`` hole or ``...`` written before its operand
+    tight: bool = False  # the ``:`` of a slice, written without spaces: ``xs[1:3]``
 
 
 def _normalize_spacing(stripped: str) -> str:
     """Put canonical spaces between the tokens of one stripped source line.
 
     One space around binary operators and ``->``, after ``,`` and ``:``, none
-    inside brackets, before a call's ``(`` or after a sign. Token text,
+    inside brackets, before a call's ``(``, after a sign or around a slice's
+    ``:``. Token text,
     strings and comments are copied exactly; a line the lexer cannot read on
     its own is left as it is.
     """
@@ -366,6 +369,8 @@ def _normalize_spacing(stripped: str) -> str:
         ):
             starts[position] -= 1
     pieces: list[_Piece] = []
+    # Open brackets, innermost last; True for the ``[`` of an index or slice.
+    open_brackets: list[bool] = []
     for position, token in enumerate(tokens):
         start = starts[position]
         text = code[start : starts[position + 1]].rstrip()
@@ -373,11 +378,13 @@ def _normalize_spacing(stripped: str) -> str:
         if (
             token.type is _T.DOT
             and previous is not None
-            and previous.kind in (_T.DOT, _ELLIPSIS)
+            and previous.kind in (_T.DOT, _REST_OF_FIELDS, _ELLIPSIS)
             and start == previous.start + len(previous.text)
             and len(previous.text) < 3
         ):
             previous.text += text
+            if previous.text == _REST_OF_FIELDS:
+                previous.kind = _REST_OF_FIELDS
             if previous.text == _ELLIPSIS:
                 previous.kind = _ELLIPSIS
                 previous.prefix = True
@@ -389,7 +396,17 @@ def _normalize_spacing(stripped: str) -> str:
         prefix = (token.type in _SIGNS or token.type is _T.QUESTION) and (
             not operand_before
         )
-        pieces.append(_Piece(token.type, text, start, prefix))
+        if token.type in (_T.LPAREN, _T.LBRACKET, _T.LBRACE):
+            # `func name[T: Bound]` declares type parameters; its `:` is a
+            # bound, spaced like an annotation.
+            declares = len(pieces) >= 2 and pieces[-2].kind in (_T.FUNC, _T.TYPE)
+            open_brackets.append(
+                token.type is _T.LBRACKET and operand_before and not declares
+            )
+        elif token.type in (_T.RPAREN, _T.RBRACKET, _T.RBRACE) and open_brackets:
+            open_brackets.pop()
+        tight = token.type is _T.COLON and bool(open_brackets) and open_brackets[-1]
+        pieces.append(_Piece(token.type, text, start, prefix, tight))
 
     parts = [pieces[0].text]
     for previous, piece in pairwise(pieces):
@@ -406,7 +423,7 @@ def _space_between(previous: _Piece, piece: _Piece) -> str:
     kind = piece.kind
     if kind in _NO_SPACE_BEFORE and kind is not _ELLIPSIS:
         return ""
-    if previous.kind in _NO_SPACE_AFTER or previous.prefix:
+    if previous.kind in _NO_SPACE_AFTER or previous.prefix or previous.tight:
         return ""
     if kind is _T.QUESTION and not piece.prefix:
         return ""  # ``f(x)?`` propagates

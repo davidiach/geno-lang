@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from .target_profile import TargetProfile
 
 from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definitions; Program; Visitor
+    FORMAT_OPERATOR,
+    SLICE_OPERATOR,
     AssertStatement,
     AssignStatement,
     AwaitExpr,
@@ -96,6 +98,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     WhileStatement,
     WildcardPattern,
     WithExpr,
+    slice_bounds,
 )
 from .builtin_registry import VALID_EFFECTS, source_builtin_specs
 from .constructor_args import constructor_argument_order
@@ -103,6 +106,7 @@ from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
+from .format_spec import FormatSpecError, parse_format_spec, value_kind
 from .mutation_ownership import function_owned_names, lambda_owned_names
 from .parser_patterns import pattern_bound_names
 from .stdlib_scope import binds_unqualified
@@ -5411,8 +5415,112 @@ class TypeChecker(ExhaustivenessMixin):
         expr._resolved_builtin_name = "concat"
         return result
 
+    def _check_format_spec(self, expr: BinaryOp, env: TypeEnv) -> Type:
+        """``{value:spec}`` in an f-string: the spec must fit the value's type.
+
+        Records how the runtime formats the value: as an Int, as a Float, or
+        as text. For text the value becomes its own one-part f-string, so the
+        backends pad exactly what the f-string would have written.
+        """
+        value_type = self._check_expression(expr.left, env)
+        spec_text = cast(StringLiteral, expr.right).value
+        if isinstance(value_type, IntType):
+            static_kind = "int"
+        elif isinstance(value_type, FloatType):
+            static_kind = "float"
+        else:
+            static_kind = "text"
+        try:
+            spec = parse_format_spec(spec_text)
+            kind = value_kind(spec, static_kind, spec_text)
+        except FormatSpecError as error:
+            if not isinstance(value_type, AnyType):
+                self._error(str(error), expr.right.location, ErrorCode.TYPE_FORMAT_SPEC)
+            return _STRING_TYPE
+        expr._resolved_builtin_name = kind
+        if kind == "text" and static_kind == "float" and not spec.align:
+            # A number is right-aligned unless the spec says otherwise, also
+            # when it is padded as the text `to_string` writes.
+            cast(StringLiteral, expr.right).value = ">" + spec_text
+        if (
+            kind == "text"
+            and not isinstance(value_type, StringType)
+            and not isinstance(expr.left, FStringExpr)
+        ):
+            expr.left = FStringExpr(location=expr.left.location, parts=[expr.left])
+        return _STRING_TYPE
+
+    def _check_slice(self, expr: BinaryOp, env: TypeEnv) -> Type:
+        """``xs[a:b]``: part of a List or a String, with Int bounds.
+
+        A bound may be left out or negative, and one past either end is
+        clamped, so a slice never fails at run time.
+        """
+        target_type = self._check_expression(expr.left, env)
+        for name, bound in zip(("start", "stop"), slice_bounds(expr)):
+            if bound is None:
+                continue
+            bound_type = self._check_expression(bound, env)
+            if not isinstance(bound_type, (IntType, AnyType, NeverType)):
+                self._error(
+                    f"Slice {name} must be Int, got {_display_type(bound_type)}",
+                    bound.location,
+                )
+        if isinstance(target_type, (ListType, StringType, AnyType)):
+            return target_type
+        self._error(
+            f"Cannot slice {_display_type(target_type)}: a slice takes part of "
+            "a List or a String",
+            expr.location,
+        )
+        return _ANY_TYPE
+
+    def _order_named_fields(
+        self, pattern: ConstructorPattern, declared: list[str]
+    ) -> bool:
+        """Rewrite ``Cfg(port: p, ..)`` to the positional pattern it means.
+
+        Each declared field takes the subpattern written for it, or ``_``
+        when ``..`` left it out. The names are then cleared, so exhaustiveness
+        and every backend see an ordinary constructor pattern. Returns False,
+        after reporting why, when the names do not fit the constructor.
+        """
+        assert pattern.field_names is not None
+        written = dict(zip(pattern.field_names, pattern.subpatterns))
+        unknown = [name for name in pattern.field_names if name not in declared]
+        if unknown:
+            known = ", ".join(declared) if declared else "none"
+            self._error(
+                f"Constructor {pattern.constructor} has no field "
+                f"'{unknown[0]}'; its fields are: {known}",
+                written[unknown[0]].location,
+                ErrorCode.TYPE_PATTERN_MISMATCH,
+            )
+            return False
+        missing = [name for name in declared if name not in written]
+        if missing and not pattern.ignores_rest:
+            self._error(
+                f"This {pattern.constructor} pattern leaves out "
+                f"{', '.join(missing)}; name each field or end the pattern "
+                "with '..' to ignore the rest",
+                pattern.location,
+                ErrorCode.TYPE_PATTERN_MISMATCH,
+            )
+            return False
+        pattern.subpatterns = [
+            written.get(name) or WildcardPattern(location=pattern.location)
+            for name in declared
+        ]
+        pattern.field_names = None
+        pattern.ignores_rest = False
+        return True
+
     def _check_binary_op(self, expr: BinaryOp, env: TypeEnv) -> Type:
         """Type check a binary operation."""
+        if expr.operator == SLICE_OPERATOR:
+            return self._check_slice(expr, env)
+        if expr.operator == FORMAT_OPERATOR:
+            return self._check_format_spec(expr, env)
         left_type = self._check_expression(expr.left, env)
         right_type = self._check_expression(expr.right, env)
 
@@ -7220,7 +7328,9 @@ class TypeChecker(ExhaustivenessMixin):
             else:
                 merged_type = self._merge_match_expr_result_types(result_type, arm_type)
                 if merged_type is None:
-                    what = "If branch" if expr.from_if else "Match arm"
+                    what = (
+                        "If branch" if expr.from_if or expr.from_if_let else "Match arm"
+                    )
                     self._error(
                         f"{what} type mismatch: expected "
                         f"{_display_type(result_type)}, got {_display_type(arm_type)}",
@@ -7395,6 +7505,10 @@ class TypeChecker(ExhaustivenessMixin):
                     type_param_map[param] = arg
 
             fields = type_info.variants[pattern.constructor]
+            if pattern.field_names is not None and not self._order_named_fields(
+                pattern, [name for name, _type in fields]
+            ):
+                return
             if len(pattern.subpatterns) != len(fields):
                 self._error(
                     f"Constructor {pattern.constructor} expects {len(fields)} fields, got {len(pattern.subpatterns)}",

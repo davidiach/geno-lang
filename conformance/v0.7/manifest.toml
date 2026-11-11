@@ -483,3 +483,48 @@ path = "programs/cold_write_diagnostic_missing_return_type.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E201"]
+
+# Proposal 0023 (Accepted): f-string format specs, slices, named-field patterns
+# and if let. Each form was a parse error before. The spec grid against
+# Python's format, the rejected forms and formatter spacing are covered by
+# geno/tests/test_fstring_format_specs.py, test_slicing.py,
+# test_named_field_patterns.py and test_if_let.py.
+
+[[cases]]
+id = "if-let"
+path = "programs/if_let.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "7\n3\nsmall\nsome 9\nnone\n9\n"
+
+[[cases]]
+id = "slices"
+path = "programs/slices.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "[2, 3]\n[1, 2]\n[4, 5]\n[1, 2, 3, 4, 5]\n[4, 5]\n[4, 5]\n[]\néllo\nwörld\n[2, 3, 4]\n[1, 2, 3, 4, 5]\n"
+
+[[cases]]
+id = "named-field-patterns"
+path = "programs/named_field_patterns.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "x:8080\nsecure\ndebug z\nx\n"
+
+[[cases]]
+id = "fstring-format-specs"
+path = "programs/fstring_format_specs.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "[   42] [42   ] [ 42  ] [00042] [+42] [2a] [101010]\n[1,234,567] [   1,234,567] [-1,234,567]\n[3.14] [   3.142] [+3] [3.14e+00] [314.2%] [42.0]\n[2] [0] [2] [0.12]\n[   héllo] [**héllo**] [hél] [  [1, 2]] [   3.14159]\n[  42] [  [2, 3]] [:::42]\n"
+
+[[cases]]
+id = "diagnostic-format-spec"
+path = "programs/diagnostic_format_spec.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E331"]

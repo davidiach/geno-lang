@@ -13,6 +13,20 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- Four more forms models write, from accepted
+  [proposal 0023](docs/proposals/0023-format-specs-slices-named-patterns-if-let.md).
+  Each was a parse error before, so every accepted program keeps its meaning:
+  - F-string format specs: `f"{price:.2f}"`, `f"{n:05d}"`, `f"{total:,}"`,
+    `f"{name:>10}"`, `f"{ratio:.1%}"`. The spec is a subset of Python's, and
+    every backend writes what Python's `format` writes, ties included. A spec
+    that is malformed or does not fit its value is the new diagnostic E331.
+  - Slices of a List or a String: `xs[1:3]`, `xs[:2]`, `xs[-2:]`, `s[1:-1]`.
+    A negative bound counts from the end and a bound past either end is
+    clamped, so a slice never fails.
+  - Constructor patterns that name their fields: `Cfg(port: p, ..)`, in any
+    order, with `..` for the fields that are not named.
+  - `if let Some(x) = value then ... else ... end if`, as a statement or an
+    expression, chaining with `else if let`.
 - Forms models write from other languages' habits, from accepted
   [proposal 0026](docs/proposals/0026-cold-write-forms.md); every previously
   accepted program keeps its meaning:

@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import NoReturn, Union
 
 from .ast_nodes import (
+    FORMAT_OPERATOR,
+    SLICE_OPERATOR,
     AwaitExpr,
     BinaryOp,
     BooleanLiteral,
@@ -31,6 +33,7 @@ from .ast_nodes import (
     MapLiteral,
     MatchArm,
     MatchExpr,
+    Pattern,
     Pipeline,
     PipelineStage,
     PlaceholderExpr,
@@ -42,13 +45,38 @@ from .ast_nodes import (
     TypedHole,
     TypeIdentifier,
     UnaryOp,
+    WildcardPattern,
     WithExpr,
 )
 from .diagnostics import ErrorCode, Fix, TextEdit, replace_fix
-from .lexer import Lexer, LexerError
+from .lexer import Lexer, LexerError, string_literal_end
 from .parser_base import REMOVED_THROW, ParseError, ParserBase
 from .parser_patterns import first_await
 from .tokens import SourceLocation, Token, TokenType, token_type_to_str
+
+
+def _format_spec_start(expr_text: str) -> int | None:
+    """Where an interpolation's format spec starts, or None without one.
+
+    The spec follows the first ``:`` that is outside every bracket and string
+    literal: a named argument or a slice is inside brackets, so its colon is
+    not that one. Everything after it is the spec, a ``:`` fill included.
+    """
+    depth = 0
+    index = 0
+    while index < len(expr_text):
+        char = expr_text[index]
+        if char == '"':
+            index = string_literal_end(expr_text, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ":" and depth == 0:
+            return index
+        index += 1
+    return None
 
 
 class ExpressionParserMixin(ParserBase):
@@ -359,9 +387,15 @@ class ExpressionParserMixin(ParserBase):
                     location=expr.location, function=expr, arguments=args
                 )
             elif current_type is TokenType.LBRACKET:
-                self._advance()
+                bracket = self._advance()
+                if self._current_type is TokenType.COLON:
+                    expr = self._parse_slice(expr, None, bracket.location)
+                    continue
                 # Index access
                 index = self._parse_expression()
+                if self._current_type is TokenType.COLON:
+                    expr = self._parse_slice(expr, index, bracket.location)
+                    continue
                 self._expect(TokenType.RBRACKET)
                 expr = IndexAccess(location=expr.location, target=expr, index=index)
             elif current_type is TokenType.DOT:
@@ -397,6 +431,41 @@ class ExpressionParserMixin(ParserBase):
                 break
         return expr
 
+    def _parse_slice(
+        self,
+        target: Expression,
+        start: Expression | None,
+        bracket: SourceLocation,
+    ) -> BinaryOp:
+        """Parse the rest of ``target[start:stop]`` from its ``:``.
+
+        Either bound may be left out. The slice is a binary operation on the
+        target and the pair of bounds, so every pass that walks operands
+        reaches all three.
+        """
+        self._expect(TokenType.COLON)
+        stop: Expression | None = None
+        if self._current_type not in (TokenType.RBRACKET, TokenType.COLON):
+            stop = self._parse_expression()
+        if self._current_type is TokenType.COLON:
+            raise self._error(
+                "A slice takes no step: write xs[start:stop]. Use reverse(xs) "
+                "to reverse, or a comprehension to take every nth element"
+            )
+        self._expect(TokenType.RBRACKET)
+
+        def bound(value: Expression | None) -> Expression:
+            return (
+                value if value is not None else TupleExpr(location=bracket, elements=[])
+            )
+
+        return BinaryOp(
+            location=target.location,
+            operator=SLICE_OPERATOR,
+            left=target,
+            right=TupleExpr(location=bracket, elements=[bound(start), bound(stop)]),
+        )
+
     def _parse_with_expr(self, target: Expression) -> WithExpr:
         """Parse: expr with (field1: val1, field2: val2, ...)"""
         self._expect(TokenType.WITH)
@@ -430,9 +499,21 @@ class ExpressionParserMixin(ParserBase):
             if expr_start - 1 > text_start:
                 parts.append(raw[text_start : expr_start - 1])
             expr_text = raw[expr_start:expr_end]
+            spec_at = _format_spec_start(expr_text)
+            spec_text = None
+            if spec_at is not None:
+                expr_text, spec_text = expr_text[:spec_at], expr_text[spec_at + 1 :]
             if not expr_text.strip():
                 raise ParseError("Empty expression in f-string", expr_location)
-            parts.append(self._parse_fstring_expr(expr_text, expr_location))
+            value = self._parse_fstring_expr(expr_text, expr_location)
+            if spec_text is not None:
+                value = BinaryOp(
+                    location=value.location,
+                    operator=FORMAT_OPERATOR,
+                    left=value,
+                    right=StringLiteral(location=expr_location, value=spec_text),
+                )
+            parts.append(value)
             text_start = expr_end + 1  # past the closing `}`
         if text_start < len(raw):
             parts.append(raw[text_start:])
@@ -860,7 +941,26 @@ class ExpressionParserMixin(ParserBase):
     def _parse_if_expression_chain(self) -> MatchExpr:
         location = self._current().location
         self._expect(TokenType.IF)
+        if_let_patterns: list[Pattern] | None = None
+        if self._match(TokenType.LET):
+            # `if let PATTERN = value then a else b end if`: a match on the
+            # pattern, with the else branch as the arm for everything else.
+            if_let_patterns = self._parse_arm_patterns()
+            if not self._check(TokenType.ASSIGN):
+                raise self._error(
+                    "Expected '=' after the pattern: if let PATTERN = value then"
+                )
+            self._advance()
         condition = self._parse_expression()
+        if (
+            if_let_patterns is not None
+            and self._check(TokenType.IDENTIFIER)
+            and self._current().value == "when"
+        ):
+            raise self._error(
+                "if let takes no guard. Test the condition inside the branch, "
+                "or write a match, whose arms take `when`"
+            )
         self._expect(TokenType.THEN)
         then_value = self._parse_expression()
         if not self._match(TokenType.ELSE):
@@ -872,6 +972,25 @@ class ExpressionParserMixin(ParserBase):
             else_value: Expression = self._parse_if_expression_chain()
         else:
             else_value = self._parse_expression()
+        if if_let_patterns is not None:
+            then_body: list[Statement] = [
+                ReturnStatement(location=then_value.location, value=then_value)
+            ]
+            let_arms = self._or_pattern_arms(
+                if_let_patterns, None, then_body, then_value.location
+            )
+            let_arms.append(
+                MatchArm(
+                    pattern=WildcardPattern(location=else_value.location),
+                    body=[
+                        ReturnStatement(location=else_value.location, value=else_value)
+                    ],
+                    location=else_value.location,
+                )
+            )
+            let_expr = MatchExpr(location=location, scrutinee=condition, arms=let_arms)
+            let_expr.from_if_let = True
+            return let_expr
         arms = [
             MatchArm(
                 pattern=LiteralPattern(location=then_value.location, value=True),

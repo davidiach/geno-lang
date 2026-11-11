@@ -1247,6 +1247,139 @@ function _safe_index(target, index) {
     throw new Error("Cannot index into " + typeof target);
 }
 
+// ---------------------------------------------------------------------------
+// Format specs: f"{value:spec}"
+//
+// Python's format() defines what a spec writes, so these reproduce it. Number
+// conversion is exact: a double is taken apart into an integer and a power of
+// two, scaled in BigInt arithmetic and rounded half to even, which is what
+// Python does. toFixed() rounds a tie away from zero and would differ.
+// ---------------------------------------------------------------------------
+
+// round-half-even(|x| * 10^power) as a BigInt, for a finite double x.
+function _genoScaledDecimal(x, power) {
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, Math.abs(x));
+    const bits = view.getBigUint64(0);
+    const biased = Number((bits >> 52n) & 0x7ffn);
+    let mantissa = bits & 0xfffffffffffffn;
+    if (biased !== 0) mantissa |= 1n << 52n;
+    const exponent = (biased === 0 ? 1 : biased) - 1075;
+    let numerator = mantissa;
+    let denominator = 1n;
+    if (exponent >= 0) numerator <<= BigInt(exponent);
+    else denominator <<= BigInt(-exponent);
+    if (power >= 0) numerator *= 10n ** BigInt(power);
+    else denominator *= 10n ** BigInt(-power);
+    let quotient = numerator / denominator;
+    const twice = (numerator % denominator) * 2n;
+    if (twice > denominator || (twice === denominator && quotient % 2n === 1n)) {
+        quotient += 1n;
+    }
+    return quotient;
+}
+
+function _genoGroupDigits(digits) {
+    return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// The digits of |x| in fixed notation with `precision` decimals.
+function _genoFixedDigits(x, precision, comma) {
+    let digits = _genoScaledDecimal(x, precision).toString();
+    if (digits.length <= precision) digits = "0".repeat(precision - digits.length + 1) + digits;
+    let whole = digits.slice(0, digits.length - precision);
+    if (comma) whole = _genoGroupDigits(whole);
+    return precision === 0 ? whole : whole + "." + digits.slice(digits.length - precision);
+}
+
+// The digits of |x| in exponent notation with `precision` decimals.
+function _genoExponentDigits(x, precision) {
+    let exponent = 0;
+    let digits = "0".repeat(precision + 1);
+    if (x !== 0) {
+        exponent = Math.floor(Math.log10(Math.abs(x)));
+        for (;;) {
+            digits = _genoScaledDecimal(x, precision - exponent).toString();
+            if (digits.length > precision + 1) exponent += 1;
+            else if (digits.length < precision + 1) exponent -= 1;
+            else break;
+        }
+    }
+    const mantissa = precision === 0 ? digits : digits[0] + "." + digits.slice(1);
+    const magnitude = Math.abs(exponent).toString().padStart(2, "0");
+    return mantissa + "e" + (exponent < 0 ? "-" : "+") + magnitude;
+}
+
+function _genoFormatSpec(value, kind, fill, align, sign, zero, width, comma, precision, type) {
+    if (kind === null) {
+        if ("dxXob".includes(type) && type !== "") kind = "int";
+        else if ("fe%".includes(type) && type !== "") kind = "float";
+        else if (type !== "s" && (typeof value === "bigint" || _GENO_NUMBER.isInteger(value))) kind = "int";
+        else {
+            kind = "text";
+            if (typeof value !== "string") value = to_string(value);
+        }
+    }
+    let body;
+    let prefix = "";
+    let numeric = true;
+    if (kind === "int") {
+        if (typeof value !== "bigint" && !_GENO_NUMBER.isInteger(value)) {
+            throw new Error("Format spec needs an Int");
+        }
+        const whole = BigInt(value);
+        const negative = whole < 0n;
+        const magnitude = negative ? -whole : whole;
+        const base = { x: 16, X: 16, o: 8, b: 2 }[type] || 10;
+        body = magnitude.toString(base);
+        if (type === "X") body = body.toUpperCase();
+        if (comma) body = _genoGroupDigits(body);
+        prefix = negative ? "-" : sign === "+" ? "+" : sign === " " ? " " : "";
+    } else if (kind === "float") {
+        if (typeof value !== "number") throw new Error("Format spec needs an Int or a Float");
+        const negative = value < 0 || Object.is(value, -0);
+        const digits = precision === null ? 6 : precision;
+        // Like Python, % multiplies the double by 100 and then formats it.
+        const shown = type === "%" ? value * 100 : value;
+        if (_GENO_NUMBER.isNaN(shown)) body = "nan";
+        else if (!_GENO_NUMBER.isFinite(shown)) body = "inf";
+        else if (type === "e") body = _genoExponentDigits(shown, digits);
+        else body = _genoFixedDigits(shown, digits, comma);
+        if (type === "%") body += "%";
+        prefix = negative && !_GENO_NUMBER.isNaN(value) ? "-" : sign === "+" ? "+" : sign === " " ? " " : "";
+    } else {
+        if (typeof value !== "string") throw new Error("Format spec needs a String here");
+        numeric = false;
+        body = precision === null ? value : _stringCodePoints(value).slice(0, precision).join("");
+    }
+    const length = _stringCodePoints(prefix + body).length;
+    if (length >= width) return prefix + body;
+    const missing = width - length;
+    if (zero) return prefix + "0".repeat(missing) + body;
+    const pad = fill === "" ? " " : fill;
+    const side = align === "" ? (numeric ? ">" : "<") : align;
+    if (side === "<") return prefix + body + pad.repeat(missing);
+    if (side === ">") return pad.repeat(missing) + prefix + body;
+    const left = Math.floor(missing / 2);
+    return pad.repeat(left) + prefix + body + pad.repeat(missing - left);
+}
+
+// `target[start:stop]` on a List or a String. A bound is undefined when the
+// slice left it out. As in Python, a negative bound counts from the end and
+// one past either end is clamped. Strings slice by code point.
+function _genoSlice(target, start, stop) {
+    for (const bound of [start, stop]) {
+        if (bound !== undefined && !_GENO_NUMBER.isInteger(bound)) {
+            throw new Error("A slice bound must be an integer");
+        }
+    }
+    if (Array.isArray(target)) return target.slice(start, stop);
+    if (typeof target === 'string') {
+        return _stringCodePoints(target).slice(start, stop).join("");
+    }
+    throw new Error("A slice takes a List or a String");
+}
+
 function _safe_index_set(target, index, value) {
     _checkCollectionSize(index);
     _checkCollectionSize(value);
