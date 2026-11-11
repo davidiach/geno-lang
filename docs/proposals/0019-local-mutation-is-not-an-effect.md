@@ -1351,6 +1351,13 @@ list of causes explains.
    JavaScript's output recorded separately where it differs, so a fix shows
    up as a deliberate test change.
 
+   **Update (2026-11-11):** the two JavaScript parity bugs are fixed (#241,
+   #242). The pinned cases are now ordinary every-backend cases,
+   `array-for-loop-iterates-a-snapshot` and
+   `element-and-field-arguments-do-not-alias`, and the text above and in
+   section 6 describes the behaviour before that fix. The argument-passing
+   deviation on every backend remains (#243).
+
 ## Implementation Plan
 
 Four sequential packages; each leaves the tree green and builds on the
