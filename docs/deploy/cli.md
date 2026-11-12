@@ -158,6 +158,8 @@ jobs:
       - run: pip install geno-lang
       - run: geno check .
       - run: geno test .
+      # Optional: also run the examples in the compiled code you ship.
+      - run: geno test --backend python .
       - run: geno compile Main.geno -o app.py
       - uses: actions/upload-artifact@v4
         with:

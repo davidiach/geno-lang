@@ -13,6 +13,14 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- `geno test --backend interpreter|python|js|all` (Experimental), from accepted
+  [proposal 0024](docs/proposals/0024-test-backends.md). `python` and `js`
+  run every example and `test` block in compiled code, built the way `geno
+  compile` builds it, in a subprocess with the test grant and a hard
+  per-case timeout. `all` runs the three backends and reports every case
+  whose outcome differs between them. The default is still the interpreter.
+  A compiled run's `--json` output names its `backend`; a plain run's is
+  unchanged. `--properties` stays interpreter only, and `js` needs `node`.
 - Self tail calls run in constant stack on the interpreter, compiled Python
   and compiled JavaScript, from accepted
   [proposal 0022](docs/proposals/0022-self-tail-calls.md). A function that
@@ -510,6 +518,10 @@ package version stays 0.6.0, and the Draft
 
 ### Fixed
 
+- Compiled JavaScript: a `Unit` function that ended without a `return`
+  yielded a value that did not equal `()`, so `nothing() == ()` was `false`
+  there and `true` on the interpreter and in compiled Python. Found by
+  `geno test --backend all`.
 - A tuple pattern matched against a value that is not a tuple is one error:
   the names it binds no longer add "Undefined variable" errors, one of which
   carried a rename fix to an unrelated variable.

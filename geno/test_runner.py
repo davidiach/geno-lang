@@ -21,6 +21,7 @@ from .execution_limits import (
     DEFAULT_TEST_TIMEOUT,
 )
 from .harness import (
+    CaseOutcome,
     FunctionHarness,
     HarnessResult,
     SpecViolation,
@@ -41,6 +42,12 @@ if TYPE_CHECKING:
     from .typechecker import TypeChecker
 
 logger = logging.getLogger(__name__)
+
+# What `geno test --backend` accepts (proposal 0024). `all` runs the three
+# real backends and compares them.
+INTERPRETER_BACKEND = "interpreter"
+REAL_BACKENDS = (INTERPRETER_BACKEND, "python", "js")
+TEST_BACKENDS = (*REAL_BACKENDS, "all")
 
 
 def default_test_sandbox_config(
@@ -192,17 +199,22 @@ def _run_examples_and_tests(
                     for stmt in test_block.body:
                         interp.exec_stmt(stmt, test_env)
                 result.passed += 1
+                result.outcomes.append(CaseOutcome("test", test_block.name, 0, True))
             except Exception as e:
                 result.failed += 1
                 interp.mark_test_origin(e)
+                message = _test_block_failure_detail(e)
                 result.violations.append(
                     SpecViolation(
                         kind="test",
                         function=test_block.name,
-                        message=_test_block_failure_detail(e),
+                        message=message,
                         location=_failure_location(e),
                         stack=_failure_stack(e),
                     )
+                )
+                result.outcomes.append(
+                    CaseOutcome("test", test_block.name, 0, False, None, message)
                 )
 
     interp.run_with_recursion_room(run)
@@ -228,24 +240,24 @@ def _run_examples(
         if func is None or func is _UNBOUND:
             # Missing target — record one violation per example so the
             # harness totals stay aligned with the spec surface.
-            for _example in harness.examples:
+            for ordinal, _example in enumerate(harness.examples):
                 result.total += 1
                 result.failed += 1
+                missing = (
+                    f"Function '{harness.name}' not found in interpreter "
+                    f"(impl={harness.impl_trait}/{harness.impl_target})"
+                    if harness.impl_trait is not None
+                    else f"Function '{harness.name}' not found"
+                )
                 result.violations.append(
-                    SpecViolation(
-                        kind="error",
-                        function=harness.name,
-                        message=(
-                            f"Function '{harness.name}' not found in interpreter "
-                            f"(impl={harness.impl_trait}/{harness.impl_target})"
-                            if harness.impl_trait is not None
-                            else f"Function '{harness.name}' not found"
-                        ),
-                    )
+                    SpecViolation(kind="error", function=harness.name, message=missing)
+                )
+                result.outcomes.append(
+                    CaseOutcome("example", harness.name, ordinal, False, None, missing)
                 )
             continue
 
-        for example in harness.examples:
+        for ordinal, example in enumerate(harness.examples):
             result.total += 1
             try:
                 if example.output_expr is None:
@@ -261,6 +273,16 @@ def _run_examples(
                                 message=reason,
                             )
                         )
+                    result.outcomes.append(
+                        CaseOutcome(
+                            "example",
+                            harness.name,
+                            ordinal,
+                            reason is None,
+                            None,
+                            reason,
+                        )
+                    )
                     continue
                 with interp._execution_deadline(interp.sandbox_config.timeout):
                     input_val = interp.eval_expr(example.input_expr, interp.global_env)
@@ -297,31 +319,42 @@ def _run_examples(
 
                 if interp._values_equal(actual, expected, approximate_floats=True):
                     result.passed += 1
+                    result.outcomes.append(
+                        CaseOutcome("example", harness.name, ordinal, True)
+                    )
                 else:
                     result.failed += 1
+                    shown = interp._format_value(actual)
+                    message = f"expected {interp._format_value(expected)}, got {shown}"
                     result.violations.append(
                         SpecViolation(
                             kind="example",
                             function=harness.name,
-                            message=(
-                                f"expected {interp._format_value(expected)}, "
-                                f"got {interp._format_value(actual)}"
-                            ),
+                            message=message,
                             expected=expected,
                             actual=actual,
+                        )
+                    )
+                    result.outcomes.append(
+                        CaseOutcome(
+                            "example", harness.name, ordinal, False, shown, message
                         )
                     )
             except Exception as e:
                 result.failed += 1
                 interp.mark_example_origin(e, example.location)
+                message = f"Runtime error: {_runtime_failure_detail(e)}"
                 result.violations.append(
                     SpecViolation(
                         kind=_classify_runtime_failure(e),
                         function=harness.name,
-                        message=f"Runtime error: {_runtime_failure_detail(e)}",
+                        message=message,
                         location=_failure_location(e),
                         stack=_failure_stack(e),
                     )
+                )
+                result.outcomes.append(
+                    CaseOutcome("example", harness.name, ordinal, False, None, message)
                 )
 
 
@@ -389,6 +422,8 @@ class SuiteResult:
 
     file_results: List[FileTestResult] = field(default_factory=list)
     property_config: PropertyConfig | None = None
+    # The backend the examples and test blocks ran on (proposal 0024).
+    backend: str = INTERPRETER_BACKEND
 
     @property
     def property_results(self) -> list[PropertyResult]:
@@ -456,15 +491,21 @@ class SuiteResult:
     def success(self) -> bool:
         return self.failed == 0 and self.errors == 0 and self.property_failures == 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, name_backend: bool | None = None) -> dict:
         """The ``geno test --json`` payload.
 
         The ``properties`` key appears only when the suite ran property
-        checks, so the payload of a plain run is unchanged.
+        checks, and ``backend`` (on the payload and on each file) only for a
+        compiled backend or inside a ``--backend all`` report (proposal
+        0024), so the payload of a plain run is unchanged.
         """
+        if name_backend is None:
+            name_backend = self.backend != INTERPRETER_BACKEND
         files = []
         for fr in self.file_results:
             entry: dict = {"path": fr.path}
+            if name_backend:
+                entry["backend"] = self.backend
             if fr.error:
                 entry["error"] = fr.error
             elif fr.harness_result:
@@ -482,7 +523,8 @@ class SuiteResult:
                 entry["violations"] = [_violation_dict(v) for v in hr.violations]
             entry["elapsed_ms"] = round(fr.elapsed_ms, 2)
             files.append(entry)
-        payload: dict = {
+        payload: dict = {"backend": self.backend} if name_backend else {}
+        payload |= {
             "files": files,
             "total": self.total,
             "passed": self.passed,
@@ -495,6 +537,161 @@ class SuiteResult:
         if report is not None:
             payload["properties"] = report.to_dict()
         return payload
+
+
+@dataclass(frozen=True)
+class Divergence:
+    """One example or test block that did not end the same way everywhere.
+
+    ``outcomes`` maps each backend that ran the case to ``"passed"`` or to
+    ``"failed: <message>"``.
+    """
+
+    path: str
+    kind: str
+    function: str
+    ordinal: int
+    outcomes: dict[str, str]
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "kind": self.kind,
+            "function": self.function,
+            "ordinal": self.ordinal,
+            "outcomes": dict(self.outcomes),
+        }
+
+
+def _keyed_outcomes(result: HarnessResult) -> dict[tuple[str, str, int], CaseOutcome]:
+    """A file's outcomes by case. Test blocks of one name count in order."""
+    keyed: dict[tuple[str, str, int], CaseOutcome] = {}
+    seen: dict[str, int] = {}
+    for outcome in result.outcomes:
+        ordinal = outcome.ordinal
+        if outcome.kind == "test":
+            ordinal = seen.get(outcome.function, 0)
+            seen[outcome.function] = ordinal + 1
+        keyed[(outcome.kind, outcome.function, ordinal)] = outcome
+    return keyed
+
+
+def find_divergences(suites: Mapping[str, SuiteResult]) -> list[Divergence]:
+    """The cases whose outcome differs between the backends of *suites*.
+
+    A case diverges when it passes on one backend and fails on another, or
+    fails everywhere by returning a different value on each. Two failures
+    with differently worded runtime errors are the same outcome: the
+    backends word some errors differently. A case a backend did not run (its
+    file failed to load there) is not compared; that error is reported on
+    its own.
+    """
+    by_path: dict[str, dict[str, dict[tuple[str, str, int], CaseOutcome]]] = {}
+    for backend, suite in suites.items():
+        for file_result in suite.file_results:
+            if file_result.harness_result is None:
+                continue
+            by_path.setdefault(file_result.path, {})[backend] = _keyed_outcomes(
+                file_result.harness_result
+            )
+
+    divergences = []
+    for path, per_backend in by_path.items():
+        keys: list[tuple[str, str, int]] = []
+        for outcomes in per_backend.values():
+            keys.extend(key for key in outcomes if key not in keys)
+        for key in keys:
+            ran = {
+                backend: outcomes[key]
+                for backend, outcomes in per_backend.items()
+                if key in outcomes
+            }
+            if len(ran) < 2:
+                continue
+            verdicts = {outcome.passed for outcome in ran.values()}
+            values = {outcome.actual for outcome in ran.values()}
+            differs = len(verdicts) > 1 or (
+                verdicts == {False} and None not in values and len(values) > 1
+            )
+            if differs:
+                divergences.append(
+                    Divergence(
+                        path=path,
+                        kind=key[0],
+                        function=key[1],
+                        ordinal=key[2],
+                        outcomes={
+                            backend: (
+                                "passed"
+                                if outcome.passed
+                                else f"failed: {outcome.message}"
+                            )
+                            for backend, outcome in ran.items()
+                        },
+                    )
+                )
+    return divergences
+
+
+@dataclass
+class BackendComparison:
+    """``geno test --backend all``: one suite per backend, and how they differ.
+
+    A divergence fails the run even where each backend's own suite passed
+    (it cannot, today: a case that passes on one backend and fails on another
+    already fails that backend's suite; the divergence says why it matters).
+    """
+
+    suites: dict[str, SuiteResult]
+    divergences: list[Divergence]
+    backend: str = "all"
+    property_config: None = None
+
+    def _sum(self, name: str) -> int:
+        return sum(getattr(suite, name) for suite in self.suites.values())
+
+    @property
+    def total(self) -> int:
+        return self._sum("total")
+
+    @property
+    def passed(self) -> int:
+        return self._sum("passed")
+
+    @property
+    def failed(self) -> int:
+        return self._sum("failed")
+
+    @property
+    def errors(self) -> int:
+        return self._sum("errors")
+
+    @property
+    def untested(self) -> int:
+        """Functions marked `@untested`, counted once, not once per backend."""
+        return max((suite.untested for suite in self.suites.values()), default=0)
+
+    @property
+    def success(self) -> bool:
+        return not self.divergences and all(
+            suite.success for suite in self.suites.values()
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "backend": self.backend,
+            "backends": {
+                name: suite.to_dict(name_backend=True)
+                for name, suite in self.suites.items()
+            },
+            "divergences": [divergence.to_dict() for divergence in self.divergences],
+            "total": self.total,
+            "passed": self.passed,
+            "failed": self.failed,
+            "errors": self.errors,
+            "untested": self.untested,
+            "success": self.success,
+        }
 
 
 def _violation_dict(violation: SpecViolation) -> dict:
@@ -584,15 +781,33 @@ def run_test_suite(
     target: str | None = None,
     sandbox_config: SandboxConfig | None = None,
     properties: PropertyConfig | None = None,
+    backend: str = INTERPRETER_BACKEND,
 ) -> SuiteResult:
     """Run tests on a list of files and return aggregated results.
 
     With *properties*, each file's eligible functions are also property
     checked after its examples and test blocks (``geno test --properties``).
+    *backend* ``"python"`` or ``"js"`` runs the examples and test blocks in
+    compiled code instead (``geno.compiled_tests``).
     """
     property_config = _suite_property_config(properties, filter_pattern)
-    suite = SuiteResult(property_config=property_config)
+    suite = SuiteResult(property_config=property_config, backend=backend)
     sandbox_config = sandbox_config or default_test_sandbox_config()
+    if backend != INTERPRETER_BACKEND:
+        from .compiled_tests import run_compiled_project
+
+        for filepath in files:
+            suite.file_results.extend(
+                run_compiled_project(
+                    filepath,
+                    backend,
+                    filter_pattern=filter_pattern,
+                    target=target,
+                    timeout=sandbox_config.timeout,
+                    entry_only=True,
+                )
+            )
+        return suite
 
     for filepath in files:
         result = _test_file(
@@ -613,6 +828,7 @@ def run_project_test_suite(
     target: str | None = None,
     sandbox_config: SandboxConfig | None = None,
     properties: PropertyConfig | None = None,
+    backend: str = INTERPRETER_BACKEND,
 ) -> SuiteResult:
     """Run tests using ProjectGraph.
 
@@ -642,6 +858,19 @@ def run_project_test_suite(
 
     sandbox_config = sandbox_config or default_test_sandbox_config()
     property_config = _suite_property_config(properties, filter_pattern)
+    if backend != INTERPRETER_BACKEND:
+        from .compiled_tests import run_compiled_project
+
+        return SuiteResult(
+            backend=backend,
+            file_results=run_compiled_project(
+                project_path,
+                backend,
+                filter_pattern=filter_pattern,
+                target=target,
+                timeout=sandbox_config.timeout,
+            ),
+        )
 
     def _project_error_result(message: str) -> SuiteResult:
         suite = SuiteResult(property_config=property_config)

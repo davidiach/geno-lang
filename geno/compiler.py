@@ -44,6 +44,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     FLOAT_PROMOTION_UNKNOWN,
     FORMAT_OPERATOR,
     SLICE_OPERATOR,
+    AssertStatement,
     AssignStatement,
     ASTVisitor,
     AwaitExpr,
@@ -93,6 +94,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     SimpleType,
     Statement,
     StringLiteral,
+    TestBlock,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -113,7 +115,11 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
 if TYPE_CHECKING:
     from .target_profile import TargetProfile
 from .ast_nodes import EnsuresClause, RequiresClause
-from .base_compiler import BaseCompiler, top_level_runtime_shadows
+from .base_compiler import (
+    TEST_REGISTRY_NAME,
+    BaseCompiler,
+    top_level_runtime_shadows,
+)
 from .builtin_registry import (
     all_builtin_names,
     python_backend_builtin_helper_names,
@@ -997,6 +1003,9 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Write runtime prelude
         self.output.write(RUNTIME_PRELUDE)
+        self._test_module = None
+        if self.test_cases is not None:
+            self.output.write(f"\n{TEST_REGISTRY_NAME} = []\n")
 
         main_defn = next(
             (
@@ -1011,7 +1020,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         # before the body never shifts a host line the table records.
         anchor_at = (
             self._begin_trace(getattr(main_defn.location, "filename", None))
-            if main_defn is not None
+            if main_defn is not None and self.test_cases is None
             else -1
         )
 
@@ -1045,13 +1054,14 @@ class Compiler(BaseCompiler, ASTVisitor):
                 if defn.alias:
                     alias = self._mangle_name(defn.alias)
                     self.output.write(f"{alias} = {defn.module_name}\n")
-            # TestBlock definitions are skipped in compiled output
+            # A TestBlock is compiled only in a test-harness build, below.
 
         # Emit trait dispatch wrapper functions
         self._emit_trait_dispatchers()
+        self._register_test_blocks(program)
 
         # Add main call if 'main' was defined
-        if main_defn is not None:
+        if main_defn is not None and self.test_cases is None:
             self._trace_end_of_body()
             self.output.write(
                 _compiled_main_guard(
@@ -1135,9 +1145,11 @@ class Compiler(BaseCompiler, ASTVisitor):
         )
         anchor_at = (
             self._begin_trace(getattr(entry_main.location, "filename", None))
-            if entry_main is not None
+            if entry_main is not None and self.test_cases is None
             else -1
         )
+        if self.test_cases is not None:
+            self.output.write(f"\n{TEST_REGISTRY_NAME} = []\n")
         main_defn = None
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
@@ -1205,6 +1217,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             self.output.write(f"\n\n# === Module: {mod_name} ===\n")
             self._display_module = None if mod_name == entrypoint else mod_name
+            self._test_module = mod_name
             factory_name = f"_geno_module_{self._mangle_name(mod_name)}"
             self._writeln(f"def {factory_name}():")
             self._indent()
@@ -1232,7 +1245,8 @@ class Compiler(BaseCompiler, ASTVisitor):
                         main_defn = defn
                 elif isinstance(defn, ImplDef):
                     self._compile_impl_def(defn)
-                # TestBlock is skipped
+                # A TestBlock is compiled only in a test-harness build.
+            self._register_test_blocks(program)
 
             # Emit module namespace object for qualified access
             attrs = ", ".join(f"{n!r}: {self._mangle_name(n)}" for n in runtime_exports)
@@ -1262,7 +1276,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._emit_trait_dispatchers()
 
         # Add main call
-        if main_defn is not None:
+        if main_defn is not None and self.test_cases is None:
             self._trace_end_of_body()
             self.output.write(
                 _compiled_main_guard(
@@ -1526,6 +1540,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         trace = self._trace
         if trace is None:
             self._compile_function_def_untraced(defn)
+            self._register_examples(defn, self._mangle_name(defn.name))
             return
         index = trace.function(
             self._mangle_name(defn.name), self._function_display_name(defn)
@@ -1853,6 +1868,56 @@ class Compiler(BaseCompiler, ASTVisitor):
         sources = ", ".join(binding.split(" = ", 1)[1] for binding in bindings)
         return f"(lambda {names}: {request})({sources})"
 
+    # -- Test-harness builds (proposal 0024) ---------------------------------
+
+    def _register_test_blocks(self, program: Program) -> None:
+        if self.test_cases is None:
+            return
+        blocks = [d for d in program.definitions if isinstance(d, TestBlock)]
+        for ordinal, block in enumerate(blocks):
+            self._register_test_block(block, ordinal)
+
+    def _emit_example_case(
+        self, defn: FunctionDef, example: ExampleClause, function_ref: str
+    ) -> None:
+        """Register one example: its arguments, its function, its expectation.
+
+        The arguments and the expected value are thunks, so each is evaluated
+        when the example runs and a failure in one is that example's alone.
+        An Int written for a Float parameter or result is widened here, as a
+        call site and a `return` widen it.
+        """
+        if self._example_spreads(defn, example):
+            # The tuple the expression yields is the argument list.
+            arguments_thunk = f"lambda: tuple({self._compile_expr(example.input_expr)})"
+        else:
+            arguments = self._example_arguments(defn, example)
+            parts = []
+            for param, argument in zip(defn.params, arguments):
+                parts.append(
+                    self._promote_expr_to_expected_float(
+                        self._compile_expr(argument),
+                        param._resolved_type or param.param_type,
+                        argument,
+                    )
+                )
+            values = "".join(f"{part}, " for part in parts)
+            arguments_thunk = f"lambda: ({values})"
+        expected = "None"
+        if example.output_expr is not None:
+            expected = "lambda: " + self._promote_expr_to_expected_float(
+                self._compile_expr(example.output_expr),
+                defn.return_type,
+                example.output_expr,
+            )
+        self._writeln(
+            f"{TEST_REGISTRY_NAME}.append((({arguments_thunk}), "
+            f"{function_ref}, {expected}))"
+        )
+
+    def _emit_test_block_case(self, function_ref: str) -> None:
+        self._writeln(f"{TEST_REGISTRY_NAME}.append((None, {function_ref}, None))")
+
     def _compile_requires_check(
         self,
         defn: FunctionDef,
@@ -2107,6 +2172,13 @@ class Compiler(BaseCompiler, ASTVisitor):
             self._writeln("continue")
         elif isinstance(stmt, ExpressionStatement):
             self._writeln(self._compile_expr(stmt.expression))
+        elif isinstance(stmt, AssertStatement):
+            # Only a `test` block has one, and only a test-harness build
+            # compiles those (proposal 0024).
+            self._writeln(f"if not ({self._compile_expr(stmt.expression)}):")
+            self._indent()
+            self._writeln('raise RuntimeError("Assertion failed")')
+            self._dedent()
         else:
             raise CompileError(f"Unsupported statement node: {type(stmt).__name__}")
 

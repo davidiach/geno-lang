@@ -3969,11 +3969,11 @@ class TypeChecker(ExhaustivenessMixin):
                     )
             generic = self._generic_signature(defn, None)
             if generic is not None and example_subs is not None:
-                self._check_instance_bounds(
-                    generic,
-                    self._generic_instance(generic, example_subs).type_args,
-                    ex.location,
-                )
+                instance = self._generic_instance(generic, example_subs)
+                # A test-harness build calls the copy this instance names,
+                # as a call with the example's inputs would (proposal 0024).
+                ex._generic_instance = instance
+                self._check_instance_bounds(generic, instance.type_args, ex.location)
 
     def _report_example_panic_form(self, ex: ExampleClause) -> bool:
         """E330: an example whose expected value is written as a panic.

@@ -408,13 +408,15 @@ def build_parser() -> argparse.ArgumentParser:
     # Test command
     test_parser = subparsers.add_parser(
         "test",
-        help="Run interpreter-backed example/test blocks",
+        help="Run example clauses and test blocks",
         description=(
-            "Run example clauses and test blocks through the interpreter. "
-            "--target applies platform availability checks; it does not select "
-            "a compiled backend. --properties also checks each eligible "
-            "function against its own requires/ensures on generated inputs "
-            "(experimental)."
+            "Run example clauses and test blocks, through the interpreter by "
+            "default. --backend python or js runs them in compiled code, and "
+            "--backend all runs all three and reports any example whose "
+            "outcome differs. --target applies platform availability checks; "
+            "it does not select a backend. --properties also checks each "
+            "eligible function against its own requires/ensures on generated "
+            "inputs (experimental, interpreter only)."
         ),
     )
     test_parser.add_argument(
@@ -427,8 +429,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         choices=["python-cli", "node-cli", "browser", "python-hosted"],
         help=(
-            "Typecheck availability against a target profile; tests run in "
-            "the interpreter"
+            "Typecheck availability against a target profile; --backend "
+            "chooses where tests run"
+        ),
+    )
+    test_parser.add_argument(
+        "--backend",
+        choices=["interpreter", "python", "js", "all"],
+        default="interpreter",
+        help=(
+            "Where examples and test blocks run: the interpreter (default), "
+            "compiled Python, compiled JavaScript (needs node), or all three "
+            "with their outcomes compared"
         ),
     )
     test_parser.add_argument(
@@ -798,6 +810,7 @@ def dispatch_args(
             properties=args.properties,
             trials=args.trials,
             seed=args.seed,
+            backend=args.backend,
         )
     elif args.command == "fmt":
         format_files = _command("format_files")

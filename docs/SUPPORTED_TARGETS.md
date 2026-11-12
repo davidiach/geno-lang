@@ -56,8 +56,12 @@ an explicit compatible override. Browser output always uses `geno build`; raw
 JavaScript compilation does not install the browser capability bootstrap or
 HTML wrapper.
 
-For `geno test`, the target profile is applied before execution; examples and
-test blocks still run through the interpreter. Backend parity is covered by the
+For `geno test`, the target profile is applied before execution; it does not
+choose where examples and test blocks run. They run on the interpreter unless
+`--backend python`, `--backend js` or `--backend all` is given (0.7
+development line, Experimental; [spec v0.7](spec/v0.7.md) section 5.5), which
+runs them in compiled code and, for `all`, reports each case whose outcome
+differs between backends. The project's own backend parity is covered by the
 pytest backend parity suites.
 
 ## Targets

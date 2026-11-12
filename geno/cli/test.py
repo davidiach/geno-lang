@@ -26,19 +26,40 @@ def _run_test_suite_once(
     target_name: str | None = None,
     sandbox_config=None,
     properties: PropertyConfig | None = None,
+    backend: str = "interpreter",
 ):
     """Run tests once and return the suite result.
 
-    With *properties*, eligible functions are also property checked.
+    With *properties*, eligible functions are also property checked. With
+    *backend* ``"all"``, the result is a ``BackendComparison`` of the
+    interpreter, compiled Python and compiled JavaScript (proposal 0024).
     """
     import time
 
     from ..test_runner import (
+        REAL_BACKENDS,
+        BackendComparison,
         default_test_sandbox_config,
         discover_files,
+        find_divergences,
         run_project_test_suite,
         run_test_suite,
     )
+
+    if backend == "all":
+        start = time.monotonic()
+        suites = {
+            name: _run_test_suite_once(
+                path,
+                filter_pattern,
+                target_name=target_name,
+                sandbox_config=sandbox_config,
+                backend=name,
+            )[0]
+            for name in REAL_BACKENDS
+        }
+        comparison = BackendComparison(suites, find_divergences(suites))
+        return comparison, time.monotonic() - start
 
     target = Path(path)
     sandbox_config = sandbox_config or default_test_sandbox_config()
@@ -63,6 +84,7 @@ def _run_test_suite_once(
             target=target_name,
             sandbox_config=sandbox_config,
             properties=properties,
+            backend=backend,
         )
     else:
         files = discover_files(target)
@@ -75,14 +97,51 @@ def _run_test_suite_once(
             target=target_name,
             sandbox_config=sandbox_config,
             properties=properties,
+            backend=backend,
         )
 
     elapsed = time.monotonic() - start
     return suite_result, elapsed
 
 
-def _print_test_results(suite_result, elapsed: float, verbose: bool = False):
-    """Print test results with color, timing, and untested counts."""
+def _print_comparison(comparison, elapsed: float, verbose: bool = False) -> None:
+    """Print ``--backend all``: each backend's files, then how they differ."""
+    for name, suite in comparison.suites.items():
+        print(f"Backend: {name}")
+        _print_file_results(suite, verbose=verbose)
+    print()
+    if comparison.divergences:
+        print(_red("Divergences") + " (the backends disagree)")
+        for divergence in comparison.divergences:
+            what = (
+                f"test {divergence.function!r}"
+                if divergence.kind == "test"
+                else f"{divergence.function}, example {divergence.ordinal + 1}"
+            )
+            print(f"  {_red('x')} {divergence.path}: {what}")
+            for backend, outcome in divergence.outcomes.items():
+                print(f"        {backend}: {outcome}")
+        print()
+    for name, suite in comparison.suites.items():
+        failed = f"{suite.failed} failed"
+        parts = [
+            _green(f"{suite.passed} passed"),
+            _red(failed) if suite.failed > 0 else failed,
+        ]
+        if suite.errors > 0:
+            noun = "error" if suite.errors == 1 else "errors"
+            parts.append(_red(f"{suite.errors} {noun}"))
+        print(f"{name}: " + ", ".join(parts))
+    count = len(comparison.divergences)
+    noun = "divergence" if count == 1 else "divergences"
+    summary = _red(f"{count} {noun}") if count else f"{count} {noun}"
+    if comparison.untested > 0:
+        summary += ", " + _yellow(f"{comparison.untested} untested")
+    print(f"{summary}, {_dim(f'in {elapsed:.2f}s')}")
+
+
+def _print_file_results(suite_result, verbose: bool = False) -> int:
+    """Print one line per file (and its details); return the untested count."""
     total_untested = 0
 
     for file_result in suite_result.file_results:
@@ -121,6 +180,17 @@ def _print_test_results(suite_result, elapsed: float, verbose: bool = False):
                     print(f"          {line}")
             for name, reason in hr.untested:
                 print(f"        {_yellow('o')} {name}: @untested({reason!r})")
+    return total_untested
+
+
+def _print_test_results(suite_result, elapsed: float, verbose: bool = False):
+    """Print test results with color, timing, and untested counts."""
+    if getattr(suite_result, "backend", "interpreter") == "all":
+        _print_comparison(suite_result, elapsed, verbose=verbose)
+        return
+    if suite_result.backend != "interpreter":
+        print(f"Backend: {suite_result.backend}")
+    total_untested = _print_file_results(suite_result, verbose=verbose)
 
     print()
     if suite_result.property_config is not None:
@@ -285,12 +355,18 @@ def run_tests(
     properties: bool = False,
     trials: int | None = None,
     seed: int | None = None,
+    backend: str = "interpreter",
 ):
     """Run example-based tests on Geno files.
 
     With *properties* (``--properties``), eligible functions are also
     property checked with *trials* generated inputs each from *seed*
     (defaults: 100 trials, seed 0); a failed property fails the run.
+
+    *backend* (``--backend``) chooses where examples and test blocks run:
+    the interpreter, compiled Python, compiled JavaScript, or ``all`` three
+    with their outcomes compared (proposal 0024). Property checks run on the
+    interpreter only.
     """
     from ..test_runner import default_test_sandbox_config
 
@@ -307,10 +383,13 @@ def run_tests(
     def _json_error_result(message: str) -> None:
         import json as json_mod
 
+        named = {} if backend == "interpreter" else {"backend": backend}
         payload: dict = {
+            **named,
             "files": [
                 {
                     "path": path,
+                    **named,
                     "error": message,
                     "elapsed_ms": 0.0,
                 }
@@ -329,6 +408,17 @@ def run_tests(
                 seed=property_config.seed, trials=property_config.trials
             ).to_dict()
         print(json_mod.dumps(payload, indent=2))
+
+    if properties and backend != "interpreter":
+        message = (
+            "Error: --properties runs on the interpreter only; use it without "
+            f"--backend {backend}"
+        )
+        if json_output:
+            _json_error_result(message)
+        else:
+            print(message, file=sys.stderr)
+        sys.exit(1)
 
     target = Path(path)
     if not target.exists():
@@ -358,6 +448,7 @@ def run_tests(
             target_name=target_name,
             sandbox_config=sandbox_config,
             properties=property_config,
+            backend=backend,
         )
         return
 
@@ -368,6 +459,7 @@ def run_tests(
             target_name=target_name,
             sandbox_config=sandbox_config,
             properties=property_config,
+            backend=backend,
         )
     except Exception as e:
         if json_output:
@@ -413,6 +505,7 @@ def _run_tests_watch(
     target_name: str | None = None,
     sandbox_config=None,
     properties: PropertyConfig | None = None,
+    backend: str = "interpreter",
 ):
     """Watch for file changes and re-run tests (and property checks)."""
     import time
@@ -443,6 +536,7 @@ def _run_tests_watch(
             target_name=target_name,
             sandbox_config=sandbox_config,
             properties=properties,
+            backend=backend,
         )
         _print_test_results(suite_result, elapsed, verbose=verbose)
     except Exception as e:
@@ -465,6 +559,7 @@ def _run_tests_watch(
                         target_name=target_name,
                         sandbox_config=sandbox_config,
                         properties=properties,
+                        backend=backend,
                     )
                     _print_test_results(suite_result, elapsed, verbose=verbose)
                 except Exception as e:

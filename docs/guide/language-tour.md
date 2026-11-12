@@ -219,6 +219,11 @@ The fix is one of three: correct the body; add the `requires` that states the
 domain, as here; or add a panics example that says the panic is intended. The
 seed is fixed (0 unless you pass `--seed`), so a run reproduces exactly.
 
+`geno test` runs examples on the interpreter. If you ship compiled Python or
+JavaScript, `geno test --backend all` (experimental) also runs them in the
+compiled code and reports any example whose outcome differs between
+backends; `--backend python` and `--backend js` run one.
+
 ### Generic Functions
 
 A function can work at any type by declaring type parameters in brackets after
