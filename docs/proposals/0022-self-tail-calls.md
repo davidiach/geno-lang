@@ -1,12 +1,39 @@
 # Proposal 0022: Self Tail Calls In Constant Stack
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-12 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-11
 - Discussion: https://github.com/davidiach/geno-lang/issues/237
 - Supersedes: None
-- Review: None yet. No independent human technical review has taken place.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: local validation, and GitHub CI, Release Gate and External Apps on
+  #261. The automated Codex review did not run. These are not independent
+  approval.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-12 the project lead, David Iach, accepted this proposal as
+implemented on #261. In the Claude Code session that built it, told that the
+proposal was a Draft and asked whether to accept it as written or change it
+first, the project lead answered "accept 0022 as written and merge". This
+records acceptance for the 0.7 development line and authorization to merge
+#261 after green CI.
+
+The decision accepts the choices listed under Reference Design and
+Compatibility And Migration as written: a tail recursion that never ends is
+stopped by the step limit or the timeout and no longer by the recursion depth
+limit; a failure report shows one frame for the calls a tail call replaced,
+with no count; an `ensures` clause that reads no parameter and calls no
+function is checked once; and only self calls are covered. The Unresolved
+Questions stay open and do not block acceptance.
+
+The proposal was created on 2026-11-11 and accepted the next day. The usual
+seven-day review period in `docs/proposals/README.md` did not elapse; the
+project lead's explicit acceptance is recorded here as an exception to it. It
+does not imply that independent human review occurred.
 
 ## Summary
 

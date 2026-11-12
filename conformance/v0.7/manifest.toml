@@ -529,7 +529,7 @@ kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E331"]
 
-# Proposal 0022 (Draft): a function's call to itself in tail position runs in
+# Proposal 0022 (Accepted): a function's call to itself in tail position runs in
 # constant stack. The positions, contracts, closures, limits and reports are
 # covered by geno/tests/test_tail_calls.py.
 

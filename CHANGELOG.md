@@ -14,7 +14,7 @@ package version stays 0.6.0, and the Draft
 ### Added
 
 - Self tail calls run in constant stack on the interpreter, compiled Python
-  and compiled JavaScript, from Draft
+  and compiled JavaScript, from accepted
   [proposal 0022](docs/proposals/0022-self-tail-calls.md). A function that
   ends with a call to itself (`return go(rest, acc + 1)`, a branch of an `if`
   or `match` in return position, or the last statement of a `Unit` function)
