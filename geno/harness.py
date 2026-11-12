@@ -69,6 +69,24 @@ class SpecViolation:
     stack: "GenoStack | None" = None
 
 
+@dataclass(frozen=True)
+class CaseOutcome:
+    """How one example or test block ended, for comparing backends.
+
+    ``geno test --backend all`` matches the outcomes of the same case on each
+    backend (proposal 0024). ``ordinal`` is an example's position among its
+    function's examples. ``actual`` is the rendered value of an example that
+    returned something other than it expected.
+    """
+
+    kind: str  # "example" or "test"
+    function: str
+    ordinal: int
+    passed: bool
+    actual: str | None = None
+    message: str | None = None
+
+
 @dataclass
 class HarnessResult:
     """Result of running all harness tests."""
@@ -78,6 +96,8 @@ class HarnessResult:
     failed: int = 0
     violations: List[SpecViolation] = field(default_factory=list)
     untested: List[tuple] = field(default_factory=list)  # (name, reason) pairs
+    # One entry per case `geno test` ran, in the order it ran them.
+    outcomes: List[CaseOutcome] = field(default_factory=list)
 
     @property
     def success(self) -> bool:

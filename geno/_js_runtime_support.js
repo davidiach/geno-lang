@@ -610,6 +610,10 @@ function array_to_list(arr) {
 
 function _valuesEqual(a, b) {
     if (a === b) return true;
+    // Unit is `null`, but a function that ends without a `return` yields
+    // `undefined`: both are the one Unit value.
+    if (a === undefined) a = null;
+    if (b === undefined) b = null;
     if (a === null || b === null) return a === b;
     if (typeof a !== typeof b) return false;
     if (a instanceof GenoArray && b instanceof GenoArray) {

@@ -13,7 +13,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from io import StringIO
 from typing import cast
 
@@ -23,6 +23,7 @@ from .ast_nodes import (
     CallArg,
     ConstructorCall,
     ConstructorPattern,
+    ExampleClause,
     Expression,
     FieldAccess,
     FieldAssignStatement,
@@ -46,10 +47,13 @@ from .ast_nodes import (
     RestPattern,
     ReturnStatement,
     SimpleType,
+    SpecBlock,
     Statement,
+    TestBlock,
     TraitDef,
     TraitMethodSig,
     TupleDestructureStatement,
+    TupleExpr,
     TuplePattern,
     TypeAlias,
     TypeDef,
@@ -121,6 +125,33 @@ def top_level_runtime_shadows(program: Program) -> frozenset[str]:
     )
 
 
+# The array compiled output registers its examples and test blocks in, when it
+# is built for `geno test --backend python|js` (proposal 0024).
+TEST_REGISTRY_NAME = "_geno_tests"
+
+
+@dataclass(frozen=True)
+class CompiledTestCase:
+    """One example or test block a test-harness build registered.
+
+    ``index`` is its position in the compiled registry. ``function`` is the
+    name `geno test` reports: the function's name, ``Target.Trait.method``
+    for an impl method, or the test block's name. ``ordinal`` is the
+    example's position among the function's examples.
+    """
+
+    index: int
+    module: str | None
+    kind: str  # "example" or "test"
+    function: str
+    ordinal: int = 0
+    line: int | None = None
+    expects_panic: bool = False
+    panic_message: str | None = None
+    # Filters also match an impl method as `Target.method` and `method`.
+    aliases: tuple[str, ...] = ()
+
+
 class BaseCompiler(ABC):
     """Abstract base class shared by the Python and JS compiler backends.
 
@@ -156,6 +187,13 @@ class BaseCompiler(ABC):
         # method `Type.method`. See _function_display_name.
         self._display_module: str | None = None
         self._display_name_override: str | None = None
+        # Proposal 0024: when a list, this is a test-harness build. Every
+        # example and test block is registered as callable thunks, recorded
+        # here in registry order, and `main` is not called. ``None`` is an
+        # ordinary build.
+        self.test_cases: list[CompiledTestCase] | None = None
+        self._test_module: str | None = None
+        self._test_impl: tuple[str, str, str] | None = None
         # The function a trace table is being recorded for, and the names it
         # binds anywhere (computed on first use). See _is_indirect_callee.
         self._trace_scope: FunctionDef | None = None
@@ -1062,10 +1100,98 @@ class BaseCompiler(ABC):
                 effects=method.effects,
             )
             self._display_name_override = f"{defn.target_type}.{method.name}"
+            self._test_impl = (defn.target_type, defn.trait_name, method.name)
             try:
                 self._compile_function_def(mangled_def)
             finally:
                 self._display_name_override = None
+                self._test_impl = None
+
+    # -- Test-harness builds (proposal 0024) ---------------------------------
+
+    @staticmethod
+    def _example_arguments(defn: FunctionDef, example: ExampleClause) -> list:
+        """The argument expressions an example's input stands for.
+
+        As ``geno.harness.example_call_args`` reads a value: a tuple is the
+        way to write several arguments, `()` is no argument for a function
+        that needs none, and a function with one parameter takes the input
+        whole.
+        """
+        inputs = example.input_expr
+        if isinstance(inputs, TupleExpr):
+            required = sum(1 for p in defn.params if p.default_value is None)
+            if not inputs.elements and required == 0:
+                return []
+            if len(defn.params) != 1:
+                return list(inputs.elements)
+        return [inputs]
+
+    def _register_examples(self, defn: FunctionDef, function_ref: str) -> None:
+        """Register *defn*'s examples in a test-harness build."""
+        if self.test_cases is None or not defn.specs.examples:
+            return
+        if self._test_impl is not None:
+            target, trait, method = self._test_impl
+            name = f"{target}.{trait}.{method}"
+            aliases: tuple[str, ...] = (f"{target}.{method}", method)
+        else:
+            name, aliases = defn.name, ()
+        for ordinal, example in enumerate(defn.specs.examples):
+            self.test_cases.append(
+                CompiledTestCase(
+                    index=len(self.test_cases),
+                    module=self._test_module,
+                    kind="example",
+                    function=name,
+                    ordinal=ordinal,
+                    line=example.location.line if example.location else None,
+                    expects_panic=example.expects_panic,
+                    panic_message=example.panic_message,
+                    aliases=aliases,
+                )
+            )
+            self._emit_example_case(defn, example, function_ref)
+
+    def _register_test_block(self, block: TestBlock, ordinal: int) -> None:
+        """Compile and register a `test` block in a test-harness build."""
+        if self.test_cases is None:
+            return
+        name = self._fresh_temp()
+        body = FunctionDef(
+            location=block.location,
+            name=name,
+            params=[],
+            return_type=SimpleType(location=block.location, name="Unit"),
+            specs=SpecBlock(),
+            body=block.body,
+        )
+        saved = self._display_name_override
+        # A report names the block, not the function it is compiled to.
+        self._display_name_override = block.name
+        try:
+            self._compile_function_def(body)
+        finally:
+            self._display_name_override = saved
+        self.test_cases.append(
+            CompiledTestCase(
+                index=len(self.test_cases),
+                module=self._test_module,
+                kind="test",
+                function=block.name,
+                ordinal=ordinal,
+                line=block.location.line if block.location else None,
+            )
+        )
+        self._emit_test_block_case(self._mangle_name(name))
+
+    def _emit_example_case(
+        self, defn: FunctionDef, example: ExampleClause, function_ref: str
+    ) -> None:
+        raise NotImplementedError
+
+    def _emit_test_block_case(self, function_ref: str) -> None:
+        raise NotImplementedError
 
     def _function_display_name(self, defn: FunctionDef) -> str:
         """The name runtime reports give *defn* (proposal 0018, section 2).

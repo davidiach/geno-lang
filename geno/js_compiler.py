@@ -36,6 +36,7 @@ from ._js_generics import (
 from .ast_nodes import (
     FORMAT_OPERATOR,
     SLICE_OPERATOR,
+    AssertStatement,
     AssignStatement,
     AwaitExpr,
     BinaryOp,
@@ -45,6 +46,7 @@ from .ast_nodes import (
     ConstructorCall,
     ConstructorPattern,
     ContinueStatement,
+    ExampleClause,
     Expression,
     ExpressionStatement,
     FieldAccess,
@@ -82,6 +84,7 @@ from .ast_nodes import (
     SimpleType,
     Statement,
     StringLiteral,
+    TestBlock,
     TupleDestructureStatement,
     TupleExpr,
     TuplePattern,
@@ -113,7 +116,11 @@ from .ast_nodes import EnsuresClause, RequiresClause
 from .ast_nodes import (
     FunctionType as ASTFunctionType,
 )
-from .base_compiler import BaseCompiler, top_level_runtime_shadows
+from .base_compiler import (
+    TEST_REGISTRY_NAME,
+    BaseCompiler,
+    top_level_runtime_shadows,
+)
 from .builtin_registry import (
     all_builtin_names,
     js_backend_builtin_helper_names,
@@ -1172,11 +1179,15 @@ class JSCompiler(BaseCompiler):
         )
         # A Node entry build starts with the trace table's anchor (proposal
         # 0018); browser builds and libraries carry no table.
+        testing = self.test_cases is not None
         anchor_at = (
             self._begin_trace(main_def)
-            if node_host and main_def is not None and not is_app_mode
+            if node_host and main_def is not None and not is_app_mode and not testing
             else -1
         )
+        self._test_module = None
+        if testing:
+            self._writeln(f"const {TEST_REGISTRY_NAME} = [];")
 
         self._compile_module_constants(program)
 
@@ -1197,12 +1208,16 @@ class JSCompiler(BaseCompiler):
                 if defn.alias:
                     alias = self._mangle_name(defn.alias)
                     self._write(f"const {alias} = {defn.module_name};\n")
-            # TestBlock definitions are skipped in compiled output
+            # A TestBlock is compiled only in a test-harness build, below.
 
         # Emit trait dispatch wrapper functions
         self._emit_trait_dispatchers()
+        self._register_test_blocks(program)
 
-        if is_app_mode:
+        if testing:
+            # A test-harness build calls neither `main` nor the app loop.
+            pass
+        elif is_app_mode:
             # App mode: emit requestAnimationFrame loop
             self._writeln()
             self._writeln("// App mode: game loop")
@@ -1352,9 +1367,14 @@ class JSCompiler(BaseCompiler):
         # 0018); browser builds and libraries carry no table.
         anchor_at = (
             self._begin_trace(main_def)
-            if node_host and main_def is not None and not is_app_mode
+            if node_host
+            and main_def is not None
+            and not is_app_mode
+            and self.test_cases is None
             else -1
         )
+        if self.test_cases is not None:
+            self._writeln(f"const {TEST_REGISTRY_NAME} = [];")
         self._emit_function_assignments = False
         self._spec_plan = plan_specializations(
             (mod_name, dep_graph.parsed[mod_name])
@@ -1445,6 +1465,7 @@ class JSCompiler(BaseCompiler):
 
             # Compile definitions
             self._current_module = mod_name
+            self._test_module = mod_name
             self._display_module = None if mod_name == entrypoint else mod_name
             for defn in program.definitions:
                 if isinstance(defn, TypeDef):
@@ -1454,7 +1475,8 @@ class JSCompiler(BaseCompiler):
                     self._compile_specializations(defn)
                 elif isinstance(defn, ImplDef):
                     self._compile_impl_def(defn)
-                # TestBlock is skipped
+                # A TestBlock is compiled only in a test-harness build.
+            self._register_test_blocks(program)
             self._current_module = None
             self._display_module = None
 
@@ -1480,7 +1502,10 @@ class JSCompiler(BaseCompiler):
         if ep_program:
             entrypoint_type_aliases = visible_type_aliases(ep_program, dep_graph.parsed)
 
-        if is_app_mode:
+        if self.test_cases is not None:
+            # A test-harness build calls neither `main` nor the app loop.
+            pass
+        elif is_app_mode:
             # App mode: emit requestAnimationFrame loop
             self._writeln()
             self._writeln("// App mode: game loop")
@@ -1943,6 +1968,9 @@ class JSCompiler(BaseCompiler):
         trace = self._trace
         if trace is None:
             self._compile_function_def_untraced(defn, None)
+            self._register_examples(
+                defn, self._mangle_name(self._function_name_override or defn.name)
+            )
             return
         index = trace.function(
             self._mangle_name(self._function_name_override or defn.name),
@@ -2041,6 +2069,48 @@ class JSCompiler(BaseCompiler):
             ) = saved_tail
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
+
+    # -- Test-harness builds (proposal 0024) ---------------------------------
+
+    def _register_test_blocks(self, program: Program) -> None:
+        if self.test_cases is None:
+            return
+        blocks = [d for d in program.definitions if isinstance(d, TestBlock)]
+        for ordinal, block in enumerate(blocks):
+            self._register_test_block(block, ordinal)
+
+    def _emit_example_case(
+        self, defn: FunctionDef, example: ExampleClause, function_ref: str
+    ) -> None:
+        """Register one example: its arguments, its function, its expectation.
+
+        The arguments and the expected value are thunks, so each is evaluated
+        when the example runs and a failure in one is that example's alone.
+        The last entry is the result's display shape: JavaScript values do
+        not tell an Int from a Float, so a report renders them by type.
+        """
+        arguments = ", ".join(
+            self._compile_expr(argument)
+            for argument in self._example_arguments(defn, example)
+        )
+        expected = "null"
+        if example.output_expr is not None:
+            expected = f"() => {self._compile_expr(example.output_expr)}"
+        type_bindings: dict[str, Type] = {
+            name: TypeParam(name) for name in defn.type_params
+        }
+        shape = self._contract_display_shape(
+            None if defn.type_params else defn.__dict__.get("_resolved_return_type"),
+            defn.return_type,
+            type_bindings,
+        )
+        self._writeln(
+            f"{TEST_REGISTRY_NAME}.push([() => [{arguments}], {function_ref}, "
+            f"{expected}, {shape}]);"
+        )
+
+    def _emit_test_block_case(self, function_ref: str) -> None:
+        self._writeln(f"{TEST_REGISTRY_NAME}.push([null, {function_ref}, null, null]);")
 
     def _tail_call_plan(self, defn: FunctionDef, func_name: str) -> TailCallPlan | None:
         """The self tail calls of *defn* this backend runs in constant stack.
@@ -2625,6 +2695,11 @@ class JSCompiler(BaseCompiler):
             self._writeln("continue;")
         elif isinstance(stmt, ExpressionStatement):
             self._writeln(f"{self._compile_expr(stmt.expression)};")
+        elif isinstance(stmt, AssertStatement):
+            # Only a `test` block has one, and only a test-harness build
+            # compiles those (proposal 0024).
+            condition = self._compile_expr(stmt.expression)
+            self._writeln(f'if (!({condition})) throw new Error("Assertion failed");')
         else:
             raise JSCompileError(f"Unsupported statement type: {type(stmt).__name__}")
 
