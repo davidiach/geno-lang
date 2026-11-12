@@ -156,7 +156,10 @@ def _main():
         except BaseException as exc:
             failure.append(exc)
 
-    threading.stack_size(60100 * 2048)
+    try:
+        threading.stack_size(60100 * 2048)
+    except (ValueError, RuntimeError):
+        pass  # the host's default stack: deep recursion ends sooner
     thread = threading.Thread(target=target, daemon=True)
     thread.start()
     thread.join()

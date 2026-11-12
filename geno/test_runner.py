@@ -491,16 +491,21 @@ class SuiteResult:
     def success(self) -> bool:
         return self.failed == 0 and self.errors == 0 and self.property_failures == 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, name_backend: bool | None = None) -> dict:
         """The ``geno test --json`` payload.
 
         The ``properties`` key appears only when the suite ran property
-        checks. ``backend`` names where the examples and test blocks ran, on
-        the payload and on each file (proposal 0024).
+        checks, and ``backend`` (on the payload and on each file) only for a
+        compiled backend or inside a ``--backend all`` report (proposal
+        0024), so the payload of a plain run is unchanged.
         """
+        if name_backend is None:
+            name_backend = self.backend != INTERPRETER_BACKEND
         files = []
         for fr in self.file_results:
-            entry: dict = {"path": fr.path, "backend": self.backend}
+            entry: dict = {"path": fr.path}
+            if name_backend:
+                entry["backend"] = self.backend
             if fr.error:
                 entry["error"] = fr.error
             elif fr.harness_result:
@@ -518,8 +523,8 @@ class SuiteResult:
                 entry["violations"] = [_violation_dict(v) for v in hr.violations]
             entry["elapsed_ms"] = round(fr.elapsed_ms, 2)
             files.append(entry)
-        payload: dict = {
-            "backend": self.backend,
+        payload: dict = {"backend": self.backend} if name_backend else {}
+        payload |= {
             "files": files,
             "total": self.total,
             "passed": self.passed,
@@ -675,7 +680,10 @@ class BackendComparison:
     def to_dict(self) -> dict:
         return {
             "backend": self.backend,
-            "backends": {name: suite.to_dict() for name, suite in self.suites.items()},
+            "backends": {
+                name: suite.to_dict(name_backend=True)
+                for name, suite in self.suites.items()
+            },
             "divergences": [divergence.to_dict() for divergence in self.divergences],
             "total": self.total,
             "passed": self.passed,

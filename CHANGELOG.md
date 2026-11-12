@@ -19,8 +19,8 @@ package version stays 0.6.0, and the Draft
   compile` builds it, in a subprocess with the test grant and a hard
   per-case timeout. `all` runs the three backends and reports every case
   whose outcome differs between them. The default is still the interpreter.
-  `--json` output gains a `backend` key; `--properties` stays interpreter
-  only; `js` needs `node`.
+  A compiled run's `--json` output names its `backend`; a plain run's is
+  unchanged. `--properties` stays interpreter only, and `js` needs `node`.
 - Self tail calls run in constant stack on the interpreter, compiled Python
   and compiled JavaScript, from accepted
   [proposal 0022](docs/proposals/0022-self-tail-calls.md). A function that

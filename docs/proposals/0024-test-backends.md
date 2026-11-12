@@ -149,8 +149,9 @@ A divergence fails the run.
 
 ### 6. JSON
 
-Every `geno test --json` payload gains `backend`, on the payload and on each
-file entry; `interpreter` for a plain run. Other keys keep their values.
+A plain run's payload is unchanged. With `--backend python` or `--backend js`
+the payload gains `backend`, on the payload and on each file entry; other
+keys keep their values.
 
 `--backend all` prints:
 
@@ -169,7 +170,8 @@ file entry; `interpreter` for a plain run. Other keys keep their values.
 }
 ```
 
-Each entry of `backends` is that backend's ordinary payload. `ordinal` is the
+Each entry of `backends` is that backend's payload, with its `backend` keys
+(the interpreter's too). `ordinal` is the
 example's position among its function's examples, from 0.
 
 ## Backend And Target Parity
@@ -181,8 +183,8 @@ are now the one `Unit` value.
 
 ## Compatibility And Migration
 
-Additive. Without `--backend` the command behaves as before. `--json` output
-gains the `backend` key; consumers that reject unknown keys need to allow it.
+Additive. Without `--backend` the command behaves as before, and its `--json`
+payload is byte-for-byte what it was.
 
 ## Security And Resource Limits
 

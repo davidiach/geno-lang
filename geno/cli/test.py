@@ -383,12 +383,13 @@ def run_tests(
     def _json_error_result(message: str) -> None:
         import json as json_mod
 
+        named = {} if backend == "interpreter" else {"backend": backend}
         payload: dict = {
-            "backend": backend,
+            **named,
             "files": [
                 {
                     "path": path,
-                    "backend": backend,
+                    **named,
                     "error": message,
                     "elapsed_ms": 0.0,
                 }

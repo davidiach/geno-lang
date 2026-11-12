@@ -489,16 +489,23 @@ def test_text_report_labels_a_compiled_backend(tmp_path, capsys):
     assert "(5/5)" in lines[1]
 
 
-def test_the_default_backend_is_the_interpreter_and_json_names_it(tmp_path, capsys):
+def test_a_plain_run_keeps_its_payload_and_a_compiled_one_names_its_backend(
+    tmp_path, capsys
+):
     path = _write(tmp_path, FILTERED)
 
     with pytest.raises(SystemExit):
         run_tests(str(path), json_output=True)
+    plain = json.loads(capsys.readouterr().out)
+    with pytest.raises(SystemExit):
+        run_tests(str(path), json_output=True, backend="python")
+    compiled = json.loads(capsys.readouterr().out)
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["backend"] == "interpreter"
-    assert payload["files"][0]["backend"] == "interpreter"
-    assert (payload["total"], payload["passed"]) == (5, 5)
+    assert "backend" not in plain and "backend" not in plain["files"][0]
+    assert (plain["total"], plain["passed"]) == (5, 5)
+    assert compiled["backend"] == "python"
+    assert compiled["files"][0]["backend"] == "python"
+    assert (compiled["total"], compiled["passed"]) == (5, 5)
 
 
 @pytest.mark.parametrize("backend", COMPILED)
