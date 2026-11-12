@@ -869,6 +869,11 @@ class ExampleClause(ASTNode):
     inputs_end_location: SourceLocation | None = field(
         default=None, repr=False, compare=False
     )
+    # Set by the typechecker on an example of a generic function: the
+    # ``GenericInstance`` its inputs choose, as a call with them would.
+    _generic_instance: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @property
     def expects_panic(self) -> bool:

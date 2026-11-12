@@ -69,6 +69,13 @@ def _main():
     def show(value):
         return render(value, {_DISPLAY_LIMIT})
 
+    wrappers = {{
+        "_GenoArray": "_elements",
+        "_GenoVec": "_elements",
+        "_GenoMutableMap": "_data",
+        "_GenoSet": "_data",
+    }}
+
     def numbers_match(a, b):
         if type(a) is int and type(b) is int:
             return a == b
@@ -89,6 +96,16 @@ def _main():
                 equal(getattr(a, f.name), getattr(b, f.name))
                 for f in dataclasses.fields(a)
             )
+        # The runtime's own collections: an Array or Vec holds a list, a
+        # MutableMap a dict, a Set a set.
+        if type(a) is type(b) and type(a).__name__ in wrappers:
+            inner_a = getattr(a, wrappers[type(a).__name__])
+            inner_b = getattr(b, wrappers[type(a).__name__])
+            if isinstance(inner_a, (set, frozenset)):
+                return len(inner_a) == len(inner_b) and all(
+                    any(equal(x, y) for y in inner_b) for x in inner_a
+                )
+            return equal(inner_a, inner_b)
         return bool(a == b)
 
     def describe(exc):
@@ -190,6 +207,17 @@ _JS_DRIVER = f"""
     const _equal = (a, b, shape) => {{
         if (shape === "float") {{
             return typeof a === "number" && typeof b === "number" ? _close(a, b) : _valuesEqual(a, b);
+        }}
+        // The runtime's own collections hold their elements in a field.
+        if (a instanceof GenoArray && b instanceof GenoArray) return _equal(a._elements, b._elements, shape);
+        if (a instanceof GenoVec && b instanceof GenoVec) return _equal(a._elements, b._elements, shape);
+        if (a instanceof GenoMutableMap && b instanceof GenoMutableMap) return _equal(a._data, b._data, shape);
+        if (a instanceof GenoSet && b instanceof GenoSet) {{
+            const inner = Array.isArray(shape) && shape[0] === "sequence" ? shape[1] : null;
+            const left = [...a._data.values()];
+            const right = [...b._data.values()];
+            return left.length === right.length
+                && left.every((item) => right.some((other) => _equal(item, other, inner)));
         }}
         if (Array.isArray(shape) && Array.isArray(a) && Array.isArray(b)) {{
             if (shape[0] === "sequence") {{

@@ -609,3 +609,69 @@ def test_unit_is_one_value_however_the_function_ended(backend):
     """Found by `--backend all`: on JavaScript a function that ended without a
     `return` yielded `undefined`, which did not equal `()`."""
     assert backend(UNIT) == "true\ntrue\ntrue\n"
+
+
+REVIEWED = """
+func show[T](x: T) -> String
+    example 1 -> "1"
+    example "a" -> "a"
+    example 2.0 -> "2.0"
+    example [1.0, 2.5] -> "[1.0, 2.5]"
+    return to_string(x)
+end func
+
+func twice[T: Num](x: T) -> T
+    example 2 -> 4
+    example 1.5 -> 3.0
+    return x + x
+end func
+
+func inputs() -> (Int, Int)
+    example () -> (1, 2)
+    return (1, 2)
+end func
+
+func add(a: Int, b: Int) -> Int
+    example inputs() -> 3
+    return a + b
+end func
+
+func as_array(n: Int) -> Array[Float]
+    example 1 -> array_from_list([0.3])
+    return array_from_list([0.1 + 0.2])
+end func
+
+func as_vec(n: Int) -> Vec[Float]
+    example 1 -> vec_from_list([0.3])
+    example 2 -> vec_from_list([0.4])
+    return vec_from_list([0.1 + 0.2])
+end func
+
+func as_set(n: Int) -> Set[Float]
+    example 1 -> set_from_list([0.3, 1.0])
+    return set_from_list([1.0, 0.1 + 0.2])
+end func
+
+func main() -> Unit with io
+    print(show(2.0))
+    print(show(3))
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_generic_copies_tuple_valued_inputs_and_float_collections(tmp_path, backend):
+    """Three things a review of the first version found.
+
+    An example of a generic function runs once, on the copy its inputs
+    choose: JavaScript emits a Float copy of `show`, which used to register
+    every example again. An input that is one tuple-valued expression is the
+    argument list. A Float inside an Array, Vec or Set gets an example's
+    tolerance, as it does inside a List.
+    """
+    harness = _suite(_write(tmp_path, REVIEWED), backend).file_results[0].harness_result
+
+    assert (harness.total, harness.passed) == (12, 11)
+    [violation] = harness.violations
+    assert violation.function == "as_vec"
+    assert violation.message.startswith("expected Vec([0.4]), got Vec([0.3")

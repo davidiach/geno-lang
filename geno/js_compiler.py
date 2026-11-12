@@ -1149,7 +1149,9 @@ class JSCompiler(BaseCompiler):
 
         # First pass: collect type, function, trait, and impl definitions
         collect_definitions(program, into=self._definition_index)
-        self._spec_plan = plan_specializations([(None, program)])
+        self._spec_plan = plan_specializations(
+            [(None, program)], examples=self.test_cases is not None
+        )
         self._current_module = None
 
         # Validate no user names shadow prelude names
@@ -1377,8 +1379,11 @@ class JSCompiler(BaseCompiler):
             self._writeln(f"const {TEST_REGISTRY_NAME} = [];")
         self._emit_function_assignments = False
         self._spec_plan = plan_specializations(
-            (mod_name, dep_graph.parsed[mod_name])
-            for mod_name in dep_graph.sorted_modules
+            (
+                (mod_name, dep_graph.parsed[mod_name])
+                for mod_name in dep_graph.sorted_modules
+            ),
+            examples=self.test_cases is not None,
         )
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
@@ -1968,9 +1973,10 @@ class JSCompiler(BaseCompiler):
         trace = self._trace
         if trace is None:
             self._compile_function_def_untraced(defn, None)
-            self._register_examples(
-                defn, self._mangle_name(self._function_name_override or defn.name)
-            )
+            if self._function_name_override is None:
+                # A Float-dependent copy of a generic function is the same
+                # source function: its examples are registered once.
+                self._register_examples(defn, self._mangle_name(defn.name))
             return
         index = trace.function(
             self._mangle_name(self._function_name_override or defn.name),
@@ -2089,10 +2095,22 @@ class JSCompiler(BaseCompiler):
         The last entry is the result's display shape: JavaScript values do
         not tell an Int from a Float, so a report renders them by type.
         """
-        arguments = ", ".join(
-            self._compile_expr(argument)
-            for argument in self._example_arguments(defn, example)
-        )
+        if self._example_spreads(defn, example):
+            # A tuple is an array: the value is the argument list.
+            arguments_thunk = f"() => {self._compile_expr(example.input_expr)}"
+        else:
+            arguments = ", ".join(
+                self._compile_expr(argument)
+                for argument in self._example_arguments(defn, example)
+            )
+            arguments_thunk = f"() => [{arguments}]"
+        # An example of a generic function calls the copy its inputs choose,
+        # as a call with them would (`show(2.0)` is the Float copy).
+        instance = example._generic_instance
+        if instance is not None:
+            copy = self._spec_plan.lookup(instance, {}, self._current_module)
+            if copy is not None:
+                function_ref = self._mangle_name(copy)
         expected = "null"
         if example.output_expr is not None:
             expected = f"() => {self._compile_expr(example.output_expr)}"
@@ -2105,7 +2123,7 @@ class JSCompiler(BaseCompiler):
             type_bindings,
         )
         self._writeln(
-            f"{TEST_REGISTRY_NAME}.push([() => [{arguments}], {function_ref}, "
+            f"{TEST_REGISTRY_NAME}.push([{arguments_thunk}, {function_ref}, "
             f"{expected}, {shape}]);"
         )
 

@@ -20,7 +20,14 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .ast_nodes import FieldAccess, FunctionDef, Identifier, ImplDef, Program
+from .ast_nodes import (
+    ExampleClause,
+    FieldAccess,
+    FunctionDef,
+    Identifier,
+    ImplDef,
+    Program,
+)
 from .types import (
     AsyncType,
     FloatType,
@@ -166,12 +173,14 @@ class SpecializationPlan:
         return target[0], defn, spec
 
 
-def _generic_references(node: Any) -> Iterator[GenericInstance]:
+def _generic_references(node: Any, examples: bool = False) -> Iterator[GenericInstance]:
     """Yield the generic instances named anywhere inside *node*.
 
     Instances live on the identifier or module field access that names the
     function, whether it is called or used as a value. Example clauses are
-    skipped because the JS backend does not compile them.
+    skipped unless *examples*: only a test-harness build compiles them, and
+    there an example also names the instance of its own function that its
+    inputs choose.
     """
     stack = [node]
     seen: set[int] = set()
@@ -183,14 +192,16 @@ def _generic_references(node: Any) -> Iterator[GenericInstance]:
         if isinstance(current, (list, tuple)):
             stack.extend(current)
             continue
-        if isinstance(current, (Identifier, FieldAccess)):
+        if isinstance(current, (Identifier, FieldAccess)) or (
+            examples and isinstance(current, ExampleClause)
+        ):
             instance = getattr(current, "_generic_instance", None)
             if instance is not None:
                 yield instance
         if not hasattr(current, "__dict__"):
             continue
         for name, value in vars(current).items():
-            if name.startswith("_") or name == "examples":
+            if name.startswith("_") or (name == "examples" and not examples):
                 continue
             if not isinstance(value, (str, int, float, bool, type(None))):
                 stack.append(value)
@@ -198,11 +209,14 @@ def _generic_references(node: Any) -> Iterator[GenericInstance]:
 
 def plan_specializations(
     modules: Iterable[tuple[str | None, Program]],
+    *,
+    examples: bool = False,
 ) -> SpecializationPlan:
     """Plan every Float-dependent copy the compiled program can reach.
 
     That is every copy named by non-generic code or by a generic function's
-    erased body, and then by the copies those need.
+    erased body, and then by the copies those need. With *examples* (a
+    test-harness build), also every copy an example clause names.
     """
     plan = SpecializationPlan()
     module_list = list(modules)
@@ -214,7 +228,7 @@ def plan_specializations(
     work: list[tuple[str | None, FunctionDef, Specialization]] = []
 
     def visit(node: Any, subst: Mapping[str, Type], module: str | None) -> None:
-        for instance in _generic_references(node):
+        for instance in _generic_references(node, examples):
             requested = plan._request(instance, subst, module)
             if requested is not None:
                 work.append(requested)

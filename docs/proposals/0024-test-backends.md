@@ -115,6 +115,10 @@ differs from an ordinary build in three ways:
 - After each function, each of its examples is registered: a thunk for its
   arguments, the function, and a thunk for its expected value. An Int written
   for a Float parameter or result is widened as a call site would widen it.
+  An example of a generic function calls the copy its inputs choose, as a
+  call with them would, and is registered once however many copies the
+  backend emits. An input that is one tuple-valued expression is the argument
+  list, as on the interpreter.
 - Each `test` block is compiled as a function and registered. `assert` is
   compiled only here.
 - The call of `main` is left out.
@@ -133,7 +137,7 @@ arguments, then the expected value, then makes the call, and writes one line
 of JSON to a results file. The parent decides what each record means.
 
 - **Equality** is Geno's, with the tolerance `geno test` gives a Float
-  (relative `1e-9`). On JavaScript, where a value does not say whether it is a
+  (relative `1e-9`), inside every collection. On JavaScript, where a value does not say whether it is a
   Float, the result's static type does.
 - **Rendering.** A failure shows `expected X, got Y` with each backend's own
   diagnostic formatter, which writes values as the interpreter does.
@@ -270,9 +274,7 @@ Ships in the 0.7 development line as Experimental
 4. **Inherent differences.** Stack depth is the host's, so a deep non-tail
    recursion can pass on one backend and not another. It is reported as a
    divergence, which is accurate and may be noise for some projects.
-5. **An example whose input is a tuple-valued expression** (not a tuple
-   literal) is passed as one argument in a compiled run.
-6. **A forged refusal on JavaScript.** JavaScript throws a plain `Error` for a
+5. **A forged refusal on JavaScript.** JavaScript throws a plain `Error` for a
    capability denial, so a program that panics with that exact wording reads
    as refused. That can fail a panics example, never pass one.
 

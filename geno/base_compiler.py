@@ -67,6 +67,7 @@ from .ast_nodes import (
 from .builtin_registry import all_builtin_names, builtin_param_name_lists
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .tokens import SourceLocation
+from .types import TupleType
 
 # Built-in type variants that must be registered for dynamic field lookup.
 # These mirror the type definitions in the typechecker but are expressed as
@@ -1126,6 +1127,21 @@ class BaseCompiler(ABC):
             if len(defn.params) != 1:
                 return list(inputs.elements)
         return [inputs]
+
+    @staticmethod
+    def _example_spreads(defn: FunctionDef, example: ExampleClause) -> bool:
+        """Whether the input is one expression whose tuple value is the
+        argument list (`example inputs() -> 3` for a two-parameter function).
+
+        The interpreter spreads the evaluated value; a compiled case reads
+        the same from the expression's type.
+        """
+        inputs = example.input_expr
+        return (
+            not isinstance(inputs, TupleExpr)
+            and len(defn.params) != 1
+            and isinstance(getattr(inputs, "_resolved_type", None), TupleType)
+        )
 
     def _register_examples(self, defn: FunctionDef, function_ref: str) -> None:
         """Register *defn*'s examples in a test-harness build."""

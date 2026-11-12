@@ -1887,17 +1887,22 @@ class Compiler(BaseCompiler, ASTVisitor):
         An Int written for a Float parameter or result is widened here, as a
         call site and a `return` widen it.
         """
-        arguments = self._example_arguments(defn, example)
-        parts = []
-        for param, argument in zip(defn.params, arguments):
-            parts.append(
-                self._promote_expr_to_expected_float(
-                    self._compile_expr(argument),
-                    param._resolved_type or param.param_type,
-                    argument,
+        if self._example_spreads(defn, example):
+            # The tuple the expression yields is the argument list.
+            arguments_thunk = f"lambda: tuple({self._compile_expr(example.input_expr)})"
+        else:
+            arguments = self._example_arguments(defn, example)
+            parts = []
+            for param, argument in zip(defn.params, arguments):
+                parts.append(
+                    self._promote_expr_to_expected_float(
+                        self._compile_expr(argument),
+                        param._resolved_type or param.param_type,
+                        argument,
+                    )
                 )
-            )
-        values = "".join(f"{part}, " for part in parts)
+            values = "".join(f"{part}, " for part in parts)
+            arguments_thunk = f"lambda: ({values})"
         expected = "None"
         if example.output_expr is not None:
             expected = "lambda: " + self._promote_expr_to_expected_float(
@@ -1906,7 +1911,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 example.output_expr,
             )
         self._writeln(
-            f"{TEST_REGISTRY_NAME}.append(((lambda: ({values})), "
+            f"{TEST_REGISTRY_NAME}.append((({arguments_thunk}), "
             f"{function_ref}, {expected}))"
         )
 
