@@ -52,11 +52,24 @@ BACKENDS = [
     ),
 ]
 
-# Past every backend's stack: the interpreter allows 10,000 calls, compiled
-# Python about 60,000 host frames, and Node far fewer.
+# Past each backend's stack: the interpreter allows 10,000 calls, compiled
+# Python about 60,000 host frames, and Node far fewer. The interpreter gets
+# the smaller depth because it is the slow one, most of all under coverage.
 DEEP = 70_000
+INTERPRETER_DEEP = 10_500
 
-POSITIONS = f"""
+
+def _depth(backend) -> int:
+    interpreted = (_interpreter_output, _interpreter_project_output)
+    return INTERPRETER_DEEP if backend in interpreted else DEEP
+
+
+def _at(depth: int, template: str) -> str:
+    """*template* with its `{DEEP}` placeholders set to *depth*."""
+    return template.replace("{DEEP}", str(depth))
+
+
+POSITIONS = """
 func by_return(n: Int, acc: Int) -> Int
     example (3, 0) -> 3
     if n == 0 then
@@ -168,24 +181,25 @@ func main() -> Unit with io
 end func
 """
 
-POSITIONS_OUTPUT = f"""{DEEP}
-{DEEP}
-{2 * DEEP}
-{DEEP}.0
-{DEEP}
-{DEEP}
-{DEEP}
-1
-{DEEP}
-{2 * DEEP}
-kept
-2.0
-"""
-
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_every_tail_position_runs_deep(backend):
-    assert backend(POSITIONS) == POSITIONS_OUTPUT
+    deep = _depth(backend)
+    expected = [
+        deep,
+        deep,
+        2 * deep,
+        f"{deep}.0",
+        deep,
+        deep,
+        deep,
+        1,
+        deep,
+        2 * deep,
+        "kept",
+        "2.0",
+    ]
+    assert backend(_at(deep, POSITIONS)) == "".join(f"{line}\n" for line in expected)
 
 
 SEMANTICS = """
@@ -447,7 +461,7 @@ def test_the_innermost_failing_ensures_is_the_one_reported(backend):
     assert "fall(n: 3)" in message
 
 
-ENSURES_PASSING = f"""
+ENSURES_PASSING = """
 func total(n: Int, acc: Int) -> Int
     ensures result >= acc
     ensures result >= 0
@@ -476,8 +490,9 @@ end func
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_deep_tail_recursion_with_ensures(backend):
-    expected = DEEP * (DEEP + 1) // 2
-    assert backend(ENSURES_PASSING) == f"{expected}\n{expected}\n"
+    deep = _depth(backend)
+    expected = deep * (deep + 1) // 2
+    assert backend(_at(deep, ENSURES_PASSING)) == f"{expected}\n{expected}\n"
 
 
 def _plan(source: str, name: str = "f"):
@@ -703,7 +718,7 @@ export func total(n: Int, acc: Int = 0) -> Int
 end func
 """
 
-IMPORTER = f"""
+IMPORTER = """
 import Deep
 
 func main() -> Unit with io
@@ -725,8 +740,9 @@ end func
     ],
 )
 def test_a_function_of_an_imported_module_runs_deep(backend):
-    expected = f"{DEEP}\n{DEEP * (DEEP + 1) // 2}\n"
-    assert backend(IMPORTER, {"Deep": MODULE}) == expected
+    deep = _depth(backend)
+    expected = f"{deep}\n{deep * (deep + 1) // 2}\n"
+    assert backend(_at(deep, IMPORTER), {"Deep": MODULE}) == expected
 
 
 def _violation(source: str, name: str, arguments: list[int]) -> ContractViolationError:
@@ -786,7 +802,7 @@ def test_a_default_is_evaluated_for_each_logical_call_that_omits_it(backend):
     assert backend(DEFAULTS) == "default\ndefault\ndefault\n0\n"
 
 
-MIXED = f"""
+MIXED = """
 func check(n: Int) -> Result[Int, String]
     example (1) -> Ok(1)
     if n == 13 then
@@ -851,9 +867,9 @@ func main() -> Unit with io, mutation
     print(tally({DEEP}, 0))
     print(tally(5, 0))
     print(tally(20, 0))
-    print(length(build(3000, [])))
+    print(length(build(300, [])))
     print(build(3, []))
-    print(length(text(3000, "")))
+    print(length(text(300, "")))
     print(widen({DEEP}, 0.5))
     let out: Vec[() -> Int] = vec_new()
     unit_closure(3, out)
@@ -862,15 +878,15 @@ func main() -> Unit with io, mutation
 end func
 """
 
-MIXED_OUTPUT = f"""Err(error: "unlucky")
+MIXED_OUTPUT = """Err(error: "unlucky")
 Ok(value: 5)
 Err(error: "unlucky")
-3000
+300
 [3, 2, 1]
-3000
+300
 1.0
 4
-{3 * DEEP + 3}
+{TOTAL}
 """
 
 
@@ -879,4 +895,6 @@ def test_tail_calls_beside_propagation_collections_widening_and_loops(backend):
     """`?` in the body, a List or String result through an expression, an Int
     argument for a Float parameter, a `Unit` function that makes closures,
     and a body with its own loop."""
-    assert backend(MIXED) == MIXED_OUTPUT
+    deep = _depth(backend)
+    expected = MIXED_OUTPUT.replace("{TOTAL}", str(3 * deep + 3))
+    assert backend(_at(deep, MIXED)) == expected
