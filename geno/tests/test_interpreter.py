@@ -1237,7 +1237,7 @@ class TestCallFunctionDepthTracking:
         source = """
         func bomb(x: Int) -> Int
             example (0) -> 0
-            return bomb(x)
+            return bomb(x) + 0
         end func
 
         func main() -> List[Int]
@@ -1255,7 +1255,7 @@ class TestCallFunctionDepthTracking:
         source = """
         func bomb(acc: Int, x: Int) -> Int
             example (0, 0) -> 0
-            return bomb(acc, x)
+            return bomb(acc, x) + 0
         end func
 
         func main() -> Int

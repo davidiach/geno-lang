@@ -1,0 +1,15 @@
+# EXPECT: E503
+# A self tail call replaces the running call (proposal 0022),
+# so this recursion never reaches the call-depth limit.  It is
+# a loop, and the step limit stops it as it stops `while true`.
+func spin(n: Int) -> Int
+    example -1 -> 0
+    if n < 0 then
+        return 0
+    end if
+    return spin(n + 1)
+end func
+
+func main() -> Int
+    return spin(0)
+end func

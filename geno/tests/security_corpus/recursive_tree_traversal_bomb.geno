@@ -1,7 +1,9 @@
-# EXPECT: E502
+# EXPECT: E503
 # Build a tree with structural sharing (O(n) memory) then
-# traverse it recursively (O(2^n) time).  The call-depth
-# limit should catch this before the traversal completes.
+# traverse it recursively (O(2^n) time).  The tree is shallow,
+# so the call-depth limit does not apply (`grow` ends in a self
+# tail call, which does not nest; `count` nests 41 deep): the
+# step limit stops the traversal.
 type Tree = Leaf(x: Int) | Node(l: Tree, r: Tree)
 
 func grow(t: Tree, d: Int) -> Tree
@@ -21,6 +23,6 @@ func count(t: Tree) -> Int
 end func
 
 func main() -> Int
-    let t: Tree = grow(Leaf(1), 499)
+    let t: Tree = grow(Leaf(1), 40)
     return count(t)
 end func

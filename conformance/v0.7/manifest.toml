@@ -528,3 +528,15 @@ path = "programs/diagnostic_format_spec.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E331"]
+
+# Proposal 0022 (Accepted): a function's call to itself in tail position runs in
+# constant stack. The positions, contracts, closures, limits and reports are
+# covered by geno/tests/test_tail_calls.py.
+
+[[cases]]
+id = "self-tail-calls"
+path = "programs/self_tail_calls.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "30000\n2001000\n5\n30\n20\n10\n[2, 1]\n"

@@ -13,6 +13,16 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- Self tail calls run in constant stack on the interpreter, compiled Python
+  and compiled JavaScript, from accepted
+  [proposal 0022](docs/proposals/0022-self-tail-calls.md). A function that
+  ends with a call to itself (`return go(rest, acc + 1)`, a branch of an `if`
+  or `match` in return position, or the last statement of a `Unit` function)
+  no longer reaches "maximum recursion depth exceeded" on a large input.
+  Argument order, defaults, `requires`, `ensures` for every logical call and
+  closure captures are kept. A runtime failure report shows one frame for the
+  calls a tail call replaced. Calls whose result is still used, mutual
+  recursion and `impl` methods nest as before.
 - Four more forms models write, from accepted
   [proposal 0023](docs/proposals/0023-format-specs-slices-named-patterns-if-let.md).
   Each was a parse error before, so every accepted program keeps its meaning:
@@ -375,6 +385,13 @@ package version stays 0.6.0, and the Draft
 
 ### Changed
 
+- A tail recursion that never ends is now a loop that never ends: the step
+  limit or the timeout stops it, where 0.6 reported "maximum recursion depth
+  exceeded", and its failure reports show one frame for the function (see
+  self tail calls under Added, and the
+  [compatibility policy](docs/operations/compatibility-policy.md#07-draft-a-self-tail-call-does-not-nest)).
+  A recursion whose result is still used reaches the recursion limit as
+  before.
 - A capability denial in the default `geno run` lane, in `main` or in an
   example, now ends with the isolated command when the lane can grant the
   capability (`Hint: grant it with --cap; the program stays

@@ -118,6 +118,7 @@ from .sandbox import (
 )
 from .sandbox import TimeoutError as SandboxTimeout
 from .stdlib_scope import binds_unqualified
+from .tail_calls import mark_self_tail_calls
 from .tokens import SourceLocation
 from .types import FloatType
 
@@ -143,6 +144,7 @@ from .values import (
     RuntimeError,
     RuntimeLimitError,
     SetValue,
+    TailCallException,
     VecValue,
 )
 
@@ -1624,6 +1626,7 @@ class Interpreter:
                         self._constructor_to_type[variant.name] = defn.name
                 elif isinstance(defn, FunctionDef):
                     self.functions[defn.name] = defn
+                    tail_plan = mark_self_tail_calls(defn)
                     closure = Closure(
                         params=defn.params,
                         body=defn.body,
@@ -1632,6 +1635,7 @@ class Interpreter:
                         specs=defn.specs,
                         is_async=defn.is_async,
                         display_name=defn.name,
+                        tail_snapshots=tail_plan is not None and tail_plan.snapshots,
                     )
                     self.global_env.bind(defn.name, closure)
                     self._function_closures[defn.name] = closure
@@ -1763,6 +1767,7 @@ class Interpreter:
         module_functions: dict[str, FunctionDef] = {}
         for defn in mod_program.definitions:
             if isinstance(defn, FunctionDef):
+                tail_plan = mark_self_tail_calls(defn)
                 closure = Closure(
                     params=defn.params,
                     body=defn.body,
@@ -1771,6 +1776,7 @@ class Interpreter:
                     specs=defn.specs,
                     is_async=defn.is_async,
                     display_name=f"{name}.{defn.name}",
+                    tail_snapshots=tail_plan is not None and tail_plan.snapshots,
                 )
                 module_env.bind(defn.name, closure)
                 if has_exports and not defn.exported:
@@ -2596,6 +2602,10 @@ class Interpreter:
         else:
             args = [self._eval_argument(arg.value, env) for arg in expr.arguments]
 
+        if expr._self_tail_call:
+            # The frame of the function this call is in restarts with these
+            # arguments (proposal 0022); see _call_function.
+            raise TailCallException(args, expr.location)
         return self._call_function(func, args, expr.location)
 
     def _reorder_named_args(
@@ -2814,112 +2824,120 @@ class Interpreter:
                 raise self._recursion_limit_error(location)
             self.call_depth += 1
             try:
-                # Fill in default values while this invocation counts toward the
-                # recursion limit. Recursive defaults should raise a Geno error
-                # instead of escaping as a host-language RecursionError.
-                if len(args) < len(func.params):
-                    # Trailing args omitted — append defaults
-                    filled_args = list(args)
-                    for i in range(len(args), len(func.params)):
-                        if func.params[i].default_value is not None:
-                            default = func.params[i].default_value
-                            assert default is not None
-                            filled_args.append(
-                                self._eval_default_argument(func, default, location)
-                            )
-                        else:
-                            break
-                    args = filled_args
-                # Handle _UNFILLED sentinels from named-arg reordering
-                for i, arg in enumerate(args):
-                    if arg is _UNFILLED:
-                        if func.params[i].default_value is not None:
-                            default = func.params[i].default_value
-                            assert default is not None
-                            args[i] = self._eval_default_argument(
-                                func, default, location
-                            )
-                        else:
-                            raise RuntimeError(
-                                f"Missing argument for parameter '{func.params[i].name}'",
-                                location,
-                            )
-
-                if len(args) != len(func.params):
-                    raise RuntimeError(
-                        f"Expected {len(func.params)} arguments, got {len(args)}",
-                        location,
-                    )
-
-                # A contravariant function alias can advertise Int arguments
-                # while the actual closure accepts Float. Use the closure's
-                # parameter types at this boundary, including callbacks and
-                # deferred async calls that have no direct call-site coercion.
-                args = [
-                    _promote_int_to_expected_float(
-                        arg,
-                        param._resolved_type or param.param_type,
-                    )
-                    for param, arg in zip(func.params, args)
-                ]
-                self._check_collection_limits(args, location)
+                args = self._bind_call_arguments(func, args, location)
 
                 # For async functions, return an AsyncValue instead of executing
                 if func.is_async:
                     return AsyncValue(func, list(args))
 
+                # A self tail call restarts the loop below with new arguments,
+                # so the logical calls of a tail-recursive function share one
+                # frame and one unit of recursion depth (proposal 0022).
+                # ``replaced`` counts the calls a tail call has replaced, and
+                # ``waiting`` holds those whose ``ensures`` checks need their
+                # own bindings, innermost last.
+                replaced = 0
+                tail_location: SourceLocation | None = None
+                waiting: list[tuple[Environment, list[Any]]] | None = None
                 # A lambda's entry has no name: it is not a report frame
                 # (proposal 0018), but it keeps the stack depth honest.
-                self._call_stack.append((func.display_name or func.name, location))
-                try:
-                    # Create new environment with parameters bound
-                    # (immutable binds are plain dict entries, so build the
-                    # frame directly instead of child() plus bind() per param)
-                    call_env = Environment(
-                        {param.name: arg for param, arg in zip(func.params, args)},
-                        parent=func.env,
-                    )
-
-                    # Check preconditions (requires clauses). An empty
-                    # SpecBlock is truthy — gate on the clause list so
-                    # spec-free functions skip the check call entirely.
-                    specs = func.specs
-                    if specs is not None and specs.requires:
-                        self._check_requires(func, call_env, args)
-
-                    # Execute body
+                entry = (func.display_name or func.name, location)
+                while True:
+                    self._call_stack.append(entry)
                     try:
-                        for stmt in func.body:
-                            self.exec_stmt(stmt, call_env)
-                        result = None  # No explicit return
-                    except ReturnException as ret:
-                        result = ret.value
-                    except PropagateException as prop:
-                        result = prop.value
-                    except BreakException:
-                        raise RuntimeError("'break' outside of loop", location)
-                    except ContinueException:
-                        raise RuntimeError("'continue' outside of loop", location)
+                        if replaced:
+                            # The next logical call starts inside this frame,
+                            # so a failure binding its arguments is located
+                            # at the tail call.
+                            self._check_timeout(tail_location)
+                            args = self._bind_call_arguments(func, args, tail_location)
 
-                    # Check postconditions (ensures clauses); gated on the
-                    # clause list — _check_ensures allocates an environment
-                    # even when there is nothing to check.
-                    if specs is not None and specs.ensures:
-                        self._check_ensures(func, call_env, result, args)
+                        # Create new environment with parameters bound
+                        # (immutable binds are plain dict entries, so build the
+                        # frame directly instead of child() plus bind() per param)
+                        call_env = Environment(
+                            {param.name: arg for param, arg in zip(func.params, args)},
+                            parent=func.env,
+                        )
 
-                    self._check_collection_limits([result], location)
-                    self._check_timeout(location)
-                    return result
-                except (RuntimeError, SandboxError) as e:
-                    # The first Geno frame a failure unwinds captures the
-                    # stack, once per failure (proposal 0018). Reports bound
-                    # and name it later; outer handlers may still locate a
-                    # callback's entry (see the builtin branch below).
-                    if e.geno_stack is None:
-                        e.geno_stack = CapturedStack(list(self._call_stack), e.location)
-                    raise
-                finally:
-                    self._call_stack.pop()
+                        # Check preconditions (requires clauses). An empty
+                        # SpecBlock is truthy — gate on the clause list so
+                        # spec-free functions skip the check call entirely.
+                        specs = func.specs
+                        if specs is not None and specs.requires:
+                            if replaced:
+                                self._check_replaced_call(
+                                    replaced, self._check_requires, func, call_env, args
+                                )
+                            else:
+                                self._check_requires(func, call_env, args)
+
+                        # Execute body
+                        try:
+                            for stmt in func.body:
+                                self.exec_stmt(stmt, call_env)
+                            result = None  # No explicit return
+                        except ReturnException as ret:
+                            result = ret.value
+                        except TailCallException as tail:
+                            if func.tail_snapshots:
+                                if waiting is None:
+                                    waiting = []
+                                waiting.append((call_env, args))
+                            args = tail.arguments
+                            tail_location = tail.location
+                            replaced += 1
+                            continue
+                        except PropagateException as prop:
+                            result = prop.value
+                        except BreakException:
+                            raise RuntimeError("'break' outside of loop", location)
+                        except ContinueException:
+                            raise RuntimeError("'continue' outside of loop", location)
+
+                        # Check postconditions (ensures clauses); gated on the
+                        # clause list — _check_ensures allocates an environment
+                        # even when there is nothing to check.
+                        if specs is not None and specs.ensures:
+                            if replaced:
+                                self._check_replaced_call(
+                                    replaced,
+                                    self._check_ensures,
+                                    func,
+                                    call_env,
+                                    result,
+                                    args,
+                                )
+                                # Each call a tail call replaced returns this
+                                # result too: check them innermost first.
+                                while waiting:
+                                    earlier_env, earlier_args = waiting.pop()
+                                    self._check_replaced_call(
+                                        len(waiting),
+                                        self._check_ensures,
+                                        func,
+                                        earlier_env,
+                                        result,
+                                        earlier_args,
+                                    )
+                            else:
+                                self._check_ensures(func, call_env, result, args)
+
+                        self._check_collection_limits([result], location)
+                        self._check_timeout(location)
+                        return result
+                    except (RuntimeError, SandboxError) as e:
+                        # The first Geno frame a failure unwinds captures the
+                        # stack, once per failure (proposal 0018). Reports bound
+                        # and name it later; outer handlers may still locate a
+                        # callback's entry (see the builtin branch below).
+                        if e.geno_stack is None:
+                            e.geno_stack = CapturedStack(
+                                list(self._call_stack), e.location
+                            )
+                        raise
+                    finally:
+                        self._call_stack.pop()
             finally:
                 self.call_depth -= 1
 
@@ -2975,6 +2993,80 @@ class Interpreter:
             raise RuntimeError(
                 f"Cannot call non-function: {type(func).__name__}", location
             )
+
+    @staticmethod
+    def _check_replaced_call(
+        depth: int, check: Callable[..., None], *args: Any
+    ) -> None:
+        """Run a contract *check* for a logical call *depth* tail calls deep.
+
+        A violation records the depth it was raised at, and a self tail call
+        does not deepen the stack. Counting the calls it replaced keeps a
+        violation in a later logical call from looking like one in the first:
+        an example or a generated input is rejected only by its own call.
+        """
+        try:
+            check(*args)
+        except ContractViolationError as violation:
+            if violation.call_depth is not None:
+                violation.call_depth += depth
+            raise
+
+    def _bind_call_arguments(
+        self, func: Closure, args: list[Any], location: SourceLocation | None
+    ) -> list[Any]:
+        """The values *func*'s parameters take for a call made with *args*.
+
+        Fills defaults, widens Ints bound to Float parameters and enforces
+        the collection limits. Runs while the invocation counts toward the
+        recursion limit, so a recursive default raises a Geno error instead
+        of escaping as a host-language RecursionError.
+        """
+        if len(args) < len(func.params):
+            # Trailing args omitted — append defaults
+            filled_args = list(args)
+            for i in range(len(args), len(func.params)):
+                if func.params[i].default_value is not None:
+                    default = func.params[i].default_value
+                    assert default is not None
+                    filled_args.append(
+                        self._eval_default_argument(func, default, location)
+                    )
+                else:
+                    break
+            args = filled_args
+        # Handle _UNFILLED sentinels from named-arg reordering
+        for i, arg in enumerate(args):
+            if arg is _UNFILLED:
+                if func.params[i].default_value is not None:
+                    default = func.params[i].default_value
+                    assert default is not None
+                    args[i] = self._eval_default_argument(func, default, location)
+                else:
+                    raise RuntimeError(
+                        f"Missing argument for parameter '{func.params[i].name}'",
+                        location,
+                    )
+
+        if len(args) != len(func.params):
+            raise RuntimeError(
+                f"Expected {len(func.params)} arguments, got {len(args)}",
+                location,
+            )
+
+        # A contravariant function alias can advertise Int arguments
+        # while the actual closure accepts Float. Use the closure's
+        # parameter types at this boundary, including callbacks and
+        # deferred async calls that have no direct call-site coercion.
+        args = [
+            _promote_int_to_expected_float(
+                arg,
+                param._resolved_type or param.param_type,
+            )
+            for param, arg in zip(func.params, args)
+        ]
+        self._check_collection_limits(args, location)
+        return args
 
     def _eval_default_argument(
         self, func: Closure, default: Expression, location: SourceLocation | None

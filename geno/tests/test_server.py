@@ -4025,7 +4025,7 @@ _DEEP_PANIC_SOURCE = """func count_down(n: Int) -> Int
     if n == 0 then
         panic("bottom")
     end if
-    return count_down(n - 1)
+    return count_down(n - 1) + 0
 end func
 
 func main() -> Int

@@ -356,6 +356,9 @@ class FunctionCall(Expression):
     _method_call: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Set by the interpreter when it loads the enclosing function: this is a
+    # self tail call (geno/tail_calls.py), run without a new frame.
+    _self_tail_call: bool = field(default=False, init=False, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_function_call(self)

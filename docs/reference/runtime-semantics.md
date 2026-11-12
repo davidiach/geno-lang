@@ -292,6 +292,14 @@ an `Async` created in one statement and awaited in another can position its
 caller at the creation call; write `await f(...)` as one expression where the
 position matters. Browser builds and programs without `main` are unchanged.
 
+A function's call to itself in tail position replaces the running call
+(accepted [proposal 0022](../proposals/0022-self-tail-calls.md),
+[spec v0.7 section 4.1.4](../spec/v0.7.md#414-self-tail-calls)), so the calls
+it replaced leave no frames: a failure in the 40th step of a tail-recursive
+loop shows the function once, and no count of the replaced calls. Such calls
+do not count toward the recursion depth limit; the step limit and the timeout
+still stop a tail loop that never ends.
+
 Set `GENO_TRACEBACK=host` to also print the host's own traceback after the
 report: the interpreter's or the worker's Python traceback on `geno run`, the
 generated code's traceback in standalone Python, and the V8 stack in Node.

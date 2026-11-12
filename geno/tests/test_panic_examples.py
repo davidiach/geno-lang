@@ -754,7 +754,7 @@ class TestGenoTest:
             """
             func forever(n: Int) -> Int
                 example 0 panics
-                return forever(n + 1)
+                return forever(n + 1) + 0
             end func
             """
             + _MAIN,

@@ -82,6 +82,7 @@ from .ast_nodes import (  # Types; Expressions; Patterns; Statements; Definition
     MatchExpr,
     MatchStatement,
     ModuleConstant,
+    Parameter,
     Pattern,
     Pipeline,
     PlaceholderExpr,
@@ -133,6 +134,7 @@ from .runtime_prelude import RUNTIME_PRELUDE
 from .runtime_report import TRACE_AWAIT_KEY, TRACE_CALL_KEY, TRACE_TABLE_PLACEHOLDER
 from .runtime_report import TraceRecorder as _TraceRecorder
 from .stdlib_scope import binds_unqualified
+from .tail_calls import TailCallPlan, plan_tail_calls
 from .tokens import SourceLocation
 from .types import AsyncType, FloatType, ListType, UserType
 
@@ -265,6 +267,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "_geno_own_index",
             "_geno_slice",
             "_geno_format_spec",
+            "_GenoTailCall",
             "_safe_index",
             "_safe_index_set",
             "_safe_div",
@@ -484,6 +487,13 @@ class Compiler(BaseCompiler, ASTVisitor):
         # keeps the frontend's paths, as `--unsafe` prints them.
         self._trace: _TraceRecorder | None = None
         self.trace_absolute_paths = False
+        # Proposal 0022: the self tail calls of the function being compiled,
+        # by node identity, and that function's parameter names. A call in
+        # the first set assigns the parameters and continues the body loop;
+        # one in the second returns a `_GenoTailCall` to the trampoline.
+        self._tail_loop_calls: dict[int, FunctionCall] = {}
+        self._tail_trampoline_calls: set[int] = set()
+        self._tail_params: list[Parameter] = []
 
     def _begin_trace(self, entry_filename: str | None) -> int:
         """Start the trace table; returns where the anchor starts."""
@@ -1553,6 +1563,34 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         self._indent()
 
+        # Self tail calls run in constant stack (proposal 0022). An impl
+        # method is called through its trait's dispatcher, never by its own
+        # name, so only a top-level function has them.
+        tail_plan = (
+            plan_tail_calls(defn) if self._display_name_override is None else None
+        )
+        saved_tail = (
+            self._tail_loop_calls,
+            self._tail_trampoline_calls,
+            self._tail_params,
+        )
+        self._tail_loop_calls = {}
+        self._tail_trampoline_calls = set()
+        self._tail_params = defn.params
+        try:
+            self._compile_function_interior(defn, tail_plan)
+        finally:
+            (
+                self._tail_loop_calls,
+                self._tail_trampoline_calls,
+                self._tail_params,
+            ) = saved_tail
+        self._dedent()
+
+    def _compile_function_interior(
+        self, defn: FunctionDef, tail_plan: TailCallPlan | None
+    ) -> None:
+        """Emit everything of *defn* below its `def` line."""
         # Docstring with specs
         if defn.specs.requires or defn.specs.ensures or defn.specs.examples:
             self._writeln('"""')
@@ -1563,6 +1601,27 @@ class Compiler(BaseCompiler, ASTVisitor):
             for ex in defn.specs.examples:
                 self._writeln(f"Example: {self._example_docstring(ex)}")
             self._writeln('"""')
+
+        step = ""
+        waiting = ""
+        if tail_plan is not None and tail_plan.form == "loop":
+            # Nothing can observe that the parameters are reused: the body
+            # is a loop, and a tail call assigns them and continues it.
+            self._tail_loop_calls = {id(call): call for call in tail_plan.calls}
+            self._writeln("while True:")
+            self._indent()
+        elif tail_plan is not None:
+            # Each logical call is one call of this inner function, with its
+            # own bindings; the loop below it runs them one after another.
+            self._tail_trampoline_calls = {id(call) for call in tail_plan.calls}
+            step = self._fresh_temp()
+            step_params = ", ".join(
+                self._mangle_name(p.name)
+                + (" = _GENO_MISSING" if p.default_value is not None else "")
+                for p in defn.params
+            )
+            self._writeln(f"def {step}({step_params}):")
+            self._indent()
 
         for p in defn.params:
             if p.default_value is None:
@@ -1662,7 +1721,22 @@ class Compiler(BaseCompiler, ASTVisitor):
             call_prefix = "await " if is_async_execution_form(defn) else ""
             result_name = self._fresh_temp()
             self._writeln(f"{result_name} = {call_prefix}{body_helper}()")
-            if self._expected_runtime_type_is_float(defn.return_type):
+            check = ""
+            if tail_plan is not None and tail_plan.snapshots:
+                # Each logical call has its own check (TailCallPlan.snapshots):
+                # a call that ends in a tail call is checked later, with the
+                # result.
+                check = self._fresh_temp()
+                self._writeln(f"def {check}({result_name}):")
+                self._indent()
+            elif tail_plan is not None:
+                # Every call's check would compute the same thing: the last
+                # call's check stands for those a tail call replaced.
+                self._writeln(f"if isinstance({result_name}, _GenoTailCall):")
+                self._indent()
+                self._writeln(f"return {result_name}")
+                self._dedent()
+            if not check and self._expected_runtime_type_is_float(defn.return_type):
                 self._writeln(f"{result_name} = _promote_int_to_float({result_name})")
             # Check ensures clauses
             for index, ens in enumerate(defn.specs.ensures):
@@ -1681,9 +1755,103 @@ class Compiler(BaseCompiler, ASTVisitor):
                         (display_name, ens.source_text, param_names, call_arguments),
                         param_values if call_arguments != param_values else None,
                     )
+            if check:
+                self._writeln("return None")
+                self._dedent()
+                self._writeln(f"if isinstance({result_name}, _GenoTailCall):")
+                self._indent()
+                self._writeln(f"{result_name}.ensures = {check}")
+                self._writeln(f"return {result_name}")
+                self._dedent()
+                if self._expected_runtime_type_is_float(defn.return_type):
+                    self._writeln(
+                        f"{result_name} = _promote_int_to_float({result_name})"
+                    )
+                self._writeln(f"{check}({result_name})")
             self._writeln(f"return {result_name}")
 
-        self._dedent()
+        if tail_plan is not None and tail_plan.form == "loop":
+            if not isinstance(defn.body[-1], ReturnStatement) and (
+                id(getattr(defn.body[-1], "expression", None))
+                not in self._tail_loop_calls
+            ):
+                # A body that ends without a tail call ends the function.
+                self._writeln("return None")
+            self._dedent()
+        elif tail_plan is not None:
+            self._dedent()
+            outcome = self._fresh_temp()
+            arguments = ", ".join(self._mangle_name(p.name) for p in defn.params)
+            if tail_plan.snapshots:
+                waiting = self._fresh_temp()
+                self._writeln(f"{waiting} = []")
+            self._writeln(f"{outcome} = {step}({arguments})")
+            self._writeln(f"while isinstance({outcome}, _GenoTailCall):")
+            self._indent()
+            if waiting:
+                self._writeln(f"{waiting}.append({outcome}.ensures)")
+            self._writeln(f"{outcome} = {step}(*{outcome}.arguments)")
+            self._dedent()
+            if waiting:
+                # Every replaced call returns this result: innermost first.
+                self._writeln(f"while {waiting}:")
+                self._indent()
+                self._writeln(f"{waiting}.pop()({outcome})")
+                self._dedent()
+            self._writeln(f"return {outcome}")
+
+    def _tail_call_values(self, call: FunctionCall) -> tuple[list[str], list[str]]:
+        """A self tail call's arguments: statements-free bindings and values.
+
+        Returns ``(bindings, values)``. ``values`` are the expressions for the
+        parameters in order, ``_GENO_MISSING`` for one the call leaves to its
+        default. When named arguments are written out of parameter order,
+        ``bindings`` are ``name = value`` pairs in source order, which
+        ``values`` then name, so evaluation order is the written order.
+        """
+        names = [p.name for p in self._tail_params]
+        if any(arg.name for arg in call.arguments):
+            ordered = self._reorder_call_args_for_compile(call.arguments, names)
+        else:
+            ordered = list(call.arguments)
+        ordered += [None] * (len(names) - len(ordered))
+        concrete = [arg for arg in ordered if arg is not None]
+        in_order = all(a is b for a, b in zip(call.arguments, concrete))
+        compiled = {
+            id(arg): self._compile_call_argument(arg.value) for arg in call.arguments
+        }
+        bindings: list[str] = []
+        if not in_order:
+            for arg in call.arguments:
+                temporary = self._fresh_temp()
+                bindings.append(f"{temporary} = {compiled[id(arg)]}")
+                compiled[id(arg)] = temporary
+        values = [
+            "_GENO_MISSING" if arg is None else compiled[id(arg)] for arg in ordered
+        ]
+        return bindings, values
+
+    def _compile_tail_loop_call(self, call: FunctionCall) -> None:
+        """Assign the parameters for the next logical call and start it."""
+        bindings, values = self._tail_call_values(call)
+        for binding in bindings:
+            self._writeln(binding)
+        if values:
+            targets = ", ".join(self._mangle_name(p.name) for p in self._tail_params)
+            self._writeln(f"{targets} = {', '.join(values)}")
+        self._writeln("continue")
+
+    def _compile_tail_trampoline_call(self, call: FunctionCall) -> str:
+        """The `_GenoTailCall` that asks the trampoline for the next call."""
+        bindings, values = self._tail_call_values(call)
+        while values and values[-1] == "_GENO_MISSING":
+            values.pop()
+        request = f"_GenoTailCall({', '.join(values)})"
+        if not bindings:
+            return request
+        names = ", ".join(binding.split(" = ", 1)[0] for binding in bindings)
+        sources = ", ".join(binding.split(" = ", 1)[1] for binding in bindings)
+        return f"(lambda {names}: {request})({sources})"
 
     def _compile_requires_check(
         self,
@@ -1833,6 +2001,26 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_statement_untraced(self, stmt: Statement) -> None:
         stmt_type = type(stmt)
+
+        if self._tail_loop_calls:
+            value: Expression | None = None
+            if isinstance(stmt, ReturnStatement):
+                value = stmt.value
+            elif isinstance(stmt, ExpressionStatement):
+                value = stmt.expression
+            tail_call = self._tail_loop_calls.get(id(value))
+            if tail_call is not None:
+                self._emit_source_location(stmt.location)
+                self._compile_tail_loop_call(tail_call)
+                return
+        elif (
+            self._tail_trampoline_calls
+            and isinstance(stmt, ExpressionStatement)
+            and id(stmt.expression) in self._tail_trampoline_calls
+        ):
+            # The call a `Unit` function ends with: hand it to the trampoline.
+            self._writeln(f"return {self._compile_expr(stmt.expression)}")
+            return
 
         # Emit source mapping comment for control-flow and binding statements
         if stmt_type in (
@@ -3162,6 +3350,8 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_function_call(self, expr: FunctionCall) -> str:
         """Compile a function call."""
+        if id(expr) in self._tail_trampoline_calls:
+            return self._compile_tail_trampoline_call(expr)
         has_named_args = any(arg.name for arg in expr.arguments)
         func_name = (
             expr.function.name if isinstance(expr.function, Identifier) else None
