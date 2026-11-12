@@ -13,7 +13,7 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
-- `geno test --backend interpreter|python|js|all` (Experimental), from Draft
+- `geno test --backend interpreter|python|js|all` (Experimental), from accepted
   [proposal 0024](docs/proposals/0024-test-backends.md). `python` and `js`
   run every example and `test` block in compiled code, built the way `geno
   compile` builds it, in a subprocess with the test grant and a hard

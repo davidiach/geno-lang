@@ -1,12 +1,40 @@
 # Proposal 0024: Run `geno test` On The Compiled Backends
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-12 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-12
 - Discussion: https://github.com/davidiach/geno-lang/issues/239
 - Supersedes: None
-- Review: None yet. No independent human technical review has taken place.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: local validation, and GitHub CI, Release Gate and External Apps on
+  #262. An automated Codex review was running on #262 when the proposal was
+  accepted. These are not independent approval.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-12 the project lead, David Iach, accepted this proposal as
+implemented on #262. In the Claude Code session that built it, told that the
+proposal was a Draft that needed acceptance before merge, the project lead
+answered "accept 0024 as written and merge when green". This records
+acceptance for the 0.7 development line and authorization to merge #262
+after green CI.
+
+The decision accepts the choices of the Reference Design as written: a plain
+run's `--json` payload is unchanged and `backend` appears only for a compiled
+or `all` run; a divergence is a differing verdict or a differing wrong value,
+and differently worded runtime errors are the same outcome; a stack-depth
+difference between hosts is reported as a divergence; the flag is
+Experimental; and a compiled failure carries its message without a Geno
+location or stack. The Unresolved Questions stay open and do not block
+acceptance.
+
+The proposal was created and accepted on 2026-11-12. The usual seven-day
+review period in `docs/proposals/README.md` did not elapse; the project
+lead's explicit acceptance is recorded here as an exception to it. It does
+not imply that independent human review occurred.
 
 ## Summary
 
