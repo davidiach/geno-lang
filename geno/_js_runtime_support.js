@@ -4780,18 +4780,19 @@ function _jsonValueToPrettyString(value, indent, depth) {
 // theirs. The walk mirrors _geno_json_from and _geno_json_to in the Python
 // runtime, message for message.
 
-// Constructor name -> constructor function, for the user types of a program
-// that uses typed JSON (a compiled type definition registers its
-// constructors here) and the built-in record types.
+// "Type.Constructor" -> constructor function, for the user types of a
+// program that uses typed JSON (a compiled type definition registers its
+// constructors here) and the built-in record types. The type's name is part
+// of the key because two types may each have a constructor of one name.
 const _GENO_JSON_CTORS = new _GENO_MAP([
-    ["HttpResponse", HttpResponse],
-    ["HttpRequest", HttpRequest],
-    ["ProcessResult", ProcessResult],
-    ["FileKindFile", FileKindFile],
-    ["FileKindDirectory", FileKindDirectory],
-    ["FileKindSymlink", FileKindSymlink],
-    ["FileKindOther", FileKindOther],
-    ["FileMetadata", FileMetadata],
+    ["HttpResponse.HttpResponse", HttpResponse],
+    ["HttpRequest.HttpRequest", HttpRequest],
+    ["ProcessResult.ProcessResult", ProcessResult],
+    ["FileKind.FileKindFile", FileKindFile],
+    ["FileKind.FileKindDirectory", FileKindDirectory],
+    ["FileKind.FileKindSymlink", FileKindSymlink],
+    ["FileKind.FileKindOther", FileKindOther],
+    ["FileMetadata.FileMetadata", FileMetadata],
 ]);
 const _GENO_JSON_KINDS = {
     JsonString: "String", JsonInt: "Int", JsonFloat: "Float", JsonBool: "Bool",
@@ -4902,32 +4903,33 @@ function _genoJsonFrom(node, shape, types, path) {
         return Err(_genoJsonFrom(entries.get("err"), shape[2], types, [path, ".err"]));
     }
     const described = types.get(shape[1]);
+    const owner = described[1] + ".";
     if (described[0] === "enum") {
         if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
-        if (!described[1].includes(node.value)) {
-            _genoJsonFail(path, "expected " + _genoJsonOneOf(described[1])
+        if (!described[2].includes(node.value)) {
+            _genoJsonFail(path, "expected " + _genoJsonOneOf(described[2])
                 + ", got " + _GENO_JSON.stringify(node.value));
         }
-        return _GENO_JSON_CTORS.get(node.value)();
+        return _GENO_JSON_CTORS.get(owner + node.value)();
     }
     if (tag !== "JsonObject") _genoJsonExpected(path, "object", tag);
     const entries = _genoJsonObject(node);
     if (described[0] === "record") {
-        return _GENO_JSON_CTORS.get(described[1])(
-            ..._genoJsonFields(entries, described[2], types, path));
+        return _GENO_JSON_CTORS.get(owner + described[2])(
+            ..._genoJsonFields(entries, described[3], types, path));
     }
     if (!entries.has("type")) _genoJsonFail(path, 'missing field "type"');
     const chosen = entries.get("type");
     const typePath = [path, ".type"];
     if (chosen._tag !== "JsonString") _genoJsonExpected(typePath, "String", chosen._tag);
-    for (const [constructor, fields] of described[1]) {
+    for (const [constructor, fields] of described[2]) {
         if (constructor === chosen.value) {
-            return _GENO_JSON_CTORS.get(constructor)(
+            return _GENO_JSON_CTORS.get(owner + constructor)(
                 ..._genoJsonFields(entries, fields, types, path));
         }
     }
     _genoJsonFail(typePath, "expected "
-        + _genoJsonOneOf(described[1].map((variant) => variant[0]))
+        + _genoJsonOneOf(described[2].map((variant) => variant[0]))
         + ", got " + _GENO_JSON.stringify(chosen.value));
 }
 function _genoJsonTo(value, shape, types, depth) {
@@ -4975,12 +4977,12 @@ function _genoJsonTo(value, shape, types, depth) {
     }
     const described = types.get(shape[1]);
     if (described[0] === "enum") {
-        if (!described[1].includes(value._tag)) {
+        if (!described[2].includes(value._tag)) {
             throw new Error("json_encode: value is not of its declared type");
         }
         return JsonString(value._tag);
     }
-    const variants = described[0] === "record" ? [[described[1], described[2]]] : described[1];
+    const variants = described[0] === "record" ? [[described[2], described[3]]] : described[2];
     for (const [constructor, fields] of variants) {
         if (value._tag !== constructor) continue;
         const entries = described[0] === "record" ? [] : [["type", JsonString(constructor)]];

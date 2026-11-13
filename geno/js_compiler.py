@@ -1819,7 +1819,8 @@ class JSCompiler(BaseCompiler):
             # `json_decode` builds values of this type by constructor name.
             for variant in defn.variants:
                 self._writeln(
-                    f"_GENO_JSON_CTORS.set({_json.dumps(variant.name)}, "
+                    f"_GENO_JSON_CTORS.set("
+                    f"{_json.dumps(defn.name + '.' + variant.name)}, "
                     f"{self._mangle_name(variant.name)});"
                 )
         for variant in defn.variants:

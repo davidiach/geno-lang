@@ -25,18 +25,21 @@ _NODE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _constructor_fields(types: Mapping[str, tuple]) -> dict[str, tuple[str, ...]]:
-    """Each user constructor's field names, from a codec's types."""
-    fields: dict[str, tuple[str, ...]] = {}
+def _constructor_fields(
+    types: Mapping[str, tuple],
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Each user constructor's field names, by type and constructor name."""
+    fields: dict[tuple[str, str], tuple[str, ...]] = {}
     for described in types.values():
+        owner = described[1]
         if described[0] == "enum":
-            for constructor in described[1]:
-                fields[constructor] = ()
+            for constructor in described[2]:
+                fields[(owner, constructor)] = ()
         elif described[0] == "record":
-            fields[described[1]] = tuple(name for name, _ in described[2])
+            fields[(owner, described[2])] = tuple(name for name, _ in described[3])
         else:
-            for constructor, variant_fields in described[1]:
-                fields[constructor] = tuple(name for name, _ in variant_fields)
+            for constructor, variant_fields in described[2]:
+                fields[(owner, constructor)] = tuple(n for n, _ in variant_fields)
     return fields
 
 
@@ -89,12 +92,14 @@ class InterpreterJsonOps:
     def map(self, pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         return dict(pairs)
 
-    def make(self, constructor: str, values: list[Any]) -> ConstructorValue:
+    def make(self, owner: str, constructor: str, values: list[Any]) -> ConstructorValue:
         return ConstructorValue(
-            constructor, dict(zip(self._fields[constructor], values))
+            constructor, dict(zip(self._fields[(owner, constructor)], values))
         )
 
-    def is_variant(self, value: Any, constructor: str) -> bool:
+    def is_variant(
+        self, value: Any, constructor: str, owner: str | None = None
+    ) -> bool:
         return isinstance(value, ConstructorValue) and value.constructor == constructor
 
     def array_items(self, value: Any) -> list[Any]:

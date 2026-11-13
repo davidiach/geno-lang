@@ -487,8 +487,8 @@ def test_an_ordinary_program_registers_no_constructors():
 
     assert "_GENO_JSON_CTORS[" not in generated(compile_to_python(plain))
     assert "_GENO_JSON_CTORS.set(" not in compile_to_js(plain)
-    assert "_GENO_JSON_CTORS['Red']" in generated(compile_to_python(ENCODES))
-    assert '_GENO_JSON_CTORS.set("Red"' in compile_to_js(ENCODES)
+    assert "_GENO_JSON_CTORS[('Color', 'Red')]" in generated(compile_to_python(ENCODES))
+    assert '_GENO_JSON_CTORS.set("Color.Red"' in compile_to_js(ENCODES)
 
 
 @needs_node
@@ -551,4 +551,96 @@ def test_aliases_named_arguments_and_sets_of_records(backend):
         '[{"x":1.0,"y":2.0}]\n'
         "Ok(value: Set({Point(x: 1.0, y: 2.0)}))\n"
         "Ok(value: None)\n"
+    )
+
+
+FIRST = """
+export type AValue = Shared(left: Int)
+
+export func parse_a(text: String) -> Result[AValue, String]
+    example "1" -> Err("$: expected object, got Int")
+    return json_decode(text)
+end func
+
+export func show_a(value: AValue) -> String
+    example Shared(1) -> "{\\"left\\":1}"
+    return json_encode(value)
+end func
+"""
+
+SECOND = """
+export type BValue = Shared(right: String)
+
+export func parse_b(text: String) -> Result[BValue, String]
+    example "1" -> Err("$: expected object, got Int")
+    return json_decode(text)
+end func
+
+export func show_b(value: BValue) -> String
+    example Shared("x") -> "{\\"right\\":\\"x\\"}"
+    return json_encode(value)
+end func
+"""
+
+BOTH = """
+import A as First
+import B as Second
+
+func main() -> Unit with io
+    match First.parse_a("{\\"left\\": 1}") with
+        | Ok(value) -> print(First.show_a(value))
+        | Err(message) -> print(message)
+    end match
+    match Second.parse_b("{\\"right\\": \\"z\\"}") with
+        | Ok(value) -> print(Second.show_b(value))
+        | Err(message) -> print(message)
+    end match
+end func
+"""
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        _compiled_python_project_output,
+        pytest.param(_compiled_js_project_output, marks=needs_node),
+    ],
+)
+def test_two_types_may_each_have_a_constructor_of_one_name(backend):
+    """Found in review: constructors were registered by their own name alone,
+    so the module compiled later replaced the other's `Shared`. A constructor
+    is found by its type's name and its own."""
+    assert backend(BOTH, {"A": FIRST, "B": SECOND}) == '{"left":1}\n{"right":"z"}\n'
+
+
+def test_a_type_that_nests_itself_at_ever_larger_types_is_rejected():
+    """Found in review: building this codec recursed until the host's stack
+    ran out. `Nest[Int]` contains `Nest[List[Int]]`, which contains
+    `Nest[List[List[Int]]]`, without end."""
+    source = (
+        "type Nest[T] = Stop | More(next: Nest[List[T]])\n\n"
+        "func main() -> Unit with io\n    let nest: Nest[Int] = Stop\n"
+        "    print(json_encode(nest))\nend func\n"
+    )
+
+    [(code, message)] = _errors(source)
+
+    assert code == "E332"
+    assert message == (
+        "json_encode cannot encode this type: Nest has no JSON form: it "
+        "contains itself at ever larger types, so its JSON form would never end"
+    )
+
+
+def test_a_regular_recursive_generic_type_still_has_a_codec():
+    source = (
+        "type Chain[T] = End | Link(head: T, rest: Chain[T])\n\n"
+        "func main() -> Unit with io\n"
+        "    let chain: Chain[Int] = Link(1, Link(2, End))\n"
+        "    print(json_encode(chain))\nend func\n"
+    )
+
+    assert _interpreter_output(source) == (
+        '{"type":"Link","head":1,"rest":{"type":"Link","head":2,'
+        '"rest":{"type":"End"}}}\n'
     )

@@ -121,8 +121,10 @@ is not data (in field 'run' of Handler)
 ```
 
 They are: function types, `Async`, a `Map` whose keys are not `String`,
-`MutableMap`, and a type that is not known where the call is written (a type
-parameter of the enclosing generic function).
+`MutableMap`, a type that is not known where the call is written (a type
+parameter of the enclosing generic function), and a type that contains
+itself at ever larger types (`type Nest[T] = Stop | More(next:
+Nest[List[T]])`), whose JSON form would never end.
 
 ### 4. Errors at run time
 
@@ -158,8 +160,9 @@ codec together:
 - The interpreter and compiled Python share one walk; JavaScript has its
   own, written to match message for message.
 - A compiled program that uses typed JSON registers each type's constructors
-  by name, so a type reached only through another module's type can be
-  built. A program that does not use typed JSON emits none of this.
+  by the type's name and their own, so a type reached only through another
+  module's type can be built, and two types may each have a constructor of
+  one name. A program that does not use typed JSON emits none of this.
 
 ## Backend And Target Parity
 

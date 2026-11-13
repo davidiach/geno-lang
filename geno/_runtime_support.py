@@ -3675,18 +3675,19 @@ def json_stringify_pretty(value, indent) -> str:
 # depends on how a value is represented goes through an ops object.
 # -----------------------------------------------------------------------------
 
-# Constructor name -> class, for the user types of a program that uses typed
-# JSON (a compiled type definition registers its constructors here) and the
-# built-in record types.
+# (type name, constructor name) -> class, for the user types of a program
+# that uses typed JSON (a compiled type definition registers its constructors
+# here) and the built-in record types. The type's name is part of the key
+# because two types may each have a constructor of one name.
 _GENO_JSON_CTORS: dict = {
-    "HttpResponse": HttpResponse,
-    "HttpRequest": HttpRequest,
-    "ProcessResult": ProcessResult,
-    "FileKindFile": FileKindFile,
-    "FileKindDirectory": FileKindDirectory,
-    "FileKindSymlink": FileKindSymlink,
-    "FileKindOther": FileKindOther,
-    "FileMetadata": FileMetadata,
+    ("HttpResponse", "HttpResponse"): HttpResponse,
+    ("HttpRequest", "HttpRequest"): HttpRequest,
+    ("ProcessResult", "ProcessResult"): ProcessResult,
+    ("FileKind", "FileKindFile"): FileKindFile,
+    ("FileKind", "FileKindDirectory"): FileKindDirectory,
+    ("FileKind", "FileKindSymlink"): FileKindSymlink,
+    ("FileKind", "FileKindOther"): FileKindOther,
+    ("FileMetadata", "FileMetadata"): FileMetadata,
 }
 _GENO_JSON_KINDS = {
     "JsonString": "String",
@@ -3742,16 +3743,15 @@ class _GenoJsonOps:
     def map(self, pairs: Any) -> Any:
         return _map_literal(pairs)
 
-    def make(self, constructor: Any, values: Any) -> Any:
-        return _GENO_JSON_CTORS[constructor](*values)
+    def make(self, owner: Any, constructor: Any, values: Any) -> Any:
+        return _GENO_JSON_CTORS[(owner, constructor)](*values)
 
-    def is_variant(self, value: Any, constructor: Any) -> Any:
+    def is_variant(self, value: Any, constructor: Any, owner: Any = None) -> Any:
+        if owner is not None:
+            return isinstance(value, _GENO_JSON_CTORS[(owner, constructor)])
         if constructor == "None":
             return isinstance(value, _None)
-        known = _GENO_JSON_BUILTIN_VARIANTS.get(constructor)
-        if known is None:
-            known = _GENO_JSON_CTORS[constructor]
-        return isinstance(value, known)
+        return isinstance(value, _GENO_JSON_BUILTIN_VARIANTS[constructor])
 
     def array_items(self, value: Any) -> Any:
         return array_to_list(value)
@@ -3932,25 +3932,28 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
             _geno_json_from(entries["err"], shape[2], types, (path, ".err"), ops)
         )
     described = types[shape[1]]
+    owner = described[1]
     if described[0] == "enum":
         if tag != "JsonString":
             _geno_json_expected(path, "String", tag)
         name = ops.get(node, "value")
-        if name not in described[1]:
+        if name not in described[2]:
             _geno_json_fail(
                 path,
                 "expected "
-                + _geno_json_one_of(described[1])
+                + _geno_json_one_of(described[2])
                 + ", got "
                 + _geno_json_quote(name),
             )
-        return ops.make(name, [])
+        return ops.make(owner, name, [])
     if tag != "JsonObject":
         _geno_json_expected(path, "object", tag)
     entries = _geno_json_object(node, ops)
     if described[0] == "record":
         return ops.make(
-            described[1], _geno_json_fields(entries, described[2], types, path, ops)
+            owner,
+            described[2],
+            _geno_json_fields(entries, described[3], types, path, ops),
         )
     if "type" not in entries:
         _geno_json_fail(path, 'missing field "type"')
@@ -3959,15 +3962,17 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
     if ops.tag(chosen) != "JsonString":
         _geno_json_expected(type_path, "String", ops.tag(chosen))
     name = ops.get(chosen, "value")
-    for constructor, fields in described[1]:
+    for constructor, fields in described[2]:
         if constructor == name:
             return ops.make(
-                constructor, _geno_json_fields(entries, fields, types, path, ops)
+                owner,
+                constructor,
+                _geno_json_fields(entries, fields, types, path, ops),
             )
     _geno_json_fail(
         type_path,
         "expected "
-        + _geno_json_one_of([constructor for constructor, _ in described[1]])
+        + _geno_json_one_of([constructor for constructor, _ in described[2]])
         + ", got "
         + _geno_json_quote(name),
     )
@@ -4038,19 +4043,20 @@ def _geno_json_to(value: Any, shape: Any, types: Any, depth: Any, ops: Any) -> A
         inner = _geno_json_to(ops.get(value, "error"), shape[2], types, depth, ops)
         return ops.node("JsonObject", [("err", inner)])
     described = types[shape[1]]
+    owner = described[1]
     if described[0] == "enum":
-        for constructor in described[1]:
-            if ops.is_variant(value, constructor):
+        for constructor in described[2]:
+            if ops.is_variant(value, constructor, owner):
                 return ops.node("JsonString", constructor)
         raise RuntimeError("json_encode: value is not of its declared type")
     if described[0] == "record":
-        variants = ((described[1], described[2]),)
+        variants = ((described[2], described[3]),)
         entries: Any = []
     else:
-        variants = described[1]
+        variants = described[2]
         entries = None
     for constructor, fields in variants:
-        if not ops.is_variant(value, constructor):
+        if not ops.is_variant(value, constructor, owner):
             continue
         if entries is None:
             entries = [("type", ops.node("JsonString", constructor))]

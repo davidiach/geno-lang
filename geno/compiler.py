@@ -1344,7 +1344,7 @@ class Compiler(BaseCompiler, ASTVisitor):
             # `json_decode` builds values of this type by constructor name.
             for variant in defn.variants:
                 self._writeln(
-                    f"_GENO_JSON_CTORS[{variant.name!r}] = "
+                    f"_GENO_JSON_CTORS[({defn.name!r}, {variant.name!r})] = "
                     f"{self._mangle_name(variant.name)}"
                 )
 
