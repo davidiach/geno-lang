@@ -4943,6 +4943,7 @@ function _genoJsonTo(value, shape, types, depth) {
     }
     if (kind === "bool") return JsonBool(value);
     if (kind === "unit") return JsonNull();
+    if (kind === "unknown") throw new Error("json_encode: value is not of its declared type");
     if (kind === "option") {
         if (value._tag === "None") return JsonNull();
         return _genoJsonTo(value.value, shape[1], types, depth);

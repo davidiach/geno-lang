@@ -3991,6 +3991,8 @@ def _geno_json_to(value: Any, shape: Any, types: Any, depth: Any, ops: Any) -> A
         return ops.node("JsonBool", value)
     if kind == "unit":
         return ops.node("JsonNull")
+    if kind == "unknown":
+        raise RuntimeError("json_encode: value is not of its declared type")
     if kind == "option":
         if ops.is_variant(value, "None"):
             return ops.node("JsonNull")

@@ -15,6 +15,7 @@ A shape is a tuple whose first item names its kind::
     ("option", item)
     ("result", ok, err)
     ("map", value)                  # Map[String, V]
+    ("unknown",)                    # encoding only: a type no value can have
     ("ref", key)                    # a user type, described in ``types``
 
 and ``types`` maps each user type's key (its written form, ``Box[Int]``) to
@@ -109,8 +110,9 @@ def _substitute(type_: Type, bindings: Mapping[str, Type]) -> Type:
 
 
 class _Builder:
-    def __init__(self, type_defs: Mapping[str, TypeDefInfo]) -> None:
+    def __init__(self, type_defs: Mapping[str, TypeDefInfo], encoding: bool) -> None:
         self.type_defs = type_defs
+        self.encoding = encoding
         self.types: dict[str, Shape] = {}
 
     def fail(self, type_: Type, reason: str, where: tuple[str, ...]) -> JsonTypeError:
@@ -163,6 +165,10 @@ class _Builder:
             raise self.fail(type_, "an async computation is not data", where)
         if isinstance(type_, MutableMapType):
             raise self.fail(type_, "use a Map[String, V]", where)
+        if isinstance(type_, TypeVar) and self.encoding:
+            # The element type of `[]` or of `None` that nothing settled: no
+            # value has it, so an encoder never reaches this shape.
+            return ("unknown",)
         if isinstance(type_, (TypeVar, TypeParam)):
             raise self.fail(
                 type_, "its type is not known where the call is written", where
@@ -208,8 +214,14 @@ class _Builder:
         return ("ref", key)
 
 
-def build_codec(type_: Type, type_defs: Mapping[str, TypeDefInfo]) -> JsonCodec:
-    """The codec of *type_*; raises ``JsonTypeError`` if it has no JSON form."""
-    builder = _Builder(type_defs)
+def build_codec(
+    type_: Type, type_defs: Mapping[str, TypeDefInfo], *, encoding: bool = False
+) -> JsonCodec:
+    """The codec of *type_*; raises ``JsonTypeError`` if it has no JSON form.
+
+    With *encoding*, an inference variable nothing settled (the element type
+    of an empty list literal) is allowed: no value has that type.
+    """
+    builder = _Builder(type_defs, encoding)
     shape = builder.shape(type_, ())
     return JsonCodec(shape, builder.types)

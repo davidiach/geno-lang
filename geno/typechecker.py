@@ -4805,7 +4805,9 @@ class TypeChecker(ExhaustivenessMixin):
                 if not isinstance(target, Type):
                     continue
             try:
-                call._json_codec = build_codec(target, self.type_defs)
+                call._json_codec = build_codec(
+                    target, self.type_defs, encoding=name != "json_decode"
+                )
             except JsonTypeError as error:
                 verb = "decode" if name == "json_decode" else "encode"
                 self._error(
@@ -5871,6 +5873,16 @@ class TypeChecker(ExhaustivenessMixin):
         if builtin_name in TYPED_JSON_BUILTINS:
             assert identifier_func is not None
             return self._check_typed_json_call(expr, builtin_name, identifier_func, env)
+        if identifier_func is not None and identifier_func._type_argument is not None:
+            # The parser reads `json_decode[T](...)` by name; here the name is
+            # the program's own, which takes no type argument.
+            self._error(
+                f"'{identifier_func.name}' here is not the builtin json_decode, "
+                "so it takes no type in brackets; remove the brackets, or "
+                "rename the definition that hides the builtin",
+                expr.location,
+                ErrorCode.TYPE_JSON_FORM,
+            )
 
         # Special case: range accepts 1 to 3 arguments; `range(n)` is `range(0, n)`
         if builtin_name == "range" and len(arguments) in (1, 2, 3):
