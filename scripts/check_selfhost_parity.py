@@ -232,6 +232,9 @@ SELFHOST_BUILTIN_GAP_GROUPS = {
     "pure_path_data_next": {
         "csv_parse",
         "csv_parse_with_headers",
+        "json_decode",
+        "json_encode",
+        "json_encode_pretty",
         "json_parse",
         "json_stringify",
         "json_stringify_pretty",

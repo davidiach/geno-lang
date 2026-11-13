@@ -4772,6 +4772,250 @@ function _jsonValueToPrettyString(value, indent, depth) {
         + "\n" + " ".repeat(indent * depth) + close;
 }
 
+// Typed JSON (proposal 0021): json_decode and json_encode. The compiler
+// passes each call the codec of its type (geno/json_shape.py): a shape and
+// the user types it reaches. Decoding is json_parse followed by a walk of the
+// JsonValue tree and the shape together; encoding is the reverse walk
+// followed by json_stringify, so parsing, size limits and number rules are
+// theirs. The walk mirrors _geno_json_from and _geno_json_to in the Python
+// runtime, message for message.
+
+// Constructor name -> constructor function, for the user types of a program
+// that uses typed JSON (a compiled type definition registers its
+// constructors here) and the built-in record types.
+const _GENO_JSON_CTORS = new _GENO_MAP([
+    ["HttpResponse", HttpResponse],
+    ["HttpRequest", HttpRequest],
+    ["ProcessResult", ProcessResult],
+    ["FileKindFile", FileKindFile],
+    ["FileKindDirectory", FileKindDirectory],
+    ["FileKindSymlink", FileKindSymlink],
+    ["FileKindOther", FileKindOther],
+    ["FileMetadata", FileMetadata],
+]);
+const _GENO_JSON_KINDS = {
+    JsonString: "String", JsonInt: "Int", JsonFloat: "Float", JsonBool: "Bool",
+    JsonNull: "null", JsonArray: "array", JsonObject: "object",
+};
+class _GenoJsonMismatch extends Error {}
+
+function _genoJsonPath(path) {
+    const parts = [];
+    while (path !== null) {
+        parts.push(path[1]);
+        path = path[0];
+    }
+    return "$" + parts.reverse().join("");
+}
+function _genoJsonKey(key) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? "." + key : "[" + _GENO_JSON.stringify(key) + "]";
+}
+function _genoJsonFail(path, message) {
+    throw new _GenoJsonMismatch(_genoJsonPath(path) + ": " + message);
+}
+function _genoJsonExpected(path, wanted, tag) {
+    _genoJsonFail(path, "expected " + wanted + ", got " + _GENO_JSON_KINDS[tag]);
+}
+function _genoJsonOneOf(names) {
+    return "one of " + names.map((name) => _GENO_JSON.stringify(name)).join(", ");
+}
+// A JsonObject's entries by key (json_parse keeps the last duplicate).
+function _genoJsonObject(node) {
+    return new _GENO_MAP(node.entries);
+}
+function _genoJsonFields(entries, fields, types, path) {
+    const values = [];
+    for (const [name, shape] of fields) {
+        if (entries.has(name)) {
+            values.push(_genoJsonFrom(entries.get(name), shape, types, [path, _genoJsonKey(name)]));
+        } else if (shape[0] === "option") {
+            // An absent field is an absent value.
+            values.push(None_);
+        } else {
+            _genoJsonFail(path, "missing field " + _GENO_JSON.stringify(name));
+        }
+    }
+    return values;
+}
+function _genoJsonFrom(node, shape, types, path) {
+    const kind = shape[0];
+    const tag = node._tag;
+    if (kind === "json") return node;
+    if (kind === "string") {
+        if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
+        return node.value;
+    }
+    if (kind === "int") {
+        if (tag !== "JsonInt") _genoJsonExpected(path, "Int", tag);
+        return node.value;
+    }
+    if (kind === "float") {
+        if (tag !== "JsonFloat" && tag !== "JsonInt") _genoJsonExpected(path, "Float", tag);
+        return node.value;
+    }
+    if (kind === "bool") {
+        if (tag !== "JsonBool") _genoJsonExpected(path, "Bool", tag);
+        return node.value;
+    }
+    if (kind === "unit") {
+        if (tag !== "JsonNull") _genoJsonExpected(path, "null", tag);
+        return null;
+    }
+    if (kind === "option") {
+        if (tag === "JsonNull") return None_;
+        return Some(_genoJsonFrom(node, shape[1], types, path));
+    }
+    if (kind === "list" || kind === "array" || kind === "vec" || kind === "set") {
+        if (tag !== "JsonArray") _genoJsonExpected(path, "array", tag);
+        const items = node.items.map(
+            (item, index) => _genoJsonFrom(item, shape[1], types, [path, "[" + index + "]"]));
+        if (kind === "list") return items;
+        if (kind === "array") return array_from_list(items);
+        if (kind === "vec") return vec_from_list(items);
+        return set_from_list(items);
+    }
+    if (kind === "tuple") {
+        if (tag !== "JsonArray") _genoJsonExpected(path, "array", tag);
+        if (node.items.length !== shape[1].length) {
+            _genoJsonFail(path, "expected an array of " + shape[1].length
+                + " items, got " + node.items.length);
+        }
+        return node.items.map(
+            (item, index) => _genoJsonFrom(item, shape[1][index], types, [path, "[" + index + "]"]));
+    }
+    if (kind === "map") {
+        if (tag !== "JsonObject") _genoJsonExpected(path, "object", tag);
+        const pairs = [];
+        for (const [key, value] of _genoJsonObject(node)) {
+            pairs.push([key, _genoJsonFrom(value, shape[1], types, [path, _genoJsonKey(key)])]);
+        }
+        return _mapLiteral(pairs);
+    }
+    if (kind === "result") {
+        const entries = tag === "JsonObject" ? _genoJsonObject(node) : new _GENO_MAP();
+        if (entries.has("ok") === entries.has("err")) {
+            _genoJsonFail(path, 'expected an object with "ok" or "err"');
+        }
+        if (entries.has("ok")) {
+            return Ok(_genoJsonFrom(entries.get("ok"), shape[1], types, [path, ".ok"]));
+        }
+        return Err(_genoJsonFrom(entries.get("err"), shape[2], types, [path, ".err"]));
+    }
+    const described = types.get(shape[1]);
+    if (described[0] === "enum") {
+        if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
+        if (!described[1].includes(node.value)) {
+            _genoJsonFail(path, "expected " + _genoJsonOneOf(described[1])
+                + ", got " + _GENO_JSON.stringify(node.value));
+        }
+        return _GENO_JSON_CTORS.get(node.value)();
+    }
+    if (tag !== "JsonObject") _genoJsonExpected(path, "object", tag);
+    const entries = _genoJsonObject(node);
+    if (described[0] === "record") {
+        return _GENO_JSON_CTORS.get(described[1])(
+            ..._genoJsonFields(entries, described[2], types, path));
+    }
+    if (!entries.has("type")) _genoJsonFail(path, 'missing field "type"');
+    const chosen = entries.get("type");
+    const typePath = [path, ".type"];
+    if (chosen._tag !== "JsonString") _genoJsonExpected(typePath, "String", chosen._tag);
+    for (const [constructor, fields] of described[1]) {
+        if (constructor === chosen.value) {
+            return _GENO_JSON_CTORS.get(constructor)(
+                ..._genoJsonFields(entries, fields, types, path));
+        }
+    }
+    _genoJsonFail(typePath, "expected "
+        + _genoJsonOneOf(described[1].map((variant) => variant[0]))
+        + ", got " + _GENO_JSON.stringify(chosen.value));
+}
+function _genoJsonTo(value, shape, types, depth) {
+    const kind = shape[0];
+    if (kind === "json") return value;
+    if (kind === "string") return JsonString(value);
+    if (kind === "int") return JsonInt(value);
+    if (kind === "float") {
+        if (!_GENO_NUMBER.isFinite(_GENO_NUMBER(value))) {
+            throw new Error("json_encode: a Float must be finite");
+        }
+        return JsonFloat(_GENO_NUMBER(value));
+    }
+    if (kind === "bool") return JsonBool(value);
+    if (kind === "unit") return JsonNull();
+    if (kind === "option") {
+        if (value._tag === "None") return JsonNull();
+        return _genoJsonTo(value.value, shape[1], types, depth);
+    }
+    if (depth >= _MAX_JSON_NESTING_DEPTH) {
+        throw new Error("json_encode: value nested too deeply (max "
+            + _MAX_JSON_NESTING_DEPTH + ")");
+    }
+    depth += 1;
+    if (kind === "list" || kind === "array" || kind === "vec" || kind === "set") {
+        if (kind === "array") value = array_to_list(value);
+        else if (kind === "vec") value = vec_to_list(value);
+        else if (kind === "set") value = set_to_list(value);
+        return JsonArray(value.map((item) => _genoJsonTo(item, shape[1], types, depth)));
+    }
+    if (kind === "tuple") {
+        return JsonArray(value.map(
+            (item, index) => _genoJsonTo(item, shape[1][index], types, depth)));
+    }
+    if (kind === "map") {
+        return JsonObject(map_entries(value).map(
+            ([key, item]) => [key, _genoJsonTo(item, shape[1], types, depth)]));
+    }
+    if (kind === "result") {
+        if (value._tag === "Ok") {
+            return JsonObject([["ok", _genoJsonTo(value.value, shape[1], types, depth)]]);
+        }
+        return JsonObject([["err", _genoJsonTo(value.error, shape[2], types, depth)]]);
+    }
+    const described = types.get(shape[1]);
+    if (described[0] === "enum") {
+        if (!described[1].includes(value._tag)) {
+            throw new Error("json_encode: value is not of its declared type");
+        }
+        return JsonString(value._tag);
+    }
+    const variants = described[0] === "record" ? [[described[1], described[2]]] : described[1];
+    for (const [constructor, fields] of variants) {
+        if (value._tag !== constructor) continue;
+        const entries = described[0] === "record" ? [] : [["type", JsonString(constructor)]];
+        for (const [name, fieldShape] of fields) {
+            entries.push([name, _genoJsonTo(value[name], fieldShape, types, depth)]);
+        }
+        return JsonObject(entries);
+    }
+    throw new Error("json_encode: value is not of its declared type");
+}
+function _genoJsonCodec(name, shape, types) {
+    if (shape === undefined || shape === null) {
+        throw new Error(name + " needs the type it works on: call it directly, in checked code");
+    }
+    return new _GENO_MAP(types || []);
+}
+function json_decode(text, shape, types) {
+    const known = _genoJsonCodec("json_decode", shape, types);
+    const parsed = json_parse(text);
+    if (parsed._tag !== "Ok") return parsed;
+    try {
+        return Ok(_genoJsonFrom(parsed.value, shape, known, null));
+    } catch (error) {
+        if (error instanceof _GenoJsonMismatch) return Err(error.message);
+        throw error;
+    }
+}
+function json_encode(value, shape, types) {
+    const known = _genoJsonCodec("json_encode", shape, types);
+    return json_stringify(_genoJsonTo(value, shape, known, 0));
+}
+function json_encode_pretty(value, indent, shape, types) {
+    const known = _genoJsonCodec("json_encode_pretty", shape, types);
+    return json_stringify_pretty(_genoJsonTo(value, shape, known, 0), indent);
+}
+
 function _genoValueToJs(value) {
     if (value === null || value === undefined) return null;
     if (typeof value === "number") {

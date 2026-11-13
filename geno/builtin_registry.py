@@ -555,6 +555,9 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "json_stringify": FuncType((UserType("JsonValue"),), StringType()),
     "json_stringify_pretty": FuncType((UserType("JsonValue"), IntType()), StringType()),
     "json_to_string": FuncType((TypeVar("T"),), StringType()),
+    "json_decode": FuncType((StringType(),), ResultType(TypeVar("T"), StringType())),
+    "json_encode": FuncType((TypeVar("T"),), StringType()),
+    "json_encode_pretty": FuncType((TypeVar("T"), IntType()), StringType()),
     "csv_parse": FuncType((StringType(),), ListType(ListType(StringType()))),
     "csv_parse_with_headers": FuncType(
         (StringType(),), ListType(MapType(StringType(), StringType()))

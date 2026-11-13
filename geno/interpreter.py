@@ -192,6 +192,20 @@ _UNFILLED = object()
 # A requires failure has no result (None is Geno's Unit, a valid result).
 _NO_RESULT = object()
 
+_TYPED_JSON_BUILTINS = frozenset({"json_decode", "json_encode", "json_encode_pretty"})
+
+
+def _typed_json_needs_a_call(name: str) -> Callable[..., Any]:
+    """The value of a typed-JSON builtin reached other than by a direct call."""
+
+    def uncalled(*_args: Any) -> Any:
+        raise RuntimeError(
+            f"{name} needs the type it works on: call it directly, in checked code"
+        )
+
+    return uncalled
+
+
 # These builtins mutate a validated reference container in place. Their own
 # implementations enforce top-level growth; the interpreter only needs to
 # inspect the non-target arguments and result for nested resource limits.
@@ -1078,6 +1092,16 @@ class Interpreter:
                 ["value", "indent"],
             ),
             ("json_to_string", _builtins.builtin_json_to_string, 1, ["value"]),
+            # Typed JSON needs the codec of its call, which only a direct
+            # call carries (see _eval_typed_json).
+            ("json_decode", _typed_json_needs_a_call("json_decode"), 1, ["text"]),
+            ("json_encode", _typed_json_needs_a_call("json_encode"), 1, ["value"]),
+            (
+                "json_encode_pretty",
+                _typed_json_needs_a_call("json_encode_pretty"),
+                2,
+                ["value", "indent"],
+            ),
             ("csv_parse", _builtins.builtin_csv_parse, 1, ["text"]),
             (
                 "csv_parse_with_headers",
@@ -2552,6 +2576,9 @@ class Interpreter:
                         expr.location,
                     )
 
+        if expr._json_codec is not None:
+            return self._eval_typed_json(expr, env)
+
         func = self.eval_expr(expr.function, env)
 
         # Handle named arguments by reordering them to match parameter order
@@ -2607,6 +2634,43 @@ class Interpreter:
             # arguments (proposal 0022); see _call_function.
             raise TailCallException(args, expr.location)
         return self._call_function(func, args, expr.location)
+
+    def _eval_typed_json(self, expr: FunctionCall, env: Environment) -> Any:
+        """`json_decode`, `json_encode` or `json_encode_pretty` (proposal 0021).
+
+        The typechecker left the codec of the call's type on the call. The
+        walk is the compiled Python runtime's, over this interpreter's values
+        and its own size-limited builtins.
+        """
+        import builtins as _python
+
+        from . import typed_json
+
+        name = cast(str, expr._resolved_builtin_name)
+        builtin = self._builtin_functions[name]
+        arguments = self._reorder_named_args(
+            expr.arguments, builtin.param_names, env, expr.location
+        )
+        self._check_collection_limits(arguments, expr.location)
+        self._step()
+        bound = {key: value.func for key, value in self._builtin_functions.items()}
+        try:
+            if name == "json_decode":
+                result = typed_json.decode(bound, arguments[0], expr._json_codec)
+            else:
+                indent = arguments[1] if name == "json_encode_pretty" else None
+                result = typed_json.encode(
+                    bound, arguments[0], expr._json_codec, indent
+                )
+        except (RuntimeError, SandboxError) as error:
+            self._locate_builtin_failure(error, expr.location)
+            raise
+        except _python.RuntimeError as error:
+            # The shared walk raises the host's error type.
+            raise RuntimeError(str(error), expr.location) from None
+        self._check_collection_limits([result], expr.location)
+        self._check_timeout(expr.location)
+        return result
 
     def _reorder_named_args(
         self,

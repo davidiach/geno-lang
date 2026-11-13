@@ -107,6 +107,7 @@ from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
 from .float_promotion import float_shape, promotion_shape
 from .format_spec import FormatSpecError, parse_format_spec, value_kind
+from .json_shape import JsonTypeError, build_codec
 from .mutation_ownership import function_owned_names, lambda_owned_names
 from .parser_patterns import pattern_bound_names
 from .stdlib_scope import binds_unqualified
@@ -976,6 +977,10 @@ def _suggest_project_import(
 # =============================================================================
 
 
+# Type-directed builtins (proposal 0021): each call carries the codec of its type.
+TYPED_JSON_BUILTINS = frozenset({"json_decode", "json_encode", "json_encode_pretty"})
+
+
 class TypeChecker(ExhaustivenessMixin):
     """
     Type checker for Geno programs.
@@ -1074,6 +1079,10 @@ class TypeChecker(ExhaustivenessMixin):
         # Generic functions referenced as values, checked once the program is,
         # so each has its type arguments determined by its context.
         self._generic_value_refs: list[Expression] = []
+        # Calls of `json_decode`, `json_encode` and `json_encode_pretty`:
+        # each one's codec is built once its type is settled (proposal 0021).
+        self._typed_json_calls: list[FunctionCall] = []
+        self._typed_json_names: list[Identifier] = []
 
         # Trait support
         self.trait_defs: dict[str, TraitDef] = {}
@@ -1811,6 +1820,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._check_test_block(defn)
 
         self._check_generic_value_refs()
+        self._settle_typed_json_calls()
         self._dedupe_errors()
 
         if self.errors:
@@ -4690,9 +4700,128 @@ class TypeChecker(ExhaustivenessMixin):
                 stmt.location,
             )
 
+    def _check_typed_json_call(
+        self, expr: FunctionCall, name: str, callee: Identifier, env: TypeEnv
+    ) -> Type:
+        """Check `json_decode`, `json_encode` or `json_encode_pretty`.
+
+        These are type-directed (proposal 0021): the call is checked here and
+        its codec is built in `_settle_typed_json_calls`, once the context
+        has had the chance to say which type a `json_decode` produces.
+        """
+        param_names = ["value", "indent"] if name == "json_encode_pretty" else ["value"]
+        if name == "json_decode":
+            param_names = ["text"]
+        arguments = expr.arguments
+        self._validate_special_builtin_named_args(arguments, param_names, expr.location)
+        ordered: dict[str, Expression] = {}
+        positional = [n for n in param_names if n not in {a.name for a in arguments}]
+        for argument in arguments:
+            argument_type = self._check_expression(argument.value, env)
+            slot = argument.name if argument.name in param_names else None
+            if slot is None and argument.name is None and positional:
+                slot = positional.pop(0)
+            if slot is None or slot in ordered:
+                continue
+            ordered[slot] = argument.value
+            wanted: Type | None = (
+                _STRING_TYPE
+                if slot == "text"
+                else _INT_TYPE
+                if slot == "indent"
+                else None
+            )
+            if wanted is not None and not self._types_compatible(wanted, argument_type):
+                self._error(
+                    f"Argument '{slot}' type mismatch: expected {wanted}, "
+                    f"got {argument_type}",
+                    argument.value.location,
+                )
+        if len(ordered) != len(param_names):
+            missing = [n for n in param_names if n not in ordered]
+            self._error(
+                f"{name} is missing its argument{'s' if len(missing) > 1 else ''}: "
+                + ", ".join(missing),
+                expr.location,
+                ErrorCode.TYPE_WRONG_ARITY,
+            )
+        expr._json_codec = None
+        callee.__dict__["_json_callee"] = True
+        expr.__dict__["_json_target"] = None
+        expr.__dict__["_json_value"] = ordered.get("value")
+        self._typed_json_calls.append(expr)
+        if name != "json_decode":
+            return _STRING_TYPE
+        if callee._type_argument is not None:
+            target = self._resolve_type(callee._type_argument)
+            expr.__dict__["_json_target"] = target
+            return ResultType(target, _STRING_TYPE)
+        return ResultType(TypeVar("T"), _STRING_TYPE)
+
+    def _record_json_target(self, expr: Expression, target: Type) -> None:
+        """Let the context say which type a `json_decode` call produces."""
+        if (
+            isinstance(expr, FunctionCall)
+            and expr._resolved_builtin_name == "json_decode"
+            and expr.__dict__.get("_json_target") is None
+            and not self._has_type_vars(target)
+            and not self._contains_any(target)
+        ):
+            expr.__dict__["_json_target"] = target
+
+    def _settle_typed_json_calls(self) -> None:
+        """Build the codec of every typed-JSON call, or say why it has none."""
+        calls = list({id(call): call for call in self._typed_json_calls}.values())
+        names = list({id(name): name for name in self._typed_json_names}.values())
+        self._typed_json_calls = []
+        self._typed_json_names = []
+        for used in names:
+            if used.__dict__.get("_json_callee"):
+                continue
+            # The type it works on is the call's: a function value has none.
+            self._error(
+                f"'{used.name}' can only be called directly, because the type "
+                "it works on is the call's; to pass it as a function, wrap the "
+                f"call in a lambda, as in fn(x: ...) -> {used.name}(x)",
+                used.location,
+                ErrorCode.TYPE_JSON_FORM,
+            )
+        for call in calls:
+            name = cast(str, call._resolved_builtin_name)
+            if name == "json_decode":
+                target = call.__dict__.get("_json_target")
+                if target is None:
+                    self._error(
+                        "Cannot tell which type json_decode produces here; name "
+                        "it, as in json_decode[User](text), or give the result a "
+                        "type, as in `let user: User = json_decode(text)?`",
+                        call.location,
+                        ErrorCode.TYPE_GENERIC_INFERENCE,
+                    )
+                    continue
+            else:
+                value = call.__dict__.get("_json_value")
+                target = getattr(value, "_resolved_type", None)
+                if not isinstance(target, Type):
+                    continue
+            try:
+                call._json_codec = build_codec(target, self.type_defs)
+            except JsonTypeError as error:
+                verb = "decode" if name == "json_decode" else "encode"
+                self._error(
+                    f"{name} cannot {verb} this type: {error}",
+                    call.location,
+                    ErrorCode.TYPE_JSON_FORM,
+                )
+
     def _record_expected_runtime_type(self, expr: Expression, expected: Type) -> None:
         """Attach concrete contextual types used by backend lowering."""
         expr._expected_runtime_type = expected
+        if isinstance(expr, PropagateExpr):
+            # `let user: User = json_decode(text)?` decodes a User.
+            self._record_json_target(expr.operand, expected)
+        elif isinstance(expected, ResultType):
+            self._record_json_target(expr, expected.ok_type)
         if getattr(expr, "_generic_target", None) is not None:
             self._record_generic_value_instance(expr, expected)
         if isinstance(expr, FunctionCall):
@@ -5134,6 +5263,9 @@ class TypeChecker(ExhaustivenessMixin):
             self._record_binding_use(expr.name, expr.location, env)
         if self._identifier_resolves_to_builtin(expr.name, env):
             expr._resolved_builtin_name = expr.name
+            if expr.name in TYPED_JSON_BUILTINS:
+                # Checked in _settle_typed_json_calls: only a callee is fine.
+                self._typed_json_names.append(expr)
         target = self._generic_target(expr, env)
         if target is not None:
             expr._generic_target = target
@@ -5735,6 +5867,10 @@ class TypeChecker(ExhaustivenessMixin):
             builtin_name = identifier_func.name
             expr._resolved_builtin_name = builtin_name
             self._record_captured_binding(identifier_func.name, env)
+
+        if builtin_name in TYPED_JSON_BUILTINS:
+            assert identifier_func is not None
+            return self._check_typed_json_call(expr, builtin_name, identifier_func, env)
 
         # Special case: range accepts 1 to 3 arguments; `range(n)` is `range(0, n)`
         if builtin_name == "range" and len(arguments) in (1, 2, 3):

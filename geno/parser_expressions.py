@@ -387,6 +387,21 @@ class ExpressionParserMixin(ParserBase):
                     location=expr.location, function=expr, arguments=args
                 )
             elif current_type is TokenType.LBRACKET:
+                if (
+                    type(expr) is Identifier
+                    and expr.name == "json_decode"
+                    and expr._type_argument is None
+                    and self.pos + 1 < tokens_len
+                    and tokens[self.pos + 1].type
+                    in (TokenType.TYPE_IDENTIFIER, TokenType.LPAREN)
+                ):
+                    # `json_decode[User](text)`: the type to decode to. The
+                    # builtin is a function, which cannot be indexed, so the
+                    # bracket can only be its type argument (proposal 0021).
+                    self._advance()
+                    expr._type_argument = self._parse_type()
+                    self._expect(TokenType.RBRACKET)
+                    continue
                 bracket = self._advance()
                 if self._current_type is TokenType.COLON:
                     expr = self._parse_slice(expr, None, bracket.location)

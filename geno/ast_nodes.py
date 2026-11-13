@@ -219,6 +219,11 @@ class Identifier(Expression):
     """Variable or function reference: x, foo"""
 
     name: str
+    # The type written in brackets after `json_decode`, as in
+    # `json_decode[User](text)` (proposal 0021).
+    _type_argument: "TypeAnnotation | None" = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_identifier(self)
@@ -356,6 +361,9 @@ class FunctionCall(Expression):
     _method_call: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Set by the typechecker on a call of `json_decode`, `json_encode` or
+    # `json_encode_pretty`: the `JsonCodec` of the type it works on.
+    _json_codec: Any = field(default=None, init=False, repr=False, compare=False)
     # Set by the interpreter when it loads the enclosing function: this is a
     # self tail call (geno/tail_calls.py), run without a new frame.
     _self_tail_call: bool = field(default=False, init=False, repr=False, compare=False)

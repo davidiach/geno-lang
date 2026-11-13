@@ -125,7 +125,7 @@
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
       "E204", "E205", "E300", "E301", "E302", "E303", "E304", "E305", "E306",
-      "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E330", "E331", "E400", "E401",
+      "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E330", "E331", "E332", "E400", "E401",
       "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409",
       "E410", "E411", "E412", "E413", "E414", "E499", "E500", "E501", "E502",
       "E503", "E504", "E505", "W300"
@@ -410,6 +410,9 @@
       {"name": "json_parse", "signature": "(text: String) -> Result[JsonValue, String]"},
       {"name": "json_stringify", "signature": "(value: JsonValue) -> String"},
       {"name": "json_stringify_pretty", "signature": "(value: JsonValue, indent: Int) -> String"},
+      {"name": "json_decode", "signature": "(text: String) -> Result[T, String]"},
+      {"name": "json_encode", "signature": "(value: T) -> String"},
+      {"name": "json_encode_pretty", "signature": "(value: T, indent: Int) -> String"},
       {"name": "csv_parse", "signature": "(text: String) -> List[List[String]]"},
       {"name": "csv_parse_with_headers", "signature": "(text: String) -> List[Map[String, String]]"},
       {"name": "toml_parse", "signature": "(text: String) -> Result[JsonValue, String]"}

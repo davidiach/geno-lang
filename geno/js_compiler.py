@@ -1182,6 +1182,7 @@ class JSCompiler(BaseCompiler):
         # A Node entry build starts with the trace table's anchor (proposal
         # 0018); browser builds and libraries carry no table.
         testing = self.test_cases is not None
+        self._registers_json_constructors = self._uses_typed_json([program])
         anchor_at = (
             self._begin_trace(main_def)
             if node_host and main_def is not None and not is_app_mode and not testing
@@ -1377,6 +1378,9 @@ class JSCompiler(BaseCompiler):
         )
         if self.test_cases is not None:
             self._writeln(f"const {TEST_REGISTRY_NAME} = [];")
+        self._registers_json_constructors = self._uses_typed_json(
+            dep_graph.parsed.values()
+        )
         self._emit_function_assignments = False
         self._spec_plan = plan_specializations(
             (
@@ -1811,6 +1815,13 @@ class JSCompiler(BaseCompiler):
         }
         for variant in defn.variants:
             self._compile_variant(variant, formatter_names[variant.name])
+        if self._registers_json_constructors:
+            # `json_decode` builds values of this type by constructor name.
+            for variant in defn.variants:
+                self._writeln(
+                    f"_GENO_JSON_CTORS.set({_json.dumps(variant.name)}, "
+                    f"{self._mangle_name(variant.name)});"
+                )
         for variant in defn.variants:
             self._compile_variant_formatter(
                 defn, variant, formatter_names[variant.name]
@@ -4088,9 +4099,32 @@ class JSCompiler(BaseCompiler):
             return f"(~{operand})"
         return operand
 
+    def _compile_typed_json_call(self, expr: FunctionCall) -> str:
+        """`json_decode`, `json_encode` or `json_encode_pretty` with its codec.
+
+        The codec is passed as array literals (proposal 0021). Arguments are
+        evaluated in source order and passed in parameter order.
+        """
+        codec = expr._json_codec
+        ordered = self._typed_json_arguments(expr)
+        shape = _json.dumps(codec.shape, ensure_ascii=False)
+        types = _json.dumps(list(codec.types.items()), ensure_ascii=False)
+        name = self._compile_expr(expr.function)
+        self._trace_candidate(self._trace_callee(name), expr.location)
+        if all(a is b for a, b in zip(ordered, expr.arguments)):
+            values = ", ".join(self._compile_expr(a.value) for a in ordered)
+            return f"{name}({values}, {shape}, {types})"
+        temporaries = {id(a): self._fresh_temp() for a in expr.arguments}
+        parameters = ", ".join(temporaries[id(a)] for a in expr.arguments)
+        sources = ", ".join(self._compile_expr(a.value) for a in expr.arguments)
+        values = ", ".join(temporaries[id(a)] for a in ordered)
+        return f"(({parameters}) => {name}({values}, {shape}, {types}))({sources})"
+
     def _compile_function_call(self, expr: FunctionCall) -> str:
         if id(expr) in self._tail_trampoline_calls:
             return self._compile_tail_trampoline_call(expr)
+        if expr._json_codec is not None:
+            return self._compile_typed_json_call(expr)
         has_named_args = any(arg.name for arg in expr.arguments)
         func_name = (
             expr.function.name if isinstance(expr.function, Identifier) else None

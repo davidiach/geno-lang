@@ -3662,6 +3662,465 @@ def json_stringify_pretty(value, indent) -> str:
     )
 
 
+# -----------------------------------------------------------------------------
+# Typed JSON (proposal 0021): json_decode and json_encode.
+#
+# The compiler passes each call the codec of its type (geno/json_shape.py): a
+# shape and the user types it reaches. Decoding is json_parse followed by a
+# walk of the JsonValue tree and the shape together; encoding is the reverse
+# walk followed by json_stringify. Parsing, size limits and number rules are
+# therefore json_parse's and json_stringify's.
+#
+# The interpreter runs the same walk over its own values: everything that
+# depends on how a value is represented goes through an ops object.
+# -----------------------------------------------------------------------------
+
+# Constructor name -> class, for the user types of a program that uses typed
+# JSON (a compiled type definition registers its constructors here) and the
+# built-in record types.
+_GENO_JSON_CTORS: dict = {
+    "HttpResponse": HttpResponse,
+    "HttpRequest": HttpRequest,
+    "ProcessResult": ProcessResult,
+    "FileKindFile": FileKindFile,
+    "FileKindDirectory": FileKindDirectory,
+    "FileKindSymlink": FileKindSymlink,
+    "FileKindOther": FileKindOther,
+    "FileMetadata": FileMetadata,
+}
+_GENO_JSON_KINDS = {
+    "JsonString": "String",
+    "JsonInt": "Int",
+    "JsonFloat": "Float",
+    "JsonBool": "Bool",
+    "JsonNull": "null",
+    "JsonArray": "array",
+    "JsonObject": "object",
+}
+
+
+class _GenoJsonMismatch(Exception):
+    """A JSON value does not have the form its type requires."""
+
+
+class _GenoJsonOps:
+    """How compiled Python represents the values the walk reads and builds."""
+
+    def tag(self, node: Any) -> Any:
+        return type(node).__name__
+
+    def get(self, value: Any, name: Any) -> Any:
+        return get_field(value, name)
+
+    def node(self, tag: Any, *values) -> Any:
+        return _GENO_JSON_NODES[tag](*values)
+
+    def unit(self) -> Any:
+        return None
+
+    def none(self) -> Any:
+        return None_
+
+    def some(self, value: Any) -> Any:
+        return Some(value)
+
+    def ok(self, value: Any) -> Any:
+        return Ok(value)
+
+    def err(self, value: Any) -> Any:
+        return Err(value)
+
+    def array(self, items: Any) -> Any:
+        return array_from_list(items)
+
+    def vec(self, items: Any) -> Any:
+        return vec_from_list(items)
+
+    def set(self, items: Any) -> Any:
+        return set_from_list(items)
+
+    def map(self, pairs: Any) -> Any:
+        return _map_literal(pairs)
+
+    def make(self, constructor: Any, values: Any) -> Any:
+        return _GENO_JSON_CTORS[constructor](*values)
+
+    def is_variant(self, value: Any, constructor: Any) -> Any:
+        if constructor == "None":
+            return isinstance(value, _None)
+        known = _GENO_JSON_BUILTIN_VARIANTS.get(constructor)
+        if known is None:
+            known = _GENO_JSON_CTORS[constructor]
+        return isinstance(value, known)
+
+    def array_items(self, value: Any) -> Any:
+        return array_to_list(value)
+
+    def vec_items(self, value: Any) -> Any:
+        return vec_to_list(value)
+
+    def set_items(self, value: Any) -> Any:
+        return set_to_list(value)
+
+    def map_pairs(self, value: Any) -> Any:
+        return map_entries(value)
+
+
+_GENO_JSON_NODES = {
+    "JsonString": JsonString,
+    "JsonInt": JsonInt,
+    "JsonFloat": JsonFloat,
+    "JsonBool": JsonBool,
+    "JsonNull": JsonNull,
+    "JsonArray": JsonArray,
+    "JsonObject": JsonObject,
+}
+_GENO_JSON_BUILTIN_VARIANTS = {"Some": Some, "Ok": Ok, "Err": Err}
+_GENO_JSON_OPS = _GenoJsonOps()
+
+
+def _geno_json_quote(text: Any) -> Any:
+    import json as _json
+
+    return _json.dumps(text, ensure_ascii=False)
+
+
+def _geno_json_path(path: Any) -> Any:
+    parts = []
+    while path is not None:
+        path, segment = path
+        parts.append(segment)
+    parts.reverse()
+    return "$" + "".join(parts)
+
+
+def _geno_json_key(key: Any) -> Any:
+    if key.isascii() and key.isidentifier():
+        return "." + key
+    return "[" + _geno_json_quote(key) + "]"
+
+
+def _geno_json_fail(path: Any, message: Any) -> Any:
+    raise _GenoJsonMismatch(_geno_json_path(path) + ": " + message)
+
+
+def _geno_json_expected(path: Any, wanted: Any, tag: Any) -> Any:
+    _geno_json_fail(path, "expected " + wanted + ", got " + _GENO_JSON_KINDS[tag])
+
+
+def _geno_json_one_of(names: Any) -> Any:
+    return "one of " + ", ".join(_geno_json_quote(name) for name in names)
+
+
+def _geno_json_object(node: Any, ops: Any) -> Any:
+    """A JsonObject's entries as a dict (json_parse keeps the last duplicate)."""
+    entries = {}
+    for key, value in ops.get(node, "entries"):
+        entries[key] = value
+    return entries
+
+
+def _geno_json_fields(
+    entries: Any, fields: Any, types: Any, path: Any, ops: Any
+) -> Any:
+    values = []
+    for name, shape in fields:
+        if name in entries:
+            values.append(
+                _geno_json_from(
+                    entries[name], shape, types, (path, _geno_json_key(name)), ops
+                )
+            )
+        elif shape[0] == "option":
+            # An absent field is an absent value.
+            values.append(ops.none())
+        else:
+            _geno_json_fail(path, "missing field " + _geno_json_quote(name))
+    return values
+
+
+def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> Any:
+    """The value of the type *shape* describes that the JsonValue *node* is."""
+    kind = shape[0]
+    tag = ops.tag(node)
+    if kind == "json":
+        return node
+    if kind == "string":
+        if tag != "JsonString":
+            _geno_json_expected(path, "String", tag)
+        return ops.get(node, "value")
+    if kind == "int":
+        if tag != "JsonInt":
+            _geno_json_expected(path, "Int", tag)
+        return ops.get(node, "value")
+    if kind == "float":
+        if tag == "JsonFloat":
+            return ops.get(node, "value")
+        if tag != "JsonInt":
+            _geno_json_expected(path, "Float", tag)
+        try:
+            return float(ops.get(node, "value"))
+        except OverflowError:
+            _geno_json_fail(path, "expected Float, got an Int out of its range")
+    if kind == "bool":
+        if tag != "JsonBool":
+            _geno_json_expected(path, "Bool", tag)
+        return ops.get(node, "value")
+    if kind == "unit":
+        if tag != "JsonNull":
+            _geno_json_expected(path, "null", tag)
+        return ops.unit()
+    if kind == "option":
+        if tag == "JsonNull":
+            return ops.none()
+        return ops.some(_geno_json_from(node, shape[1], types, path, ops))
+    if kind in ("list", "array", "vec", "set"):
+        if tag != "JsonArray":
+            _geno_json_expected(path, "array", tag)
+        items = [
+            _geno_json_from(item, shape[1], types, (path, "[" + str(index) + "]"), ops)
+            for index, item in enumerate(ops.get(node, "items"))
+        ]
+        if kind == "list":
+            return items
+        if kind == "array":
+            return ops.array(items)
+        if kind == "vec":
+            return ops.vec(items)
+        return ops.set(items)
+    if kind == "tuple":
+        if tag != "JsonArray":
+            _geno_json_expected(path, "array", tag)
+        items = ops.get(node, "items")
+        if len(items) != len(shape[1]):
+            _geno_json_fail(
+                path,
+                "expected an array of "
+                + str(len(shape[1]))
+                + " items, got "
+                + str(len(items)),
+            )
+        return tuple(
+            _geno_json_from(
+                item, item_shape, types, (path, "[" + str(index) + "]"), ops
+            )
+            for index, (item, item_shape) in enumerate(zip(items, shape[1]))
+        )
+    if kind == "map":
+        if tag != "JsonObject":
+            _geno_json_expected(path, "object", tag)
+        return ops.map(
+            [
+                (
+                    key,
+                    _geno_json_from(
+                        value, shape[1], types, (path, _geno_json_key(key)), ops
+                    ),
+                )
+                for key, value in _geno_json_object(node, ops).items()
+            ]
+        )
+    if kind == "result":
+        entries = _geno_json_object(node, ops) if tag == "JsonObject" else {}
+        if ("ok" in entries) == ("err" in entries):
+            _geno_json_fail(path, 'expected an object with "ok" or "err"')
+        if "ok" in entries:
+            return ops.ok(
+                _geno_json_from(entries["ok"], shape[1], types, (path, ".ok"), ops)
+            )
+        return ops.err(
+            _geno_json_from(entries["err"], shape[2], types, (path, ".err"), ops)
+        )
+    described = types[shape[1]]
+    if described[0] == "enum":
+        if tag != "JsonString":
+            _geno_json_expected(path, "String", tag)
+        name = ops.get(node, "value")
+        if name not in described[1]:
+            _geno_json_fail(
+                path,
+                "expected "
+                + _geno_json_one_of(described[1])
+                + ", got "
+                + _geno_json_quote(name),
+            )
+        return ops.make(name, [])
+    if tag != "JsonObject":
+        _geno_json_expected(path, "object", tag)
+    entries = _geno_json_object(node, ops)
+    if described[0] == "record":
+        return ops.make(
+            described[1], _geno_json_fields(entries, described[2], types, path, ops)
+        )
+    if "type" not in entries:
+        _geno_json_fail(path, 'missing field "type"')
+    chosen = entries["type"]
+    type_path = (path, ".type")
+    if ops.tag(chosen) != "JsonString":
+        _geno_json_expected(type_path, "String", ops.tag(chosen))
+    name = ops.get(chosen, "value")
+    for constructor, fields in described[1]:
+        if constructor == name:
+            return ops.make(
+                constructor, _geno_json_fields(entries, fields, types, path, ops)
+            )
+    _geno_json_fail(
+        type_path,
+        "expected "
+        + _geno_json_one_of([constructor for constructor, _ in described[1]])
+        + ", got "
+        + _geno_json_quote(name),
+    )
+
+
+def _geno_json_to(value: Any, shape: Any, types: Any, depth: Any, ops: Any) -> Any:
+    """The JsonValue of *value*, a value of the type *shape* describes."""
+    kind = shape[0]
+    if kind == "json":
+        return value
+    if kind == "string":
+        return ops.node("JsonString", value)
+    if kind == "int":
+        return ops.node("JsonInt", value)
+    if kind == "float":
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise RuntimeError("json_encode: a Float must be finite")
+        return ops.node("JsonFloat", number)
+    if kind == "bool":
+        return ops.node("JsonBool", value)
+    if kind == "unit":
+        return ops.node("JsonNull")
+    if kind == "option":
+        if ops.is_variant(value, "None"):
+            return ops.node("JsonNull")
+        return _geno_json_to(ops.get(value, "value"), shape[1], types, depth, ops)
+    if depth >= _MAX_JSON_NESTING_DEPTH:
+        raise RuntimeError(
+            "json_encode: value nested too deeply (max "
+            + str(_MAX_JSON_NESTING_DEPTH)
+            + ")"
+        )
+    depth += 1
+    if kind in ("list", "array", "vec", "set"):
+        if kind == "array":
+            value = ops.array_items(value)
+        elif kind == "vec":
+            value = ops.vec_items(value)
+        elif kind == "set":
+            value = ops.set_items(value)
+        return ops.node(
+            "JsonArray",
+            [_geno_json_to(item, shape[1], types, depth, ops) for item in value],
+        )
+    if kind == "tuple":
+        return ops.node(
+            "JsonArray",
+            [
+                _geno_json_to(item, item_shape, types, depth, ops)
+                for item, item_shape in zip(value, shape[1])
+            ],
+        )
+    if kind == "map":
+        return ops.node(
+            "JsonObject",
+            [
+                (key, _geno_json_to(item, shape[1], types, depth, ops))
+                for key, item in ops.map_pairs(value)
+            ],
+        )
+    if kind == "result":
+        if ops.is_variant(value, "Ok"):
+            inner = _geno_json_to(ops.get(value, "value"), shape[1], types, depth, ops)
+            return ops.node("JsonObject", [("ok", inner)])
+        inner = _geno_json_to(ops.get(value, "error"), shape[2], types, depth, ops)
+        return ops.node("JsonObject", [("err", inner)])
+    described = types[shape[1]]
+    if described[0] == "enum":
+        for constructor in described[1]:
+            if ops.is_variant(value, constructor):
+                return ops.node("JsonString", constructor)
+        raise RuntimeError("json_encode: value is not of its declared type")
+    if described[0] == "record":
+        variants = ((described[1], described[2]),)
+        entries: Any = []
+    else:
+        variants = described[1]
+        entries = None
+    for constructor, fields in variants:
+        if not ops.is_variant(value, constructor):
+            continue
+        if entries is None:
+            entries = [("type", ops.node("JsonString", constructor))]
+        for name, field_shape in fields:
+            entries.append(
+                (
+                    name,
+                    _geno_json_to(ops.get(value, name), field_shape, types, depth, ops),
+                )
+            )
+        return ops.node("JsonObject", entries)
+    raise RuntimeError("json_encode: value is not of its declared type")
+
+
+def _geno_json_codec(name: Any, shape: Any, types: Any) -> Any:
+    if shape is None:
+        raise RuntimeError(
+            name + " needs the type it works on: call it directly, in checked code"
+        )
+    # The interpreter passes a mapping; compiled code passes constant pairs.
+    return shape, dict(types) if types is not None else {}
+
+
+def json_decode(
+    text: Any,
+    shape: Any = None,
+    types: Any = None,
+    _ops: Any = None,
+    _parse: Any = None,
+) -> Any:
+    """Decode JSON *text* as the type the call's codec describes."""
+    shape, types = _geno_json_codec("json_decode", shape, types)
+    ops = _GENO_JSON_OPS if _ops is None else _ops
+    parsed = (json_parse if _parse is None else _parse)(text)
+    if not ops.is_variant(parsed, "Ok"):
+        return parsed
+    try:
+        value = _geno_json_from(ops.get(parsed, "value"), shape, types, None, ops)
+    except _GenoJsonMismatch as mismatch:
+        return ops.err(str(mismatch))
+    return ops.ok(value)
+
+
+def json_encode(
+    value: Any,
+    shape: Any = None,
+    types: Any = None,
+    _ops: Any = None,
+    _stringify: Any = None,
+) -> Any:
+    """Encode *value*, of the type the call's codec describes, as JSON."""
+    shape, types = _geno_json_codec("json_encode", shape, types)
+    ops = _GENO_JSON_OPS if _ops is None else _ops
+    node = _geno_json_to(value, shape, types, 0, ops)
+    return (json_stringify if _stringify is None else _stringify)(node)
+
+
+def json_encode_pretty(
+    value: Any,
+    indent: Any,
+    shape: Any = None,
+    types: Any = None,
+    _ops: Any = None,
+    _stringify: Any = None,
+) -> Any:
+    """Encode as json_encode does, indented as json_stringify_pretty indents."""
+    shape, types = _geno_json_codec("json_encode_pretty", shape, types)
+    ops = _GENO_JSON_OPS if _ops is None else _ops
+    node = _geno_json_to(value, shape, types, 0, ops)
+    return (json_stringify_pretty if _stringify is None else _stringify)(node, indent)
+
+
 def _geno_value_to_python(value):
     """Convert any Geno value to a Python object for JSON serialization."""
     # JsonValue constructors
