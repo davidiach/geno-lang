@@ -540,3 +540,22 @@ kind = "run"
 targets = ["interpreter", "python", "js"]
 capabilities = ["print"]
 expected_stdout = "30000\n2001000\n5\n30\n20\n10\n[2, 1]\n"
+
+# Proposal 0021 (Accepted): json_decode and json_encode are type-directed. The
+# mapping of every kind of type, each mismatch message and the rejected types
+# are covered by geno/tests/test_typed_json.py.
+
+[[cases]]
+id = "typed-json"
+path = "programs/typed_json.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "Ok(value: User(name: \"Al\", age: None, roles: [Admin], contact: Phone(country: 1, number: \"555\")))\nOk(value: \"Al\")\n{\"name\":\"Bo\",\"age\":30,\"roles\":[\"Member\",\"Admin\"],\"contact\":{\"type\":\"Email\",\"address\":\"bo@example.com\"}}\n{\"items\":[[1,2.5]],\"next\":null}\nOk(value: Page(items: [Unlisted], next: Some(value: \"p2\")))\nOk(value: {\"a\": [1.0, 2.5]})\nErr(error: \"$.roles[0]: expected one of \\\"Admin\\\", \\\"Member\\\", got \\\"Owner\\\"\")\nErr(error: \"$[0].name: expected String, got Int\")\nErr(error: \"$.items[1]: expected Int, got String\")\n{\n  \"ok\": [\n    true,\n    false\n  ]\n}\n"
+
+[[cases]]
+id = "diagnostic-json-form"
+path = "programs/diagnostic_json_form.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E332"]

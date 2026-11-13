@@ -1003,6 +1003,7 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         # Write runtime prelude
         self.output.write(RUNTIME_PRELUDE)
+        self._registers_json_constructors = self._uses_typed_json([program])
         self._test_module = None
         if self.test_cases is not None:
             self.output.write(f"\n{TEST_REGISTRY_NAME} = []\n")
@@ -1150,6 +1151,9 @@ class Compiler(BaseCompiler, ASTVisitor):
         )
         if self.test_cases is not None:
             self.output.write(f"\n{TEST_REGISTRY_NAME} = []\n")
+        self._registers_json_constructors = self._uses_typed_json(
+            dep_graph.parsed.values()
+        )
         main_defn = None
         module_impl_exports: dict[str, list[str]] = {}
         module_runtime_exports: dict[str, list[str]] = {}
@@ -1336,6 +1340,13 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         for variant in defn.variants:
             self._compile_variant(defn.name, defn.type_params, variant)
+        if self._registers_json_constructors:
+            scope = defn._json_constructor_scope
+            for variant in defn.variants:
+                self._writeln(
+                    f"_GENO_JSON_CTORS[{(scope, variant.name)!r}] = "
+                    f"{self._mangle_name(variant.name)}"
+                )
 
         # Emit a Union type alias so the type name resolves in annotations
         variant_names = [v.name for v in defn.variants]
@@ -3424,6 +3435,8 @@ class Compiler(BaseCompiler, ASTVisitor):
         """Compile a function call."""
         if id(expr) in self._tail_trampoline_calls:
             return self._compile_tail_trampoline_call(expr)
+        if expr._json_codec is not None:
+            return self._compile_typed_json_call(expr)
         has_named_args = any(arg.name for arg in expr.arguments)
         func_name = (
             expr.function.name if isinstance(expr.function, Identifier) else None
@@ -3471,6 +3484,31 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._trace_indirect_call(expr.function, expr.location)
 
         return f"{func}({args})"
+
+    def _compile_typed_json_call(self, expr: FunctionCall) -> str:
+        """`json_decode`, `json_encode` or `json_encode_pretty` with its codec.
+
+        The codec is passed as constants (proposal 0021): nested tuples, which
+        Python folds into the function's constants, so a call builds nothing.
+        Keyword arguments preserve source order for mixed Geno call syntax.
+        """
+        codec = expr._json_codec
+        parameter_names = dict(
+            zip(
+                map(id, self._typed_json_arguments(expr)),
+                self._typed_json_parameter_names(expr),
+            )
+        )
+        arguments = [
+            f"{parameter_names[id(argument)]}="
+            + self._compile_call_argument(argument.value)
+            for argument in expr.arguments
+        ]
+        arguments.append(f"shape={codec.shape!r}")
+        arguments.append(f"types={tuple(codec.types.items())!r}")
+        name = self._compile_expr(expr.function)
+        self._trace_candidate(self._trace_callee(name), expr.location)
+        return f"{name}({', '.join(arguments)})"
 
     def _compile_builtin_fast_path(
         self, func_name: str | None, call_args: list[CallArg]

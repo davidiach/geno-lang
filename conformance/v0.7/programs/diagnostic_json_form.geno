@@ -1,0 +1,6 @@
+// Proposal 0021: a type with no JSON form is rejected where the call is
+// written. A JSON object's keys are strings, so a Map's must be.
+
+func main() -> Unit with io
+    print(json_decode[Map[Int, String]]("{}"))
+end func

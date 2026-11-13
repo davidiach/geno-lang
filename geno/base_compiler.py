@@ -193,6 +193,10 @@ class BaseCompiler(ABC):
         # here in registry order, and `main` is not called. ``None`` is an
         # ordinary build.
         self.test_cases: list[CompiledTestCase] | None = None
+        # Proposal 0021: whether the program being compiled calls a typed
+        # JSON builtin, in which case each type definition registers its
+        # constructors for `json_decode` to build values with.
+        self._registers_json_constructors = False
         self._test_module: str | None = None
         self._test_impl: tuple[str, str, str] | None = None
         # The function a trace table is being recorded for, and the names it
@@ -1107,6 +1111,45 @@ class BaseCompiler(ABC):
             finally:
                 self._display_name_override = None
                 self._test_impl = None
+
+    # -- Typed JSON (proposal 0021) -------------------------------------------
+
+    @staticmethod
+    def _uses_typed_json(programs: Iterable[Program]) -> bool:
+        """Whether any call in *programs* carries a typed-JSON codec."""
+        stack: list[object] = [program.definitions for program in programs]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (list, tuple)):
+                stack.extend(node)
+            elif isinstance(node, FunctionCall):
+                if node._json_codec is not None:
+                    return True
+                stack.append(node.function)
+                stack.extend(argument.value for argument in node.arguments)
+            elif is_dataclass(node) and not isinstance(node, type):
+                stack.extend(
+                    getattr(node, item.name)
+                    for item in fields(node)
+                    if not item.name.startswith("_") and item.name != "location"
+                )
+        return False
+
+    @staticmethod
+    def _typed_json_parameter_names(expr: FunctionCall) -> list[str]:
+        return {
+            "json_decode": ["text"],
+            "json_encode": ["value"],
+            "json_encode_pretty": ["value", "indent"],
+        }[expr._resolved_builtin_name or ""]
+
+    @staticmethod
+    def _typed_json_arguments(expr: FunctionCall) -> list[CallArg]:
+        """A typed-JSON call's arguments in parameter order."""
+        ordered = BaseCompiler._reorder_call_args_for_compile(
+            expr.arguments, BaseCompiler._typed_json_parameter_names(expr)
+        )
+        return [argument for argument in ordered if argument is not None]
 
     # -- Test-harness builds (proposal 0024) ---------------------------------
 

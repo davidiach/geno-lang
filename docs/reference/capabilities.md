@@ -342,7 +342,8 @@ recognizes canonical Windows drive paths such as `C:/work/file`.
 `set_size`, `set_is_empty`, `set_to_list`, `set_union`, `set_intersection`
 
 **Data parsing:**
-`json_parse`, `json_stringify`, `json_stringify_pretty`, `json_to_string`, `csv_parse`,
+`json_parse`, `json_stringify`, `json_stringify_pretty`, `json_to_string`,
+`json_decode`, `json_encode`, `json_encode_pretty`, `csv_parse`,
 `csv_parse_with_headers`, `toml_parse`
 
 **Character operations:**

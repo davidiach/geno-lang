@@ -1045,13 +1045,13 @@ def _test_file(
     import time
 
     from .interpreter import Interpreter
-    from .lexer import Lexer, LexerError
-    from .parser import ParseError, ParseErrors, Parser
+    from .lexer import LexerError
+    from .parser import ParseError, ParseErrors
     from .project_resolution import ProjectResolutionError, resolve_file_context
     from .target_profile import TargetProfile, resolve_manifest_targets
     from .target_validation import (
         TargetValidationError,
-        validate_default_run_lowering_for_program,
+        validate_default_run_lowering,
     )
     from .typechecker import TypeChecker
 
@@ -1069,8 +1069,8 @@ def _test_file(
             )
 
         source = context.source
-        tokens = Lexer(source, context.filename).tokenize()
-        program = Parser(tokens, source).parse_program()
+        program = context.program
+        dependency_graph = context.dependency_graph
         parsed_modules = context.parsed_modules or None
         target_names: list[str] = (
             [target]
@@ -1079,20 +1079,20 @@ def _test_file(
         )
         check_targets: list[str | None] = list(target_names) if target_names else [None]
 
-        # Type check
+        # Check imported bodies too: the interpreter executes their typed ASTs.
         for target_name in check_targets:
             target_profile = (
                 TargetProfile.load(target_name) if target_name is not None else None
             )
             checker = TypeChecker(target_profile=target_profile)
-            checker.check_program(program, modules=parsed_modules)
+            checker.check_project_graph(
+                dependency_graph, retain_module_checkers=properties is not None
+            )
             if target_profile is None:
                 # A target-less file is still run by the default `geno run`,
                 # which lowers through the Python backend. Validate that here so
                 # examples cannot pass for a program that cannot run (#70).
-                validate_default_run_lowering_for_program(
-                    program, parsed_modules, entrypoint_name=context.module_name
-                )
+                validate_default_run_lowering(dependency_graph)
 
         # Count examples (apply filter)
         harnesses = extract_harnesses(program)
@@ -1146,7 +1146,7 @@ def _test_file(
             # have contracts (or, without any, must not panic).
             property_results = _check_properties(
                 program,
-                checker,
+                checker.module_checkers[context.module_name],
                 module=context.module_name,
                 path=str(filepath),
                 config=properties,

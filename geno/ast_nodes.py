@@ -348,6 +348,9 @@ class FunctionCall(Expression):
 
     function: Expression
     arguments: list[CallArg]
+    # The type in `json_decode[User](text)` (proposal 0021). When brackets can
+    # also be an index, `function` keeps that reading until the name resolves.
+    _type_argument: TypeAnnotation | None = field(default=None, init=False, repr=False)
     _resolved_builtin_name: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -356,6 +359,9 @@ class FunctionCall(Expression):
     _method_call: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Set by the typechecker on a call of `json_decode`, `json_encode` or
+    # `json_encode_pretty`: the `JsonCodec` of the type it works on.
+    _json_codec: Any = field(default=None, init=False, repr=False, compare=False)
     # Set by the interpreter when it loads the enclosing function: this is a
     # self tail call (geno/tail_calls.py), run without a new frame.
     _self_tail_call: bool = field(default=False, init=False, repr=False, compare=False)
@@ -1043,6 +1049,9 @@ class TypeDef(Definition):
     type_params: list[str]
     variants: list[TypeVariant]
     exported: bool = False  # True when declared with `export type`
+    _json_constructor_scope: str = field(
+        default="", init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_type_def(self)

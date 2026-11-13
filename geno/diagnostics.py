@@ -77,6 +77,9 @@ class ErrorCode(Enum):
     # An f-string format spec (`{x:.2f}`) is malformed or does not fit the
     # type of the value it formats (proposal 0023).
     TYPE_FORMAT_SPEC = "E331"
+    # `json_decode` or `json_encode` is used at a type with no JSON form, or
+    # as a function value, where its type is not known (proposal 0021).
+    TYPE_JSON_FORM = "E332"
 
     # Warnings (W3xx): reported with Severity.WARNING once a program passes
     # the type checker; the program is still accepted.

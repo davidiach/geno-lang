@@ -2375,6 +2375,8 @@ def _json_value_to_python(
     value: Any,
     limit: int | None = None,
     memo: dict[int, tuple[Any, Any]] | None = None,
+    *,
+    keep_last: bool = False,
 ) -> Any:
     """Convert a Geno JsonValue back to a Python object for json.dumps.
 
@@ -2411,7 +2413,10 @@ def _json_value_to_python(
         items = value.fields["items"]
         if limit is not None:
             _check_collection_size("List", len(items), limit)
-        converted = [_json_value_to_python(item, limit, memo) for item in items]
+        converted = [
+            _json_value_to_python(item, limit, memo, keep_last=keep_last)
+            for item in items
+        ]
         memo[id(value)] = (value, converted)
         return converted
     if tag == "JsonObject":
@@ -2419,11 +2424,12 @@ def _json_value_to_python(
         if limit is not None:
             _check_collection_size("Map", len(entries), limit)
         result = {}
+        entries = dict(entries).items() if keep_last else entries
         for entry in entries:
             key, val = entry
             if limit is not None and isinstance(key, str):
                 _check_collection_size("String", len(key), limit)
-            result[key] = _json_value_to_python(val, limit, memo)
+            result[key] = _json_value_to_python(val, limit, memo, keep_last=keep_last)
         memo[id(value)] = (value, result)
         return result
     raise RuntimeError(f"json_stringify: unknown JsonValue constructor: {tag}")
@@ -2586,11 +2592,14 @@ def builtin_json_parse(
 
 
 def builtin_json_stringify(
-    value: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+    value: Any,
+    *,
+    max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE,
+    _keep_last: bool = False,
 ) -> str:
     """Convert a JsonValue to a JSON string."""
     limit = _effective_max_collection_size(max_collection_size)
-    obj = _json_value_to_python(value, limit)
+    obj = _json_value_to_python(value, limit, keep_last=_keep_last)
     return _json_dumps_under_limit("json_stringify", obj, max_collection_size)
 
 
@@ -2599,6 +2608,7 @@ def builtin_json_stringify_pretty(
     indent: Any,
     *,
     max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE,
+    _keep_last: bool = False,
 ) -> str:
     """Pretty-print a JsonValue. ``indent <= 0`` returns compact form.
 
@@ -2608,7 +2618,7 @@ def builtin_json_stringify_pretty(
     if not isinstance(indent, int) or isinstance(indent, bool):
         raise RuntimeError("json_stringify_pretty: indent must be Int")
     limit = _effective_max_collection_size(max_collection_size)
-    obj = _json_value_to_python(value, limit)
+    obj = _json_value_to_python(value, limit, keep_last=_keep_last)
     return _json_dumps_under_limit(
         "json_stringify_pretty",
         obj,

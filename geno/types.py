@@ -455,3 +455,4 @@ class TypeDefInfo:
     type_params: list[str]
     variants: dict[str, list[tuple[str, Type]]]  # variant_name -> [(field_name, type)]
     invariant_params: frozenset[int] = field(default_factory=frozenset)
+    json_constructor_scope: str = ""

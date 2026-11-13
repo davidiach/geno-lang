@@ -313,6 +313,10 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "json_stringify": (["value"], None),
     "json_stringify_pretty": (["value", "indent"], None),
     "json_to_string": (["value"], None),
+    # Typed JSON (proposal 0021): the call's codec is passed by the compiler.
+    "json_decode": (["text"], None),
+    "json_encode": (["value"], None),
+    "json_encode_pretty": (["value", "indent"], None),
     # --- CSV / TOML (always available, pure computation) -------------------
     "csv_parse": (["text"], None),
     "csv_parse_with_headers": (["text"], None),

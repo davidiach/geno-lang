@@ -751,6 +751,25 @@ let output: String = json_stringify(value: JsonObject([("key", JsonString("value
 // output: {"key":"value"}
 ```
 
+To decode straight to your own types, and encode them, use typed JSON (0.7
+development line):
+
+```geno
+type Role = Admin | Member
+type User = User(name: String, age: Option[Int], roles: List[Role])
+
+func rename(body: String, name: String) -> Result[String, String]
+    example ("{\"name\": \"Al\", \"roles\": []}", "Bo") -> Ok("{\"name\":\"Bo\",\"age\":null,\"roles\":[]}")
+    let user: User = json_decode(body)?
+    return Ok(json_encode(user with (name: name)))
+end func
+```
+
+`json_decode` decodes to the type its context names, or the one in brackets:
+`json_decode[List[User]](text)`. A value that does not fit is an `Err` that
+says where, such as `$.roles[0]: expected one of "Admin", "Member", got
+"Owner"`.
+
 **Note:** `json_parse` returns `Result[JsonValue, String]`, not the original Geno type. A `json_parse` → `json_stringify` round-trip preserves the JSON structure faithfully, but the result is always a `JsonValue` tree — not your original Geno types. Use pattern matching to extract values from the `JsonValue` variants.
 
 ## Tuples

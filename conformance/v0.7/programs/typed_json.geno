@@ -1,0 +1,27 @@
+// Proposal 0021: json_decode and json_encode work on the type the call names
+// or its context gives. A mismatch is an Err with the path to the value.
+
+type Role = Admin | Member
+type Contact = Email(address: String) | Phone(country: Int, number: String) | Unlisted
+type User = User(name: String, age: Option[Int], roles: List[Role], contact: Contact)
+type Page[T] = Page(items: List[T], next: Option[String])
+
+func load(text: String) -> Result[String, String]
+    example "{}" -> Err("$: missing field \"name\"")
+    let user: User = json_decode(text)?
+    return Ok(user.name)
+end func
+
+func main() -> Unit with io
+    let text = "{\"name\": \"Al\", \"roles\": [\"Admin\"], \"contact\": {\"type\": \"Phone\", \"country\": 1, \"number\": \"555\"}, \"extra\": true}"
+    print(json_decode[User](text))
+    print(load(text))
+    print(json_encode(User("Bo", Some(30), [Member, Admin], Email("bo@example.com"))))
+    print(json_encode(Page([(1, 2.5)], None)))
+    print(json_decode[Page[Contact]]("{\"items\": [{\"type\": \"Unlisted\"}], \"next\": \"p2\"}"))
+    print(json_decode[Map[String, List[Float]]]("{\"a\": [1, 2.5]}"))
+    print(json_decode[User]("{\"name\": \"Al\", \"roles\": [\"Owner\"], \"contact\": {\"type\": \"Unlisted\"}}"))
+    print(json_decode[List[User]]("[{\"name\": 7}]"))
+    print(json_decode[Page[Int]]("{\"items\": [1, \"2\"]}"))
+    print(json_encode_pretty({"ok": [true, false]}, 2))
+end func

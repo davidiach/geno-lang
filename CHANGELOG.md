@@ -13,6 +13,16 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- Typed JSON, from [proposal 0021](docs/proposals/0021-typed-json.md):
+  `json_decode[T](text) -> Result[T, String]`, `json_encode(value)` and
+  `json_encode_pretty(value, indent)` decode to and encode from a program's
+  own types. The type is the one in brackets or the one the context gives
+  (`let user: User = json_decode(body)?`). Records are objects, types whose
+  constructors have no fields are strings, other types carry a `"type"`
+  discriminator, and `Option`, `Result`, `Map[String, V]`, tuples and the
+  collections map as expected. A mismatch is an `Err` with the path to the
+  value (`$.items[2].age: expected Int, got String`), identical on every
+  backend. A type with no JSON form is the new diagnostic E332.
 - `geno test --backend interpreter|python|js|all` (Experimental), from accepted
   [proposal 0024](docs/proposals/0024-test-backends.md). `python` and `js`
   run every example and `test` block in compiled code, built the way `geno

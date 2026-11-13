@@ -75,6 +75,11 @@ write (0.7 development line, proposal 0023): format specs in f-strings
 List or a String (`xs[1:3]`, `xs[-2:]`, `s[1:-1]`), patterns that name fields
 (`Cfg(port: p, ..)`) and `if let Some(x) = value then ... end if`.
 
+Typed JSON (0.7 development line, proposal 0021) replaces hand-written
+`JsonValue` matching: `let user: User = json_decode(body)?` decodes to a
+program's own type and `json_encode(user)` encodes it. Name the type in
+brackets where the context does not give it: `json_decode[List[User]](text)`.
+
 ## Common LLM Mistakes
 
 ### 1. Using `let mut` instead of `var`
