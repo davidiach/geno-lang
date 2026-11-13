@@ -1341,10 +1341,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         for variant in defn.variants:
             self._compile_variant(defn.name, defn.type_params, variant)
         if self._registers_json_constructors:
-            # `json_decode` builds values of this type by constructor name.
+            scope = defn._json_constructor_scope
             for variant in defn.variants:
                 self._writeln(
-                    f"_GENO_JSON_CTORS[({defn.name!r}, {variant.name!r})] = "
+                    f"_GENO_JSON_CTORS[{(scope, variant.name)!r}] = "
                     f"{self._mangle_name(variant.name)}"
                 )
 
@@ -3490,11 +3490,17 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         The codec is passed as constants (proposal 0021): nested tuples, which
         Python folds into the function's constants, so a call builds nothing.
-        Arguments are written in source order, by name where they were named.
+        Keyword arguments preserve source order for mixed Geno call syntax.
         """
         codec = expr._json_codec
+        parameter_names = dict(
+            zip(
+                map(id, self._typed_json_arguments(expr)),
+                self._typed_json_parameter_names(expr),
+            )
+        )
         arguments = [
-            (f"{argument.name}=" if argument.name else "")
+            f"{parameter_names[id(argument)]}="
             + self._compile_call_argument(argument.value)
             for argument in expr.arguments
         ]

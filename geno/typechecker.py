@@ -463,6 +463,7 @@ def _clone_type_def_info(info: TypeDefInfo) -> TypeDefInfo:
             variant_name: list(fields) for variant_name, fields in info.variants.items()
         },
         invariant_params=frozenset(info.invariant_params),
+        json_constructor_scope=info.json_constructor_scope,
     )
 
 
@@ -1663,6 +1664,7 @@ class TypeChecker(ExhaustivenessMixin):
         modules: Mapping[str, Union[Program, _ModuleImportSummary]] | None = None,
         *,
         is_entrypoint: bool = True,
+        module_name: str | None = None,
     ) -> None:
         """
         Type check a complete program.
@@ -1671,6 +1673,7 @@ class TypeChecker(ExhaustivenessMixin):
             program: The main program AST.
             modules: Optional map of module names to parsed Program ASTs or
                 precomputed import summaries.
+            module_name: Defining module of this program in a project graph.
 
         Raises:
             TypeError: If any type errors are found
@@ -1725,7 +1728,7 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in type_aliases:
                 self._collect_type_alias(defn)
             for defn in type_defs:
-                self._collect_type_def(defn)
+                self._collect_type_def(defn, module_name)
             self._refresh_type_def_variance(
                 {
                     defn.name: self.type_defs[defn.name]
@@ -1858,10 +1861,11 @@ class TypeChecker(ExhaustivenessMixin):
                 program,
                 modules=modules,
                 is_entrypoint=mod_name == dep_graph.project.entrypoint,
+                module_name=mod_name,
             )
             checked[mod_name] = program
             module_summaries[mod_name] = mod_checker._build_module_import_summary(
-                program
+                program, mod_name
             )
 
         return checked
@@ -2097,7 +2101,7 @@ class TypeChecker(ExhaustivenessMixin):
                     if has_exports and not defn.exported:
                         continue  # Not exported — skip
                     if not is_aliased:
-                        self._collect_type_def(defn)
+                        self._collect_type_def(defn, name)
                         if defn.name in self.type_defs:
                             collected_type_defs[defn.name] = self.type_defs[defn.name]
                     # Track for qualified access
@@ -2146,7 +2150,9 @@ class TypeChecker(ExhaustivenessMixin):
                         module_default_counts[defn.name] = num_defaults
                     if generic is not None:
                         module_generic_functions[defn.name] = generic
-            import_summaries[name] = self._build_module_import_summary(mod_program)
+            import_summaries[name] = self._build_module_import_summary(
+                mod_program, name
+            )
         finally:
             # Restore temporary-alias state even if signature resolution raised,
             # so failed or aliased imports cannot leak names into the importer.
@@ -2258,7 +2264,9 @@ class TypeChecker(ExhaustivenessMixin):
             for defn in program.definitions
         )
 
-    def _build_module_import_summary(self, program: Program) -> _ModuleImportSummary:
+    def _build_module_import_summary(
+        self, program: Program, module_name: str
+    ) -> _ModuleImportSummary:
         """Precompute the import-facing shape of a checked module."""
         has_exports = self._program_has_explicit_exports(program)
         imports: list[ImportStatement] = []
@@ -2302,7 +2310,7 @@ class TypeChecker(ExhaustivenessMixin):
                 elif isinstance(defn, TypeDef):
                     if has_exports and not defn.exported:
                         continue
-                    type_defs[defn.name] = self._build_type_def_info(defn)
+                    type_defs[defn.name] = self._build_type_def_info(defn, module_name)
                     type_def_locations[defn.name] = defn.location
                     for variant in defn.variants:
                         fields = []
@@ -2454,7 +2462,9 @@ class TypeChecker(ExhaustivenessMixin):
         """Collect a type alias."""
         self.type_aliases[alias.name] = (alias.type_params, alias.target_type)
 
-    def _build_type_def_info(self, defn: TypeDef) -> TypeDefInfo:
+    def _build_type_def_info(
+        self, defn: TypeDef, module_name: str | None
+    ) -> TypeDefInfo:
         """Build resolved type information for a type definition."""
         variants: dict[str, list[tuple[str, Type]]] = {}
 
@@ -2474,10 +2484,12 @@ class TypeChecker(ExhaustivenessMixin):
                 fields.append((field_name, field_type))
             variants[variant.name] = fields
 
+        defn._json_constructor_scope = f"{module_name or ''}.{defn.name}"
         return TypeDefInfo(
             name=defn.name,
             type_params=defn.type_params,
             variants=variants,
+            json_constructor_scope=defn._json_constructor_scope,
         )
 
     def _refresh_type_def_variance(self, type_defs: dict[str, TypeDefInfo]) -> None:
@@ -2579,9 +2591,11 @@ class TypeChecker(ExhaustivenessMixin):
             )
         return False
 
-    def _collect_type_def(self, defn: TypeDef) -> None:
+    def _collect_type_def(self, defn: TypeDef, module_name: str | None = None) -> None:
         """Collect a type definition."""
-        self._register_type_def_info(self._build_type_def_info(defn), defn.location)
+        self._register_type_def_info(
+            self._build_type_def_info(defn, module_name), defn.location
+        )
 
     def _register_type_def_info(
         self, info: TypeDefInfo, location: SourceLocation
@@ -4752,8 +4766,8 @@ class TypeChecker(ExhaustivenessMixin):
         self._typed_json_calls.append(expr)
         if name != "json_decode":
             return _STRING_TYPE
-        if callee._type_argument is not None:
-            target = self._resolve_type(callee._type_argument)
+        if expr._type_argument is not None:
+            target = self._resolve_type(expr._type_argument)
             expr.__dict__["_json_target"] = target
             return ResultType(target, _STRING_TYPE)
         return ResultType(TypeVar("T"), _STRING_TYPE)
@@ -5852,6 +5866,14 @@ class TypeChecker(ExhaustivenessMixin):
 
     def _check_function_call(self, expr: FunctionCall, env: TypeEnv) -> Type:
         """Type check a function call."""
+        if expr._type_argument is not None and isinstance(expr.function, IndexAccess):
+            indexed_name = cast(Identifier, expr.function.target)
+            if self._identifier_resolves_to_builtin(
+                indexed_name.name, env
+            ) or isinstance(env.lookup(indexed_name.name), FuncType):
+                # A function binding cannot be indexed. Shadowing functions
+                # receive the diagnostic for unsupported type arguments below.
+                expr.function = indexed_name
         if isinstance(expr.function, FieldAccess):
             method = self._resolve_method_call(expr, env)
             if method is not None:
@@ -5873,7 +5895,7 @@ class TypeChecker(ExhaustivenessMixin):
         if builtin_name in TYPED_JSON_BUILTINS:
             assert identifier_func is not None
             return self._check_typed_json_call(expr, builtin_name, identifier_func, env)
-        if identifier_func is not None and identifier_func._type_argument is not None:
+        if identifier_func is not None and expr._type_argument is not None:
             # The parser reads `json_decode[T](...)` by name; here the name is
             # the program's own, which takes no type argument.
             self._error(
@@ -6245,17 +6267,9 @@ class TypeChecker(ExhaustivenessMixin):
             self._check_instance_bounds(
                 generic_target, instance.type_args, expr.location
             )
-        # A generic function passed as an argument is instantiated by this
-        # call's final substitution: its type may only be settled by a later
-        # argument, as in `apply(show, 2.0)`.
-        for call_arg in arguments:
-            if getattr(call_arg.value, "_generic_target", None) is None:
-                continue
-            arg_expected = getattr(call_arg.value, "_expected_runtime_type", None)
-            if isinstance(arg_expected, Type):
-                self._record_expected_runtime_type(
-                    call_arg.value, self._apply_substitutions(arg_expected, subs)
-                )
+        # A later argument can settle the type an earlier argument expects,
+        # as in `apply(show, 2.0)` or `pick(json_decode(text), fallback)`.
+        self._settle_call_argument_types((arg.value for arg in arguments), subs)
 
         if has_never_arg:
             return NeverType()
@@ -6267,6 +6281,18 @@ class TypeChecker(ExhaustivenessMixin):
             result_type = func_type.return_type
         self._validate_keyed_collection_type(result_type, expr.location)
         return result_type
+
+    def _settle_call_argument_types(
+        self, arguments: Iterable[Expression], substitutions: dict[str, Type]
+    ) -> None:
+        if not substitutions:
+            return
+        for argument in arguments:
+            expected = argument._expected_runtime_type
+            if isinstance(expected, Type) and self._has_type_vars(expected):
+                self._record_expected_runtime_type(
+                    argument, self._apply_substitutions(expected, substitutions)
+                )
 
     # -----------------------------------------------------------------
     # Method-call syntax (proposal 0006): `receiver.name(args)`
@@ -7090,14 +7116,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._check_instance_bounds(
                     generic_target, instance.type_args, stage.location
                 )
-            for arg_expr in stage.arguments:
-                if getattr(arg_expr, "_generic_target", None) is None:
-                    continue
-                arg_expected = getattr(arg_expr, "_expected_runtime_type", None)
-                if isinstance(arg_expected, Type):
-                    self._record_expected_runtime_type(
-                        arg_expr, self._apply_substitutions(arg_expected, subs)
-                    )
+            self._settle_call_argument_types(stage.arguments, subs)
 
             current_type = (
                 self._apply_substitutions(func_type.return_type, subs)

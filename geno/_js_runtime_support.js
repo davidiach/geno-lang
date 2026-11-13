@@ -4780,19 +4780,16 @@ function _jsonValueToPrettyString(value, indent, depth) {
 // theirs. The walk mirrors _geno_json_from and _geno_json_to in the Python
 // runtime, message for message.
 
-// "Type.Constructor" -> constructor function, for the user types of a
-// program that uses typed JSON (a compiled type definition registers its
-// constructors here) and the built-in record types. The type's name is part
-// of the key because two types may each have a constructor of one name.
+// Defining type scope and constructor name -> constructor function.
 const _GENO_JSON_CTORS = new _GENO_MAP([
-    ["HttpResponse.HttpResponse", HttpResponse],
-    ["HttpRequest.HttpRequest", HttpRequest],
-    ["ProcessResult.ProcessResult", ProcessResult],
-    ["FileKind.FileKindFile", FileKindFile],
-    ["FileKind.FileKindDirectory", FileKindDirectory],
-    ["FileKind.FileKindSymlink", FileKindSymlink],
-    ["FileKind.FileKindOther", FileKindOther],
-    ["FileMetadata.FileMetadata", FileMetadata],
+    [".HttpResponse", HttpResponse],
+    [".HttpRequest", HttpRequest],
+    [".ProcessResult", ProcessResult],
+    [".FileKindFile", FileKindFile],
+    [".FileKindDirectory", FileKindDirectory],
+    [".FileKindSymlink", FileKindSymlink],
+    [".FileKindOther", FileKindOther],
+    [".FileMetadata", FileMetadata],
 ]);
 const _GENO_JSON_KINDS = {
     JsonString: "String", JsonInt: "Int", JsonFloat: "Float", JsonBool: "Bool",
@@ -4824,13 +4821,17 @@ function _genoJsonOneOf(names) {
 function _genoJsonObject(node) {
     return new _GENO_MAP(node.entries);
 }
-function _genoJsonFields(entries, fields, types, path) {
+const _MAX_JSON_DECODE_DEPTH = 320;
+
+function _genoJsonFields(entries, fields, types, path, visit, depth) {
     const values = [];
     for (const [name, shape] of fields) {
         if (entries.has(name)) {
-            values.push(_genoJsonFrom(entries.get(name), shape, types, [path, _genoJsonKey(name)]));
+            values.push(_genoJsonFrom(entries.get(name), shape, types,
+                [path, _genoJsonKey(name)], visit, depth));
         } else if (shape[0] === "option") {
             // An absent field is an absent value.
+            visit(depth, true);
             values.push(None_);
         } else {
             _genoJsonFail(path, "missing field " + _GENO_JSON.stringify(name));
@@ -4838,7 +4839,9 @@ function _genoJsonFields(entries, fields, types, path) {
     }
     return values;
 }
-function _genoJsonFrom(node, shape, types, path) {
+function _genoJsonFrom(node, shape, types, path, visit, depth) {
+    visit(depth, false);
+    depth += 1;
     const kind = shape[0];
     const tag = node._tag;
     if (kind === "json") return node;
@@ -4864,12 +4867,13 @@ function _genoJsonFrom(node, shape, types, path) {
     }
     if (kind === "option") {
         if (tag === "JsonNull") return None_;
-        return Some(_genoJsonFrom(node, shape[1], types, path));
+        visit(depth, true);
+        return Some(_genoJsonFrom(node, shape[1], types, path, visit, depth));
     }
     if (kind === "list" || kind === "array" || kind === "vec" || kind === "set") {
         if (tag !== "JsonArray") _genoJsonExpected(path, "array", tag);
         const items = node.items.map(
-            (item, index) => _genoJsonFrom(item, shape[1], types, [path, "[" + index + "]"]));
+            (item, index) => _genoJsonFrom(item, shape[1], types, [path, "[" + index + "]"], visit, depth));
         if (kind === "list") return items;
         if (kind === "array") return array_from_list(items);
         if (kind === "vec") return vec_from_list(items);
@@ -4882,13 +4886,13 @@ function _genoJsonFrom(node, shape, types, path) {
                 + " items, got " + node.items.length);
         }
         return node.items.map(
-            (item, index) => _genoJsonFrom(item, shape[1][index], types, [path, "[" + index + "]"]));
+            (item, index) => _genoJsonFrom(item, shape[1][index], types, [path, "[" + index + "]"], visit, depth));
     }
     if (kind === "map") {
         if (tag !== "JsonObject") _genoJsonExpected(path, "object", tag);
         const pairs = [];
         for (const [key, value] of _genoJsonObject(node)) {
-            pairs.push([key, _genoJsonFrom(value, shape[1], types, [path, _genoJsonKey(key)])]);
+            pairs.push([key, _genoJsonFrom(value, shape[1], types, [path, _genoJsonKey(key)], visit, depth)]);
         }
         return _mapLiteral(pairs);
     }
@@ -4898,100 +4902,237 @@ function _genoJsonFrom(node, shape, types, path) {
             _genoJsonFail(path, 'expected an object with "ok" or "err"');
         }
         if (entries.has("ok")) {
-            return Ok(_genoJsonFrom(entries.get("ok"), shape[1], types, [path, ".ok"]));
+            return Ok(_genoJsonFrom(entries.get("ok"), shape[1], types, [path, ".ok"], visit, depth));
         }
-        return Err(_genoJsonFrom(entries.get("err"), shape[2], types, [path, ".err"]));
+        return Err(_genoJsonFrom(entries.get("err"), shape[2], types, [path, ".err"], visit, depth));
     }
     const described = types.get(shape[1]);
-    const owner = described[1] + ".";
     if (described[0] === "enum") {
         if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
-        if (!described[2].includes(node.value)) {
-            _genoJsonFail(path, "expected " + _genoJsonOneOf(described[2])
+        if (!described[1].includes(node.value)) {
+            _genoJsonFail(path, "expected " + _genoJsonOneOf(described[1])
                 + ", got " + _GENO_JSON.stringify(node.value));
         }
-        return _GENO_JSON_CTORS.get(owner + node.value)();
+        return _GENO_JSON_CTORS.get(shape[2] + "." + node.value)();
     }
     if (tag !== "JsonObject") _genoJsonExpected(path, "object", tag);
     const entries = _genoJsonObject(node);
     if (described[0] === "record") {
-        return _GENO_JSON_CTORS.get(owner + described[2])(
-            ..._genoJsonFields(entries, described[3], types, path));
+        return _GENO_JSON_CTORS.get(shape[2] + "." + described[1])(
+            ..._genoJsonFields(entries, described[2], types, path, visit, depth));
     }
     if (!entries.has("type")) _genoJsonFail(path, 'missing field "type"');
     const chosen = entries.get("type");
     const typePath = [path, ".type"];
     if (chosen._tag !== "JsonString") _genoJsonExpected(typePath, "String", chosen._tag);
-    for (const [constructor, fields] of described[2]) {
+    for (const [constructor, fields] of described[1]) {
         if (constructor === chosen.value) {
-            return _GENO_JSON_CTORS.get(owner + constructor)(
-                ..._genoJsonFields(entries, fields, types, path));
+            return _GENO_JSON_CTORS.get(shape[2] + "." + constructor)(
+                ..._genoJsonFields(entries, fields, types, path, visit, depth));
         }
     }
     _genoJsonFail(typePath, "expected "
-        + _genoJsonOneOf(described[2].map((variant) => variant[0]))
+        + _genoJsonOneOf(described[1].map((variant) => variant[0]))
         + ", got " + _GENO_JSON.stringify(chosen.value));
 }
-function _genoJsonTo(value, shape, types, depth) {
+function _genoJsonContainerDepth(depth) {
+    if (depth >= _MAX_JSON_NESTING_DEPTH) {
+        throw new Error("json_encode: value nested too deeply (max "
+            + _MAX_JSON_NESTING_DEPTH + ")");
+    }
+    return depth + 1;
+}
+function _genoJsonTextSize(text) {
+    // One or two UTF-16 code units per output character, before escapes.
+    return _GENO_MATH.ceil(text.length / 2);
+}
+function _genoJsonReserveValue(value, depth, reserve, pretty) {
+    const tag = value._tag;
+    if (tag === "JsonArray") {
+        depth = _genoJsonContainerDepth(depth);
+        reserve(2 + _GENO_MATH.max(0, value.items.length - 1));
+        for (const item of value.items) {
+            _genoJsonReserveValue(item, depth, reserve, pretty);
+        }
+    } else if (tag === "JsonObject") {
+        depth = _genoJsonContainerDepth(depth);
+        const entries = pretty ? new _GENO_MAP(value.entries) : value.entries;
+        const count = pretty ? entries.size : entries.length;
+        reserve(2 + _GENO_MATH.max(0, count - 1));
+        for (const [key, item] of entries) {
+            reserve(_genoJsonTextSize(key) + 3);
+            _genoJsonReserveValue(item, depth, reserve, pretty);
+        }
+    } else if (tag === "JsonString") {
+        reserve(_genoJsonTextSize(value.value) + 2);
+    } else if (tag === "JsonBool") {
+        reserve(value.value ? 4 : 5);
+    } else if (tag === "JsonNull") {
+        reserve(4);
+    } else {
+        reserve(1);
+    }
+}
+function _genoJsonTo(value, shape, types, depth, reserve, pretty) {
+    // Some wrappers do not add JSON nesting.
+    while (shape[0] === "option") {
+        if (value._tag === "None") {
+            reserve(4);
+            return JsonNull();
+        }
+        value = value.value;
+        shape = shape[1];
+    }
     const kind = shape[0];
-    if (kind === "json") return value;
-    if (kind === "string") return JsonString(value);
-    if (kind === "int") return JsonInt(value);
+    if (kind === "json") {
+        _genoJsonReserveValue(value, depth, reserve, pretty);
+        return value;
+    }
+    if (kind === "string") {
+        reserve(_genoJsonTextSize(value) + 2);
+        return JsonString(value);
+    }
+    if (kind === "int") {
+        reserve(1);
+        return JsonInt(value);
+    }
     if (kind === "float") {
+        reserve(1);
         if (!_GENO_NUMBER.isFinite(_GENO_NUMBER(value))) {
             throw new Error("json_encode: a Float must be finite");
         }
         return JsonFloat(_GENO_NUMBER(value));
     }
-    if (kind === "bool") return JsonBool(value);
-    if (kind === "unit") return JsonNull();
+    if (kind === "bool") {
+        reserve(value ? 4 : 5);
+        return JsonBool(value);
+    }
+    if (kind === "unit") {
+        reserve(4);
+        return JsonNull();
+    }
     if (kind === "unknown") throw new Error("json_encode: value is not of its declared type");
-    if (kind === "option") {
-        if (value._tag === "None") return JsonNull();
-        return _genoJsonTo(value.value, shape[1], types, depth);
-    }
-    if (depth >= _MAX_JSON_NESTING_DEPTH) {
-        throw new Error("json_encode: value nested too deeply (max "
-            + _MAX_JSON_NESTING_DEPTH + ")");
-    }
-    depth += 1;
+    if (kind !== "ref") depth = _genoJsonContainerDepth(depth);
     if (kind === "list" || kind === "array" || kind === "vec" || kind === "set") {
         if (kind === "array") value = array_to_list(value);
         else if (kind === "vec") value = vec_to_list(value);
         else if (kind === "set") value = set_to_list(value);
-        return JsonArray(value.map((item) => _genoJsonTo(item, shape[1], types, depth)));
+        reserve(2 + _GENO_MATH.max(0, value.length - 1));
+        return JsonArray(value.map((item) => _genoJsonTo(item, shape[1], types, depth, reserve, pretty)));
     }
     if (kind === "tuple") {
+        reserve(2 + _GENO_MATH.max(0, shape[1].length - 1));
         return JsonArray(value.map(
-            (item, index) => _genoJsonTo(item, shape[1][index], types, depth)));
+            (item, index) => _genoJsonTo(item, shape[1][index], types, depth, reserve, pretty)));
     }
     if (kind === "map") {
-        return JsonObject(map_entries(value).map(
-            ([key, item]) => [key, _genoJsonTo(item, shape[1], types, depth)]));
+        const pairs = map_entries(value);
+        reserve(2 + _GENO_MATH.max(0, pairs.length - 1));
+        return JsonObject(pairs.map(([key, item]) => {
+            reserve(_genoJsonTextSize(key) + 3);
+            return [key, _genoJsonTo(item, shape[1], types, depth, reserve, pretty)];
+        }));
     }
     if (kind === "result") {
         if (value._tag === "Ok") {
-            return JsonObject([["ok", _genoJsonTo(value.value, shape[1], types, depth)]]);
+            reserve(7);
+            return JsonObject([["ok", _genoJsonTo(value.value, shape[1], types, depth, reserve, pretty)]]);
         }
-        return JsonObject([["err", _genoJsonTo(value.error, shape[2], types, depth)]]);
+        reserve(8);
+        return JsonObject([["err", _genoJsonTo(value.error, shape[2], types, depth, reserve, pretty)]]);
     }
     const described = types.get(shape[1]);
     if (described[0] === "enum") {
-        if (!described[2].includes(value._tag)) {
+        if (!described[1].includes(value._tag)) {
             throw new Error("json_encode: value is not of its declared type");
         }
+        reserve(_genoJsonTextSize(value._tag) + 2);
         return JsonString(value._tag);
     }
-    const variants = described[0] === "record" ? [[described[2], described[3]]] : described[2];
+    depth = _genoJsonContainerDepth(depth);
+    const variants = described[0] === "record" ? [[described[1], described[2]]] : described[1];
     for (const [constructor, fields] of variants) {
         if (value._tag !== constructor) continue;
-        const entries = described[0] === "record" ? [] : [["type", JsonString(constructor)]];
+        let entries;
+        if (described[0] === "record") {
+            reserve(2 + _GENO_MATH.max(0, fields.length - 1));
+            entries = [];
+        } else {
+            reserve(2 + fields.length + 7 + _genoJsonTextSize(constructor) + 2);
+            entries = [["type", JsonString(constructor)]];
+        }
         for (const [name, fieldShape] of fields) {
-            entries.push([name, _genoJsonTo(value[name], fieldShape, types, depth)]);
+            reserve(_genoJsonTextSize(name) + 3);
+            entries.push([name, _genoJsonTo(value[name], fieldShape, types, depth, reserve, pretty)]);
         }
         return JsonObject(entries);
     }
     throw new Error("json_encode: value is not of its declared type");
+}
+function _genoJsonReserve(name) {
+    // Measure compact output as we walk, including each occurrence of a
+    // shared input value. Final serialization still checks the exact size.
+    let total = 0;
+    return (size) => {
+        total += size;
+        _checkStringResultSize(name, total);
+    };
+}
+function _genoJsonStringifyBounded(value, width, pretty, name) {
+    const reserve = _genoJsonReserve(name);
+    const pieces = [];
+    function append(text) {
+        let size = 0;
+        for (const _ of text) size += 1;
+        reserve(size);
+        pieces.push(text);
+    }
+    function appendString(raw) {
+        let size = 2; // Quotes.
+        for (const char of raw) {
+            const code = char.codePointAt(0);
+            if (char === '"' || char === "\\" || "\b\f\n\r\t".includes(char)) {
+                size += 2;
+            } else if (code < 0x20 || (code >= 0xd800 && code <= 0xdfff)) {
+                size += 6;
+            } else if (!pretty && code > 0x7f) {
+                size += code > 0xffff ? 12 : 6;
+            } else {
+                size += 1;
+            }
+        }
+        reserve(size);
+        pieces.push(pretty ? _GENO_JSON.stringify(raw) : _jsonStringLiteral(raw));
+    }
+    function write(node, depth) {
+        if (node._tag === "JsonString") {
+            appendString(node.value);
+            return;
+        }
+        const object = node._tag === "JsonObject";
+        if (!object && node._tag !== "JsonArray") {
+            append(_jsonValueToString(node, name));
+            return;
+        }
+        const items = object ? (pretty ? new _GENO_MAP(node.entries) : node.entries) : node.items;
+        append(object ? "{" : "[");
+        let hasItems = false;
+        for (const item of items) {
+            if (hasItems) append(",");
+            if (width) append("\n" + " ".repeat(width * (depth + 1)));
+            hasItems = true;
+            if (object) {
+                appendString(item[0]);
+                append(width ? ": " : ":");
+            }
+            write(object ? item[1] : item, depth + 1);
+        }
+        if (hasItems && width) append("\n" + " ".repeat(width * depth));
+        append(object ? "}" : "]");
+    }
+    _checkCollectionSize(value);
+    write(value, 0);
+    return pieces.join("");
 }
 function _genoJsonCodec(name, shape, types) {
     if (shape === undefined || shape === null) {
@@ -5003,8 +5144,18 @@ function json_decode(text, shape, types) {
     const known = _genoJsonCodec("json_decode", shape, types);
     const parsed = json_parse(text);
     if (parsed._tag !== "Ok") return parsed;
+    let extraValues = 0;
+    function visit(depth, extra) {
+        if (depth >= _MAX_JSON_DECODE_DEPTH) {
+            _genoJsonFail(null, "decoded value nested too deeply");
+        }
+        if (extra) {
+            extraValues += 1;
+            _checkCollectionKind("Decoded JSON", extraValues);
+        }
+    }
     try {
-        return Ok(_genoJsonFrom(parsed.value, shape, known, null));
+        return Ok(_genoJsonFrom(parsed.value, shape, known, null, visit, 0));
     } catch (error) {
         if (error instanceof _GenoJsonMismatch) return Err(error.message);
         throw error;
@@ -5012,11 +5163,19 @@ function json_decode(text, shape, types) {
 }
 function json_encode(value, shape, types) {
     const known = _genoJsonCodec("json_encode", shape, types);
-    return json_stringify(_genoJsonTo(value, shape, known, 0));
+    const reserve = _genoJsonReserve("json_encode");
+    const node = _genoJsonTo(value, shape, known, 0, reserve, false);
+    return _genoJsonStringifyBounded(node, 0, false, "json_encode");
 }
 function json_encode_pretty(value, indent, shape, types) {
     const known = _genoJsonCodec("json_encode_pretty", shape, types);
-    return json_stringify_pretty(_genoJsonTo(value, shape, known, 0), indent);
+    if (!_GENO_NUMBER.isInteger(indent)) {
+        throw new Error("json_stringify_pretty: indent must be Int");
+    }
+    const reserve = _genoJsonReserve("json_encode_pretty");
+    const node = _genoJsonTo(value, shape, known, 0, reserve, true);
+    const width = indent <= 0 ? 0 : _GENO_MATH.min(indent, 10);
+    return _genoJsonStringifyBounded(node, width, true, "json_encode_pretty");
 }
 
 function _genoValueToJs(value) {

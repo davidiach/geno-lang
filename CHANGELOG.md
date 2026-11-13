@@ -13,7 +13,7 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
-- Typed JSON, from Draft [proposal 0021](docs/proposals/0021-typed-json.md):
+- Typed JSON, from [proposal 0021](docs/proposals/0021-typed-json.md):
   `json_decode[T](text) -> Result[T, String]`, `json_encode(value)` and
   `json_encode_pretty(value, indent)` decode to and encode from a program's
   own types. The type is the one in brackets or the one the context gives

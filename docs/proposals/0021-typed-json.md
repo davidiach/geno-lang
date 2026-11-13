@@ -1,12 +1,21 @@
 # Proposal 0021: Typed JSON
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-13 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-13
 - Discussion: https://github.com/davidiach/geno-lang/issues/236
 - Supersedes: None
-- Review: None yet. No independent human technical review has taken place.
+- Review: The project lead accepted under the sole-maintainer provision in
+  `GOVERNANCE.md`, following automated review of #263 and reproduction of the
+  reported defects. No independent human technical review took place.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-13, the project lead directed that #263's blockers be fixed,
+covered by regression tests, and verified before merging after CI passes.
+This accepts typed JSON for the 0.7 development line subject to those checks.
 
 ## Summary
 
@@ -108,8 +117,9 @@ The three builtins can only be called directly. As a function value
 error (E332) that suggests a lambda.
 
 `json_decode[T]` is the only use of a bracketed type argument on a call.
-`json_decode` names a function, which cannot be indexed, so the bracket is
-unambiguous.
+The bracket is a type argument when the name resolves to the builtin.
+An index into a shadowing collection keeps its usual meaning, including when
+the indexed value is callable.
 
 ### 3. Types with no JSON form
 
@@ -121,10 +131,8 @@ is not data (in field 'run' of Handler)
 ```
 
 They are: function types, `Async`, a `Map` whose keys are not `String`,
-`MutableMap`, a type that is not known where the call is written (a type
-parameter of the enclosing generic function), and a type that contains
-itself at ever larger types (`type Nest[T] = Stop | More(next:
-Nest[List[T]])`), whose JSON form would never end.
+`MutableMap`, and a type that is not known where the call is written (a type
+parameter of the enclosing generic function).
 
 ### 4. Errors at run time
 
@@ -146,8 +154,8 @@ are identical on every backend.
 ### 5. How it is built
 
 The checker turns the call's type into a **codec** (`geno/json_shape.py`): a
-small description of the type's JSON form, with each user type described once
-and referred to by name so a recursive type is finite. The codec is the one
+small description of the type's JSON form, with each concrete user type
+described once and referenced by key. The codec is the one
 place the mapping is decided.
 
 Each backend passes the codec to its runtime, which walks a value and the
@@ -160,9 +168,9 @@ codec together:
 - The interpreter and compiled Python share one walk; JavaScript has its
   own, written to match message for message.
 - A compiled program that uses typed JSON registers each type's constructors
-  by the type's name and their own, so a type reached only through another
-  module's type can be built, and two types may each have a constructor of
-  one name. A program that does not use typed JSON emits none of this.
+  by defining module and type, so a type reached through another module can be
+  built even if its constructor's name is also used elsewhere. A program that
+  does not use typed JSON emits none of this.
 
 ## Backend And Target Parity
 
@@ -186,14 +194,16 @@ frozen conformance case is affected.
 ## Security And Resource Limits
 
 Pure: no capability and no effect. Decoding is bounded by `json_parse`'s
-nesting limit (128) and size limits, and the decoded value by the collection
-limits. Encoding stops with a runtime error at the same nesting depth, so a
-deeply recursive value cannot exhaust the host's stack, and its output is
-bounded as `json_stringify`'s is.
+nesting limit (128) and size limits. The typed decoder also bounds its own
+nesting and the extra values it creates for option wrappers or missing fields.
+Encoding stops with a runtime error at the same JSON nesting depth, so a
+deeply recursive value cannot exhaust the host's stack. The encoding walk
+checks a lower bound on output size before expanding shared or nested values.
+Serialization enforces the exact output bound. Codec construction is also
+bounded, and type expansions that exceed the checker budget receive E332.
 
-Decoding builds only the types the program declared, by constructor name
-from a table the program's own type definitions filled. JSON text cannot name
-a constructor outside the codec of the call.
+Decoding builds only the types the program declared. The codec specifies the
+defining type and the constructors that JSON text can select.
 
 ## Testing And Validation
 

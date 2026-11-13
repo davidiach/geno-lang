@@ -219,11 +219,6 @@ class Identifier(Expression):
     """Variable or function reference: x, foo"""
 
     name: str
-    # The type written in brackets after `json_decode`, as in
-    # `json_decode[User](text)` (proposal 0021).
-    _type_argument: "TypeAnnotation | None" = field(
-        default=None, init=False, repr=False, compare=False
-    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_identifier(self)
@@ -353,6 +348,9 @@ class FunctionCall(Expression):
 
     function: Expression
     arguments: list[CallArg]
+    # The type in `json_decode[User](text)` (proposal 0021). When brackets can
+    # also be an index, `function` keeps that reading until the name resolves.
+    _type_argument: TypeAnnotation | None = field(default=None, init=False, repr=False)
     _resolved_builtin_name: str | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -1051,6 +1049,9 @@ class TypeDef(Definition):
     type_params: list[str]
     variants: list[TypeVariant]
     exported: bool = False  # True when declared with `export type`
+    _json_constructor_scope: str = field(
+        default="", init=False, repr=False, compare=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_type_def(self)

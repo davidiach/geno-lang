@@ -1816,11 +1816,10 @@ class JSCompiler(BaseCompiler):
         for variant in defn.variants:
             self._compile_variant(variant, formatter_names[variant.name])
         if self._registers_json_constructors:
-            # `json_decode` builds values of this type by constructor name.
+            scope = defn._json_constructor_scope
             for variant in defn.variants:
                 self._writeln(
-                    f"_GENO_JSON_CTORS.set("
-                    f"{_json.dumps(defn.name + '.' + variant.name)}, "
+                    f"_GENO_JSON_CTORS.set({_json.dumps(scope + '.' + variant.name)}, "
                     f"{self._mangle_name(variant.name)});"
                 )
         for variant in defn.variants:

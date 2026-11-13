@@ -34,7 +34,7 @@ from .project_graph import ProjectGraph, ResolvedFile
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-_PARSE_CACHE_VERSION = 4  # bumped: cache entries include source content hash
+_PARSE_CACHE_VERSION = 5  # typed JSON adds bracketed call syntax to the AST
 _CACHE_ROOT_ENV = "GENO_CACHE_DIR"
 _DISABLE_CACHE_ENV = "GENO_DISABLE_DEP_GRAPH_CACHE"
 _CACHE_PICKLE_PROTOCOL = 3

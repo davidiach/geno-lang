@@ -25,24 +25,6 @@ _NODE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _constructor_fields(
-    types: Mapping[str, tuple],
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    """Each user constructor's field names, by type and constructor name."""
-    fields: dict[tuple[str, str], tuple[str, ...]] = {}
-    for described in types.values():
-        owner = described[1]
-        if described[0] == "enum":
-            for constructor in described[2]:
-                fields[(owner, constructor)] = ()
-        elif described[0] == "record":
-            fields[(owner, described[2])] = tuple(name for name, _ in described[3])
-        else:
-            for constructor, variant_fields in described[2]:
-                fields[(owner, constructor)] = tuple(n for n, _ in variant_fields)
-    return fields
-
-
 class InterpreterJsonOps:
     """The interpreter's values, for the shared typed-JSON walk.
 
@@ -50,11 +32,8 @@ class InterpreterJsonOps:
     collection limit.
     """
 
-    def __init__(
-        self, builtins: Mapping[str, Callable[..., Any]], types: Mapping[str, tuple]
-    ) -> None:
+    def __init__(self, builtins: Mapping[str, Callable[..., Any]]) -> None:
         self._builtins = builtins
-        self._fields = _constructor_fields(types)
 
     def tag(self, node: ConstructorValue) -> str:
         return node.constructor
@@ -92,14 +71,14 @@ class InterpreterJsonOps:
     def map(self, pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         return dict(pairs)
 
-    def make(self, owner: str, constructor: str, values: list[Any]) -> ConstructorValue:
+    def make(
+        self, scope: str, constructor: str, fields: tuple, values: list[Any]
+    ) -> ConstructorValue:
         return ConstructorValue(
-            constructor, dict(zip(self._fields[(owner, constructor)], values))
+            constructor, {name: value for (name, _), value in zip(fields, values)}
         )
 
-    def is_variant(
-        self, value: Any, constructor: str, owner: str | None = None
-    ) -> bool:
+    def is_variant(self, value: Any, constructor: str, scope: str = "") -> bool:
         return isinstance(value, ConstructorValue) and value.constructor == constructor
 
     def array_items(self, value: Any) -> list[Any]:
@@ -115,14 +94,23 @@ class InterpreterJsonOps:
         return list(value.items())
 
 
-def decode(builtins: Mapping[str, Callable[..., Any]], text: str, codec: JsonCodec):
+def decode(
+    builtins: Mapping[str, Callable[..., Any]],
+    text: str,
+    codec: JsonCodec,
+    *,
+    check_size: Callable[[int], None],
+    step: Callable[[], None],
+):
     """``json_decode(text)`` for the type *codec* describes."""
     return _runtime.json_decode(
         text,
         codec.shape,
         codec.types,
-        InterpreterJsonOps(builtins, codec.types),
+        InterpreterJsonOps(builtins),
         builtins["json_parse"],
+        check_size,
+        step,
     )
 
 
@@ -131,13 +119,22 @@ def encode(
     value: Any,
     codec: JsonCodec,
     indent: int | None = None,
+    *,
+    check_size: Callable[[int], None],
+    step: Callable[[], None],
 ) -> str:
     """``json_encode(value)``, or ``json_encode_pretty(value, indent)``."""
-    ops = InterpreterJsonOps(builtins, codec.types)
+    ops = InterpreterJsonOps(builtins)
     if indent is None:
         return str(
             _runtime.json_encode(
-                value, codec.shape, codec.types, ops, builtins["json_stringify"]
+                value,
+                codec.shape,
+                codec.types,
+                ops,
+                lambda node: builtins["json_stringify"](node, _keep_last=True),
+                check_size,
+                step,
             )
         )
     return str(
@@ -147,6 +144,10 @@ def encode(
             codec.shape,
             codec.types,
             ops,
-            builtins["json_stringify_pretty"],
+            lambda node, width: builtins["json_stringify_pretty"](
+                node, width, _keep_last=True
+            ),
+            check_size,
+            step,
         )
     )

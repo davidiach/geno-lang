@@ -2656,11 +2656,26 @@ class Interpreter:
         bound = {key: value.func for key, value in self._builtin_functions.items()}
         try:
             if name == "json_decode":
-                result = typed_json.decode(bound, arguments[0], expr._json_codec)
+                result = typed_json.decode(
+                    bound,
+                    arguments[0],
+                    expr._json_codec,
+                    check_size=lambda size: self._check_collection_size(
+                        "Decoded JSON", size, expr.location
+                    ),
+                    step=lambda: self._step(expr.location),
+                )
             else:
                 indent = arguments[1] if name == "json_encode_pretty" else None
                 result = typed_json.encode(
-                    bound, arguments[0], expr._json_codec, indent
+                    bound,
+                    arguments[0],
+                    expr._json_codec,
+                    indent,
+                    check_size=lambda size: self._check_collection_size(
+                        "String", size, expr.location
+                    ),
+                    step=lambda: self._step(expr.location),
                 )
         except (RuntimeError, SandboxError) as error:
             self._locate_builtin_failure(error, expr.location)

@@ -16,23 +16,16 @@ A shape is a tuple whose first item names its kind::
     ("result", ok, err)
     ("map", value)                  # Map[String, V]
     ("unknown",)                    # encoding only: a type no value can have
-    ("ref", key)                    # a user type, described in ``types``
+    ("ref", key, scope)             # a user type, described in ``types``
 
 and ``types`` maps each user type's key (its written form, ``Box[Int]``) to
 one of::
 
-    ("record", type, constructor, ((field, shape), ...))  # one constructor with fields
-    ("enum", type, (constructor, ...))                     # every constructor nullary
-    ("union", type, ((constructor, ((field, shape), ...)), ...))
-
-where ``type`` is the type's name without its arguments: a compiled runtime
-finds a constructor by its type's name and its own, since two types may each
-have a constructor of one name.
+    ("record", constructor, ((field, shape), ...))   # one constructor with fields
+    ("enum", (constructor, ...))                      # every constructor nullary
+    ("union", ((constructor, ((field, shape), ...)), ...))
 
 A user type refers to itself through its key, so a recursive type is finite.
-A type that contains itself at ever larger arguments
-(``type Nest[T] = Stop | More(next: Nest[List[T]])``) has no finite codec and
-is rejected.
 """
 
 from __future__ import annotations
@@ -65,6 +58,7 @@ from .types import (
     UnitType,
     UserType,
     VecType,
+    type_children,
 )
 
 Shape = tuple[Any, ...]
@@ -72,12 +66,14 @@ Shape = tuple[Any, ...]
 # The key a multi-constructor type's object names its constructor under.
 # `type` is a Geno keyword, so no field can have this name.
 DISCRIMINATOR = "type"
-# How many instantiations of one generic type may be open at once while its
-# codec is built. A regular recursive type opens one; a type that nests
-# itself at ever larger arguments would open them without end.
-MAX_OPEN_INSTANTIATIONS = 8
 RESULT_OK = "ok"
 RESULT_ERR = "err"
+
+# Keep expanded generic instantiations and serialized codec literals bounded.
+# Even before an ADT can be looked up, its structural key may repeat part of
+# its type arguments many times (for example, Nest[(T, T)]).
+_MAX_CODEC_NODES = 4096
+_MAX_CODEC_DEPTH = 128
 
 
 class JsonTypeError(Exception):
@@ -125,13 +121,24 @@ class _Builder:
         self.type_defs = type_defs
         self.encoding = encoding
         self.types: dict[str, Shape] = {}
-        self.open: dict[str, int] = {}
+        self.depth = 0
+        self.nodes = 0
 
     def fail(self, type_: Type, reason: str, where: tuple[str, ...]) -> JsonTypeError:
         inside = f" (in {' of '.join(reversed(where))})" if where else ""
         return JsonTypeError(f"{type_} has no JSON form: {reason}{inside}")
 
     def shape(self, type_: Type, where: tuple[str, ...]) -> Shape:
+        self.depth += 1
+        self.nodes += 1
+        if self.depth > _MAX_CODEC_DEPTH or self.nodes > _MAX_CODEC_NODES:
+            raise JsonTypeError("its type is too complex to describe")
+        try:
+            return self._shape(type_, where)
+        finally:
+            self.depth -= 1
+
+    def _shape(self, type_: Type, where: tuple[str, ...]) -> Shape:
         if isinstance(type_, IntType):
             return ("int",)
         if isinstance(type_, FloatType):
@@ -170,6 +177,7 @@ class _Builder:
                 )
             return ("map", self.shape(type_.value_type, where))
         if isinstance(type_, UserType):
+            self.check_type_size(type_)
             return self.user_type(type_, where)
         if isinstance(type_, FuncType):
             raise self.fail(type_, "a function is not data", where)
@@ -189,54 +197,54 @@ class _Builder:
             raise self.fail(type_, "its type is not known", where)
         raise self.fail(type_, "it is not a data type", where)
 
+    def check_type_size(self, type_: Type) -> None:
+        """Count expanded type nodes before constructing a printable key."""
+        pending = [(type_, 1)]
+        while pending:
+            current, depth = pending.pop()
+            self.nodes += 1
+            if depth > _MAX_CODEC_DEPTH or self.nodes > _MAX_CODEC_NODES:
+                raise JsonTypeError("its type is too complex to describe")
+            parts = type_children(current)
+            if parts is not None:
+                pending.extend((child, depth + 1) for child in parts[0])
+
     def user_type(self, type_: UserType, where: tuple[str, ...]) -> Shape:
         if type_.name == "JsonValue":
             return ("json",)
-        key = str(type_)
-        if key in self.types:
-            return ("ref", key)
         info = self.type_defs.get(type_.name)
         if info is None or not info.variants:
             raise self.fail(type_, "it is not a data type", where)
+        key = str(type_)
+        reference = ("ref", key, info.json_constructor_scope)
+        if key in self.types:
+            return reference
         bindings = dict(zip(info.type_params, type_.type_args))
         if len(type_.type_args) != len(info.type_params):
             raise self.fail(type_, "its type arguments are not known", where)
-        if self.open.get(type_.name, 0) >= MAX_OPEN_INSTANTIATIONS:
-            raise JsonTypeError(
-                f"{type_.name} has no JSON form: it contains itself at ever "
-                "larger types, so its JSON form would never end"
-            )
         # Reserve the key first: a recursive field refers back to it.
         self.types[key] = ()
-        self.open[type_.name] = self.open.get(type_.name, 0) + 1
         variants = []
-        try:
-            for constructor, fields in info.variants.items():
-                described = []
-                for name, field_type in fields:
-                    described.append(
-                        (
-                            name,
-                            self.shape(
-                                _substitute(field_type, bindings),
-                                (*where, f"field '{name}' of {constructor}"),
-                            ),
-                        )
+        for constructor, fields in info.variants.items():
+            described = []
+            for name, field_type in fields:
+                described.append(
+                    (
+                        name,
+                        self.shape(
+                            _substitute(field_type, bindings),
+                            (*where, f"field '{name}' of {constructor}"),
+                        ),
                     )
-                variants.append((constructor, tuple(described)))
-        finally:
-            self.open[type_.name] -= 1
+                )
+            variants.append((constructor, tuple(described)))
         if all(not fields for _, fields in variants):
-            self.types[key] = (
-                "enum",
-                type_.name,
-                tuple(name for name, _ in variants),
-            )
+            self.types[key] = ("enum", tuple(name for name, _ in variants))
         elif len(variants) == 1:
-            self.types[key] = ("record", type_.name, variants[0][0], variants[0][1])
+            self.types[key] = ("record", variants[0][0], variants[0][1])
         else:
-            self.types[key] = ("union", type_.name, tuple(variants))
-        return ("ref", key)
+            self.types[key] = ("union", tuple(variants))
+        return reference
 
 
 def build_codec(
@@ -248,5 +256,6 @@ def build_codec(
     of an empty list literal) is allowed: no value has that type.
     """
     builder = _Builder(type_defs, encoding)
+    builder.check_type_size(type_)
     shape = builder.shape(type_, ())
     return JsonCodec(shape, builder.types)

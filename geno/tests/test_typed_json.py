@@ -487,8 +487,79 @@ def test_an_ordinary_program_registers_no_constructors():
 
     assert "_GENO_JSON_CTORS[" not in generated(compile_to_python(plain))
     assert "_GENO_JSON_CTORS.set(" not in compile_to_js(plain)
-    assert "_GENO_JSON_CTORS[('Color', 'Red')]" in generated(compile_to_python(ENCODES))
-    assert '_GENO_JSON_CTORS.set("Color.Red"' in compile_to_js(ENCODES)
+    assert "_GENO_JSON_CTORS[('.Color', 'Red')]" in generated(
+        compile_to_python(ENCODES)
+    )
+    assert '_GENO_JSON_CTORS.set(".Color.Red"' in compile_to_js(ENCODES)
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        _interpreter_project_output,
+        _compiled_python_project_output,
+        pytest.param(_compiled_js_project_output, marks=needs_node),
+    ],
+)
+def test_typed_json_resolves_constructors_in_their_defining_modules(backend):
+    left = r"""
+type Value = Shared(label: String)
+
+export func load() -> String
+    example () -> "left"
+    match json_decode[Value]("{\"label\":\"left\"}") with
+        | Ok(Shared(label)) -> return label
+        | Err(_) -> return "invalid"
+    end match
+end func
+"""
+    right = r"""
+type Value = Shared(first: Int, second: Int)
+
+export func load() -> Int
+    example () -> 3
+    match json_decode[Value]("{\"first\":1,\"second\":2}") with
+        | Ok(Shared(first, second)) -> return first + second
+        | Err(_) -> return 0
+    end match
+end func
+"""
+    main = """
+import Left as L
+import Right as R
+
+func main() -> Unit with io
+    print(L.load())
+    print(R.load())
+end func
+"""
+    assert backend(main, {"Left": left, "Right": right}) == "left\n3\n"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_pretty_encoding_mixed_arguments_preserves_evaluation_order(backend):
+    source = """
+func get_values() -> List[Int] with io
+    example () -> [1, 2]
+    print("value")
+    return [1, 2]
+end func
+
+func get_indent() -> Int with io
+    example () -> 2
+    print("indent")
+    return 2
+end func
+
+func main() -> Unit with io
+    print(json_encode_pretty(value: get_values(), get_indent()))
+    print(json_encode_pretty(indent: get_indent(), get_values()))
+end func
+"""
+    assert (
+        backend(source)
+        == "value\nindent\n[\n  1,\n  2\n]\nindent\nvalue\n[\n  1,\n  2\n]\n"
+    )
 
 
 @needs_node
@@ -626,10 +697,7 @@ def test_a_type_that_nests_itself_at_ever_larger_types_is_rejected():
     [(code, message)] = _errors(source)
 
     assert code == "E332"
-    assert message == (
-        "json_encode cannot encode this type: Nest has no JSON form: it "
-        "contains itself at ever larger types, so its JSON form would never end"
-    )
+    assert "too complex to describe" in message
 
 
 def test_a_regular_recursive_generic_type_still_has_a_codec():

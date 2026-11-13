@@ -42,6 +42,7 @@ from .ast_nodes import (
     Statement,
     StringLiteral,
     TupleExpr,
+    TypeAnnotation,
     TypedHole,
     TypeIdentifier,
     UnaryOp,
@@ -358,51 +359,21 @@ class ExpressionParserMixin(ParserBase):
 
     def _parse_postfix_chain(self, expr: Expression) -> Expression:
         """Apply call, index, field and `?` postfixes to ``expr``."""
-        tokens = self.tokens
-        tokens_len = self._tokens_len
         while True:
             current_type = self._current_type
             if current_type is TokenType.LPAREN:
-                self._advance()
-                args: list[CallArg] = []
-                if self._current_type is not TokenType.RPAREN:
-                    while True:
-                        next_pos = self.pos + 1
-                        if (
-                            self._current_type is TokenType.IDENTIFIER
-                            and next_pos < tokens_len
-                            and tokens[next_pos].type is TokenType.COLON
-                        ):
-                            name = self._advance().value
-                            self._expect(TokenType.COLON)
-                            value = self._parse_expression()
-                            args.append(CallArg(value=value, name=name))
-                        else:
-                            args.append(CallArg(value=self._parse_expression()))
-                        if self._current_type is not TokenType.COMMA:
-                            break
-                        self._advance()
-                self._expect(TokenType.RPAREN)
-                expr = FunctionCall(
-                    location=expr.location, function=expr, arguments=args
-                )
+                expr = self._parse_function_call(expr)
             elif current_type is TokenType.LBRACKET:
+                bracket = self._advance()
                 if (
                     type(expr) is Identifier
                     and expr.name == "json_decode"
-                    and expr._type_argument is None
-                    and self.pos + 1 < tokens_len
-                    and tokens[self.pos + 1].type
-                    in (TokenType.TYPE_IDENTIFIER, TokenType.LPAREN)
+                    and self._check(TokenType.TYPE_IDENTIFIER, TokenType.LPAREN)
                 ):
-                    # `json_decode[User](text)`: the type to decode to. The
-                    # builtin is a function, which cannot be indexed, so the
-                    # bracket can only be its type argument (proposal 0021).
-                    self._advance()
-                    expr._type_argument = self._parse_type()
-                    self._expect(TokenType.RBRACKET)
-                    continue
-                bracket = self._advance()
+                    typed_call = self._try_parse_typed_json_call(expr)
+                    if typed_call is not None:
+                        expr = typed_call
+                        continue
                 if self._current_type is TokenType.COLON:
                     expr = self._parse_slice(expr, None, bracket.location)
                     continue
@@ -445,6 +416,64 @@ class ExpressionParserMixin(ParserBase):
             else:
                 break
         return expr
+
+    def _parse_function_call(
+        self, callee: Expression, type_argument: TypeAnnotation | None = None
+    ) -> FunctionCall:
+        self._advance()  # consume '('
+        args: list[CallArg] = []
+        if self._current_type is not TokenType.RPAREN:
+            while True:
+                if (
+                    self._current_type is TokenType.IDENTIFIER
+                    and self._peek(1).type is TokenType.COLON
+                ):
+                    name = self._advance().value
+                    self._expect(TokenType.COLON)
+                    value = self._parse_expression()
+                    args.append(CallArg(value=value, name=name))
+                else:
+                    args.append(CallArg(value=self._parse_expression()))
+                if self._current_type is not TokenType.COMMA:
+                    break
+                self._advance()
+        self._expect(TokenType.RPAREN)
+        call = FunctionCall(location=callee.location, function=callee, arguments=args)
+        call._type_argument = type_argument
+        return call
+
+    def _try_parse_typed_json_call(self, expr: Identifier) -> FunctionCall | None:
+        """Read brackets as a type only when they are followed by a call."""
+        start = self.pos
+        try:
+            annotation = self._parse_type()
+            self._expect(TokenType.RBRACKET)
+        except ParseError:
+            self._restore_postfix_position(start)
+            return None
+        if self._current_type is not TokenType.LPAREN:
+            self._restore_postfix_position(start)
+            return None
+
+        # A constructor or tuple of constructors can also be a map key.
+        # Preserve the index for the checker if the name is shadowed.
+        after_brackets = self.pos
+        self._restore_postfix_position(start)
+        callee: Expression = expr
+        try:
+            index = self._parse_expression()
+            if self.pos == after_brackets - 1:
+                callee = IndexAccess(location=expr.location, target=expr, index=index)
+        except ParseError:
+            pass  # Only the type reading is valid.
+        finally:
+            self._restore_postfix_position(after_brackets)
+        return self._parse_function_call(callee, annotation)
+
+    def _restore_postfix_position(self, pos: int) -> None:
+        self.pos = pos
+        self._current_token = self.tokens[pos]
+        self._current_type = self._current_token.type
 
     def _parse_slice(
         self,

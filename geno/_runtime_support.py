@@ -3472,7 +3472,7 @@ def _python_to_json_value(obj):
     raise RuntimeError(f"json_parse: unsupported JSON value type: {type(obj).__name__}")
 
 
-def _json_value_to_python(value):
+def _json_value_to_python(value, *, keep_last: bool = False):
     """Convert a compiled JsonValue back to a Python object for json.dumps."""
     if isinstance(value, JsonNull):
         return None
@@ -3487,9 +3487,12 @@ def _json_value_to_python(value):
     if isinstance(value, JsonString):
         return value.value
     if isinstance(value, JsonArray):
-        return [_json_value_to_python(item) for item in value.items]
+        return [
+            _json_value_to_python(item, keep_last=keep_last) for item in value.items
+        ]
     if isinstance(value, JsonObject):
-        return {k: _json_value_to_python(v) for k, v in value.entries}
+        entries = dict(value.entries).items() if keep_last else value.entries
+        return {k: _json_value_to_python(v, keep_last=keep_last) for k, v in entries}
     raise RuntimeError(
         f"json_stringify: expected JsonValue, got {type(value).__name__}"
     )
@@ -3635,14 +3638,14 @@ def json_parse(text: str):
     return _check_collection_size(Ok(value))
 
 
-def json_stringify(value) -> str:
+def json_stringify(value, _keep_last: bool = False) -> str:
     """Convert a JsonValue to a JSON string."""
     _check_collection_size(value)
-    obj = _json_value_to_python(value)
+    obj = _json_value_to_python(value, keep_last=_keep_last)
     return _json_dumps_under_limit("json_stringify", obj)
 
 
-def json_stringify_pretty(value, indent) -> str:
+def json_stringify_pretty(value, indent, _keep_last: bool = False) -> str:
     """Pretty-print a JsonValue. ``indent <= 0`` returns compact form.
 
     Indents above 10 print as 10, matching JavaScript's JSON.stringify.
@@ -3653,7 +3656,7 @@ def json_stringify_pretty(value, indent) -> str:
             f"json_stringify_pretty: indent must be Int, got {type(indent).__name__}"
         )
     _check_collection_size(value)
-    obj = _json_value_to_python(value)
+    obj = _json_value_to_python(value, keep_last=_keep_last)
     return _json_dumps_under_limit(
         "json_stringify_pretty",
         obj,
@@ -3675,19 +3678,16 @@ def json_stringify_pretty(value, indent) -> str:
 # depends on how a value is represented goes through an ops object.
 # -----------------------------------------------------------------------------
 
-# (type name, constructor name) -> class, for the user types of a program
-# that uses typed JSON (a compiled type definition registers its constructors
-# here) and the built-in record types. The type's name is part of the key
-# because two types may each have a constructor of one name.
+# (Defining type scope, constructor name) -> runtime class.
 _GENO_JSON_CTORS: dict = {
-    ("HttpResponse", "HttpResponse"): HttpResponse,
-    ("HttpRequest", "HttpRequest"): HttpRequest,
-    ("ProcessResult", "ProcessResult"): ProcessResult,
-    ("FileKind", "FileKindFile"): FileKindFile,
-    ("FileKind", "FileKindDirectory"): FileKindDirectory,
-    ("FileKind", "FileKindSymlink"): FileKindSymlink,
-    ("FileKind", "FileKindOther"): FileKindOther,
-    ("FileMetadata", "FileMetadata"): FileMetadata,
+    ("", "HttpResponse"): HttpResponse,
+    ("", "HttpRequest"): HttpRequest,
+    ("", "ProcessResult"): ProcessResult,
+    ("", "FileKindFile"): FileKindFile,
+    ("", "FileKindDirectory"): FileKindDirectory,
+    ("", "FileKindSymlink"): FileKindSymlink,
+    ("", "FileKindOther"): FileKindOther,
+    ("", "FileMetadata"): FileMetadata,
 }
 _GENO_JSON_KINDS = {
     "JsonString": "String",
@@ -3743,15 +3743,16 @@ class _GenoJsonOps:
     def map(self, pairs: Any) -> Any:
         return _map_literal(pairs)
 
-    def make(self, owner: Any, constructor: Any, values: Any) -> Any:
-        return _GENO_JSON_CTORS[(owner, constructor)](*values)
+    def make(self, scope: Any, constructor: Any, fields: Any, values: Any) -> Any:
+        return _GENO_JSON_CTORS[scope, constructor](*values)
 
-    def is_variant(self, value: Any, constructor: Any, owner: Any = None) -> Any:
-        if owner is not None:
-            return isinstance(value, _GENO_JSON_CTORS[(owner, constructor)])
+    def is_variant(self, value: Any, constructor: Any, scope: Any = "") -> Any:
         if constructor == "None":
             return isinstance(value, _None)
-        return isinstance(value, _GENO_JSON_BUILTIN_VARIANTS[constructor])
+        known = _GENO_JSON_BUILTIN_VARIANTS.get(constructor)
+        if known is None:
+            known = _GENO_JSON_CTORS[scope, constructor]
+        return isinstance(value, known)
 
     def array_items(self, value: Any) -> Any:
         return array_to_list(value)
@@ -3820,27 +3821,53 @@ def _geno_json_object(node: Any, ops: Any) -> Any:
     return entries
 
 
+_MAX_JSON_DECODE_DEPTH = 320
+
+
 def _geno_json_fields(
-    entries: Any, fields: Any, types: Any, path: Any, ops: Any
+    entries: Any,
+    fields: Any,
+    types: Any,
+    path: Any,
+    ops: Any,
+    visit: Any,
+    depth: int,
 ) -> Any:
     values = []
     for name, shape in fields:
         if name in entries:
             values.append(
                 _geno_json_from(
-                    entries[name], shape, types, (path, _geno_json_key(name)), ops
+                    entries[name],
+                    shape,
+                    types,
+                    (path, _geno_json_key(name)),
+                    ops,
+                    visit,
+                    depth,
                 )
             )
         elif shape[0] == "option":
             # An absent field is an absent value.
+            visit(depth, True)
             values.append(ops.none())
         else:
             _geno_json_fail(path, "missing field " + _geno_json_quote(name))
     return values
 
 
-def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> Any:
+def _geno_json_from(
+    node: Any,
+    shape: Any,
+    types: Any,
+    path: Any,
+    ops: Any,
+    visit: Any,
+    depth: int,
+) -> Any:
     """The value of the type *shape* describes that the JsonValue *node* is."""
+    visit(depth, False)
+    depth += 1
     kind = shape[0]
     tag = ops.tag(node)
     if kind == "json":
@@ -3873,12 +3900,15 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
     if kind == "option":
         if tag == "JsonNull":
             return ops.none()
-        return ops.some(_geno_json_from(node, shape[1], types, path, ops))
+        visit(depth, True)
+        return ops.some(_geno_json_from(node, shape[1], types, path, ops, visit, depth))
     if kind in ("list", "array", "vec", "set"):
         if tag != "JsonArray":
             _geno_json_expected(path, "array", tag)
         items = [
-            _geno_json_from(item, shape[1], types, (path, "[" + str(index) + "]"), ops)
+            _geno_json_from(
+                item, shape[1], types, (path, "[" + str(index) + "]"), ops, visit, depth
+            )
             for index, item in enumerate(ops.get(node, "items"))
         ]
         if kind == "list":
@@ -3902,7 +3932,13 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
             )
         return tuple(
             _geno_json_from(
-                item, item_shape, types, (path, "[" + str(index) + "]"), ops
+                item,
+                item_shape,
+                types,
+                (path, "[" + str(index) + "]"),
+                ops,
+                visit,
+                depth,
             )
             for index, (item, item_shape) in enumerate(zip(items, shape[1]))
         )
@@ -3914,7 +3950,13 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
                 (
                     key,
                     _geno_json_from(
-                        value, shape[1], types, (path, _geno_json_key(key)), ops
+                        value,
+                        shape[1],
+                        types,
+                        (path, _geno_json_key(key)),
+                        ops,
+                        visit,
+                        depth,
                     ),
                 )
                 for key, value in _geno_json_object(node, ops).items()
@@ -3926,34 +3968,38 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
             _geno_json_fail(path, 'expected an object with "ok" or "err"')
         if "ok" in entries:
             return ops.ok(
-                _geno_json_from(entries["ok"], shape[1], types, (path, ".ok"), ops)
+                _geno_json_from(
+                    entries["ok"], shape[1], types, (path, ".ok"), ops, visit, depth
+                )
             )
         return ops.err(
-            _geno_json_from(entries["err"], shape[2], types, (path, ".err"), ops)
+            _geno_json_from(
+                entries["err"], shape[2], types, (path, ".err"), ops, visit, depth
+            )
         )
     described = types[shape[1]]
-    owner = described[1]
     if described[0] == "enum":
         if tag != "JsonString":
             _geno_json_expected(path, "String", tag)
         name = ops.get(node, "value")
-        if name not in described[2]:
+        if name not in described[1]:
             _geno_json_fail(
                 path,
                 "expected "
-                + _geno_json_one_of(described[2])
+                + _geno_json_one_of(described[1])
                 + ", got "
                 + _geno_json_quote(name),
             )
-        return ops.make(owner, name, [])
+        return ops.make(shape[2], name, (), [])
     if tag != "JsonObject":
         _geno_json_expected(path, "object", tag)
     entries = _geno_json_object(node, ops)
     if described[0] == "record":
         return ops.make(
-            owner,
+            shape[2],
+            described[1],
             described[2],
-            _geno_json_fields(entries, described[3], types, path, ops),
+            _geno_json_fields(entries, described[2], types, path, ops, visit, depth),
         )
     if "type" not in entries:
         _geno_json_fail(path, 'missing field "type"')
@@ -3962,53 +4008,99 @@ def _geno_json_from(node: Any, shape: Any, types: Any, path: Any, ops: Any) -> A
     if ops.tag(chosen) != "JsonString":
         _geno_json_expected(type_path, "String", ops.tag(chosen))
     name = ops.get(chosen, "value")
-    for constructor, fields in described[2]:
+    for constructor, fields in described[1]:
         if constructor == name:
             return ops.make(
-                owner,
+                shape[2],
                 constructor,
-                _geno_json_fields(entries, fields, types, path, ops),
+                fields,
+                _geno_json_fields(entries, fields, types, path, ops, visit, depth),
             )
     _geno_json_fail(
         type_path,
         "expected "
-        + _geno_json_one_of([constructor for constructor, _ in described[2]])
+        + _geno_json_one_of([constructor for constructor, _ in described[1]])
         + ", got "
         + _geno_json_quote(name),
     )
 
 
-def _geno_json_to(value: Any, shape: Any, types: Any, depth: Any, ops: Any) -> Any:
-    """The JsonValue of *value*, a value of the type *shape* describes."""
-    kind = shape[0]
-    if kind == "json":
-        return value
-    if kind == "string":
-        return ops.node("JsonString", value)
-    if kind == "int":
-        return ops.node("JsonInt", value)
-    if kind == "float":
-        number = float(value)
-        if number != number or number in (float("inf"), float("-inf")):
-            raise RuntimeError("json_encode: a Float must be finite")
-        return ops.node("JsonFloat", number)
-    if kind == "bool":
-        return ops.node("JsonBool", value)
-    if kind == "unit":
-        return ops.node("JsonNull")
-    if kind == "unknown":
-        raise RuntimeError("json_encode: value is not of its declared type")
-    if kind == "option":
-        if ops.is_variant(value, "None"):
-            return ops.node("JsonNull")
-        return _geno_json_to(ops.get(value, "value"), shape[1], types, depth, ops)
+def _geno_json_container_depth(depth: int) -> int:
     if depth >= _MAX_JSON_NESTING_DEPTH:
         raise RuntimeError(
             "json_encode: value nested too deeply (max "
             + str(_MAX_JSON_NESTING_DEPTH)
             + ")"
         )
-    depth += 1
+    return depth + 1
+
+
+def _geno_json_reserve_value(value: Any, depth: int, ops: Any, reserve: Any) -> None:
+    """Bound a raw JsonValue, whose children have no separate codec shapes."""
+    tag = ops.tag(value)
+    if tag == "JsonArray":
+        depth = _geno_json_container_depth(depth)
+        items = ops.get(value, "items")
+        reserve(2 + max(0, len(items) - 1))
+        for item in items:
+            _geno_json_reserve_value(item, depth, ops, reserve)
+    elif tag == "JsonObject":
+        depth = _geno_json_container_depth(depth)
+        entries = ops.get(value, "entries")
+        last_values = dict(entries)
+        reserve(2 + max(0, len(last_values) - 1))
+        for key, item in last_values.items():
+            reserve(len(key) + 3)
+            _geno_json_reserve_value(item, depth, ops, reserve)
+    elif tag == "JsonString":
+        reserve(len(ops.get(value, "value")) + 2)
+    elif tag == "JsonBool":
+        reserve(4 if ops.get(value, "value") else 5)
+    elif tag == "JsonNull":
+        reserve(4)
+    else:
+        reserve(1)
+
+
+def _geno_json_to(
+    value: Any, shape: Any, types: Any, depth: Any, ops: Any, reserve: Any
+) -> Any:
+    """The JsonValue of *value*, a value of the type *shape* describes."""
+    # Some wrappers do not add JSON nesting. Unwrap them without adding
+    # Python frames, including when a recursive field has several wrappers.
+    while shape[0] == "option":
+        if ops.is_variant(value, "None"):
+            reserve(4)
+            return ops.node("JsonNull")
+        reserve(0)
+        value = ops.get(value, "value")
+        shape = shape[1]
+    kind = shape[0]
+    if kind == "json":
+        _geno_json_reserve_value(value, depth, ops, reserve)
+        return value
+    if kind == "string":
+        reserve(len(value) + 2)
+        return ops.node("JsonString", value)
+    if kind == "int":
+        reserve(1)
+        return ops.node("JsonInt", value)
+    if kind == "float":
+        reserve(1)
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise RuntimeError("json_encode: a Float must be finite")
+        return ops.node("JsonFloat", number)
+    if kind == "bool":
+        reserve(4 if value else 5)
+        return ops.node("JsonBool", value)
+    if kind == "unit":
+        reserve(4)
+        return ops.node("JsonNull")
+    if kind == "unknown":
+        raise RuntimeError("json_encode: value is not of its declared type")
+    if kind != "ref":
+        depth = _geno_json_container_depth(depth)
     if kind in ("list", "array", "vec", "set"):
         if kind == "array":
             value = ops.array_items(value)
@@ -4016,59 +4108,101 @@ def _geno_json_to(value: Any, shape: Any, types: Any, depth: Any, ops: Any) -> A
             value = ops.vec_items(value)
         elif kind == "set":
             value = ops.set_items(value)
-        return ops.node(
-            "JsonArray",
-            [_geno_json_to(item, shape[1], types, depth, ops) for item in value],
-        )
-    if kind == "tuple":
+        reserve(2 + max(0, len(value) - 1))
         return ops.node(
             "JsonArray",
             [
-                _geno_json_to(item, item_shape, types, depth, ops)
+                _geno_json_to(item, shape[1], types, depth, ops, reserve)
+                for item in value
+            ],
+        )
+    if kind == "tuple":
+        reserve(2 + max(0, len(shape[1]) - 1))
+        return ops.node(
+            "JsonArray",
+            [
+                _geno_json_to(item, item_shape, types, depth, ops, reserve)
                 for item, item_shape in zip(value, shape[1])
             ],
         )
     if kind == "map":
-        return ops.node(
-            "JsonObject",
-            [
-                (key, _geno_json_to(item, shape[1], types, depth, ops))
-                for key, item in ops.map_pairs(value)
-            ],
-        )
+        pairs = ops.map_pairs(value)
+        reserve(2 + max(0, len(pairs) - 1))
+        map_entries = []
+        for key, item in pairs:
+            reserve(len(key) + 3)
+            map_entries.append(
+                (key, _geno_json_to(item, shape[1], types, depth, ops, reserve))
+            )
+        return ops.node("JsonObject", map_entries)
     if kind == "result":
         if ops.is_variant(value, "Ok"):
-            inner = _geno_json_to(ops.get(value, "value"), shape[1], types, depth, ops)
+            reserve(7)  # Object brackets, "ok", and a colon.
+            inner = _geno_json_to(
+                ops.get(value, "value"), shape[1], types, depth, ops, reserve
+            )
             return ops.node("JsonObject", [("ok", inner)])
-        inner = _geno_json_to(ops.get(value, "error"), shape[2], types, depth, ops)
+        reserve(8)
+        inner = _geno_json_to(
+            ops.get(value, "error"), shape[2], types, depth, ops, reserve
+        )
         return ops.node("JsonObject", [("err", inner)])
     described = types[shape[1]]
-    owner = described[1]
     if described[0] == "enum":
-        for constructor in described[2]:
-            if ops.is_variant(value, constructor, owner):
+        for constructor in described[1]:
+            if ops.is_variant(value, constructor, shape[2]):
+                reserve(len(constructor) + 2)
                 return ops.node("JsonString", constructor)
         raise RuntimeError("json_encode: value is not of its declared type")
+    depth = _geno_json_container_depth(depth)
     if described[0] == "record":
-        variants = ((described[2], described[3]),)
+        variants = ((described[1], described[2]),)
         entries: Any = []
     else:
-        variants = described[2]
+        variants = described[1]
         entries = None
     for constructor, fields in variants:
-        if not ops.is_variant(value, constructor, owner):
+        if not ops.is_variant(value, constructor, shape[2]):
             continue
         if entries is None:
+            reserve(2 + len(fields) + 7 + len(constructor) + 2)
             entries = [("type", ops.node("JsonString", constructor))]
+        else:
+            reserve(2 + max(0, len(fields) - 1))
         for name, field_shape in fields:
+            reserve(len(name) + 3)
             entries.append(
                 (
                     name,
-                    _geno_json_to(ops.get(value, name), field_shape, types, depth, ops),
+                    _geno_json_to(
+                        ops.get(value, name), field_shape, types, depth, ops, reserve
+                    ),
                 )
             )
         return ops.node("JsonObject", entries)
     raise RuntimeError("json_encode: value is not of its declared type")
+
+
+def _geno_json_reserve(name: Any, check_size: Any, step: Any) -> Any:
+    """Bound compact output as the encoder walks it, including shared values.
+
+    Each occurrence contributes to the output even if it shares its input.
+    Measure the lower bound before allocating each JSON node. The serializer
+    still checks the exact size, including escaping and optional indentation.
+    """
+    total = 0
+
+    def reserve(size: Any) -> None:
+        nonlocal total
+        total += size
+        if step is not None:
+            step()
+        if check_size is None:
+            _check_string_result_size(name, total)
+        else:
+            check_size(total)
+
+    return reserve
 
 
 def _geno_json_codec(name: Any, shape: Any, types: Any) -> Any:
@@ -4086,6 +4220,8 @@ def json_decode(
     types: Any = None,
     _ops: Any = None,
     _parse: Any = None,
+    _check_size: Any = None,
+    _step: Any = None,
 ) -> Any:
     """Decode JSON *text* as the type the call's codec describes."""
     shape, types = _geno_json_codec("json_decode", shape, types)
@@ -4093,8 +4229,26 @@ def json_decode(
     parsed = (json_parse if _parse is None else _parse)(text)
     if not ops.is_variant(parsed, "Ok"):
         return parsed
+    extra_values = 0
+
+    def visit(depth: int, extra: bool) -> None:
+        nonlocal extra_values
+        if depth >= _MAX_JSON_DECODE_DEPTH:
+            _geno_json_fail(None, "decoded value nested too deeply")
+        if _step is not None:
+            _step()
+        if extra:
+            # Some wrappers and defaulted fields have no JSON node of their own.
+            extra_values += 1
+            if _check_size is None:
+                _check_collection_kind("Decoded JSON", extra_values)
+            else:
+                _check_size(extra_values)
+
     try:
-        value = _geno_json_from(ops.get(parsed, "value"), shape, types, None, ops)
+        value = _geno_json_from(
+            ops.get(parsed, "value"), shape, types, None, ops, visit, 0
+        )
     except _GenoJsonMismatch as mismatch:
         return ops.err(str(mismatch))
     return ops.ok(value)
@@ -4106,12 +4260,17 @@ def json_encode(
     types: Any = None,
     _ops: Any = None,
     _stringify: Any = None,
+    _check_size: Any = None,
+    _step: Any = None,
 ) -> Any:
     """Encode *value*, of the type the call's codec describes, as JSON."""
     shape, types = _geno_json_codec("json_encode", shape, types)
     ops = _GENO_JSON_OPS if _ops is None else _ops
-    node = _geno_json_to(value, shape, types, 0, ops)
-    return (json_stringify if _stringify is None else _stringify)(node)
+    reserve = _geno_json_reserve("json_encode", _check_size, _step)
+    node = _geno_json_to(value, shape, types, 0, ops, reserve)
+    if _stringify is None:
+        return json_stringify(node, _keep_last=True)
+    return _stringify(node)
 
 
 def json_encode_pretty(
@@ -4121,12 +4280,17 @@ def json_encode_pretty(
     types: Any = None,
     _ops: Any = None,
     _stringify: Any = None,
+    _check_size: Any = None,
+    _step: Any = None,
 ) -> Any:
     """Encode as json_encode does, indented as json_stringify_pretty indents."""
     shape, types = _geno_json_codec("json_encode_pretty", shape, types)
     ops = _GENO_JSON_OPS if _ops is None else _ops
-    node = _geno_json_to(value, shape, types, 0, ops)
-    return (json_stringify_pretty if _stringify is None else _stringify)(node, indent)
+    reserve = _geno_json_reserve("json_encode_pretty", _check_size, _step)
+    node = _geno_json_to(value, shape, types, 0, ops, reserve)
+    if _stringify is None:
+        return json_stringify_pretty(node, indent, _keep_last=True)
+    return _stringify(node, indent)
 
 
 def _geno_value_to_python(value):

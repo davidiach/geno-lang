@@ -1136,14 +1136,19 @@ class BaseCompiler(ABC):
         return False
 
     @staticmethod
-    def _typed_json_arguments(expr: FunctionCall) -> list[CallArg]:
-        """A typed-JSON call's arguments in parameter order."""
-        names = {
+    def _typed_json_parameter_names(expr: FunctionCall) -> list[str]:
+        return {
             "json_decode": ["text"],
             "json_encode": ["value"],
             "json_encode_pretty": ["value", "indent"],
         }[expr._resolved_builtin_name or ""]
-        ordered = BaseCompiler._reorder_call_args_for_compile(expr.arguments, names)
+
+    @staticmethod
+    def _typed_json_arguments(expr: FunctionCall) -> list[CallArg]:
+        """A typed-JSON call's arguments in parameter order."""
+        ordered = BaseCompiler._reorder_call_args_for_compile(
+            expr.arguments, BaseCompiler._typed_json_parameter_names(expr)
+        )
         return [argument for argument in ordered if argument is not None]
 
     # -- Test-harness builds (proposal 0024) ---------------------------------
