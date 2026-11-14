@@ -23,6 +23,18 @@ builtins your program needs. The normative per-surface list is
 | `process` | `exec`, `exec_with_input`, `spawn`, `spawn_with_input` | Process execution |
 | `stdin` | `stdin_read_all` | Standard input |
 | `serve` | `http_listen`, `http_route`, `http_respond` | HTTP server |
+| `ffi` | every extern function (0.7 draft, Experimental) | Host functions declared with `extern func` |
+
+`ffi` gates no builtin. It gates calls of extern functions
+([proposal 0025](../proposals/0025-extern-functions.md), section 9.11.2 of the
+0.7 draft), which run host Python or JavaScript code with the full authority
+of the process. It is granted only by `geno run --unsafe --cap ffi`, by a
+compiled program run with `--cap ffi`, and by
+`RunConfig(capabilities={..., "ffi"}, allow_ffi=True)`. The default `geno run`
+lane, `geno run --json` and `geno serve` refuse it, and `geno test`,
+`geno repl` and browser builds do not grant it. A call without it fails with
+`Capability denied: 'name' requires the 'ffi' capability`, before the
+binding's module is imported.
 
 ## Capabilities by Execution Surface
 
@@ -178,6 +190,7 @@ JSON mode installs no host callbacks, so a granted `fs`, `http`, `stdin`,
 `process` or `serve` builtin fails with E413 ("Host callback not provided").
 Use the hosted server or a caller-managed worker process when JSON results are
 needed for untrusted code; JSON mode itself does not provide process isolation.
+JSON mode refuses `--cap ffi`.
 
 Integer results remain exact JSON numbers, including values beyond Python's
 default 4,300-digit conversion limit. This also applies inside collections;
@@ -192,7 +205,8 @@ The HTTP server allows **print**, **clock**, and **random** by default, but a
 request must still list the capabilities it wants. Omitting `capabilities`
 grants no gated builtins. Operators can expand the allowlist with server
 configuration; clients still receive only the requested subset unless an
-embedding deliberately sets `default_request_capabilities`.
+embedding deliberately sets `default_request_capabilities`. The server refuses
+to start with `ffi` in its allowlist or its default request set.
 
 ### Host Resource Scope
 
@@ -263,6 +277,10 @@ result = geno.run(source, config=RunConfig(capabilities=set()))
 
 # Grant specific capabilities
 result = geno.run(source, config=RunConfig(capabilities={"print", "fs", "http"}))
+
+# ffi needs a second, explicit opt-in: extern functions run host code
+# in this process, outside every limit the API enforces (trusted code only)
+result = geno.run(source, config=RunConfig(capabilities={"ffi"}, allow_ffi=True))
 ```
 
 ## Always-Available Builtins

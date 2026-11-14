@@ -133,6 +133,7 @@ from .entrypoint import (
     is_async_execution_form,
 )
 from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH
+from .extern import python_binding
 from .float_promotion import float_shape
 from .host_names import HOST_NAME_SUFFIX, geno_runtime_names
 from .manifest import validate_module_name
@@ -1588,6 +1589,10 @@ class Compiler(BaseCompiler, ASTVisitor):
         self._writeln(f"{async_prefix}def {func_name}({params}) -> '{ret_type}':")
 
         self._indent()
+        if defn.is_extern:
+            self._compile_extern_body(defn)
+            self._dedent()
+            return
 
         # Self tail calls run in constant stack (proposal 0022). An impl
         # method is called through its trait's dispatcher, never by its own
@@ -1612,6 +1617,25 @@ class Compiler(BaseCompiler, ASTVisitor):
                 self._tail_params,
             ) = saved_tail
         self._dedent()
+
+    def _compile_extern_body(self, defn: FunctionDef) -> None:
+        """An extern's body: the runtime checks ``ffi`` and calls the host.
+
+        The binding is passed already split, so the runtime imports the module
+        it names only when the call is allowed (proposal 0025).
+        """
+        if defn._extern_shapes is None:
+            raise CompileError(f"Extern function '{defn.name}' was not type-checked")
+        params, result = defn._extern_shapes
+        spec = (defn.extern_bindings or {}).get("python")
+        binding = None if spec is None else python_binding(spec)
+        arguments = _python_tuple(self._mangle_name(p.name) for p in defn.params)
+        # Located at the declaration, as the interpreter locates the call.
+        with self._traced_statement(defn.location):
+            self._writeln(
+                f"return _geno_extern_call({defn.name!r}, {binding!r}, "
+                f"{arguments}, {params!r}, {result!r})"
+            )
 
     def _compile_function_interior(
         self, defn: FunctionDef, tail_plan: TailCallPlan | None

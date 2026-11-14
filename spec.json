@@ -30,7 +30,8 @@
       "F-string format specs (proposal 0023, Accepted): f\"{value:spec}\" with spec [[fill]align][sign][0][width][,][.precision][type]; types d x X o b for an Int, f e % for an Int or a Float, s for any value. Output equals Python's format on every backend, ties rounding to even. A spec that is malformed or does not fit the value's type is E331.",
       "Self tail calls (proposal 0022, Accepted): a top-level, non-async function's call to itself by its plain name, in tail position (the value of a return, a branch of an if or match expression in tail position, or the last statement of a Unit function), replaces the running call on every backend, so tail recursion runs in constant stack and does not count toward the recursion depth limit. Argument order, defaults, requires, ensures for every logical call and closure captures are kept; a runtime failure report shows one frame for the replaced calls. Mutual recursion, impl methods, calls through function values and calls whose result is used nest as before.",
       "Test backends (proposal 0024, Accepted): geno test --backend interpreter|python|js|all chooses where examples and test blocks run. python and js compile the file or project as geno compile does, with every example and test block registered as a case, and run the cases in a subprocess with the test grant and a hard per-case timeout; main is not called. all runs the three and reports as a divergence each case that passes on one backend and fails on another, or returns a different wrong value on each. The default stays the interpreter, --properties is interpreter only, js needs node, and the --json payload of a compiled or all run names its backend while a plain run's is unchanged.",
-      "Typed JSON (proposal 0021, Accepted): json_decode[T](text) -> Result[T, String], json_encode(value) -> String and json_encode_pretty(value, indent) work on the type the call names in brackets or its context gives. Int, Float, String, Bool, Unit (null), List/Array/Vec/Set (array), tuples (fixed-length array), Option (value or null; a missing Option field is None), Map[String, V] (object), Result ({ok} or {err}) and JsonValue map directly; a type with one constructor with fields is an object, a type whose constructors have no fields is the constructor's name, and any other type is an object with a type discriminator. Unknown object fields are ignored. A mismatch is Err with a path, as in $.items[2].age: expected Int, got String, identical on every backend. A type with no JSON form (functions, Async, non-String map keys, MutableMap, an unknown type, or a type whose codec expansion exceeds the checker limits) or a use as a function value is E332."
+      "Typed JSON (proposal 0021, Accepted): json_decode[T](text) -> Result[T, String], json_encode(value) -> String and json_encode_pretty(value, indent) work on the type the call names in brackets or its context gives. Int, Float, String, Bool, Unit (null), List/Array/Vec/Set (array), tuples (fixed-length array), Option (value or null; a missing Option field is None), Map[String, V] (object), Result ({ok} or {err}) and JsonValue map directly; a type with one constructor with fields is an object, a type whose constructors have no fields is the constructor's name, and any other type is an object with a type discriminator. Unknown object fields are ignored. A mismatch is Err with a path, as in $.items[2].age: expected Int, got String, identical on every backend. A type with no JSON form (functions, Async, non-String map keys, MutableMap, an unknown type, or a type whose codec expansion exceeds the checker limits) or a use as a function value is E332.",
+      "Extern functions (proposal 0025, Accepted): `extern func name(params) -> Type with ffi` followed by one binding per line, `python \"module:attribute\"` and/or `js \"module#export\"` or `js \"Global.path\"`, then `end func`, declares a host function. `extern` is contextual. Parameter and return types are Int, Float, String, Bool, Unit, List, tuples, Option, Map[String, V] and JsonValue, built from those; any other is E333. A call needs the new `ffi` capability on every backend, and `ffi` is a new effect. The host result is checked against the declared type at run time; a mismatch, a host exception or a binding that does not load panics. A target-aware check rejects a use of an extern on a target that never grants `ffi` (browser, python-hosted) and, on python-cli and node-cli, a use of one with no binding for the target's runtime."
     ]
   },
 
@@ -111,7 +112,7 @@
   "effect_system": {
     "syntax": "with effect1, effect2",
     "valid_effects": [
-      "clock", "env", "fs", "http", "io", "mutation", "process",
+      "clock", "env", "ffi", "fs", "http", "io", "mutation", "process",
       "random", "regex", "stdin"
     ],
     "inference": "Effects are inferred from effectful builtins, mutation, and calls to effectful functions. A panic is not an effect.",
@@ -126,7 +127,7 @@
     "codes": [
       "E100", "E101", "E102", "E103", "E200", "E201", "E202", "E203",
       "E204", "E205", "E300", "E301", "E302", "E303", "E304", "E305", "E306",
-      "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E330", "E331", "E332", "E400", "E401",
+      "E307", "E308", "E309", "E310", "E311", "E312", "E320", "E321", "E322", "E323", "E330", "E331", "E332", "E333", "E400", "E401",
       "E402", "E403", "E404", "E405", "E406", "E407", "E408", "E409",
       "E410", "E411", "E412", "E413", "E414", "E499", "E500", "E501", "E502",
       "E503", "E504", "E505", "W300"
@@ -150,6 +151,13 @@
   },
 
   "syntax": {
+    "extern_function": {
+      "template": "extern func name(param: Type, ...) -> ReturnType with ffi\\n  python \"module:attribute\"\\n  js \"module#export\"\\nend func",
+      "notes": [
+        "Development line 0.7 (proposal 0025, Accepted): no body, examples, contracts, defaults or type parameters; at least one binding",
+        "A js binding is either \"module#export\" or a global path such as \"Math.sqrt\"; the browser and python-hosted targets reject externs, since they never grant ffi"
+      ]
+    },
     "function": {
       "template": "func name(param: Type, ...) -> ReturnType [with effect, ...]\\n  [requires condition]\\n  [ensures condition]\\n  [example (args) -> result]\\n  body\\nend func",
       "notes": [
@@ -542,13 +550,13 @@
       "serve": ["http_listen", "http_route", "http_respond"]
     },
     "surfaces": {
-      "embedding_api": "RunConfig(capabilities=None) grants no gated builtins (fail-closed); an explicit set grants exactly that set",
-      "cli": "Default `geno run` (process-isolated lane): `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise, for examples and `main`; a capability the lane cannot grant (`isolated_run.refused`, `isolated_run.unavailable`, and `isolated_run.unavailable_on_windows` on Windows) is refused before launch. `geno run --unsafe`: `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise. `geno run --json`: no gated builtins without --cap, and exactly the --cap list otherwise",
+      "embedding_api": "RunConfig(capabilities=None) grants no gated builtins (fail-closed); an explicit set grants exactly that set. A set that grants `ffi` is rejected unless RunConfig(allow_ffi=True) is also given",
+      "cli": "Default `geno run` (process-isolated lane): `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise, for examples and `main`; a capability the lane cannot grant (`isolated_run.refused`, `isolated_run.unavailable`, and `isolated_run.unavailable_on_windows` on Windows) is refused before launch. `geno run --unsafe`: `clock`, `print` and `random` without --cap, and exactly the --cap list otherwise. `geno run --json`: no gated builtins without --cap, and exactly the --cap list otherwise; it refuses `ffi`",
       "compiled_programs": "`geno compile` output, Python or JavaScript, grants no gated builtins without --cap, and exactly the --cap list otherwise; JavaScript run outside Node has no --cap and grants no gated builtins",
       "browser_builds": "Browser builds from `geno build` and `geno dev` take no --cap: every page grants the browser target profile's capabilities, `clock`, `http`, `print`, `random` and `regex`",
       "geno_test": "`geno test` runs examples and test blocks with `clock`, `print` and `random`; it takes no --cap",
       "repl": "`geno repl` evaluates input with `clock`, `print` and `random`; it takes no --cap",
-      "hosted_server": "A /run request that omits capabilities gets the server's default request set: no gated builtins unless the embedding configures `default_request_capabilities` (a subset of the allowed set); a request may list only allowed capabilities"
+      "hosted_server": "A /run request that omits capabilities gets the server's default request set: no gated builtins unless the embedding configures `default_request_capabilities` (a subset of the allowed set); a request may list only allowed capabilities. The server refuses to start with `ffi` allowed"
     },
     "default_grants": {
       "embedding_api": [],
@@ -561,10 +569,11 @@
       "repl": ["clock", "print", "random"],
       "hosted_server": []
     },
+    "extern_functions": "`ffi` gates extern functions (proposal 0025, Accepted), not builtins: every call of an extern needs it, on every backend. It is granted only by `geno run --unsafe --cap ffi`, by compiled programs run with `--cap ffi`, and by RunConfig(capabilities={..., \"ffi\"}, allow_ffi=True); the isolated `geno run` lane, `geno run --json` and the hosted server refuse it",
     "isolated_run": {
       "default_grant": ["clock", "print", "random"],
       "grantable": ["clock", "env", "fs", "http", "print", "random", "regex"],
-      "refused": ["process", "serve"],
+      "refused": ["ffi", "process", "serve"],
       "unavailable": ["stdin"],
       "unavailable_on_windows": ["http"]
     }

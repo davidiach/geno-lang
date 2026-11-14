@@ -105,6 +105,7 @@ from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
+from .extern import ExternTypeError, marshal_shape
 from .float_promotion import float_shape, promotion_shape
 from .format_spec import FormatSpecError, parse_format_spec, value_kind
 from .json_shape import JsonTypeError, build_codec
@@ -2640,9 +2641,39 @@ class TypeChecker(ExhaustivenessMixin):
 
         effects = frozenset(defn.effects) if defn.effects else frozenset()
         func_type = FuncType(param_types, return_type, effects)
+        if defn.is_extern:
+            # Carried by the signature itself, so a use through an import, a
+            # module namespace or an alias of the function finds it.
+            func_type = dataclasses.replace(
+                func_type, unavailable=self._extern_unavailable_message(defn)
+            )
         param_names = [p.name for p in defn.params]
         num_defaults = sum(1 for p in defn.params if p.default_value is not None)
         return func_type, param_names, num_defaults
+
+    def _extern_unavailable_message(self, defn: FunctionDef) -> str | None:
+        """Why the target being checked cannot call extern *defn*, or None.
+
+        Without a target there is nothing to reject: a call on a backend with
+        no binding panics when it runs (proposal 0025).
+        """
+        profile = self._target_profile
+        if profile is None or defn.extern_bindings is None:
+            return None
+        if "ffi" not in profile.capabilities:
+            # Browser builds and the hosted runtime never grant `ffi`, so a
+            # call there could only be denied.
+            return (
+                f"Extern function '{defn.name}' is not available on the "
+                f"'{profile.target}' target: it never grants the 'ffi' capability"
+            )
+        needed = "python" if profile.runtime == "python" else "js"
+        if needed not in defn.extern_bindings:
+            return (
+                f"Extern function '{defn.name}' is not available on the "
+                f"'{profile.target}' target: it has no {needed} binding"
+            )
+        return None
 
     def _qualified_module_function_type_from_def(self, defn: FunctionDef) -> FuncType:
         """Build the qualified-call type used for module namespace access."""
@@ -2990,6 +3021,9 @@ class TypeChecker(ExhaustivenessMixin):
         validate_effects: bool,
     ) -> None:
         """Type check a function definition with its type parameters in scope."""
+        if defn.is_extern:
+            self._check_extern_def(defn)
+            return
         # Enforce example requirement - every function must have at least one example
         # Exception: 'main' and app lifecycle functions don't require examples
         # In app mode, all functions are exempt (game helpers can't easily have examples)
@@ -3132,6 +3166,47 @@ class TypeChecker(ExhaustivenessMixin):
         self.current_return_type = None
         self._in_async_function = prev_async
         self._in_main_function = prev_main
+
+    def _check_extern_def(self, defn: FunctionDef) -> None:
+        """Check an extern function's signature (proposal 0025).
+
+        An extern has no body, examples or contracts: the parser rejects
+        them. What is left is its types, each of which must cross the host
+        boundary, and the shapes the runtimes convert with.
+        """
+        seen: set[str] = set()
+        param_shapes = []
+        for param in defn.params:
+            if param.name in seen:
+                self._error(
+                    f"Duplicate parameter name '{param.name}'",
+                    param.location,
+                    ErrorCode.TYPE_DUPLICATE_DEFINITION,
+                )
+            seen.add(param.name)
+            param_type = self._resolve_type(param.param_type)
+            param._resolved_type = param_type
+            try:
+                param_shapes.append(marshal_shape(param_type))
+            except ExternTypeError as exc:
+                self._error(
+                    f"Extern function '{defn.name}' cannot take parameter "
+                    f"'{param.name}': {exc}",
+                    param.location,
+                    ErrorCode.TYPE_EXTERN_TYPE,
+                )
+        return_type = self._resolve_type(defn.return_type)
+        try:
+            return_shape = marshal_shape(return_type)
+        except ExternTypeError as exc:
+            self._error(
+                f"Extern function '{defn.name}' cannot return {return_type}: {exc}",
+                defn.return_type.location,
+                ErrorCode.TYPE_EXTERN_TYPE,
+            )
+            return
+        if len(param_shapes) == len(defn.params):
+            defn._extern_shapes = (tuple(param_shapes), return_shape)
 
     def _inferred_function_return_type(self, return_types: list[Type]) -> Type | None:
         """The one type a function's ``return`` values agree on, if any.
@@ -5259,6 +5334,8 @@ class TypeChecker(ExhaustivenessMixin):
         if self._reject_ambiguous_import_use(expr.name, env, expr.location):
             return AnyType()
         type_ = env.lookup(expr.name)
+        if isinstance(type_, FuncType) and type_.unavailable is not None:
+            self._error(type_.unavailable, expr.location)
         if type_ is None:
             if expr.name in self._target_rejected:
                 self._error(self._target_rejected[expr.name], expr.location)
@@ -6702,6 +6779,8 @@ class TypeChecker(ExhaustivenessMixin):
             )
             if ns_name in self._module_exports:
                 sym_type = self._module_exports[ns_name].get(expr.field_name)
+                if isinstance(sym_type, FuncType) and sym_type.unavailable is not None:
+                    self._error(sym_type.unavailable, expr.location)
                 if sym_type is not None:
                     target = self._generic_target(expr, env)
                     if target is not None:

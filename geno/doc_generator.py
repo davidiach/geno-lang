@@ -202,6 +202,7 @@ class FuncDoc:
         "examples",
         "exported",
         "is_async",
+        "is_extern",
         "name",
         "params",
         "requires",
@@ -220,6 +221,7 @@ class FuncDoc:
         self.ensures = fdef.specs.ensures if fdef.specs else []
         self.doc_comment = doc
         self.is_async = fdef.is_async
+        self.is_extern = fdef.is_extern
         self.exported = fdef.exported
 
 
@@ -387,7 +389,12 @@ def _render_signature_html(func: FuncDoc) -> str:
     pn = '<span class="param-name">'
     end = "</span>"
 
-    prefix = f"{kw}async func{end}" if func.is_async else f"{kw}func{end}"
+    if func.is_async:
+        prefix = f"{kw}async func{end}"
+    elif func.is_extern:
+        prefix = f"{kw}extern func{end}"
+    else:
+        prefix = f"{kw}func{end}"
     params_parts = []
     for p in func.params:
         params_parts.append(

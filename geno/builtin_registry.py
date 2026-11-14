@@ -98,6 +98,7 @@ CAPABILITY_TO_EFFECT: dict[str, str] = {
     "random": "random",
     "regex": "regex",
     "stdin": "stdin",
+    "ffi": "ffi",
 }
 
 # All valid effect names that can appear in `with` annotations.
@@ -113,6 +114,7 @@ VALID_EFFECTS: frozenset[str] = frozenset(
         "regex",
         "stdin",
         "mutation",
+        "ffi",
     }
 )
 

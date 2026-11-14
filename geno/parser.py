@@ -34,6 +34,7 @@ from .ast_nodes import (
     constant_initializer_error,
 )
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix
+from .extern import EXTERN_TARGETS, FFI, binding_error, binding_form
 from .parser_base import (
     ParseError,
     ParseErrors,
@@ -131,6 +132,17 @@ class Parser(
             if self._check(TokenType.AT):
                 untested_reason = self._parse_untested_annotation()
 
+        if self._at_extern_def():
+            # `extern` is contextual: it is a declaration word only before
+            # `func` at the top level, so it stays a valid name elsewhere.
+            if untested_reason is not None:
+                raise self._error(
+                    "@untested is not needed on an extern function: it has no "
+                    "body, so it needs no examples"
+                )
+            defn = self._parse_extern_def()
+            defn.exported = is_exported
+            return defn
         if self._check(TokenType.ASYNC):
             self._advance()  # consume 'async'
             defn = self._parse_function_def(is_async=True)
@@ -477,7 +489,7 @@ class Parser(
         # Closing: end func [name]
         self._expect_end(TokenType.FUNC)
         closing_name = None
-        if self._check(TokenType.IDENTIFIER):
+        if self._check(TokenType.IDENTIFIER) and not self._at_extern_def():
             closing_name = self._advance().value
             if closing_name != name:
                 raise self._error(
@@ -496,6 +508,126 @@ class Parser(
             effects=effects,
             type_params=type_params,
             type_param_bounds=type_param_bounds,
+        )
+
+    def _at_extern_def(self) -> bool:
+        """Whether an extern declaration starts here (``extern func``).
+
+        A declaration starts a line, so ``end func extern`` (the closing
+        name of a function called ``extern``) followed by another ``func``
+        is not one.
+        """
+        return (
+            self._check(TokenType.IDENTIFIER)
+            and self._current().value == "extern"
+            and self._peek(1).type is TokenType.FUNC
+            and (
+                self.pos == 0
+                or self.tokens[self.pos - 1].type is TokenType.EXPORT
+                or self._current().location.line
+                > self.tokens[self.pos - 1].location.line
+            )
+        )
+
+    def _parse_extern_def(self) -> FunctionDef:
+        """Parse an extern function (proposal 0025)::
+
+        extern func name(params) -> Type with ffi
+            python "module:function"
+            js "module#export"
+        end func
+        """
+        location = self._current().location
+        self._advance()  # consume 'extern'
+        self._expect(TokenType.FUNC)
+        name = self._expect(TokenType.IDENTIFIER, "Expected function name").value
+        if self._check(TokenType.LBRACKET):
+            raise self._error(
+                f"Extern function '{name}' cannot have type parameters: a host "
+                "function's argument and result types must be known"
+            )
+        self._expect(TokenType.LPAREN)
+        params = self._parse_parameter_list()
+        self._expect(TokenType.RPAREN)
+        for param in params:
+            if param.default_value is not None:
+                raise ParseError(
+                    f"Extern function '{name}' cannot give parameter "
+                    f"'{param.name}' a default value",
+                    param.location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
+                )
+        self._expect(
+            TokenType.ARROW,
+            f"Extern function '{name}' needs a return type: write '-> Type' "
+            "after its parameters, or '-> Unit' when it returns nothing",
+        )
+        return_type = self._parse_type()
+        if not self._check(TokenType.WITH):
+            raise self._error(
+                f"Extern function '{name}' must declare 'with ffi': it runs host "
+                "code, which only the 'ffi' capability allows"
+            )
+        self._advance()  # consume 'with'
+        effects = self._parse_effect_list()
+        if effects != [FFI]:
+            raise self._error(
+                f"Extern function '{name}' declares 'with {', '.join(effects)}'; "
+                "an extern declares exactly 'with ffi', which covers whatever "
+                "the host function does"
+            )
+
+        bindings: dict[str, str] = {}
+        while self._check(TokenType.IDENTIFIER) and (
+            self._current().value in EXTERN_TARGETS
+        ):
+            target = str(self._advance().value)
+            if target in bindings:
+                raise self._error(
+                    f"Extern function '{name}' has more than one {target} binding"
+                )
+            spec_token = self._expect(
+                TokenType.STRING,
+                f"Expected the {target} binding as a string: "
+                f"{target} {binding_form(target)}",
+            )
+            reason = binding_error(target, str(spec_token.value))
+            if reason is not None:
+                raise ParseError(
+                    f"Invalid binding for extern function '{name}': {reason}",
+                    spec_token.location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
+                )
+            bindings[target] = str(spec_token.value)
+        if not self._check(TokenType.END):
+            raise self._error(
+                f"Expected a binding or 'end func' in extern function '{name}': "
+                f'write python "module:function" or js "module#export", one '
+                "per line; an extern function has no body"
+            )
+        if not bindings:
+            raise self._error(
+                f"Extern function '{name}' needs at least one binding: "
+                f'python "module:function" or js "module#export"'
+            )
+        self._expect_end(TokenType.FUNC)
+        closing_name = None
+        if self._check(TokenType.IDENTIFIER) and not self._at_extern_def():
+            closing_name = self._advance().value
+            if closing_name != name:
+                raise self._error(
+                    f"Function closing name '{closing_name}' doesn't match '{name}'"
+                )
+        return FunctionDef(
+            location=location,
+            name=name,
+            params=params,
+            return_type=return_type,
+            specs=SpecBlock(),
+            body=[],
+            closing_name=closing_name,
+            effects=effects,
+            extern_bindings=bindings,
         )
 
     def _expect_type_parameter_name(self) -> Token:

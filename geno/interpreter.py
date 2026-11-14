@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from functools import partial
 from types import MappingProxyType
 from typing import Any, TypeVar, cast
@@ -98,6 +99,7 @@ from .capabilities import capability_denied_message
 from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode
 from .execution_limits import DEFAULT_MAX_RECURSION_DEPTH, call_with_recursion_room
+from .extern import python_binding
 from .float_promotion import float_shape
 from .format_spec import format_value, runtime_kind
 from .harness import example_call_args, example_numbers_match
@@ -580,6 +582,9 @@ class Interpreter:
     def apply_capabilities(self, capabilities: Collection[str] | None) -> None:
         """Replace disallowed gated builtins with capability-denied stubs."""
         allowed_gated = allowed_gated_builtins(capabilities)
+        # Extern functions are not builtins: their calls check this instead
+        # (proposal 0025).
+        self._ffi_granted = capabilities is not None and "ffi" in capabilities
 
         def _make_denied_stub(builtin_name: str):
             capability = capability_for_source_builtin(builtin_name)
@@ -1653,7 +1658,7 @@ class Interpreter:
                     tail_plan = mark_self_tail_calls(defn)
                     closure = Closure(
                         params=defn.params,
-                        body=defn.body,
+                        body=_function_body(defn),
                         env=self.global_env,
                         name=defn.name,
                         specs=defn.specs,
@@ -1794,7 +1799,7 @@ class Interpreter:
                 tail_plan = mark_self_tail_calls(defn)
                 closure = Closure(
                     params=defn.params,
-                    body=defn.body,
+                    body=_function_body(defn),
                     env=module_env,
                     name=defn.name,
                     specs=defn.specs,
@@ -3808,6 +3813,59 @@ class Interpreter:
     ) -> None:
         self.eval_expr(stmt.expression, env)
 
+    def _exec_extern(self, stmt: "_ExternCall", env: Environment) -> None:
+        """The body of an extern function (proposal 0025): call the host.
+
+        Only the Python binding runs here; the capability is checked first,
+        so a program that is not granted ``ffi`` never imports host code.
+        """
+        from . import _runtime_support as _runtime
+        from .typed_json import InterpreterJsonOps
+
+        defn = stmt.defn
+        if not self._ffi_granted:
+            error: Any = RuntimeError(
+                capability_denied_message(defn.name, "ffi"),
+                stmt.location,
+                error_code=ErrorCode.RUNTIME_CAPABILITY_DENIED,
+            )
+            error._geno_capability_denied = "ffi"
+            raise error
+        shapes = defn._extern_shapes
+        if shapes is None:
+            raise RuntimeError(
+                f"Extern function '{defn.name}' was not type-checked",
+                stmt.location,
+            )
+        params, result_shape = shapes
+        bindings = defn.extern_bindings or {}
+        spec = bindings.get("python")
+        binding = None if spec is None else python_binding(spec)
+        arguments = [env.lookup(param.name) for param in defn.params]
+        ops = self.__dict__.get("_extern_ops")
+        if ops is None:
+            # Only the ungated collection builtins are read, so the adapter
+            # stays valid when capabilities are applied again.
+            ops = InterpreterJsonOps(
+                {key: value.func for key, value in self._builtin_functions.items()}
+            )
+            self._extern_ops = ops
+        try:
+            value = _runtime._geno_extern_invoke(
+                defn.name,
+                binding,
+                arguments,
+                params,
+                result_shape,
+                ops,
+            )
+        except _runtime._GenoExternFailure as failure:
+            raise RuntimeError(
+                str(failure), stmt.location, error_code=ErrorCode.RUNTIME_PANIC
+            ) from None
+        self._check_collection_limits([value], stmt.location)
+        raise ReturnException(value)
+
     def _exec_assert(self, stmt: AssertStatement, env: Environment) -> None:
         result = self.eval_expr(stmt.expression, env)
         if not result:
@@ -4289,6 +4347,26 @@ _STMT_DISPATCH: dict[type, Any] = {
     ExpressionStatement: Interpreter._exec_expression_stmt,
     AssertStatement: Interpreter._exec_assert,
 }
+
+
+@dataclass
+class _ExternCall(Statement):
+    """The body the interpreter gives an extern function (proposal 0025)."""
+
+    defn: FunctionDef = field(repr=False)
+
+    def accept(self, visitor: Any) -> Any:  # pragma: no cover - never visited
+        raise NotImplementedError
+
+
+def _function_body(defn: FunctionDef) -> list[Statement]:
+    """The statements a call of *defn* runs: an extern's is its host call."""
+    if defn.is_extern:
+        return [_ExternCall(location=defn.location, defn=defn)]
+    return defn.body
+
+
+_STMT_DISPATCH[_ExternCall] = Interpreter._exec_extern
 
 
 def _dispatch_via_mro(table: dict[type, Any], node: Any) -> Any:

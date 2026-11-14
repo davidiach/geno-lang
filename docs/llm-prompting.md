@@ -80,6 +80,22 @@ Typed JSON (0.7 development line, proposal 0021) replaces hand-written
 program's own type and `json_encode(user)` encodes it. Name the type in
 brackets where the context does not give it: `json_decode[List[User]](text)`.
 
+Extern functions (0.7 development line, proposal 0025, Experimental) reach a
+host function the builtins do not cover. Only suggest one when the program
+will run as trusted code with `--cap ffi`:
+
+```geno
+extern func url_quote(text: String) -> String with ffi
+    python "urllib.parse:quote"
+    js "encodeURIComponent"
+end func
+```
+
+The declaration has no body and no examples; it must say `with ffi`, and its
+types are built from `Int`, `Float`, `String`, `Bool`, `Unit`, `List`,
+tuples, `Option`, `Map[String, V]` and `JsonValue`. A function that calls it
+infers `ffi` and needs `@untested`, since `geno test` does not grant `ffi`.
+
 ## Common LLM Mistakes
 
 ### 1. Using `let mut` instead of `var`

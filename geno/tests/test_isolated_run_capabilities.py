@@ -634,7 +634,7 @@ def test_platform_matrix() -> None:
         frozenset({"clock", "env", "fs", "http", "print", "random", "regex"})
         == ISOLATED_RUN_CAPABILITIES
     )
-    assert frozenset({"process", "serve"}) == ISOLATED_RUN_REFUSED_CAPABILITIES
+    assert frozenset({"ffi", "process", "serve"}) == ISOLATED_RUN_REFUSED_CAPABILITIES
     assert frozenset({"stdin", "http"}) == ISOLATED_RUN_WINDOWS_UNAVAILABLE
     assert isolated_run_capabilities("posix") == frozenset(
         {"clock", "env", "fs", "http", "print", "random", "regex"}

@@ -1,0 +1,12 @@
+// Proposal 0025: an extern's parameters and result must cross the host
+// boundary. A record does not: it is the new diagnostic E333.
+
+type User = User(name: String)
+
+extern func save(user: User) -> Unit with ffi
+    python "storage:save"
+end func
+
+func main() -> Unit with io
+    print("unreachable")
+end func

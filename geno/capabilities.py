@@ -13,7 +13,9 @@ from collections.abc import Iterable
 
 from .builtin_manifest import manifest_capability_names
 
-KNOWN_CAPABILITIES = manifest_capability_names()
+# ``ffi`` gates extern functions (proposal 0025), which no builtin names.
+FFI_CAPABILITY = "ffi"
+KNOWN_CAPABILITIES = manifest_capability_names() | {FFI_CAPABILITY}
 
 # Capabilities granted to programs that do not ask for any. Re-exported by
 # builtin_registry for its existing importers.
@@ -38,7 +40,7 @@ ISOLATED_RUN_CAPABILITIES = frozenset(
 ISOLATED_RUN_FS_WRITE_LIMIT_BYTES = 64 * 1024 * 1024
 
 # Never granted in the isolated lane: they need ``--unsafe``.
-ISOLATED_RUN_REFUSED_CAPABILITIES = frozenset({"process", "serve"})
+ISOLATED_RUN_REFUSED_CAPABILITIES = frozenset({"ffi", "process", "serve"})
 
 # Refused before launch on Windows until their platform gates have evidence
 # there (stdin handle inheritance and cleanup, HTTP client behaviour).
@@ -52,9 +54,24 @@ ISOLATED_HOST_PRIVATE_NAMES = frozenset(
 )
 
 _ISOLATED_RUN_REFUSAL_REASONS = {
+    "ffi": "extern functions run host code outside the sandbox",
     "process": "programs it starts would run outside the sandbox",
     "serve": "a listener would outlive the run's wall-clock limit and buffered output",
 }
+
+
+def hosted_ffi_refusal(capabilities: Iterable[str] | None) -> str | None:
+    """Why the hosted runtime (``geno serve``) refuses *capabilities*, or None.
+
+    Extern functions run host code in the server's own process, so no
+    request may be granted ``ffi`` (proposal 0025).
+    """
+    if capabilities is None or FFI_CAPABILITY not in capabilities:
+        return None
+    return (
+        "the hosted runtime cannot grant 'ffi': extern functions would run "
+        "host code inside the server process"
+    )
 
 
 def isolated_env_name_error(name: object) -> str | None:

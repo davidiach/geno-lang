@@ -1,0 +1,15 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print,ffi
+# STDERR: --cap ffi is not available in the process-isolated run mode
+# The isolated lane refuses ffi before launch: an extern function would run
+# host code outside the sandbox (proposal 0025). Nothing runs, not even the
+# first print, and the message names --unsafe.
+extern func run_shell(command: String) -> Int with ffi
+    python "os:system"
+end func
+
+func main() -> Unit with ffi, io
+    print("ESCAPED")
+    print(to_string(run_shell("echo ESCAPED")))
+end func

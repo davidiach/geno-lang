@@ -180,6 +180,13 @@ class RunConfig:
     target: str | None = None
     check_examples: bool = True
     monitoring_hook: Callable[[Any], None] | None = None
+    allow_ffi: bool = False
+    """Allow ``capabilities`` to grant ``ffi`` (proposal 0025).
+
+    An extern function runs host Python code in this process, outside every
+    limit this API enforces. Granting ``ffi`` therefore needs this explicit
+    opt-in as well; use it for trusted code only.
+    """
 
     def __post_init__(self) -> None:
         if self.timeout is not None and (
@@ -227,6 +234,12 @@ class RunConfig:
             raise ValueError("RunConfig.max_integer_bits must be a positive integer")
         if self.capabilities is not None:
             self.capabilities = normalize_capability_values(self.capabilities)
+            if "ffi" in self.capabilities and self.allow_ffi is not True:
+                raise ValueError(
+                    "RunConfig.capabilities grants 'ffi', which lets extern "
+                    "functions run host code outside this API's limits; set "
+                    "RunConfig(allow_ffi=True) as well, for trusted code only"
+                )
         self.env_allowed_names = _normalize_env_policy_values(
             self.env_allowed_names,
             "RunConfig.env_allowed_names",

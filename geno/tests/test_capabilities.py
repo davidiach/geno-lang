@@ -46,6 +46,7 @@ def test_known_capabilities_match_registry_capability_map():
         KNOWN_CAPABILITIES,
     )
 
-    assert frozenset(CAPABILITY_MAP) == KNOWN_CAPABILITIES
+    # `ffi` gates extern functions, not builtins (proposal 0025).
+    assert frozenset(CAPABILITY_MAP) == KNOWN_CAPABILITIES - {"ffi"}
     assert DEFAULT_ALLOWED_CAPABILITIES is LIGHT_DEFAULTS
     assert LIGHT_DEFAULTS <= KNOWN_CAPABILITIES

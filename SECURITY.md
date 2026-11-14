@@ -262,6 +262,33 @@ geno run --cap env,fs,print report.geno -- data/input.csv
   invoking user, and the Python-level sandbox and these policies are the
   boundary.
 
+### Extern Functions (`ffi`)
+
+The 0.7 development line adds extern functions
+([proposal 0025](docs/proposals/0025-extern-functions.md), Experimental): an
+`extern func` gives a host Python or JavaScript function a Geno signature.
+Host code runs with the full authority of the process, outside the step
+limit, the timeout, the output limit and every other capability, so the
+`ffi` capability that gates every extern call is fail-closed everywhere:
+
+- No surface grants `ffi` by default.
+- The process-isolated `geno run` lane and `geno run --json` refuse
+  `--cap ffi` before running, and `geno serve` refuses to start with `ffi`
+  allowed.
+- The embedding API rejects a `RunConfig` that grants `ffi` unless
+  `allow_ffi=True` is also set.
+- `geno run --unsafe --cap ffi` and compiled programs run with `--cap ffi`
+  grant it, for trusted code.
+- The capability is checked before the binding's module is imported, so a
+  denied program loads no host code.
+- Results are validated against the declared type and copied into Geno
+  values; a mismatch, a cyclic or over-deep value, or a host exception is a
+  panic.
+
+Granting `ffi` means trusting every extern the program and its dependencies
+declare. Review a dependency's `extern func` declarations as you would its
+native code.
+
 ## Host Callback Trust Model
 
 High-risk builtins (`fs_read_text`, `http_fetch`) are **not implemented by Geno**. Instead,

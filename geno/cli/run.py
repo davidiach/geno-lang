@@ -909,6 +909,12 @@ def run_file(
         from ..diagnostics import Diagnostic, ErrorCode, Severity
 
         try:
+            if capabilities is not None and "ffi" in capabilities:
+                raise ValueError(
+                    "--cap ffi is not available with --json: the embedding API "
+                    "would run extern functions' host code in-process. Use "
+                    "--unsafe --cap ffi for trusted code."
+                )
             cfg_kwargs: dict[str, Any] = {
                 "timeout": timeout,
                 "max_recursion_depth": max_recursion_depth,

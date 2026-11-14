@@ -256,8 +256,13 @@ def serve_runtime(
     allow_insecure: bool = False,
 ):
     """Run the hosted HTTP runtime."""
+    from ..capabilities import hosted_ffi_refusal
     from ..server import _configure_logging, _enforce_secure_bind, serve_forever
 
+    refusal = hosted_ffi_refusal(capabilities)
+    if refusal is not None:
+        print(f"Error: {refusal}.", file=sys.stderr)
+        sys.exit(2)
     _configure_logging()
     api_key = os.getenv("GENO_API_KEY") or None
     _enforce_secure_bind(host, api_key, allow_insecure=allow_insecure)

@@ -52,6 +52,8 @@ selfhost parser does not yet implement:
 - Typed JSON (proposal 0021): the type argument of
   `json_decode[User](text)` and the `json_decode`, `json_encode` and
   `json_encode_pretty` builtins.
+- Extern functions (accepted proposal 0025): `extern func` declarations and their
+  `python` and `js` bindings. No selfhost file uses them.
 - Self tail calls in constant stack (accepted proposal 0022). The self-hosted
   interpreter nests every call, so a deep tail recursion it interprets is
   bounded by its host's stack.

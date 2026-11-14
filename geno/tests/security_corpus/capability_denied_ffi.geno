@@ -1,0 +1,10 @@
+# EXPECT: E412
+# An extern function without the "ffi" capability is denied at the call,
+# before its binding's module is imported (proposal 0025).
+extern func run_shell(command: String) -> Int with ffi
+    python "os:system"
+end func
+
+func main() -> Int with ffi
+    return run_shell("echo ESCAPED")
+end func

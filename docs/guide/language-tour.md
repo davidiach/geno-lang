@@ -772,6 +772,25 @@ says where, such as `$.roles[0]: expected one of "Admin", "Member", got
 
 **Note:** `json_parse` returns `Result[JsonValue, String]`, not the original Geno type. A `json_parse` → `json_stringify` round-trip preserves the JSON structure faithfully, but the result is always a `JsonValue` tree — not your original Geno types. Use pattern matching to extract values from the `JsonValue` variants.
 
+## Extern Functions
+
+An extern function gives a host function a Geno signature (0.7 development
+line, Experimental):
+
+```geno
+extern func host_sqrt(x: Float) -> Float with ffi
+    python "math:sqrt"
+    js "Math.sqrt"
+end func
+```
+
+The interpreter and compiled Python call the `python` binding, a
+`module:attribute`; compiled JavaScript calls the `js` binding, a
+`module#export` or a global path. Every call needs the `ffi` capability,
+which only trusted lanes grant: `geno run --unsafe --cap ffi`, or a compiled
+program run with `--cap ffi`. The host's result is checked against the
+declared type, and a host exception is a panic that names the extern.
+
 ## Tuples
 
 A tuple's elements are read by position:

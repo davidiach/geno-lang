@@ -138,6 +138,10 @@ class FuncType(Type):
     param_types: tuple[Type, ...]
     return_type: Type
     effects: frozenset[str] = frozenset()
+    # Why the target being checked cannot call this function, for an extern
+    # with no way to run there (proposal 0025). Not part of the type's
+    # identity: it only marks where a use must be rejected.
+    unavailable: str | None = field(default=None, compare=False, repr=False)
 
     def __str__(self) -> str:
         params = ", ".join(str(t) for t in self.param_types)

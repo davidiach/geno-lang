@@ -945,9 +945,20 @@ class FunctionDef(Definition):
     type_params: list[str] = field(default_factory=list)  # func name[T, U](...)
     # Declared bounds per type parameter: func name[T: Ord + Hash](...)
     type_param_bounds: dict[str, list[str]] = field(default_factory=dict)
+    # An ``extern func`` (proposal 0025): its host bindings by target
+    # (``"python"``, ``"js"``) in source order. ``None`` for a Geno function;
+    # an extern has no body.
+    extern_bindings: dict[str, str] | None = None
+    # Set by the checker on an extern: the shapes its arguments and result
+    # cross the host boundary with (``geno/extern.py``).
+    _extern_shapes: Any = field(default=None, init=False, repr=False, compare=False)
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_function_def(self)
+
+    @property
+    def is_extern(self) -> bool:
+        return self.extern_bindings is not None
 
 
 @dataclass

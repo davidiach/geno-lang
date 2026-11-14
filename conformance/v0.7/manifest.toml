@@ -559,3 +559,22 @@ path = "programs/diagnostic_json_form.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E332"]
+
+# Proposal 0025 (Accepted): extern functions call host functions with checked
+# types. Conversion of every kind of type, each failure message, the
+# capability and each lane's refusal are covered by geno/tests/test_extern.py.
+
+[[cases]]
+id = "extern-functions"
+path = "programs/extern_functions.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["ffi", "print"]
+expected_stdout = "5.0\n11\n6\n2\n"
+
+[[cases]]
+id = "diagnostic-extern-type"
+path = "programs/diagnostic_extern_type.geno"
+kind = "diagnostic"
+targets = ["checker"]
+expected_diagnostics = ["E333"]

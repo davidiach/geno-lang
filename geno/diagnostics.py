@@ -80,6 +80,9 @@ class ErrorCode(Enum):
     # `json_decode` or `json_encode` is used at a type with no JSON form, or
     # as a function value, where its type is not known (proposal 0021).
     TYPE_JSON_FORM = "E332"
+    # An extern function's parameter or return type cannot cross the host
+    # boundary (proposal 0025).
+    TYPE_EXTERN_TYPE = "E333"
 
     # Warnings (W3xx): reported with Severity.WARNING once a program passes
     # the type checker; the program is still accepted.

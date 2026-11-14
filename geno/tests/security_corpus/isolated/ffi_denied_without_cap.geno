@@ -1,0 +1,13 @@
+# EXPECT: E412
+# LANE: isolated
+# RUN: --cap print
+# STDERR: Capability denied: 'run_shell' requires the 'ffi' capability
+# Without the ffi grant, an extern call in the isolated lane is denied before
+# its binding's module is imported, so no host code runs (proposal 0025).
+extern func run_shell(command: String) -> Int with ffi
+    python "os:system"
+end func
+
+func main() -> Unit with ffi, io
+    print(to_string(run_shell("echo ESCAPED")))
+end func
