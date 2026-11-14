@@ -362,6 +362,10 @@ class FunctionCall(Expression):
     # Set by the typechecker on a call of `json_decode`, `json_encode` or
     # `json_encode_pretty`: the `JsonCodec` of the type it works on.
     _json_codec: Any = field(default=None, init=False, repr=False, compare=False)
+    # The checker's working state for such a call: the type a `json_decode`
+    # produces once its context names it, and a `json_encode` call's value.
+    _json_target: Any = field(default=None, init=False, repr=False, compare=False)
+    _json_value: Any = field(default=None, init=False, repr=False, compare=False)
     # Set by the interpreter when it loads the enclosing function: this is a
     # self tail call (geno/tail_calls.py), run without a new frame.
     _self_tail_call: bool = field(default=False, init=False, repr=False, compare=False)
