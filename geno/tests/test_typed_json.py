@@ -712,3 +712,31 @@ def test_a_regular_recursive_generic_type_still_has_a_codec():
         '{"type":"Link","head":1,"rest":{"type":"Link","head":2,'
         '"rest":{"type":"End"}}}\n'
     )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_each_decode_in_one_expression_takes_its_own_type(backend):
+    """Two calls named by one tuple's context decode different types."""
+    source = (
+        "func main() -> Unit with io\n"
+        "    let pair: (Result[Int, String], Result[Bool, String]) = "
+        '(json_decode("1"), json_decode("true"))\n'
+        '    print(f"{pair}")\nend func\n'
+    )
+
+    assert backend(source) == "(Ok(value: 1), Ok(value: true))\n"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_encoding_writes_the_last_of_duplicate_keys_compact_or_pretty(backend):
+    """A JsonValue field with a repeated key encodes alike on every backend."""
+    source = (
+        "type Box = Box(v: JsonValue)\n\n"
+        "func main() -> Unit with io\n"
+        '    let dup: JsonValue = JsonObject([("a", JsonInt(1)), ("b", JsonInt(3)), '
+        '("a", JsonInt(2))])\n'
+        "    print(json_encode(Box(v: dup)))\n"
+        "    print(json_encode_pretty(Box(v: dup), 0))\nend func\n"
+    )
+
+    assert backend(source) == '{"v":{"a":2,"b":3}}\n{"v":{"a":2,"b":3}}\n'

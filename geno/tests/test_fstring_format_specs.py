@@ -144,6 +144,20 @@ def test_specs_on_other_values_and_inside_larger_interpolations(backend):
     assert backend(OTHER) == OTHER_EXPECTED
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_number_under_type_s_is_right_aligned_like_any_number(backend):
+    """`s` pads what `to_string` writes; an Int and a Float align alike."""
+    source = _program(
+        [
+            "    let n = 42\n",
+            "    let x = 2.5\n",
+            '    print(f"[{n:6s}] [{x:6s}] [{n:<6s}] [{"ab":4s}]")\n',
+        ]
+    )
+
+    assert backend(source) == "[    42] [   2.5] [42    ] [ab  ]\n"
+
+
 def test_the_python_prelude_and_the_interpreter_agree_on_every_spec():
     cases = itertools.chain(
         ((value, spec, "int") for value in INTS for spec in INT_SPECS[:23]),
