@@ -5276,6 +5276,15 @@ function _genoExternEntries(value, path) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
         _genoExternMismatch(path, "an object", value);
     }
+    // Only a plain object is data: a Promise, a Date or a class instance has
+    // a value its enumerable properties do not hold.
+    const prototype = globalThis.Object.getPrototypeOf(value);
+    if (prototype !== globalThis.Object.prototype && prototype !== null) {
+        const kind = value.constructor && typeof value.constructor.name === "string"
+            && value.constructor.name !== "" ? value.constructor.name : "object";
+        throw new _GenoExternMismatch(_genoExternWhere(path)
+            + "expected a plain object, got " + kind);
+    }
     return globalThis.Object.keys(value).map(key => [key, value[key]]);
 }
 
@@ -5315,7 +5324,8 @@ function _genoExternFromHost(value, shape, path, depth) {
     if (kind === "list") {
         if (!Array.isArray(value)) _genoExternMismatch(path, "an array", value);
         _checkCollectionKind("List", value.length);
-        return value.map((item, index) =>
+        // Array.from visits every index, so a hole is checked as undefined.
+        return Array.from(value, (item, index) =>
             _genoExternFromHost(item, shape[1], [path, "[" + index + "]"], depth));
     }
     if (kind === "tuple") {
@@ -5324,7 +5334,7 @@ function _genoExternFromHost(value, shape, path, depth) {
             throw new _GenoExternMismatch(_genoExternWhere(path) + "expected a tuple of "
                 + shape[1].length + " items, got " + value.length);
         }
-        return value.map((item, index) =>
+        return Array.from(value, (item, index) =>
             _genoExternFromHost(item, shape[1][index], [path, "[" + index + "]"], depth));
     }
     if (kind === "map") {
@@ -5351,7 +5361,7 @@ function _genoExternJsonFromHost(value, path, depth) {
     }
     if (Array.isArray(value)) {
         _checkCollectionKind("List", value.length);
-        return JsonArray(value.map((item, index) =>
+        return JsonArray(Array.from(value, (item, index) =>
             _genoExternJsonFromHost(item, [path, "[" + index + "]"], depth + 1)));
     }
     if (value instanceof _GENO_MAP || (typeof value === "object" && value !== undefined)) {

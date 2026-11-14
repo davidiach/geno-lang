@@ -101,6 +101,9 @@ module.exports = {
     intKeys: () => new Map([[1, "a"]]),
     orderedMap: () => ({ b: 1, a: 2 }),
     nothing: () => undefined,
+    sparse: () => new Array(2),
+    promise: () => Promise.resolve(42),
+    when: () => new Date(0),
     cycle: () => { const items = []; items.push(items); return items; },
     argsSeen: (...args) => JSON.stringify(args),
     countTo: n => Array.from({ length: n }, (_, index) => index),
@@ -1041,3 +1044,66 @@ def test_geno_doc_marks_an_extern(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     html = (tmp_path / "doc.html").read_text(encoding="utf-8")
     assert '<span class="keyword">extern func</span> host_sqrt' in html
+
+
+def test_a_function_named_extern_may_close_with_its_name() -> None:
+    source = textwrap.dedent(
+        """\
+        func extern(x: Int) -> Int
+            example (1) -> 2
+            return x + 1
+        end func extern
+
+        func main() -> Unit with io
+            print(extern(1))
+        end func
+        """
+    )
+    result = api.run(source, config=api.RunConfig(capabilities={"print"}))
+    assert result.ok, _messages(result)
+    assert result.output == "2\n"
+
+
+@pytest.mark.parametrize(
+    ("signature", "export", "message"),
+    [
+        (
+            "() -> List[Int]",
+            "sparse",
+            "Extern function 'f' returned a value that is not List[Int]: "
+            "$[0]: expected Int, got undefined",
+        ),
+        (
+            "() -> (Option[Int], Int)",
+            "sparse",
+            "Extern function 'f' returned a value that is not (Option[Int], Int): "
+            "$[1]: expected Int, got undefined",
+        ),
+        (
+            "() -> Map[String, Int]",
+            "promise",
+            "Extern function 'f' returned a value that is not Map[String, Int]: "
+            "expected a plain object, got Promise",
+        ),
+        (
+            "() -> JsonValue",
+            "when",
+            "Extern function 'f' returned a value that is not JsonValue: "
+            "expected a plain object, got Date",
+        ),
+    ],
+)
+@needs_node
+def test_js_results_that_are_not_plain_data_are_rejected(
+    host_dir: Path, signature: str, export: str, message: str
+) -> None:
+    source = _extern("f", signature, None, f"./ffi_host.js#{export}") + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(f())
+        end func
+        """
+    )
+    ok, failure = _run("js", source, host_dir)
+    assert not ok
+    assert failure == message

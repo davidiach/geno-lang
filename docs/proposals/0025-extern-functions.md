@@ -129,7 +129,8 @@ Python `tuple` or a JS array, and a `JsonValue` the host's plain JSON value.
 Results are validated against the declared type: `Int` must be an `int` that
 is not a `bool` (Python), or a safe integer (JS); `Float` accepts any number;
 lists and tuples accept a `list` or a `tuple` (Python) or an array (JS); maps
-accept a `dict` with `str` keys, or a plain object or a `Map` with string keys.
+accept a `dict` with `str` keys, or a plain object (not a Promise, a `Date` or
+a class instance) or a `Map` with string keys.
 A mismatch, a host exception, a binding that does not load or is not
 callable, and a backend with no binding are each a panic that names the
 extern, for example

@@ -511,11 +511,22 @@ class Parser(
         )
 
     def _at_extern_def(self) -> bool:
-        """Whether an extern declaration starts here (``extern func``)."""
+        """Whether an extern declaration starts here (``extern func``).
+
+        A declaration starts a line, so ``end func extern`` (the closing
+        name of a function called ``extern``) followed by another ``func``
+        is not one.
+        """
         return (
             self._check(TokenType.IDENTIFIER)
             and self._current().value == "extern"
             and self._peek(1).type is TokenType.FUNC
+            and (
+                self.pos == 0
+                or self.tokens[self.pos - 1].type is TokenType.EXPORT
+                or self._current().location.line
+                > self.tokens[self.pos - 1].location.line
+            )
         )
 
     def _parse_extern_def(self) -> FunctionDef:
