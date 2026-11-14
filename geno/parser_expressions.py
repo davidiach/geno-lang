@@ -497,6 +497,16 @@ class ExpressionParserMixin(ParserBase):
                 "to reverse, or a comprehension to take every nth element"
             )
         self._expect(TokenType.RBRACKET)
+        for written in (start, stop):
+            # A left-out bound is the empty tuple (see slice_bounds), so a
+            # written `()` would silently read as one.
+            if isinstance(written, TupleExpr) and not written.elements:
+                raise ParseError(
+                    "A slice bound is an Int; to slice from the start or to the "
+                    "end, leave the bound out, as in xs[:2] or xs[1:]",
+                    written.location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
+                )
 
         def bound(value: Expression | None) -> Expression:
             return (

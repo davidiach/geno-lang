@@ -1085,6 +1085,8 @@ class TypeChecker(ExhaustivenessMixin):
         # each one's codec is built once its type is settled (proposal 0021).
         self._typed_json_calls: list[FunctionCall] = []
         self._typed_json_names: list[Identifier] = []
+        # The ids of the names above that are the callee of such a call.
+        self._typed_json_callees: set[int] = set()
 
         # Trait support
         self.trait_defs: dict[str, TraitDef] = {}
@@ -4843,37 +4845,41 @@ class TypeChecker(ExhaustivenessMixin):
                 ErrorCode.TYPE_WRONG_ARITY,
             )
         expr._json_codec = None
-        callee.__dict__["_json_callee"] = True
-        expr.__dict__["_json_target"] = None
-        expr.__dict__["_json_value"] = ordered.get("value")
+        self._typed_json_callees.add(id(callee))
+        expr._json_target = None
+        expr._json_value = ordered.get("value")
         self._typed_json_calls.append(expr)
         if name != "json_decode":
             return _STRING_TYPE
         if expr._type_argument is not None:
             target = self._resolve_type(expr._type_argument)
-            expr.__dict__["_json_target"] = target
+            expr._json_target = target
             return ResultType(target, _STRING_TYPE)
-        return ResultType(TypeVar("T"), _STRING_TYPE)
+        # Fresh for each call: two calls in one expression, as in a tuple,
+        # may decode different types.
+        return ResultType(self._fresh_type_var(), _STRING_TYPE)
 
     def _record_json_target(self, expr: Expression, target: Type) -> None:
         """Let the context say which type a `json_decode` call produces."""
         if (
             isinstance(expr, FunctionCall)
             and expr._resolved_builtin_name == "json_decode"
-            and expr.__dict__.get("_json_target") is None
+            and expr._json_target is None
             and not self._has_type_vars(target)
             and not self._contains_any(target)
         ):
-            expr.__dict__["_json_target"] = target
+            expr._json_target = target
 
     def _settle_typed_json_calls(self) -> None:
         """Build the codec of every typed-JSON call, or say why it has none."""
         calls = list({id(call): call for call in self._typed_json_calls}.values())
         names = list({id(name): name for name in self._typed_json_names}.values())
+        callees = self._typed_json_callees
         self._typed_json_calls = []
         self._typed_json_names = []
+        self._typed_json_callees = set()
         for used in names:
-            if used.__dict__.get("_json_callee"):
+            if id(used) in callees:
                 continue
             # The type it works on is the call's: a function value has none.
             self._error(
@@ -4886,7 +4892,7 @@ class TypeChecker(ExhaustivenessMixin):
         for call in calls:
             name = cast(str, call._resolved_builtin_name)
             if name == "json_decode":
-                target = call.__dict__.get("_json_target")
+                target = call._json_target
                 if target is None:
                     self._error(
                         "Cannot tell which type json_decode produces here; name "
@@ -4897,7 +4903,7 @@ class TypeChecker(ExhaustivenessMixin):
                     )
                     continue
             else:
-                value = call.__dict__.get("_json_value")
+                value = call._json_value
                 target = getattr(value, "_resolved_type", None)
                 if not isinstance(target, Type):
                     continue
@@ -5672,9 +5678,10 @@ class TypeChecker(ExhaustivenessMixin):
                 self._error(str(error), expr.right.location, ErrorCode.TYPE_FORMAT_SPEC)
             return _STRING_TYPE
         expr._resolved_builtin_name = kind
-        if kind == "text" and static_kind == "float" and not spec.align:
+        if kind == "text" and static_kind in ("int", "float") and not spec.align:
             # A number is right-aligned unless the spec says otherwise, also
-            # when it is padded as the text `to_string` writes.
+            # when it is padded as the text `to_string` writes (an Int under
+            # `s`, a Float without a type).
             cast(StringLiteral, expr.right).value = ">" + spec_text
         if (
             kind == "text"

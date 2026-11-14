@@ -173,6 +173,13 @@ def test_a_step_is_rejected_with_the_alternatives(statement):
         parse(_function(statement))
 
 
+@pytest.mark.parametrize("statement", ["let y = xs[():2]", "let y = xs[1:()]"])
+def test_a_unit_bound_is_not_read_as_a_left_out_one(statement):
+    """A left-out bound is the empty tuple, so a written `()` is rejected."""
+    with pytest.raises(ParseError, match=r"slice bound is an Int.*xs\[:2\]"):
+        parse(_function(statement))
+
+
 def test_a_slice_cannot_be_assigned_to():
     with pytest.raises(ParseError, match="Invalid assignment target"):
         parse(_function("xs[0:1] = [2]"))

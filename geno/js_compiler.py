@@ -2412,19 +2412,30 @@ class JSCompiler(BaseCompiler):
                 )
             self._writeln(f"return {outcome};")
 
-    def _tail_call_values(self, call: FunctionCall) -> tuple[list[str], list[str]]:
+    def _tail_call_order(self, call: FunctionCall) -> list[CallArg | None]:
+        """A self tail call's argument for each parameter in order.
+
+        ``None`` stands for a parameter the call leaves to its default.
+        """
+        names = [p.name for p in self._tail_params]
+        ordered: list[CallArg | None]
+        if any(arg.name for arg in call.arguments):
+            ordered = self._reorder_call_args_for_compile(call.arguments, names)
+        else:
+            ordered = list(call.arguments)
+        return ordered + [None] * (len(names) - len(ordered))
+
+    def _tail_call_values(
+        self, call: FunctionCall, ordered: list[CallArg | None] | None = None
+    ) -> tuple[list[str], list[str]]:
         """A self tail call's arguments, bound in the order they are written.
 
         Returns ``(bindings, values)``: ``name = value`` pairs in source
         order, and for each parameter in order the binding's name, or
         ``undefined`` for one the call leaves to its default.
         """
-        names = [p.name for p in self._tail_params]
-        if any(arg.name for arg in call.arguments):
-            ordered = self._reorder_call_args_for_compile(call.arguments, names)
-        else:
-            ordered = list(call.arguments)
-        ordered += [None] * (len(names) - len(ordered))
+        if ordered is None:
+            ordered = self._tail_call_order(call)
         temporaries = {id(arg): self._fresh_temp() for arg in call.arguments}
         bindings = [
             f"{temporaries[id(arg)]} = {self._compile_expr(arg.value)}"
@@ -2447,23 +2458,16 @@ class JSCompiler(BaseCompiler):
 
     def _compile_tail_trampoline_call(self, call: FunctionCall) -> str:
         """The `_GenoTailCall` that asks the trampoline for the next call."""
-        concrete = [arg for arg in call.arguments]
-        names = [p.name for p in self._tail_params]
-        if any(arg.name for arg in call.arguments):
-            ordered = self._reorder_call_args_for_compile(call.arguments, names)
-        else:
-            ordered = list(call.arguments)
-        in_order = all(
-            a is b
-            for a, b in zip(concrete, [arg for arg in ordered if arg is not None])
-        )
-        if in_order:
+        ordered = self._tail_call_order(call)
+        written = [arg for arg in ordered if arg is not None]
+        if all(a is b for a, b in zip(call.arguments, written)):
+            # Written in parameter order: the values evaluate in place.
             values = [
                 "undefined" if arg is None else self._compile_expr(arg.value)
                 for arg in ordered
             ]
             return f"new _GenoTailCall({', '.join(values)})"
-        bindings, values = self._tail_call_values(call)
+        bindings, values = self._tail_call_values(call, ordered)
         while values and values[-1] == "undefined":
             values.pop()
         parameters = ", ".join(binding.split(" = ", 1)[0] for binding in bindings)
