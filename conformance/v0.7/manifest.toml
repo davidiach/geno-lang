@@ -560,7 +560,7 @@ kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E332"]
 
-# Proposal 0025 (Draft): extern functions call host functions with checked
+# Proposal 0025 (Accepted): extern functions call host functions with checked
 # types. Conversion of every kind of type, each failure message, the
 # capability and each lane's refusal are covered by geno/tests/test_extern.py.
 

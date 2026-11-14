@@ -1,12 +1,38 @@
 # Proposal 0025: Extern Functions
 
-- Status: Draft
+- Status: Accepted
+- Accepted: 2026-11-14 by David Iach (project lead)
 - Authors: Claude Code (drafted and implemented at the project lead's request)
 - Created: 2026-11-14
 - Discussion: https://github.com/davidiach/geno-lang/issues/240
 - Supersedes: None
-- Review: None yet. No independent human technical review has taken place.
+- Review: No independent human technical review took place. The project lead
+  accepted under the sole-maintainer provision in `GOVERNANCE.md`. Review
+  received: local validation, a high-effort automated self-review of #265 whose
+  findings were fixed or answered there, and GitHub CI on #265. These are not
+  independent approval.
 - Target: the 0.7 development line (`docs/spec/v0.7.md`, Draft)
+
+## Acceptance Decision
+
+On 2026-11-14 the project lead, David Iach, accepted this proposal as
+implemented on #265. In the Claude Code session that built it, asked whether
+to record acceptance of the Draft proposal before merging, the project lead
+chose "Accept 0025 and merge". This records acceptance for the 0.7
+development line and authorization to merge #265 after green CI.
+
+The decision accepts the choices under Reference Design and Security And
+Resource Limits as written: an extern declares exactly `with ffi`; the
+embedding API needs `allow_ffi=True` on top of the `ffi` grant; the isolated
+`geno run` lane, `geno run --json` and `geno serve` refuse `ffi`; the
+`browser` and `python-hosted` targets reject externs; and the CI/DX
+broad-exception budget rises from 56 to 57 for the host boundary. The
+Unresolved Questions stay open and do not block acceptance.
+
+The proposal was created and accepted on the same day. The usual seven-day
+review period in `docs/proposals/README.md` did not elapse; the project
+lead's explicit acceptance is recorded here as an exception to it. It does not
+imply that independent human review occurred.
 
 ## Summary
 

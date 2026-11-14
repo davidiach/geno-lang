@@ -13,7 +13,7 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
-- Extern functions (Experimental), from Draft
+- Extern functions (Experimental), from accepted
   [proposal 0025](docs/proposals/0025-extern-functions.md): `extern func
   name(params) -> Type with ffi`, followed by a `python "module:attribute"`
   binding, a `js "module#export"` or `js "Global.path"` binding, or both, and
