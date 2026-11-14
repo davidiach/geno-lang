@@ -13,6 +13,21 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- Extern functions (Experimental), from Draft
+  [proposal 0025](docs/proposals/0025-extern-functions.md): `extern func
+  name(params) -> Type with ffi`, followed by a `python "module:attribute"`
+  binding, a `js "module#export"` or `js "Global.path"` binding, or both, and
+  `end func`, gives a host function a Geno signature on the interpreter,
+  compiled Python and compiled JavaScript. Parameter and result types are
+  built from `Int`, `Float`, `String`, `Bool`, `Unit`, `List`, tuples,
+  `Option`, `Map[String, V]` and `JsonValue`; any other is the new diagnostic
+  E333. Every call needs the new `ffi` capability, and `ffi` is a new effect.
+  The host's result is checked against the declared type; a mismatch, a host
+  exception or a binding that does not load panics, naming the extern. With
+  `--target`, a use of an extern with no binding for the target is rejected.
+  The isolated `geno run` lane, `geno run --json` and `geno serve` refuse
+  `ffi`, and `RunConfig` grants it only with the new `allow_ffi=True`.
+  `extern`, `python` and `js` stay valid names.
 - Typed JSON, from [proposal 0021](docs/proposals/0021-typed-json.md):
   `json_decode[T](text) -> Result[T, String]`, `json_encode(value)` and
   `json_encode_pretty(value, indent)` decode to and encode from a program's

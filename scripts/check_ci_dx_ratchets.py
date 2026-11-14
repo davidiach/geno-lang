@@ -32,7 +32,11 @@ UNTYPED_FUNCTION_BUDGET = 423
 # `_geno_report_uncaught` formats the message and the Geno frames under two
 # broad handlers so a failure in either still prints the report, never a host
 # traceback; one fit within the previous slack.
-BROAD_EXCEPTION_HANDLER_BUDGET = 56
+# +1 for the extern function boundary (proposal 0025): importing a binding's
+# module and calling the host function run arbitrary host code, so one broad
+# handler in `_geno_extern_invoke` turns whatever it raises into a Geno panic
+# that names the extern.
+BROAD_EXCEPTION_HANDLER_BUDGET = 57
 WINDOWS_PACKAGE_POLICY_TEST = (
     "geno/tests/test_package_manager.py::TestManifestParse::"
     "test_manifest_filesystem_sensitive_dependency_name_raises"

@@ -34,7 +34,11 @@ from urllib.parse import urlsplit
 from ._darwin_resource import rlimit_as_ceiling
 from .api import RunConfig, constrain_prefix, run
 from .builtin_registry import DEFAULT_ALLOWED_CAPABILITIES
-from .capabilities import CapabilityParseError, normalize_capability_values
+from .capabilities import (
+    CapabilityParseError,
+    hosted_ffi_refusal,
+    normalize_capability_values,
+)
 from .execution_limits import DEFAULT_PROCESS_MAX_MEMORY_BYTES
 from .json_encoding import GenoJSONEncoder, int_to_decimal
 from .monitoring import HealthCheck, RunMetrics, RunOutcome, RuntimeMetricsCollector
@@ -1950,6 +1954,10 @@ def create_handler(
 
     if api_key is not None and not api_key.strip():
         raise ValueError("api_key must not be empty or whitespace")
+    for capabilities in (allowed_capabilities, default_request_capabilities):
+        refusal = hosted_ffi_refusal(capabilities)
+        if refusal is not None:
+            raise ValueError(refusal)
 
     if (
         isinstance(rate_limit_requests, bool)
@@ -3036,6 +3044,9 @@ def main(argv: list[str] | None = None) -> None:
         )
     except CapabilityParseError as exc:
         parser.error(str(exc))
+    refusal = hosted_ffi_refusal(allowed_capabilities)
+    if refusal is not None:
+        parser.error(refusal)
     api_key = os.environ.get("GENO_API_KEY") or None
     trusted_proxy = os.environ.get("GENO_TRUSTED_PROXY") or None
     _enforce_secure_bind(

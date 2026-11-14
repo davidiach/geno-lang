@@ -108,6 +108,7 @@ from .entrypoint import (
     is_async_execution_form,
     visible_type_aliases,
 )
+from .extern import js_binding
 from .format_spec import FormatSpecError, parse_format_spec
 
 if TYPE_CHECKING:
@@ -2073,9 +2074,12 @@ class JSCompiler(BaseCompiler):
         self._tail_params = defn.params
         self._tail_label = ""
         try:
-            self._compile_function_interior(
-                defn, tail_plan, tail_form, params, traced_default
-            )
+            if defn.is_extern:
+                self._compile_extern_body(defn)
+            else:
+                self._compile_function_interior(
+                    defn, tail_plan, tail_form, params, traced_default
+                )
         finally:
             (
                 self._tail_loop_calls,
@@ -2086,6 +2090,24 @@ class JSCompiler(BaseCompiler):
             ) = saved_tail
         self._dedent()
         self._writeln("};" if self._emit_function_assignments else "}")
+
+    def _compile_extern_body(self, defn: FunctionDef) -> None:
+        """An extern's body: the runtime checks ``ffi`` and calls the host.
+
+        The module a binding names is required only when the call is allowed
+        (proposal 0025).
+        """
+        if defn._extern_shapes is None:
+            raise JSCompileError(f"Extern function '{defn.name}' was not type-checked")
+        params, result = defn._extern_shapes
+        spec = (defn.extern_bindings or {}).get("js")
+        binding = None if spec is None else list(js_binding(spec))
+        arguments = ", ".join(self._mangle_name(p.name) for p in defn.params)
+        self._writeln(
+            f"return _genoExternCall({_json.dumps(defn.name)}, "
+            f"{_json.dumps(binding)}, [{arguments}], {_json.dumps(params)}, "
+            f"{_json.dumps(result)});"
+        )
 
     # -- Test-harness builds (proposal 0024) ---------------------------------
 

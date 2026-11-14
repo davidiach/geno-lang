@@ -123,6 +123,14 @@
     "function-definition": {
       "patterns": [
         {
+          "match": "\\b(extern)\\s+(func)\\s+([a-z_][a-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "storage.modifier.extern.geno" },
+            "2": { "name": "storage.type.function.geno" },
+            "3": { "name": "entity.name.function.geno" }
+          }
+        },
+        {
           "match": "\\b(func)\\s+([a-z_][a-z0-9_]*)\\b",
           "captures": {
             "1": { "name": "storage.type.function.geno" },

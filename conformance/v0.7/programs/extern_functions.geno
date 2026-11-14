@@ -1,0 +1,35 @@
+// Proposal 0025: an extern function gives a host function a Geno signature.
+// These bind standard library functions on both hosts, so the case runs
+// anywhere; each call needs the `ffi` capability.
+
+extern func host_sqrt(x: Float) -> Float with ffi
+    python "math:sqrt"
+    js "Math.sqrt"
+end func
+
+extern func host_max(a: Int, b: Int) -> Int with ffi
+    python "builtins:max"
+    js "Math.max"
+end func
+
+extern func host_abs(x: Int) -> Int with ffi
+    python "builtins:abs"
+    js "Math.abs"
+end func
+
+extern func host_floor(x: Float) -> Int with ffi
+    python "math:floor"
+    js "Math.floor"
+end func
+
+@untested("calls the host")
+func hypotenuse(a: Float, b: Float) -> Float
+    return host_sqrt(a * a + b * b)
+end func
+
+func main() -> Unit with ffi, io
+    print(hypotenuse(3.0, 4.0))
+    print(host_max(3, 11))
+    print(host_abs(-5) + 1)
+    print(host_floor(2.75))
+end func

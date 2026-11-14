@@ -58,6 +58,9 @@ $ geno run score.geno
   `requires`/`ensures` on generated inputs and prints a failing input, shrunk,
   in the form that follows `example` ([spec v0.7](docs/spec/v0.7.md) sections
   5.3.1 and 5.4).
+- Also on the 0.7 development line, `extern func` (experimental) declares a
+  typed host function, and every call needs the `ffi` capability, which the
+  sandboxed lanes refuse ([spec v0.7](docs/spec/v0.7.md) section 9.11.2).
 
 ## Quickstart
 

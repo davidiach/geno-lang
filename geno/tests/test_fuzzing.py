@@ -326,7 +326,8 @@ func main() -> Int
     return 42
 end func
 """
-        config = RunConfig(capabilities=set(caps), timeout=2.0)
+        # Granting `ffi` needs its own opt-in (proposal 0025).
+        config = RunConfig(capabilities=set(caps), timeout=2.0, allow_ffi=True)
         result = run(source, config=config)
         # Should always succeed since main() doesn't use any gated builtins
         assert result.ok is True

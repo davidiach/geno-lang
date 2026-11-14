@@ -667,6 +667,9 @@ def _run_interpreter(
             timeout=timeout,
             max_steps=1_000_000,
             capabilities=set(case.capabilities),
+            # The corpus is trusted: a case that declares `ffi` binds only
+            # standard library functions (proposal 0025).
+            allow_ffi="ffi" in case.capabilities,
         ),
     )
     if not result.ok:
