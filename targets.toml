@@ -18,14 +18,14 @@ description = "CLI and automation scripts running on the Python interpreter"
 runtime = "python"
 entry_command = "geno run"
 compile_command = "geno compile -o app.py"
-capabilities = ["fs", "http", "process", "env", "clock", "random", "print", "regex", "stdin", "serve"]
+capabilities = ["fs", "http", "process", "env", "clock", "random", "print", "regex", "stdin", "serve", "ffi"]
 
 [targets.node-cli]
 description = "CLI and automation scripts compiled to Node.js"
 runtime = "node"
 entry_command = "geno compile --target js -o app.js && node app.js"
 compile_command = "geno compile --target js -o app.js"
-capabilities = ["fs", "http", "env", "clock", "random", "print", "regex"]
+capabilities = ["fs", "http", "env", "clock", "random", "print", "regex", "ffi"]
 
 [targets.browser]
 description = "Browser apps compiled to static HTML/JS artifacts with canvas"

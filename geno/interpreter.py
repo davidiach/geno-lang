@@ -3842,7 +3842,14 @@ class Interpreter:
         spec = bindings.get("python")
         binding = None if spec is None else python_binding(spec)
         arguments = [env.lookup(param.name) for param in defn.params]
-        bound = {key: value.func for key, value in self._builtin_functions.items()}
+        ops = self.__dict__.get("_extern_ops")
+        if ops is None:
+            # Only the ungated collection builtins are read, so the adapter
+            # stays valid when capabilities are applied again.
+            ops = InterpreterJsonOps(
+                {key: value.func for key, value in self._builtin_functions.items()}
+            )
+            self._extern_ops = ops
         try:
             value = _runtime._geno_extern_invoke(
                 defn.name,
@@ -3850,7 +3857,7 @@ class Interpreter:
                 arguments,
                 params,
                 result_shape,
-                InterpreterJsonOps(bound),
+                ops,
             )
         except _runtime._GenoExternFailure as failure:
             raise RuntimeError(

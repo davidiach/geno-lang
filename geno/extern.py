@@ -100,11 +100,6 @@ def js_binding(spec: str) -> tuple[str | None, tuple[str, ...]]:
     return None, tuple(spec.split("."))
 
 
-def is_global_js_binding(spec: str) -> bool:
-    """Whether a JS binding names a global path, the one form a browser has."""
-    return js_binding(spec)[0] is None
-
-
 def marshal_shape(type_: Type) -> Shape:
     """The shape of *type_* at the host boundary.
 

@@ -105,7 +105,7 @@ from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
-from .extern import ExternTypeError, is_global_js_binding, marshal_shape
+from .extern import ExternTypeError, marshal_shape
 from .float_promotion import float_shape, promotion_shape
 from .format_spec import FormatSpecError, parse_format_spec, value_kind
 from .json_shape import JsonTypeError, build_codec
@@ -2642,11 +2642,11 @@ class TypeChecker(ExhaustivenessMixin):
         effects = frozenset(defn.effects) if defn.effects else frozenset()
         func_type = FuncType(param_types, return_type, effects)
         if defn.is_extern:
-            unavailable = self._extern_unavailable_message(defn)
-            if unavailable is not None:
-                # Carried by the signature itself, so a use through an import,
-                # a module namespace or an alias of the function finds it.
-                object.__setattr__(func_type, "_extern_unavailable", unavailable)
+            # Carried by the signature itself, so a use through an import, a
+            # module namespace or an alias of the function finds it.
+            func_type = dataclasses.replace(
+                func_type, unavailable=self._extern_unavailable_message(defn)
+            )
         param_names = [p.name for p in defn.params]
         num_defaults = sum(1 for p in defn.params if p.default_value is not None)
         return func_type, param_names, num_defaults
@@ -2660,26 +2660,18 @@ class TypeChecker(ExhaustivenessMixin):
         profile = self._target_profile
         if profile is None or defn.extern_bindings is None:
             return None
-        bindings = defn.extern_bindings
-        runtime = profile.runtime
-        if runtime == "python":
-            needed = "python"
-        elif runtime in {"node", "browser"}:
-            needed = "js"
-        else:
-            return None
-        spec = bindings.get(needed)
-        if spec is None:
+        if "ffi" not in profile.capabilities:
+            # Browser builds and the hosted runtime never grant `ffi`, so a
+            # call there could only be denied.
+            return (
+                f"Extern function '{defn.name}' is not available on the "
+                f"'{profile.target}' target: it never grants the 'ffi' capability"
+            )
+        needed = "python" if profile.runtime == "python" else "js"
+        if needed not in defn.extern_bindings:
             return (
                 f"Extern function '{defn.name}' is not available on the "
                 f"'{profile.target}' target: it has no {needed} binding"
-            )
-        if runtime == "browser" and not is_global_js_binding(spec):
-            return (
-                f"Extern function '{defn.name}' is not available on the "
-                f"'{profile.target}' target: a browser loads no modules, so "
-                f'its js binding must be a global path such as "Math.sqrt", '
-                f"not {spec!r}"
             )
         return None
 
@@ -5342,9 +5334,8 @@ class TypeChecker(ExhaustivenessMixin):
         if self._reject_ambiguous_import_use(expr.name, env, expr.location):
             return AnyType()
         type_ = env.lookup(expr.name)
-        unavailable = getattr(type_, "_extern_unavailable", None)
-        if unavailable is not None:
-            self._error(unavailable, expr.location)
+        if isinstance(type_, FuncType) and type_.unavailable is not None:
+            self._error(type_.unavailable, expr.location)
         if type_ is None:
             if expr.name in self._target_rejected:
                 self._error(self._target_rejected[expr.name], expr.location)
@@ -6788,9 +6779,8 @@ class TypeChecker(ExhaustivenessMixin):
             )
             if ns_name in self._module_exports:
                 sym_type = self._module_exports[ns_name].get(expr.field_name)
-                unavailable = getattr(sym_type, "_extern_unavailable", None)
-                if unavailable is not None:
-                    self._error(unavailable, expr.location)
+                if isinstance(sym_type, FuncType) and sym_type.unavailable is not None:
+                    self._error(sym_type.unavailable, expr.location)
                 if sym_type is not None:
                     target = self._generic_target(expr, env)
                     if target is not None:

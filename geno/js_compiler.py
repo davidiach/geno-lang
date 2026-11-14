@@ -2103,11 +2103,13 @@ class JSCompiler(BaseCompiler):
         spec = (defn.extern_bindings or {}).get("js")
         binding = None if spec is None else list(js_binding(spec))
         arguments = ", ".join(self._mangle_name(p.name) for p in defn.params)
-        self._writeln(
-            f"return _genoExternCall({_json.dumps(defn.name)}, "
-            f"{_json.dumps(binding)}, [{arguments}], {_json.dumps(params)}, "
-            f"{_json.dumps(result)});"
-        )
+        # Located at the declaration, as the interpreter locates the call.
+        with self._traced_statement(defn.location):
+            self._writeln(
+                f"return _genoExternCall({_json.dumps(defn.name)}, "
+                f"{_json.dumps(binding)}, [{arguments}], {_json.dumps(params)}, "
+                f"{_json.dumps(result)});"
+            )
 
     # -- Test-harness builds (proposal 0024) ---------------------------------
 

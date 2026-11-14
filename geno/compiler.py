@@ -1630,10 +1630,12 @@ class Compiler(BaseCompiler, ASTVisitor):
         spec = (defn.extern_bindings or {}).get("python")
         binding = None if spec is None else python_binding(spec)
         arguments = _python_tuple(self._mangle_name(p.name) for p in defn.params)
-        self._writeln(
-            f"return _geno_extern_call({defn.name!r}, {binding!r}, "
-            f"{arguments}, {params!r}, {result!r})"
-        )
+        # Located at the declaration, as the interpreter locates the call.
+        with self._traced_statement(defn.location):
+            self._writeln(
+                f"return _geno_extern_call({defn.name!r}, {binding!r}, "
+                f"{arguments}, {params!r}, {result!r})"
+            )
 
     def _compile_function_interior(
         self, defn: FunctionDef, tail_plan: TailCallPlan | None

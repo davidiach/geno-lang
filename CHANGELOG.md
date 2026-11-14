@@ -24,7 +24,8 @@ package version stays 0.6.0, and the Draft
   E333. Every call needs the new `ffi` capability, and `ffi` is a new effect.
   The host's result is checked against the declared type; a mismatch, a host
   exception or a binding that does not load panics, naming the extern. With
-  `--target`, a use of an extern with no binding for the target is rejected.
+  `--target`, a use of an extern with no binding for the target is rejected,
+  as is any use on `browser` or `python-hosted`, which never grant `ffi`.
   The isolated `geno run` lane, `geno run --json` and `geno serve` refuse
   `ffi`, and `RunConfig` grants it only with the new `allow_ffi=True`.
   `extern`, `python` and `js` stay valid names.

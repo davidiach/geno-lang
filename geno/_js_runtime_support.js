@@ -5297,6 +5297,7 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "string") {
         if (typeof value !== "string") _genoExternMismatch(path, "String", value);
+        _checkCollectionKind("String", value.length);
         return value;
     }
     if (kind === "bool") {
@@ -5313,6 +5314,7 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "list") {
         if (!Array.isArray(value)) _genoExternMismatch(path, "an array", value);
+        _checkCollectionKind("List", value.length);
         return value.map((item, index) =>
             _genoExternFromHost(item, shape[1], [path, "[" + index + "]"], depth));
     }
@@ -5326,7 +5328,9 @@ function _genoExternFromHost(value, shape, path, depth) {
             _genoExternFromHost(item, shape[1][index], [path, "[" + index + "]"], depth));
     }
     if (kind === "map") {
-        return _mapLiteral(_genoExternEntries(value, path).map(([key, item]) =>
+        const entries = _genoExternEntries(value, path);
+        _checkCollectionKind("Map", entries.length);
+        return _mapLiteral(entries.map(([key, item]) =>
             [key, _genoExternFromHost(item, shape[1], [path, _genoJsonKey(key)], depth)]));
     }
     return _genoExternJsonFromHost(value, path, depth);
@@ -5341,13 +5345,19 @@ function _genoExternJsonFromHost(value, path, depth) {
     if (typeof value === "number") {
         return _GENO_NUMBER.isSafeInteger(value) ? JsonInt(value) : JsonFloat(value);
     }
-    if (typeof value === "string") return JsonString(value);
+    if (typeof value === "string") {
+        _checkCollectionKind("String", value.length);
+        return JsonString(value);
+    }
     if (Array.isArray(value)) {
+        _checkCollectionKind("List", value.length);
         return JsonArray(value.map((item, index) =>
             _genoExternJsonFromHost(item, [path, "[" + index + "]"], depth + 1)));
     }
     if (value instanceof _GENO_MAP || (typeof value === "object" && value !== undefined)) {
-        return JsonObject(_genoExternEntries(value, path).map(([key, item]) =>
+        const entries = _genoExternEntries(value, path);
+        _checkCollectionKind("Map", entries.length);
+        return JsonObject(entries.map(([key, item]) =>
             [key, _genoExternJsonFromHost(item, [path, _genoJsonKey(key)], depth + 1)]));
     }
     return _genoExternMismatch(path, "a JSON value", value);

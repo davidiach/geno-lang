@@ -431,7 +431,8 @@ def validate_target_surface(
     target_infos = cast(Mapping[str, Any], raw.get("targets", {}))
     builtin_infos = cast(Mapping[str, Any], raw.get("builtins", {}))
     source_specs = source_builtin_specs()
-    known_capabilities = set(CAPABILITY_MAP)
+    # `ffi` gates extern functions, not builtins (proposal 0025).
+    known_capabilities = set(CAPABILITY_MAP) | {"ffi"}
     targets_to_check = tuple(sorted(VALID_TARGETS))
     expected_gated = {
         name for name, spec in source_specs.items() if spec.capability is not None

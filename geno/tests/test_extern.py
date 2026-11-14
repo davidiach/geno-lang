@@ -81,6 +81,10 @@ def args_seen(*args):
     return repr(args)
 
 
+def count_to(n):
+    return list(range(n))
+
+
 not_callable = 42
 """
 
@@ -99,6 +103,7 @@ module.exports = {
     nothing: () => undefined,
     cycle: () => { const items = []; items.push(items); return items; },
     argsSeen: (...args) => JSON.stringify(args),
+    countTo: n => Array.from({ length: n }, (_, index) => index),
     notCallable: 42,
     counter: { value: 5, read() { return this.value; } },
 };
@@ -459,10 +464,7 @@ MAIN_CALLS = textwrap.dedent(
 )
 
 
-@pytest.mark.parametrize(
-    ("target", "ok"),
-    [("python-cli", False), ("python-hosted", False), ("node-cli", True)],
-)
+@pytest.mark.parametrize(("target", "ok"), [("python-cli", False), ("node-cli", True)])
 def test_a_target_rejects_a_use_of_an_extern_with_no_binding_for_it(
     target: str, ok: bool
 ) -> None:
@@ -476,6 +478,17 @@ def test_a_target_rejects_a_use_of_an_extern_with_no_binding_for_it(
         ) in _messages(result)
 
 
+@pytest.mark.parametrize("target", ["browser", "python-hosted"])
+def test_a_target_that_never_grants_ffi_rejects_every_extern_use(target: str) -> None:
+    source = _extern("only_js", "(x: Int) -> Int", "m:f", "Math.abs") + MAIN_CALLS
+    result = _check(source, target=target)
+    assert not result.ok
+    assert (
+        f"Extern function 'only_js' is not available on the '{target}' target: "
+        "it never grants the 'ffi' capability"
+    ) in _messages(result)
+
+
 def test_an_unused_extern_with_no_binding_for_the_target_is_accepted() -> None:
     source = _extern("only_js", "(x: Int) -> Int", None, "m#f") + textwrap.dedent(
         """\
@@ -485,15 +498,6 @@ def test_an_unused_extern_with_no_binding_for_the_target_is_accepted() -> None:
         """
     )
     assert _check(source, target="python-cli").ok
-
-
-def test_a_browser_accepts_only_a_global_js_binding() -> None:
-    module_form = _extern("only_js", "(x: Int) -> Int", None, "m#f") + MAIN_CALLS
-    result = _check(module_form, target="browser")
-    assert not result.ok
-    assert any("a browser loads no modules" in message for message in _messages(result))
-    global_form = _extern("only_js", "(x: Int) -> Int", None, "Math.abs") + MAIN_CALLS
-    assert _check(global_form, target="browser").ok
 
 
 def test_an_alias_of_an_unavailable_extern_is_rejected() -> None:
@@ -957,3 +961,83 @@ def test_geno_run_lanes(tmp_path: Path) -> None:
     )
     assert unsafe.returncode == 0, unsafe.stderr
     assert unsafe.stdout == "3.0\n"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_host_result_is_bound_by_the_collection_limit(
+    backend: str, host_dir: Path
+) -> None:
+    source = _extern(
+        "count_to",
+        "(n: Int) -> List[Int]",
+        "ffi_host:count_to",
+        "./ffi_host.js#countTo",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(length(count_to(20)))
+        end func
+        """
+    )
+    if backend == "interpreter":
+        result = api.run(
+            source,
+            config=api.RunConfig(
+                capabilities={"ffi", "print"}, allow_ffi=True, max_collection_size=10
+            ),
+        )
+        assert not result.ok
+        message = result.diagnostics[0].message
+    else:
+        if backend == "python":
+            path = host_dir / "program.py"
+            code = "_GENO_MAX_COLLECTION_SIZE = 10\n" + compile_to_python(source)
+            command = [sys.executable, str(path)]
+        else:
+            path = host_dir / "program.js"
+            js = compile_to_js(source)
+            assert isinstance(js, str)
+            code = "globalThis.__GENO_MAX_COLLECTION_SIZE = 10;\n" + js
+            command = ["node", str(path)]
+        path.write_text(code, encoding="utf-8")
+        proc = subprocess.run(
+            [*command, "--cap", "ffi,print"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=host_dir,
+            env={**os.environ, "PYTHONPATH": str(host_dir)},
+        )
+        assert proc.returncode != 0, proc.stdout
+        message = _failure_line(proc.stderr)
+    assert "size exceeds limit" in message, message
+
+
+@pytest.mark.parametrize("backend", ["python", pytest.param("js", marks=needs_node)])
+def test_a_compiled_extern_frame_is_located_at_its_declaration(
+    backend: str, tmp_path: Path
+) -> None:
+    (tmp_path / "main.geno").write_text(SQRT_PROGRAM, encoding="utf-8")
+    args = ["compile", "main.geno", "-o", "out.py"]
+    run = [sys.executable, "out.py"]
+    if backend == "js":
+        args = ["compile", "--target", "js", "main.geno", "-o", "out.js"]
+        run = ["node", "out.js"]
+    assert _geno_cli(*args, cwd=tmp_path).returncode == 0
+    proc = subprocess.run(
+        [*run, "--cap", "print"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=tmp_path,
+    )
+    assert proc.returncode != 0
+    assert "main.geno:1:1 in host_sqrt" in proc.stderr, proc.stderr
+
+
+def test_geno_doc_marks_an_extern(tmp_path: Path) -> None:
+    (tmp_path / "main.geno").write_text(SQRT_PROGRAM, encoding="utf-8")
+    proc = _geno_cli("doc", "main.geno", "-o", "doc.html", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    html = (tmp_path / "doc.html").read_text(encoding="utf-8")
+    assert '<span class="keyword">extern func</span> host_sqrt' in html

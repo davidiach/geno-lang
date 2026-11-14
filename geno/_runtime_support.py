@@ -3766,6 +3766,10 @@ class _GenoJsonOps:
     def map_pairs(self, value: Any) -> Any:
         return map_entries(value)
 
+    def extern_size(self, kind: Any, size: Any) -> None:
+        """Bound a container an extern's host returned (proposal 0025)."""
+        _check_collection_kind(kind, size)
+
 
 _GENO_JSON_NODES = {
     "JsonString": JsonString,
@@ -4411,6 +4415,7 @@ def _geno_extern_from_host(
     if kind == "string":
         if not isinstance(value, str):
             _geno_extern_mismatch(path, "String", value)
+        _geno_extern_size(ops, "String", len(value))
         return value
     if kind == "bool":
         if not isinstance(value, bool):
@@ -4427,6 +4432,7 @@ def _geno_extern_from_host(
     if kind == "list":
         if not isinstance(value, (list, tuple)):
             _geno_extern_mismatch(path, "a list", value)
+        _geno_extern_size(ops, "List", len(value))
         return [
             _geno_extern_from_host(
                 item, shape[1], (path, "[" + str(index) + "]"), ops, depth
@@ -4453,6 +4459,7 @@ def _geno_extern_from_host(
     if kind == "map":
         if not isinstance(value, dict):
             _geno_extern_mismatch(path, "a dict", value)
+        _geno_extern_size(ops, "Map", len(value))
         pairs = []
         for key, item in value.items():
             if not isinstance(key, str):
@@ -4481,8 +4488,10 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
     if isinstance(value, float):
         return ops.node("JsonFloat", value)
     if isinstance(value, str):
+        _geno_extern_size(ops, "String", len(value))
         return ops.node("JsonString", value)
     if isinstance(value, (list, tuple)):
+        _geno_extern_size(ops, "List", len(value))
         return ops.node(
             "JsonArray",
             [
@@ -4493,6 +4502,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
             ],
         )
     if isinstance(value, dict):
+        _geno_extern_size(ops, "Map", len(value))
         entries = []
         for key, item in value.items():
             if not isinstance(key, str):
@@ -4509,6 +4519,23 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
     return _geno_extern_mismatch(path, "a JSON value", value)
 
 
+def _geno_extern_spec(binding: Any) -> str:
+    """A Python binding as it is written, ``module:attribute``."""
+    module, attributes = binding
+    return str(module) + ":" + ".".join(attributes)
+
+
+def _geno_extern_size(ops: Any, kind: str, size: int) -> None:
+    """Apply compiled Python's collection limit to a host container.
+
+    The interpreter's adapter has no such hook: it checks the whole result
+    against its own configured limits afterwards.
+    """
+    check = getattr(ops, "extern_size", None)
+    if check is not None:
+        check(kind, size)
+
+
 def _geno_extern_load(name: str, binding: Any) -> Any:
     """The host function a Python binding names, imported on first use.
 
@@ -4519,7 +4546,6 @@ def _geno_extern_load(name: str, binding: Any) -> Any:
     cached = _GENO_EXTERN_HOSTS.get(binding)
     if cached is not None:
         return cached
-    spec = module + ":" + ".".join(attributes)
     import importlib
 
     target = importlib.import_module(module)
@@ -4530,7 +4556,7 @@ def _geno_extern_load(name: str, binding: Any) -> Any:
             "Extern function '"
             + name
             + "' has a python binding '"
-            + spec
+            + _geno_extern_spec(binding)
             + "' that is not callable"
         )
     _GENO_EXTERN_HOSTS[binding] = target
@@ -4569,9 +4595,7 @@ def _geno_extern_invoke(
                 "Extern function '"
                 + name
                 + "' could not load its python binding '"
-                + binding[0]
-                + ":"
-                + ".".join(binding[1])
+                + _geno_extern_spec(binding)
                 + "': "
                 + detail
             ) from None

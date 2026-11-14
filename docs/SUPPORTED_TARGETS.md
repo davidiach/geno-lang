@@ -77,7 +77,7 @@ pytest backend parity suites.
 
 CLI and automation scripts running on the Python interpreter. Full access to filesystem, HTTP, process execution, and environment variables when capabilities are granted.
 
-**Capabilities:** fs, http, process, stdin, env, clock, random, print, regex, serve
+**Capabilities:** fs, http, process, stdin, env, clock, random, print, regex, serve, ffi
 
 ### node-cli
 
@@ -90,7 +90,7 @@ redirects discard caller headers. `http_request` preserves ordered duplicate
 header pairs and returns scheme, transport, and network-policy failures as
 `Err`. User-authored process execution is not supported on this target.
 
-**Capabilities:** fs, http, env, clock, random, print, regex
+**Capabilities:** fs, http, env, clock, random, print, regex, ffi
 
 ### browser
 

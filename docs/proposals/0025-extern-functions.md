@@ -111,10 +111,12 @@ extern, for example
 Int, got str`. Paths use typed JSON's notation, and a value nested more than
 320 levels deep is rejected.
 
-**Targets.** With `--target`, the checker rejects every use of an extern that
-has no binding for the target's runtime (Python for `python-cli` and
-`python-hosted`, JS for `node-cli` and `browser`), and on `browser` a JS
-binding that names a module. The unavailability travels with the function's
+**Targets.** With `--target`, the checker rejects every use of an extern on a
+target whose profile never grants `ffi` (`browser`, whose pages get a fixed
+grant, and `python-hosted`, since `geno serve` refuses it), and on the others
+every use of an extern with no binding for the target's runtime (Python for
+`python-cli`, JS for `node-cli`). `targets.toml` lists `ffi` among the
+capabilities of `python-cli` and `node-cli` only. The unavailability travels with the function's
 signature, so a use through an import, a module namespace or a local alias is
 rejected too. `geno compile` checks against the target it compiles for, so
 it rejects such a use as well. Only an untargeted check (as for
@@ -211,7 +213,9 @@ Ships in the 0.7 development line, marked Experimental.
    object form; left out to keep the first version small.
 3. **Bytes.** Geno has no bytes type; a host function that needs one can take
    a `String` or a `List[Int]`.
-4. **Browser ES modules.** A browser build can only reach globals.
+4. **Browser builds.** A page grants a fixed set of capabilities that does not
+   include `ffi`, so the `browser` target rejects externs. Allowing global-path
+   bindings there would need a way for a page to opt in.
 5. **The self-hosted frontend** does not parse `extern`.
 
 ## Implementation Plan
