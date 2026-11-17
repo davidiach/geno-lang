@@ -270,8 +270,9 @@ class TestTextReport:
         completed = geno_test("--properties", "my dir/abs.geno", cwd=tmp_path)
 
         assert completed.returncode == 1
-        assert "--filter abs_val 'my dir/abs.geno'" in completed.stdout
-        assert reproduce_line(completed.stdout, "abs_val")[-1] == "my dir/abs.geno"
+        assert reproduce_line(completed.stdout, "abs_val")[-1] == str(
+            Path("my dir") / "abs.geno"
+        )
 
     def test_warnings_are_listed_with_their_notes(self, tmp_path):
         write(tmp_path, "exact.geno", EXACT_GAVE_UP)

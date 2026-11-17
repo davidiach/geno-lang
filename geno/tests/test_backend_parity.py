@@ -670,7 +670,8 @@ def _compiled_python_output(
         proc = subprocess.run(
             [sys.executable, tmp_path, *_cap_args(capabilities)],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=10,
         )
         if proc.returncode != 0:
@@ -702,7 +703,7 @@ def _compiled_js_output(
         proc = subprocess.run(
             ["node", tmp_path, *_cap_args(capabilities)],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=GENERATED_PROGRAM_TIMEOUT,
         )
         if proc.returncode != 0:

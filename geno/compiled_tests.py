@@ -84,6 +84,36 @@ def _main():
         except OverflowError:
             return bool(a == b)
 
+    def sets_match(a, b):
+        if len(a) != len(b):
+            return False
+        left, right = list(a), list(b)
+        owner = [-1] * len(right)
+        paired = [-1] * len(left)
+        for start in range(len(left)):
+            # Find a free partner, moving earlier matches when their tolerances overlap.
+            queue = [start]
+            previous = {{}}
+            free = -1
+            for i in queue:
+                for j, candidate in enumerate(right):
+                    if j in previous or not equal(left[i], candidate):
+                        continue
+                    previous[j] = i
+                    if owner[j] < 0:
+                        free = j
+                        break
+                    queue.append(owner[j])
+                if free >= 0:
+                    break
+            if free < 0:
+                return False
+            while free >= 0:
+                i = previous[free]
+                owner[free] = i
+                paired[i], free = free, paired[i]
+        return True
+
     def equal(a, b):
         if type(a) in (int, float) and type(b) in (int, float):
             return numbers_match(a, b)
@@ -102,9 +132,7 @@ def _main():
             inner_a = getattr(a, wrappers[type(a).__name__])
             inner_b = getattr(b, wrappers[type(a).__name__])
             if isinstance(inner_a, (set, frozenset)):
-                return len(inner_a) == len(inner_b) and all(
-                    any(equal(x, y) for y in inner_b) for x in inner_a
-                )
+                return sets_match(inner_a, inner_b)
             return equal(inner_a, inner_b)
         return bool(a == b)
 
@@ -201,6 +229,37 @@ _JS_DRIVER = f"""
         if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
         return Math.abs(a - b) <= Math.max(1e-9 * Math.max(Math.abs(a), Math.abs(b)), 1e-12);
     }};
+    const _setsMatch = (a, b, inner) => {{
+        if (a._data.size !== b._data.size) return false;
+        const left = [...a._data.values()];
+        const right = [...b._data.values()];
+        const owner = Array(right.length).fill(-1);
+        const paired = Array(left.length).fill(-1);
+        for (let start = 0; start < left.length; start++) {{
+            // Follow alternating matches until a free right-hand value is reached.
+            const queue = [start];
+            const previous = new Map();
+            let free = -1;
+            for (const i of queue) {{
+                for (let j = 0; j < right.length; j++) {{
+                    if (previous.has(j) || !_equal(left[i], right[j], inner)) continue;
+                    previous.set(j, i);
+                    if (owner[j] < 0) {{ free = j; break; }}
+                    queue.push(owner[j]);
+                }}
+                if (free >= 0) break;
+            }}
+            if (free < 0) return false;
+            while (free >= 0) {{
+                const i = previous.get(free);
+                owner[free] = i;
+                const old = paired[i];
+                paired[i] = free;
+                free = old;
+            }}
+        }}
+        return true;
+    }};
     // Geno equality, with the tolerance an example gives a Float. A
     // JavaScript value does not say whether it is a Float, so the result's
     // static shape does.
@@ -214,10 +273,7 @@ _JS_DRIVER = f"""
         if (a instanceof GenoMutableMap && b instanceof GenoMutableMap) return _equal(a._data, b._data, shape);
         if (a instanceof GenoSet && b instanceof GenoSet) {{
             const inner = Array.isArray(shape) && shape[0] === "sequence" ? shape[1] : null;
-            const left = [...a._data.values()];
-            const right = [...b._data.values()];
-            return left.length === right.length
-                && left.every((item) => right.some((other) => _equal(item, other, inner)));
+            return _setsMatch(a, b, inner);
         }}
         if (Array.isArray(shape) && Array.isArray(a) && Array.isArray(b)) {{
             if (shape[0] === "sequence") {{

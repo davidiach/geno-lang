@@ -230,3 +230,15 @@ def test_an_empty_interpolation_before_a_spec_is_still_an_error():
 def test_the_formatter_leaves_specs_alone():
     source = _one("[{n:>5}] [{n:05d}] [{n::^7}]")
     assert format_source(source) == source
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_comment_punctuation_is_not_a_format_spec(backend):
+    source = _one("{n /* note: [ */ + 1}:{n /* ) */:05d}")
+    assert backend(source) == "43:00042\n"
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
+def test_float_formatting_with_host_named_constructors():
+    source = "type Packet = DataView | ArrayBuffer\n" + _one("{n:.2f}", "let n = 2.5")
+    assert _compiled_js_output(source) == "2.50\n"

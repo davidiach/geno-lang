@@ -1262,7 +1262,7 @@ function _safe_index(target, index) {
 
 // round-half-even(|x| * 10^power) as a BigInt, for a finite double x.
 function _genoScaledDecimal(x, power) {
-    const view = new DataView(new ArrayBuffer(8));
+    const view = new globalThis.DataView(new globalThis.ArrayBuffer(8));
     view.setFloat64(0, Math.abs(x));
     const bits = view.getBigUint64(0);
     const biased = Number((bits >> 52n) & 0x7ffn);
@@ -5306,7 +5306,7 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "string") {
         if (typeof value !== "string") _genoExternMismatch(path, "String", value);
-        _checkCollectionKind("String", value.length);
+        _checkCollectionKind("String", _stringLength(value));
         return value;
     }
     if (kind === "bool") {
@@ -5356,7 +5356,7 @@ function _genoExternJsonFromHost(value, path, depth) {
         return _GENO_NUMBER.isSafeInteger(value) ? JsonInt(value) : JsonFloat(value);
     }
     if (typeof value === "string") {
-        _checkCollectionKind("String", value.length);
+        _checkCollectionKind("String", _stringLength(value));
         return JsonString(value);
     }
     if (Array.isArray(value)) {

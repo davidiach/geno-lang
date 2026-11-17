@@ -274,6 +274,9 @@ class UserType(Type):
 
     name: str
     type_args: tuple[Type, ...] = ()
+    # The constructor registry uses the defining module even for an aliased
+    # import. Keep the unqualified spelling in diagnostics.
+    definition_scope: str = field(default="", repr=False)
 
     def __str__(self) -> str:
         if self.type_args:
@@ -358,11 +361,9 @@ def type_children(
     if isinstance(t, FuncType):
         n = len(t.param_types)
         children = (*t.param_types, t.return_type)
-        eff = t.effects
-        return children, lambda cs, _n=n, _e=eff: FuncType(cs[:_n], cs[_n], _e)
+        return children, lambda cs: FuncType(cs[:n], cs[n], t.effects, t.unavailable)
     if isinstance(t, UserType) and t.type_args:
-        nm = t.name
-        return tuple(t.type_args), lambda cs, _n=nm: UserType(_n, cs)
+        return t.type_args, lambda cs: UserType(t.name, cs, t.definition_scope)
     return None
 
 

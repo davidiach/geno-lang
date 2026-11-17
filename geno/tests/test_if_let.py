@@ -121,6 +121,34 @@ def test_every_backend_runs_if_let_the_same(backend):
     assert backend(PROGRAM) == EXPECTED
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_await_in_an_if_let_arm(backend):
+    source = """
+async func twice(x: Int) -> Int
+    return x * 2
+end func
+async func option(x: Int) -> Option[Int]
+    return Some(x)
+end func
+async func pick(o: Option[Int]) -> Int
+    return if let Some(x) = o then await twice(x) else if let Some(y) = await option(5) then await twice(y) else 0 end if
+end func
+async func guarded(pair: (Int, Int)) -> Int
+    return match pair with
+        | (x, y) when (await twice(x)) == y -> await twice(y)
+        | _ -> 0
+    end match
+end func
+func main() -> Unit with io
+    print(await pick(Some(3)))
+    print(await pick(None))
+    print(await guarded((2, 4)))
+    print(await guarded((2, 5)))
+end func
+"""
+    assert backend(source) == "6\n10\n8\n0\n"
+
+
 def test_the_program_checks_and_its_examples_hold():
     assert _messages(PROGRAM) == []
 

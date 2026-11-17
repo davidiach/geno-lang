@@ -3742,6 +3742,46 @@ class TestAddManifestTransaction:
         assert not self._journal(root).exists()
         assert self._leftovers(root) == []
 
+    @pytest.mark.parametrize("same_as_staged", [False, True])
+    def test_add_preserves_a_manifest_saved_after_journaling(
+        self, tmp_path, same_as_staged
+    ):
+        from geno import package_manager
+
+        root, _manifest, _tag = self._project(tmp_path, "new")
+        manifest_path = root / "geno.toml"
+        edit = b'name = "saved-during-publication"\n'
+        write_journal = package_manager._write_transaction_journal
+
+        def journal_then_edit(path, payload):
+            nonlocal edit
+            write_journal(path, payload)
+            if same_as_staged:
+                edit = (root / (payload["transaction"] + ".toml.next")).read_bytes()
+            manifest_path.write_bytes(edit)
+
+        with (
+            mock.patch.object(
+                package_manager, "_write_transaction_journal", journal_then_edit
+            ),
+            mock.patch.object(
+                package_manager,
+                "_git_clone",
+                TestPackageTransactions._clone_with_source,
+            ),
+            mock.patch.object(
+                package_manager, "_git_head_commit", return_value=self.COMMIT
+            ),
+            pytest.raises(RuntimeError, match=r"geno\.toml changed"),
+        ):
+            add("lib", self.URL, project_root=root)
+
+        assert manifest_path.read_bytes() == edit
+        assert parse_lockfile(root / "geno.lock").dependencies == {}
+        assert not (root / "geno_modules" / "lib").exists()
+        assert not self._journal(root).exists()
+        assert self._leftovers(root) == []
+
     def test_add_with_nothing_to_install_still_declares_the_dependency(self, tmp_path):
         """`lib` is locked and installed already; only geno.toml lacks it."""
         root, _manifest, _tag = self._project(tmp_path, "replace")

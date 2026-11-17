@@ -984,7 +984,10 @@ def _recover_project_transaction(root: Path, journal_path: Path) -> bool:
                 )
             _remove_checkout(destination)
     _fsync_directory(modules_dir)
-    if manifest_record is not None:
+    staged_manifest = root / (transaction_name + _TRANSACTION_MANIFEST_SUFFIX)
+    if manifest_record is not None and not staged_manifest.exists():
+        # Publishing consumes the staged file. Until then the live manifest
+        # belongs to the editor, even if its bytes happen to match our proposal.
         new_sha256, old_sha256 = manifest_record
         _restore_manifest(
             root / "geno.toml",
@@ -1090,6 +1093,8 @@ def _publish_transaction(
         assert returned_next_lockfile == next_lockfile
         if manifest_change is not None:
             # The journal is durable, so recovery can now put the old one back.
+            if not _manifest_is_unchanged(manifest_change):
+                raise _manifest_changed_error(manifest_change)
             _replace_keeping_mode(
                 root / (transaction_root.name + _TRANSACTION_MANIFEST_SUFFIX),
                 manifest_change.path,

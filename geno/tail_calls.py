@@ -48,6 +48,7 @@ from .ast_nodes import (
     WhileStatement,
 )
 from .entrypoint import is_async_execution_form
+from .types import UnitType
 
 
 @dataclass(frozen=True)
@@ -69,8 +70,13 @@ class TailCallPlan:
     """
 
     calls: tuple[FunctionCall, ...]
+    implicit_conditionals: tuple[MatchExpr, ...]
     form: Literal["loop", "trampoline"]
     snapshots: bool
+
+    def trampoline_expressions(self) -> set[int]:
+        """Calls that make requests and final conditionals that return them."""
+        return {id(expr) for expr in (*self.calls, *self.implicit_conditionals)}
 
 
 def _children(node: object) -> Iterator[object]:
@@ -112,6 +118,8 @@ def _bound_names(defn: FunctionDef) -> set[str]:
 
 
 def _returns_unit(defn: FunctionDef) -> bool:
+    if isinstance(getattr(defn, "_resolved_return_type", None), UnitType):
+        return True
     return isinstance(defn.return_type, SimpleType) and defn.return_type.name == "Unit"
 
 
@@ -121,6 +129,7 @@ class _Finder:
     def __init__(self, defn: FunctionDef) -> None:
         self.name = defn.name
         self.calls: list[FunctionCall] = []
+        self.implicit_conditionals: list[MatchExpr] = []
         # A tail call the loop form cannot express: inside a loop, or the
         # value of an `if`/`match` expression.
         self.needs_trampoline = False
@@ -158,7 +167,10 @@ class _Finder:
             return
         last = statements[-1]
         if isinstance(last, ExpressionStatement):
+            before = len(self.calls)
             self.expression(last.expression, True)
+            if isinstance(last.expression, MatchExpr) and len(self.calls) > before:
+                self.implicit_conditionals.append(last.expression)
         elif isinstance(last, IfStatement):
             self.last_statement(last.then_body)
             self.last_statement(last.else_body)
@@ -203,6 +215,7 @@ def plan_tail_calls(defn: FunctionDef) -> TailCallPlan | None:
     trampoline = bool(checked) or creates_closure or finder.needs_trampoline
     return TailCallPlan(
         calls=tuple(finder.calls),
+        implicit_conditionals=tuple(finder.implicit_conditionals),
         form="trampoline" if trampoline else "loop",
         snapshots=snapshots,
     )

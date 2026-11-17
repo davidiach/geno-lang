@@ -740,3 +740,67 @@ def test_encoding_writes_the_last_of_duplicate_keys_compact_or_pretty(backend):
     )
 
     assert backend(source) == '{"v":{"a":2,"b":3}}\n{"v":{"a":2,"b":3}}\n'
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        _interpreter_project_output,
+        _compiled_python_project_output,
+        pytest.param(_compiled_js_project_output, marks=needs_node),
+    ],
+)
+def test_codec_keeps_defining_modules_for_fields_and_generic_arguments(backend):
+    common = "export type Box[T] = Box(item: T)"
+    left = r"""
+import Common
+export type Item = L(n: Int)
+export type LeftBox = LeftBox(item: Item)
+export type LeftAlias = Item
+
+export @untested("fixture")
+func left() -> Box[Item]
+    return Box(unwrap(json_decode[Item]("{\"n\":1}")))
+end func
+"""
+    right = r"""
+import Common
+export type Item = R(s: String)
+export type RightAlias = Item
+
+export @untested("fixture")
+func right() -> Box[Item]
+    return Box(unwrap(json_decode[Item]("{\"s\":\"r\"}")))
+end func
+"""
+    main = r"""import Left
+import Right
+type RootBox = RootBox(left: LeftBox, right: RightAlias)
+func main() -> Unit with io
+    print(json_decode[LeftBox]("{\"item\":{\"n\":1}}"))
+    print(json_decode[LeftBox]("{\"item\":{\"s\":\"wrong\"}}"))
+    print(json_decode[LeftAlias]("{\"n\":2}"))
+    print(json_decode[RootBox]("{\"left\":{\"item\":{\"n\":1}},\"right\":{\"s\":\"r\"}}"))
+    print(json_encode((Left.left(), Right.right())))
+end func
+"""
+    modules = {"Left": left, "Right": right, "Common": common}
+    assert backend(main, modules) == (
+        "Ok(value: LeftBox(item: L(n: 1)))\n"
+        'Err(error: "$.item: missing field \\"n\\"")\n'
+        "Ok(value: L(n: 2))\n"
+        'Ok(value: RootBox(left: LeftBox(item: L(n: 1)), right: R(s: "r")))\n'
+        '[{"item":{"n":1}},{"item":{"s":"r"}}]\n'
+    )
+    aliased = """
+import Left as A
+import Right as B
+func main() -> Unit with io
+    print(json_encode((A.left(), B.right())))
+    print(json_encode(A.left().item))
+    print(json_encode(B.right().item))
+end func
+"""
+    assert backend(aliased, modules) == (
+        '[{"item":{"n":1}},{"item":{"s":"r"}}]\n{"n":1}\n{"s":"r"}\n'
+    )

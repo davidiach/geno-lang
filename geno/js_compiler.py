@@ -2149,14 +2149,14 @@ class JSCompiler(BaseCompiler):
         expected = "null"
         if example.output_expr is not None:
             expected = f"() => {self._compile_expr(example.output_expr)}"
-        type_bindings: dict[str, Type] = {
-            name: TypeParam(name) for name in defn.type_params
-        }
-        shape = self._contract_display_shape(
-            None if defn.type_params else defn.__dict__.get("_resolved_return_type"),
-            defn.return_type,
-            type_bindings,
-        )
+        if instance is not None:
+            bindings = dict(zip(instance.type_params, instance.type_args))
+            result_type = self._annotation_to_type(defn.return_type, bindings)
+        else:
+            result_type = defn.__dict__.get("_resolved_return_type")
+            if result_type is None:
+                result_type = self._annotation_to_type(defn.return_type)
+        shape = self._compile_example_shape(result_type)
         self._writeln(
             f"{TEST_REGISTRY_NAME}.push([{arguments_thunk}, {function_ref}, "
             f"{expected}, {shape}]);"
@@ -2233,7 +2233,7 @@ class JSCompiler(BaseCompiler):
         elif tail_plan is not None:
             # Each logical call is one call of this inner function, with its
             # own bindings; the loop below it runs them one after another.
-            self._tail_trampoline_calls = {id(call) for call in tail_plan.calls}
+            self._tail_trampoline_calls = tail_plan.trampoline_expressions()
             step = self._fresh_temp()
             self._writeln(f"function {step}({params}) {{")
             if traced_default and trace is not None:
@@ -4599,6 +4599,7 @@ class JSCompiler(BaseCompiler):
         resolved_type: Type | None,
         *,
         active_user_types: frozenset[UserType] = frozenset(),
+        definitions: dict[UserType, tuple[str, str]] | None = None,
     ) -> str:
         """Keep static Float/tuple/field information for bounded formatting.
 
@@ -4615,7 +4616,7 @@ class JSCompiler(BaseCompiler):
 
         def nested(value: Type | None) -> str:
             return self._compile_fstring_shape(
-                value, active_user_types=active_user_types
+                value, active_user_types=active_user_types, definitions=definitions
             )
 
         if isinstance(resolved_type, (ListType, ArrayType, VecType, SetType)):
@@ -4632,12 +4633,17 @@ class JSCompiler(BaseCompiler):
             elements = ", ".join(nested(item) for item in resolved_type.element_types)
             return '["tuple", [' + elements + "]]"
         if isinstance(resolved_type, UserType):
+            if definitions is not None and resolved_type in definitions:
+                return definitions[resolved_type][0]
             if resolved_type in active_user_types:
                 return "null"
             active_user_types = active_user_types | {resolved_type}
         if resolved_type is not None:
             variants = self._variant_field_types(resolved_type)
             if variants is not None:
+                if definitions is not None and isinstance(resolved_type, UserType):
+                    # Reserve the shape before walking mutually recursive fields.
+                    definitions[resolved_type] = (self._fresh_temp(), "")
                 cases = []
                 for name, fields in variants.items():
                     field_shapes = ", ".join(
@@ -4645,8 +4651,27 @@ class JSCompiler(BaseCompiler):
                         for field, kind in fields
                     )
                     cases.append(self._js_string_literal(name) + f": [{field_shapes}]")
-                return '["record", {' + ", ".join(cases) + "}]"
+                record = '["record", {' + ", ".join(cases) + "}]"
+                if definitions is not None and isinstance(resolved_type, UserType):
+                    ref = definitions[resolved_type][0]
+                    definitions[resolved_type] = (ref, record)
+                    return ref
+                return record
         return "null"
+
+    def _compile_example_shape(self, result_type: Type | None) -> str:
+        """A comparison shape retains Float fields through recursive records."""
+        definitions: dict[UserType, tuple[str, str]] = {}
+        shape = self._compile_fstring_shape(result_type, definitions=definitions)
+        if not definitions:
+            return shape
+        # Allocate every record first, then link the fields. The driver
+        # walks the shape as far as the actual value goes.
+        declare = " ".join(f"const {ref} = [];" for ref, _ in definitions.values())
+        link = " ".join(
+            f"{ref}.push(...{record});" for ref, record in definitions.values()
+        )
+        return f"(() => {{ {declare} {link} return {shape}; }})()"
 
     # ``_compile_with_expr`` lives on ``BaseCompiler``; JS's emission
     # goes through ``_with_expr_emit`` below.  #622 slice.
@@ -4672,6 +4697,7 @@ class JSCompiler(BaseCompiler):
     def _compile_match_expr(self, expr: MatchExpr) -> str:
         scrutinee = self._compile_expr(expr.scrutinee)
         match_var = self._fresh_temp()
+        awaits_arms = _awaits_directly(expr.arms)
 
         result_parts = []
         for arm in expr.arms:
@@ -4685,17 +4711,21 @@ class JSCompiler(BaseCompiler):
             bound_names = self._pattern_bound_names(arm.pattern)
             with self._block_scope(bound_names):
                 body_expr = self._compile_expr(return_stmt.value)
+            awaits_body = awaits_arms and _awaits_directly(arm.body)
             for var_name, var_expr in reversed(bindings):
-                body_expr = f"(({var_name}) => {body_expr})({var_expr})"
+                body_expr = self._bind_match_value(
+                    var_name, var_expr, body_expr, awaits_body
+                )
 
             if arm.guard is not None:
                 with self._block_scope(bound_names):
                     guard_code = self._compile_expr(arm.guard)
                 if bindings:
                     guard_with_bindings = guard_code
+                    awaits_guard = awaits_arms and _awaits_directly([arm.guard])
                     for var_name, var_expr in reversed(bindings):
-                        guard_with_bindings = (
-                            f"(({var_name}) => {guard_with_bindings})({var_expr})"
+                        guard_with_bindings = self._bind_match_value(
+                            var_name, var_expr, guard_with_bindings, awaits_guard
                         )
                     cond = f"{cond} && {guard_with_bindings}"
                 else:
@@ -4709,7 +4739,15 @@ class JSCompiler(BaseCompiler):
         for cond, body in reversed(result_parts):
             result = f"({cond} ? {body} : {result})"
 
-        return f"(({match_var}) => {result})({scrutinee})"
+        return self._bind_match_value(match_var, scrutinee, result, awaits_arms)
+
+    @staticmethod
+    def _bind_match_value(name: str, value: str, body: str, awaits: bool) -> str:
+        if awaits:
+            # The result may itself be an Async value. Wrapping it in an
+            # array stops the async arrow from implicitly awaiting it.
+            return f"((await (async ({name}) => [{body}])({value}))[0])"
+        return f"(({name}) => {body})({value})"
 
     # =========================================================================
     # Helpers

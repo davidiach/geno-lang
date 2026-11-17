@@ -524,6 +524,23 @@ def test_expected_exit_status_defaults_to_zero(tmp_path: Path) -> None:
     assert case.expected_exit_status == 0
 
 
+def test_child_lanes_exchange_unicode_independently_of_locale(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+    targets = ["python", "cli-process", "cli-direct", "cli-json"]
+    if shutil.which("node"):
+        targets += ["js", "js-esm"]
+    manifest = _corpus(
+        tmp_path,
+        program='func main() -> Int with io\n    print("café 猫")\n    return 0\nend func\n',
+        targets=targets,
+        capabilities=["print"],
+        expected_stdout="café 猫\n",
+        expected_json_value="0",
+    )
+    results = run_suite(load_manifest(manifest))
+    assert all(result.status == "passed" for result in results), results
+
+
 @pytest.mark.parametrize(
     ("value", "match"),
     [
