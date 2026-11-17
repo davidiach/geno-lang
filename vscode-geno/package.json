@@ -93,6 +93,8 @@
     ]
   },
   "scripts": {
+    "postinstall": "node ./scripts/prepare-language-client.js",
+    "vscode:prepublish": "node ./scripts/prepare-language-client.js",
     "check:node": "node ./scripts/check-node-version.js",
     "compile": "tsc -p ./",
     "test": "npm run check:node && npm run compile && node ./out/shellEscape.test.js && node ./out/lspStatus.test.js && node ./out/extension.test.js",
@@ -111,6 +113,7 @@
   "overrides": {
     "@azure/identity": {
       "@azure/msal-node": "^7.1.1"
-    }
+    },
+    "minimatch@^10.2.6": "^11.0.1"
   }
 }

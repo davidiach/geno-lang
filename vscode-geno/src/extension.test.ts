@@ -51,6 +51,7 @@ const vscode = {
     textDocuments: [],
     getConfiguration: () => ({ get: () => "geno" }),
     createFileSystemWatcher: () => disposable,
+    onDidCreateFiles: () => disposable,
     onDidSaveTextDocument: (callback: typeof save) => { save = callback; return disposable; },
     onDidOpenTextDocument: () => disposable,
     onDidCloseTextDocument: (callback: typeof close) => { close = callback; return disposable; },
@@ -95,7 +96,35 @@ function complete(error: Error | null, stderr = ""): void {
   callbacks.shift()!(error, "", stderr);
 }
 
+async function testLanguageClientFileFilters(): Promise<void> {
+  const { matchGlobPattern } = require("vscode-languageclient/$test/common/utils/globPattern");
+  const document = { fsPath: "/src/main.geno" };
+  assert.strictEqual(matchGlobPattern("**/*.geno", document), true);
+  assert.strictEqual(matchGlobPattern("**/*.py", document), false);
+  assert.strictEqual(matchGlobPattern("", document), false);
+
+  const { DidCreateFilesFeature } = require("vscode-languageclient/$test/common/fileOperations");
+  const notifications: unknown[] = [];
+  const feature = new DidCreateFilesFeature({
+    code2ProtocolConverter: { asDidCreateFilesParams: (event: unknown) => event },
+    middleware: {},
+    sendNotification: (_type: unknown, event: unknown) => notifications.push(event),
+  });
+  feature.register({
+    id: "geno-files",
+    registerOptions: { filters: [{ pattern: { glob: "**/*.geno", options: { ignoreCase: true } } }] },
+  });
+  const genoFile = { scheme: "file", fsPath: "/src/Main.GENO" };
+  await feature.send({ files: [genoFile, { scheme: "file", fsPath: "/src/main.py" }] });
+  assert.deepStrictEqual(notifications, [{ files: [genoFile] }]);
+  assert.throws(() => feature.register({
+    id: "empty-glob",
+    registerOptions: { filters: [{ pattern: { glob: "" } }] },
+  }), /Invalid pattern/);
+}
+
 async function main(): Promise<void> {
+  await testLanguageClientFileFilters();
   const extension = require("./extension") as {
     activate(context: { subscriptions: unknown[] }): void;
     deactivate(): unknown;
