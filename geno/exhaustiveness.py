@@ -40,7 +40,8 @@ from .types import (
 class ExhaustivenessMixin:
     """Mixin for TypeChecker pattern exhaustiveness helpers."""
 
-    type_defs: dict[str, TypeDefInfo]
+    def _user_type_info(self, type_: UserType) -> TypeDefInfo | None:
+        raise NotImplementedError
 
     def _error(self, message: str, location: SourceLocation) -> TypeError:
         raise NotImplementedError
@@ -114,7 +115,7 @@ class ExhaustivenessMixin:
         if isinstance(t, (BoolType, OptionType, ResultType)):
             return True
         if isinstance(t, UserType):
-            return t.name in self.type_defs
+            return self._user_type_info(t) is not None
         return False
 
     def _list_patterns_are_exhaustive(self, patterns: list[Pattern]) -> bool:
@@ -185,7 +186,7 @@ class ExhaustivenessMixin:
         if isinstance(t, ResultType):
             return [("Ok", (t.ok_type,)), ("Err", (t.err_type,))]
         if isinstance(t, UserType):
-            type_info = self.type_defs.get(t.name)
+            type_info = self._user_type_info(t)
             if type_info is None:
                 return None
             substitutions = {
@@ -294,7 +295,7 @@ class ExhaustivenessMixin:
         if isinstance(t, ResultType):
             return "Ok(_)"
         if isinstance(t, UserType):
-            type_info = self.type_defs.get(t.name)
+            type_info = self._user_type_info(t)
             if type_info and type_info.variants:
                 constructor, fields = next(iter(type_info.variants.items()))
                 if not fields:

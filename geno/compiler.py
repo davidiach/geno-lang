@@ -1663,7 +1663,7 @@ class Compiler(BaseCompiler, ASTVisitor):
         elif tail_plan is not None:
             # Each logical call is one call of this inner function, with its
             # own bindings; the loop below it runs them one after another.
-            self._tail_trampoline_calls = {id(call) for call in tail_plan.calls}
+            self._tail_trampoline_calls = tail_plan.trampoline_expressions()
             step = self._fresh_temp()
             step_params = ", ".join(
                 self._mangle_name(p.name)
@@ -3913,8 +3913,12 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_match_expr(self, expr: MatchExpr) -> str:
         """Compile a match expression (inline)."""
-        # For inline match, we use a helper function
-        scrutinee = self._compile_expr(expr.scrutinee)
+        awaits_arms = _awaits_directly(expr.arms)
+        scrutinee = (
+            self._compile_comprehension_iterable(expr.scrutinee)
+            if awaits_arms
+            else self._compile_expr(expr.scrutinee)
+        )
         match_var = self._fresh_temp()
 
         # Build a conditional expression chain
@@ -3931,9 +3935,11 @@ class Compiler(BaseCompiler, ASTVisitor):
             bound_names = sorted(self._pattern_bound_names(arm.pattern))
             with self._with_shadowed_bindings(bound_names):
                 body_expr = self._compile_expr(return_stmt.value)
-            # Wrap with nested lambdas for all bindings (in reverse order)
+            awaits_body = awaits_arms and _awaits_directly(arm.body)
             for var_name, var_expr in reversed(bindings):
-                body_expr = f"(lambda {var_name}: {body_expr})({var_expr})"
+                body_expr = self._bind_match_value(
+                    var_name, var_expr, body_expr, awaits_body
+                )
 
             if arm.guard is not None:
                 with self._with_shadowed_bindings(bound_names):
@@ -3941,9 +3947,10 @@ class Compiler(BaseCompiler, ASTVisitor):
                 if bindings:
                     # Need bindings available for guard evaluation too
                     guard_with_bindings = guard_code
+                    awaits_guard = awaits_arms and _awaits_directly([arm.guard])
                     for var_name, var_expr in reversed(bindings):
-                        guard_with_bindings = (
-                            f"(lambda {var_name}: {guard_with_bindings})({var_expr})"
+                        guard_with_bindings = self._bind_match_value(
+                            var_name, var_expr, guard_with_bindings, awaits_guard
                         )
                     cond = f"{cond} and {guard_with_bindings}"
                 else:
@@ -3959,10 +3966,18 @@ class Compiler(BaseCompiler, ASTVisitor):
         for cond, body in reversed(result_parts):
             result = f"({body} if {cond} else {result})"
 
-        match_result = f"(lambda {match_var}: {result})({scrutinee})"
+        match_result = self._bind_match_value(match_var, scrutinee, result, awaits_arms)
         return self._promote_expr_to_expected_float(
             match_result, getattr(expr, "_resolved_type", None)
         )
+
+    @staticmethod
+    def _bind_match_value(name: str, value: str, body: str, awaits: bool) -> str:
+        if awaits:
+            # A one-item async generator binds the value in its own scope
+            # and allows await in the body. Advance it to its only value.
+            return f"(await ({body} for {name} in ({value},)).asend(None))"
+        return f"(lambda {name}: {body})({value})"
 
 
 # =============================================================================

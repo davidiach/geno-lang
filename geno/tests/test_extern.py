@@ -890,6 +890,15 @@ def test_the_embedding_api_needs_an_explicit_opt_in_for_ffi() -> None:
     assert result.value == 2.0
 
 
+def test_run_revalidates_the_ffi_opt_in_on_a_reused_config() -> None:
+    config = api.RunConfig(capabilities={"ffi"}, allow_ffi=True)
+    source = "func main() -> Int\n    return 7\nend func\n"
+    assert api.run(source, config=config).value == 7
+    config.allow_ffi = False
+    with pytest.raises(ValueError, match="allow_ffi=True"):
+        api.run(source, config=config)
+
+
 def test_the_hosted_server_refuses_to_allow_ffi() -> None:
     from geno.monitoring import RuntimeMetricsCollector
     from geno.server import create_handler

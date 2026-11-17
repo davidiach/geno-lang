@@ -70,6 +70,18 @@ def _format_spec_start(expr_text: str) -> int | None:
         if char == '"':
             index = string_literal_end(expr_text, index)
             continue
+        if expr_text.startswith("/*", index):
+            end = expr_text.find("*/", index + 2)
+            if end == -1:
+                return None  # Let the lexer diagnose the unterminated comment.
+            index = end + 2
+            continue
+        if expr_text.startswith("//", index):
+            end = expr_text.find("\n", index + 2)
+            if end == -1:
+                return None
+            index = end + 1
+            continue
         if char in "([{":
             depth += 1
         elif char in ")]}":

@@ -102,6 +102,24 @@ def run_compiled_js_with_limit(
     return run_node_code(js_code)
 
 
+@pytest.mark.parametrize("shape", ["string", "json"])
+def test_extern_result_measures_unicode_code_points(shape):
+    output = run_js_runtime_script(
+        f"""
+        const text = String.fromCodePoint(0x1f600).repeat(5);
+        const result = _genoExternFromHost(text, ["{shape}"], null, 0);
+        console.log(result === text || result.value === text);
+        try {{
+            _genoExternFromHost(text + "!", ["{shape}"], null, 0);
+        }} catch (error) {{
+            console.log(error.message);
+        }}
+        """
+    )
+    assert output.splitlines()[0] == "true"
+    assert "6 > 5" in output
+
+
 def _slow_tree_shake_prelude(user_code: str) -> str:
     """Reference implementation for prelude tree-shaking regressions."""
     if js_compiler._PRELUDE_SECTIONS is None:

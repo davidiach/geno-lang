@@ -58,6 +58,7 @@ from .types import (
     UnitType,
     UserType,
     VecType,
+    map_type,
     type_children,
 )
 
@@ -92,28 +93,17 @@ def _substitute(type_: Type, bindings: Mapping[str, Type]) -> Type:
     """*type_* with a user type's parameters replaced by its arguments."""
     if isinstance(type_, (TypeVar, TypeParam)):
         return bindings.get(type_.name, type_)
-    if isinstance(type_, (ListType, ArrayType, VecType, SetType)):
-        return type(type_)(_substitute(type_.element_type, bindings))
-    if isinstance(type_, OptionType):
-        return OptionType(_substitute(type_.value_type, bindings))
-    if isinstance(type_, ResultType):
-        return ResultType(
-            _substitute(type_.ok_type, bindings), _substitute(type_.err_type, bindings)
-        )
-    if isinstance(type_, TupleType):
-        return TupleType(tuple(_substitute(t, bindings) for t in type_.element_types))
-    if isinstance(type_, (MapType, MutableMapType)):
-        return type(type_)(
-            _substitute(type_.key_type, bindings),
-            _substitute(type_.value_type, bindings),
-        )
-    if isinstance(type_, UserType) and type_.type_args:
+    return map_type(type_, lambda child: _substitute(child, bindings))
+
+
+def _qualified_type(type_: Type) -> Type:
+    """Use defining scopes in codec keys, including inside type arguments."""
+    if isinstance(type_, UserType):
         return UserType(
-            type_.name, tuple(_substitute(arg, bindings) for arg in type_.type_args)
+            type_.definition_scope or type_.name,
+            tuple(_qualified_type(arg) for arg in type_.type_args),
         )
-    if isinstance(type_, AsyncType):
-        return AsyncType(_substitute(type_.result_type, bindings))
-    return type_
+    return map_type(type_, _qualified_type)
 
 
 class _Builder:
@@ -212,10 +202,10 @@ class _Builder:
     def user_type(self, type_: UserType, where: tuple[str, ...]) -> Shape:
         if type_.name == "JsonValue":
             return ("json",)
-        info = self.type_defs.get(type_.name)
+        info = self.type_defs.get(type_.definition_scope or type_.name)
         if info is None or not info.variants:
             raise self.fail(type_, "it is not a data type", where)
-        key = str(type_)
+        key = str(_qualified_type(type_))
         reference = ("ref", key, info.json_constructor_scope)
         if key in self.types:
             return reference

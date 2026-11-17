@@ -2522,6 +2522,11 @@ import os
 import sys
 import time
 
+# The parent writes and reads these pipes as UTF-8, including on Windows.
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 # A Windows venv uses a redirector executable that can escape a Job Object
 # before assignment. The parent launches the real base interpreter instead,
 # then appends only validated venv package roots after the standard library.

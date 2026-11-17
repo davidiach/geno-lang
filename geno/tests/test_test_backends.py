@@ -7,6 +7,7 @@ the three and reports the cases whose outcome differs.
 
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -148,6 +149,22 @@ def _write(tmp_path, source: str, name: str = "sample.geno"):
 
 def _suite(path, backend: str, **options) -> SuiteResult:
     return run_test_suite([path], backend=backend, **options)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_float_sets_require_a_one_to_one_match(tmp_path, backend):
+    path = _write(
+        tmp_path,
+        """
+func sample() -> Set[Float]
+    example () -> set_from_list([0.000000000003, 0.0000000000039])
+    example () -> set_from_list([0.000000000003, 1.0])
+    return set_from_list([0.000000000003, 0.0000000000021])
+end func
+""",
+    )
+    harness = _suite(path, backend).file_results[0].harness_result
+    assert [outcome.passed for outcome in harness.outcomes] == [True, False]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -346,8 +363,7 @@ def test_a_project_is_tested_module_by_module_and_main_does_not_run(tmp_path, ba
 
     assert [result.error for result in suite.file_results] == [None, None]
     by_name = {
-        result.path.rsplit("/", 1)[-1]: result.harness_result
-        for result in suite.file_results
+        Path(result.path).name: result.harness_result for result in suite.file_results
     }
     maths, main = by_name["Maths.geno"], by_name["Main.geno"]
     assert (maths.total, maths.passed) == (4, 3)

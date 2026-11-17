@@ -788,7 +788,9 @@ def run(
         config = resolved_filename
         resolved_filename = "<api>"
 
-    cfg = config or RunConfig()
+    # Snapshot reusable host settings and validate their current grants together.
+    # RunConfig.__post_init__ also copies the capability set for this execution.
+    cfg = replace(config) if config is not None else RunConfig()
     diagnostics: list[Diagnostic] = []
     timing = Timing()
     t0 = time.perf_counter()

@@ -202,6 +202,41 @@ def test_every_tail_position_runs_deep(backend):
     assert backend(_at(deep, POSITIONS)) == "".join(f"{line}\n" for line in expected)
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_unit_expression_statement_keeps_the_selected_tail_call(backend):
+    source = """
+func tick(n: Int) -> Unit with io
+    example 0 -> ()
+    if n >= 0 then
+        print(n)
+    end if
+    (if n > 0 then tick(n - 1) else () end if)
+end func
+
+func main() -> Unit with io
+    tick(2)
+end func
+"""
+    assert backend(source) == "2\n1\n0\n"
+
+
+def test_unit_alias_accepts_an_implicit_tail_call():
+    source = """
+type Nothing = Unit
+func down(n: Int) -> Nothing
+    example 0 -> ()
+    if n > 0 then
+        down(n - 1)
+    end if
+end func
+func main() -> Unit
+    down(100)
+end func
+"""
+    result = geno.run(source, config=geno.RunConfig(max_recursion_depth=20))
+    assert result.ok, result.diagnostics
+
+
 SEMANTICS = """
 func note(label: String, value: Int) -> Int with io
     example ("a", 1) -> 1

@@ -7271,11 +7271,11 @@ class TestCompletionFreshnessBeforeDebounce:
         )
 
     @staticmethod
-    def _labels(server, uri):
+    def _labels(server, uri, line=0, character=0):
         result = server.lsp._get_handler(types.TEXT_DOCUMENT_COMPLETION)(
             types.CompletionParams(
                 text_document=types.TextDocumentIdentifier(uri=uri),
-                position=types.Position(line=0, character=0),
+                position=types.Position(line=line, character=character),
             )
         )
         return {item.label: item for item in result.items}, result.is_incomplete
@@ -7371,7 +7371,7 @@ class TestCompletionFreshnessBeforeDebounce:
         utils_file = tmp_path / "Utils.geno"
         main_source = (
             "import Utils\nfunc main_local() -> Int\n  example () -> 1\n"
-            "  return 1\nend func\n"
+            "  return Utils.old_helper()\nend func\n"
         )
         old_utils = (
             "export func old_helper() -> Int\n  example () -> 1\n  return 1\nend func\n"
@@ -7395,6 +7395,10 @@ class TestCompletionFreshnessBeforeDebounce:
         # The importer sees the module's current exports, not the indexed ones.
         assert main_labels["new_helper"].detail == "(from Utils)"
         assert "old_helper" not in main_labels
+        dot_labels, _ = self._labels(
+            server, main_file.as_uri(), line=3, character=len("  return Utils.")
+        )
+        assert set(dot_labels) == {"new_helper"}
 
     def test_completion_does_not_reparse_unchanged_documents(
         self, tmp_path, monkeypatch

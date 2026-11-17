@@ -362,7 +362,7 @@ class _ModuleImportSummary:
     """Compact import-facing view of a checked module."""
 
     imports: tuple[ImportStatement, ...]
-    type_aliases: dict[str, tuple[list[str], TypeAnnotation]]
+    type_aliases: dict[str, tuple[list[str], Type]]
     type_defs: dict[str, TypeDefInfo]
     type_def_locations: dict[str, SourceLocation]
     functions: dict[str, FuncType]
@@ -1001,7 +1001,8 @@ class TypeChecker(ExhaustivenessMixin):
     def __init__(self, target_profile: TargetProfile | None = None) -> None:
         self.global_env = TypeEnv()
         self.type_defs: dict[str, TypeDefInfo] = {}
-        self.type_aliases: dict[str, tuple[list[str], TypeAnnotation]] = {}
+        self.type_aliases: dict[str, tuple[list[str], TypeAnnotation | Type]] = {}
+        self._scoped_type_defs: dict[str, TypeDefInfo] = {}
         self.func_param_names: dict[
             str, list[str]
         ] = {}  # Store param names for named arg support
@@ -1060,7 +1061,7 @@ class TypeChecker(ExhaustivenessMixin):
         # with their bounds closed under implication. Inside that body each
         # one resolves to a rigid TypeParam.
         self._rigid_type_params: dict[str, frozenset[str]] = {}
-        self._declared_user_types: list[dict[str, tuple[str, ...]]] = []
+        self._declared_user_types: list[dict[str, TypeDef]] = []
         self._trait_self_type_depth = 0
         self._target_profile = target_profile
         self._target_rejected: dict[str, str] = {}
@@ -1291,9 +1292,13 @@ class TypeChecker(ExhaustivenessMixin):
         return error
 
     @contextmanager
-    def _with_declared_type_defs(self, type_defs: Iterable[TypeDef]) -> Iterator[None]:
+    def _with_declared_type_defs(
+        self, type_defs: Iterable[TypeDef], module_name: str | None
+    ) -> Iterator[None]:
         """Temporarily expose in-scope user type names before full collection."""
-        declared = {defn.name: tuple(defn.type_params) for defn in type_defs}
+        declared = {defn.name: defn for defn in type_defs}
+        for name, defn in declared.items():
+            defn._json_constructor_scope = f"{module_name or ''}.{name}"
         if not declared:
             yield
             return
@@ -1306,14 +1311,21 @@ class TypeChecker(ExhaustivenessMixin):
             self._declared_user_types.pop()
             self._resolved_type_cache.clear()
 
-    def _declared_user_type_params(self, name: str) -> tuple[str, ...] | None:
+    def _user_type_info(self, type_: UserType) -> TypeDefInfo | None:
+        if type_.definition_scope:
+            return self._scoped_type_defs.get(type_.definition_scope)
+        return self.type_defs.get(type_.name)
+
+    def _declared_user_type(self, name: str) -> tuple[list[str], str] | None:
         """Return declared type parameters for a known user-defined type."""
         for declared in reversed(self._declared_user_types):
             if name in declared:
-                return declared[name]
+                return declared[name].type_params, declared[
+                    name
+                ]._json_constructor_scope
         type_info = self.type_defs.get(name)
         if type_info is not None:
-            return tuple(type_info.type_params)
+            return type_info.type_params, type_info.json_constructor_scope
         return None
 
     @staticmethod
@@ -1578,15 +1590,16 @@ class TypeChecker(ExhaustivenessMixin):
                 type_.ok_type, seen_user_types
             ) and self._is_hashable_type(type_.err_type, seen_user_types)
         if isinstance(type_, UserType):
-            type_info = self.type_defs.get(type_.name)
+            type_info = self._user_type_info(type_)
             if type_info is None:
                 return True
-            if type_.name in seen_user_types:
+            key = type_.definition_scope or type_.name
+            if key in seen_user_types:
                 return True
             substitutions = {
                 param: arg for param, arg in zip(type_info.type_params, type_.type_args)
             }
-            next_seen = seen_user_types | {type_.name}
+            next_seen = seen_user_types | {key}
             for fields in type_info.variants.values():
                 for _field_name, field_type in fields:
                     resolved_field_type = self._apply_substitutions(
@@ -1727,11 +1740,11 @@ class TypeChecker(ExhaustivenessMixin):
         self._validate_type_definition_names(program)
 
         # First pass: collect type aliases, type definitions, and trait definitions
-        with self._with_declared_type_defs(type_defs):
+        with self._with_declared_type_defs(type_defs, module_name):
             for defn in type_aliases:
                 self._collect_type_alias(defn)
             for defn in type_defs:
-                self._collect_type_def(defn, module_name)
+                self._collect_type_def(defn)
             self._refresh_type_def_variance(
                 {
                     defn.name: self.type_defs[defn.name]
@@ -1781,7 +1794,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         if is_entrypoint:
             self._validate_browser_entrypoint_lifecycle(program)
-            self._validate_entrypoint_main_params(program)
+            self._validate_entrypoint_main(program)
 
         # Collect function names tested by test blocks so they can be
         # exempted from the example requirement.
@@ -1873,15 +1886,13 @@ class TypeChecker(ExhaustivenessMixin):
 
         return checked
 
-    def _validate_entrypoint_main_params(self, program: Program) -> None:
-        """Reject an entrypoint ``main`` that declares parameters (#133).
-
-        Every host calls the entrypoint as ``main()`` (spec section 4.1.1), so
-        a parameter could never be supplied; without this check each backend
-        failed at run time with its own host error.
-        """
+    def _validate_entrypoint_main(self, program: Program) -> None:
+        """Validate the host's implicit zero-argument call to main."""
         main_def = find_entrypoint_main(program)
-        if main_def is None or not main_def.params:
+        if main_def is None:
+            return
+        self._check_implicit_extern_call(main_def)
+        if not main_def.params:
             return
         self._error(
             "The entrypoint `main` must take no parameters; it is called as "
@@ -1940,6 +1951,9 @@ class TypeChecker(ExhaustivenessMixin):
         init_def = func_defs["init"]
         update_def = func_defs["update"]
         render_def = func_defs["render"]
+
+        for callback in (init_def, update_def, render_def):
+            self._check_implicit_extern_call(callback)
 
         if init_def.params:
             self._error(
@@ -2059,129 +2073,30 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(defn, ImplDef):
                 self._validate_impl_method_names(defn)
 
-        # Determine if module uses explicit exports
-        has_exports = any(
-            (isinstance(d, (FunctionDef, TypeAlias, TypeDef)) and d.exported)
-            for d in mod_program.definitions
-        )
+        # Resolve exported signatures in the module's scope, never in the
+        # importer's scope: sibling imports can independently define Item.
+        checker = TypeChecker(target_profile=self._target_profile)
+        dependencies: set[str] = set()
+        applied: dict[str, _ModuleImportSummary] = {}
+        for item in mod_program.definitions:
+            if isinstance(item, ImportStatement):
+                checker._resolve_import(item, import_summaries, dependencies, applied)
+            elif isinstance(item, TypeAlias):
+                checker._collect_type_alias(item)
 
-        # Track exported symbols for qualified access
-        module_symbols: dict[str, Type] = {}
-        is_aliased = import_stmt.alias is not None
-
-        # Collect type aliases and definitions from module
         module_type_defs = [
-            defn for defn in mod_program.definitions if isinstance(defn, TypeDef)
+            d for d in mod_program.definitions if isinstance(d, TypeDef)
         ]
-        module_aliases = [
-            defn for defn in mod_program.definitions if isinstance(defn, TypeAlias)
-        ]
-        module_functions = [
-            defn for defn in mod_program.definitions if isinstance(defn, FunctionDef)
-        ]
-        self._validate_exported_type_surface(
-            module_aliases,
-            module_type_defs,
-            module_functions,
-            has_exports=has_exports,
-        )
-        temporary_alias_names = {
-            defn.name
-            for defn in module_aliases
-            if is_aliased or (has_exports and not defn.exported)
-        }
-        previous_temporary_aliases = {
-            alias_name: self.type_aliases[alias_name]
-            for alias_name in temporary_alias_names
-            if alias_name in self.type_aliases
-        }
-        try:
-            with self._with_declared_type_defs(module_type_defs):
-                for defn in module_aliases:
-                    self._collect_type_alias(defn)
-                collected_type_defs: dict[str, TypeDefInfo] = {}
-                for defn in module_type_defs:
-                    if has_exports and not defn.exported:
-                        continue  # Not exported — skip
-                    if not is_aliased:
-                        self._collect_type_def(defn, name)
-                        if defn.name in self.type_defs:
-                            collected_type_defs[defn.name] = self.type_defs[defn.name]
-                    # Track for qualified access
-                    for variant in defn.variants:
-                        fields = []
-                        for fn, ft in variant.fields:
-                            fields.append(
-                                (fn, self._resolve_type(ft, defn.type_params))
-                            )
-                        func_type = FuncType(
-                            tuple(t for _, t in fields),
-                            UserType(defn.name),
-                        )
-                        module_symbols[variant.name] = func_type
-                self._refresh_type_def_variance(collected_type_defs)
-                self._validate_type_aliases(module_aliases)
-
-            # Collect function signatures from module
-            module_param_names: dict[str, list[str]] = {}
-            module_default_counts: dict[str, int] = {}
-            module_generic_functions: dict[str, GenericSignature] = {}
-            for defn in mod_program.definitions:
-                if isinstance(defn, FunctionDef):
-                    if has_exports and not defn.exported:
-                        continue  # Not exported — skip
-                    func_type, param_names, num_defaults = (
-                        self._function_signature_from_def(defn)
-                    )
-                    generic = self._generic_signature(defn, name)
-                    if (
-                        direct
-                        and not is_aliased
-                        and binds_unqualified(mod_program, defn.name)
-                    ):
-                        self._register_function_signature(
-                            defn.name,
-                            func_type,
-                            param_names,
-                            num_defaults,
-                            generic=generic,
-                        )
-                    # Track for qualified access
-                    module_symbols[defn.name] = func_type
-                    module_param_names[defn.name] = param_names
-                    if num_defaults > 0:
-                        module_default_counts[defn.name] = num_defaults
-                    if generic is not None:
-                        module_generic_functions[defn.name] = generic
-            import_summaries[name] = self._build_module_import_summary(
-                mod_program, name
+        with checker._with_declared_type_defs(module_type_defs, name):
+            checker._validate_type_aliases(
+                item for item in mod_program.definitions if isinstance(item, TypeAlias)
             )
-        finally:
-            # Restore temporary-alias state even if signature resolution raised,
-            # so failed or aliased imports cannot leak names into the importer.
-            if temporary_alias_names:
-                for alias_name in temporary_alias_names:
-                    if alias_name in previous_temporary_aliases:
-                        self.type_aliases[alias_name] = previous_temporary_aliases[
-                            alias_name
-                        ]
-                    else:
-                        self.type_aliases.pop(alias_name, None)
-                # Cached resolutions may have referenced hidden aliases while
-                # resolving exported signatures above; drop the cache so later
-                # lookups do not observe private names.
-                self._resolved_type_cache.clear()
-
-        if not direct:
-            return
-
-        # Register module namespace for qualified access (Foo.symbol)
-        ns_name = import_stmt.alias or name
-        self._module_exports[ns_name] = module_symbols
-        self._module_param_names[ns_name] = module_param_names
-        self._module_default_counts[ns_name] = module_default_counts
-        self._module_generic_functions[ns_name] = module_generic_functions
-        self.global_env.bind(ns_name, ModuleType(name))
+            summary = checker._build_module_import_summary(mod_program, name)
+        self.errors.extend(checker.errors)
+        import_summaries[name] = summary
+        self._apply_module_import_summary(
+            module_name=name, alias=import_stmt.alias, summary=summary, direct=direct
+        )
 
     def _find_ambiguous_imported_names(
         self,
@@ -2273,7 +2188,7 @@ class TypeChecker(ExhaustivenessMixin):
         """Precompute the import-facing shape of a checked module."""
         has_exports = self._program_has_explicit_exports(program)
         imports: list[ImportStatement] = []
-        type_aliases: dict[str, tuple[list[str], TypeAnnotation]] = {}
+        type_aliases: dict[str, tuple[list[str], Type]] = {}
         type_defs: dict[str, TypeDefInfo] = {}
         type_def_locations: dict[str, SourceLocation] = {}
         functions: dict[str, FuncType] = {}
@@ -2299,7 +2214,7 @@ class TypeChecker(ExhaustivenessMixin):
             has_exports=has_exports,
         )
 
-        with self._with_declared_type_defs(module_type_defs):
+        with self._with_declared_type_defs(module_type_defs, module_name):
             for defn in program.definitions:
                 if isinstance(defn, ImportStatement):
                     imports.append(defn)
@@ -2308,12 +2223,12 @@ class TypeChecker(ExhaustivenessMixin):
                         continue
                     type_aliases[defn.name] = (
                         list(defn.type_params),
-                        defn.target_type,
+                        self._resolve_type(defn.target_type, defn.type_params),
                     )
                 elif isinstance(defn, TypeDef):
                     if has_exports and not defn.exported:
                         continue
-                    type_defs[defn.name] = self._build_type_def_info(defn, module_name)
+                    type_defs[defn.name] = self._build_type_def_info(defn)
                     type_def_locations[defn.name] = defn.location
                     for variant in defn.variants:
                         fields = []
@@ -2326,7 +2241,11 @@ class TypeChecker(ExhaustivenessMixin):
                             )
                         module_symbols[variant.name] = FuncType(
                             tuple(field_type for _, field_type in fields),
-                            UserType(defn.name),
+                            UserType(
+                                defn.name,
+                                tuple(TypeVar(p) for p in defn.type_params),
+                                defn._json_constructor_scope,
+                            ),
                         )
                 elif isinstance(defn, FunctionDef):
                     if has_exports and not defn.exported:
@@ -2373,6 +2292,8 @@ class TypeChecker(ExhaustivenessMixin):
 
         An indirect import contributes its types only (see ``_resolve_import``).
         """
+        for info in summary.type_defs.values():
+            self._scoped_type_defs[info.json_constructor_scope] = info
         if alias is None:
             for alias_name, alias_info in summary.type_aliases.items():
                 self.type_aliases[alias_name] = (list(alias_info[0]), alias_info[1])
@@ -2465,9 +2386,7 @@ class TypeChecker(ExhaustivenessMixin):
         """Collect a type alias."""
         self.type_aliases[alias.name] = (alias.type_params, alias.target_type)
 
-    def _build_type_def_info(
-        self, defn: TypeDef, module_name: str | None
-    ) -> TypeDefInfo:
+    def _build_type_def_info(self, defn: TypeDef) -> TypeDefInfo:
         """Build resolved type information for a type definition."""
         variants: dict[str, list[tuple[str, Type]]] = {}
 
@@ -2487,7 +2406,6 @@ class TypeChecker(ExhaustivenessMixin):
                 fields.append((field_name, field_type))
             variants[variant.name] = fields
 
-        defn._json_constructor_scope = f"{module_name or ''}.{defn.name}"
         return TypeDefInfo(
             name=defn.name,
             type_params=defn.type_params,
@@ -2594,11 +2512,9 @@ class TypeChecker(ExhaustivenessMixin):
             )
         return False
 
-    def _collect_type_def(self, defn: TypeDef, module_name: str | None = None) -> None:
+    def _collect_type_def(self, defn: TypeDef) -> None:
         """Collect a type definition."""
-        self._register_type_def_info(
-            self._build_type_def_info(defn, module_name), defn.location
-        )
+        self._register_type_def_info(self._build_type_def_info(defn), defn.location)
 
     def _register_type_def_info(
         self, info: TypeDefInfo, location: SourceLocation
@@ -2611,6 +2527,7 @@ class TypeChecker(ExhaustivenessMixin):
                 self._constructor_to_type.pop(old_ctor, None)
 
         self.type_defs[info.name] = info
+        self._scoped_type_defs[info.json_constructor_scope] = info
         for constructor_name in info.variants:
             existing_type = self._constructor_to_type.get(constructor_name)
             if existing_type is not None and existing_type != info.name:
@@ -2650,6 +2567,11 @@ class TypeChecker(ExhaustivenessMixin):
         param_names = [p.name for p in defn.params]
         num_defaults = sum(1 for p in defn.params if p.default_value is not None)
         return func_type, param_names, num_defaults
+
+    def _check_implicit_extern_call(self, defn: FunctionDef) -> None:
+        unavailable = self._extern_unavailable_message(defn)
+        if unavailable is not None:
+            self._error(unavailable, defn.location)
 
     def _extern_unavailable_message(self, defn: FunctionDef) -> str | None:
         """Why the target being checked cannot call extern *defn*, or None.
@@ -2802,7 +2724,10 @@ class TypeChecker(ExhaustivenessMixin):
             return
 
         trait_def = self.trait_defs[defn.trait_name]
-        impl_self_type = UserType(defn.target_type)
+        impl_self_type = UserType(
+            defn.target_type,
+            definition_scope=self.type_defs[defn.target_type].json_constructor_scope,
+        )
 
         self._validate_impl_method_names(defn)
 
@@ -4881,6 +4806,9 @@ class TypeChecker(ExhaustivenessMixin):
                 used.location,
                 ErrorCode.TYPE_JSON_FORM,
             )
+        if not calls:
+            return
+        codec_defs = {**self.type_defs, **self._scoped_type_defs}
         for call in calls:
             name = cast(str, call._resolved_builtin_name)
             if name == "json_decode":
@@ -4901,7 +4829,7 @@ class TypeChecker(ExhaustivenessMixin):
                     continue
             try:
                 call._json_codec = build_codec(
-                    target, self.type_defs, encoding=name != "json_decode"
+                    target, codec_defs, encoding=name != "json_decode"
                 )
             except JsonTypeError as error:
                 verb = "decode" if name == "json_decode" else "encode"
@@ -5010,7 +4938,7 @@ class TypeChecker(ExhaustivenessMixin):
                     )
                 return
             if isinstance(expected, UserType):
-                type_info = self.type_defs.get(expected.name)
+                type_info = self._user_type_info(expected)
                 if type_info is None:
                     return
                 fields = type_info.variants.get(expr.constructor)
@@ -5032,7 +4960,7 @@ class TypeChecker(ExhaustivenessMixin):
             return
 
         if isinstance(expr, WithExpr) and isinstance(expected, UserType):
-            type_info = self.type_defs.get(expected.name)
+            type_info = self._user_type_info(expected)
             if type_info is None:
                 return
             substitutions = dict(zip(type_info.type_params, expected.type_args))
@@ -5442,8 +5370,11 @@ class TypeChecker(ExhaustivenessMixin):
                     return UserType(
                         type_name,
                         tuple(self._fresh_type_var(p) for p in type_info.type_params),
+                        type_info.json_constructor_scope,
                     )
-                return UserType(type_name)
+                return UserType(
+                    type_name, definition_scope=type_info.json_constructor_scope
+                )
 
         # Check if it's a module namespace (for qualified access)
         if expr.name in self._module_exports:
@@ -6822,7 +6753,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         known_fields: set[str] = set()
         if isinstance(target_type, UserType):
-            info = self.type_defs.get(target_type.name)
+            info = self._user_type_info(target_type)
             if info is not None:
                 for variant_fields in info.variants.values():
                     known_fields.update(name for name, _type in variant_fields)
@@ -6840,7 +6771,7 @@ class TypeChecker(ExhaustivenessMixin):
         self, target_type: UserType, field_name: str
     ) -> tuple[list[tuple[str, Type]], list[str]]:
         """Return resolved field types per variant plus any missing variants."""
-        type_info = self.type_defs.get(target_type.name)
+        type_info = self._user_type_info(target_type)
         if type_info is None:
             return [], []
 
@@ -6963,7 +6894,7 @@ class TypeChecker(ExhaustivenessMixin):
             )
             return AnyType()
 
-        type_info = self.type_defs.get(target_type.name)
+        type_info = self._user_type_info(target_type)
         if not type_info:
             hint = _suggest_name(target_type.name, self.type_defs.keys())
             self._error(
@@ -7515,8 +7446,12 @@ class TypeChecker(ExhaustivenessMixin):
                 inferred_params = tuple(
                     _bind_or_fresh(param) for param in type_info.type_params
                 )
-                return UserType(type_name, inferred_params)
-            return UserType(type_name)
+                return UserType(
+                    type_name, inferred_params, type_info.json_constructor_scope
+                )
+            return UserType(
+                type_name, definition_scope=type_info.json_constructor_scope
+            )
 
         hint, fixes = _rename_fixes(
             expr.constructor, self._all_constructors(), expr.location
@@ -7669,7 +7604,7 @@ class TypeChecker(ExhaustivenessMixin):
 
         type_info: TypeDefInfo | None = None
         if isinstance(expected_type, UserType):
-            type_info = self.type_defs.get(expected_type.name)
+            type_info = self._user_type_info(expected_type)
         elif isinstance(expected_type, OptionType):
             type_info = self.type_defs.get("Option")
         elif isinstance(expected_type, ResultType):
@@ -7722,7 +7657,7 @@ class TypeChecker(ExhaustivenessMixin):
 
             if isinstance(expected_type, UserType):
                 type_name = expected_type.name
-                type_info = self.type_defs.get(type_name)
+                type_info = self._user_type_info(expected_type)
             elif isinstance(expected_type, OptionType):
                 type_name = "Option"
                 type_info = self.type_defs.get(type_name)
@@ -8019,7 +7954,11 @@ class TypeChecker(ExhaustivenessMixin):
                         sub_params = list(type_params or [])
                         for ap, _arg in zip(alias_params, type_annot.type_params):
                             sub_params.append(ap)
-                        resolved = self._resolve_type(alias_target, sub_params)
+                        resolved = (
+                            alias_target
+                            if isinstance(alias_target, Type)
+                            else self._resolve_type(alias_target, sub_params)
+                        )
                         subs: dict[str, Type] = {}
                         for ap, arg in zip(alias_params, type_annot.type_params):
                             subs[ap] = self._resolve_type(arg, type_params)
@@ -8029,7 +7968,11 @@ class TypeChecker(ExhaustivenessMixin):
                         )
                         self._resolved_type_cache[cache_key] = resolved
                         return resolved
-                    resolved = self._resolve_type(alias_target, type_params)
+                    resolved = (
+                        alias_target
+                        if isinstance(alias_target, Type)
+                        else self._resolve_type(alias_target, type_params)
+                    )
                     self._validate_keyed_collection_type(resolved, type_annot.location)
                     self._resolved_type_cache[cache_key] = resolved
                     return resolved
@@ -8037,8 +7980,9 @@ class TypeChecker(ExhaustivenessMixin):
                     self._resolving_aliases.discard(name)
 
             # User-defined types
-            declared_type_params = self._declared_user_type_params(name)
-            if declared_type_params is not None:
+            declared_type = self._declared_user_type(name)
+            if declared_type is not None:
+                declared_type_params, definition_scope = declared_type
                 if len(type_annot.type_params) != len(declared_type_params):
                     self._raise_type_arity_error(
                         name,
@@ -8049,7 +7993,7 @@ class TypeChecker(ExhaustivenessMixin):
                 type_args = tuple(
                     self._resolve_type(t, type_params) for t in type_annot.type_params
                 )
-                resolved = UserType(name, type_args)
+                resolved = UserType(name, type_args, definition_scope)
                 self._resolved_type_cache[cache_key] = resolved
                 return resolved
 
@@ -8201,11 +8145,14 @@ class TypeChecker(ExhaustivenessMixin):
             return params_ok and ret_ok and effects_ok
 
         if isinstance(expected, UserType) and isinstance(actual, UserType):
-            if expected.name != actual.name:
+            if (
+                expected.name != actual.name
+                or expected.definition_scope != actual.definition_scope
+            ):
                 return False
             if len(expected.type_args) != len(actual.type_args):
                 return False
-            type_info = self.type_defs.get(expected.name)
+            type_info = self._user_type_info(expected)
             inv = type_info.invariant_params if type_info else frozenset()
             return all(
                 matches_invariant(e, a) if i in inv else matches(e, a)
@@ -8458,11 +8405,14 @@ class TypeChecker(ExhaustivenessMixin):
             return params_ok and ret_ok and effects_ok
 
         if isinstance(expected, UserType) and isinstance(actual, UserType):
-            if expected.name != actual.name:
+            if (
+                expected.name != actual.name
+                or expected.definition_scope != actual.definition_scope
+            ):
                 return False
             if len(expected.type_args) != len(actual.type_args):
                 return False
-            type_info = self.type_defs.get(expected.name)
+            type_info = self._user_type_info(expected)
             inv = type_info.invariant_params if type_info else frozenset()
             return all(
                 matches_invariant(e, a) if i in inv else recurse(e, a)

@@ -1795,7 +1795,7 @@ class TestContractFields:
         """No ContractViolationError is built without its structured fields."""
         offenders = []
         for path in sorted((REPO_ROOT / "geno").glob("*.py")):
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if (
                     isinstance(node, ast.Call)

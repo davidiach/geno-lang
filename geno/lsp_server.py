@@ -2532,7 +2532,9 @@ class GenoLanguageServer:
 
         # Module dot-access: check if target_name is a module alias
         project_view = self._project_view_for_uri(uri)
-        for mod_name, (_, _all, exported) in project_view.completion_modules.items():
+        for mod_name, (_, _all, exported) in self._current_completion_modules(
+            project_view
+        ).items():
             if mod_name == target_name or mod_name.split("/")[-1] == target_name:
                 for symbol in exported:
                     items.append(
