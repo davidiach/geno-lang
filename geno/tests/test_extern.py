@@ -1078,6 +1078,24 @@ def test_the_hosted_server_refuses_to_allow_ffi() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "capabilities", [{" ffi"}, ("print", "ffi "), ["\tffi\n"]], ids=repr
+)
+def test_the_hosted_server_refuses_ffi_however_it_is_spelled(capabilities) -> None:
+    """The refusal applies to the names the server grants, once normalized."""
+    from geno.monitoring import RuntimeMetricsCollector
+    from geno.server import create_handler
+
+    with pytest.raises(ValueError, match="cannot grant 'ffi'"):
+        create_handler(RuntimeMetricsCollector(), allowed_capabilities=capabilities)
+    with pytest.raises(ValueError, match="cannot grant 'ffi'"):
+        create_handler(
+            RuntimeMetricsCollector(),
+            allowed_capabilities={"print"},
+            default_request_capabilities=capabilities,
+        )
+
+
 def test_geno_serve_refuses_ffi_before_starting(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

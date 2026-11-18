@@ -1954,10 +1954,6 @@ def create_handler(
 
     if api_key is not None and not api_key.strip():
         raise ValueError("api_key must not be empty or whitespace")
-    for capabilities in (allowed_capabilities, default_request_capabilities):
-        refusal = hosted_ffi_refusal(capabilities)
-        if refusal is not None:
-            raise ValueError(refusal)
 
     if (
         isinstance(rate_limit_requests, bool)
@@ -1987,6 +1983,11 @@ def create_handler(
         if default_request_capabilities is None
         else normalize_capability_values(default_request_capabilities)
     )
+    # Refuse the names as granted: " ffi" normalizes to "ffi".
+    for capabilities in (allowed, default_grants):
+        refusal = hosted_ffi_refusal(capabilities)
+        if refusal is not None:
+            raise ValueError(refusal)
     if not default_grants <= allowed:
         disallowed_defaults = default_grants - allowed
         raise ValueError(
