@@ -1144,6 +1144,10 @@ def test_geno_run_lanes(tmp_path: Path) -> None:
     assert "Capability denied: 'host_sqrt' requires the 'ffi' capability" in (
         denied.stderr
     )
+    # The hint explains the risk and offers no command line to paste.
+    assert "lane never grants 'ffi'" in denied.stderr
+    assert "full authority" in denied.stderr
+    assert "geno run --unsafe" not in denied.stderr
 
     as_json = _geno_cli(
         "run", "--json", "--cap", "ffi,print", "main.geno", cwd=tmp_path

@@ -30,6 +30,7 @@ from .._serve import (
 )
 from ..capabilities import (
     DEFAULT_ALLOWED_CAPABILITIES,
+    FFI_CAPABILITY,
     ISOLATED_RUN_FS_WRITE_LIMIT_BYTES,
     KNOWN_CAPABILITIES,
     isolated_env_name_error,
@@ -635,6 +636,17 @@ def _default_lane_capability_hint(
         )
     if capability not in KNOWN_CAPABILITIES or capability in granted:
         return None
+    if capability == FFI_CAPABILITY:
+        # An extern runs host code outside every sandbox and limit, so the
+        # hint explains that and names the flags in words, with no command
+        # line to paste for a program that may not be trusted.
+        return (
+            "Hint: the process-isolated 'geno run' lane never grants 'ffi': "
+            "extern functions run host code with the full authority of the "
+            "process.\n"
+            "  Only for code you trust, run it without process isolation, with "
+            "--unsafe and ffi added to its --cap list (--unsafe --cap ffi)."
+        )
     caps = ",".join(sorted(granted | {capability}))
     if capability in isolated_run_capabilities(os_name):
         return (
