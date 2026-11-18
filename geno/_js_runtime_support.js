@@ -468,7 +468,9 @@ function _requireSafeJsInt(value, context) {
     if (!_GENO_NUMBER.isSafeInteger(value)) {
         throw _safeIntRangeError(context);
     }
-    return _checkIntegerBits(value);
+    // An Int has no negative zero: Math.ceil(-0.4) and Math.trunc(-0.5) are
+    // -0, which a Float format spec or int_to_float would then show as -0.0.
+    return _checkIntegerBits(value === 0 ? 0 : value);
 }
 
 function _toSafeJsBigInt(value, context) {
@@ -5316,7 +5318,8 @@ function _genoExternFromHost(value, shape, path, depth) {
         if (typeof value !== "number" || !_GENO_NUMBER.isSafeInteger(value)) {
             _genoExternMismatch(path, "Int", value);
         }
-        return value;
+        // An Int has no negative zero.
+        return value === 0 ? 0 : value;
     }
     if (kind === "float") {
         if (typeof value !== "number") _genoExternMismatch(path, "Float", value);
@@ -5371,7 +5374,10 @@ function _genoExternJsonFromHost(value, path, depth) {
     if (value === null) return JsonNull();
     if (typeof value === "boolean") return JsonBool(value);
     if (typeof value === "number") {
-        return _GENO_NUMBER.isSafeInteger(value) ? JsonInt(value) : JsonFloat(value);
+        // -0 is a Float: an Int has no negative zero.
+        return _GENO_NUMBER.isSafeInteger(value) && !(value === 0 && 1 / value < 0)
+            ? JsonInt(value)
+            : JsonFloat(value);
     }
     if (typeof value === "string") {
         _checkCollectionKind("String", _stringLength(value));
