@@ -400,6 +400,50 @@ def _usage(example: str) -> str:
             "Write 'panics \"division\"'",
             '    example 1, 0 panics "division"',
         ),
+        # Redundant parentheses belong to the expected value the fix replaces.
+        (
+            _divider('example 1, 0 -> (panic("division"))'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _divider('example 1, 0 -> panic(("division"))'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _divider('example 1, 0 -> ( ( panic( ( "division" ) ) ) )'),
+            'example 1, 0 panics "division"',
+            "Write 'panics \"division\"'",
+            '    example 1, 0 panics "division"',
+        ),
+        (
+            _divider("example 1, 0 -> (panic)"),
+            "example 1, 0 panics",
+            "Write 'panics'",
+            "    example 1, 0 panics",
+        ),
+        (
+            _divider("example 1, 0 -> (panics)"),
+            "example 1, 0 panics",
+            "Write 'panics'",
+            "    example 1, 0 panics",
+        ),
+        (
+            _usage('example -> (panic("not implemented"))'),
+            'example () panics "not implemented"',
+            "Write '() panics \"not implemented\"'",
+            '    example () panics "not implemented"',
+        ),
+        (
+            # The message is written back as the literal it was.
+            _divider('example 1, 0 -> panic("say \\"no\\"\\t\\\\")'),
+            'example 1, 0 panics "say \\"no\\"\\t\\\\"',
+            'Write \'panics "say \\"no\\"\\t\\\\"\'',
+            '    example 1, 0 panics "say \\"no\\"\\t\\\\"',
+        ),
         (
             _usage("example -> panics"),
             "example () panics",
@@ -450,16 +494,13 @@ def test_the_e330_fix_edits_serialize() -> None:
     assert diagnostic.to_dict()["fixes"] == [
         {
             "title": "Write 'panics \"division\"'",
+            # One edit, from the end of the inputs to the end of the expected
+            # value, so it covers any parentheses around the call or message.
             "edits": [
                 {
                     "start": {"line": 3, "column": 17},
-                    "end": {"line": 3, "column": 27},
-                    "text": " panics ",
-                },
-                {
-                    "start": {"line": 3, "column": 37},
                     "end": {"line": 3, "column": 38},
-                    "text": "",
+                    "text": ' panics "division"',
                 },
             ],
         }
@@ -540,6 +581,8 @@ def test_geno_check_fix_rewrites_every_arrow_form(tmp_path: Path) -> None:
         "    example 2, 0 -> panic\n"
         '    example 3, 0 -> panics "zero"\n'
         "    example 4, 0 -> panics\n"
+        '    example 5, 0 -> (panic("zero"))\n'
+        '    example 6, 0 -> panic(("zero"))\n'
         "    return a / b\n"
         "end func\n\n"
         "func usage() -> String\n"
@@ -557,7 +600,7 @@ def test_geno_check_fix_rewrites_every_arrow_form(tmp_path: Path) -> None:
         cwd=_REPO_ROOT,
     )
     assert fixed.returncode == 0, fixed.stderr
-    assert "Applied 5 fixes" in fixed.stdout
+    assert "Applied 7 fixes" in fixed.stdout
     assert path.read_text(encoding="utf-8") == (
         "func safe_div(a: Int, b: Int) -> Int\n"
         "    example 6, 3 -> 2\n"
@@ -565,6 +608,8 @@ def test_geno_check_fix_rewrites_every_arrow_form(tmp_path: Path) -> None:
         "    example 2, 0 panics\n"
         '    example 3, 0 panics "zero"\n'
         "    example 4, 0 panics\n"
+        '    example 5, 0 panics "zero"\n'
+        '    example 6, 0 panics "zero"\n'
         "    return a / b\n"
         "end func\n\n"
         "func usage() -> String\n"
