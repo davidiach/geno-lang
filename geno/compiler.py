@@ -143,7 +143,7 @@ from .runtime_report import TraceRecorder as _TraceRecorder
 from .stdlib_scope import binds_unqualified
 from .tail_calls import TailCallPlan, plan_tail_calls
 from .tokens import SourceLocation
-from .types import AsyncType, FloatType, ListType, UserType
+from .types import AsyncType, FloatType, ListType, TupleType, UserType
 
 
 @dataclass
@@ -272,6 +272,7 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "get_field",
             "_geno_own_field",
             "_geno_own_index",
+            "_geno_unshared_part",
             "_geno_slice",
             "_geno_format_spec",
             "_GenoTailCall",
@@ -2219,6 +2220,17 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     def _compile_field_assign_statement(self, stmt: FieldAssignStatement) -> None:
         """Compile field assignment against frozen Python constructor dataclasses."""
+        root = stmt.target
+        while isinstance(root, (FieldAccess, IndexAccess)):
+            root = root.target
+        if isinstance(root, Identifier) and isinstance(
+            getattr(root, "_resolved_type", None), TupleType
+        ):
+            # A Python tuple cannot be written in place, so a write through
+            # one of its elements rebinds the root to its unshared copy first,
+            # as the interpreter does (#129).
+            name = self._compile_expr(root)
+            self._writeln(f"{name} = _geno_unshared_part({name})")
         target = self._compile_write_target(stmt.target)
         value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(f"_object_setattr({target}, {stmt.field_name!r}, {value})")

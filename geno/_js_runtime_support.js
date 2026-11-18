@@ -1054,7 +1054,15 @@ function _genoOwnIndex(container, index) {
         return child;
     }
     const unshared = _genoUnsharedPart(child);
-    if (unshared !== child) _safe_index_set(container, index, unshared);
+    if (unshared !== child) {
+        // The read accepted a negative index; store at the place it named,
+        // since an assignment by index rejects one on an Array.
+        _safe_index_set(
+            container,
+            index < 0 && !(container instanceof _GENO_MAP) ? index + container.length : index,
+            unshared,
+        );
+    }
     return unshared;
 }
 

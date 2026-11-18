@@ -459,6 +459,10 @@ def _geno_unshared_part(value: Any) -> Any:
         return list(value)
     if isinstance(value, dict):
         return dict(value)
+    if type(value) is tuple:
+        # A tuple cannot be written in place: rebuild it from unshared parts,
+        # so a write through any of its elements lands in a copy.
+        return tuple(_geno_unshared_part(element) for element in value)
     return value
 
 

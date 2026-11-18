@@ -334,6 +334,9 @@ def _unshared_part(value: Any) -> Any:
     """Return a one-level copy of a value-type container about to be written.
 
     Reference types (Array, Vec, MutableMap, ...) and scalars come back as is.
+    A tuple cannot be written in place, so it comes back rebuilt from the
+    unshared parts of its elements: the write below it then lands in a copy
+    whichever element it goes through.
     """
     if isinstance(value, ConstructorValue):
         return ConstructorValue(value.constructor, dict(value.fields))
@@ -341,6 +344,8 @@ def _unshared_part(value: Any) -> Any:
         return list(value)
     if isinstance(value, dict):
         return dict(value)
+    if isinstance(value, tuple):
+        return tuple(_unshared_part(element) for element in value)
     return value
 
 
@@ -3997,8 +4002,17 @@ class Interpreter:
         A snapshot keeps one copy of a part that two places shared, so each
         constructor, list or map reached on the way to the write is copied
         and put back first.  The write then never shows through another path
-        to the same part (#129).  The root binding is already its own copy.
+        to the same part (#129).  The root binding is already its own copy,
+        except for a tuple, which cannot be written in place: a tuple root is
+        rebound to its unshared copy.
         """
+        if isinstance(expr, Identifier):
+            root = self.eval_expr(expr, env)
+            if isinstance(root, tuple):
+                unshared = _unshared_part(root)
+                if env.assign(expr.name, unshared):
+                    return unshared
+            return root
         if isinstance(expr, FieldAccess):
             parent = self._eval_write_target(expr.target, env)
             if (

@@ -150,6 +150,99 @@ end func
         "0\n[[P(x: 5)], [P(x: 6)]]\n",
         id="nested-element-argument",
     ),
+    # A field write through a negative index lands in the element it read;
+    # compiled JavaScript rejected the store-back on an Array (0.7 review).
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var a = array_from_list([P(x: 1), P(x: 2)])
+    let peek = keep(a[-1])
+    a[-1].x = 50
+    a[-2].x += 7
+    print(peek())
+    print(a)
+end func
+""",
+        "2\nArray([P(x: 8), P(x: 50)])\n",
+        id="negative-array-index",
+    ),
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var ys = [P(x: 1), P(x: 2)]
+    ys[-1].x = 20
+    print(ys)
+end func
+""",
+        "[P(x: 1), P(x: 20)]\n",
+        id="negative-list-index",
+    ),
+    # A tuple cannot be written in place on the interpreter or in compiled
+    # Python, so its element was written where an earlier read still held it
+    # (0.7 review); every backend now gives the write its own copy.
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var t = (P(x: 1), 2)
+    let peek = keep(t.0)
+    t.0.x = 5
+    print(peek())
+    print(t)
+end func
+""",
+        "1\n(P(x: 5), 2)\n",
+        id="tuple-root-element-argument",
+    ),
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var t = (P(x: 1), 2)
+    let peek = keep(t.0)
+    let bump = fn() do
+        t.0.x += 10
+    end fn
+    bump()
+    print(peek())
+    print(t)
+end func
+""",
+        "1\n(P(x: 11), 2)\n",
+        id="tuple-root-written-by-a-lambda",
+    ),
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var a = array_from_list([(P(x: 1), 1), (P(x: 2), 2)])
+    for e in a do
+        a[1].0.x = 99
+        print(e.0.x)
+    end for
+    print(a)
+end func
+""",
+        "1\n2\nArray([(P(x: 1), 1), (P(x: 99), 2)])\n",
+        id="array-loop-over-tuples",
+    ),
+    pytest.param(
+        """
+type Pair = Pair(pair: (P, Int))
+
+func main() -> Unit with io, mutation
+    var b = Pair(pair: (P(x: 3), 4))
+    let peek = keep(b.pair.0)
+    b.pair.0.x = 30
+    var m = {"k": (P(x: 9), 0)}
+    let peek_map = keep(m["k"].0)
+    m["k"].0.x = 90
+    print(peek())
+    print(peek_map())
+    print(b)
+    print(m)
+end func
+""",
+        '3\n9\nPair(pair: (P(x: 30), 4))\n{"k": (P(x: 90), 0)}\n',
+        id="tuple-below-a-field-and-a-map-value",
+    ),
 ]
 
 
