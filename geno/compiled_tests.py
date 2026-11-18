@@ -15,15 +15,19 @@ cases continue in a new one.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,7 +66,13 @@ def _main():
         out.write(json.dumps(record) + "\\n")
         out.flush()
 
-    namespace = runpy.run_path(sys.argv[1], run_name="__geno_test__")
+    # The grant is injected as the hosts inject it, not passed as --cap, so
+    # a denial does not advise a --cap that geno test does not take.
+    namespace = runpy.run_path(
+        sys.argv[1],
+        init_globals={{"_GENO_CAPS": plan["capabilities"]}},
+        run_name="__geno_test__",
+    )
     tests = namespace[{TEST_REGISTRY_NAME!r}]
     render = namespace["_geno_format_bounded"]
 
@@ -146,10 +156,17 @@ def _main():
             "panic": getattr(exc, "_geno_panic", None) is True,
             "denied": isinstance(denied, str) or isinstance(env_denied, str),
             "contract": clause if clause in ("requires", "ensures") else None,
+            # The compiled runtime fails with these types; anything else (a
+            # NameError, a TypeError) is the host's own error, not Geno's.
+            "host": not isinstance(exc, _GENO_FAILURES),
         }}
 
     def finish(value):
         return asyncio.run(value) if inspect.iscoroutine(value) else value
+
+    _GENO_FAILURES = (
+        RuntimeError, ArithmeticError, LookupError, ValueError, MemoryError
+    )
 
     def run():
         emit({{"event": "ready"}})
@@ -298,15 +315,19 @@ _JS_DRIVER = f"""
         }}
         return _valuesEqual(a, b);
     }};
+    // The runtime fails with a plain Error (or one of its own classes); a
+    // native TypeError or ReferenceError is the host's own error, not Geno's.
+    const _HOST_ERRORS = ["TypeError", "ReferenceError", "SyntaxError", "EvalError", "URIError"];
     const _describe = (error) => {{
         const isError = error instanceof Error;
         const contract = isError && error instanceof _GenoContractViolation ? error.clause : null;
         return {{
             type: isError ? error.name : typeof error,
             message: isError ? (error.message || error.name) : String(error),
-            panic: false,
+            panic: isError && error._genoPanic === true,
             denied: false,
             contract: contract === "requires" || contract === "ensures" ? contract : null,
+            host: !isError || _HOST_ERRORS.includes(error.name),
         }};
     }};
     _emit({{event: "ready"}});
@@ -448,6 +469,39 @@ class _LoadFailure(Exception):
     """The compiled program did not get as far as running a case."""
 
 
+@contextlib.contextmanager
+def _stop_on_termination() -> Iterator[None]:
+    """Turn SIGTERM and SIGHUP into ``SystemExit`` while cases run.
+
+    Their default action ends this process without unwinding, which would
+    leave the case's host process running with nothing enforcing its
+    timeout, and its scratch directory behind. Raising instead runs the
+    ``finally`` that kills it. Signal handlers can only be set on the main
+    thread; elsewhere (an embedder's worker thread) nothing changes.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous: dict[int, Any] = {}
+
+    def stop(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        for name in ("SIGTERM", "SIGHUP"):
+            number = getattr(signal, name, None)
+            if number is None:
+                continue
+            try:
+                previous[number] = signal.signal(number, stop)
+            except (OSError, ValueError):
+                continue
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def _run_cases(
     backend: str, code: str, indices: list[int], timeout: float | None
 ) -> dict[int, dict[str, Any]]:
@@ -461,12 +515,17 @@ def _run_cases(
     results: dict[int, dict[str, Any]] = {}
     if not indices:
         return results
-    with tempfile.TemporaryDirectory(prefix="geno-test-") as scratch:
+    with (
+        _stop_on_termination(),
+        tempfile.TemporaryDirectory(prefix="geno-test-") as scratch,
+    ):
         root = Path(scratch)
         plan_path = root / "plan.json"
         results_path = root / "results.jsonl"
         stderr_path = root / "stderr.txt"
-        caps = ",".join(sorted(HARNESS_CAPABILITIES))
+        # The grant is injected as the hosts inject theirs, never read from
+        # argv, so a denial does not advise a --cap that geno test lacks.
+        caps = sorted(HARNESS_CAPABILITIES)
         if backend == "python":
             artifact = root / "program.py"
             launcher = root / "launcher.py"
@@ -474,17 +533,25 @@ def _run_cases(
             command = [sys.executable, str(launcher), str(artifact)]
         else:
             artifact = root / "program.js"
-            command = ["node", str(artifact)]
+            grant = root / "grant.js"
+            grant.write_text(
+                f"globalThis.__GENO_CAPS = {json.dumps(caps)};\n", encoding="utf-8"
+            )
+            command = ["node", "--require", str(grant), str(artifact)]
         artifact.write_text(code, encoding="utf-8", newline="\n")
-        if caps:
-            command += ["--cap", caps]
         environment = dict(os.environ, GENO_TEST_PLAN=str(plan_path))
 
         remaining = list(indices)
         while remaining:
             results_path.write_text("", encoding="utf-8")
             plan_path.write_text(
-                json.dumps({"results": str(results_path), "indices": remaining}),
+                json.dumps(
+                    {
+                        "results": str(results_path),
+                        "indices": remaining,
+                        "capabilities": caps,
+                    }
+                ),
                 encoding="utf-8",
             )
             with open(stderr_path, "wb") as stderr:
@@ -565,13 +632,27 @@ def _run_cases(
     return results
 
 
-def _classify(backend: str, error: dict[str, Any]) -> CallFailure:
+# Node's RangeErrors for a value too large to allocate.
+_JS_MEMORY_ERRORS = (
+    "Invalid string length",
+    "Invalid array length",
+    "Array buffer allocation failed",
+)
+
+
+def _classify(backend: str, error: dict[str, Any]) -> CallFailure | None:
     """How a compiled call that threw ended (see ``geno.panic_outcome``).
 
-    Compiled Python marks its own panics and capability denials. JavaScript
-    throws a plain ``Error`` for both, so a denial is recognized there by the
-    runtime's fixed wording; a program that panics with that wording reads as
+    Both runtimes mark their own panics (``panic``, ``option_expect``,
+    ``result_expect`` and compiler-emitted panics). Compiled Python also
+    marks its capability denials; JavaScript throws a plain ``Error`` for
+    one, so a denial is recognized there by the runtime's fixed wording, and
+    a program that panics with that wording without the mark reads as
     refused, which can fail a panics example but never pass one.
+
+    Returns ``None`` for the host's own error (a JavaScript ``TypeError`` or
+    ``ReferenceError``, a Python ``NameError``): it means the compiled
+    program or its runtime is broken, never that the call panicked.
     """
     message = str(error.get("message", ""))
     kind = error.get("type")
@@ -579,8 +660,14 @@ def _classify(backend: str, error: dict[str, Any]) -> CallFailure:
         kind == "RecursionError" or "call stack" in message
     ):
         return CallFailure("limit", message, "host recursion limit")
-    if kind == "MemoryError":
+    if kind == "MemoryError" or (
+        kind == "RangeError" and message.startswith(_JS_MEMORY_ERRORS)
+    ):
         return CallFailure("limit", message, "memory limit")
+    if kind == "RangeError" and message.startswith("Maximum BigInt size exceeded"):
+        return CallFailure("limit", message, "integer size limit")
+    if error.get("host") or kind == "RangeError":
+        return None
     if kind == "_GenoOutputLimitError":
         return CallFailure("limit", message, "output limit")
     if error.get("panic"):
@@ -647,7 +734,15 @@ def _judge(
             # An input that panics is a broken example, not a satisfied one.
             return failed("example", f"Runtime error: {error.get('message')}")
         else:
-            reason = check_panics_example(_classify(backend, error), case.panic_message)
+            failure = _classify(backend, error)
+            if failure is None:
+                reason = (
+                    "expected a panic, but the compiled program failed with a "
+                    f"host error, not a panic: {error.get('type')}: "
+                    f"{error.get('message')}"
+                )
+            else:
+                reason = check_panics_example(failure, case.panic_message)
         return passed if reason is None else failed("example", reason)
 
     if outcome == "equal":
@@ -662,6 +757,23 @@ def _judge(
     return failed(
         error.get("contract") or "example", f"Runtime error: {error.get('message')}"
     )
+
+
+def _host_profiles(project_root: Path | None, backend: str) -> list[str]:
+    """The execution profiles ``geno compile --target <backend>`` checks.
+
+    A project that declares only profiles of another backend (``browser``
+    for ``js``) is compiled for this one's default host profile here, since
+    that is where the cases run.
+    """
+    from .target_profile import resolve_compilation_profiles
+
+    defaults = {"python": "python-cli", "js": "node-cli"}
+    try:
+        profiles = resolve_compilation_profiles(project_root, backend)
+    except ValueError:
+        return [defaults[backend]]
+    return [profile.target for profile in profiles]
 
 
 def _selected(case: CompiledTestCase, filter_pattern: str | None) -> bool:
@@ -742,6 +854,12 @@ def run_compiled_project(
             if target is not None
             else resolve_manifest_targets(context.project.root)
         )
+        # The build runs on the backend's own host, so it is also checked
+        # against the profiles `geno compile` checks it against: a builtin
+        # that host lacks is a type error there, not a call that throws.
+        for host_profile in _host_profiles(context.project.root, backend):
+            if host_profile not in targets:
+                targets.append(host_profile)
         for target_name in targets or [None]:
             profile = (
                 TargetProfile.load(target_name) if target_name is not None else None

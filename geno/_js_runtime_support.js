@@ -1800,9 +1800,19 @@ class _GenoTailCall {
         this.ensures = null;
     }
 }
+// The error a panic throws: a plain Error marked as a panic. Provenance for
+// classifiers (geno test --backend js): the runtime's resource limits are
+// plain Errors recognized by their fixed messages, so a panic whose own text
+// reads like one ("List size exceeds limit") carries the mark to stay a
+// panic. Only the panicking builtins and compiler-emitted panics set it, as
+// in compiled Python. (Section names are scanned for tree shaking, so this
+// comment names no builtin.)
+function _genoPanicError(message) {
+    return Object.defineProperty(new Error(message), "_genoPanic", { value: true });
+}
 // End the program with `message`: Geno code cannot recover from a panic.
 function _genoPanic(message) {
-    throw new Error(message);
+    throw _genoPanicError(message);
 }
 class _GenoContractViolation extends Error {
     constructor(message) {
@@ -1836,7 +1846,7 @@ function unwrap(opt) {
 }
 
 function panic(message) {
-    throw new Error(message);
+    throw _genoPanicError(message);
 }
 
 function unwrap_or(opt, def) {
@@ -6051,7 +6061,7 @@ function result_unwrap(result) {
 
 function result_expect(result, message) {
     if (result._tag === 'Ok') return result.value;
-    throw new Error(message + ": " + _stringifyValue(result.error));
+    throw _genoPanicError(message + ": " + _stringifyValue(result.error));
 }
 
 function result_is_ok(result) {
@@ -6088,7 +6098,7 @@ function option_unwrap_or(option, defaultVal) {
 
 function option_expect(option, message) {
     if (option._tag === 'Some') return option.value;
-    throw new Error(message);
+    throw _genoPanicError(message);
 }
 
 function option_is_some(option) {

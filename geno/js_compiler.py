@@ -246,6 +246,7 @@ _CORE_NAMES = (
             "_PropagateReturn",
             "_propagate",
             "_genoPanic",
+            "_genoPanicError",
             "_GenoContractViolation",
         }
     )
