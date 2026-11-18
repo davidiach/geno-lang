@@ -804,3 +804,67 @@ end func
     assert backend(aliased, modules) == (
         '[{"item":{"n":1}},{"item":{"s":"r"}}]\n{"n":1}\n{"s":"r"}\n'
     )
+
+
+LONE_SURROGATES = (
+    TYPES
+    + r"""
+func shown(text: String) -> String
+    example "ab" -> "2 ab"
+    var out = ""
+    for c in to_chars(text) do
+        let code = char_code(c)
+        if code >= 55296 and code <= 57343 then
+            out = out + "<" + to_string(code) + ">"
+        else
+            out = out + c
+        end if
+    end for
+    return to_string(length(text)) + " " + out
+end func
+
+func main() -> Unit with io
+    match json_decode[String]("\"\\ud800x\\udfffé\\u0001\"") with
+        | Ok(v) ->
+            print(shown(json_encode(v)))
+            print(shown(json_encode_pretty([v], indent: 2)))
+            print(shown(json_encode_pretty({v: 1}, indent: 1)))
+            print(shown(json_stringify_pretty(JsonString(v), 2)))
+        | Err(e) -> print(e)
+    end match
+    match json_decode[Color]("\"\\ud800é\"") with
+        | Ok(c) -> print("ok")
+        | Err(e) -> print(shown(e))
+    end match
+    match json_decode[Map[String, Int]]("{\"\\ud800é\": \"x\"}") with
+        | Ok(c) -> print("ok")
+        | Err(e) -> print(shown(e))
+    end match
+    match json_decode[Map[String, List[Int]]]("{\"k\": [1], \"\\udfff\": [2, \"x\"]}") with
+        | Ok(c) -> print("ok")
+        | Err(e) -> print(shown(e))
+    end match
+end func
+"""
+)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_lone_surrogate_is_escaped_as_javascript_writes_it(backend):
+    """JSON text and decode errors write a lone surrogate as ``\\udxxx``.
+
+    Well-formed ``JSON.stringify`` escapes an unpaired surrogate in lowercase
+    hex and leaves every other character as it is; the Python backends
+    write the same, so a message or a pretty encoding has the same length
+    and text everywhere. Compact ``json_encode`` escapes all non-ASCII.
+    """
+    escaped = "\\ud800x\\udfff\u00e9\\u0001"
+    assert backend(LONE_SURROGATES) == (
+        f'27 "\\ud800x\\udfff\\u00e9\\u0001"\n'
+        f'28 [\n  "{escaped}"\n]\n'
+        f'30 {{\n "{escaped}": 1\n}}\n'
+        f'22 "{escaped}"\n'
+        '48 $: expected one of "Red", "Green", got "\\ud800\u00e9"\n'
+        '38 $["\\ud800\u00e9"]: expected Int, got String\n'
+        '40 $["\\udfff"][1]: expected Int, got String\n'
+    )

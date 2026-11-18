@@ -2526,6 +2526,25 @@ def _json_container_bounds(
     return bounds
 
 
+# A UTF-16 surrogate code point. A Python str holds an astral character as one
+# code point, so every surrogate in one is unpaired.
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _escape_lone_surrogates(text: str) -> str:
+    """JSON *text* with each lone surrogate written as ``\\udxxx``.
+
+    Copy of ``_geno_escape_lone_surrogates`` in geno/_runtime_support.py:
+    well-formed ``JSON.stringify`` escapes an unpaired surrogate in lowercase
+    hex, and ``json.dumps`` with ``ensure_ascii=False`` writes it as is.
+    """
+    if _LONE_SURROGATE_RE.search(text) is None:
+        return text
+    return _LONE_SURROGATE_RE.sub(
+        lambda match: "\\u" + f"{ord(match.group()):04x}", text
+    )
+
+
 def _json_dumps_under_limit(
     func_name: str,
     obj: Any,
@@ -2538,8 +2557,28 @@ def _json_dumps_under_limit(
 
     A subtree shared by reference is written once per occurrence, so a small
     value can encode to an arbitrarily large string. Bound the size first and
-    stream the encoding only when the bounds cannot decide.
+    stream the encoding only when the bounds cannot decide. Without
+    ``ensure_ascii`` a lone surrogate is escaped, as JavaScript does.
     """
+    text = _json_dumps_bounded(
+        func_name, obj, max_collection_size, indent, ensure_ascii
+    )
+    if ensure_ascii:
+        return text
+    escaped = _escape_lone_surrogates(text)
+    if len(escaped) != len(text):
+        _check_result_string_size(func_name, len(escaped), max_collection_size)
+    return escaped
+
+
+def _json_dumps_bounded(
+    func_name: str,
+    obj: Any,
+    max_collection_size: int,
+    indent: int | None,
+    ensure_ascii: bool,
+) -> str:
+    """``_json_dumps_under_limit`` before lone surrogates are escaped."""
     import json
 
     limit = _effective_max_collection_size(max_collection_size)

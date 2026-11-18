@@ -3590,6 +3590,27 @@ def _json_container_bounds(
     return min_chars, max_chars, lines, indent_units
 
 
+# A UTF-16 surrogate code point. A Python str holds an astral character as one
+# code point, so every surrogate in one is unpaired.
+_GENO_LONE_SURROGATE_RE = _re.compile(r"[\ud800-\udfff]")
+
+
+def _geno_escape_lone_surrogates(text: str) -> str:
+    """JSON *text* with each lone surrogate written as ``\\udxxx``.
+
+    Well-formed ``JSON.stringify`` escapes an unpaired surrogate in lowercase
+    hex and writes every other non-ASCII character as it is; ``json.dumps``
+    with ``ensure_ascii=False`` writes the surrogate itself. Escaping it here
+    makes the Python backends write what JavaScript writes. (A copy lives in
+    geno/builtins.py.)
+    """
+    if _GENO_LONE_SURROGATE_RE.search(text) is None:
+        return text
+    return _GENO_LONE_SURROGATE_RE.sub(
+        lambda match: "\\u" + f"{ord(match.group()):04x}", text
+    )
+
+
 def _json_dumps_under_limit(
     func_name: str, obj: Any, *, indent: int | None = None, ensure_ascii: bool = True
 ) -> str:
@@ -3597,8 +3618,22 @@ def _json_dumps_under_limit(
 
     A subtree shared by reference is written once per occurrence, so a small
     value can encode to an arbitrarily large string. Bound the size first and
-    stream the encoding only when the bounds cannot decide.
+    stream the encoding only when the bounds cannot decide. Without
+    ``ensure_ascii`` a lone surrogate is escaped, as JavaScript does.
     """
+    text = _json_dumps_bounded(func_name, obj, indent, ensure_ascii)
+    if ensure_ascii:
+        return text
+    escaped = _geno_escape_lone_surrogates(text)
+    if len(escaped) != len(text):
+        _check_string_result_size(func_name, len(escaped))
+    return escaped
+
+
+def _json_dumps_bounded(
+    func_name: str, obj: Any, indent: int | None, ensure_ascii: bool
+) -> str:
+    """``_json_dumps_under_limit`` before lone surrogates are escaped."""
     import json as _json
 
     separators = (",", ":") if indent is None else (",", ": ")
@@ -3798,9 +3833,10 @@ _GENO_JSON_OPS = _GenoJsonOps()
 
 
 def _geno_json_quote(text: Any) -> Any:
+    """*text* as a JSON string in a message, as ``JSON.stringify`` writes it."""
     import json as _json
 
-    return _json.dumps(text, ensure_ascii=False)
+    return _geno_escape_lone_surrogates(_json.dumps(text, ensure_ascii=False))
 
 
 def _geno_json_path(path: Any) -> Any:
