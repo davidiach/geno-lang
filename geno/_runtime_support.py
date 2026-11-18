@@ -3779,6 +3779,10 @@ class _GenoJsonOps:
         """Bound a container an extern's host returned (proposal 0025)."""
         _check_collection_kind(kind, size)
 
+    def extern_int(self, value: Any) -> None:
+        """Bound an Int an extern's host returned (proposal 0025)."""
+        _require_int_bit_limit(value)
+
 
 _GENO_JSON_NODES = {
     "JsonString": JsonString,
@@ -4382,7 +4386,12 @@ def _geno_extern_to_host(value: Any, shape: Any, ops: Any) -> Any:
 
 def _geno_extern_json_to_host(node: Any, ops: Any, depth: int) -> Any:
     if depth >= _GENO_EXTERN_MAX_DEPTH:
-        raise _GenoExternFailure("a JsonValue argument is nested too deeply")
+        # _geno_extern_invoke names the extern in front of this.
+        raise _GenoExternFailure(
+            "a JsonValue argument nested more than "
+            + str(_GENO_EXTERN_MAX_DEPTH)
+            + " levels deep"
+        )
     tag = ops.tag(node)
     if tag == "JsonNull":
         return None
@@ -4410,7 +4419,7 @@ def _geno_extern_from_host(
     if kind == "int":
         if isinstance(value, bool) or not isinstance(value, int):
             _geno_extern_mismatch(path, "Int", value)
-        return value
+        return _geno_extern_int(value, ops)
     if kind == "float":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             _geno_extern_mismatch(path, "Float", value)
@@ -4425,7 +4434,7 @@ def _geno_extern_from_host(
         if not isinstance(value, str):
             _geno_extern_mismatch(path, "String", value)
         _geno_extern_size(ops, "String", len(value))
-        return value
+        return _geno_extern_str(value)
     if kind == "bool":
         if not isinstance(value, bool):
             _geno_extern_mismatch(path, "Bool", value)
@@ -4446,7 +4455,7 @@ def _geno_extern_from_host(
             _geno_extern_from_host(
                 item, shape[1], (path, "[" + str(index) + "]"), ops, depth
             )
-            for index, item in enumerate(value)
+            for index, item in _builtin_enumerate(value)
         ]
     if kind == "tuple":
         if not isinstance(value, (list, tuple)):
@@ -4463,7 +4472,9 @@ def _geno_extern_from_host(
             _geno_extern_from_host(
                 item, item_shape, (path, "[" + str(index) + "]"), ops, depth
             )
-            for index, (item, item_shape) in enumerate(zip(value, shape[1]))
+            for index, (item, item_shape) in _builtin_enumerate(
+                _builtin_zip(value, shape[1])
+            )
         )
     if kind == "map":
         if not isinstance(value, dict):
@@ -4473,6 +4484,7 @@ def _geno_extern_from_host(
         for key, item in value.items():
             if not isinstance(key, str):
                 _geno_extern_mismatch(path, "a dict with str keys", key)
+            key = _geno_extern_str(key)
             pairs.append(
                 (
                     key,
@@ -4493,12 +4505,12 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
     if isinstance(value, bool):
         return ops.node("JsonBool", value)
     if isinstance(value, int):
-        return ops.node("JsonInt", value)
+        return ops.node("JsonInt", _geno_extern_int(value, ops))
     if isinstance(value, float):
-        return ops.node("JsonFloat", value)
+        return ops.node("JsonFloat", float(value))
     if isinstance(value, str):
         _geno_extern_size(ops, "String", len(value))
-        return ops.node("JsonString", value)
+        return ops.node("JsonString", _geno_extern_str(value))
     if isinstance(value, (list, tuple)):
         _geno_extern_size(ops, "List", len(value))
         return ops.node(
@@ -4507,7 +4519,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
                 _geno_extern_json_from_host(
                     item, (path, "[" + str(index) + "]"), ops, depth + 1
                 )
-                for index, item in enumerate(value)
+                for index, item in _builtin_enumerate(value)
             ],
         )
     if isinstance(value, dict):
@@ -4516,6 +4528,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
         for key, item in value.items():
             if not isinstance(key, str):
                 _geno_extern_mismatch(path, "a dict with str keys", key)
+            key = _geno_extern_str(key)
             entries.append(
                 (
                     key,
@@ -4526,6 +4539,36 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
             )
         return ops.node("JsonObject", entries)
     return _geno_extern_mismatch(path, "a JSON value", value)
+
+
+def _geno_extern_int(value: Any, ops: Any) -> Any:
+    """A host int result as a Geno Int, within the integer size limit.
+
+    A subclass (an ``IntEnum`` member, say) becomes the plain int it holds,
+    so Geno's equality and display see the same value on every backend.
+    Compiled Python's adapter applies the integer size limit here; the
+    interpreter's checks the whole result against its own limits afterwards.
+    """
+    if type(value) is not int:
+        value = int(value)
+    check = getattr(ops, "extern_int", None)
+    if check is not None:
+        check(value)
+    return value
+
+
+def _geno_extern_str(value: Any) -> Any:
+    """A host str result as a plain str.
+
+    A subclass (a ``StrEnum`` or ``(str, Enum)`` member, or one with its own
+    ``__eq__``) is copied character by character: joining a lone item that
+    is not an exact str builds a new str from its characters without calling
+    any method it overrides (``str()`` would call ``__str__``, which a
+    ``(str, Enum)`` member overrides to return its name).
+    """
+    if type(value) is str:
+        return value
+    return "".join([value])
 
 
 def _geno_extern_spec(binding: Any) -> str:
@@ -4585,9 +4628,15 @@ def _geno_extern_invoke(
             + name
             + "' has no python binding, so it cannot run on this backend"
         )
-    host_args = [
-        _geno_extern_to_host(value, shape, ops) for value, shape in zip(args, params)
-    ]
+    try:
+        host_args = [
+            _geno_extern_to_host(value, shape, ops)
+            for value, shape in _builtin_zip(args, params)
+        ]
+    except _GenoExternFailure as failure:
+        raise _GenoExternFailure(
+            "Extern function '" + name + "' got " + str(failure)
+        ) from None
     loading = True
     # Host code, the binding's import or the call, can raise anything: this is
     # the boundary where it becomes a Geno panic.
