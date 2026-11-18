@@ -620,6 +620,59 @@ package version stays 0.6.0, and the Draft
   replaces the earlier one, so hover shows the final pass's type, and the
   first pass's type stays when the final pass stopped at an error.
 
+Fixed in the 0.7 release review:
+
+- `geno test --backend js` passed an `example ... panics` whose call threw
+  a JavaScript `ReferenceError` because Node lacks the builtin
+  (`sleep_ms`, `stdin_read_all`), with exit status 0, where the interpreter
+  and `--backend python` failed it. A compiled test build is now also
+  type-checked against the profiles `geno compile --target <backend>`
+  uses, so such a program is a type error, and a host's own error (a
+  JavaScript `TypeError` or `ReferenceError`, a Python `NameError`) fails a
+  panics example instead of satisfying it.
+- Under `geno test --backend js`, JavaScript's integer limits (`Exponent
+  too large`, `... exceeds JavaScript safe integer range`) satisfied a
+  panics example; they are resource limits, as on the other backends. The
+  JavaScript runtime now marks its panics, as compiled Python does, so a
+  panic worded like a limit stays a panic there too.
+- Killing `geno test --backend python|js` with SIGTERM or SIGHUP left the
+  running case's process behind, at full CPU and with no timeout, and its
+  scratch directory; both are now cleaned up. A compiled case's capability
+  denial no longer advises `pass '--cap env'`, which `geno test` does not
+  take.
+- Compiled JavaScript rejected a field write through a negative index
+  (`arr[-1].x = 50`, "Index -1 out of bounds for assignment") that the
+  interpreter and compiled Python accept; a regression from #259.
+- A field write through a tuple element (`t.0.x = 5`, `arr[1].0.x = 99`)
+  changed a value read from the same place earlier on the interpreter and
+  in compiled Python, while compiled JavaScript, since #259, did not. Every
+  backend now gives the write its own copy, as
+  [runtime semantics](docs/reference/runtime-semantics.md) describes.
+- Compiled JavaScript's `ceil`, `floor` and `float_to_int`, and an extern
+  whose host returned `-0`, produced an Int negative zero, which a Float
+  format spec or `int_to_float` showed as `-0.0`. An Int is never `-0`
+  now.
+- On compiled JavaScript, `json_decode` of an integer literal past the
+  safe range (`9007199254740993`) failed even for a `Float`, which accepts
+  any JSON number on the other backends; it now decodes as a Float. An
+  `Int` or `JsonValue` target still gets the documented JavaScript error.
+- An assignment or compound assignment whose target goes through a slice
+  (`xs[1:] = ys`, `xs[1:][0].x = 50`, `ps[1:][0].x += 1`) is now an error at
+  the slice (E202), even on a `let`. Before, the write was accepted and
+  silently lost on every backend. `xs[1:][i].x += 1` no longer says the
+  target "cannot call a function", and an invalid assignment target is
+  reported at its `=`, not on the next line.
+- A loop or comprehension over something that is not a List reports one
+  error, without a follow-on "Tuple pattern used with non-tuple type: Any".
+- The E330 fix handles parentheses around the expected value:
+  `example 1, 0 -> (panic("division"))` and `example 1 -> panic(("boom"))`
+  become `example 1, 0 panics "division"` and `example 1 panics "boom"`,
+  not a parse error.
+- `geno check --fix` for Python-style loop names wraps the whole pattern
+  list: `for i, _ in`, `for _, s in` and `for i, (x, y) in` become
+  `for (i, _) in`, `for (_, s) in` and `for (i, (x, y)) in`, in loops and
+  comprehensions.
+
 ## [0.6.0] - 2026-10-25
 
 ### Changed
