@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from .ast_nodes import (
+    SLICE_OPERATOR,
     AssignStatement,
     BinaryOp,
     BooleanLiteral,
@@ -199,8 +200,10 @@ class StatementParserMixin(ParserBase):
         if operator is not None:
             return self._parse_compound_assignment(location, expr, operator)
 
-        if self._match(TokenType.ASSIGN):
+        assign = self._match(TokenType.ASSIGN)
+        if assign is not None:
             value = self._parse_expression()
+            _reject_slice_target(expr)
             if isinstance(expr, IndexAccess):
                 return IndexAssignStatement(
                     location=location, target=expr.target, index=expr.index, value=value
@@ -213,9 +216,13 @@ class StatementParserMixin(ParserBase):
                     value=value,
                 )
             else:
-                raise self._error(
+                # At the `=`: the parser is past the value, often on the
+                # next statement.
+                raise ParseError(
                     "Invalid assignment target: only variables, fields (x.field), "
-                    "and indices (x[i]) can be assigned to"
+                    "and indices (x[i]) can be assigned to",
+                    assign.location,
+                    ErrorCode.PARSE_INVALID_SYNTAX,
                 )
 
         return ExpressionStatement(location=location, expression=expr)
@@ -231,6 +238,7 @@ class StatementParserMixin(ParserBase):
         operator_location = self._current().location
         self._advance()  # the operator
         self._advance()  # `=`
+        _reject_slice_target(target)
         if not isinstance(target, Identifier | IndexAccess | FieldAccess):
             raise ParseError(
                 f"Invalid assignment target for '{operator}=': only variables, "
@@ -506,3 +514,41 @@ def _repeatable(expr: Expression) -> bool:
     if isinstance(expr, UnaryOp):
         return _repeatable(expr.operand)
     return False
+
+
+def _reject_slice_target(target: Expression) -> None:
+    """Reject an assignment target whose path goes through a slice.
+
+    ``xs[a:b]`` is a new list (proposal 0023), so ``xs[1:] = ys``,
+    ``xs[1:][0] = y`` and ``ps[1:][0].x += 1`` would each write to that new
+    list and leave ``xs`` and ``ps`` as they were. The error is at the `[`
+    of the first slice on the path. A slice in an index
+    (``a[len(xs[1:])] = 0``) is a read.
+    """
+    first: BinaryOp | None = None
+    node: Expression = target
+    while True:
+        if isinstance(node, FieldAccess | IndexAccess):
+            node = node.target
+        elif isinstance(node, BinaryOp) and node.operator == SLICE_OPERATOR:
+            first = node
+            node = node.left
+        else:
+            break
+    if first is None:
+        return
+    if isinstance(target, BinaryOp):  # the target is itself a slice
+        advice = (
+            "assigning to it would not change what it slices; assign the "
+            "whole new value instead, as in xs = xs[:1] + ys"
+        )
+    else:
+        advice = (
+            "a write through it would not change what it slices; write "
+            "through the list itself, as in xs[1 + i] for xs[1:][i]"
+        )
+    raise ParseError(
+        f"Invalid assignment target: a slice is a new list (or string), so {advice}",
+        first.right.location,
+        ErrorCode.PARSE_INVALID_SYNTAX,
+    )

@@ -185,6 +185,82 @@ def test_a_slice_cannot_be_assigned_to():
         parse(_function("xs[0:1] = [2]"))
 
 
+# A slice is a new list, so a write whose target goes through one would
+# change only that list (or, for an element that is an Array, reach it by a
+# way the program does not show); every form is rejected where it is written.
+_WRITES_THROUGH_A_SLICE = [
+    "xs[1:] = [9]",
+    "xs[1:] += [9]",
+    "xs[:] = []",
+    "xs[1:][0] = 9",
+    "xs[1:][0] += 1",
+    "ps[1:][0].x = 50",
+    "ps[1:][0].x += 1",
+    "ps[1:][1].x += 7",
+    "w.ps[-1:][0].x = 9",
+    "grid[0][1:][0] = 5",
+    "ps[0:2][0:1][0].x = 4",
+    "arrays[0:1][0][0] = 99",
+]
+
+
+def _slice_writer(keyword: str, write: str) -> str:
+    return (
+        "type P = P(x: Int)\n\n"
+        "type W = W(ps: List[P])\n\n"
+        "func main() -> Unit with io, mutation\n"
+        f"    {keyword} xs = [1, 2, 3]\n"
+        f"    {keyword} ps = [P(x: 1), P(x: 2), P(x: 3)]\n"
+        f"    {keyword} w = W(ps: ps)\n"
+        f"    {keyword} grid = [[1, 2], [3, 4]]\n"
+        f"    {keyword} arrays = [array_from_list([1, 2])]\n"
+        f"    {write}\n"
+        "    print(xs)\n"
+        "end func\n"
+    )
+
+
+@pytest.mark.parametrize("keyword", ["var", "let"])
+@pytest.mark.parametrize("write", _WRITES_THROUGH_A_SLICE)
+def test_a_write_through_a_slice_is_rejected_at_the_slice(keyword, write):
+    source = _slice_writer(keyword, write)
+    [diagnostic] = geno.check(source).diagnostics
+    assert diagnostic.code is geno.ErrorCode.PARSE_INVALID_SYNTAX
+    assert diagnostic.message.startswith(
+        "Invalid assignment target: a slice is a new list"
+    ), diagnostic.message
+    assert "cannot call a function" not in diagnostic.message
+    line = source.split("\n")[diagnostic.location.line - 1]
+    assert line.strip() == write
+    # At the `[` of the slice the target goes through.
+    assert diagnostic.location.column == line.rindex("[", 0, line.index(":")) + 1
+
+
+@pytest.mark.parametrize("write", _WRITES_THROUGH_A_SLICE)
+def test_a_write_through_a_slice_does_not_parse(write):
+    with pytest.raises(ParseError, match="a slice is a new list"):
+        parse(_slice_writer("var", write))
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_slice_may_still_be_read_by_an_assignment(backend):
+    """Only the target's own path is checked: its index and value may slice."""
+    source = (
+        "func main() -> Unit with io, mutation\n"
+        "    let xs = [1, 2, 3]\n"
+        "    var arr = array_from_list([0, 0, 0])\n"
+        "    arr[length(xs[1:])] = xs[1:][0]\n"
+        "    arr[0] += xs[:1][0]\n"
+        "    var t = xs[1:]\n"
+        "    t += xs[:1]\n"
+        "    print(arr)\n"
+        "    print(t)\n"
+        "end func\n"
+    )
+    assert geno.check(source).ok
+    assert backend(source).split("\n")[1] == "[2, 3, 1]"
+
+
 def test_the_formatter_writes_a_slice_without_spaces_around_its_colon():
     untidy = _function("let y = xs[ 1 : -1 ][ : 2]")
     tidy = _function("let y = xs[1:-1][:2]")
