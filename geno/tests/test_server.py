@@ -1006,6 +1006,63 @@ class TestAmbiguousRequestHeaders:
 
 
 class TestMetrics:
+    @pytest.mark.parametrize("outcome", ["bad_request", "ok"])
+    def test_post_metrics_are_recorded_before_the_response_is_sent(
+        self, monkeypatch, outcome
+    ):
+        """A client that reads /metrics right after its response sees itself.
+
+        Recording is slowed down, so that a record made after the response
+        bytes were written would reliably come too late for the client.
+        """
+        import http.client
+
+        server = create_server("127.0.0.1", 0, bind_and_activate=True)
+        collector = server.collector
+        record = collector.record_http_post_request
+
+        def slow_record(**kwargs):
+            time.sleep(0.3)
+            record(**kwargs)
+
+        monkeypatch.setattr(collector, "record_http_post_request", slow_record)
+        if outcome == "ok":
+            payload = {"source": _VALID_SOURCE}
+            monkeypatch.setattr(
+                "geno.server._execute_run_with_wall_timeout", _ok_run_response
+            )
+        else:
+            # Rejected before any worker runs.
+            payload = {}
+        host, port = server.server_address
+        _start_test_server(server)
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            body = json.dumps(payload).encode("utf-8")
+            conn.request(
+                "POST",
+                "/run",
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                },
+            )
+            _getresponse_or_skip(conn).read()
+            conn.close()
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            conn.request("GET", "/metrics")
+            metrics = _getresponse_or_skip(conn).read().decode("utf-8")
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert "geno_http_post_requests_total 1" in metrics
+        assert (
+            f'geno_http_post_requests_by_outcome_total{{outcome="{outcome}"}} 1'
+            in metrics
+        )
+
     def test_metrics_returns_200(self, client):
         status, body = client.get("/metrics")
         assert status == 200

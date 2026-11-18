@@ -28,7 +28,7 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from multiprocessing.reduction import ForkingPickler
 from socketserver import TCPServer
-from typing import AbstractSet, Any, Iterator, cast
+from typing import AbstractSet, Any, Callable, Iterator, cast
 from urllib.parse import urlsplit
 
 from ._darwin_resource import rlimit_as_ceiling
@@ -1154,7 +1154,14 @@ def _json_response(
     *,
     request_id: str | None = None,
     bounded: bool = True,
+    before_send: Callable[[], None] | None = None,
 ) -> None:
+    """Write *payload* as the JSON response.
+
+    *before_send* runs once the body is built (a body over the size bound
+    raises ``ResponseTooLarge`` first) and before any byte is written, so
+    what it records is visible to a client by the time it has its response.
+    """
     # Compact separators: indent=2 pretty-printing inflated every response with
     # whitespace proportional to the (sandbox-bounded but still large) result,
     # needlessly amplifying bytes buffered and sent for each request.
@@ -1163,6 +1170,8 @@ def _json_response(
         if bounded
         else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
     )
+    if before_send is not None:
+        before_send()
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
@@ -2313,6 +2322,23 @@ def create_handler(
             outcome = "error"
             http_status = HTTPStatus.INTERNAL_SERVER_ERROR
             semaphore_acquired = False
+            recorded = False
+
+            def record_request() -> None:
+                # Count the request before its response is written, so a
+                # client that reads /metrics as soon as it has its response
+                # sees it; the finally below covers a request that never
+                # got one.
+                nonlocal recorded
+                if recorded:
+                    return
+                recorded = True
+                collector.record_http_post_request(
+                    endpoint=self.path,
+                    status=http_status.value,
+                    outcome=outcome,
+                )
+
             try:
                 # --- Per-IP rate limiting ---
                 if _rate_limiter is not None and not _rate_limiter.is_allowed(
@@ -2325,6 +2351,7 @@ def create_handler(
                         http_status,
                         {"error": "rate limit exceeded"},
                         request_id=request_id,
+                        before_send=record_request,
                     )
                     logger.warning(
                         "rate_limited request_id=%s client_ip=%s",
@@ -2342,6 +2369,7 @@ def create_handler(
                         http_status,
                         {"error": "authentication required"},
                         request_id=request_id,
+                        before_send=record_request,
                     )
                     logger.warning(
                         "auth_failed request_id=%s client_ip=%s",
@@ -2359,6 +2387,7 @@ def create_handler(
                         http_status,
                         {"error": "Too many concurrent requests"},
                         request_id=request_id,
+                        before_send=record_request,
                     )
                     return
                 semaphore_acquired = True
@@ -2386,6 +2415,7 @@ def create_handler(
                         http_status,
                         {"error": str(exc)},
                         request_id=request_id,
+                        before_send=record_request,
                     )
                     return
 
@@ -2430,6 +2460,7 @@ def create_handler(
                                 http_status,
                                 _serialize_constraint_result(result),
                                 request_id=request_id,
+                                before_send=record_request,
                                 bounded=True,
                             )
                         elif status == "timeout":
@@ -2449,6 +2480,7 @@ def create_handler(
                                     )
                                 },
                                 request_id=request_id,
+                                before_send=record_request,
                             )
                         elif status == "startup_timeout":
                             collector.record_constrain_result(
@@ -2467,6 +2499,7 @@ def create_handler(
                                     )
                                 },
                                 request_id=request_id,
+                                before_send=record_request,
                             )
                         else:
                             logger.error(
@@ -2484,6 +2517,7 @@ def create_handler(
                                 http_status,
                                 {"error": "internal server error"},
                                 request_id=request_id,
+                                before_send=record_request,
                             )
                     else:
                         # Run api.run() inside a child process with a wall-clock
@@ -2522,6 +2556,7 @@ def create_handler(
                                 http_status,
                                 _serialize_run_result(result),
                                 request_id=request_id,
+                                before_send=record_request,
                                 bounded=True,
                             )
                         elif status == "timeout":
@@ -2540,6 +2575,7 @@ def create_handler(
                                 http_status,
                                 {"error": f"Wall-clock timeout ({wall_timeout:.1f}s)"},
                                 request_id=request_id,
+                                before_send=record_request,
                             )
                         elif status == "startup_timeout":
                             collector.record(
@@ -2562,6 +2598,7 @@ def create_handler(
                                     )
                                 },
                                 request_id=request_id,
+                                before_send=record_request,
                             )
                         else:
                             logger.error(
@@ -2579,6 +2616,7 @@ def create_handler(
                                 http_status,
                                 {"error": "internal server error"},
                                 request_id=request_id,
+                                before_send=record_request,
                             )
                 except ResponseTooLarge:
                     logger.warning(
@@ -2593,6 +2631,7 @@ def create_handler(
                         http_status,
                         {"error": "response too large"},
                         request_id=request_id,
+                        before_send=record_request,
                         bounded=False,
                     )
                 except Exception:
@@ -2608,15 +2647,12 @@ def create_handler(
                         http_status,
                         {"error": "internal server error"},
                         request_id=request_id,
+                        before_send=record_request,
                     )
             finally:
                 if semaphore_acquired:
                     _request_semaphore.release()
-                collector.record_http_post_request(
-                    endpoint=self.path,
-                    status=http_status.value,
-                    outcome=outcome,
-                )
+                record_request()
                 duration_ms = (time.monotonic() - started_at) * 1000
                 logger.info(
                     "request_id=%s client_ip=%s status=%d duration_ms=%.2f "
