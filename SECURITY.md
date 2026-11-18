@@ -236,14 +236,18 @@ config = geno.RunConfig(
 
 ### Granting Capabilities on the Command Line
 
-`geno run --cap ...` grants exactly the listed capabilities while the program
-stays in the process sandbox, with its hard wall-clock kill and memory, CPU,
-file-size and process limits
+On the 0.7 development line, `geno run --cap ...` grants exactly the listed
+capabilities while the program stays in the process sandbox, with its hard
+wall-clock kill and memory, CPU, file-size and process limits
 ([proposal 0013](docs/proposals/0013-isolated-run-capabilities.md)):
 
 ```bash
 geno run --cap env,fs,print report.geno -- data/input.csv
 ```
+
+The published 0.6 release refuses `--cap` in that lane, so there every grant
+needs `geno run --unsafe --cap ...`, which runs without process isolation and
+is for trusted code only. In the 0.7 lane:
 
 - The worker binds host access only for granted capabilities, through trusted
   bindings that compiled program code cannot name; the capability check and

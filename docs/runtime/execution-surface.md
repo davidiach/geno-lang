@@ -121,7 +121,7 @@ The JS backend emits standalone JavaScript that includes the runtime prelude. It
 
 | Entry point | Trust level | Intended use |
 |---|---|---|
-| `geno run` (default) | **Production CLI boundary** -- compiled Python in a supervised child process with a hard wall-clock kill and memory, CPU, file-size and process limits; `--cap` grants exactly its list, except `process` and `serve` | Running generated or untrusted programs from the command line |
+| `geno run` (default) | **Production CLI boundary** -- compiled Python in a supervised child process with a hard wall-clock kill and memory, CPU, file-size and process limits; on the 0.7 line, `--cap` grants exactly its list, except `process` and `serve` (0.6 refuses `--cap` here) | Running generated or untrusted programs from the command line |
 | `geno run --unsafe` | **Trusted** -- direct interpreter in the CLI process, cooperative timeout and step limit only | Trusted code that needs `process`, `serve`, `stdin`, or `http` on Windows |
 | `geno.api.run()` | **Production embedding API** -- in-process interpreter with cooperative timeout and capability gating | Host-controlled embedding where the caller owns process isolation |
 | `geno run --json` | **In-process CLI** -- embedding API with cooperative timeout; capabilities must be granted explicitly | JSON results for trusted code or a caller-managed worker |
@@ -138,7 +138,8 @@ rely on the in-process embedding API alone for killable wall-clock isolation.
 
 ### Capability grants in the default `geno run` lane
 
-The default lane's worker binds host access only for the capabilities it was
+This section describes the 0.7 development line; the published 0.6 release
+refuses `--cap` in the default lane. The default lane's worker binds host access only for the capabilities it was
 granted, through trusted bindings that compiled program code cannot name
 ([spec v0.7 section 9.11.1](../spec/v0.7.md#9111-capability-grants-in-the-isolated-geno-run-lane),
 [proposal 0013](../proposals/0013-isolated-run-capabilities.md)):

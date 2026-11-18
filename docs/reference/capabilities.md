@@ -53,11 +53,14 @@ computation) work, and **all other gated builtins are denied**.
 geno run myfile.geno
 ```
 
-`--cap` grants **exactly** the capabilities you list, for examples and `main`
-alike, and the program stays in the process sandbox
-([proposal 0013](../proposals/0013-isolated-run-capabilities.md)). The list
-replaces the defaults rather than adding to them, so name `print` too if the
-program prints:
+On the 0.7 development line, `--cap` grants **exactly** the capabilities you
+list, for examples and `main` alike, and the program stays in the process
+sandbox ([proposal 0013](../proposals/0013-isolated-run-capabilities.md)). The
+published 0.6 release refuses `--cap` in this lane ("--cap is not supported in
+the default process-isolated run mode"); there, grant capabilities with
+`geno run --unsafe --cap ...` ([interpreter mode](#interpreter-mode-geno-run---unsafe---cap),
+trusted code only). The list replaces the defaults rather than adding to them,
+so name `print` too if the program prints:
 
 ```bash
 # Program arguments: cli_args() needs env

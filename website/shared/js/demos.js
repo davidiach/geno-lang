@@ -306,9 +306,11 @@
         }
       }
       // Without --cap the process-isolated default lane grants print, clock
-      // and random only; with it, exactly the list.
+      // and random only; with it, exactly the list. That is the 0.7
+      // development line: the published 0.6 release refuses --cap in this
+      // lane and its hint names --unsafe, so the transcript says which.
       if (!list.length) denied = CAPS_CALLS[0];
-      var text = cmd + "\n";
+      var text = "# Geno 0.7 development line (in 0.6, --cap needs --unsafe)\n" + cmd + "\n";
       if (!denied) text += "ada has 3 notes";
       else {
         var grant = (list.length ? list : ["clock", "print", "random"]).concat([denied.cap]).sort();
