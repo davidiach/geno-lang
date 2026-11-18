@@ -3,6 +3,7 @@ Tests for the Geno LSP server
 ==============================
 """
 
+import itertools
 import os
 import sys
 import threading
@@ -1101,6 +1102,126 @@ class TestDocumentHighlights:
 
         assert len(highlights) == 2
         assert all(h.range.start.line == 2 for h in highlights)
+
+
+class TestCompoundAssignmentLocations:
+    """``x op= v`` reads its target as a copy at the same location. Rename,
+    references and highlights report that one use once, so a rename never
+    has the overlapping edits the LSP forbids."""
+
+    SOURCE = (
+        "type Point = Point(x: Int, y: Int)\n"
+        "\n"
+        "func main() -> Unit with io\n"
+        "    var total = 0\n"
+        "    total += 1\n"
+        "    var arr = array_from_list([1, 2, 3])\n"
+        "    let i = 0\n"
+        "    arr[i] += total\n"
+        "    var p = Point(x: 1, y: 2)\n"
+        "    p.x *= 2\n"
+        "    print(total + arr[i] + p.x)\n"
+        "end func\n"
+    )
+
+    # (cursor line, cursor character) -> every span of the symbol, 0-based.
+    CASES = [
+        pytest.param(
+            (4, 4),
+            [(3, 8, 13), (4, 4, 9), (7, 14, 19), (10, 10, 15)],
+            id="x += 1",
+        ),
+        pytest.param(
+            (7, 4),
+            [(5, 8, 11), (7, 4, 7), (10, 18, 21)],
+            id="arr[i] += x (arr)",
+        ),
+        pytest.param(
+            (7, 8),
+            [(6, 8, 9), (7, 8, 9), (10, 22, 23)],
+            id="arr[i] += x (i)",
+        ),
+        pytest.param(
+            (9, 4),
+            [(8, 8, 9), (9, 4, 5), (10, 27, 28)],
+            id="p.x *= 2",
+        ),
+    ]
+
+    @pytest.fixture
+    def opened(self, tmp_path):
+        main_file = tmp_path / "Main.geno"
+        main_file.write_text(self.SOURCE)
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        uri = main_file.as_uri()
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri,
+                    language_id="geno",
+                    version=1,
+                    text=self.SOURCE,
+                )
+            )
+        )
+        return server, uri
+
+    @staticmethod
+    def _spans(ranges) -> list[tuple[int, int, int]]:
+        return sorted(
+            (r.start.line, r.start.character, r.end.character) for r in ranges
+        )
+
+    @pytest.mark.parametrize("cursor, expected", CASES)
+    def test_rename_edits_do_not_repeat_or_overlap(self, opened, cursor, expected):
+        server, uri = opened
+        rename = server.lsp._get_handler(types.TEXT_DOCUMENT_RENAME)
+        edit = rename(
+            types.RenameParams(
+                text_document=types.TextDocumentIdentifier(uri=uri),
+                position=types.Position(line=cursor[0], character=cursor[1]),
+                new_name="renamed",
+            )
+        )
+        assert edit is not None and edit.changes is not None
+        assert list(edit.changes) == [uri]
+        spans = self._spans(e.range for e in edit.changes[uri])
+        assert spans == expected
+        for before, after in itertools.pairwise(spans):
+            assert before[0] < after[0] or before[2] <= after[1]
+
+    @pytest.mark.parametrize("cursor, expected", CASES)
+    def test_references_list_each_use_once(self, opened, cursor, expected):
+        server, uri = opened
+        references = server.lsp._get_handler(types.TEXT_DOCUMENT_REFERENCES)
+        locations = references(
+            types.ReferenceParams(
+                text_document=types.TextDocumentIdentifier(uri=uri),
+                position=types.Position(line=cursor[0], character=cursor[1]),
+                context=types.ReferenceContext(include_declaration=True),
+            )
+        )
+        assert locations is not None
+        assert self._spans(loc.range for loc in locations) == expected
+
+    @pytest.mark.parametrize("cursor, expected", CASES)
+    def test_highlights_mark_each_use_once(self, opened, cursor, expected):
+        server, uri = opened
+        document_highlight = server.lsp._get_handler(
+            types.TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT
+        )
+        highlights = document_highlight(
+            types.DocumentHighlightParams(
+                text_document=types.TextDocumentIdentifier(uri=uri),
+                position=types.Position(line=cursor[0], character=cursor[1]),
+            )
+        )
+        assert self._spans(h.range for h in highlights) == expected
 
 
 class TestSemanticDefinition:
