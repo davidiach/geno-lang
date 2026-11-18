@@ -152,12 +152,15 @@ def mod_program(draw):
 # Parity tests
 # ---------------------------------------------------------------------------
 
+# Process startup varies under CI load. The subprocess runners bound execution
+# time, so leave Hypothesis deadlines disabled for these parity properties.
+
 
 class TestArithmeticParity:
     """Interpreter and compiled backends agree on pure arithmetic."""
 
     @given(prog=arith_program())
-    @settings(max_examples=50, deadline=5000)
+    @settings(max_examples=50, deadline=None)
     @example(
         prog=(
             '@untested("generated")\n'
@@ -175,7 +178,7 @@ class TestArithmeticParity:
         )
 
     @given(prog=arith_program())
-    @settings(max_examples=50, deadline=5000)
+    @settings(max_examples=50, deadline=None)
     def test_interpreter_vs_js(self, prog):
         if _NODE is None:
             pytest.skip("Node.js not available")
@@ -190,7 +193,7 @@ class TestDivisionParity:
     """Integer division truncation is consistent across backends."""
 
     @given(prog=div_program())
-    @settings(max_examples=30, deadline=5000)
+    @settings(max_examples=30, deadline=None)
     @example(
         prog=(
             '@untested("generated")\n'
@@ -217,7 +220,7 @@ class TestDivisionParity:
         )
 
     @given(prog=div_program())
-    @settings(max_examples=30, deadline=5000)
+    @settings(max_examples=30, deadline=None)
     def test_div_interpreter_vs_js(self, prog):
         if _NODE is None:
             pytest.skip("Node.js not available")
@@ -232,7 +235,7 @@ class TestModuloParity:
     """Modulo semantics are consistent across backends."""
 
     @given(prog=mod_program())
-    @settings(max_examples=30, deadline=5000)
+    @settings(max_examples=30, deadline=None)
     @example(
         prog=(
             '@untested("generated")\n'
@@ -250,7 +253,7 @@ class TestModuloParity:
         )
 
     @given(prog=mod_program())
-    @settings(max_examples=30, deadline=5000)
+    @settings(max_examples=30, deadline=None)
     def test_mod_interpreter_vs_js(self, prog):
         if _NODE is None:
             pytest.skip("Node.js not available")
