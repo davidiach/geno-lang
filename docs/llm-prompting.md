@@ -85,9 +85,9 @@ host function the builtins do not cover. Only suggest one when the program
 will run as trusted code with `--cap ffi`:
 
 ```geno
-extern func url_quote(text: String) -> String with ffi
-    python "urllib.parse:quote"
-    js "encodeURIComponent"
+extern func host_name() -> String with ffi
+    python "socket:gethostname"
+    js "node:os#hostname"
 end func
 ```
 
