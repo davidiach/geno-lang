@@ -4528,6 +4528,12 @@ function _jsonParseNumber(parser) {
     parser.index += token.length;
     const isInt = !/[.eE]/.test(token);
     if (isInt) {
+        if (parser.wideInts && !_GENO_NUMBER.isSafeInteger(_GENO_NUMBER(token))) {
+            // json_decode: a Float may hold it, as on the other backends; an
+            // Int or a JsonValue still cannot (_genoJsonFrom decides).
+            parser.sawWideInt = true;
+            return { _tag: "JsonInt", value: _GENO_NUMBER(token), _genoWideInt: true };
+        }
         return {
             _tag: "JsonInt",
             value: _fromSafeJsBigInt(BigInt(token), "json_parse integer literal"),
@@ -4650,14 +4656,28 @@ function _ensureJsonNestingLimit(text) {
     }
 }
 
-function _jsonParseText(text) {
-    const parser = { text, index: 0 };
+function _jsonParseText(text, parser = { text, index: 0 }) {
     const value = _jsonParseValue(parser);
     _jsonSkipWhitespace(parser);
     if (parser.index !== text.length) {
         _jsonParseError(parser, "unexpected trailing input");
     }
     return value;
+}
+
+// An integer literal past the safe range, as json_parse reports one.
+const _GENO_JSON_WIDE_INT_ERROR = "json_parse integer literal exceeds JavaScript safe integer range";
+
+function _genoJsonRejectWideInts(node) {
+    const items = [node];
+    while (items.length > 0) {
+        const item = items.pop();
+        if (item._genoWideInt) throw new _GenoJsonMismatch(_GENO_JSON_WIDE_INT_ERROR);
+        if (item._tag === "JsonArray") items.push(...item.items);
+        else if (item._tag === "JsonObject") {
+            for (const [, child] of item.entries) items.push(child);
+        }
+    }
 }
 
 function _jsonValueToString(value, context) {
@@ -4864,17 +4884,24 @@ function _genoJsonFrom(node, shape, types, path, visit, depth) {
     depth += 1;
     const kind = shape[0];
     const tag = node._tag;
-    if (kind === "json") return node;
+    if (kind === "json") {
+        if (visit.wide) _genoJsonRejectWideInts(node);
+        return node;
+    }
     if (kind === "string") {
         if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
         return node.value;
     }
     if (kind === "int") {
         if (tag !== "JsonInt") _genoJsonExpected(path, "Int", tag);
+        if (node._genoWideInt) throw new _GenoJsonMismatch(_GENO_JSON_WIDE_INT_ERROR);
         return node.value;
     }
     if (kind === "float") {
         if (tag !== "JsonFloat" && tag !== "JsonInt") _genoJsonExpected(path, "Float", tag);
+        if (node._genoWideInt && !_GENO_NUMBER.isFinite(node.value)) {
+            _genoJsonFail(path, "expected Float, got an Int out of its range");
+        }
         return node.value;
     }
     if (kind === "bool") {
@@ -5164,8 +5191,21 @@ function _genoJsonCodec(name, shape, types) {
 }
 function json_decode(text, shape, types) {
     const known = _genoJsonCodec("json_decode", shape, types);
-    const parsed = json_parse(text);
-    if (parsed._tag !== "Ok") return parsed;
+    // As json_parse, except that an integer literal past the safe range is
+    // kept for a Float to take (json_parse itself rejects one).
+    const parser = { text, index: 0, wideInts: true, sawWideInt: false };
+    let parsed;
+    try {
+        const value = _genoQuietly(() => {
+            _ensureJsonNestingLimit(text);
+            return _jsonParseText(text, parser);
+        });
+        parsed = _checkCollectionSize({ _tag: "Ok", value });
+    } catch (e) {
+        if (String(e.message).includes("size exceeds limit")) throw _genoRestack(e);
+        return _checkCollectionSize(Err(e.message));
+    }
+
     let extraValues = 0;
     function visit(depth, extra) {
         if (depth >= _MAX_JSON_DECODE_DEPTH) {
@@ -5177,6 +5217,7 @@ function json_decode(text, shape, types) {
         }
     }
     try {
+        if (parser.sawWideInt) visit.wide = true;
         return Ok(_genoJsonFrom(parsed.value, shape, known, null, visit, 0));
     } catch (error) {
         if (error instanceof _GenoJsonMismatch) return Err(error.message);
