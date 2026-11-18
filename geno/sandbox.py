@@ -3133,6 +3133,13 @@ def main():
                     _bound_names = (_node.name,)
                 elif isinstance(_node, _ast.arg):
                     _bound_names = (_node.arg,)
+                elif isinstance(_node, _ast.alias):
+                    # `import m as NAME`, `import NAME.sub` and
+                    # `from m import NAME` bind NAME. A wildcard import binds
+                    # names no check here can see, so compiled code has none.
+                    if _node.name == "*" and _WORKER_COMPILED_INTERNAL_NAMES:
+                        _worker_fail("Wildcard import is not allowed in compiled code")
+                    _bound_names = (_node.asname or _node.name.split(".", 1)[0],)
                 elif isinstance(_node, _ast.MatchMapping):
                     _bound_names = (_node.rest,)
                 elif isinstance(_node, (_ast.Global, _ast.Nonlocal)):
@@ -3923,6 +3930,9 @@ _FORMAT_METHODS = frozenset({"format", "format_map"})
 _WORKER_COMPILED_INTERNAL_NAMES = (
     frozenset(
         {
+            # The program namespace's builtins: binding it would replace the
+            # builtins of every function defined after it.
+            "__builtins__",
             "_GENO_CAPS",
             "_GENO_CAPS_FROM_ARGV",
             "_bounded_regex_replace",

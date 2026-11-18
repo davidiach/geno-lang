@@ -453,3 +453,113 @@ def test_no_runtime_name_looks_like_a_renamed_one() -> None:
         | _JS_LOCAL_RESERVED_NAMES
     )
     assert sorted(n for n in names if n.endswith(("_g", "_kw"))) == []
+
+
+# Python keeps every `__x__` name for itself, and compiled Python's namespace
+# relies on several: `let __builtins__ = 1` replaced the builtins of every
+# later function, so the default `geno run` failed where `--unsafe` ran.
+_PYTHON_DUNDER_NAMES = [
+    "__builtins__",
+    "__doc__",
+    "__file__",
+    "__import__",
+    "__loader__",
+    "__name__",
+    "__package__",
+    "__spec__",
+    "__x__",
+]
+
+_TOP_LEVEL_BINDING_FORMS = {
+    "module constant": (
+        "let {name} = 1\nfunc main() -> Unit\n    print(1)\nend func\n"
+    ),
+    "function": (
+        "func {name}() -> Int\n"
+        "    example () -> 1\n"
+        "    return 1\n"
+        "end func\n"
+        "func main() -> Unit\n"
+        "    print(1)\n"
+        "end func\n"
+    ),
+}
+_PYTHON_DUNDER_BINDING_FORMS = {**_LOCAL_BINDING_FORMS, **_TOP_LEVEL_BINDING_FORMS}
+
+
+@pytest.mark.parametrize("name", _PYTHON_DUNDER_NAMES)
+@pytest.mark.parametrize("form", sorted(_PYTHON_DUNDER_BINDING_FORMS))
+def test_python_dunder_names_cannot_be_bound(name: str, form: str) -> None:
+    source = _PYTHON_DUNDER_BINDING_FORMS[form].format(name=name)
+    with pytest.raises(
+        CompileError,
+        match=f"'{name}' is a reserved runtime name and cannot be used as a {form}",
+    ):
+        compile_to_python(source, typecheck=False)
+
+
+@pytest.mark.parametrize("name", ["__x", "x__", "__", "____", "_____", "_x_"])
+def test_names_that_are_not_python_dunders_stay_ordinary(name: str) -> None:
+    source = f"func main() -> Unit\n    let {name} = 3\n    print({name})\nend func\n"
+    assert _compiled_python_output(source) == "3\n"
+
+
+def test_project_modules_cannot_bind_python_dunder_names(tmp_path: Path) -> None:
+    from geno.compiler import Compiler
+    from geno.dependency_graph import DependencyGraph
+    from geno.project_graph import ProjectGraph
+
+    (tmp_path / "geno.toml").write_text(
+        'entrypoint = "Main"\nfiles = ["Main", "Lib"]\n', encoding="utf-8"
+    )
+    (tmp_path / "Main.geno").write_text(
+        "import Lib\nfunc main() -> Unit\n    print(Lib.f(1))\nend func\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Lib.geno").write_text(
+        "let __builtins__ = 1\n"
+        "export func f(x: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    return length([x])\n"
+        "end func\n",
+        encoding="utf-8",
+    )
+    graph = DependencyGraph.resolve(ProjectGraph.discover(tmp_path))
+
+    with pytest.raises(CompileError, match="'__builtins__' is a reserved runtime"):
+        Compiler().compile_project(graph)
+
+
+def test_default_run_and_check_refuse_a_program_binding_builtins(
+    tmp_path: Path,
+) -> None:
+    """Refused before launch, so `geno check` and the default `geno run` agree."""
+    source = tmp_path / "probe.geno"
+    source.write_text(
+        "let __builtins__ = 1\n"
+        "func f(x: Int) -> Int\n"
+        "    example 1 -> 1\n"
+        "    return length([x])\n"
+        "end func\n"
+        "func main() -> Unit with io\n"
+        '    print("ESCAPED")\n'
+        "    print(f(1))\n"
+        "end func\n",
+        encoding="utf-8",
+    )
+    message = (
+        "'__builtins__' is a reserved runtime name and cannot be used as a "
+        "module constant name"
+    )
+
+    for command in ("run", "check"):
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", command, str(source)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 1, (command, result.stdout, result.stderr)
+        assert "ESCAPED" not in result.stdout
+        assert message in result.stderr, (command, result.stderr)
+        assert "TypeError" not in result.stderr

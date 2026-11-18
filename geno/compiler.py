@@ -365,6 +365,38 @@ _PYTHON_PROJECT_RESERVED_NAMES = (
     RESERVED_PRELUDE_NAMES - _PYTHON_HOST_INTRINSIC_NAMES
 ) | _PYTHON_EMITTED_HOST_INTRINSIC_NAMES
 
+
+def is_python_dunder_name(name: str) -> bool:
+    """Report whether *name* has the ``__x__`` form Python keeps for itself.
+
+    Python reserves every such name for the interpreter, and compiled
+    Python's namespace depends on several: ``__builtins__`` supplies every
+    function's builtins, ``__name__`` decides whether ``main`` runs, and
+    ``__spec__`` and ``__loader__`` drive imports. A program binding one
+    would break the runtime, so the form is reserved rather than a list
+    that could miss a name.
+    """
+    return name.startswith("__") and name.endswith("__") and name.strip("_") != ""
+
+
+class _WithPythonDunderNames(Collection[str]):
+    """Reserved names plus every ``__x__`` name (see is_python_dunder_name)."""
+
+    def __init__(self, names: Collection[str]) -> None:
+        self._names = frozenset(names)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._names or (
+            isinstance(name, str) and is_python_dunder_name(name)
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+
 # Python keywords that are valid Geno identifiers but would produce invalid
 # Python if emitted verbatim.  We mangle them by appending "_kw".
 _PYTHON_KEYWORDS: frozenset[str] = frozenset(keyword.kwlist) | frozenset(
@@ -1032,10 +1064,10 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         self._validate_runtime_name_collisions(
             program,
-            RESERVED_PRELUDE_NAMES - _python_host_names(),
-            _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names(),
+            _WithPythonDunderNames(RESERVED_PRELUDE_NAMES - _python_host_names()),
+            _WithPythonDunderNames(_PYTHON_LOCAL_RESERVED_NAMES - _python_host_names()),
             CompileError,
-            direct_reference_reserved_names=(
+            direct_reference_reserved_names=_WithPythonDunderNames(
                 _PYTHON_DIRECT_REFERENCE_RESERVED_NAMES - _python_host_names()
             ),
         )
@@ -1108,11 +1140,15 @@ class Compiler(BaseCompiler, ASTVisitor):
 
             self._validate_runtime_name_collisions(
                 program,
-                _PYTHON_PROJECT_RESERVED_NAMES - _python_host_names(),
-                _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names(),
+                _WithPythonDunderNames(
+                    _PYTHON_PROJECT_RESERVED_NAMES - _python_host_names()
+                ),
+                _WithPythonDunderNames(
+                    _PYTHON_LOCAL_RESERVED_NAMES - _python_host_names()
+                ),
                 CompileError,
                 top_level_dispatchers_share_scope=False,
-                direct_reference_reserved_names=(
+                direct_reference_reserved_names=_WithPythonDunderNames(
                     _PYTHON_DIRECT_REFERENCE_RESERVED_NAMES - _python_host_names()
                 ),
             )

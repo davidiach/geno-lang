@@ -239,7 +239,8 @@ end for
 Geno 0.6 accepts any ordinary name: a parameter `len`, a local `list`, a
 function `max` or a constructor `Error` all compile, because the backends
 rename them. Only names starting with `_` that the runtime uses (`_safe_add`)
-are reserved. There is no need to steer a model away from Python builtins.
+are reserved, and, for compiled Python, every name of the form `__x__`
+(`__builtins__`). There is no need to steer a model away from Python builtins.
 
 ```
 func trim_to(s: String, len: Int) -> String
