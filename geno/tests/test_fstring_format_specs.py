@@ -238,6 +238,48 @@ def test_comment_punctuation_is_not_a_format_spec(backend):
     assert backend(source) == "43:00042\n"
 
 
+BIG_INT_FLOAT_SPEC = """
+func main() -> Unit with io
+    var x = 1
+    for i in range(0, 1100) do
+        x = x * 2
+    end for
+    print(f"{x:SPEC}")
+end func
+"""
+# What int_to_float and Int + Float report for the same Int on the interpreter.
+TOO_LARGE_FOR_A_FLOAT = "int too large to convert to float"
+
+
+@pytest.mark.parametrize("spec", [".2e", "f", ".1%"])
+def test_an_int_too_large_for_a_float_spec_is_a_geno_runtime_error(spec):
+    """Not a host OverflowError: the interpreter's report, `geno.run()`'s
+    diagnostic and compiled Python's message line are the same panic.
+    (Compiled JavaScript cannot hold such an Int.)
+    """
+    source = BIG_INT_FLOAT_SPEC.replace("SPEC", spec)
+
+    result = geno.run(source, config=geno.RunConfig(capabilities={"print"}))
+    assert not result.ok
+    assert [d.message for d in result.diagnostics] == [TOO_LARGE_FOR_A_FLOAT]
+
+    with pytest.raises(RuntimeError) as compiled:
+        _compiled_python_output(source)
+    assert (
+        str(compiled.value).rstrip().endswith("Runtime Error: " + TOO_LARGE_FOR_A_FLOAT)
+    )
+    assert "OverflowError" not in str(compiled.value)
+
+
+def test_the_format_helpers_report_an_int_too_large_for_a_float_alike():
+    with pytest.raises(ValueError, match=f"^{TOO_LARGE_FOR_A_FLOAT}$"):
+        format_value(2**1100, ".2e", "float")
+    with pytest.raises(RuntimeError, match=f"^{TOO_LARGE_FOR_A_FLOAT}$"):
+        _geno_format_spec(2**1100, ".2e", "float")
+    with pytest.raises(RuntimeError, match=f"^{TOO_LARGE_FOR_A_FLOAT}$"):
+        _geno_format_spec(2**1100, ".2e")
+
+
 @pytest.mark.skipif(not HAS_NODE, reason="Node.js not available")
 def test_float_formatting_with_host_named_constructors():
     source = "type Packet = DataView | ArrayBuffer\n" + _one("{n:.2f}", "let n = 2.5")

@@ -24,6 +24,8 @@ INT_TYPES = frozenset("dxXob")
 FLOAT_TYPES = frozenset("fe%")
 MAX_WIDTH = 1000
 MAX_PRECISION = 100
+# The error for an Int under f, e or % that no Float can hold.
+INT_TOO_LARGE_FOR_FLOAT = "int too large to convert to float"
 
 _SPEC_RE = re.compile(
     r"(?:(?P<fill>.)?(?P<align>[<>^]))?"
@@ -200,7 +202,13 @@ def format_value(value: object, text: str, kind: str) -> str:
     if kind == "float":
         if type(value) not in (int, float):
             raise ValueError(f"Format spec '{text}' needs an Int or a Float")
-        return format(float(value), text)  # type: ignore[arg-type]
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except OverflowError:
+            # An Int past the largest Float: a Geno error, worded as
+            # int_to_float reports it (``_geno_format_spec`` has a copy).
+            raise ValueError(INT_TOO_LARGE_FOR_FLOAT) from None
+        return format(number, text)
     if not isinstance(value, str):
         raise ValueError(f"Format spec '{text}' needs a String here")
     return format(value, text)

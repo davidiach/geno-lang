@@ -778,7 +778,12 @@ def _geno_format_spec(value: Any, spec: str, kind: Any = None) -> str:
     if kind == "float":
         if type(value) not in (int, float):
             raise RuntimeError(f"Format spec '{spec}' needs an Int or a Float")
-        return f"{float(value):{spec}}"
+        try:
+            number = float(value)
+        except OverflowError:
+            # geno/format_spec.py INT_TOO_LARGE_FOR_FLOAT, as int_to_float says it.
+            raise RuntimeError("int too large to convert to float") from None
+        return f"{number:{spec}}"
     if not isinstance(value, str):
         raise RuntimeError(f"Format spec '{spec}' needs a String here")
     return f"{value:{spec}}"
