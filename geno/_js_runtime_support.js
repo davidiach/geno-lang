@@ -5314,7 +5314,10 @@ function _genoExternToHost(value, shape) {
 
 function _genoExternJsonToHost(node, depth) {
     if (depth >= _GENO_EXTERN_MAX_DEPTH) {
-        throw new _GenoExternFailure("a JsonValue argument is nested too deeply");
+        // _genoExternCall names the extern in front of this, as compiled
+        // Python does.
+        throw new _GenoExternMismatch(
+            "a JsonValue argument nested more than " + _GENO_EXTERN_MAX_DEPTH + " levels deep");
     }
     if (node._tag === "JsonNull") return null;
     if (node._tag === "JsonArray") return node.items.map(item => _genoExternJsonToHost(item, depth + 1));
@@ -5486,7 +5489,13 @@ function _genoExternCall(name, binding, args, params, result) {
                 + "' has no js binding, so it cannot run on this backend");
         }
         const host = _genoExternLoad(name, binding);
-        const hostArgs = args.map((value, index) => _genoExternToHost(value, params[index]));
+        let hostArgs;
+        try {
+            hostArgs = args.map((value, index) => _genoExternToHost(value, params[index]));
+        } catch (e) {
+            if (!(e instanceof _GenoExternMismatch)) throw e;
+            throw new _GenoExternFailure("Extern function '" + name + "' got " + e.message);
+        }
         let value;
         try {
             value = host.fn.apply(host.owner, hostArgs);

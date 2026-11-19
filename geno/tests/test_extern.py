@@ -805,7 +805,7 @@ def test_a_host_int_is_bound_by_the_integer_size_limit(
     assert message == "Integer exceeds maximum size (100001 bits)"
 
 
-@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+@pytest.mark.parametrize("backend", BACKENDS)
 def test_a_too_deeply_nested_argument_names_the_extern(
     backend: str, host_dir: Path
 ) -> None:
