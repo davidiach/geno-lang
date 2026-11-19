@@ -14,12 +14,14 @@ sandbox security violation); whether it occurs depends on what the host
 grants, not on the input, so by default it does not satisfy one either.
 
 Limits are identified by exception type, never by the Geno-facing message, so
-``panic("List size exceeds limit")`` stays a panic. The one exception is
-compiled Python, whose runtime raises plain ``RuntimeError`` for its limits:
-``classify_compiled_failure`` recognizes those by the fixed messages of
-``geno/_runtime_support.py``, after the provenance fields its ``panic``
-(``_geno_panic``) and capability check (``_geno_capability_denied``) set, so
-a program cannot make its own panic read as a limit or a refusal there either.
+``panic("List size exceeds limit")`` stays a panic. The exceptions are the
+compiled runtimes, which raise plain ``RuntimeError`` (Python) or ``Error``
+(JavaScript) for their limits: ``classify_compiled_failure`` and
+``geno test --backend`` recognize those by the fixed messages of
+``geno/_runtime_support.py`` and ``geno/_js_runtime_support.js``, after the
+provenance marks their ``panic`` (``_geno_panic``, ``_genoPanic``) and
+capability check (``_geno_capability_denied``) set, so a program cannot make
+its own panic read as a limit or a refusal there either.
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ _REFUSAL_CODES = frozenset(
 # each one names. Matched from the start of the message, after an optional
 # "<builtin>: " prefix.
 _COMPILED_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\w+ size exceeds limit \("), "collection size limit"),
+    (re.compile(r"\w+ size exceeds limit(?: \(|$)"), "collection size limit"),
     (re.compile(r"result would exceed collection size limit"), "collection size limit"),
     (re.compile(r"Integer exceeds maximum size \("), "integer size limit"),
     (
@@ -76,6 +78,12 @@ _COMPILED_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"Exponentiation result too large$"), "numeric range limit"),
     (re.compile(r"(Left|Right) shift amount too large \("), "integer size limit"),
     (re.compile(r"Output limit exceeded \("), "output limit"),
+    # Compiled JavaScript's own integer limits (geno/_js_runtime_support.js).
+    (re.compile(r"Exponent too large \("), "integer size limit"),
+    (
+        re.compile(r"[\w ]+ exceeds JavaScript safe integer range$"),
+        "JavaScript safe integer limit",
+    ),
 )
 _COMPILED_PREFIX = re.compile(r"^(?:\w+: )?")
 

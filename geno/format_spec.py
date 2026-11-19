@@ -20,10 +20,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .values import int_text, is_int_digit_limit_error
+
 INT_TYPES = frozenset("dxXob")
 FLOAT_TYPES = frozenset("fe%")
 MAX_WIDTH = 1000
 MAX_PRECISION = 100
+# The error for an Int under f, e or % that no Float can hold.
+INT_TOO_LARGE_FOR_FLOAT = "int too large to convert to float"
 
 _SPEC_RE = re.compile(
     r"(?:(?P<fill>.)?(?P<align>[<>^]))?"
@@ -196,11 +200,56 @@ def format_value(value: object, text: str, kind: str) -> str:
     if kind == "int":
         if type(value) is not int:
             raise ValueError(f"Format spec '{text}' needs an Int")
-        return format(value, text)
+        try:
+            return format(value, text)
+        except ValueError as error:
+            spec = parse_format_spec(text)
+            if not is_int_digit_limit_error(error) or spec.type not in ("", "d"):
+                raise
+            return format_long_decimal(value, spec)
     if kind == "float":
         if type(value) not in (int, float):
             raise ValueError(f"Format spec '{text}' needs an Int or a Float")
-        return format(float(value), text)  # type: ignore[arg-type]
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except OverflowError:
+            # An Int past the largest Float: a Geno error, worded as
+            # int_to_float reports it (``_geno_format_spec`` has a copy).
+            raise ValueError(INT_TOO_LARGE_FOR_FLOAT) from None
+        return format(number, text)
     if not isinstance(value, str):
         raise ValueError(f"Format spec '{text}' needs a String here")
     return format(value, text)
+
+
+def format_long_decimal(value: int, spec: FormatSpec) -> str:
+    """``format(value, spec)`` for a decimal type, past CPython's digit limit.
+
+    CPython refuses to write an int with more digits than
+    ``sys.get_int_max_str_digits()``; Geno's Ints can have more. The digits
+    come from ``int_text`` and the spec is applied as ``format`` applies it:
+    ``,`` groups them by three, the sign is ``-`` or the spec's ``+`` or
+    space, a ``0`` flag pads between the sign and the digits, and otherwise
+    the fill pads on the alignment's side (right by default; ``^`` puts the
+    odd one on the right). ``_geno_format_long_decimal`` in the Python
+    prelude is the compiled copy.
+    """
+    digits = int_text(abs(value))
+    if spec.comma:
+        head = len(digits) % 3 or 3
+        digits = digits[:head] + "".join(
+            "," + digits[index : index + 3] for index in range(head, len(digits), 3)
+        )
+    sign = "-" if value < 0 else spec.sign.replace("-", "")
+    padding = spec.width - len(sign) - len(digits)
+    if padding <= 0:
+        return sign + digits
+    if spec.zero:
+        return sign + "0" * padding + digits
+    fill = spec.fill or " "
+    if spec.align == "<":
+        return sign + digits + fill * padding
+    if spec.align == "^":
+        left = padding // 2
+        return fill * left + sign + digits + fill * (padding - left)
+    return fill * padding + sign + digits

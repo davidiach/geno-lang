@@ -107,6 +107,24 @@ class SymbolTable:
     references: list[SymbolRef] = field(default_factory=list)
     # Module namespace bindings (for qualified access like Module.func)
     module_scopes: dict[str, Scope] = field(default_factory=dict)
+    # References already recorded, so the same use is recorded once.
+    _recorded: set[SymbolRef] = field(
+        default_factory=set, init=False, repr=False, compare=False
+    )
+
+    def add_reference(self, ref: SymbolRef) -> None:
+        """Record a reference unless the same use is already recorded.
+
+        The parser reads a compound assignment's target twice
+        (``total += x`` is ``total = total + x``), and the read is a copy at
+        the same location, so a walk of the AST meets that one use twice.
+        Recording it twice would give rename two overlapping edits, which
+        the LSP forbids, and list the use twice in references.
+        """
+        if ref in self._recorded:
+            return
+        self._recorded.add(ref)
+        self.references.append(ref)
 
     def refs_for_def(self, defn: SymbolDef) -> list[SymbolRef]:
         """Find all references that point to a given definition."""
@@ -175,7 +193,7 @@ class SymbolTable:
         for r in self.references:
             if r.definition == defn:
                 locs.append(r.location)
-        return locs
+        return list(dict.fromkeys(locs))
 
 
 class SymbolTableBuilder:
@@ -472,13 +490,13 @@ class SymbolTableBuilder:
         """Resolve references within an impl block."""
         trait_def = parent_scope.lookup(impl.trait_name)
         if trait_def:
-            self.table.references.append(
+            self.table.add_reference(
                 SymbolRef(impl.trait_name, impl.location, trait_def)
             )
 
         target_def = parent_scope.lookup(impl.target_type)
         if target_def:
-            self.table.references.append(
+            self.table.add_reference(
                 SymbolRef(impl.target_type, impl.location, target_def)
             )
 
@@ -492,7 +510,7 @@ class SymbolTableBuilder:
         if isinstance(type_annot, SimpleType):
             defn = scope.lookup(type_annot.name)
             if defn:
-                self.table.references.append(
+                self.table.add_reference(
                     SymbolRef(type_annot.name, type_annot.location, defn)
                 )
             for param in type_annot.type_params:
@@ -527,7 +545,7 @@ class SymbolTableBuilder:
             # The target is a reference to an existing variable
             target_def = scope.lookup(stmt.target)
             if target_def:
-                self.table.references.append(
+                self.table.add_reference(
                     SymbolRef(stmt.target, stmt.location, target_def)
                 )
             self._resolve_expr(stmt.value, scope)
@@ -608,7 +626,7 @@ class SymbolTableBuilder:
             # The constructor name is a reference
             ctor_def = scope.lookup(pattern.constructor)
             if ctor_def:
-                self.table.references.append(
+                self.table.add_reference(
                     SymbolRef(pattern.constructor, pattern.location, ctor_def)
                 )
             for sub in pattern.subpatterns:
@@ -641,7 +659,7 @@ class SymbolTableBuilder:
         if isinstance(expr, (Identifier, TypeIdentifier)):
             defn = scope.lookup(expr.name)
             if defn:
-                self.table.references.append(SymbolRef(expr.name, expr.location, defn))
+                self.table.add_reference(SymbolRef(expr.name, expr.location, defn))
 
         elif isinstance(expr, FunctionCall):
             self._resolve_expr(expr.function, scope)
@@ -667,7 +685,7 @@ class SymbolTableBuilder:
                 if mod_scope:
                     member_def = mod_scope.lookup(expr.field_name)
                     if member_def:
-                        self.table.references.append(
+                        self.table.add_reference(
                             SymbolRef(
                                 expr.field_name,
                                 SourceLocation(
@@ -703,7 +721,7 @@ class SymbolTableBuilder:
         elif isinstance(expr, ConstructorCall):
             ctor_def = scope.lookup(expr.constructor)
             if ctor_def:
-                self.table.references.append(
+                self.table.add_reference(
                     SymbolRef(expr.constructor, expr.location, ctor_def)
                 )
             for ctor_arg in expr.arguments:

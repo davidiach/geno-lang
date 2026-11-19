@@ -468,7 +468,9 @@ function _requireSafeJsInt(value, context) {
     if (!_GENO_NUMBER.isSafeInteger(value)) {
         throw _safeIntRangeError(context);
     }
-    return _checkIntegerBits(value);
+    // An Int has no negative zero: Math.ceil(-0.4) and Math.trunc(-0.5) are
+    // -0, which a Float format spec or int_to_float would then show as -0.0.
+    return _checkIntegerBits(value === 0 ? 0 : value);
 }
 
 function _toSafeJsBigInt(value, context) {
@@ -1054,7 +1056,15 @@ function _genoOwnIndex(container, index) {
         return child;
     }
     const unshared = _genoUnsharedPart(child);
-    if (unshared !== child) _safe_index_set(container, index, unshared);
+    if (unshared !== child) {
+        // The read accepted a negative index; store at the place it named,
+        // since an assignment by index rejects one on an Array.
+        _safe_index_set(
+            container,
+            index < 0 && !(container instanceof _GENO_MAP) ? index + container.length : index,
+            unshared,
+        );
+    }
     return unshared;
 }
 
@@ -1792,9 +1802,19 @@ class _GenoTailCall {
         this.ensures = null;
     }
 }
+// The error a panic throws: a plain Error marked as a panic. Provenance for
+// classifiers (geno test --backend js): the runtime's resource limits are
+// plain Errors recognized by their fixed messages, so a panic whose own text
+// reads like one ("List size exceeds limit") carries the mark to stay a
+// panic. Only the panicking builtins and compiler-emitted panics set it, as
+// in compiled Python. (Section names are scanned for tree shaking, so this
+// comment names no builtin.)
+function _genoPanicError(message) {
+    return Object.defineProperty(new Error(message), "_genoPanic", { value: true });
+}
 // End the program with `message`: Geno code cannot recover from a panic.
 function _genoPanic(message) {
-    throw new Error(message);
+    throw _genoPanicError(message);
 }
 class _GenoContractViolation extends Error {
     constructor(message) {
@@ -1828,7 +1848,7 @@ function unwrap(opt) {
 }
 
 function panic(message) {
-    throw new Error(message);
+    throw _genoPanicError(message);
 }
 
 function unwrap_or(opt, def) {
@@ -4508,6 +4528,12 @@ function _jsonParseNumber(parser) {
     parser.index += token.length;
     const isInt = !/[.eE]/.test(token);
     if (isInt) {
+        if (parser.wideInts && !_GENO_NUMBER.isSafeInteger(_GENO_NUMBER(token))) {
+            // json_decode: a Float may hold it, as on the other backends; an
+            // Int or a JsonValue still cannot (_genoJsonFrom decides).
+            parser.sawWideInt = true;
+            return { _tag: "JsonInt", value: _GENO_NUMBER(token), _genoWideInt: true };
+        }
         return {
             _tag: "JsonInt",
             value: _fromSafeJsBigInt(BigInt(token), "json_parse integer literal"),
@@ -4630,14 +4656,31 @@ function _ensureJsonNestingLimit(text) {
     }
 }
 
-function _jsonParseText(text) {
-    const parser = { text, index: 0 };
+function _jsonParseText(text, parser = { text, index: 0 }) {
     const value = _jsonParseValue(parser);
     _jsonSkipWhitespace(parser);
     if (parser.index !== text.length) {
         _jsonParseError(parser, "unexpected trailing input");
     }
     return value;
+}
+
+// An integer literal past the safe range, as json_parse reports one.
+const _GENO_JSON_WIDE_INT_ERROR = "json_parse integer literal exceeds JavaScript safe integer range";
+
+function _genoJsonRejectWideInts(node) {
+    const items = [node];
+    while (items.length > 0) {
+        const item = items.pop();
+        if (item._genoWideInt) throw new _GenoJsonMismatch(_GENO_JSON_WIDE_INT_ERROR);
+        // One push per child: spreading a large array into one call would
+        // pass more arguments than the engine allows.
+        if (item._tag === "JsonArray") {
+            for (const child of item.items) items.push(child);
+        } else if (item._tag === "JsonObject") {
+            for (const [, child] of item.entries) items.push(child);
+        }
+    }
 }
 
 function _jsonValueToString(value, context) {
@@ -4844,17 +4887,24 @@ function _genoJsonFrom(node, shape, types, path, visit, depth) {
     depth += 1;
     const kind = shape[0];
     const tag = node._tag;
-    if (kind === "json") return node;
+    if (kind === "json") {
+        if (visit.wide) _genoJsonRejectWideInts(node);
+        return node;
+    }
     if (kind === "string") {
         if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
         return node.value;
     }
     if (kind === "int") {
         if (tag !== "JsonInt") _genoJsonExpected(path, "Int", tag);
+        if (node._genoWideInt) throw new _GenoJsonMismatch(_GENO_JSON_WIDE_INT_ERROR);
         return node.value;
     }
     if (kind === "float") {
         if (tag !== "JsonFloat" && tag !== "JsonInt") _genoJsonExpected(path, "Float", tag);
+        if (node._genoWideInt && !_GENO_NUMBER.isFinite(node.value)) {
+            _genoJsonFail(path, "expected Float, got an Int out of its range");
+        }
         return node.value;
     }
     if (kind === "bool") {
@@ -5144,8 +5194,21 @@ function _genoJsonCodec(name, shape, types) {
 }
 function json_decode(text, shape, types) {
     const known = _genoJsonCodec("json_decode", shape, types);
-    const parsed = json_parse(text);
-    if (parsed._tag !== "Ok") return parsed;
+    // As json_parse, except that an integer literal past the safe range is
+    // kept for a Float to take (json_parse itself rejects one).
+    const parser = { text, index: 0, wideInts: true, sawWideInt: false };
+    let parsed;
+    try {
+        const value = _genoQuietly(() => {
+            _ensureJsonNestingLimit(text);
+            return _jsonParseText(text, parser);
+        });
+        parsed = _checkCollectionSize({ _tag: "Ok", value });
+    } catch (e) {
+        if (String(e.message).includes("size exceeds limit")) throw _genoRestack(e);
+        return _checkCollectionSize(Err(e.message));
+    }
+
     let extraValues = 0;
     function visit(depth, extra) {
         if (depth >= _MAX_JSON_DECODE_DEPTH) {
@@ -5157,6 +5220,7 @@ function json_decode(text, shape, types) {
         }
     }
     try {
+        if (parser.sawWideInt) visit.wide = true;
         return Ok(_genoJsonFrom(parsed.value, shape, known, null, visit, 0));
     } catch (error) {
         if (error instanceof _GenoJsonMismatch) return Err(error.message);
@@ -5253,7 +5317,10 @@ function _genoExternToHost(value, shape) {
 
 function _genoExternJsonToHost(node, depth) {
     if (depth >= _GENO_EXTERN_MAX_DEPTH) {
-        throw new _GenoExternFailure("a JsonValue argument is nested too deeply");
+        // _genoExternCall names the extern in front of this, as compiled
+        // Python does.
+        throw new _GenoExternMismatch(
+            "a JsonValue argument nested more than " + _GENO_EXTERN_MAX_DEPTH + " levels deep");
     }
     if (node._tag === "JsonNull") return null;
     if (node._tag === "JsonArray") return node.items.map(item => _genoExternJsonToHost(item, depth + 1));
@@ -5298,7 +5365,8 @@ function _genoExternFromHost(value, shape, path, depth) {
         if (typeof value !== "number" || !_GENO_NUMBER.isSafeInteger(value)) {
             _genoExternMismatch(path, "Int", value);
         }
-        return value;
+        // An Int has no negative zero.
+        return value === 0 ? 0 : value;
     }
     if (kind === "float") {
         if (typeof value !== "number") _genoExternMismatch(path, "Float", value);
@@ -5353,7 +5421,10 @@ function _genoExternJsonFromHost(value, path, depth) {
     if (value === null) return JsonNull();
     if (typeof value === "boolean") return JsonBool(value);
     if (typeof value === "number") {
-        return _GENO_NUMBER.isSafeInteger(value) ? JsonInt(value) : JsonFloat(value);
+        // -0 is a Float: an Int has no negative zero.
+        return _GENO_NUMBER.isSafeInteger(value) && !(value === 0 && 1 / value < 0)
+            ? JsonInt(value)
+            : JsonFloat(value);
     }
     if (typeof value === "string") {
         _checkCollectionKind("String", _stringLength(value));
@@ -5421,7 +5492,13 @@ function _genoExternCall(name, binding, args, params, result) {
                 + "' has no js binding, so it cannot run on this backend");
         }
         const host = _genoExternLoad(name, binding);
-        const hostArgs = args.map((value, index) => _genoExternToHost(value, params[index]));
+        let hostArgs;
+        try {
+            hostArgs = args.map((value, index) => _genoExternToHost(value, params[index]));
+        } catch (e) {
+            if (!(e instanceof _GenoExternMismatch)) throw e;
+            throw new _GenoExternFailure("Extern function '" + name + "' got " + e.message);
+        }
         let value;
         try {
             value = host.fn.apply(host.owner, hostArgs);
@@ -6043,7 +6120,7 @@ function result_unwrap(result) {
 
 function result_expect(result, message) {
     if (result._tag === 'Ok') return result.value;
-    throw new Error(message + ": " + _stringifyValue(result.error));
+    throw _genoPanicError(message + ": " + _stringifyValue(result.error));
 }
 
 function result_is_ok(result) {
@@ -6080,7 +6157,7 @@ function option_unwrap_or(option, defaultVal) {
 
 function option_expect(option, message) {
     if (option._tag === 'Some') return option.value;
-    throw new Error(message);
+    throw _genoPanicError(message);
 }
 
 function option_is_some(option) {

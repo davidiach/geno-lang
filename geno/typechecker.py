@@ -699,6 +699,37 @@ def _geno_string(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
+# The escapes the lexer reads in a string literal (``_STRING_ESCAPE_MAP``).
+_SOURCE_STRING_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+}
+
+
+def _geno_source_string(text: str) -> str:
+    """``text`` as a one-line Geno string literal, for a fix to write."""
+    return '"' + "".join(_SOURCE_STRING_ESCAPES.get(char, char) for char in text) + '"'
+
+
+def _expected_value_end(
+    example: ExampleClause, output: Identifier | FunctionCall
+) -> SourceLocation | None:
+    """Just after an example's expected value, parentheses around it included.
+
+    The value's last token is the clause's last: the name written alone, or
+    else the `)` that closes the call or the parentheses around the value.
+    """
+    last = example.end_location
+    if last is None:
+        return None
+    if isinstance(output, Identifier) and last == output.location:
+        return _shifted(last, len(output.name))
+    return _shifted(last, 1)
+
+
 def _example_inputs_text(example: ExampleClause, zero_input: bool) -> str:
     """An example's inputs as written in a diagnostic: ``1, 0``, ``()``."""
     from .doc_generator import _render_expr
@@ -4013,8 +4044,11 @@ class TypeChecker(ExhaustivenessMixin):
         output = ex.output_expr
         builtin_panic = self._identifier_resolves_to_builtin("panic", self.global_env)
         # The fix replaces the text from the end of the inputs up to `upto`
-        # with " panics..." and applies `extra`; None when there is no fix.
-        rewrite: tuple[str, SourceLocation, tuple[TextEdit, ...]] | None = None
+        # with " panics..."; no fix when either is unknown. `upto` is the end
+        # of the expected value, so the edit takes the parentheses around a
+        # call or its message with it: `-> (panic(("m")))` is one value.
+        text: str | None = None
+        upto: SourceLocation | None = None
         message: str | None = None
         unquoted = False  # `panic(e)`: the message is not a literal
         if isinstance(output, Identifier) and output.name == "panics":
@@ -4024,11 +4058,15 @@ class TypeChecker(ExhaustivenessMixin):
             ):
                 return False
             message = ex.panic_message
-            rewrite = ("", output.location, ())
+            if message is None:
+                text, upto = "panics", _expected_value_end(ex, output)
+            else:
+                # `-> panics "m"`, a word and a string: only the arrow goes.
+                text, upto = "", output.location
         elif isinstance(output, Identifier) and output.name == "panic":
             if not builtin_panic:
                 return False
-            rewrite = ("panics", _shifted(output.location, len("panic")), ())
+            text, upto = "panics", _expected_value_end(ex, output)
         elif (
             isinstance(output, FunctionCall)
             and isinstance(output.function, Identifier)
@@ -4040,12 +4078,8 @@ class TypeChecker(ExhaustivenessMixin):
             unquoted = literal is None
             if literal is not None:
                 message = literal.value
-                close = ex.end_location  # the call's `)`
-                if close is not None:
-                    delete_close = TextEdit(
-                        close.line, close.column, close.line, close.column + 1, ""
-                    )
-                    rewrite = ("panics ", literal.location, (delete_close,))
+                text = f"panics {_geno_source_string(message)}"
+                upto = _expected_value_end(ex, output)
         else:
             return False
 
@@ -4060,8 +4094,7 @@ class TypeChecker(ExhaustivenessMixin):
             written += ", optionally followed by the message as a string literal"
         fixes: tuple[Fix, ...] = ()
         start = ex.inputs_end_location
-        if rewrite is not None and start is not None:
-            text, upto, extra = rewrite
+        if text is not None and upto is not None and start is not None:
             lead = " () " if zero_input else " "
             title = f"() {form}" if zero_input else form
             fixes = (
@@ -4075,7 +4108,6 @@ class TypeChecker(ExhaustivenessMixin):
                             upto.column,
                             lead + text,
                         ),
-                        *extra,
                     ),
                 ),
             )
@@ -7745,11 +7777,14 @@ class TypeChecker(ExhaustivenessMixin):
                 ):
                     self._check_pattern(elem_pattern, elem_type, env, pattern.location)
             else:
-                self._error(
-                    f"Tuple pattern used with non-tuple type: {expected_type}",
-                    pattern.location,
-                    ErrorCode.TYPE_PATTERN_MISMATCH,
-                )
+                # Any is a value that already failed to check (such as the
+                # element of `for (a, b) in 5`), reported where it failed.
+                if not isinstance(expected_type, AnyType):
+                    self._error(
+                        f"Tuple pattern used with non-tuple type: {expected_type}",
+                        pattern.location,
+                        ErrorCode.TYPE_PATTERN_MISMATCH,
+                    )
                 # The names still exist in the arm, so their uses do not add
                 # "Undefined variable" errors (or a rename fix) to this one.
                 for name in sorted(pattern_bound_names(pattern)):

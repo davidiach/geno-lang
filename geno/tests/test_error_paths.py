@@ -185,6 +185,25 @@ end func
 """
         _expect_parse_error(source)
 
+    @pytest.mark.parametrize("target", ["xs[0] + 1", "xs.length()", "xs[0] * 2"])
+    def test_an_invalid_target_is_reported_at_its_equals_sign(self, target):
+        """Not at the next statement, where the parser is after the value."""
+        source = (
+            "func main() -> Int\n"
+            "    let xs = [1]\n"
+            "    let y: Int = 2\n"
+            f"    {target} = 3\n"
+            "    return 0\n"
+            "end func\n"
+        )
+        error = _expect_parse_error(source)
+        assert isinstance(error, ParseError)
+        assert "Invalid assignment target" in error.message
+        assert (error.location.line, error.location.column) == (
+            4,
+            len(f"    {target} ") + 1,
+        )
+
 
 # ===========================================================================
 # Typechecker error paths

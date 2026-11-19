@@ -53,11 +53,14 @@ computation) work, and **all other gated builtins are denied**.
 geno run myfile.geno
 ```
 
-`--cap` grants **exactly** the capabilities you list, for examples and `main`
-alike, and the program stays in the process sandbox
-([proposal 0013](../proposals/0013-isolated-run-capabilities.md)). The list
-replaces the defaults rather than adding to them, so name `print` too if the
-program prints:
+On the 0.7 development line, `--cap` grants **exactly** the capabilities you
+list, for examples and `main` alike, and the program stays in the process
+sandbox ([proposal 0013](../proposals/0013-isolated-run-capabilities.md)). The
+published 0.6 release refuses `--cap` in this lane ("--cap is not supported in
+the default process-isolated run mode"); there, grant capabilities with
+`geno run --unsafe --cap ...` ([interpreter mode](#interpreter-mode-geno-run---unsafe---cap),
+trusted code only). The list replaces the defaults rather than adding to them,
+so name `print` too if the program prints:
 
 ```bash
 # Program arguments: cli_args() needs env
@@ -228,9 +231,17 @@ below, but those checks do not sandbox the artifact. See
   only root is the current working directory and absolute paths are rejected.
   Without an explicit root policy, the CLI also scopes `--cap fs` to the source
   project and explicit path-like program arguments, allowing absolute paths
-  inside that scope so tools can receive file paths after `--`. Set
+  inside that scope so tools can receive file paths after `--`. A path-like
+  argument is any argument after `--` that is absolute or contains a path
+  separator, whether or not it is meant as a path, and it adds that
+  directory, or the parent directory of a file or missing path, after
+  resolving `..` and symlinks: `-- data/input.csv` adds all of `data/`,
+  `-- 's/../../g'` adds the parent of the working directory and `-- /` adds
+  the whole filesystem. Set
   `GENO_FS_ROOTS` to an `os.pathsep`-separated root list to replace those automatic
-  CLI grants; an explicitly empty list is rejected by the CLI. With configured
+  CLI grants, as you should for untrusted code
+  ([Security Policy](../../SECURITY.md#granting-capabilities-on-the-command-line));
+  an explicitly empty list is rejected by the CLI. With configured
   roots, absolute paths are rejected by default. Set
   `GENO_FS_ALLOW_ABSOLUTE=1` only for trusted deployments that need absolute
   paths inside those roots. The CLI also honors an explicitly false

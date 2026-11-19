@@ -634,6 +634,20 @@ class TestPreludeBlobFraming:
             "try:\n    pass\nexcept Exception as _GENO_CAPS:\n    pass\n__result__ = 1\n",
             "__result__ = _geno_environ()\n",
             "__result__ = _GenoHostUnavailable\n",
+            # Import forms bind their alias, so they are binding forms too.
+            "import sys as _GENO_CAPS\n__result__ = 1\n",
+            "from os import environ as _geno_environ\n__result__ = 1\n",
+            "from functools import cmp_to_key\n__result__ = 1\n",
+            "import math\n__result__ = 1\n",
+            "import math.x\n__result__ = 1\n",
+            "def probe():\n    import json as _GENO_HOST\n    return 1\n"
+            "__result__ = probe()\n",
+            # The namespace's builtins: rebinding it replaces every later
+            # function's builtins.
+            "__builtins__ = {}\n__result__ = 1\n",
+            "import sys as __builtins__\n__result__ = 1\n",
+            "def probe(__builtins__=None):\n    return 1\n__result__ = probe()\n",
+            "__result__ = __builtins__\n",
         ],
     )
     def test_compiler_tail_cannot_modify_or_bypass_capability_authority(self, tail):
@@ -645,6 +659,28 @@ class TestPreludeBlobFraming:
         assert result is None
         assert error is not None
         assert "compiler runtime internal" in error
+
+    def test_compiler_tail_cannot_use_a_wildcard_import(self):
+        """A wildcard import binds names the worker's checks cannot see."""
+        sandbox = self._sandbox()
+        code = self._canonical_prelude() + "\nfrom math import *\n__result__ = 1\n"
+
+        result, _output, error = sandbox._execute_compiler_output(code)
+
+        assert result is None
+        assert error is not None
+        assert "Wildcard import is not allowed" in error
+
+    def test_public_execute_keeps_ordinary_imports(self):
+        """The import checks guard compiled code; raw Python keeps its imports."""
+        sandbox = self._sandbox()
+
+        result, _output, error = sandbox.execute(
+            "import math\nfrom math import floor\n__result__ = floor(math.pi)\n"
+        )
+
+        assert error is None
+        assert result == 3
 
     def test_compiler_capabilities_are_injected_by_worker_configuration(self):
         sandbox = self._sandbox()

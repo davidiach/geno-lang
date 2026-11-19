@@ -31,7 +31,7 @@ from .ast_nodes import (
     VariablePattern,
     WildcardPattern,
 )
-from .diagnostics import ErrorCode, insert_fix
+from .diagnostics import ErrorCode, Fix, insert_fix
 from .parser_base import ParseError, ParserBase
 from .tokens import SourceLocation, TokenType, token_type_to_str
 
@@ -102,6 +102,9 @@ class PatternParserMixin(ParserBase):
         with ``match item with | (i, x) -> ...``.
         """
         start = self._current()
+        first_end = self._loop_pattern_end(0)
+        if first_end is not None and self._peek(first_end).type is TokenType.COMMA:
+            self._reject_unparenthesized_loop_names(first_end)
         if start.type is TokenType.LPAREN:
             pattern = self._parse_pattern()
             if not isinstance(pattern, TuplePattern) or not _binds_only(pattern):
@@ -120,41 +123,73 @@ class PatternParserMixin(ParserBase):
                 name = f"_geno_item_{self._synthetic_names[0]}"
                 if name not in self._loop_binding_reserved:
                     return name, var_type, pattern
-        if start.type is TokenType.IDENTIFIER and self._peek(1).type is TokenType.COMMA:
-            self._reject_unparenthesized_loop_names()
         variable_token = self._expect(TokenType.IDENTIFIER, "Expected variable name")
         var_type = InferredType(location=variable_token.location)
         if self._match(TokenType.COLON):
             var_type = self._parse_type()
         return variable_token.value, var_type, None
 
-    def _reject_unparenthesized_loop_names(self) -> None:
-        """``for i, x in pairs`` is Python; Geno writes ``for (i, x) in pairs``."""
+    def _loop_pattern_end(self, offset: int) -> int | None:
+        """The token offset just past a loop pattern that starts at ``offset``.
+
+        A loop pattern is a name, ``_``, or a tuple of two or more loop
+        patterns, as in ``(i, (x, _))``; ``None`` when none starts there. The
+        tokens are only looked at, not consumed.
+        """
+        # The number of elements so far in each tuple left open.
+        open_tuples: list[int] = []
+        while True:
+            # One element: the tuples it opens, then a name or `_`.
+            while self._peek(offset).type is TokenType.LPAREN:
+                open_tuples.append(0)
+                offset += 1
+            if self._peek(offset).type not in (
+                TokenType.IDENTIFIER,
+                TokenType.UNDERSCORE,
+            ):
+                return None
+            offset += 1
+            if open_tuples:
+                open_tuples[-1] += 1
+            # The tuples it closes, each an element of the one around it.
+            while open_tuples and self._peek(offset).type is TokenType.RPAREN:
+                if open_tuples.pop() < 2:
+                    return None  # `(i)` is not a tuple pattern
+                offset += 1
+                if open_tuples:
+                    open_tuples[-1] += 1
+            if not open_tuples:
+                return offset
+            if self._peek(offset).type is not TokenType.COMMA:
+                return None
+            offset += 1
+
+    def _reject_unparenthesized_loop_names(self, first_end: int) -> None:
+        """``for i, x in pairs`` is Python; Geno writes ``for (i, x) in pairs``.
+
+        ``first_end`` is the offset of the comma after the first pattern. The
+        fix parenthesizes the whole list up to ``in`` (``for i, (x, y) in``,
+        ``for _, s in``), and is offered only when every element is a loop
+        pattern, so the fixed loop parses.
+        """
         first = self._current()
-        offset = 0
-        last = first
-        while (
-            self._peek(offset).type is TokenType.IDENTIFIER
-            and self._peek(offset + 1).type is TokenType.COMMA
-            and self._peek(offset + 2).type is TokenType.IDENTIFIER
-        ):
-            offset += 2
-            last = self._peek(offset)
-        after_last = SourceLocation(
-            last.location.line,
-            last.location.column + len(last.value),
-            last.location.filename,
-        )
+        end: int | None = first_end
+        while end is not None and self._peek(end).type is TokenType.COMMA:
+            end = self._loop_pattern_end(end + 1)
+        fixes: tuple[Fix, ...] = ()
+        if end is not None and self._peek(end).type is TokenType.IN:
+            after_last = self._token_end(self._peek(end - 1))
+            fixes = (
+                insert_fix(
+                    "Add parentheses", [(first.location, "("), (after_last, ")")]
+                ),
+            )
         raise ParseError(
             "A loop that unpacks each element writes the names in "
             "parentheses: for (i, x) in ...",
             first.location,
             ErrorCode.PARSE_INVALID_SYNTAX,
-            (
-                insert_fix(
-                    "Add parentheses", [(first.location, "("), (after_last, ")")]
-                ),
-            ),
+            fixes,
         )
 
     @staticmethod

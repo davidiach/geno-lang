@@ -280,6 +280,47 @@ def _geno_quote_string(value: str) -> str:
     return "".join(parts)
 
 
+def _geno_int_text(value: Any) -> str:
+    """``str(value)`` for an Int of any size Geno allows.
+
+    CPython 3.11+ refuses to write an int with more decimal digits than its
+    ``int_max_str_digits`` setting (4,300 by default), but an Int reaches
+    the integer size limit (about 10,000 digits by default). Past that
+    setting the digits are written in pieces small enough for any value of
+    it, and the setting is left alone. Copy of geno/values.py ``int_text``.
+    """
+    try:
+        return str(value)
+    except ValueError:
+        pass
+    if value < 0:
+        return "-" + _geno_decimal_digits(-value)
+    return _geno_decimal_digits(value)
+
+
+def _geno_decimal_digits(value: int) -> str:
+    """The digits of a non-negative int, by halving its decimal length."""
+    # Under 1,000 bits (302 digits) is under CPython's lowest setting (640).
+    if value.bit_length() < 1_000:
+        return str(value)
+    # 10**half has about half of value's digits (log10(2) is about 3/10).
+    half = value.bit_length() * 3 // 20
+    high, low = divmod(value, 10**half)
+    return _geno_decimal_digits(high) + _geno_decimal_digits(low).zfill(half)
+
+
+def _geno_scalar_text(value: Any) -> str:
+    """``str(value)``, with an Int written in full past CPython's digit limit."""
+    if type(value) is int:
+        return _geno_int_text(value)
+    return str(value)
+
+
+def _geno_is_int_digit_limit_error(error: Any) -> bool:
+    """Whether *error* is CPython refusing to write a long int in decimal."""
+    return isinstance(error, ValueError) and "integer string conversion" in str(error)
+
+
 def _geno_format(
     value: Any,
     _seen: tuple[Any, ...] | None = None,
@@ -371,7 +412,7 @@ def _geno_format(
             for k, v in value.items()
         )
         return f"{{{items}}}"
-    return str(value)
+    return _geno_scalar_text(value)
 
 
 # =============================================================================
@@ -459,6 +500,10 @@ def _geno_unshared_part(value: Any) -> Any:
         return list(value)
     if isinstance(value, dict):
         return dict(value)
+    if type(value) is tuple:
+        # A tuple cannot be written in place: rebuild it from unshared parts,
+        # so a write through any of its elements lands in a copy.
+        return tuple(_geno_unshared_part(element) for element in value)
     return value
 
 
@@ -770,14 +815,63 @@ def _geno_format_spec(value: Any, spec: str, kind: Any = None) -> str:
     if kind == "int":
         if type(value) is not int:
             raise RuntimeError(f"Format spec '{spec}' needs an Int")
-        return f"{value:{spec}}"
+        try:
+            return f"{value:{spec}}"
+        except ValueError as error:
+            if not _geno_is_int_digit_limit_error(error):
+                raise
+            return _geno_format_long_decimal(value, spec)
     if kind == "float":
         if type(value) not in (int, float):
             raise RuntimeError(f"Format spec '{spec}' needs an Int or a Float")
-        return f"{float(value):{spec}}"
+        try:
+            number = float(value)
+        except OverflowError:
+            # geno/format_spec.py INT_TOO_LARGE_FOR_FLOAT, as int_to_float says it.
+            raise RuntimeError("int too large to convert to float") from None
+        return f"{number:{spec}}"
     if not isinstance(value, str):
         raise RuntimeError(f"Format spec '{spec}' needs a String here")
     return f"{value:{spec}}"
+
+
+# geno/format_spec.py _SPEC_RE: [[fill]align][sign][0][width][,][.precision][type]
+_GENO_FORMAT_SPEC_RE = _re.compile(
+    r"(?:(.)?([<>^]))?([-+ ])?(0)?([1-9][0-9]*)?(,)?(?:\.([0-9]+))?([a-zA-Z%])?",
+    _re.DOTALL,
+)
+
+
+def _geno_format_long_decimal(value: int, spec: str) -> str:
+    """``f"{value:{spec}}"`` for a decimal type, past CPython's digit limit.
+
+    Copy of geno/format_spec.py ``format_long_decimal``: the digits come
+    from ``_geno_int_text`` and the spec is applied as ``format`` applies it.
+    Any other spec CPython refused is refused here too.
+    """
+    match = _GENO_FORMAT_SPEC_RE.fullmatch(spec)
+    if match is None or match.group(7) is not None or match.group(8) not in (None, "d"):
+        raise RuntimeError(f"Format spec '{spec}' cannot format this Int")
+    fill, align, sign, zero, width, comma = match.group(1, 2, 3, 4, 5, 6)
+    digits = _geno_int_text(abs(value))
+    if comma:
+        head = len(digits) % 3 or 3
+        digits = digits[:head] + "".join(
+            "," + digits[index : index + 3] for index in range(head, len(digits), 3)
+        )
+    sign = "-" if value < 0 else (sign or "").replace("-", "")
+    padding = int(width or 0) - len(sign) - len(digits)
+    if padding <= 0:
+        return sign + digits
+    if zero:
+        return sign + "0" * padding + digits
+    fill = fill or " "
+    if align == "<":
+        return sign + digits + fill * padding
+    if align == "^":
+        left = padding // 2
+        return fill * left + sign + digits + fill * (padding - left)
+    return fill * padding + sign + digits
 
 
 def _geno_in(element: Any, container: Any, member: Any = None) -> bool:
@@ -1045,7 +1139,7 @@ def format_(template: Any, values: Any) -> str:
         # int doesn't get converted to string just to trip the next
         # collection-size check.
         _check_collection_size(val)
-        value_parts.append(str(val))
+        value_parts.append(_geno_scalar_text(val))
     size = sum(len(part) for part in parts) + sum(len(part) for part in value_parts)
     _check_string_result_size("format", size)
     result = parts[0]
@@ -1105,7 +1199,9 @@ def range_(*args: int) -> list[int]:
         return []
     size = abs((end - start + step - (1 if step > 0 else -1)) // step)
     if size > _MAX_COLLECTION_SIZE:
-        raise RuntimeError(f"List size exceeds limit ({size} > {_MAX_COLLECTION_SIZE})")
+        raise RuntimeError(
+            f"List size exceeds limit ({_geno_scalar_text(size)} > {_MAX_COLLECTION_SIZE})"
+        )
     return [
         _require_safe_js_int(value, "range result") for value in range(start, end, step)
     ]
@@ -1132,7 +1228,9 @@ def from_char_code(n: Any) -> str:
     if not isinstance(n, int):
         raise RuntimeError("from_char_code expects integer")
     if n < 0 or n > 0x10FFFF:
-        raise RuntimeError(f"from_char_code: code point {n} out of range")
+        raise RuntimeError(
+            f"from_char_code: code point {_geno_scalar_text(n)} out of range"
+        )
     return chr(n)
 
 
@@ -1304,7 +1402,9 @@ def _int_oob(value: int) -> int:
 
 def _list_size_exceeded(size: int) -> None:
     """Cold path: raise Geno's standard list-size error."""
-    raise RuntimeError(f"List size exceeds limit ({size} > {_MAX_COLLECTION_SIZE})")
+    raise RuntimeError(
+        f"List size exceeds limit ({_geno_scalar_text(size)} > {_MAX_COLLECTION_SIZE})"
+    )
 
 
 def _safe_mod(a: Any, b: Any) -> Any:
@@ -1365,7 +1465,7 @@ def _safe_lshift(a, b):
     if isinstance(b, int) and b < 0:
         raise RuntimeError("Negative shift count")
     if isinstance(b, int) and b > _MAX_INTEGER_BITS:
-        raise RuntimeError(f"Left shift amount too large ({b} bits)")
+        raise RuntimeError(f"Left shift amount too large ({_geno_scalar_text(b)} bits)")
     return _check_int_bits(a << b)
 
 
@@ -1374,7 +1474,9 @@ def _safe_rshift(a, b):
     if isinstance(b, int) and b < 0:
         raise RuntimeError("Negative shift count")
     if isinstance(b, int) and b > _MAX_INTEGER_BITS:
-        raise RuntimeError(f"Right shift amount too large ({b} bits)")
+        raise RuntimeError(
+            f"Right shift amount too large ({_geno_scalar_text(b)} bits)"
+        )
     return _check_int_bits(a >> b)
 
 
@@ -1599,7 +1701,7 @@ def _check_collection_size(result):
 def _check_collection_kind(kind: str, size: int) -> None:
     if size > _MAX_COLLECTION_SIZE:
         raise RuntimeError(
-            f"{kind} size exceeds limit ({size} > {_MAX_COLLECTION_SIZE})"
+            f"{kind} size exceeds limit ({_geno_scalar_text(size)} > {_MAX_COLLECTION_SIZE})"
         )
 
 
@@ -1740,7 +1842,7 @@ class _GenoFString:
             self._append_mapping(value, seen)
             self.append("}")
         else:
-            self.append(str(value))
+            self.append(_geno_scalar_text(value))
 
     def finish(self) -> str:
         return "".join(self.parts)
@@ -1997,10 +2099,12 @@ def array_new(size, default):
     if not isinstance(size, int):
         raise RuntimeError("array_new size must be an integer")
     if size < 0:
-        raise RuntimeError(f"array_new size must be non-negative, got {size}")
+        raise RuntimeError(
+            f"array_new size must be non-negative, got {_geno_scalar_text(size)}"
+        )
     if size > _MAX_COLLECTION_SIZE:
         raise RuntimeError(
-            f"Array size exceeds limit ({size} > {_MAX_COLLECTION_SIZE})"
+            f"Array size exceeds limit ({_geno_scalar_text(size)} > {_MAX_COLLECTION_SIZE})"
         )
     return _GenoArray([_geno_deepcopy(default) for _ in range(size)])
 
@@ -2021,7 +2125,9 @@ def array_get(arr, index):
     if not isinstance(index, int):
         raise RuntimeError("array_get index must be an integer")
     if index < 0 or index >= len(arr):
-        raise RuntimeError(f"array_get index {index} out of bounds (length {len(arr)})")
+        raise RuntimeError(
+            f"array_get index {_geno_scalar_text(index)} out of bounds (length {len(arr)})"
+        )
     return arr[index]
 
 
@@ -2031,7 +2137,9 @@ def array_set(arr, index, value):
     if not isinstance(index, int):
         raise RuntimeError("array_set index must be an integer")
     if index < 0 or index >= len(arr):
-        raise RuntimeError(f"array_set index {index} out of bounds (length {len(arr)})")
+        raise RuntimeError(
+            f"array_set index {_geno_scalar_text(index)} out of bounds (length {len(arr)})"
+        )
     arr[index] = _geno_deepcopy(value)
     return None
 
@@ -2171,7 +2279,7 @@ def vec_get(v, index):
     if not isinstance(index, int):
         raise RuntimeError("vec_get index must be integer")
     if index < 0 or index >= len(v):
-        raise RuntimeError(f"vec_get index {index} out of bounds")
+        raise RuntimeError(f"vec_get index {_geno_scalar_text(index)} out of bounds")
     return v._elements[index]
 
 
@@ -2181,7 +2289,7 @@ def vec_set(v, index, value):
     if not isinstance(index, int):
         raise RuntimeError("vec_set index must be integer")
     if index < 0 or index >= len(v):
-        raise RuntimeError(f"vec_set index {index} out of bounds")
+        raise RuntimeError(f"vec_set index {_geno_scalar_text(index)} out of bounds")
     v._elements[index] = _geno_deepcopy(value)
     return None
 
@@ -2475,9 +2583,9 @@ def _safe_index(target, index):
     try:
         return target[index]
     except IndexError:
-        raise RuntimeError(f"Index {index} out of bounds") from None
+        raise RuntimeError(f"Index {_geno_scalar_text(index)} out of bounds") from None
     except KeyError:
-        raise RuntimeError(f"Key not found: {index}") from None
+        raise RuntimeError(f"Key not found: {_geno_scalar_text(index)}") from None
     except TypeError:
         raise RuntimeError(
             f"Cannot index {type(target).__name__} with {type(index).__name__}"
@@ -2493,7 +2601,9 @@ def _safe_index_set(target, index, value):
         if not isinstance(index, int):
             raise RuntimeError("Array index must be integer")
         if index < 0 or index >= len(target):
-            raise RuntimeError(f"Index {index} out of bounds for assignment")
+            raise RuntimeError(
+                f"Index {_geno_scalar_text(index)} out of bounds for assignment"
+            )
         target._elements[index] = value
         return None
 
@@ -2501,7 +2611,9 @@ def _safe_index_set(target, index, value):
         if not isinstance(index, int):
             raise RuntimeError("Vec index must be integer")
         if index < 0 or index >= len(target):
-            raise RuntimeError(f"Index {index} out of bounds for assignment")
+            raise RuntimeError(
+                f"Index {_geno_scalar_text(index)} out of bounds for assignment"
+            )
         target._elements[index] = value
         return None
 
@@ -2532,7 +2644,9 @@ def _safe_index_set(target, index, value):
     try:
         target[index] = value
     except IndexError:
-        raise RuntimeError(f"Index {index} out of bounds for assignment") from None
+        raise RuntimeError(
+            f"Index {_geno_scalar_text(index)} out of bounds for assignment"
+        ) from None
     except TypeError:
         raise RuntimeError(
             f"Cannot assign to index of {type(target).__name__}"
@@ -3581,6 +3695,27 @@ def _json_container_bounds(
     return min_chars, max_chars, lines, indent_units
 
 
+# A UTF-16 surrogate code point. A Python str holds an astral character as one
+# code point, so every surrogate in one is unpaired.
+_GENO_LONE_SURROGATE_RE = _re.compile(r"[\ud800-\udfff]")
+
+
+def _geno_escape_lone_surrogates(text: str) -> str:
+    """JSON *text* with each lone surrogate written as ``\\udxxx``.
+
+    Well-formed ``JSON.stringify`` escapes an unpaired surrogate in lowercase
+    hex and writes every other non-ASCII character as it is; ``json.dumps``
+    with ``ensure_ascii=False`` writes the surrogate itself. Escaping it here
+    makes the Python backends write what JavaScript writes. (A copy lives in
+    geno/builtins.py.)
+    """
+    if _GENO_LONE_SURROGATE_RE.search(text) is None:
+        return text
+    return _GENO_LONE_SURROGATE_RE.sub(
+        lambda match: "\\u" + f"{ord(match.group()):04x}", text
+    )
+
+
 def _json_dumps_under_limit(
     func_name: str, obj: Any, *, indent: int | None = None, ensure_ascii: bool = True
 ) -> str:
@@ -3588,8 +3723,105 @@ def _json_dumps_under_limit(
 
     A subtree shared by reference is written once per occurrence, so a small
     value can encode to an arbitrarily large string. Bound the size first and
-    stream the encoding only when the bounds cannot decide.
+    stream the encoding only when the bounds cannot decide. Without
+    ``ensure_ascii`` a lone surrogate is escaped, as JavaScript does.
     """
+    try:
+        text = _json_dumps_bounded(func_name, obj, indent, ensure_ascii)
+    except ValueError as error:
+        if not _geno_is_int_digit_limit_error(error):
+            raise
+        # An Int with more digits than CPython writes: write the same JSON
+        # with every int in pieces, leaving the process-wide limit alone.
+        text = _geno_json_join(
+            func_name,
+            _geno_json_chunks(
+                obj,
+                None if indent is None else " " * indent,
+                0,
+                ensure_ascii,
+            ),
+        )
+    if ensure_ascii:
+        return text
+    escaped = _geno_escape_lone_surrogates(text)
+    if len(escaped) != len(text):
+        _check_string_result_size(func_name, len(escaped))
+    return escaped
+
+
+def _geno_json_join(func_name: str, chunks: Any) -> str:
+    """Join JSON *chunks*, failing as soon as they pass the size limit."""
+    size = 0
+    parts = []
+    for chunk in chunks:
+        size += len(chunk)
+        _check_string_result_size(func_name, size)
+        parts.append(chunk)
+    return "".join(parts)
+
+
+def _geno_json_chunks(obj: Any, indent: Any, level: int, ensure_ascii: bool) -> Any:
+    """``json.dumps(obj)`` in pieces, as ``_json_dumps_bounded`` calls it, with
+    each int written by ``_geno_int_text``.
+
+    The json module writes an int with ``int.__repr__``, which CPython
+    refuses past its digit limit and which no public hook replaces, so the
+    rare value holding such an Int is written here, the json module's way.
+    """
+    import json as _json
+
+    if isinstance(obj, (list, tuple)):
+        if not obj:
+            yield "[]"
+            return
+        yield "["
+        inner = None if indent is None else "\n" + indent * (level + 1)
+        for index, item in _builtin_enumerate(obj):
+            if index:
+                yield ","
+            if inner is not None:
+                yield inner
+            yield from _geno_json_chunks(item, indent, level + 1, ensure_ascii)
+        if indent is not None:
+            yield "\n" + indent * level
+        yield "]"
+        return
+    if isinstance(obj, dict):
+        if not obj:
+            yield "{}"
+            return
+        yield "{"
+        inner = None if indent is None else "\n" + indent * (level + 1)
+        for index, (key, item) in _builtin_enumerate(obj.items()):
+            if index:
+                yield ","
+            if inner is not None:
+                yield inner
+            # A key that is not a str is written as the json module writes it.
+            if isinstance(key, bool) or key is None:
+                key = _json.dumps(key)
+            elif type(key) is int:
+                key = _geno_int_text(key)
+            elif not isinstance(key, str):
+                key = _json.dumps(key, allow_nan=False)
+            yield _json.dumps(key, ensure_ascii=ensure_ascii)
+            yield ":" if indent is None else ": "
+            yield from _geno_json_chunks(item, indent, level + 1, ensure_ascii)
+        if indent is not None:
+            yield "\n" + indent * level
+        yield "}"
+        return
+    if type(obj) is int:
+        yield _geno_int_text(obj)
+        return
+    yield _json.dumps(obj, ensure_ascii=ensure_ascii, allow_nan=False)
+
+
+def _json_dumps_bounded(
+    func_name: str, obj: Any, indent: int | None, ensure_ascii: bool
+) -> str:
+    """``_json_dumps_under_limit`` before lone surrogates are escaped."""
     import json as _json
 
     separators = (",", ":") if indent is None else (",", ": ")
@@ -3770,6 +4002,10 @@ class _GenoJsonOps:
         """Bound a container an extern's host returned (proposal 0025)."""
         _check_collection_kind(kind, size)
 
+    def extern_int(self, value: Any) -> None:
+        """Bound an Int an extern's host returned (proposal 0025)."""
+        _require_int_bit_limit(value)
+
 
 _GENO_JSON_NODES = {
     "JsonString": JsonString,
@@ -3785,9 +4021,10 @@ _GENO_JSON_OPS = _GenoJsonOps()
 
 
 def _geno_json_quote(text: Any) -> Any:
+    """*text* as a JSON string in a message, as ``JSON.stringify`` writes it."""
     import json as _json
 
-    return _json.dumps(text, ensure_ascii=False)
+    return _geno_escape_lone_surrogates(_json.dumps(text, ensure_ascii=False))
 
 
 def _geno_json_path(path: Any) -> Any:
@@ -4373,7 +4610,12 @@ def _geno_extern_to_host(value: Any, shape: Any, ops: Any) -> Any:
 
 def _geno_extern_json_to_host(node: Any, ops: Any, depth: int) -> Any:
     if depth >= _GENO_EXTERN_MAX_DEPTH:
-        raise _GenoExternFailure("a JsonValue argument is nested too deeply")
+        # _geno_extern_invoke names the extern in front of this.
+        raise _GenoExternFailure(
+            "a JsonValue argument nested more than "
+            + str(_GENO_EXTERN_MAX_DEPTH)
+            + " levels deep"
+        )
     tag = ops.tag(node)
     if tag == "JsonNull":
         return None
@@ -4401,7 +4643,7 @@ def _geno_extern_from_host(
     if kind == "int":
         if isinstance(value, bool) or not isinstance(value, int):
             _geno_extern_mismatch(path, "Int", value)
-        return value
+        return _geno_extern_int(value, ops)
     if kind == "float":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             _geno_extern_mismatch(path, "Float", value)
@@ -4416,7 +4658,7 @@ def _geno_extern_from_host(
         if not isinstance(value, str):
             _geno_extern_mismatch(path, "String", value)
         _geno_extern_size(ops, "String", len(value))
-        return value
+        return _geno_extern_str(value)
     if kind == "bool":
         if not isinstance(value, bool):
             _geno_extern_mismatch(path, "Bool", value)
@@ -4437,7 +4679,7 @@ def _geno_extern_from_host(
             _geno_extern_from_host(
                 item, shape[1], (path, "[" + str(index) + "]"), ops, depth
             )
-            for index, item in enumerate(value)
+            for index, item in _builtin_enumerate(value)
         ]
     if kind == "tuple":
         if not isinstance(value, (list, tuple)):
@@ -4454,7 +4696,9 @@ def _geno_extern_from_host(
             _geno_extern_from_host(
                 item, item_shape, (path, "[" + str(index) + "]"), ops, depth
             )
-            for index, (item, item_shape) in enumerate(zip(value, shape[1]))
+            for index, (item, item_shape) in _builtin_enumerate(
+                _builtin_zip(value, shape[1])
+            )
         )
     if kind == "map":
         if not isinstance(value, dict):
@@ -4464,6 +4708,7 @@ def _geno_extern_from_host(
         for key, item in value.items():
             if not isinstance(key, str):
                 _geno_extern_mismatch(path, "a dict with str keys", key)
+            key = _geno_extern_str(key)
             pairs.append(
                 (
                     key,
@@ -4484,12 +4729,12 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
     if isinstance(value, bool):
         return ops.node("JsonBool", value)
     if isinstance(value, int):
-        return ops.node("JsonInt", value)
+        return ops.node("JsonInt", _geno_extern_int(value, ops))
     if isinstance(value, float):
-        return ops.node("JsonFloat", value)
+        return ops.node("JsonFloat", float(value))
     if isinstance(value, str):
         _geno_extern_size(ops, "String", len(value))
-        return ops.node("JsonString", value)
+        return ops.node("JsonString", _geno_extern_str(value))
     if isinstance(value, (list, tuple)):
         _geno_extern_size(ops, "List", len(value))
         return ops.node(
@@ -4498,7 +4743,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
                 _geno_extern_json_from_host(
                     item, (path, "[" + str(index) + "]"), ops, depth + 1
                 )
-                for index, item in enumerate(value)
+                for index, item in _builtin_enumerate(value)
             ],
         )
     if isinstance(value, dict):
@@ -4507,6 +4752,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
         for key, item in value.items():
             if not isinstance(key, str):
                 _geno_extern_mismatch(path, "a dict with str keys", key)
+            key = _geno_extern_str(key)
             entries.append(
                 (
                     key,
@@ -4517,6 +4763,36 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
             )
         return ops.node("JsonObject", entries)
     return _geno_extern_mismatch(path, "a JSON value", value)
+
+
+def _geno_extern_int(value: Any, ops: Any) -> Any:
+    """A host int result as a Geno Int, within the integer size limit.
+
+    A subclass (an ``IntEnum`` member, say) becomes the plain int it holds,
+    so Geno's equality and display see the same value on every backend.
+    Compiled Python's adapter applies the integer size limit here; the
+    interpreter's checks the whole result against its own limits afterwards.
+    """
+    if type(value) is not int:
+        value = int(value)
+    check = getattr(ops, "extern_int", None)
+    if check is not None:
+        check(value)
+    return value
+
+
+def _geno_extern_str(value: Any) -> Any:
+    """A host str result as a plain str.
+
+    A subclass (a ``StrEnum`` or ``(str, Enum)`` member, or one with its own
+    ``__eq__``) is copied character by character: joining a lone item that
+    is not an exact str builds a new str from its characters without calling
+    any method it overrides (``str()`` would call ``__str__``, which a
+    ``(str, Enum)`` member overrides to return its name).
+    """
+    if type(value) is str:
+        return value
+    return "".join([value])
 
 
 def _geno_extern_spec(binding: Any) -> str:
@@ -4576,9 +4852,15 @@ def _geno_extern_invoke(
             + name
             + "' has no python binding, so it cannot run on this backend"
         )
-    host_args = [
-        _geno_extern_to_host(value, shape, ops) for value, shape in zip(args, params)
-    ]
+    try:
+        host_args = [
+            _geno_extern_to_host(value, shape, ops)
+            for value, shape in _builtin_zip(args, params)
+        ]
+    except _GenoExternFailure as failure:
+        raise _GenoExternFailure(
+            "Extern function '" + name + "' got " + str(failure)
+        ) from None
     loading = True
     # Host code, the binding's import or the call, can raise anything: this is
     # the boundary where it becomes a Geno panic.
@@ -4664,7 +4946,9 @@ def _geno_value_to_python(value):
         return result
     # Dict (Map)
     if isinstance(value, dict):
-        return {str(k): _geno_value_to_python(v) for k, v in value.items()}
+        return {
+            _geno_scalar_text(k): _geno_value_to_python(v) for k, v in value.items()
+        }
     # List/tuple
     if isinstance(value, (list, tuple)):
         return [_geno_value_to_python(item) for item in value]

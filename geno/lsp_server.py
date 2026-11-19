@@ -545,6 +545,17 @@ def _has_lsp_line(lines: list[str], line: int) -> bool:
     return 0 <= line < len(lines)
 
 
+def _range_key(uri: str, rng: types.Range) -> tuple[str, int, int, int, int]:
+    """Identify one (uri, range) span, so a span is reported at most once."""
+    return (
+        uri,
+        rng.start.line,
+        rng.start.character,
+        rng.end.line,
+        rng.end.character,
+    )
+
+
 def _has_manifest_project(root: Path | None) -> bool:
     """Return whether *root* points at a manifest-backed Geno project."""
     return root is not None and (root / "geno.toml").exists()
@@ -2381,19 +2392,28 @@ class GenoLanguageServer:
         result = self._semantic_locations(uri, doc.source, line, char, word=word)
         if result:
             _defn, locs = result
-            return [
-                types.DocumentHighlight(
-                    range=_symbol_range_from_source(
-                        doc.source,
-                        word,
-                        loc.line,
-                        loc.column,
-                    ),
-                    kind=types.DocumentHighlightKind.Text,
+            semantic_highlights: list[types.DocumentHighlight] = []
+            seen: set[tuple[str, int, int, int, int]] = set()
+            for loc in locs:
+                if loc.filename != filename:
+                    continue
+                highlight_range = _symbol_range_from_source(
+                    doc.source,
+                    word,
+                    loc.line,
+                    loc.column,
                 )
-                for loc in locs
-                if loc.filename == filename
-            ]
+                key = _range_key(uri, highlight_range)
+                if key in seen:
+                    continue
+                seen.add(key)
+                semantic_highlights.append(
+                    types.DocumentHighlight(
+                        range=highlight_range,
+                        kind=types.DocumentHighlightKind.Text,
+                    )
+                )
+            return semantic_highlights
 
         highlights: list[types.DocumentHighlight] = []
         pattern = re.compile(rf"\b{re.escape(word)}\b")
@@ -3171,11 +3191,17 @@ class GenoLanguageServer:
             ):
                 return None
             changes: dict[str, list[types.TextEdit]] = {}
+            # The LSP forbids overlapping edits in one rename.
+            seen: set[tuple[str, int, int, int, int]] = set()
             for loc in locs:
                 target = self._semantic_location_target(uri, doc.source, defn.name, loc)
                 if target is None:
                     continue
                 loc_uri, location_range = target
+                key = _range_key(loc_uri, location_range)
+                if key in seen:
+                    continue
+                seen.add(key)
                 edit = types.TextEdit(
                     range=location_range,
                     new_text=new_name,
@@ -3237,6 +3263,7 @@ class GenoLanguageServer:
         if result:
             _defn, locs = result
             semantic_results: list[types.Location] = []
+            seen: set[tuple[str, int, int, int, int]] = set()
             for loc in locs:
                 target = self._semantic_location_target(
                     uri, doc.source, _defn.name, loc
@@ -3244,6 +3271,10 @@ class GenoLanguageServer:
                 if target is None:
                     continue
                 loc_uri, location_range = target
+                key = _range_key(loc_uri, location_range)
+                if key in seen:
+                    continue
+                seen.add(key)
                 semantic_results.append(
                     types.Location(
                         uri=loc_uri,

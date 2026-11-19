@@ -70,14 +70,14 @@ results validated, and it cannot run without a grant.
 Write the signature, `with ffi`, and the host function for each target:
 
 ```geno
-extern func url_quote(text: String) -> String with ffi
-    python "urllib.parse:quote"
-    js "encodeURIComponent"
+extern func host_name() -> String with ffi
+    python "socket:gethostname"
+    js "node:os#hostname"
 end func
 
 @untested("calls the host")
-func search_url(query: String) -> String with ffi
-    return "https://example.com/search?q=" + url_quote(query)
+func greeting() -> String with ffi
+    return "Hello from " + host_name()
 end func
 ```
 
@@ -93,7 +93,7 @@ geno compile app.geno --target js -o app.js && node app.js --cap ffi,print
 ```
 
 Without the grant, the first call fails with
-`Capability denied: 'url_quote' requires the 'ffi' capability`. The default
+`Capability denied: 'host_name' requires the 'ffi' capability`. The default
 `geno run`, `geno run --json` and `geno serve` refuse to grant it.
 
 ## Reference Design

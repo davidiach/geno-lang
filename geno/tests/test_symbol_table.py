@@ -309,6 +309,59 @@ class TestNewlyCoveredStatementsAndPatterns:
         assert "..." not in var_defs
 
 
+class TestCompoundAssignmentReferences:
+    """``total += x`` is parsed as ``total = total + x`` with the read a copy
+    of the target at the same location. That is one use of each name, so the
+    table records it once: rename would otherwise get overlapping edits."""
+
+    SOURCE = (
+        "type Point = Point(x: Int, y: Int)\n"
+        "\n"
+        "func main() -> Unit with io\n"
+        "    var total = 0\n"
+        "    total += 1\n"
+        "    var arr = array_from_list([1, 2, 3])\n"
+        "    let i = 0\n"
+        "    arr[i] += total\n"
+        "    var p = Point(x: 1, y: 2)\n"
+        "    p.x *= 2\n"
+        "    print(total + arr[i] + p.x)\n"
+        "end func\n"
+    )
+
+    def test_each_use_is_recorded_once(self):
+        table = _build(self.SOURCE)
+        keys = [(r.name, r.location, r.definition) for r in table.references]
+        assert len(keys) == len(set(keys))
+
+    def test_compound_assignment_targets_are_recorded(self):
+        table = _build(self.SOURCE)
+
+        def lines_of(name: str) -> list[int]:
+            return sorted(r.location.line for r in table.references if r.name == name)
+
+        assert lines_of("total") == [5, 8, 11]
+        assert lines_of("arr") == [8, 11]
+        assert lines_of("i") == [8, 11]
+        assert lines_of("p") == [10, 11]
+
+    def test_all_locations_lists_each_location_once(self):
+        table = _build(self.SOURCE)
+        total = table.symbol_at("test.geno", 5, 5)
+        assert total is not None
+        locs = table.all_locations(total)
+        assert len(locs) == len(set(locs)) == 4
+
+    def test_add_reference_skips_an_identical_reference(self):
+        table = SymbolTable()
+        defn = SymbolDef("x", SourceLocation(1, 5, "t.geno"), "variable")
+        ref = SymbolRef("x", SourceLocation(2, 1, "t.geno"), defn)
+        table.add_reference(ref)
+        table.add_reference(SymbolRef("x", SourceLocation(2, 1, "t.geno"), defn))
+        table.add_reference(SymbolRef("x", SourceLocation(3, 1, "t.geno"), defn))
+        assert [r.location.line for r in table.references] == [2, 3]
+
+
 class TestBlockScopes:
     """Block bodies should not leak local bindings into sibling statements."""
 

@@ -85,6 +85,64 @@ def count_to(n):
     return list(range(n))
 
 
+import enum
+import http
+
+
+class Mode(str, enum.Enum):
+    READ = "r"
+
+
+class Liar(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+class Half(float):
+    def __eq__(self, other):
+        return False
+
+    __hash__ = float.__hash__
+
+
+def int_enum():
+    return http.HTTPStatus.NOT_FOUND
+
+
+def str_enum():
+    return Mode.READ
+
+
+def liar():
+    return Liar("abc")
+
+
+def half():
+    return Half(0.5)
+
+
+def enum_table():
+    return {Mode.READ: http.HTTPStatus.NOT_FOUND}
+
+
+def enum_json():
+    return {Mode.READ: [http.HTTPStatus.NOT_FOUND, Liar("abc"), Half(0.5), True]}
+
+
+def huge():
+    return 2**100000
+
+
+def huge_in_list():
+    return [1, 2**100000]
+
+
+def huge_in_json():
+    return {"n": [2**100000]}
+
+
 not_callable = 42
 """
 
@@ -665,6 +723,113 @@ def test_a_result_is_coerced_where_the_host_cannot_tell(
     )
 
 
+PYTHON_BACKENDS = ["interpreter", "python"]
+
+
+@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+def test_a_host_subclass_of_a_builtin_type_becomes_a_plain_value(
+    backend: str, host_dir: Path
+) -> None:
+    """An IntEnum, a (str, Enum) member or a str or float subclass with its
+    own ``__eq__`` arrives as the plain value it holds, at any depth, so the
+    interpreter and compiled Python compare and print it alike.
+    """
+    source = (
+        _extern("int_enum", "() -> Int", "ffi_host:int_enum", None)
+        + _extern("str_enum", "() -> String", "ffi_host:str_enum", None)
+        + _extern("liar", "() -> String", "ffi_host:liar", None)
+        + _extern("half", "() -> Float", "ffi_host:half", None)
+        + _extern("enum_table", "() -> Map[String, Int]", "ffi_host:enum_table", None)
+        + _extern("enum_json", "() -> JsonValue", "ffi_host:enum_json", None)
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                let s = int_enum()
+                print(s == 404)
+                print(s)
+                print(f"{s}")
+                let m = str_enum()
+                print(m == "r")
+                print(m)
+                print(json_encode(m))
+                let w = liar()
+                print(w == "zzz")
+                print(w == "abc")
+                print(half() == 0.5)
+                let t = enum_table()
+                print(t == {"r": 404})
+                print(t)
+                let items = [JsonInt(404), JsonString("abc"), JsonFloat(0.5), JsonBool(true)]
+                let d = enum_json()
+                print(d == JsonObject([("r", JsonArray(items))]))
+                print(json_stringify(d))
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (
+        True,
+        "true\n404\n404\ntrue\nr\n"
+        '"r"\nfalse\ntrue\ntrue\ntrue\n{"r": 404}\ntrue\n'
+        '{"r":[404,"abc",0.5,true]}\n',
+    )
+
+
+def test_a_plain_host_value_is_returned_as_is() -> None:
+    from geno import _runtime_support
+
+    value = 2**70
+    shape = ("int",)
+    ops = _runtime_support._GENO_JSON_OPS
+    assert _runtime_support._geno_extern_from_host(value, shape, None, ops, 0) is value
+
+
+@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+@pytest.mark.parametrize(
+    ("name", "type_text"),
+    [
+        ("huge", "Int"),
+        ("huge_in_list", "List[Int]"),
+        ("huge_in_json", "JsonValue"),
+    ],
+)
+def test_a_host_int_is_bound_by_the_integer_size_limit(
+    backend: str, host_dir: Path, name: str, type_text: str
+) -> None:
+    source = _extern(name, f"() -> {type_text}", f"ffi_host:{name}", None) + (
+        f"func main() -> Unit with ffi, io\n    let v = {name}()\n"
+        '    print("returned")\nend func\n'
+    )
+    ok, message = _run(backend, source, host_dir)
+    assert not ok
+    assert message == "Integer exceeds maximum size (100001 bits)"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_too_deeply_nested_argument_names_the_extern(
+    backend: str, host_dir: Path
+) -> None:
+    source = _echo("echo_json", "JsonValue") + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            var v = JsonNull
+            var i = 0
+            while i < 400 do
+                v = JsonArray([v])
+                i = i + 1
+            end while
+            let r = echo_json(v)
+            print("done")
+        end func
+        """
+    )
+    assert _run(backend, source, host_dir) == (
+        False,
+        "Extern function 'echo_json' got a JsonValue argument nested more than "
+        "320 levels deep",
+    )
+
+
 @pytest.mark.parametrize("backend", [pytest.param("js", marks=needs_node)])
 def test_a_js_method_is_called_on_its_object(host_dir: Path, backend: str) -> None:
     source = _extern(
@@ -913,6 +1078,24 @@ def test_the_hosted_server_refuses_to_allow_ffi() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "capabilities", [{" ffi"}, ("print", "ffi "), ["\tffi\n"]], ids=repr
+)
+def test_the_hosted_server_refuses_ffi_however_it_is_spelled(capabilities) -> None:
+    """The refusal applies to the names the server grants, once normalized."""
+    from geno.monitoring import RuntimeMetricsCollector
+    from geno.server import create_handler
+
+    with pytest.raises(ValueError, match="cannot grant 'ffi'"):
+        create_handler(RuntimeMetricsCollector(), allowed_capabilities=capabilities)
+    with pytest.raises(ValueError, match="cannot grant 'ffi'"):
+        create_handler(
+            RuntimeMetricsCollector(),
+            allowed_capabilities={"print"},
+            default_request_capabilities=capabilities,
+        )
+
+
 def test_geno_serve_refuses_ffi_before_starting(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -961,6 +1144,10 @@ def test_geno_run_lanes(tmp_path: Path) -> None:
     assert "Capability denied: 'host_sqrt' requires the 'ffi' capability" in (
         denied.stderr
     )
+    # The hint explains the risk and offers no command line to paste.
+    assert "lane never grants 'ffi'" in denied.stderr
+    assert "full authority" in denied.stderr
+    assert "geno run --unsafe" not in denied.stderr
 
     as_json = _geno_cli(
         "run", "--json", "--cap", "ffi,print", "main.geno", cwd=tmp_path

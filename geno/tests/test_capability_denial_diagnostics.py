@@ -422,7 +422,9 @@ def test_default_lane_hint_for_explicit_grant_restores_nothing_else() -> None:
     )
 
 
-@pytest.mark.parametrize("capability", sorted(ISOLATED_RUN_REFUSED_CAPABILITIES))
+@pytest.mark.parametrize(
+    "capability", sorted(ISOLATED_RUN_REFUSED_CAPABILITIES - {"ffi"})
+)
 def test_default_lane_hint_sends_refused_capabilities_to_unsafe(
     capability: str,
 ) -> None:
@@ -434,6 +436,30 @@ def test_default_lane_hint_sends_refused_capabilities_to_unsafe(
         f"  geno run --unsafe --cap {','.join(sorted({'print', capability}))} "
         "notes.geno"
     )
+
+
+FFI_HINT = (
+    "Hint: the process-isolated 'geno run' lane never grants 'ffi': extern "
+    "functions run host code with the full authority of the process.\n"
+    "  Only for code you trust, run it without process isolation, with "
+    "--unsafe and ffi added to its --cap list (--unsafe --cap ffi)."
+)
+
+
+@pytest.mark.parametrize("grant", [None, {"print"}, {"print", "regex"}])
+def test_default_lane_hint_for_ffi_gives_no_command_to_paste(
+    grant: set[str] | None,
+) -> None:
+    """An extern runs host code outside every sandbox: the hint says so and
+    names the flags, but offers no ready-made command line for the program.
+    """
+    hint = _default_lane_capability_hint(
+        "ffi", "notes.geno", ["--x"], grant=grant, allow_env=("HOME",)
+    )
+
+    assert hint == FFI_HINT
+    assert "geno run" not in hint.replace("'geno run' lane", "")
+    assert "notes.geno" not in hint
 
 
 def test_default_lane_hint_for_http_follows_the_platform_matrix() -> None:

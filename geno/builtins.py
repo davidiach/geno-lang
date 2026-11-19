@@ -26,6 +26,8 @@ from .values import (
     RuntimeLimitError,
     SetValue,
     VecValue,
+    int_text,
+    is_int_digit_limit_error,
 )
 
 _DECIMAL_INT_RE = re.compile(r"^-?[0-9]+$")
@@ -85,10 +87,18 @@ def _effective_max_collection_size(max_collection_size: int) -> int:
     return min(max_collection_size, _MAX_COLLECTION_SIZE)
 
 
+def _scalar_text(value: Any) -> str:
+    """``str(value)``, with an Int written in full past CPython's digit limit."""
+    if type(value) is int:
+        return int_text(value)
+    return str(value)
+
+
 def _check_collection_size(kind: str, size: int, limit: int) -> None:
     if size > limit:
         raise RuntimeLimitError(
-            f"{kind} size exceeds limit ({size} > {limit})", limit="collection size"
+            f"{kind} size exceeds limit ({_scalar_text(size)} > {limit})",
+            limit="collection size",
         )
 
 
@@ -212,7 +222,8 @@ def builtin_concat(
     limit = _effective_max_collection_size(max_collection_size)
     if expected > limit:
         raise RuntimeLimitError(
-            f"List size exceeds limit ({expected} > {limit})", limit="collection size"
+            f"List size exceeds limit ({_scalar_text(expected)} > {limit})",
+            limit="collection size",
         )
     return lst1 + lst2
 
@@ -389,7 +400,8 @@ def builtin_range(
     limit = _effective_max_collection_size(max_collection_size)
     if size > limit:
         raise RuntimeLimitError(
-            f"List size exceeds limit ({size} > {limit})", limit="collection size"
+            f"List size exceeds limit ({_scalar_text(size)} > {limit})",
+            limit="collection size",
         )
     return list(range(start, end, step))
 
@@ -416,7 +428,7 @@ def builtin_format(
         raise RuntimeError(
             f"format: expected {len(parts) - 1} values, got {len(values)}"
         )
-    value_parts = [str(value) for value in values]
+    value_parts = [_scalar_text(value) for value in values]
     size = sum(len(part) for part in parts) + sum(len(part) for part in value_parts)
     _check_result_string_size("format", size, max_collection_size)
     result = parts[0]
@@ -435,7 +447,7 @@ def builtin_char_code(s: str) -> int:
 def builtin_from_char_code(n: int) -> str:
     _require_int("from_char_code", n, "code")
     if n < 0 or n > 0x10FFFF:
-        raise RuntimeError(f"from_char_code: code point {n} out of range")
+        raise RuntimeError(f"from_char_code: code point {_scalar_text(n)} out of range")
     return chr(n)
 
 
@@ -747,11 +759,14 @@ def builtin_array_new(
     if not isinstance(size, int):
         raise RuntimeError("array_new size must be an integer")
     if size < 0:
-        raise RuntimeError(f"array_new size must be non-negative, got {size}")
+        raise RuntimeError(
+            f"array_new size must be non-negative, got {_scalar_text(size)}"
+        )
     limit = _effective_max_collection_size(max_collection_size)
     if size > limit:
         raise RuntimeLimitError(
-            f"Array size exceeds limit ({size} > {limit})", limit="collection size"
+            f"Array size exceeds limit ({_scalar_text(size)} > {limit})",
+            limit="collection size",
         )
     return ArrayValue([copy_value(default) for _ in range(size)])
 
@@ -774,7 +789,9 @@ def builtin_array_get(arr: ArrayValue, index: int) -> Any:
     if not isinstance(index, int):
         raise RuntimeError("array_get index must be an integer")
     if index < 0 or index >= len(arr):
-        raise RuntimeError(f"array_get index {index} out of bounds (length {len(arr)})")
+        raise RuntimeError(
+            f"array_get index {_scalar_text(index)} out of bounds (length {len(arr)})"
+        )
     return arr[index]
 
 
@@ -784,7 +801,9 @@ def builtin_array_set(arr: ArrayValue, index: int, value: Any) -> None:
     if not isinstance(index, int):
         raise RuntimeError("array_set index must be an integer")
     if index < 0 or index >= len(arr):
-        raise RuntimeError(f"array_set index {index} out of bounds (length {len(arr)})")
+        raise RuntimeError(
+            f"array_set index {_scalar_text(index)} out of bounds (length {len(arr)})"
+        )
     arr[index] = copy_value(value)
     return None
 
@@ -958,7 +977,7 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
         return "()"
     if isinstance(value, bool):
         return "true" if value else "false"
-    return str(value)
+    return _scalar_text(value)
 
 
 class _DisplayLimitReached(Exception):
@@ -1264,7 +1283,7 @@ def _write_stringify_value(
     if isinstance(value, BuiltinFunction):
         writer.append(repr(value))
         return
-    writer.append(str(value))
+    writer.append(_scalar_text(value))
 
 
 # =============================================================================
@@ -1377,7 +1396,9 @@ def builtin_vec_get(v: VecValue, index: int) -> Any:
     if not isinstance(index, int):
         raise RuntimeError("vec_get index must be integer")
     if index < 0 or index >= len(v):
-        raise RuntimeError(f"vec_get index {index} out of bounds (length {len(v)})")
+        raise RuntimeError(
+            f"vec_get index {_scalar_text(index)} out of bounds (length {len(v)})"
+        )
     return v._elements[index]
 
 
@@ -1387,7 +1408,9 @@ def builtin_vec_set(v: VecValue, index: int, value: Any) -> None:
     if not isinstance(index, int):
         raise RuntimeError("vec_set index must be integer")
     if index < 0 or index >= len(v):
-        raise RuntimeError(f"vec_set index {index} out of bounds (length {len(v)})")
+        raise RuntimeError(
+            f"vec_set index {_scalar_text(index)} out of bounds (length {len(v)})"
+        )
     v._elements[index] = copy_value(value)
     return None
 
@@ -2526,6 +2549,25 @@ def _json_container_bounds(
     return bounds
 
 
+# A UTF-16 surrogate code point. A Python str holds an astral character as one
+# code point, so every surrogate in one is unpaired.
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _escape_lone_surrogates(text: str) -> str:
+    """JSON *text* with each lone surrogate written as ``\\udxxx``.
+
+    Copy of ``_geno_escape_lone_surrogates`` in geno/_runtime_support.py:
+    well-formed ``JSON.stringify`` escapes an unpaired surrogate in lowercase
+    hex, and ``json.dumps`` with ``ensure_ascii=False`` writes it as is.
+    """
+    if _LONE_SURROGATE_RE.search(text) is None:
+        return text
+    return _LONE_SURROGATE_RE.sub(
+        lambda match: "\\u" + f"{ord(match.group()):04x}", text
+    )
+
+
 def _json_dumps_under_limit(
     func_name: str,
     obj: Any,
@@ -2538,8 +2580,60 @@ def _json_dumps_under_limit(
 
     A subtree shared by reference is written once per occurrence, so a small
     value can encode to an arbitrarily large string. Bound the size first and
-    stream the encoding only when the bounds cannot decide.
+    stream the encoding only when the bounds cannot decide. Without
+    ``ensure_ascii`` a lone surrogate is escaped, as JavaScript does.
     """
+    text = _json_dumps_bounded(
+        func_name, obj, max_collection_size, indent, ensure_ascii
+    )
+    if ensure_ascii:
+        return text
+    escaped = _escape_lone_surrogates(text)
+    if len(escaped) != len(text):
+        _check_result_string_size(func_name, len(escaped), max_collection_size)
+    return escaped
+
+
+def _json_dumps_bounded(
+    func_name: str,
+    obj: Any,
+    max_collection_size: int,
+    indent: int | None,
+    ensure_ascii: bool,
+) -> str:
+    """``_json_dumps_under_limit`` before lone surrogates are escaped."""
+    import json
+
+    try:
+        return _json_dumps_with(
+            json.JSONEncoder,
+            func_name,
+            obj,
+            max_collection_size,
+            indent,
+            ensure_ascii,
+        )
+    except ValueError as error:
+        if not is_int_digit_limit_error(error):
+            raise
+    # An Int with more digits than CPython writes: the shared encoder writes
+    # every int in pieces, leaving the process-wide limit alone.
+    from .json_encoding import GenoJSONEncoder
+
+    return _json_dumps_with(
+        GenoJSONEncoder, func_name, obj, max_collection_size, indent, ensure_ascii
+    )
+
+
+def _json_dumps_with(
+    encoder_class: Any,
+    func_name: str,
+    obj: Any,
+    max_collection_size: int,
+    indent: int | None,
+    ensure_ascii: bool,
+) -> str:
+    """``_json_dumps_bounded`` with the encoder class *encoder_class*."""
     import json
 
     limit = _effective_max_collection_size(max_collection_size)
@@ -2551,13 +2645,14 @@ def _json_dumps_under_limit(
     if max_chars + indentation <= limit:
         return json.dumps(
             obj,
+            cls=encoder_class,
             indent=indent,
             separators=separators,
             ensure_ascii=ensure_ascii,
             allow_nan=False,
         )
     _check_result_string_size(func_name, min_chars + indentation, max_collection_size)
-    encoder = json.JSONEncoder(
+    encoder = encoder_class(
         indent=indent,
         separators=separators,
         ensure_ascii=ensure_ascii,
@@ -2686,7 +2781,10 @@ def _convert_geno_value_for_json(
     if isinstance(value, dict):
         if limit is not None:
             _check_collection_size("Map", len(value), limit)
-        return {str(k): _geno_value_to_python(v, limit, memo) for k, v in value.items()}
+        return {
+            _scalar_text(k): _geno_value_to_python(v, limit, memo)
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
         if limit is not None:
             kind = "Tuple" if isinstance(value, tuple) else "List"
@@ -3086,7 +3184,7 @@ def builtin_string_repeat(
     if len(text) * count > limit:
         raise RuntimeLimitError(
             "string_repeat: result would exceed collection size limit "
-            f"({len(text) * count} > {limit})",
+            f"({_scalar_text(len(text) * count)} > {limit})",
             limit="collection size",
         )
     return text * count

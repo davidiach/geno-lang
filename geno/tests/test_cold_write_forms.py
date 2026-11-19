@@ -190,6 +190,17 @@ print(add_all([1, 2]))
         assert "cannot call a function" in error.message
         assert error.code is ErrorCode.PARSE_INVALID_SYNTAX
 
+    def test_a_target_through_a_slice_is_named_as_one(self) -> None:
+        """A slice calls no function; the error says what it does do."""
+        source = _main(
+            "var ps = [Point(x: 1, y: 2), Point(x: 3, y: 4)]\nps[1:][0].x += 7",
+            before=_POINT,
+        )
+        (error,) = _errors(source)
+        assert error.code is ErrorCode.PARSE_INVALID_SYNTAX
+        assert "a slice is a new list" in error.message
+        assert "cannot call a function" not in error.message
+
     def test_an_operator_written_apart_from_its_equals_sign_is_not_one(self) -> None:
         source = _main("var t = 0\nt + = 1")
         assert not geno.check(source).ok
@@ -375,6 +386,84 @@ end for
         assert "in parentheses" in error.message
         assert "for (i, x) in" in _fixed(source)
 
+    @pytest.mark.parametrize(
+        ("written", "fixed"),
+        [
+            ("for i, _ in pairs do", "for (i, _) in pairs do"),
+            ("for _, s in pairs do", "for (_, s) in pairs do"),
+            ("for _, _ in pairs do", "for (_, _) in pairs do"),
+            (
+                "for i, (n, s) in enumerate(pairs) do",
+                "for (i, (n, s)) in enumerate(pairs) do",
+            ),
+            ("for (n, s), b in grouped do", "for ((n, s), b) in grouped do"),
+            ("for n, s, b in triples do", "for (n, s, b) in triples do"),
+            (
+                "for i, (n, (s, b)) in enumerate(nested) do",
+                "for (i, (n, (s, b))) in enumerate(nested) do",
+            ),
+        ],
+    )
+    def test_the_fix_parenthesizes_every_pattern_up_to_in(
+        self, written: str, fixed: str
+    ) -> None:
+        before = (
+            'let pairs = [(1, "a"), (2, "b")]\n'
+            'let grouped = [((1, "a"), true)]\n'
+            'let triples = [(1, "a", true)]\n'
+            'let nested = [(1, ("a", true))]\n'
+        )
+        source = _main(f"{before}{written}\n    print(0)\nend for")
+        (error,) = _errors(source)
+        assert error.code is ErrorCode.PARSE_INVALID_SYNTAX
+        assert "in parentheses" in error.message
+        line = source.split("\n")[error.location.line - 1]
+        assert error.location.column == line.index("for ") + len("for ") + 1
+        assert f"    {fixed}\n" in _fixed(source)
+
+    @pytest.mark.parametrize(
+        ("written", "fixed"),
+        [
+            ("[s for _, s in pairs]", "[s for (_, s) in pairs]"),
+            ("[n for n, _ in pairs if n > 1]", "[n for (n, _) in pairs if n > 1]"),
+            (
+                "[n + i for i, (n, s) in enumerate(pairs)]",
+                "[n + i for (i, (n, s)) in enumerate(pairs)]",
+            ),
+        ],
+    )
+    def test_a_comprehension_gets_the_same_fix(self, written: str, fixed: str) -> None:
+        source = _main(f'let pairs = [(1, "a"), (2, "b")]\nprint({written})')
+        (error,) = _errors(source)
+        assert "in parentheses" in error.message
+        assert f"print({fixed})" in _fixed(source)
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "for i, x pairs do",  # no `in`
+            "for i, 1 in pairs do",  # not a name
+            "for i, Some(x) in pairs do",
+            "for i, (x) in pairs do",  # `(x)` is not a tuple pattern
+        ],
+    )
+    def test_names_that_parentheses_would_not_make_a_loop_get_no_fix(
+        self, written: str
+    ) -> None:
+        source = _main(f'let pairs = [(1, "a")]\n{written}\n    print(0)\nend for')
+        (error,) = _errors(source)
+        assert "in parentheses" in error.message
+        assert error.fixes == ()
+
+    def test_what_the_old_fix_wrote_is_not_parenthesized_again(self) -> None:
+        """0.7's fix turned `for i, _ in` into `for (i), _ in`."""
+        source = _main(
+            'let pairs = [(1, "a")]\nfor (i), _ in pairs do\n    print(i)\nend for'
+        )
+        (error,) = _errors(source)
+        assert "at least two elements" in error.message
+        assert geno.fix(source).applied == 0
+
     def test_a_pattern_that_can_fail_is_rejected(self) -> None:
         (error,) = _errors(_main("print([a for (a, 1) in [(1, 1)]])"))
         assert "unpacks each element into names" in error.message
@@ -385,6 +474,30 @@ end for
         )
         assert error.code is ErrorCode.TYPE_PATTERN_MISMATCH
         assert error.fixes == ()
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            (
+                "print([a + b for (a, b) in array_from_list([(1, 2)])])",
+                "List comprehension requires List iterable, got Array[(Int, Int)]",
+            ),
+            (
+                'print([a for (a, (b, c)) in {"x": 1}])',
+                "List comprehension requires List iterable, got Map[String, Int]",
+            ),
+            (
+                "for (a, b) in 5 do\n    print(a + b)\nend for",
+                "For loop requires List or Array, got Int",
+            ),
+        ],
+    )
+    def test_an_iterable_that_is_not_a_list_is_one_error(
+        self, body: str, message: str
+    ) -> None:
+        """Its elements' type is unknown, so the pattern is not checked against it."""
+        (error,) = _errors(_main(body))
+        assert error.message == message
 
     @pytest.mark.parametrize(
         "comprehension",

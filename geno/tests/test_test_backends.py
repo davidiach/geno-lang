@@ -261,6 +261,172 @@ def test_a_limit_or_a_refusal_never_satisfies_a_panics_example(tmp_path, backend
     assert "env" in secret.message
 
 
+INTEGER_LIMITS = """
+func pow2(n: Int) -> Int
+    example 100000 panics
+    return 2 ** n
+end func
+
+func square_twice(n: Int) -> Int
+    example 100000000000 panics
+    let m = n * n
+    return m * m
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", COMPILED)
+def test_an_integer_limit_never_satisfies_a_panics_example(tmp_path, backend):
+    """JavaScript's integer limits are limits, as the others' are (0.7 review)."""
+    harness = _suite(_write(tmp_path, INTEGER_LIMITS), backend).file_results[0]
+    assert harness.harness_result is not None
+    violations = {v.function: v.message for v in harness.harness_result.violations}
+    assert "a resource limit is not a panic" in violations["pow2"]
+    if backend == "js":
+        # Only JavaScript stops at the safe integer range; Python returns.
+        assert "JavaScript safe integer limit" in violations["square_twice"]
+    else:
+        assert violations["square_twice"].startswith(
+            "expected a panic, but it returned"
+        )
+
+
+LIMIT_WORDED_PANIC = """
+func boom(n: Int) -> Int
+    example 1 panics "List size exceeds limit"
+    panic("List size exceeds limit (1 > 0)")
+    return n
+end func
+
+func expect_none(n: Int) -> Int
+    example 1 panics "Exponent too large"
+    return option_expect(None, "Exponent too large (9 bits)")
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_panic_worded_like_a_limit_stays_a_panic(tmp_path, backend):
+    """Both compiled runtimes mark their panics, so the text cannot mislead."""
+    harness = _suite(_write(tmp_path, LIMIT_WORDED_PANIC), backend).file_results[0]
+    assert harness.harness_result is not None
+    assert harness.harness_result.violations == []
+    assert harness.harness_result.passed == 2
+
+
+HOST_ONLY_BUILTIN = """
+func nap(ms: Int) -> Int with clock
+    example 1 panics
+    sleep_ms(ms)
+    return ms
+end func
+"""
+
+
+@needs_node
+def test_js_build_is_checked_against_the_node_host(tmp_path):
+    """A builtin Node lacks is a type error, not a thrown ReferenceError that
+    a panics example would accept (0.7 review)."""
+    result = _suite(_write(tmp_path, HOST_ONLY_BUILTIN), "js").file_results[0]
+    assert result.harness_result is None
+    assert result.error is not None
+    assert "not available on the 'node-cli' target" in result.error
+
+
+@pytest.mark.parametrize("backend", COMPILED)
+def test_a_host_error_never_satisfies_a_panics_example(backend):
+    """A TypeError or ReferenceError of the host is a broken build, not a panic."""
+    from geno.compiled_tests import _classify
+
+    for kind, message in (
+        ("ReferenceError", "sleep_ms is not defined"),
+        ("TypeError", "x is not a function"),
+        ("NameError", "name 'x' is not defined"),
+    ):
+        assert (
+            _classify(backend, {"type": kind, "message": message, "host": True}) is None
+        )
+    assert (
+        _classify("js", {"type": "RangeError", "message": "Invalid count value"})
+        is None
+    )
+    memory = _classify("js", {"type": "RangeError", "message": "Invalid string length"})
+    assert memory is not None and memory.kind == "limit"
+    panic = _classify(backend, {"type": "Error", "message": "boom", "panic": True})
+    assert panic is not None and panic.kind == "panic"
+
+
+@pytest.mark.parametrize("backend", COMPILED)
+def test_a_compiled_denial_does_not_advise_a_cap_flag(tmp_path, backend):
+    """`geno test` takes no --cap, so its denials do not suggest one."""
+    harness = _suite(_write(tmp_path, LIMITS), backend).file_results[0].harness_result
+    assert harness is not None
+    secret = harness.violations[-1]
+    assert "Capability denied" in secret.message
+    assert "--cap" not in secret.message
+
+
+SPIN = """
+func spin(n: Int) -> Int
+    example 1 -> 1
+    var i = 0
+    while true do
+        i = i + 1
+    end while
+    return n
+end func
+"""
+
+
+@pytest.mark.skipif(not Path("/proc/self/cmdline").exists(), reason="needs /proc")
+@pytest.mark.parametrize("backend", COMPILED)
+def test_sigterm_stops_the_case_process_and_removes_its_files(tmp_path, backend):
+    """SIGTERM used to end `geno test` without killing the case's host
+    process, which then ran on with no timeout (0.7 review)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    source = _write(tmp_path, SPIN)
+    environment = dict(os.environ, TMPDIR=str(scratch))
+    command = [sys.executable, "-m", "geno", "test", "--backend", backend]
+    process = subprocess.Popen(
+        [*command, "--timeout", "60", str(source)],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        started = False
+        while time.monotonic() < deadline and not started:
+            for results in scratch.glob("geno-test-*/results.jsonl"):
+                started = '"start"' in results.read_text(encoding="utf-8")
+            time.sleep(0.05)
+        assert started, "the case never started"
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=30) == 128 + signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert list(scratch.iterdir()) == []
+    survivors = []
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            text = cmdline.read_bytes().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if str(scratch) in text:
+            survivors.append(text)
+    assert survivors == []
+
+
 FILTERED = """
 type Box = Box(n: Int)
 

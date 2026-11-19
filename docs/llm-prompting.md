@@ -85,9 +85,9 @@ host function the builtins do not cover. Only suggest one when the program
 will run as trusted code with `--cap ffi`:
 
 ```geno
-extern func url_quote(text: String) -> String with ffi
-    python "urllib.parse:quote"
-    js "encodeURIComponent"
+extern func host_name() -> String with ffi
+    python "socket:gethostname"
+    js "node:os#hostname"
 end func
 ```
 
@@ -239,7 +239,8 @@ end for
 Geno 0.6 accepts any ordinary name: a parameter `len`, a local `list`, a
 function `max` or a constructor `Error` all compile, because the backends
 rename them. Only names starting with `_` that the runtime uses (`_safe_add`)
-are reserved. There is no need to steer a model away from Python builtins.
+are reserved, and, for compiled Python, every name of the form `__x__`
+(`__builtins__`). There is no need to steer a model away from Python builtins.
 
 ```
 func trim_to(s: String, len: Int) -> String

@@ -11,7 +11,7 @@ import math
 import sys
 import threading
 import time
-from collections.abc import Callable, Collection, Generator
+from collections.abc import Callable, Collection, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -334,6 +334,9 @@ def _unshared_part(value: Any) -> Any:
     """Return a one-level copy of a value-type container about to be written.
 
     Reference types (Array, Vec, MutableMap, ...) and scalars come back as is.
+    A tuple cannot be written in place, so it comes back rebuilt from the
+    unshared parts of its elements: the write below it then lands in a copy
+    whichever element it goes through.
     """
     if isinstance(value, ConstructorValue):
         return ConstructorValue(value.constructor, dict(value.fields))
@@ -341,6 +344,8 @@ def _unshared_part(value: Any) -> Any:
         return list(value)
     if isinstance(value, dict):
         return dict(value)
+    if isinstance(value, tuple):
+        return tuple(_unshared_part(element) for element in value)
     return value
 
 
@@ -536,6 +541,11 @@ class Interpreter:
         # One (display name, call site) entry per active Geno call; the name is
         # None for a lambda, which reports do not show as a frame (0018).
         self._call_stack: list[tuple[str | None, SourceLocation | None]] = []
+        # The arguments each active Geno call is bound with, innermost last,
+        # above an empty entry for no call. They have passed the collection
+        # limits, so a call from that call's body need not walk them again
+        # (see _check_collection_limits).
+        self._bound_arguments: list[Sequence[Any]] = [()]
 
         # Step counter for execution budgeting
         self.steps: int = 0
@@ -2544,7 +2554,10 @@ class Interpreter:
                         if resolved_type_name == target_type:
                             impl_closure = methods[method_name]
                             return self._call_function(
-                                impl_closure, dispatch_args, expr.location
+                                impl_closure,
+                                dispatch_args,
+                                expr.location,
+                                self._bound_arguments[-1],
                             )
                 if resolved_type_name is not None:
                     raise RuntimeError(
@@ -2574,6 +2587,7 @@ class Interpreter:
                                 impl_closure,
                                 [trait_first_arg] + remaining_args,
                                 expr.location,
+                                self._bound_arguments[-1],
                             )
                     raise RuntimeError(
                         f"No trait implementation of '{method_name}' "
@@ -2638,7 +2652,7 @@ class Interpreter:
             # The frame of the function this call is in restarts with these
             # arguments (proposal 0022); see _call_function.
             raise TailCallException(args, expr.location)
-        return self._call_function(func, args, expr.location)
+        return self._call_function(func, args, expr.location, self._bound_arguments[-1])
 
     def _eval_typed_json(self, expr: FunctionCall, env: Environment) -> Any:
         """`json_decode`, `json_encode` or `json_encode_pretty` (proposal 0021).
@@ -2752,7 +2766,10 @@ class Interpreter:
         return result
 
     def _check_collection_limits(
-        self, roots: list[Any], location: SourceLocation | None
+        self,
+        roots: list[Any],
+        location: SourceLocation | None,
+        known: Sequence[Any] = (),
     ) -> None:
         """Enforce ``max_collection_size`` on every reachable container.
 
@@ -2768,6 +2785,16 @@ class Interpreter:
         return values) are handled without allocating the visited set and
         work stack; any container or unrecognised root falls through to
         the full reachability walk.
+
+        A root that is one of *known*, the very objects a Geno call was
+        bound with, is not walked: it passed these limits when that call was
+        bound, and it has stayed within them, because a value changes in
+        place only through a write that checks what it adds (the container
+        writes of ``_INCREMENTAL_MUTATION_BUILTINS``, index and field
+        assignment), and every other builtin walks its arguments again once
+        it returns. Without this, a call passing a collection along, above
+        all a self tail call (proposal 0022), costs the collection's size,
+        and threading one through a recursion costs quadratic time.
         """
         max_bits = self.sandbox_config.max_integer_bits
         size_limit = self.sandbox_config.max_collection_size
@@ -2783,6 +2810,19 @@ class Interpreter:
                 break
         else:
             return
+
+        if known:
+            # Only the roots: a part a new root shares with a known value is
+            # walked with that root, so a mutable part still keeps the
+            # constructors around it unmarked.
+            fresh: list[Any] = []
+            for value in roots:
+                for seen in known:
+                    if value is seen:
+                        break
+                else:
+                    fresh.append(value)
+            roots = fresh
 
         # A constructor value changes only through a field assignment, which
         # clears its mark, so once everything it reaches is known to fit these
@@ -2893,12 +2933,21 @@ class Interpreter:
             )
 
     def _call_function(
-        self, func: Any, args: list[Any], location: SourceLocation | None = None
+        self,
+        func: Any,
+        args: list[Any],
+        location: SourceLocation | None = None,
+        known: Sequence[Any] = (),
     ) -> Any:
         """Call a function with arguments.
 
         Tracks recursion depth so that calls originating from builtins
         (map, filter, fold, etc.) are counted towards the depth limit.
+
+        A call site in the program passes as *known* the arguments of the
+        call whose body it is in (``self._bound_arguments[-1]``); a Geno
+        function's binding does not walk those again. Calls from builtins and
+        hosts pass nothing, so what they pass is always walked.
         """
         self._check_timeout(location)
         if isinstance(func, Closure):
@@ -2908,7 +2957,7 @@ class Interpreter:
                 raise self._recursion_limit_error(location)
             self.call_depth += 1
             try:
-                args = self._bind_call_arguments(func, args, location)
+                args = self._bind_call_arguments(func, args, location, known)
 
                 # For async functions, return an AsyncValue instead of executing
                 if func.is_async:
@@ -2926,15 +2975,25 @@ class Interpreter:
                 # A lambda's entry has no name: it is not a report frame
                 # (proposal 0018), but it keeps the stack depth honest.
                 entry = (func.display_name or func.name, location)
+                # The arguments the running logical call was bound with. The
+                # call that replaces it does not walk the ones it passes on
+                # unchanged again, so a tail call that threads a collection
+                # costs what a loop iteration does.
+                checked: Sequence[Any] = args
+                bound_arguments = self._bound_arguments
                 while True:
                     self._call_stack.append(entry)
+                    bound_arguments.append(checked)
                     try:
                         if replaced:
                             # The next logical call starts inside this frame,
                             # so a failure binding its arguments is located
                             # at the tail call.
                             self._check_timeout(tail_location)
-                            args = self._bind_call_arguments(func, args, tail_location)
+                            args = self._bind_call_arguments(
+                                func, args, tail_location, checked
+                            )
+                            checked = bound_arguments[-1] = args
 
                         # Create new environment with parameters bound
                         # (immutable binds are plain dict entries, so build the
@@ -3007,7 +3066,9 @@ class Interpreter:
                             else:
                                 self._check_ensures(func, call_env, result, args)
 
-                        self._check_collection_limits([result], location)
+                        # A result that is one of the arguments, unchanged
+                        # but for checked writes, was walked at the binding.
+                        self._check_collection_limits([result], location, checked)
                         self._check_timeout(location)
                         return result
                     except (RuntimeError, SandboxError) as e:
@@ -3022,6 +3083,7 @@ class Interpreter:
                         raise
                     finally:
                         self._call_stack.pop()
+                        bound_arguments.pop()
             finally:
                 self.call_depth -= 1
 
@@ -3097,14 +3159,19 @@ class Interpreter:
             raise
 
     def _bind_call_arguments(
-        self, func: Closure, args: list[Any], location: SourceLocation | None
+        self,
+        func: Closure,
+        args: list[Any],
+        location: SourceLocation | None,
+        known: Sequence[Any] = (),
     ) -> list[Any]:
         """The values *func*'s parameters take for a call made with *args*.
 
         Fills defaults, widens Ints bound to Float parameters and enforces
-        the collection limits. Runs while the invocation counts toward the
-        recursion limit, so a recursive default raises a Geno error instead
-        of escaping as a host-language RecursionError.
+        the collection limits, except on a value that is one of *known*,
+        arguments an earlier binding checked. Runs while the invocation
+        counts toward the recursion limit, so a recursive default raises a
+        Geno error instead of escaping as a host-language RecursionError.
         """
         if len(args) < len(func.params):
             # Trailing args omitted — append defaults
@@ -3149,7 +3216,7 @@ class Interpreter:
             )
             for param, arg in zip(func.params, args)
         ]
-        self._check_collection_limits(args, location)
+        self._check_collection_limits(args, location, known)
         return args
 
     def _eval_default_argument(
@@ -3316,7 +3383,7 @@ class Interpreter:
                 index += len(target)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for list of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for list of length {len(target)}",
                     expr.location,
                 )
             return target[index]
@@ -3327,7 +3394,7 @@ class Interpreter:
                 index += len(target)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for array of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for array of length {len(target)}",
                     expr.location,
                 )
             return target[index]
@@ -3338,13 +3405,15 @@ class Interpreter:
                 index += len(target)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for string of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for string of length {len(target)}",
                     expr.location,
                 )
             return target[index]
         elif isinstance(target, dict):
             if index not in target:
-                raise RuntimeError(f"Key not found: {index}", expr.location)
+                raise RuntimeError(
+                    f"Key not found: {_builtins._scalar_text(index)}", expr.location
+                )
             return target[index]
         elif isinstance(target, tuple) and isinstance(index, int):
             # The checker allows only a literal index within the tuple's arity.
@@ -3543,7 +3612,9 @@ class Interpreter:
             if not placeholder_found:
                 args = [current] + args
 
-            current = self._call_function(func, args, stage.location)
+            current = self._call_function(
+                func, args, stage.location, self._bound_arguments[-1]
+            )
 
         return current
 
@@ -3959,7 +4030,7 @@ class Interpreter:
                 raise RuntimeError("Array index must be integer", stmt.location)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for array of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for array of length {len(target)}",
                     stmt.location,
                 )
             target[index] = value
@@ -3968,7 +4039,7 @@ class Interpreter:
                 raise RuntimeError("Vec index must be integer", stmt.location)
             if index < 0 or index >= len(target._elements):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for vec of length {len(target._elements)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for vec of length {len(target._elements)}",
                     stmt.location,
                 )
             target._elements[index] = value
@@ -3997,8 +4068,17 @@ class Interpreter:
         A snapshot keeps one copy of a part that two places shared, so each
         constructor, list or map reached on the way to the write is copied
         and put back first.  The write then never shows through another path
-        to the same part (#129).  The root binding is already its own copy.
+        to the same part (#129).  The root binding is already its own copy,
+        except for a tuple, which cannot be written in place: a tuple root is
+        rebound to its unshared copy.
         """
+        if isinstance(expr, Identifier):
+            root = self.eval_expr(expr, env)
+            if isinstance(root, tuple):
+                unshared = _unshared_part(root)
+                if env.assign(expr.name, unshared):
+                    return unshared
+            return root
         if isinstance(expr, FieldAccess):
             parent = self._eval_write_target(expr.target, env)
             if (
@@ -4029,6 +4109,9 @@ class Interpreter:
         """Execute a field assignment: obj.field = value."""
         target = self._eval_write_target(stmt.target, env)
         value = self._deep_copy_value(self.eval_expr(stmt.value, env))
+        # Like an index assignment, check what the write adds: the value it
+        # lands in may be one a call's binding no longer walks.
+        self._check_collection_limits([value], stmt.location)
 
         if isinstance(target, ConstructorValue):
             if stmt.field_name in target.fields:

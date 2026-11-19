@@ -236,14 +236,18 @@ config = geno.RunConfig(
 
 ### Granting Capabilities on the Command Line
 
-`geno run --cap ...` grants exactly the listed capabilities while the program
-stays in the process sandbox, with its hard wall-clock kill and memory, CPU,
-file-size and process limits
+On the 0.7 development line, `geno run --cap ...` grants exactly the listed
+capabilities while the program stays in the process sandbox, with its hard
+wall-clock kill and memory, CPU, file-size and process limits
 ([proposal 0013](docs/proposals/0013-isolated-run-capabilities.md)):
 
 ```bash
 geno run --cap env,fs,print report.geno -- data/input.csv
 ```
+
+The published 0.6 release refuses `--cap` in that lane, so there every grant
+needs `geno run --unsafe --cap ...`, which runs without process isolation and
+is for trusted code only. In the 0.7 lane:
 
 - The worker binds host access only for granted capabilities, through trusted
   bindings that compiled program code cannot name; the capability check and
@@ -261,6 +265,19 @@ geno run --cap env,fs,print report.geno -- data/input.csv
   operating-system filesystem or network confinement: the worker runs as the
   invoking user, and the Python-level sandbox and these policies are the
   boundary.
+- Program arguments widen the `fs` roots. Unless `GENO_FS_ROOTS` is set, the
+  roots are the working directory, the source file's directory, the project
+  root and, for every argument after `--` that is absolute or contains a
+  path separator (`/`, and `\` on Windows), that path if it is an existing
+  directory and otherwise its parent directory, after resolving `..` and
+  symlinks. This happens whether or not the argument is meant as a path:
+  `-- 's/../../g'` adds the parent of the working directory, `-- /etc/hosts`
+  adds `/etc`, and `-- /` adds the whole filesystem. A single file argument
+  grants its whole directory, for writing too unless `GENO_FS_READ_ONLY=1`,
+  and absolute paths inside the roots are allowed. The same rule applies with
+  `--unsafe`. For untrusted code, set `GENO_FS_ROOTS` to the directories the
+  program may use (it replaces all of these roots), add `GENO_FS_READ_ONLY=1`
+  when it only reads, and pass no path-like argument you do not mean to grant.
 
 ### Extern Functions (`ffi`)
 
