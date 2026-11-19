@@ -272,7 +272,8 @@ _PYTHON_LOCAL_RESERVED_NAMES = (
             "get_field",
             "_geno_own_field",
             "_geno_own_index",
-            "_geno_own_path",
+            "_geno_own_step",
+            "_geno_put_back",
             "_geno_unshared_part",
             "_geno_slice",
             "_geno_format_spec",
@@ -2267,23 +2268,24 @@ class Compiler(BaseCompiler, ASTVisitor):
             for node in (root, *path)
         ):
             # A Python tuple cannot be written in place, so the path is owned
-            # in one call that copies only the element the write goes through
-            # and rebuilds each tuple around it; a tuple root is rebound to
-            # its rebuilt tuple, as the interpreter does (#129).
-            steps = "".join(
-                f"(True, {self._compile_expr(node.index)}), "
-                if isinstance(node, IndexAccess)
-                else f"(False, {node.field_name!r}), "
-                for node in reversed(path)
-            )
-            owned = self._fresh_temp()
+            # one step at a time, each before the next index is evaluated:
+            # only the element the write goes through is copied, and each
+            # tuple is rebuilt around it; a tuple root is rebound to its
+            # rebuilt tuple, as the interpreter does (#129).
+            trail = self._fresh_temp()
             root_value = self._compile_expr(root)
-            self._writeln(f"{owned} = _geno_own_path({root_value}, ({steps}))")
-            if isinstance(root, Identifier) and isinstance(
+            rebind = isinstance(root, Identifier) and isinstance(
                 getattr(root, "_resolved_type", None), TupleType
-            ):
-                self._writeln(f"{root_value} = {owned}[0]")
-            target = f"{owned}[1]"
+            )
+            self._writeln(f"{trail} = [[{root_value}, None, None]]")
+            for node in reversed(path):
+                if isinstance(node, IndexAccess):
+                    step = f"True, {self._compile_expr(node.index)}"
+                else:
+                    step = f"False, {node.field_name!r}"
+                call = f"_geno_own_step({trail}, {step})"
+                self._writeln(f"{root_value} = {call}" if rebind else call)
+            target = f"{trail}[-1][0]"
         else:
             target = self._compile_write_target(stmt.target)
         value = self._snapshot_value(self._compile_expr(stmt.value))

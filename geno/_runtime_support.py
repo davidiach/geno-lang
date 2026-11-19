@@ -535,37 +535,49 @@ def _geno_unshared_part(value: Any) -> Any:
         return dict(value)
     # A tuple comes back as is: it cannot be written in place, so a write
     # through it rebuilds it around its one element on the path
-    # (``_geno_own_path``).
+    # (``_geno_own_step``).
     return value
 
 
-def _geno_own_path(root: Any, steps: Any) -> Any:
-    """Own the parts a field write goes through when the path has a tuple.
+def _geno_own_step(trail: Any, is_index: Any, key: Any) -> Any:
+    """Own the next part of a field write's path that goes through a tuple.
 
-    *steps* holds ``(is_index, key)`` per field or index on the path. Returns
-    ``(root, target)``: *target* is what the write lands in, and *root* the
-    root, rebuilt when it is a tuple. A tuple cannot be written in place, so
-    only the element the write goes through is copied and each tuple on the
-    path is rebuilt around it (#129), as the interpreter does.
+    *trail* holds ``[value, is_index, key]`` for each part reached so far,
+    the root first; the part *key* names is owned and appended. Each step
+    runs before the next index is evaluated, as the interpreter's path
+    does. A tuple cannot be written in place, so only the element the write
+    goes through is copied, and the tuple is rebuilt around it and put back
+    where it was (#129). Returns the root, rebuilt when it is a tuple.
     """
-    if not steps:
-        return root, root
-    is_index, key = steps[0]
-    if type(root) is tuple:
-        child, target = _geno_own_path(
-            _geno_unshared_part(_safe_index(root, key)), steps[1:]
-        )
-        position = key + len(root) if key < 0 else key
-        return root[:position] + (child,) + root[position + 1 :], target
-    owned = _geno_own_index(root, key) if is_index else _geno_own_field(root, key)
-    child, target = _geno_own_path(owned, steps[1:])
-    if child is not owned:
-        # A tuple below was rebuilt: put it back where it was.
-        if is_index:
-            root[key] = child
-        else:
-            _object_setattr(root, key, child)
-    return root, target
+    parent = trail[-1][0]
+    if type(parent) is tuple:
+        element = _safe_index(parent, key)
+        child = _geno_unshared_part(element)
+        trail += [[child, is_index, key]]
+        if child is not element:
+            _geno_put_back(trail)
+    elif is_index:
+        trail += [[_geno_own_index(parent, key), is_index, key]]
+    else:
+        trail += [[_geno_own_field(parent, key), is_index, key]]
+    return trail[0][0]
+
+
+def _geno_put_back(trail: Any) -> None:
+    """Put the last part of *trail* back, rebuilding each tuple above it."""
+    index = len(trail) - 1
+    while index > 0:
+        value, is_index, key = trail[index]
+        parent = trail[index - 1][0]
+        if type(parent) is not tuple:
+            if is_index:
+                parent[key] = value
+            else:
+                _object_setattr(parent, key, value)
+            return
+        position = key + len(parent) if key < 0 else key
+        trail[index - 1][0] = parent[:position] + (value,) + parent[position + 1 :]
+        index -= 1
 
 
 def _geno_own_field(parent: Any, field_name: str) -> Any:

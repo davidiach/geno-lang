@@ -282,6 +282,24 @@ end func
         "2\n3\n([P(x: 1), P(x: 20)], P(x: 30))\n",
         id="tuple-element-on-the-path-only",
     ),
+    # Each part of the path is owned before the next index is evaluated, so
+    # an index that writes through the same path sees the parts already
+    # owned, as the interpreter and compiled JavaScript see them.
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var rows = [[(P(x: 1), 0), (P(x: 2), 0)]]
+    let bump = fn() do
+        rows[0][1].0.x = 99
+        return 0
+    end fn
+    rows[0][bump()].0.x = 5
+    print(rows)
+end func
+""",
+        "[[(P(x: 1), 0), (P(x: 99), 0)]]\n",
+        id="tuple-path-index-evaluated-in-order",
+    ),
 ]
 
 
@@ -326,7 +344,9 @@ end func
 
     big = list(range(1000))
     record = runtime.Ok(1)
-    rebuilt, target = runtime._geno_own_path((record, big), ((True, 0),))
+    trail = [[(record, big), None, None]]
+    rebuilt = runtime._geno_own_step(trail, True, 0)
+    target = trail[-1][0]
     assert rebuilt[1] is big
     assert rebuilt[0] is target and target is not record
 
