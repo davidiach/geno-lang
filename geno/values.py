@@ -533,6 +533,41 @@ class SetValue:
 # =============================================================================
 
 
+def int_text(value: int) -> str:
+    """``str(value)`` for an Int of any size Geno allows.
+
+    CPython 3.11+ refuses to write an int with more decimal digits than
+    ``sys.get_int_max_str_digits()`` (4,300 by default), but an Int reaches
+    ``max_integer_bits`` (about 10,000 digits by default). Past that limit
+    the digits are written in pieces small enough for any setting of it, and
+    the process-wide setting is left alone. ``_geno_int_text`` in
+    geno/_runtime_support.py is the compiled Python copy.
+    """
+    try:
+        return str(value)
+    except ValueError:
+        pass
+    if value < 0:
+        return "-" + _decimal_digits(-value)
+    return _decimal_digits(value)
+
+
+def _decimal_digits(value: int) -> str:
+    """The digits of a non-negative int, by halving its decimal length."""
+    # Under 1,000 bits (302 digits) is under CPython's lowest limit (640).
+    if value.bit_length() < 1_000:
+        return str(value)
+    # 10**half has about half of value's digits (log10(2) is about 3/10).
+    half = value.bit_length() * 3 // 20
+    high, low = divmod(value, 10**half)
+    return _decimal_digits(high) + _decimal_digits(low).zfill(half)
+
+
+def is_int_digit_limit_error(error: BaseException) -> bool:
+    """Whether *error* is CPython refusing to write a long int in decimal."""
+    return isinstance(error, ValueError) and "integer string conversion" in str(error)
+
+
 def value_to_json(value: Any) -> Any:
     """
     Convert a Geno runtime value to a JSON-serializable Python object.

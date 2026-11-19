@@ -3321,7 +3321,7 @@ class Interpreter:
                 index += len(target)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for list of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for list of length {len(target)}",
                     expr.location,
                 )
             return target[index]
@@ -3332,7 +3332,7 @@ class Interpreter:
                 index += len(target)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for array of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for array of length {len(target)}",
                     expr.location,
                 )
             return target[index]
@@ -3343,13 +3343,15 @@ class Interpreter:
                 index += len(target)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for string of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for string of length {len(target)}",
                     expr.location,
                 )
             return target[index]
         elif isinstance(target, dict):
             if index not in target:
-                raise RuntimeError(f"Key not found: {index}", expr.location)
+                raise RuntimeError(
+                    f"Key not found: {_builtins._scalar_text(index)}", expr.location
+                )
             return target[index]
         elif isinstance(target, tuple) and isinstance(index, int):
             # The checker allows only a literal index within the tuple's arity.
@@ -3964,7 +3966,7 @@ class Interpreter:
                 raise RuntimeError("Array index must be integer", stmt.location)
             if index < 0 or index >= len(target):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for array of length {len(target)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for array of length {len(target)}",
                     stmt.location,
                 )
             target[index] = value
@@ -3973,7 +3975,7 @@ class Interpreter:
                 raise RuntimeError("Vec index must be integer", stmt.location)
             if index < 0 or index >= len(target._elements):
                 raise RuntimeError(
-                    f"Index {index} out of bounds for vec of length {len(target._elements)}",
+                    f"Index {_builtins._scalar_text(index)} out of bounds for vec of length {len(target._elements)}",
                     stmt.location,
                 )
             target._elements[index] = value
