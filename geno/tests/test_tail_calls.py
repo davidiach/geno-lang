@@ -1054,6 +1054,54 @@ def test_a_call_does_not_walk_a_collection_it_passes_on_again(monkeypatch):
     assert len(walked) <= 10, walked
 
 
+CHECKED_AGAIN = """
+type World = World(grid: Array[Int], tick: Int)
+
+func sum_up(xs: List[Int], i: Int, acc: Int) -> Int
+    example ([1, 2], 0, 0) -> 3
+    if i >= length(xs) then
+        return acc
+    end if
+    return sum_up(xs: xs, i: i + 1, acc: acc + xs[i])
+end func
+
+func main() -> Unit with io, mutation
+    let xs = range(0, {N})
+    print(sum_up(xs: xs, i: 0, acc: 0))
+    var world = World(grid: array_new({N}, 0), tick: 0)
+    var t = 0
+    while t < {N} do
+        var g = world.grid
+        g[t] = t
+        world.grid = g
+        t = t + 1
+    end while
+    print(world.grid[{N} - 1])
+end func
+"""
+
+
+def test_a_builtin_or_a_field_write_does_not_walk_a_checked_value(monkeypatch):
+    """`length(xs)` in a self tail call, and an Array written back into the
+    field it came from, walked the whole collection each time, so both loops
+    cost quadratic time (0.7 review); now neither walks it again."""
+    n = 2_000
+    walked: list[str] = []
+    check = Interpreter._check_collection_size
+
+    def counting(self, kind, size, location):
+        if size >= n // 2:
+            walked.append(kind)
+        check(self, kind, size, location)
+
+    monkeypatch.setattr(Interpreter, "_check_collection_size", counting)
+    output = _interpreter_output(CHECKED_AGAIN.replace("{N}", str(n)))
+
+    assert output == f"{n * (n - 1) // 2}\n{n - 1}\n"
+    # `range`'s and `array_new`'s results, and the call from `main`.
+    assert len(walked) <= 6, walked
+
+
 GROWING = """
 func drain(n: Int, seen: Vec[Int]) -> Unit
     example (0, vec_new()) -> ()

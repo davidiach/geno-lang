@@ -493,13 +493,21 @@ def _stop_on_termination() -> Iterator[None]:
             if number is None:
                 continue
             try:
+                # Only the default action ends the process without unwinding.
+                # An ignored signal (nohup), a handler of the embedding
+                # application, or one set from C (None) is left as it is.
+                if signal.getsignal(number) is not signal.SIG_DFL:
+                    continue
                 previous[number] = signal.signal(number, stop)
             except (OSError, ValueError):
                 continue
         yield
     finally:
         for number, handler in previous.items():
-            signal.signal(number, handler)
+            try:
+                signal.signal(number, handler)
+            except (OSError, TypeError, ValueError):
+                continue
 
 
 def _run_cases(
@@ -676,7 +684,7 @@ def _classify(backend: str, error: dict[str, Any]) -> CallFailure | None:
         backend == "js" and message.startswith("Capability denied: ")
     ):
         return CallFailure("refused", message)
-    limit = compiled_limit(message)
+    limit = compiled_limit(message, backend)
     if limit is not None:
         return CallFailure("limit", message, limit)
     return CallFailure("panic", message)
@@ -759,23 +767,6 @@ def _judge(
     )
 
 
-def _host_profiles(project_root: Path | None, backend: str) -> list[str]:
-    """The execution profiles ``geno compile --target <backend>`` checks.
-
-    A project that declares only profiles of another backend (``browser``
-    for ``js``) is compiled for this one's default host profile here, since
-    that is where the cases run.
-    """
-    from .target_profile import resolve_compilation_profiles
-
-    defaults = {"python": "python-cli", "js": "node-cli"}
-    try:
-        profiles = resolve_compilation_profiles(project_root, backend)
-    except ValueError:
-        return [defaults[backend]]
-    return [profile.target for profile in profiles]
-
-
 def _selected(case: CompiledTestCase, filter_pattern: str | None) -> bool:
     if not filter_pattern:
         return True
@@ -854,12 +845,6 @@ def run_compiled_project(
             if target is not None
             else resolve_manifest_targets(context.project.root)
         )
-        # The build runs on the backend's own host, so it is also checked
-        # against the profiles `geno compile` checks it against: a builtin
-        # that host lacks is a type error there, not a call that throws.
-        for host_profile in _host_profiles(context.project.root, backend):
-            if host_profile not in targets:
-                targets.append(host_profile)
         for target_name in targets or [None]:
             profile = (
                 TargetProfile.load(target_name) if target_name is not None else None

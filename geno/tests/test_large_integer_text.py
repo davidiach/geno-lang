@@ -253,3 +253,68 @@ def test_json_errors_other_than_the_digit_limit_are_unchanged() -> None:
         ):
             with pytest.raises(ValueError, match="Out of range float"):
                 dumps([10**700, float("nan")])
+
+
+LIMITS_SOURCE = """
+func shl(e: Int) -> Int
+    example 3 -> 8
+    example 2 ** 15000 panics
+    return 1 << e
+end func
+
+func pw(e: Int) -> Int
+    example 2 ** 15000 panics
+    return 3 ** e
+end func
+
+func key(n: Int) -> Int
+    example 2 ** 15000 panics "Key not found: (2817"
+    let m: Map[(Int, Int), Int] = {(1, 2): 3}
+    return m[(n, 1)]
+end func
+
+func round_trip(n: Int) -> Bool
+    example 15000 -> true
+    return json_parse(json_encode(2 ** n)) == Ok(JsonInt(2 ** n))
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", ["interpreter", "python"])
+def test_long_ints_in_limit_messages_keys_and_json_text(
+    tmp_path: Path, backend: str
+) -> None:
+    """A shift or exponent past the limit by a long Int is the integer size
+    limit on both backends, not the host's digit-limit error as a panic; a
+    key holding a long Int is named in full; json_parse reads back what
+    json_encode writes (0.7 review)."""
+    from geno.test_runner import run_test_suite
+
+    program = tmp_path / "limits.geno"
+    program.write_text(LIMITS_SOURCE, encoding="utf-8")
+    result = run_test_suite([program], backend=backend).file_results[0]
+    assert result.error is None
+    harness = result.harness_result
+    assert harness is not None
+    assert harness.passed == 3
+    assert sorted(v.function for v in harness.violations) == ["pw", "shl"]
+    for violation in harness.violations:
+        assert "integer size limit" in violation.message, violation.message
+        assert "Exceeds the limit" not in violation.message
+
+
+def test_a_json_literal_past_the_integer_limit_is_refused_early() -> None:
+    """A literal with more digits than any Int within the limit has is the
+    integer size limit, before its digits are read (0.7 review)."""
+    from geno.api import RunConfig, run
+
+    source = (
+        "func main() -> Unit with io\n"
+        f'    print(json_parse("1{"0" * 20000}"))\n'
+        "end func\n"
+    )
+    result = run(source, config=RunConfig(timeout=10.0, capabilities={"print"}))
+    assert not result.ok
+    assert "Integer exceeds maximum size" in result.diagnostics[0].message
+    with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
+        _compiled_python_output(source)

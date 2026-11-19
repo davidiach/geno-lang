@@ -138,7 +138,11 @@ deliberately.
   `a[0].x = 5`) does not alias on any backend: the closure returns `0`,
   because the field write first gives the slot its own copy of the record.
   Binding the same read first (`let q = a[0]`) takes a snapshot as well.
-  Compiled JavaScript returned `5` here before this was fixed.
+  Compiled JavaScript returned `5` here before this was fixed. A whole
+  tuple variable is the exception: a tuple cannot be written in place, so
+  a field write through one of its elements (`t.0.x = 5`) rebinds the
+  variable to a tuple rebuilt around a copy of that element, and a callee
+  or closure handed `t` keeps the tuple it was given, on every backend.
 - **A `for` loop over an `Array` iterates a snapshot.** A write the loop
   body makes to a later slot (`a[2] = 99`) or to a field of an element
   (`a[1].x = n`) does not show up in the same loop, on any backend. Compiled

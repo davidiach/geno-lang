@@ -261,6 +261,23 @@ def test_a_slice_may_still_be_read_by_an_assignment(backend):
     assert backend(source).split("\n")[1] == "[2, 3, 1]"
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_compound_assignment_may_slice_in_its_index(backend):
+    """A slice's bounds are a tuple, which reads the same twice: it is no
+    call, so `+=` may repeat it (0.7 review)."""
+    source = (
+        "func main() -> Unit with io, mutation\n"
+        "    let xs = [0, 1, 2]\n"
+        "    var a = array_new(3, 10)\n"
+        "    a[xs[1:][0]] += 5\n"
+        "    a[xs[:][2]] += 1\n"
+        "    print(a)\n"
+        "end func\n"
+    )
+    assert geno.check(source).ok
+    assert backend(source) == "Array([10, 15, 11])\n"
+
+
 def test_the_formatter_writes_a_slice_without_spaces_around_its_colon():
     untidy = _function("let y = xs[ 1 : -1 ][ : 2]")
     tidy = _function("let y = xs[1:-1][:2]")

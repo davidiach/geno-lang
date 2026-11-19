@@ -563,6 +563,32 @@ def _decimal_digits(value: int) -> str:
     return _decimal_digits(high) + _decimal_digits(low).zfill(half)
 
 
+def int_from_text(text: str) -> int:
+    """``int(text)`` for a decimal literal of any length (``int_text`` back).
+
+    Past CPython's digit limit the digits are read in halves, each small
+    enough for any setting of it, and the process-wide setting is left
+    alone. The caller bounds the length: this does the work it is given.
+    """
+    try:
+        return int(text)
+    except ValueError as error:
+        if not is_int_digit_limit_error(error):
+            raise
+    digits = text.lstrip("+-")
+    value = _int_from_digits(digits)
+    return -value if text.startswith("-") else value
+
+
+def _int_from_digits(digits: str) -> int:
+    """The int a run of decimal digits writes, read in halves."""
+    if len(digits) <= 600:
+        return int(digits)
+    half = len(digits) // 2
+    scale: int = 10**half
+    return _int_from_digits(digits[:-half]) * scale + _int_from_digits(digits[-half:])
+
+
 def is_int_digit_limit_error(error: BaseException) -> bool:
     """Whether *error* is CPython refusing to write a long int in decimal."""
     return isinstance(error, ValueError) and "integer string conversion" in str(error)

@@ -513,6 +513,9 @@ def _repeatable(expr: Expression) -> bool:
         return _repeatable(expr.left) and _repeatable(expr.right)
     if isinstance(expr, UnaryOp):
         return _repeatable(expr.operand)
+    if isinstance(expr, TupleExpr):
+        # A tuple, or a slice's bounds (an empty tuple for one left out).
+        return all(_repeatable(element) for element in expr.elements)
     return False
 
 

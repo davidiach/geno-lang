@@ -78,10 +78,19 @@ _COMPILED_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"Exponentiation result too large$"), "numeric range limit"),
     (re.compile(r"(Left|Right) shift amount too large \("), "integer size limit"),
     (re.compile(r"Output limit exceeded \("), "output limit"),
-    # Compiled JavaScript's own integer limits (geno/_js_runtime_support.js).
+)
+# Compiled JavaScript's own integer limits (geno/_js_runtime_support.js): an
+# operator's operand or result past the safe range. A builtin's result past
+# it (`floor result`, `float_to_int result`) is a panic there, as on the
+# other backends, which raise the same text for it.
+_JS_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"Exponent too large \("), "integer size limit"),
     (
-        re.compile(r"[\w ]+ exceeds JavaScript safe integer range$"),
+        re.compile(
+            r"(?:Addition|Subtraction|Multiplication|Integer division|Modulo"
+            r"|Exponentiation|Left shift|Right shift|Bitwise (?:or|and|xor|not))"
+            r" (?:operand|amount|result) exceeds JavaScript safe integer range$"
+        ),
         "JavaScript safe integer limit",
     ),
 )
@@ -157,10 +166,13 @@ def classify_call_failure(exc: BaseException) -> CallFailure | None:
     return None
 
 
-def compiled_limit(message: str) -> str | None:
-    """The limit a compiled-Python runtime message reports, if it is one."""
+def compiled_limit(message: str, backend: str = "python") -> str | None:
+    """The limit a compiled runtime message reports, if it is one."""
     text = _COMPILED_PREFIX.sub("", message, count=1)
-    for pattern, limit in _COMPILED_LIMIT_PATTERNS:
+    patterns = _COMPILED_LIMIT_PATTERNS
+    if backend == "js":
+        patterns += _JS_LIMIT_PATTERNS
+    for pattern, limit in patterns:
         if pattern.match(text) or pattern.match(message):
             return limit
     return None

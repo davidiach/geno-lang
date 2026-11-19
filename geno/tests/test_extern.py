@@ -135,6 +135,40 @@ def huge():
     return 2**100000
 
 
+class Converts(int):
+    def __int__(self):
+        return 7
+
+    def __float__(self):
+        return 7.5
+
+
+class Refuses(int):
+    def __int__(self):
+        raise ValueError("nope")
+
+
+class Floats(float):
+    def __float__(self):
+        return 7.5
+
+
+def converts():
+    return Converts(404)
+
+
+def refuses():
+    return Refuses(404)
+
+
+def converts_json():
+    return [Converts(404), Floats(0.5)]
+
+
+def converts_float():
+    return Converts(2)
+
+
 def huge_in_list():
     return [1, 2**100000]
 
@@ -772,6 +806,36 @@ def test_a_host_subclass_of_a_builtin_type_becomes_a_plain_value(
         "true\n404\n404\ntrue\nr\n"
         '"r"\nfalse\ntrue\ntrue\ntrue\n{"r": 404}\ntrue\n'
         '{"r":[404,"abc",0.5,true]}\n',
+    )
+
+
+@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+def test_a_host_subclass_is_read_without_running_its_own_methods(
+    backend: str, host_dir: Path
+) -> None:
+    """The value a subclass holds is what arrives: its own ``__int__`` or
+    ``__float__`` neither replaces it nor, by raising, escapes the extern's
+    boundary (0.7 review)."""
+    source = (
+        _extern("converts", "() -> Int", "ffi_host:converts", None)
+        + _extern("refuses", "() -> Int", "ffi_host:refuses", None)
+        + _extern("converts_json", "() -> JsonValue", "ffi_host:converts_json", None)
+        + _extern("converts_float", "() -> Float", "ffi_host:converts_float", None)
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                let c = converts()
+                print(c == 404)
+                print(refuses())
+                print(json_stringify(converts_json()))
+                print(converts_float())
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (
+        True,
+        "true\n404\n[404,0.5]\n2.0\n",
     )
 
 
