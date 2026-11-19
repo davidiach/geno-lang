@@ -19,6 +19,7 @@ from geno.compiler import compile_to_python
 from geno.interpreter import Interpreter
 from geno.js_compiler import compile_to_js
 from geno.parser import parse
+from geno.sandbox import SandboxConfig
 from geno.tail_calls import plan_tail_calls
 from geno.tests._script_runner import GENERATED_PROGRAM_TIMEOUT
 from geno.tests.test_backend_parity import (
@@ -30,7 +31,13 @@ from geno.tests.test_backend_parity import (
     _interpreter_project_output,
 )
 from geno.typechecker import TypeChecker
-from geno.values import ContractViolationError
+from geno.values import (
+    ArrayValue,
+    ConstructorValue,
+    ContractViolationError,
+    RuntimeLimitError,
+    VecValue,
+)
 
 
 def _interpreter_output(source: str) -> str:
@@ -933,3 +940,235 @@ def test_tail_calls_beside_propagation_collections_widening_and_loops(backend):
     deep = _depth(backend)
     expected = MIXED_OUTPUT.replace("{TOTAL}", str(3 * deep + 3))
     assert backend(_at(deep, MIXED)) == expected
+
+
+# A call's binding walks its arguments for the collection limits. A call that
+# passes on an argument of the call it is made from, a self tail call above
+# all, does not walk that argument again: it passed the limits when that call
+# was bound, and every write into it checks what it adds.
+
+LONG_THREADED_LIST = """
+func sum_from(xs: List[Int], i: Int, acc: Int) -> Int
+    example ([1, 2], 1, 0) -> 2
+    if i == 0 then
+        return acc
+    end if
+    return sum_from(xs: xs, i: i - 1, acc: acc + xs[i])
+end func
+
+func main() -> Unit with io
+    let xs = range(0, 20001)
+    print(sum_from(xs: xs, i: 20000, acc: 0))
+end func
+"""
+
+
+def test_a_tail_call_threading_a_long_list_runs_well_inside_the_timeout():
+    """Each logical call walked the whole list again, so this took about
+    forty seconds on the interpreter; it takes well under one now, and
+    compiled Python a tenth of one. The test's own timeout leaves room for
+    a slow, instrumented run."""
+    result = geno.run(
+        LONG_THREADED_LIST,
+        config=geno.RunConfig(timeout=10.0, capabilities={"print"}),
+    )
+
+    assert result.ok, [diagnostic.message for diagnostic in result.diagnostics]
+    assert result.output == "200010000\n"
+
+
+THREADED = """
+func sum_from(xs: List[Int], i: Int, acc: Int) -> Int
+    example ([1, 2], 1, 0) -> 2
+    if i == 0 then
+        return acc
+    end if
+    return sum_from(xs: xs, i: i - 1, acc: acc + xs[i])
+end func
+
+func drain(n: Int, seen: Vec[Int]) -> Unit
+    example (0, vec_new()) -> ()
+    if n > 0 then
+        vec_push(seen, n)
+        drain(n - 1, seen)
+    end if
+end func
+
+func at(xs: List[Int], i: Int) -> Int
+    example ([1, 2], 0) -> 1
+    return xs[i]
+end func
+
+func total(xs: List[Int], n: Int) -> Int
+    example ([1, 2], 2) -> 3
+    var acc = 0
+    var i = 0
+    while i < n do
+        acc = acc + at(xs, i)
+        i = i + 1
+    end while
+    return acc
+end func
+
+func count_down(xs: List[Int], i: Int) -> Int
+    example ([1], 0) -> 1
+    if i < 0 then
+        return 0
+    end if
+    return 1 + count_down(xs, i - 1)
+end func
+
+func main() -> Unit with io, mutation
+    let xs = range(0, {N})
+    print(sum_from(xs: xs, i: {N} - 1, acc: 0))
+    let seen: Vec[Int] = vec_new()
+    drain({N}, seen)
+    print(vec_length(seen))
+    print(total(xs, {N}))
+    print(count_down(xs, {N} - 1))
+end func
+"""
+
+
+def test_a_call_does_not_walk_a_collection_it_passes_on_again(monkeypatch):
+    """Self tail calls (`sum_from`, `drain`), calls from a loop (`at`) and an
+    ordinary recursion (`count_down`) pass on the collection they were given.
+    Each of their bindings walked it again, about 3.5 walks of a large
+    collection per element; now only the calls from `main` walk it."""
+    n = 2_000
+    walked: list[str] = []
+    check = Interpreter._check_collection_size
+
+    def counting(self, kind, size, location):
+        if size >= n // 2:  # the threaded collections, not the examples'
+            walked.append(kind)
+        check(self, kind, size, location)
+
+    monkeypatch.setattr(Interpreter, "_check_collection_size", counting)
+    output = _interpreter_output(THREADED.replace("{N}", str(n)))
+
+    total = n * (n - 1) // 2
+    assert output == f"{total}\n{n}\n{total}\n{n}\n"
+    # `range`'s result, the calls from `main` that pass `xs`, and
+    # `vec_length`'s argument before and after the call.
+    assert len(walked) <= 10, walked
+
+
+GROWING = """
+func drain(n: Int, seen: Vec[Int]) -> Unit
+    example (0, vec_new()) -> ()
+    if n > 0 then
+        vec_push(seen, n)
+        drain(n - 1, seen)
+    end if
+end func
+
+func fill(n: Int, seen: Set[Int]) -> Int
+    example (0, set_new()) -> 0
+    if n == 0 then
+        return 0
+    end if
+    set_add(seen, n)
+    return fill(n - 1, seen)
+end func
+
+func index(n: Int, m: MutableMap[Int, Int]) -> Int
+    example (0, mutable_map_new()) -> 0
+    if n == 0 then
+        return 0
+    end if
+    mutable_map_set(map: m, key: n, value: n)
+    return index(n - 1, m)
+end func
+
+func nested(n: Int, boxes: List[Vec[Int]]) -> Int
+    example (0, [vec_new()]) -> 0
+    if n == 0 then
+        return 0
+    end if
+    vec_push(boxes[0], n)
+    return nested(n - 1, boxes)
+end func
+
+func deepen(n: Int, seen: Vec[Int]) -> Int
+    example (0, vec_new()) -> 0
+    if n == 0 then
+        return 0
+    end if
+    vec_push(seen, n)
+    return 1 + deepen(n - 1, seen)
+end func
+
+func main() -> Unit with io, mutation
+    {CALL}
+end func
+"""
+
+
+@pytest.mark.parametrize(
+    "call, message",
+    [
+        ("drain(150, vec_new())", "Vec size exceeds limit (101 > 100)"),
+        ("print(fill(150, set_new()))", "Set size exceeds limit (101 > 100)"),
+        (
+            "print(index(150, mutable_map_new()))",
+            "MutableMap size exceeds limit (101 > 100)",
+        ),
+        ("print(nested(150, [vec_new()]))", "Vec size exceeds limit (101 > 100)"),
+        ("print(deepen(150, vec_new()))", "Vec size exceeds limit (101 > 100)"),
+    ],
+)
+def test_a_collection_that_grows_across_calls_still_meets_the_limit(call, message):
+    """A collection a call passes on unchanged is not walked again, but the
+    write that grows it checks the size it grows to."""
+    result = geno.run(
+        GROWING.replace("{CALL}", call),
+        config=geno.RunConfig(max_collection_size=100, capabilities={"print"}),
+    )
+
+    assert not result.ok
+    assert result.diagnostics[0].message == message
+
+
+FIELD_WRITE = """
+type Box = Box(items: List[Int])
+
+func fill(n: Int, boxes: Array[Box]) -> Int
+    if n == 0 then
+        return 0
+    end if
+    boxes[0].items = host_items
+    return fill(n - 1, boxes)
+end func
+"""
+
+
+def test_a_field_write_into_a_threaded_collection_checks_what_it_adds():
+    """A value no walk has seen, here one the host bound, written into the
+    array a tail call passes on was caught when the next call walked the
+    array. The array is not walked again, so the write checks the value."""
+    interpreter = Interpreter(
+        check_examples=False, sandbox_config=SandboxConfig(max_collection_size=5)
+    )
+    interpreter.run(parse(FIELD_WRITE), execute_main=False)
+    interpreter.global_env.bind("host_items", list(range(10)))
+    boxes = ArrayValue([ConstructorValue("Box", {"items": []})])
+    fill = interpreter.global_env.lookup("fill")
+
+    with pytest.raises(RuntimeLimitError, match=r"List size exceeds limit \(10 > 5\)"):
+        interpreter._call_function(fill, [3, boxes])
+
+
+def test_a_known_value_is_skipped_only_as_a_root():
+    """A new value that holds a known one is walked whole, so a mutable part
+    still keeps the constructor around it from being marked as checked."""
+    interpreter = Interpreter(sandbox_config=SandboxConfig(max_collection_size=5))
+    big = list(range(10))
+    seen = VecValue()
+    box = ConstructorValue("Box", {"seen": seen})
+
+    interpreter._check_collection_limits([big], None, known=[big])
+    with pytest.raises(RuntimeLimitError, match="List size exceeds limit"):
+        interpreter._check_collection_limits([[big]], None, known=[big])
+    interpreter._check_collection_limits([box, seen], None, known=[seen])
+    assert box._limits_checked is None
