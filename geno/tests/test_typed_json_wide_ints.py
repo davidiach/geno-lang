@@ -64,3 +64,19 @@ end func
 """
     refused = 'Err(error: "json_parse integer literal exceeds JavaScript safe integer range")\n'
     assert _compiled_js_output(source) == refused * 3
+
+
+@needs_node
+def test_a_wide_int_in_a_large_json_value_is_an_err_not_a_crash():
+    """The wide-integer check walks a large array without spreading it into
+    one call, which overflowed V8's argument limit (PR review)."""
+    source = """
+func main() -> Unit with io
+    let text = "[9007199254740993," + string_repeat("0,", 150000) + "0]"
+    let decoded: Result[JsonValue, String] = json_decode(text)
+    print(decoded)
+end func
+"""
+    assert _compiled_js_output(source) == (
+        'Err(error: "json_parse integer literal exceeds JavaScript safe integer range")\n'
+    )

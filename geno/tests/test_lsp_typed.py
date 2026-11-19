@@ -302,9 +302,10 @@ def test_an_expected_panic_gets_a_quick_fix_to_the_panics_form() -> None:
     editor = _Editor(source)
     [diagnostic] = editor.published[URI]
     assert diagnostic.code == "E330"
-    # The range is the text the fix replaces: ` -> panic(`.
+    # The range is the text the fix replaces: ` -> panic("division")`, the
+    # whole expected value, so parentheses around it go too.
     start, end = diagnostic.range.start, diagnostic.range.end
-    assert (start.line, start.character, end.line, end.character) == (2, 16, 2, 26)
+    assert (start.line, start.character, end.line, end.character) == (2, 16, 2, 37)
     actions = editor._handler(types.TEXT_DOCUMENT_CODE_ACTION)(
         types.CodeActionParams(
             text_document=editor.document,

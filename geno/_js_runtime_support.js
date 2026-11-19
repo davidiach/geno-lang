@@ -4673,8 +4673,11 @@ function _genoJsonRejectWideInts(node) {
     while (items.length > 0) {
         const item = items.pop();
         if (item._genoWideInt) throw new _GenoJsonMismatch(_GENO_JSON_WIDE_INT_ERROR);
-        if (item._tag === "JsonArray") items.push(...item.items);
-        else if (item._tag === "JsonObject") {
+        // One push per child: spreading a large array into one call would
+        // pass more arguments than the engine allows.
+        if (item._tag === "JsonArray") {
+            for (const child of item.items) items.push(child);
+        } else if (item._tag === "JsonObject") {
             for (const [, child] of item.entries) items.push(child);
         }
     }
