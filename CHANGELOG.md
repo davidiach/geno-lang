@@ -672,6 +672,53 @@ Fixed in the 0.7 release review:
   list: `for i, _ in`, `for _, s in` and `for i, (x, y) in` become
   `for (i, _) in`, `for (_, s) in` and `for (i, (x, y)) in`, in loops and
   comprehensions.
+- The interpreter walked every argument of every call against the
+  collection and integer limits, even one that was the very value the
+  calling function was bound with, so a self tail call threading a List or
+  Vec cost the collection's size per iteration: summing a 20,000-element
+  list by tail recursion timed out on `geno run --unsafe`, `geno test`, the
+  embedding API and the hosted server. A value passed on unchanged is no
+  longer walked again (field assignment now checks what it writes, as
+  index assignment and the mutating builtins do), and that sum takes
+  0.4 s.
+- An Int too large for a Float under an `f`, `e` or `%` format spec raised
+  a host `OverflowError` (a Python traceback on `geno run --unsafe`, an
+  exception out of `geno.run()`); it is now the runtime error
+  `int_to_float` reports, `int too large to convert to float`.
+- An Int of more than 4,300 digits, which Geno allows up to
+  `max_integer_bits`, could not be written as text on Python 3.11 and
+  later: `to_string(2 ** 15000)` raised the host's `ValueError`, `geno
+  test` logged an internal error for one in an f-string, and an `example
+  ... panics` on such a conversion passed. Every Int-to-text path of the
+  interpreter and compiled Python now writes any allowed Int, without
+  changing the process-wide limit.
+- An extern's Python host could return an `int` or `str` subclass (an
+  `IntEnum` or `StrEnum` member) that reached Geno unchanged, so
+  `status(404) == 404` was false on the interpreter and true in compiled
+  Python; extern results are now plain values. Compiled Python applies
+  `max_integer_bits` to extern Int results, as the interpreter does, and a
+  JsonValue argument nested past 320 levels names the extern on every
+  backend.
+- In the process-isolated `geno run` lane, a denied extern call's hint no
+  longer prints a ready-to-paste `geno run --unsafe --cap ...,ffi,...`
+  command for an untrusted program; it says the lane never grants `ffi`
+  and names `--unsafe --cap ffi` in words, for trusted code only.
+- The hosted server refused to start with `ffi` allowed only when the name
+  was written exactly; `" ffi"` or `"ffi "` slipped past the check (each
+  `/run` asking for it still failed). The check now runs after
+  normalization. The server also records a POST's metrics before writing
+  its response, so `/metrics` read right after a response counts it.
+- Typed JSON decode errors and `json_encode_pretty` /
+  `json_stringify_pretty` wrote a lone surrogate raw on the interpreter and
+  compiled Python and as `\ud800` in compiled JavaScript; every backend now
+  writes `\ud800`, so the messages are identical.
+- Compiled Python let a program bind `__builtins__` (`let __builtins__ =
+  1`), which broke every later function; a Python `__x__` name is now a
+  reserved runtime name there, so `geno check` rejects it. The isolated
+  worker's validator also treats import aliases as binding forms.
+- Language-server rename, references and highlights returned duplicate,
+  overlapping edits for a compound assignment's target (`total += x`,
+  `arr[i] += x`, `p.x *= 2`); each use is now recorded once.
 
 ## [0.6.0] - 2026-10-25
 
