@@ -3592,6 +3592,18 @@ class JSCompiler(BaseCompiler):
             stmt.field_name,
             context="in field assignment",
         )
+        root = stmt.target
+        while isinstance(root, (FieldAccess, IndexAccess)):
+            root = root.target
+        if isinstance(root, Identifier) and isinstance(
+            getattr(root, "_resolved_type", None), TupleType
+        ):
+            # The interpreter and compiled Python cannot write a tuple in
+            # place: they rebind the variable to a rebuilt tuple, so a callee
+            # holding the tuple keeps the old one. Copy the array first, so
+            # this backend does the same.
+            name = self._compile_expr(root)
+            self._writeln(f"{name} = {name}.slice();")
         target = self._compile_write_target(stmt.target)
         value = self._snapshot_value(self._compile_expr(stmt.value))
         self._writeln(f"{target}.{stmt.field_name} = {value};")

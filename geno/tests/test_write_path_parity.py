@@ -243,6 +243,63 @@ end func
         '3\n9\nPair(pair: (P(x: 30), 4))\n{"k": (P(x: 90), 0)}\n',
         id="tuple-below-a-field-and-a-map-value",
     ),
+    # A whole tuple variable passed as an argument is the exception to the
+    # aliasing of a whole variable: a write through it rebinds the variable
+    # to a rebuilt tuple on every backend (0.7 review).
+    pytest.param(
+        """
+@untested("returns a closure")
+func keep_t(t: (P, Int)) -> () -> Int
+    return fn() -> t.0.x
+end func
+
+func main() -> Unit with io, mutation
+    var tt = (P(x: 0), 1)
+    let peek = keep_t(tt)
+    tt.0.x = 11
+    print(peek())
+    print(tt)
+end func
+""",
+        "0\n(P(x: 11), 1)\n",
+        id="whole-tuple-variable-argument",
+    ),
+    # Only the element on the path is copied: an earlier read of another
+    # element, or of a list inside the tuple, keeps what it read.
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var t = ([P(x: 1), P(x: 2)], P(x: 3))
+    let items = t.0
+    let other = t.1
+    t.0[1].x = 20
+    t.1.x = 30
+    print(items[1].x)
+    print(other.x)
+    print(t)
+end func
+""",
+        "2\n3\n([P(x: 1), P(x: 20)], P(x: 30))\n",
+        id="tuple-element-on-the-path-only",
+    ),
+    # Each part of the path is owned before the next index is evaluated, so
+    # an index that writes through the same path sees the parts already
+    # owned, as the interpreter and compiled JavaScript see them.
+    pytest.param(
+        """
+func main() -> Unit with io, mutation
+    var rows = [[(P(x: 1), 0), (P(x: 2), 0)]]
+    let bump = fn() do
+        rows[0][1].0.x = 99
+        return 0
+    end fn
+    rows[0][bump()].0.x = 5
+    print(rows)
+end func
+""",
+        "[[(P(x: 1), 0), (P(x: 99), 0)]]\n",
+        id="tuple-path-index-evaluated-in-order",
+    ),
 ]
 
 
@@ -250,3 +307,63 @@ end func
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_a_field_write_does_not_reach_an_earlier_read(backend, source, expected):
     assert backend(TYPES + source) == expected
+
+
+def test_a_write_through_a_tuple_copies_only_the_element_on_its_path(monkeypatch):
+    """Each write through a tuple copied every element, a large list beside
+    the written record included, so a loop of writes cost quadratic time
+    (0.7 review). Neither Python backend copies the list now."""
+    from geno import _runtime_support as runtime
+    from geno import interpreter
+
+    copied: list[int] = []
+    unshared = interpreter._unshared_part
+
+    def counting(value):
+        if isinstance(value, list):
+            copied.append(len(value))
+        return unshared(value)
+
+    monkeypatch.setattr(interpreter, "_unshared_part", counting)
+    source = (
+        TYPES
+        + """
+func main() -> Unit with io, mutation
+    var t = (P(x: 0), range(0, 1000))
+    var i = 0
+    while i < 50 do
+        t.0.x = i
+        i = i + 1
+    end while
+    print(t.0.x)
+end func
+"""
+    )
+    assert _interpreter_output(source) == "49\n"
+    assert copied == []
+
+    big = list(range(1000))
+    record = runtime.Ok(1)
+    trail = [[(record, big), None, None]]
+    rebuilt = runtime._geno_own_step(trail, True, 0)
+    target = trail[-1][0]
+    assert rebuilt[1] is big
+    assert rebuilt[0] is target and target is not record
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_json_to_string_unwraps_some_on_every_backend(backend):
+    """Compiled Python wrote `Some(5)` as a tagged object (0.7 review)."""
+    source = (
+        TYPES
+        + """
+type R = R(a: Option[Int], b: Option[Int])
+
+func main() -> Unit with io
+    print(json_to_string(Some(5)))
+    print(json_to_string(R(a: Some(1), b: None)))
+    print(json_to_string([Some(1), None]))
+end func
+"""
+    )
+    assert backend(source) == '5\n{"_tag":"R","a":1,"b":null}\n[1,null]\n'

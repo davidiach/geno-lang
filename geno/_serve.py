@@ -1114,13 +1114,15 @@ def install_clock_callbacks(interpreter) -> None:
     import time
 
     from .sandbox import TimeoutError as SandboxTimeout
-    from .values import BuiltinFunction
+    from .values import BuiltinFunction, int_text
 
     def _sleep_ms(ms):
         if not isinstance(ms, int) or isinstance(ms, bool):
             raise RuntimeError("sleep_ms: ms must be Int")
         if ms < 0:
-            raise RuntimeError(f"sleep_ms: negative duration not allowed ({ms})")
+            raise RuntimeError(
+                f"sleep_ms: negative duration not allowed ({int_text(ms)})"
+            )
         if ms == 0:
             return None
         sleep_seconds = ms / 1000.0

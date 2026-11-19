@@ -12,8 +12,10 @@ import os
 import random
 import re
 import time
+from functools import partial
 from typing import Any, Callable
 
+from .json_encoding import safe_repr
 from .runtime_report import truncate_display
 from .value_copy import copy_value
 from .values import (
@@ -26,6 +28,7 @@ from .values import (
     RuntimeLimitError,
     SetValue,
     VecValue,
+    int_from_text,
     int_text,
     is_int_digit_limit_error,
 )
@@ -91,7 +94,13 @@ def _scalar_text(value: Any) -> str:
     """``str(value)``, with an Int written in full past CPython's digit limit."""
     if type(value) is int:
         return int_text(value)
-    return str(value)
+    try:
+        return str(value)
+    except ValueError as error:
+        if not is_int_digit_limit_error(error):
+            raise
+    # A tuple (a Map key, say) holding such an Int.
+    return safe_repr(value)
 
 
 def _check_collection_size(kind: str, size: int, limit: int) -> None:
@@ -2668,8 +2677,28 @@ def _reject_json_constant(name: str) -> None:
     raise ValueError(f"Invalid JSON constant: {name}")
 
 
+def _json_int(text: str, max_integer_bits: int) -> int:
+    """A JSON integer literal as an int, past CPython's digit limit too.
+
+    A literal with more digits than any Int within *max_integer_bits* has is
+    refused before any work: it is at least ``10 ** (n - 1)``, which needs
+    more than ``3 * (n - 1)`` bits. The rest are read in pieces
+    (``int_from_text``). ``_geno_json_int`` in geno/_runtime_support.py is
+    the compiled copy.
+    """
+    if 3 * (len(text.lstrip("-")) - 1) >= max_integer_bits:
+        raise RuntimeLimitError(
+            f"Integer exceeds maximum size (more than {max_integer_bits} bits)",
+            limit="integer size",
+        )
+    return int_from_text(text)
+
+
 def builtin_json_parse(
-    text: str, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+    text: str,
+    *,
+    max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE,
+    max_integer_bits: int = 33_219,
 ) -> ConstructorValue:
     """Parse a JSON string into a JsonValue."""
     if not isinstance(text, str):
@@ -2679,7 +2708,18 @@ def builtin_json_parse(
     limit = _effective_max_collection_size(max_collection_size)
     try:
         _validate_json_nesting(text)
-        obj = json.loads(text, parse_constant=_reject_json_constant)
+        try:
+            obj = json.loads(text, parse_constant=_reject_json_constant)
+        except ValueError as error:
+            if not is_int_digit_limit_error(error):
+                raise
+            # An integer literal past CPython's digit limit, as json_encode
+            # writes a long Int: read the text again, every int in pieces.
+            obj = json.loads(
+                text,
+                parse_constant=_reject_json_constant,
+                parse_int=partial(_json_int, max_integer_bits=max_integer_bits),
+            )
         value = _python_to_json_value(obj, limit)
     except (ValueError, RecursionError) as e:
         return ConstructorValue("Err", {"error": str(e)})

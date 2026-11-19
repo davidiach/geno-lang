@@ -333,10 +333,9 @@ def _expected_runtime_type_is_float(expected_type: Any) -> bool:
 def _unshared_part(value: Any) -> Any:
     """Return a one-level copy of a value-type container about to be written.
 
-    Reference types (Array, Vec, MutableMap, ...) and scalars come back as is.
-    A tuple cannot be written in place, so it comes back rebuilt from the
-    unshared parts of its elements: the write below it then lands in a copy
-    whichever element it goes through.
+    Reference types (Array, Vec, MutableMap, ...) and scalars come back as is,
+    and so does a tuple: it cannot be written in place, so a write through it
+    rebuilds it around its one element on the path (``_put_tuple_element``).
     """
     if isinstance(value, ConstructorValue):
         return ConstructorValue(value.constructor, dict(value.fields))
@@ -344,9 +343,25 @@ def _unshared_part(value: Any) -> Any:
         return list(value)
     if isinstance(value, dict):
         return dict(value)
-    if isinstance(value, tuple):
-        return tuple(_unshared_part(element) for element in value)
     return value
+
+
+def _put_field(parent: ConstructorValue, name: str, value: Any) -> None:
+    """Put *value* in field *name* of a record on a write's path."""
+    new_fields = dict(parent.fields)
+    new_fields[name] = value
+    object.__setattr__(parent, "_fields", MappingProxyType(new_fields))
+    object.__setattr__(parent, "_limits_checked", None)
+
+
+def _put_tuple_element(
+    items: tuple[Any, ...],
+    position: int,
+    put_parent: Callable[[Any], object],
+    value: Any,
+) -> None:
+    """Put back where *items* was a tuple rebuilt with *value* at *position*."""
+    put_parent((*items[:position], value, *items[position + 1 :]))
 
 
 def _promote_int_to_expected_float(
@@ -1282,6 +1297,11 @@ class Interpreter:
         for name, func, arity, param_names in builtins:
             if name in _COLLECTION_LIMITED_BUILTINS:
                 func = partial(func, max_collection_size=cap)
+            if name == "json_parse":
+                # A long integer literal is read within this interpreter's limit.
+                func = partial(
+                    func, max_integer_bits=self.sandbox_config.max_integer_bits
+                )
             if name == "to_string":
                 self._builtin_stringify_value = func
             resolved_param_names = shared_param_names.get(name, param_names)
@@ -2791,10 +2811,11 @@ class Interpreter:
         bound, and it has stayed within them, because a value changes in
         place only through a write that checks what it adds (the container
         writes of ``_INCREMENTAL_MUTATION_BUILTINS``, index and field
-        assignment), and every other builtin walks its arguments again once
-        it returns. Without this, a call passing a collection along, above
-        all a self tail call (proposal 0022), costs the collection's size,
-        and threading one through a recursion costs quadratic time.
+        assignment), and every other builtin walks its reference-typed
+        arguments again once it returns (a value-typed one it cannot change).
+        Without this, a call passing a collection along, above all a self
+        tail call (proposal 0022), costs the collection's size, and threading
+        one through a recursion costs quadratic time.
         """
         max_bits = self.sandbox_config.max_integer_bits
         size_limit = self.sandbox_config.max_collection_size
@@ -3095,7 +3116,17 @@ class Interpreter:
                 )
             incremental_mutation = func.name in _INCREMENTAL_MUTATION_BUILTINS
             checked_args = args[1:] if incremental_mutation else args
-            self._check_collection_limits(checked_args, location)
+            # An argument the running call was bound with is within the
+            # limits; a builtin can change one in place only if it is a
+            # reference value, so a value-typed one need not be walked after.
+            self._check_collection_limits(checked_args, location, known)
+            unchanged = [
+                seen
+                for seen in known
+                if not isinstance(
+                    seen, (ArrayValue, VecValue, MutableMapValue, SetValue)
+                )
+            ]
             self._step()
             try:
                 result = func.func(*args)
@@ -3131,7 +3162,7 @@ class Interpreter:
                 )
                 raise RuntimeError(str(e), location) from None
             result_roots = [result] if incremental_mutation else [result, *args]
-            self._check_collection_limits(result_roots, location)
+            self._check_collection_limits(result_roots, location, unchanged)
             self._check_timeout(location)
             return result
 
@@ -3379,36 +3410,34 @@ class Interpreter:
         if isinstance(target, list):
             if not isinstance(index, int):
                 raise RuntimeError("List index must be integer", expr.location)
-            if index < 0:
-                index += len(target)
-            if index < 0 or index >= len(target):
+            position = index + len(target) if index < 0 else index
+            if position < 0 or position >= len(target):
+                # The index as written, as the compiled backends report it.
                 raise RuntimeError(
                     f"Index {_builtins._scalar_text(index)} out of bounds for list of length {len(target)}",
                     expr.location,
                 )
-            return target[index]
+            return target[position]
         elif isinstance(target, ArrayValue):
             if not isinstance(index, int):
                 raise RuntimeError("Array index must be integer", expr.location)
-            if index < 0:
-                index += len(target)
-            if index < 0 or index >= len(target):
+            position = index + len(target) if index < 0 else index
+            if position < 0 or position >= len(target):
                 raise RuntimeError(
                     f"Index {_builtins._scalar_text(index)} out of bounds for array of length {len(target)}",
                     expr.location,
                 )
-            return target[index]
+            return target[position]
         elif isinstance(target, str):
             if not isinstance(index, int):
                 raise RuntimeError("String index must be integer", expr.location)
-            if index < 0:
-                index += len(target)
-            if index < 0 or index >= len(target):
+            position = index + len(target) if index < 0 else index
+            if position < 0 or position >= len(target):
                 raise RuntimeError(
                     f"Index {_builtins._scalar_text(index)} out of bounds for string of length {len(target)}",
                     expr.location,
                 )
-            return target[index]
+            return target[position]
         elif isinstance(target, dict):
             if index not in target:
                 raise RuntimeError(
@@ -4068,50 +4097,71 @@ class Interpreter:
         A snapshot keeps one copy of a part that two places shared, so each
         constructor, list or map reached on the way to the write is copied
         and put back first.  The write then never shows through another path
-        to the same part (#129).  The root binding is already its own copy,
-        except for a tuple, which cannot be written in place: a tuple root is
-        rebound to its unshared copy.
+        to the same part (#129).  The root binding is already its own copy.
+        A tuple cannot be written in place, so a write through one of its
+        elements copies that element alone and puts back a tuple rebuilt
+        around the copy; a tuple root is rebound to the rebuilt tuple.
         """
+        return self._own_write_path(expr, env)[0]
+
+    def _own_write_path(
+        self, expr: Expression, env: Environment
+    ) -> tuple[Any, Callable[[Any], object] | None]:
+        """``_eval_write_target``, with how to put back a rebuilt tuple there."""
         if isinstance(expr, Identifier):
-            root = self.eval_expr(expr, env)
-            if isinstance(root, tuple):
-                unshared = _unshared_part(root)
-                if env.assign(expr.name, unshared):
-                    return unshared
-            return root
+            return self.eval_expr(expr, env), partial(env.assign, expr.name)
         if isinstance(expr, FieldAccess):
-            parent = self._eval_write_target(expr.target, env)
+            parent, _ = self._own_write_path(expr.target, env)
             if (
                 isinstance(parent, ConstructorValue)
                 and expr.field_name in parent.fields
             ):
+                put = partial(_put_field, parent, expr.field_name)
                 child = _unshared_part(parent.fields[expr.field_name])
-                new_fields = dict(parent.fields)
-                new_fields[expr.field_name] = child
-                object.__setattr__(parent, "_fields", MappingProxyType(new_fields))
-                object.__setattr__(parent, "_limits_checked", None)
-                return child
-            return self._field_of(parent, expr)
+                put(child)
+                return child, put
+            return self._field_of(parent, expr), None
         if isinstance(expr, IndexAccess):
-            parent = self._eval_write_target(expr.target, env)
+            parent, put_parent = self._own_write_path(expr.target, env)
             index = self.eval_expr(expr.index, env)
             child = self._index_into(parent, index, expr)
+            if isinstance(parent, tuple):
+                if put_parent is None:
+                    return child, None
+                position = index + len(parent) if index < 0 else index
+                put = partial(_put_tuple_element, parent, position, put_parent)
+                owned = _unshared_part(child)
+                if owned is not child:
+                    put(owned)
+                return owned, put
             if isinstance(parent, (list, ArrayValue)):
+                position = index + len(parent) if index < 0 else index
                 child = _unshared_part(child)
-                parent[index + len(parent) if index < 0 else index] = child
-            elif isinstance(parent, dict):
+                parent[position] = child
+                return child, partial(parent.__setitem__, position)
+            if isinstance(parent, dict):
                 child = _unshared_part(child)
                 parent[index] = child
-            return child
-        return self.eval_expr(expr, env)
+                return child, partial(parent.__setitem__, index)
+            return child, None
+        return self.eval_expr(expr, env), None
 
     def _exec_field_assign(self, stmt: FieldAssignStatement, env: Environment) -> None:
         """Execute a field assignment: obj.field = value."""
         target = self._eval_write_target(stmt.target, env)
         value = self._deep_copy_value(self.eval_expr(stmt.value, env))
         # Like an index assignment, check what the write adds: the value it
-        # lands in may be one a call's binding no longer walks.
-        self._check_collection_limits([value], stmt.location)
+        # lands in may be one a call's binding no longer walks. The value the
+        # field holds, put back, or an argument the running call was bound
+        # with adds nothing that is not already within the limits.
+        held = (
+            target.fields.get(stmt.field_name)
+            if isinstance(target, ConstructorValue)
+            else None
+        )
+        self._check_collection_limits(
+            [value], stmt.location, (held, *self._bound_arguments[-1])
+        )
 
         if isinstance(target, ConstructorValue):
             if stmt.field_name in target.fields:
@@ -4317,7 +4367,8 @@ def _binop_pow(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
             est_bits = max(a.bit_length(), 1) * b
             if est_bits > interp.sandbox_config.max_integer_bits:
                 raise RuntimeLimitError(
-                    f"Exponentiation result too large (estimated {est_bits} bits)",
+                    "Exponentiation result too large (estimated "
+                    f"{_builtins._scalar_text(est_bits)} bits)",
                     expr.location,
                     limit="integer size",
                 )
@@ -4341,7 +4392,7 @@ def _check_shift_amount(
             raise RuntimeError("Negative shift count", expr.location)
         if b > interp.sandbox_config.max_integer_bits:
             raise RuntimeLimitError(
-                f"{direction} shift amount too large ({b} bits)",
+                f"{direction} shift amount too large ({_builtins._scalar_text(b)} bits)",
                 expr.location,
                 limit="integer size",
             )

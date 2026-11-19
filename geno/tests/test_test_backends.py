@@ -324,13 +324,118 @@ end func
 
 
 @needs_node
-def test_js_build_is_checked_against_the_node_host(tmp_path):
-    """A builtin Node lacks is a type error, not a thrown ReferenceError that
-    a panics example would accept (0.7 review)."""
+def test_a_builtin_node_lacks_fails_a_panics_example(tmp_path):
+    """A builtin Node lacks throws a host ReferenceError, which fails a
+    panics example instead of satisfying it (0.7 review)."""
     result = _suite(_write(tmp_path, HOST_ONLY_BUILTIN), "js").file_results[0]
-    assert result.harness_result is None
-    assert result.error is not None
-    assert "not available on the 'node-cli' target" in result.error
+    assert result.error is None
+    harness = result.harness_result
+    assert harness is not None and harness.passed == 0
+    assert "host error, not a panic" in harness.violations[0].message
+
+
+@pytest.mark.parametrize("backend", COMPILED)
+def test_a_browser_program_runs_its_examples_on_a_compiled_backend(backend):
+    """A browser program is not type-checked against the backend's CLI host:
+    its canvas builtins have headless stubs there (0.7 review)."""
+    tetris = Path(__file__).resolve().parents[2] / "examples/apps/tetris.geno"
+    result = _suite(tetris, backend).file_results[0]
+    assert result.error is None
+    assert result.harness_result is not None
+    assert result.harness_result.violations == []
+    assert result.harness_result.passed > 0
+
+
+BUILTIN_RANGE_PANICS = """
+func to_int(x: Float) -> Int
+    example 1000000000000000000000.0 panics "safe integer"
+    return float_to_int(x)
+end func
+
+func floored(x: Float) -> Int
+    example 1000000000000000000000.0 panics
+    return floor(x)
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_builtin_result_past_the_safe_range_is_a_panic(tmp_path, backend):
+    """floor and float_to_int past 2**53 panic on every backend; only an
+    operator past the range is a JavaScript limit (0.7 review)."""
+    harness = _suite(_write(tmp_path, BUILTIN_RANGE_PANICS), backend).file_results[0]
+    assert harness.harness_result is not None
+    assert harness.harness_result.violations == []
+    assert harness.harness_result.passed == 2
+
+
+NEGATIVE_INDEX = """
+func pick(i: Int) -> Int
+    example -5 panics "Index -5 out of bounds"
+    example -1 -> 3
+    let xs = [1, 2, 3]
+    return xs[i]
+end func
+
+func letter(i: Int) -> String
+    example -9 panics "Index -9 out of bounds"
+    let s = "abc"
+    return s[i]
+end func
+
+func slot(i: Int) -> Int with mutation
+    example -4 panics "Index -4 out of bounds"
+    let a = array_from_list([1, 2, 3])
+    return a[i]
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_an_index_out_of_bounds_is_named_as_written(tmp_path, backend):
+    """`xs[-5]` reports index -5 on every backend, not the position it
+    counted back to (0.7 review)."""
+    harness = _suite(_write(tmp_path, NEGATIVE_INDEX), backend).file_results[0]
+    assert harness.harness_result is not None
+    assert harness.harness_result.violations == []
+    assert harness.harness_result.passed == 4
+
+
+def test_termination_handlers_leave_a_set_disposition_alone(monkeypatch):
+    """nohup's ignored SIGHUP, an embedder's handler and a handler set from C
+    (read as None) stay; only the default action is replaced (0.7 review)."""
+    import signal
+
+    from geno.compiled_tests import _stop_on_termination
+
+    def handler(signum, frame):
+        pass
+
+    previous = {n: signal.getsignal(n) for n in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, handler)
+        with _stop_on_termination():
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+            assert signal.getsignal(signal.SIGTERM) is handler
+        assert signal.getsignal(signal.SIGTERM) is handler
+
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        real = signal.getsignal
+        monkeypatch.setattr(
+            signal,
+            "getsignal",
+            lambda number: None if number == signal.SIGTERM else real(number),
+        )
+        with _stop_on_termination():
+            assert real(signal.SIGTERM) is signal.SIG_DFL
+            assert real(signal.SIGHUP) is not signal.SIG_DFL
+        assert real(signal.SIGHUP) is signal.SIG_DFL
+    finally:
+        for number, disposition in previous.items():
+            if disposition is not None:
+                signal.signal(number, disposition)
 
 
 @pytest.mark.parametrize("backend", COMPILED)

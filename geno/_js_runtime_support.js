@@ -1234,24 +1234,26 @@ function _safe_neg(a) {
 }
 
 function _safe_index(target, index) {
+    // An out-of-bounds message names the index as written, as the other
+    // backends do: `xs[-5]` is "Index -5", not the position it counted to.
     if (Array.isArray(target)) {
         if (!_GENO_NUMBER.isInteger(index)) throw new Error("List index must be integer");
-        if (index < 0) index += target.length;
-        if (index < 0 || index >= target.length) throw new Error("Index " + index + " out of bounds");
-        return target[index];
+        const position = index < 0 ? index + target.length : index;
+        if (position < 0 || position >= target.length) throw new Error("Index " + index + " out of bounds");
+        return target[position];
     }
     if (target instanceof GenoArray) {
         if (!_GENO_NUMBER.isInteger(index)) throw new Error("Array index must be integer");
-        if (index < 0) index += target.length;
-        if (index < 0 || index >= target.length) throw new Error("Index " + index + " out of bounds");
-        return target._elements[index];
+        const position = index < 0 ? index + target.length : index;
+        if (position < 0 || position >= target.length) throw new Error("Index " + index + " out of bounds");
+        return target._elements[position];
     }
     if (typeof target === 'string') {
         if (!_GENO_NUMBER.isInteger(index)) throw new Error("String index must be integer");
         const chars = _stringCodePoints(target);
-        if (index < 0) index += chars.length;
-        if (index < 0 || index >= chars.length) throw new Error("Index " + index + " out of bounds");
-        return chars[index];
+        const position = index < 0 ? index + chars.length : index;
+        if (position < 0 || position >= chars.length) throw new Error("Index " + index + " out of bounds");
+        return chars[position];
     }
     if (target instanceof _GENO_MAP) {
         const value = _mapGetValue(target, index);

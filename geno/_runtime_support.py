@@ -313,7 +313,39 @@ def _geno_scalar_text(value: Any) -> str:
     """``str(value)``, with an Int written in full past CPython's digit limit."""
     if type(value) is int:
         return _geno_int_text(value)
-    return str(value)
+    try:
+        return str(value)
+    except ValueError as error:
+        if not _geno_is_int_digit_limit_error(error):
+            raise
+    # A tuple (a Map key, say) holding such an Int.
+    return _geno_repr_text(value)
+
+
+def _geno_repr_text(value: Any) -> str:
+    """``repr(value)``, with every Int in it written by ``_geno_int_text``."""
+    try:
+        return repr(value)
+    except ValueError as error:
+        if not _geno_is_int_digit_limit_error(error) or not isinstance(
+            value, (int, tuple, list, dict)
+        ):
+            raise
+    if isinstance(value, int):
+        return _geno_int_text(value)
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ", ".join(
+                _geno_repr_text(key) + ": " + _geno_repr_text(item)
+                for key, item in value.items()
+            )
+            + "}"
+        )
+    items = ", ".join(_geno_repr_text(item) for item in value)
+    if isinstance(value, list):
+        return "[" + items + "]"
+    return "(" + items + ("," if len(value) == 1 else "") + ")"
 
 
 def _geno_is_int_digit_limit_error(error: Any) -> bool:
@@ -434,7 +466,8 @@ class Constructor:
         if not fields:
             return type(self).__name__
         field_strs = ", ".join(
-            f"{f.name}: {_object_getattribute(self, f.name)!r}" for f in fields
+            f"{f.name}: {_geno_repr_text(_object_getattribute(self, f.name))}"
+            for f in fields
         )
         return f"{type(self).__name__}({field_strs})"
 
@@ -500,11 +533,51 @@ def _geno_unshared_part(value: Any) -> Any:
         return list(value)
     if isinstance(value, dict):
         return dict(value)
-    if type(value) is tuple:
-        # A tuple cannot be written in place: rebuild it from unshared parts,
-        # so a write through any of its elements lands in a copy.
-        return tuple(_geno_unshared_part(element) for element in value)
+    # A tuple comes back as is: it cannot be written in place, so a write
+    # through it rebuilds it around its one element on the path
+    # (``_geno_own_step``).
     return value
+
+
+def _geno_own_step(trail: Any, is_index: Any, key: Any) -> Any:
+    """Own the next part of a field write's path that goes through a tuple.
+
+    *trail* holds ``[value, is_index, key]`` for each part reached so far,
+    the root first; the part *key* names is owned and appended. Each step
+    runs before the next index is evaluated, as the interpreter's path
+    does. A tuple cannot be written in place, so only the element the write
+    goes through is copied, and the tuple is rebuilt around it and put back
+    where it was (#129). Returns the root, rebuilt when it is a tuple.
+    """
+    parent = trail[-1][0]
+    if type(parent) is tuple:
+        element = _safe_index(parent, key)
+        child = _geno_unshared_part(element)
+        trail += [[child, is_index, key]]
+        if child is not element:
+            _geno_put_back(trail)
+    elif is_index:
+        trail += [[_geno_own_index(parent, key), is_index, key]]
+    else:
+        trail += [[_geno_own_field(parent, key), is_index, key]]
+    return trail[0][0]
+
+
+def _geno_put_back(trail: Any) -> None:
+    """Put the last part of *trail* back, rebuilding each tuple above it."""
+    index = len(trail) - 1
+    while index > 0:
+        value, is_index, key = trail[index]
+        parent = trail[index - 1][0]
+        if type(parent) is not tuple:
+            if is_index:
+                parent[key] = value
+            else:
+                _object_setattr(parent, key, value)
+            return
+        position = key + len(parent) if key < 0 else key
+        trail[index - 1][0] = parent[:position] + (value,) + parent[position + 1 :]
+        index -= 1
 
 
 def _geno_own_field(parent: Any, field_name: str) -> Any:
@@ -1432,7 +1505,8 @@ def _safe_pow(a, b):
         est_bits = max(a.bit_length(), 1) * b
         if est_bits > _MAX_INTEGER_BITS:
             raise RuntimeError(
-                f"Exponentiation result too large (estimated {est_bits} bits)"
+                "Exponentiation result too large (estimated "
+                f"{_geno_scalar_text(est_bits)} bits)"
             )
     try:
         result = a**b
@@ -2553,7 +2627,9 @@ def sleep_ms(ms):
             f"sleep_ms: expected Int milliseconds, got {type(ms).__name__}"
         )
     if ms < 0:
-        raise RuntimeError(f"sleep_ms: negative duration not allowed ({ms})")
+        raise RuntimeError(
+            f"sleep_ms: negative duration not allowed ({_geno_scalar_text(ms)})"
+        )
     if ms == 0:
         return None
     _runtime_time.sleep(ms / 1000.0)
@@ -3857,13 +3933,50 @@ def _reject_json_constant(name: str) -> None:
     raise ValueError(f"Invalid JSON constant: {name}")
 
 
+def _geno_json_int(text: str) -> int:
+    """A JSON integer literal as an int, past CPython's digit limit too.
+
+    A literal with more digits than any Int within ``_MAX_INTEGER_BITS`` has
+    is refused before any work: it is at least ``10 ** (n - 1)``, which
+    needs more than ``3 * (n - 1)`` bits. The rest are read in pieces.
+    (geno/builtins.py ``_json_int`` is the interpreter's copy.)
+    """
+    digits = text.lstrip("-")
+    if 3 * (len(digits) - 1) >= _MAX_INTEGER_BITS:
+        raise RuntimeError(
+            f"Integer exceeds maximum size (more than {_MAX_INTEGER_BITS} bits)"
+        )
+    value = _geno_int_from_digits(digits)
+    return -value if text.startswith("-") else value
+
+
+def _geno_int_from_digits(digits: str) -> int:
+    """The int a run of decimal digits writes, read in halves."""
+    if len(digits) <= 600:
+        return int(digits)
+    half = len(digits) // 2
+    scale: int = 10**half
+    return _geno_int_from_digits(digits[:-half]) * scale + _geno_int_from_digits(
+        digits[-half:]
+    )
+
+
 def json_parse(text: str):
     """Parse a JSON string into a JsonValue."""
     import json as _json
 
     try:
         _validate_json_nesting(text)
-        obj = _json.loads(text, parse_constant=_reject_json_constant)
+        try:
+            obj = _json.loads(text, parse_constant=_reject_json_constant)
+        except ValueError as error:
+            if not _geno_is_int_digit_limit_error(error):
+                raise
+            # An integer literal past CPython's digit limit, as json_encode
+            # writes a long Int: read the text again, every int in pieces.
+            obj = _json.loads(
+                text, parse_constant=_reject_json_constant, parse_int=_geno_json_int
+            )
         value = _python_to_json_value(obj)
     except (ValueError, RecursionError) as e:
         return _check_collection_size(Err(str(e)))
@@ -4648,7 +4761,12 @@ def _geno_extern_from_host(
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             _geno_extern_mismatch(path, "Float", value)
         try:
-            return float(value)
+            # The number a subclass holds, without running its own hooks.
+            return (
+                int.__float__(value)
+                if isinstance(value, int)
+                else float.__float__(value)
+            )
         except OverflowError:
             raise _GenoExternMismatch(
                 ("" if path is None else _geno_json_path(path) + ": ")
@@ -4731,7 +4849,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
     if isinstance(value, int):
         return ops.node("JsonInt", _geno_extern_int(value, ops))
     if isinstance(value, float):
-        return ops.node("JsonFloat", float(value))
+        return ops.node("JsonFloat", float.__float__(value))
     if isinstance(value, str):
         _geno_extern_size(ops, "String", len(value))
         return ops.node("JsonString", _geno_extern_str(value))
@@ -4769,12 +4887,14 @@ def _geno_extern_int(value: Any, ops: Any) -> Any:
     """A host int result as a Geno Int, within the integer size limit.
 
     A subclass (an ``IntEnum`` member, say) becomes the plain int it holds,
-    so Geno's equality and display see the same value on every backend.
-    Compiled Python's adapter applies the integer size limit here; the
-    interpreter's checks the whole result against its own limits afterwards.
+    so Geno's equality and display see the same value on every backend;
+    ``int.__int__`` reads it without running any method the subclass
+    overrides. Compiled Python's adapter applies the integer size limit
+    here; the interpreter's checks the whole result against its own limits
+    afterwards.
     """
     if type(value) is not int:
-        value = int(value)
+        value = int.__int__(value)
     check = getattr(ops, "extern_int", None)
     if check is not None:
         check(value)
@@ -4919,7 +5039,7 @@ def _geno_value_to_python(value):
     # Option: None/Some
     if isinstance(value, type(None_)):
         return None
-    if hasattr(value, "_tag") and getattr(value, "_tag", None) == "Some":
+    if isinstance(value, Some):
         return _geno_value_to_python(value.value)
     # Result: Ok/Err
     if isinstance(value, Ok):

@@ -218,9 +218,9 @@ def test_incremental_mutators_do_not_rewalk_existing_target(
     checked_roots: list[list[object]] = []
     original_check = interpreter._check_collection_limits
 
-    def record_check(roots, location):
+    def record_check(roots, location, known=()):
         checked_roots.append(list(roots))
-        original_check(roots, location)
+        original_check(roots, location, known)
 
     monkeypatch.setattr(interpreter, "_check_collection_limits", record_check)
     interpreter._call_function(

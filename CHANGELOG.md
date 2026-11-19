@@ -625,29 +625,33 @@ Fixed in the 0.7 release review:
 - `geno test --backend js` passed an `example ... panics` whose call threw
   a JavaScript `ReferenceError` because Node lacks the builtin
   (`sleep_ms`, `stdin_read_all`), with exit status 0, where the interpreter
-  and `--backend python` failed it. A compiled test build is now also
-  type-checked against the profiles `geno compile --target <backend>`
-  uses, so such a program is a type error, and a host's own error (a
-  JavaScript `TypeError` or `ReferenceError`, a Python `NameError`) fails a
-  panics example instead of satisfying it.
+  and `--backend python` failed it. A host's own error (a JavaScript
+  `TypeError` or `ReferenceError`, a Python `NameError`) now fails a panics
+  example instead of satisfying it. A browser program's examples still run
+  on `--backend js|python`, where its canvas builtins have stubs.
 - Under `geno test --backend js`, JavaScript's integer limits (`Exponent
-  too large`, `... exceeds JavaScript safe integer range`) satisfied a
-  panics example; they are resource limits, as on the other backends. The
+  too large`, an operator's `... exceeds JavaScript safe integer range`)
+  satisfied a panics example; they are resource limits, as on the other
+  backends. A builtin's result past that range (`floor`, `float_to_int`)
+  stays a panic, as on the interpreter and in compiled Python. The
   JavaScript runtime now marks its panics, as compiled Python does, so a
   panic worded like a limit stays a panic there too.
 - Killing `geno test --backend python|js` with SIGTERM or SIGHUP left the
   running case's process behind, at full CPU and with no timeout, and its
-  scratch directory; both are now cleaned up. A compiled case's capability
-  denial no longer advises `pass '--cap env'`, which `geno test` does not
-  take.
+  scratch directory; both are now cleaned up. A signal the process ignores
+  (`nohup`) or an embedder handles is left as it is. A compiled case's
+  capability denial no longer advises `pass '--cap env'`, which `geno test`
+  does not take.
 - Compiled JavaScript rejected a field write through a negative index
   (`arr[-1].x = 50`, "Index -1 out of bounds for assignment") that the
   interpreter and compiled Python accept; a regression from #259.
 - A field write through a tuple element (`t.0.x = 5`, `arr[1].0.x = 99`)
   changed a value read from the same place earlier on the interpreter and
   in compiled Python, while compiled JavaScript, since #259, did not. Every
-  backend now gives the write its own copy, as
-  [runtime semantics](docs/reference/runtime-semantics.md) describes.
+  backend now gives the write its own copy of the one element it goes
+  through, as [runtime semantics](docs/reference/runtime-semantics.md)
+  describes; a whole tuple variable passed as an argument therefore keeps
+  what it held on every backend.
 - Compiled JavaScript's `ceil`, `floor` and `float_to_int`, and an extern
   whose host returned `-0`, produced an Int negative zero, which a Float
   format spec or `int_to_float` showed as `-0.0`. An Int is never `-0`
@@ -659,9 +663,10 @@ Fixed in the 0.7 release review:
 - An assignment or compound assignment whose target goes through a slice
   (`xs[1:] = ys`, `xs[1:][0].x = 50`, `ps[1:][0].x += 1`) is now an error at
   the slice (E202), even on a `let`. Before, the write was accepted and
-  silently lost on every backend. `xs[1:][i].x += 1` no longer says the
-  target "cannot call a function", and an invalid assignment target is
-  reported at its `=`, not on the next line.
+  silently lost on every backend. `xs[1:][i].x += 1` and
+  `a[xs[1:][0]] += 1` no longer say the target "cannot call a function",
+  and an invalid assignment target is reported at its `=`, not on the next
+  line.
 - A loop or comprehension over something that is not a List reports one
   error, without a follow-on "Tuple pattern used with non-tuple type: Any".
 - The E330 fix handles parentheses around the expected value:
@@ -677,10 +682,10 @@ Fixed in the 0.7 release review:
   calling function was bound with, so a self tail call threading a List or
   Vec cost the collection's size per iteration: summing a 20,000-element
   list by tail recursion timed out on `geno run --unsafe`, `geno test`, the
-  embedding API and the hosted server. A value passed on unchanged is no
-  longer walked again (field assignment now checks what it writes, as
-  index assignment and the mutating builtins do), and that sum takes
-  0.4 s.
+  embedding API and the hosted server. A value passed on unchanged, or
+  handed to a builtin such as `length`, is no longer walked again (field
+  assignment now checks what it writes, as index assignment and the
+  mutating builtins do), and that sum takes 0.4 s.
 - An Int too large for a Float under an `f`, `e` or `%` format spec raised
   a host `OverflowError` (a Python traceback on `geno run --unsafe`, an
   exception out of `geno.run()`); it is now the runtime error
@@ -691,11 +696,13 @@ Fixed in the 0.7 release review:
   test` logged an internal error for one in an f-string, and an `example
   ... panics` on such a conversion passed. Every Int-to-text path of the
   interpreter and compiled Python now writes any allowed Int, without
-  changing the process-wide limit.
+  changing the process-wide limit, including a Map key holding one and the
+  shift and exponent limit messages, and `json_parse` reads one back.
 - An extern's Python host could return an `int` or `str` subclass (an
   `IntEnum` or `StrEnum` member) that reached Geno unchanged, so
   `status(404) == 404` was false on the interpreter and true in compiled
-  Python; extern results are now plain values. Compiled Python applies
+  Python; extern results are now plain values, read without running a
+  method the subclass overrides. Compiled Python applies
   `max_integer_bits` to extern Int results, as the interpreter does, and a
   JsonValue argument nested past 320 levels names the extern on every
   backend.
@@ -716,6 +723,10 @@ Fixed in the 0.7 release review:
   1`), which broke every later function; a Python `__x__` name is now a
   reserved runtime name there, so `geno check` rejects it. The isolated
   worker's validator also treats import aliases as binding forms.
+- Compiled Python's `json_to_string` wrote `Some(5)` as
+  `{"_tag":"Some","value":5}`; it writes `5`, as the other backends do.
+- An index out of bounds names the index as written on every backend:
+  `xs[-5]` on a three-element list is "Index -5", not "Index -2".
 - Language-server rename, references and highlights returned duplicate,
   overlapping edits for a compound assignment's target (`total += x`,
   `arr[i] += x`, `p.x *= 2`); each use is now recorded once.
