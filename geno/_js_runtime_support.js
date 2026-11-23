@@ -5373,9 +5373,11 @@ function _genoExternJsonToHost(node, depth) {
 
 function _genoExternEntries(value, path) {
     if (value instanceof _GENO_MAP) {
+        _genoExternSize("Map", value.size);
         const entries = [];
         for (const [key, item] of value) {
             if (typeof key !== "string") _genoExternMismatch(path, "an object with string keys", key);
+            _genoExternSize("String", _stringLength(key));
             entries.push([key, item]);
         }
         return entries;
@@ -5392,7 +5394,12 @@ function _genoExternEntries(value, path) {
         throw new _GenoExternMismatch(_genoExternWhere(path)
             + "expected a plain object, got " + kind);
     }
-    return globalThis.Object.keys(value).map(key => [key, value[key]]);
+    const keys = globalThis.Object.keys(value);
+    _genoExternSize("Map", keys.length);
+    return keys.map(key => {
+        _genoExternSize("String", _stringLength(key));
+        return [key, value[key]];
+    });
 }
 
 function _genoExternFromHost(value, shape, path, depth) {
