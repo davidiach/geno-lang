@@ -514,6 +514,17 @@ class TestClassifier:
         assert failure is not None
         assert failure.kind == ("panic" if limit is None else "limit")
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Negation operand exceeds JavaScript safe integer range",
+            "Negation result exceeds JavaScript safe integer range",
+        ],
+    )
+    def test_js_negation_safe_integer_limit(self, message: str) -> None:
+        assert compiled_limit(message, "js") == "JavaScript safe integer limit"
+        assert compiled_limit(message, "python") is None
+
     def test_a_compiled_panic_is_recognized_by_its_provenance(self) -> None:
         """``panic`` in compiled Python marks its exception, so its text never
         makes it a limit; an unmarked error with the same text is one."""

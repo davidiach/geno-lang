@@ -317,7 +317,9 @@ def _numeric_mod(a: Any, b: Any) -> Any:
         raise ZeroDivisionError("division by zero")
     if isinstance(a, int) and isinstance(b, int):
         return _int_trunc_divmod(a, b)[1]
-    return a - (b * math.trunc(a / b))
+    if math.isnan(a) or math.isnan(b) or math.isinf(a):
+        return float("nan")
+    return math.fmod(a, b)
 
 
 def _expected_runtime_type_is_float(expected_type: Any) -> bool:

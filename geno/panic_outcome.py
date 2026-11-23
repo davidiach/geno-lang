@@ -88,7 +88,8 @@ _JS_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"(?:Addition|Subtraction|Multiplication|Integer division|Modulo"
-            r"|Exponentiation|Left shift|Right shift|Bitwise (?:or|and|xor|not))"
+            r"|Exponentiation|Left shift|Right shift|Bitwise (?:or|and|xor|not)"
+            r"|Negation)"
             r" (?:operand|amount|result) exceeds JavaScript safe integer range$"
         ),
         "JavaScript safe integer limit",

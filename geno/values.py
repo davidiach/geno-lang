@@ -575,9 +575,13 @@ def int_from_text(text: str) -> int:
     except ValueError as error:
         if not is_int_digit_limit_error(error):
             raise
-    digits = text.lstrip("+-")
+    stripped = text.strip()
+    negative = stripped.startswith("-")
+    digits = stripped[1:] if stripped[:1] in "+-" else stripped
+    if not digits or not digits.isascii() or not digits.isdigit():
+        raise ValueError(f"invalid literal for int() with base 10: {text!r}") from None
     value = _int_from_digits(digits)
-    return -value if text.startswith("-") else value
+    return -value if negative else value
 
 
 def _int_from_digits(digits: str) -> int:
