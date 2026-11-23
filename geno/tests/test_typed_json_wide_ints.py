@@ -80,3 +80,41 @@ end func
     assert _compiled_js_output(source) == (
         'Err(error: "json_parse integer literal exceeds JavaScript safe integer range")\n'
     )
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        "interpreter",
+        "python",
+        pytest.param("js", marks=needs_node),
+    ],
+)
+@pytest.mark.parametrize(
+    ("zeros", "expected_error"),
+    [
+        (10000, "Integer exceeds maximum size (33220 bits)"),
+        (20000, "Integer exceeds maximum size (more than 33219 bits)"),
+    ],
+)
+def test_json_decode_float_enforces_integer_bit_limit_across_backends(
+    backend, zeros, expected_error
+):
+    from geno import RunConfig, run
+
+    source = f"""
+func main() -> Unit with io
+    let r: Result[Float, String] = json_decode("1" + string_repeat("0", {zeros}))
+    print(r)
+end func
+"""
+    if backend == "interpreter":
+        result = run(source, config=RunConfig(capabilities={"print"}))
+        assert not result.ok
+        assert expected_error in result.diagnostics[0].message
+    elif backend == "python":
+        with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
+            _compiled_python_output(source)
+    else:
+        with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
+            _compiled_js_output(source)

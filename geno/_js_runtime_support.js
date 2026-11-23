@@ -4533,6 +4533,20 @@ function _jsonParseNumber(parser) {
     const isInt = !/[.eE]/.test(token);
     if (isInt) {
         if (parser.wideInts && !_GENO_NUMBER.isSafeInteger(_GENO_NUMBER(token))) {
+            // Enforce the language-wide integer size limit consistently with
+            // the Python backends before treating a wide literal as a Float.
+            const digits = token.startsWith("-") ? token.slice(1) : token;
+            if (3 * (digits.length - 1) >= _MAX_INTEGER_BITS) {
+                throw new Error(
+                    `Integer exceeds maximum size (more than ${_MAX_INTEGER_BITS} bits)`
+                );
+            }
+            if (digits.length * 4 > _MAX_INTEGER_BITS) {
+                const bits = BigInt(digits).toString(2).length;
+                if (bits > _MAX_INTEGER_BITS) {
+                    throw new Error(`Integer exceeds maximum size (${bits} bits)`);
+                }
+            }
             // json_decode: a Float may hold it, as on the other backends; an
             // Int or a JsonValue still cannot (_genoJsonFrom decides).
             parser.sawWideInt = true;
@@ -4769,7 +4783,13 @@ function json_parse(text) {
         });
         return _checkCollectionSize({ _tag: "Ok", value });
     } catch (e) {
-        if (String(e.message).includes("size exceeds limit")) throw _genoRestack(e);
+        const message = String(e.message);
+        if (
+            message.includes("size exceeds limit")
+            || message.startsWith("Integer exceeds maximum size (")
+        ) {
+            throw _genoRestack(e);
+        }
         return _checkCollectionSize(Err(e.message));
     }
 }
@@ -5209,7 +5229,13 @@ function json_decode(text, shape, types) {
         });
         parsed = _checkCollectionSize({ _tag: "Ok", value });
     } catch (e) {
-        if (String(e.message).includes("size exceeds limit")) throw _genoRestack(e);
+        const message = String(e.message);
+        if (
+            message.includes("size exceeds limit")
+            || message.startsWith("Integer exceeds maximum size (")
+        ) {
+            throw _genoRestack(e);
+        }
         return _checkCollectionSize(Err(e.message));
     }
 
