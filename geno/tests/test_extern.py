@@ -177,6 +177,55 @@ def huge_in_json():
     return {"n": [2**100000]}
 
 
+class DictHook(dict):
+    def __len__(self):
+        raise ValueError("dict_len_boom")
+
+    def items(self):
+        raise ValueError("dict_items_boom")
+
+
+class ListHook(list):
+    def __len__(self):
+        raise ValueError("list_len_boom")
+
+    def __iter__(self):
+        raise ValueError("list_iter_boom")
+
+
+class TupleHook(tuple):
+    def __len__(self):
+        raise ValueError("tuple_len_boom")
+
+    def __iter__(self):
+        raise ValueError("tuple_iter_boom")
+
+
+class StrLenHook(str):
+    def __len__(self):
+        raise ValueError("str_len_boom")
+
+
+def dict_hook():
+    return DictHook({"a": 1})
+
+
+def list_hook():
+    return ListHook([1, 2])
+
+
+def tuple_hook():
+    return TupleHook((3, 4))
+
+
+def str_len_hook():
+    return StrLenHook("ok")
+
+
+def container_hooks_json():
+    return DictHook({"xs": ListHook([TupleHook((1, StrLenHook("ok")))])})
+
+
 not_callable = 42
 """
 
@@ -196,6 +245,13 @@ module.exports = {
     sparse: () => new Array(2),
     promise: () => Promise.resolve(42),
     when: () => new Date(0),
+    throwingGetter: () => Object.defineProperty({}, "k", {
+        enumerable: true,
+        get() { throw new Error("getter_boom"); },
+    }),
+    throwingProxy: () => new Proxy({}, {
+        ownKeys() { throw new Error("proxy_boom"); },
+    }),
     cycle: () => { const items = []; items.push(items); return items; },
     argsSeen: (...args) => JSON.stringify(args),
     countTo: n => Array.from({ length: n }, (_, index) => index),
@@ -1367,3 +1423,82 @@ def test_js_results_that_are_not_plain_data_are_rejected(
     ok, failure = _run("js", source, host_dir)
     assert not ok
     assert failure == message
+
+
+@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+def test_host_container_subclass_hooks_do_not_run_or_escape(
+    backend: str, host_dir: Path
+) -> None:
+    source = (
+        _extern("dict_hook", "() -> Map[String, Int]", "ffi_host:dict_hook", None)
+        + _extern("list_hook", "() -> List[Int]", "ffi_host:list_hook", None)
+        + _extern("tuple_hook", "() -> (Int, Int)", "ffi_host:tuple_hook", None)
+        + _extern("str_len_hook", "() -> String", "ffi_host:str_len_hook", None)
+        + _extern(
+            "container_hooks_json",
+            "() -> JsonValue",
+            "ffi_host:container_hooks_json",
+            None,
+        )
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                print(dict_hook())
+                print(list_hook())
+                print(tuple_hook())
+                print(str_len_hook())
+                print(json_stringify(container_hooks_json()))
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (
+        True,
+        '{"a": 1}\n[1, 2]\n(3, 4)\nok\n{"xs":[[1,"ok"]]}\n',
+    )
+
+
+def test_python_extern_result_conversion_error_stays_inside_boundary() -> None:
+    from geno import _runtime_support
+
+    class BrokenOps:
+        def map(self, pairs: object) -> object:
+            raise ValueError("ops_boom")
+
+    with pytest.raises(
+        _runtime_support._GenoExternFailure,
+        match="Extern function 'f' failed: ValueError: ops_boom",
+    ):
+        _runtime_support._geno_extern_invoke(
+            "f",
+            ("builtins", ("dict",)),
+            [],
+            (),
+            ("map", ("int",)),
+            BrokenOps(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("signature", "export", "detail"),
+    [
+        ("() -> Map[String, Int]", "throwingGetter", "Error: getter_boom"),
+        ("() -> JsonValue", "throwingGetter", "Error: getter_boom"),
+        ("() -> Map[String, Int]", "throwingProxy", "Error: proxy_boom"),
+        ("() -> JsonValue", "throwingProxy", "Error: proxy_boom"),
+    ],
+)
+@needs_node
+def test_js_host_getter_and_proxy_errors_stay_inside_extern_boundary(
+    host_dir: Path, signature: str, export: str, detail: str
+) -> None:
+    source = _extern("f", signature, None, f"./ffi_host.js#{export}") + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(f())
+        end func
+        """
+    )
+    ok, failure = _run("js", source, host_dir)
+    assert not ok
+    assert failure == f"Extern function 'f' failed: {detail}"
