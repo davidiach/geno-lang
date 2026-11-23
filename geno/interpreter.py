@@ -317,7 +317,9 @@ def _numeric_mod(a: Any, b: Any) -> Any:
         raise ZeroDivisionError("division by zero")
     if isinstance(a, int) and isinstance(b, int):
         return _int_trunc_divmod(a, b)[1]
-    return a - (b * math.trunc(a / b))
+    if math.isnan(a) or math.isnan(b) or math.isinf(a):
+        return float("nan")
+    return math.fmod(a, b)
 
 
 def _expected_runtime_type_is_float(expected_type: Any) -> bool:
@@ -3040,7 +3042,7 @@ class Interpreter:
                         try:
                             for stmt in func.body:
                                 self.exec_stmt(stmt, call_env)
-                            result = None  # No explicit return
+                            result = ()  # No explicit return (Unit)
                         except ReturnException as ret:
                             result = ret.value
                         except TailCallException as tail:
@@ -3130,6 +3132,8 @@ class Interpreter:
             self._step()
             try:
                 result = func.func(*args)
+                if result is None:
+                    result = ()
             # These arms run only once a builtin has failed, so a successful
             # call pays nothing for them (proposal 0018).
             except SandboxError as e:
@@ -3599,7 +3603,7 @@ class Interpreter:
             try:
                 for stmt in func.body:
                     self.exec_stmt(stmt, call_env)
-                result = None
+                result = ()
             except ReturnException as ret:
                 result = ret.value
             except PropagateException as prop:
@@ -3803,6 +3807,8 @@ class Interpreter:
             return bindings
 
         if isinstance(pattern, TuplePattern):
+            if not pattern.elements:
+                return {} if value is None or value == () else None
             # Tuples are fixed-arity, so a matching pattern must have the same
             # length; the typechecker already rejects mismatched arities, and
             # this keeps the interpreter safe for untyped/dynamic values.

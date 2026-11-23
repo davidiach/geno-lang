@@ -318,3 +318,53 @@ def test_a_json_literal_past_the_integer_limit_is_refused_early() -> None:
     assert "Integer exceeds maximum size" in result.diagnostics[0].message
     with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
         _compiled_python_output(source)
+
+
+@needs_digit_limit
+def test_int_from_text_handles_surrounding_whitespace_and_sign() -> None:
+    from geno.values import int_from_text
+
+    digits = "9" * 1500
+    expected = int("9" * 600) * 10**900 + int("9" * 600) * 10**300 + int("9" * 300)
+    with _limit(640):
+        assert int_from_text(f" -{digits}\n") == -expected
+        assert int_from_text(f"\t+{digits} ") == expected
+        assert int_from_text(" " * 700 + f"-{digits}") == -expected
+        assert int_from_text(f"  {digits}  ") == expected
+        with pytest.raises(ValueError):
+            int_from_text(f"--{digits}")
+        with pytest.raises(ValueError):
+            int_from_text(f" - {digits}")
+
+
+def test_process_sandbox_round_trips_long_int_results() -> None:
+    """ProcessSandbox serializes and parses >4,300-digit Int results without
+    hitting CPython's int_max_str_digits ValueError."""
+    from geno.sandbox import ProcessSandboxConfig, run_in_process
+
+    config = ProcessSandboxConfig(timeout=15.0)
+    expected = 10**5000
+
+    value, output = run_in_process("__result__ = 10 ** 5000\n", config)
+    assert output == ""
+    assert value == expected
+
+    nested, _ = run_in_process(
+        "__result__ = [10 ** 5000, -(10 ** 5000), {'n': 10 ** 5000}]\n",
+        config,
+    )
+    assert nested == [expected, -expected, {"n": expected}]
+
+    non_json, _ = run_in_process("__result__ = {10 ** 5000}\n", config)
+    assert non_json == "{" + int_text(expected) + "}"
+
+    with pytest.raises(RuntimeError, match="result_too_large"):
+        run_in_process(
+            "__result__ = 10 ** 50_000\n",
+            ProcessSandboxConfig(timeout=15.0, max_output_length=1000),
+        )
+    with pytest.raises(RuntimeError, match="result_too_large"):
+        run_in_process(
+            "__result__ = {10 ** 50_000}\n",
+            ProcessSandboxConfig(timeout=15.0, max_output_length=1000),
+        )

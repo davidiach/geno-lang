@@ -5008,3 +5008,97 @@ try {{
         assert py_snapshot.findall(compile_to_python(shadowing)) == []
         assert len(js_snapshot.findall(js_rebinding)) == 1
         assert js_snapshot.findall(js_shadowing) == []
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        _interpreter_output,
+        _compiled_python_output,
+        pytest.param(
+            _compiled_js_output,
+            marks=pytest.mark.skipif(not HAS_NODE, reason="Node.js not available"),
+        ),
+    ],
+)
+def test_unit_representation_parity_in_maps_and_sets(backend) -> None:
+    """Every Unit value (literal `()`, implicit fall-off, json_decode) hashes
+    identically in maps and sets on every backend."""
+    source = """
+type Box = Box(value: Unit)
+
+func noop() -> Unit
+    example () -> ()
+end func
+
+func main() -> Unit with io, mutation
+    let u: Unit = ()
+    let n: Unit = noop()
+    print(u == n)
+    let m: Map[Unit, Int] = {(): 42}
+    print(n in m)
+    print(map_size(m.insert(n, 99)))
+    var mm: MutableMap[Unit, Int] = mutable_map_new()
+    mutable_map_set(map: mm, key: u, value: 1)
+    mutable_map_set(map: mm, key: n, value: 2)
+    print(mutable_map_size(mm))
+    var s: Set[Unit] = set_new()
+    set_add(s, u)
+    set_add(s, n)
+    var boxes: Set[Box] = set_new()
+    set_add(boxes, Box(u))
+    set_add(boxes, Box(n))
+    print(set_size(boxes))
+    match json_decode[Unit]("null") with
+        | Ok(decoded) ->
+            print(decoded == u)
+            print(decoded in m)
+            print(map_size(m.insert(decoded, 7)))
+            set_add(s, decoded)
+            print(set_size(s))
+        | Err(e) -> print("err: " + e)
+    end match
+end func
+"""
+    assert backend(source) == "true\ntrue\n1\n1\n1\ntrue\ntrue\n1\n1\n"
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        _interpreter_output,
+        _compiled_python_output,
+        pytest.param(
+            _compiled_js_output,
+            marks=pytest.mark.skipif(not HAS_NODE, reason="Node.js not available"),
+        ),
+    ],
+)
+def test_float_modulo_fmod_parity(backend) -> None:
+    """Float modulo uses IEEE-754 fmod semantics without quotient overflow or
+    cancellation, matching JavaScript `%` across large, subnormal, infinite,
+    and NaN operands."""
+    source = """
+func main() -> Unit with io
+    let big: Float = 10.0 ** 20.0
+    let huge: Float = 10.0 ** 200.0
+    let tiny: Float = 10.0 ** -200.0
+    let inf: Float = (10.0 ** 308.0) * 10.0
+    let nan_val: Float = inf - inf
+    print(5.5 % 2.0 == 1.5)
+    print(-5.5 % 2.0 == -1.5)
+    print(5.5 % -2.0 == 1.5)
+    print(big % 3.0 == 1.0)
+    print(-big % 3.0 == -1.0)
+    let rem: Float = huge % tiny
+    print(rem > 0.0 and rem < tiny)
+    print(1.0 % inf == 1.0)
+    let r_inf: Float = inf % 1.0
+    let r_nan_l: Float = nan_val % 1.0
+    let r_nan_r: Float = 1.0 % nan_val
+    print(r_inf != r_inf)
+    print(r_nan_l != r_nan_l)
+    print(r_nan_r != r_nan_r)
+end func
+"""
+    assert backend(source) == "true\n" * 10

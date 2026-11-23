@@ -25,6 +25,12 @@ from .lexer import Lexer, LexerError
 from .parser import ParseError, Parser
 from .typechecker import TypeChecker, TypeError
 
+
+def _is_unit_result(value: Any) -> bool:
+    """Return whether *value* represents absence of a printable value or Unit."""
+    return value is None or (type(value) is tuple and not value)
+
+
 _DEFINITION_STARTERS = {
     "FUNC",
     "TYPE",
@@ -458,7 +464,7 @@ class REPL:
                         self._flush_output()
                         print(f"Passed: {definition.name}")
                 self._flush_output()
-                if result is not None:
+                if not _is_unit_result(result):
                     print(f"=> {self.interpreter.format_display_value(result)}")
                 else:
                     print("Defined.")
@@ -467,7 +473,7 @@ class REPL:
                 # Try as expression
                 result = self._eval_expression(source)
                 self._flush_output()
-                if result is not None:
+                if not _is_unit_result(result):
                     print(f"=> {self.interpreter.format_display_value(result)}")
 
             self.history.append(source)
@@ -576,7 +582,7 @@ class REPL:
             self._flush_output()
 
             print(f"Loaded {len(program.definitions)} definitions.")
-            if result is not None:
+            if not _is_unit_result(result):
                 print(f"=> {self.interpreter.format_display_value(result)}")
 
         except FileNotFoundError:
