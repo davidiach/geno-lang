@@ -5002,30 +5002,15 @@ def _geno_extern_invoke(
             "Extern function '" + name + "' got " + str(failure)
         ) from None
     loading = True
-    # Host code, the binding's import or the call, can raise anything: this is
-    # the boundary where it becomes a Geno panic.
+    # Host code — the binding's import, the call, or result inspection — can
+    # raise anything: this is the one boundary where it becomes a Geno panic.
     try:
         host = _geno_extern_load(name, binding)
         loading = False
         value = host(*host_args)
+        return _geno_extern_from_host(value, result, None, ops, 0)
     except _GenoExternFailure:
         raise
-    except Exception as exc:
-        detail = type(exc).__name__ + ": " + str(exc)
-        if loading:
-            raise _GenoExternFailure(
-                "Extern function '"
-                + name
-                + "' could not load its python binding '"
-                + _geno_extern_spec(binding)
-                + "': "
-                + detail
-            ) from None
-        raise _GenoExternFailure(
-            "Extern function '" + name + "' failed: " + detail
-        ) from None
-    try:
-        return _geno_extern_from_host(value, result, None, ops, 0)
     except _GenoExternMismatch as mismatch:
         raise _GenoExternFailure(
             "Extern function '"
@@ -5039,6 +5024,15 @@ def _geno_extern_invoke(
         raise limit.args[0] from None
     except Exception as exc:
         detail = type(exc).__name__ + ": " + str(exc)
+        if loading:
+            raise _GenoExternFailure(
+                "Extern function '"
+                + name
+                + "' could not load its python binding '"
+                + _geno_extern_spec(binding)
+                + "': "
+                + detail
+            ) from None
         raise _GenoExternFailure(
             "Extern function '" + name + "' failed: " + detail
         ) from None

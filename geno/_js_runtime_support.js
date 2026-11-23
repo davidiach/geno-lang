@@ -5252,12 +5252,7 @@ function json_encode_pretty(value, indent, shape, types) {
 
 class _GenoExternFailure extends Error {}
 class _GenoExternMismatch extends Error {}
-class _GenoExternLimit extends Error {
-    constructor(error) {
-        super();
-        this.error = error;
-    }
-}
+const _GENO_EXTERN_LIMIT_ERRORS = new globalThis.WeakSet();
 const _GENO_EXTERN_MAX_DEPTH = 320;
 const _GENO_EXTERN_HOSTS = new _GENO_MAP();
 
@@ -5265,7 +5260,8 @@ function _genoExternSize(kind, size) {
     try {
         _checkCollectionKind(kind, size);
     } catch (e) {
-        throw new _GenoExternLimit(e);
+        if (e && typeof e === "object") _GENO_EXTERN_LIMIT_ERRORS.add(e);
+        throw e;
     }
 }
 
@@ -5529,7 +5525,7 @@ function _genoExternCall(name, binding, args, params, result) {
                 throw new _GenoExternFailure("Extern function '" + name
                     + "' returned a value that is not " + _genoExternTypeText(result) + ": " + e.message);
             }
-            if (e instanceof _GenoExternLimit) throw e.error;
+            if (e && typeof e === "object" && _GENO_EXTERN_LIMIT_ERRORS.has(e)) throw e;
             throw new _GenoExternFailure("Extern function '" + name + "' failed: "
                 + _genoExternErrorText(e));
         }
