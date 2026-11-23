@@ -891,6 +891,8 @@ def read_snippet_line(
             if not path.endswith(".geno"):
                 return None
             resolved = os.path.realpath(path)
+            if not resolved.endswith(".geno"):
+                return None
             roots = [os.path.realpath(os.fspath(root)) for root in allowed_roots]
             roots.append(str(STDLIB_DIR))
             if not any(_inside(resolved, root) for root in roots):
