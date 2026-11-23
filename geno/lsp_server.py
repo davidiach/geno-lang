@@ -173,6 +173,10 @@ def _diagnostics_by_uri_from_exceptions(
 # ---------------------------------------------------------------------------
 
 _KEYWORDS = list(KEYWORDS.keys())
+# Contextual keywords accepted by the parser without reserving them as
+# identifiers (rename still allows variables/functions with these names).
+_CONTEXTUAL_KEYWORDS = ("extern", "panics")
+_COMPLETION_KEYWORDS = (*_KEYWORDS, *_CONTEXTUAL_KEYWORDS)
 
 
 def _symbol_kind_for_lsp(kind: str) -> types.SymbolKind:
@@ -2836,7 +2840,7 @@ class GenoLanguageServer:
         completion_modules = self._current_completion_modules(project_view)
 
         # Keywords
-        for kw in _KEYWORDS:
+        for kw in _COMPLETION_KEYWORDS:
             items.append(
                 types.CompletionItem(
                     label=kw,
