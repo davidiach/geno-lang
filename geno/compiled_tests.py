@@ -48,6 +48,9 @@ _DISPLAY_LIMIT = 10_000
 # Loading the compiled program (the prelude, module constants, and on a busy
 # machine the host's own start-up) is not a test: it gets its own allowance.
 _STARTUP_TIMEOUT = 120.0
+# Bound waiting on a host that has announced `ready` (between cases or after
+# `done`, e.g. a lingering non-daemon thread or blocking exit hook).
+_SHUTDOWN_TIMEOUT = 5.0
 _POLL_SECONDS = 0.01
 _ERROR_LINE = re.compile(r"^[\w.]*(Error|Exception)\b[^:]*:")
 
@@ -575,8 +578,10 @@ def _run_cases(
             launched = time.monotonic()
             seen = 0
             ready = False
+            done = False
             current: int | None = None
             current_since = launched
+            idle_since = launched
             timed_out = False
             try:
                 while True:
@@ -586,12 +591,17 @@ def _run_cases(
                         event = record.get("event")
                         if event == "ready":
                             ready = True
+                            idle_since = time.monotonic()
+                        elif event == "done":
+                            done = True
+                            idle_since = time.monotonic()
                         elif event == "start":
                             current = record["i"]
                             current_since = time.monotonic()
                         elif "i" in record:
                             results[record["i"]] = record
                             current = None
+                            idle_since = time.monotonic()
                     seen = len(records)
                     if exited:
                         break
@@ -601,6 +611,15 @@ def _run_cases(
                             raise _LoadFailure(
                                 f"the compiled {backend} program did not start "
                                 f"within {_STARTUP_TIMEOUT:g} seconds"
+                            )
+                    elif current is None and done:
+                        if now - idle_since > _SHUTDOWN_TIMEOUT:
+                            break
+                    elif current is None:
+                        if now - idle_since > _SHUTDOWN_TIMEOUT:
+                            raise _LoadFailure(
+                                f"the compiled {backend} program stalled between "
+                                f"tests for {_SHUTDOWN_TIMEOUT:g} seconds"
                             )
                     elif (
                         current is not None

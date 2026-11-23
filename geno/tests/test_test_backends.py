@@ -962,3 +962,50 @@ def test_generic_copies_tuple_valued_inputs_and_float_collections(tmp_path, back
     [violation] = harness.violations
     assert violation.function == "as_vec"
     assert violation.message.startswith("expected Vec([0.4]), got Vec([0.3")
+
+
+def test_lingering_process_after_done_is_reaped_without_losing_results(
+    monkeypatch,
+) -> None:
+    """A compiled Python test process that leaves a non-daemon thread alive
+    after emitting `done` is bounded by `_SHUTDOWN_TIMEOUT` and reaped without
+    dropping completed case results."""
+    from geno import compiled_tests
+    from geno.base_compiler import TEST_REGISTRY_NAME
+
+    monkeypatch.setattr(compiled_tests, "_SHUTDOWN_TIMEOUT", 0.2)
+    program = f"""
+import threading, time
+
+def _geno_format_bounded(value, limit):
+    return str(value)
+
+def _case():
+    threading.Thread(target=time.sleep, args=(30.0,), daemon=False).start()
+    return 42
+
+{TEST_REGISTRY_NAME} = [(lambda: (), _case, lambda: 42)]
+"""
+    results = compiled_tests._run_cases("python", program, [0], timeout=5.0)
+    assert results[0]["outcome"] == "equal"
+    assert results[0]["actual"] == "42"
+
+
+def test_process_stalled_between_cases_fails_with_load_failure(monkeypatch) -> None:
+    """A host that announces `ready` and then stalls without starting a case or
+    emitting `done` fails bounded by `_SHUTDOWN_TIMEOUT` instead of hanging."""
+    from geno import compiled_tests
+
+    monkeypatch.setattr(compiled_tests, "_SHUTDOWN_TIMEOUT", 0.2)
+    stalling_launcher = """
+import json, os, time
+with open(os.environ["GENO_TEST_PLAN"], encoding="utf-8") as handle:
+    plan = json.load(handle)
+with open(plan["results"], "a", encoding="utf-8") as out:
+    out.write(json.dumps({"event": "ready"}) + "\\n")
+    out.flush()
+time.sleep(30.0)
+"""
+    monkeypatch.setattr(compiled_tests, "_PYTHON_LAUNCHER", stalling_launcher)
+    with pytest.raises(compiled_tests._LoadFailure, match="stalled between tests"):
+        compiled_tests._run_cases("python", "", [0], timeout=5.0)
