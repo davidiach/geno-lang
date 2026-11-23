@@ -330,6 +330,68 @@ class TestKeywords:
         assert "return" in _KEYWORDS
         assert "match" in _KEYWORDS
         assert "async" in _KEYWORDS
+        assert "extern" not in _KEYWORDS
+        assert "panics" not in _KEYWORDS
+
+    def test_completion_includes_contextual_keywords_and_rename_allows_them(
+        self, tmp_path: Path
+    ):
+        source = (
+            "func helper(n: Int) -> Int\n"
+            "    example 1 -> 1\n"
+            "    let panics: Int = n\n"
+            "    return panics\n"
+            "end func\n"
+        )
+        file_path = tmp_path / "Main.geno"
+        file_path.write_text(source, encoding="utf-8")
+        uri = file_path.as_uri()
+
+        server = create_server(diag_debounce_sec=0)
+        server.lsp._workspace = Workspace(
+            None,
+            sync_kind=types.TextDocumentSyncKind.Full,
+        )
+        did_open = server.lsp._get_handler(types.TEXT_DOCUMENT_DID_OPEN)
+        completion = server.lsp._get_handler(types.TEXT_DOCUMENT_COMPLETION)
+        rename = server.lsp._get_handler(types.TEXT_DOCUMENT_RENAME)
+
+        did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri,
+                    language_id="geno",
+                    version=1,
+                    text=source,
+                )
+            )
+        )
+
+        comp = completion(
+            types.CompletionParams(
+                text_document=types.TextDocumentIdentifier(uri=uri),
+                position=types.Position(line=2, character=4),
+            )
+        )
+        keyword_labels = {
+            item.label
+            for item in comp.items
+            if item.kind == types.CompletionItemKind.Keyword
+        }
+        assert "extern" in keyword_labels
+        assert "panics" in keyword_labels
+
+        # Contextual keywords remain valid identifiers for rename.
+        edit = rename(
+            types.RenameParams(
+                text_document=types.TextDocumentIdentifier(uri=uri),
+                position=types.Position(line=2, character=10),
+                new_name="extern",
+            )
+        )
+        assert edit is not None and edit.changes is not None
+        assert len(edit.changes[uri]) == 2
+        assert all(change.new_text == "extern" for change in edit.changes[uri])
 
 
 class TestServerCreation:
