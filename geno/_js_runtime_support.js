@@ -2854,7 +2854,9 @@ class GenoSet {
 }
 
 function _setKey(item) {
-    return _GENO_JSON.stringify(item);
+    // Unit is `null`, but a function that ends without a `return` yields
+    // `undefined`: normalize both to `null` so Set matches `_valuesEqual`.
+    return _GENO_JSON.stringify(item, (_key, value) => (value === undefined ? null : value));
 }
 
 function set_new() {
