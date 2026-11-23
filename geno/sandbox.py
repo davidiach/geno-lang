@@ -36,7 +36,38 @@ from .execution_limits import (
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     INLINE_RECURSION_LIMIT,
 )
-from .values import int_from_text
+
+
+def _int_from_decimal_digits(digits: str) -> int:
+    # Under 500 digits stays below CPython's lowest int_max_str_digits setting (640).
+    if len(digits) < 500:
+        return int(digits)
+    half = len(digits) // 2
+    right = len(digits) - half
+    scale = int(10**right)
+    return _int_from_decimal_digits(digits[:half]) * scale + _int_from_decimal_digits(
+        digits[half:]
+    )
+
+
+def _parse_json_int(text: str) -> int:
+    """Parse a JSON integer token without hitting CPython's digit limit.
+
+    Kept local to ``geno.sandbox`` so the isolated ``geno run`` parent never
+    imports ``geno.values``.
+    """
+    try:
+        return int(text)
+    except ValueError as err:
+        if "integer string conversion" not in str(err):
+            raise
+    negative = text.startswith("-")
+    digits = text[1:] if negative else text
+    if not digits or not digits.isascii() or not digits.isdigit():
+        raise ValueError(f"invalid literal for int() with base 10: {text!r}")
+    value = _int_from_decimal_digits(digits)
+    return -value if negative else value
+
 
 if TYPE_CHECKING:
     from .isolated_host import IsolatedRunPolicy
@@ -2387,7 +2418,7 @@ class ProcessSandbox:
             parsed: dict[str, Any] | None = None
             if result_json is not None:
                 try:
-                    parsed = json.loads(result_json, parse_int=int_from_text)
+                    parsed = json.loads(result_json, parse_int=_parse_json_int)
                 except (json.JSONDecodeError, ValueError):
                     parsed = None
 
