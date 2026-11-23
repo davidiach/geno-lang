@@ -154,7 +154,7 @@ def example_call_args(
     arguments.  When the target has exactly one parameter, though, a non-empty
     tuple is an ordinary tuple value for that single parameter.
     """
-    if required_count == 0 and input_val == ():
+    if required_count == 0 and (input_val is None or input_val == ()):
         return []
     if param_count == 1:
         return [input_val]

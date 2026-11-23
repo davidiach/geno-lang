@@ -3708,10 +3708,10 @@ class Interpreter:
 
         raise RuntimeError(f"Unknown constructor: {expr.constructor}", expr.location)
 
-    def _eval_tuple(self, expr: TupleExpr, env: Environment) -> tuple:
+    def _eval_tuple(self, expr: TupleExpr, env: Environment) -> Any:
         """Evaluate a tuple expression."""
         if not expr.elements:
-            return ()  # Unit
+            return None  # Unit
         self._check_collection_size("Tuple", len(expr.elements), expr.location)
         result = tuple(self.eval_expr(e, env) for e in expr.elements)
         self._check_collection_limits([result], expr.location)
@@ -3803,6 +3803,8 @@ class Interpreter:
             return bindings
 
         if isinstance(pattern, TuplePattern):
+            if not pattern.elements:
+                return {} if value is None or value == () else None
             # Tuples are fixed-arity, so a matching pattern must have the same
             # length; the typechecker already rejects mismatched arities, and
             # this keeps the interpreter safe for untyped/dynamic values.
