@@ -5280,8 +5280,18 @@ function json_encode_pretty(value, indent, shape, types) {
 
 class _GenoExternFailure extends Error {}
 class _GenoExternMismatch extends Error {}
+const _GENO_EXTERN_LIMIT_ERRORS = new globalThis.WeakSet();
 const _GENO_EXTERN_MAX_DEPTH = 320;
 const _GENO_EXTERN_HOSTS = new _GENO_MAP();
+
+function _genoExternSize(kind, size) {
+    try {
+        _checkCollectionKind(kind, size);
+    } catch (e) {
+        if (e && typeof e === "object") _GENO_EXTERN_LIMIT_ERRORS.add(e);
+        throw e;
+    }
+}
 
 function _genoExternTypeText(shape) {
     const simple = {
@@ -5404,7 +5414,7 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "string") {
         if (typeof value !== "string") _genoExternMismatch(path, "String", value);
-        _checkCollectionKind("String", _stringLength(value));
+        _genoExternSize("String", _stringLength(value));
         return value;
     }
     if (kind === "bool") {
@@ -5421,7 +5431,7 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "list") {
         if (!Array.isArray(value)) _genoExternMismatch(path, "an array", value);
-        _checkCollectionKind("List", value.length);
+        _genoExternSize("List", value.length);
         // Array.from visits every index, so a hole is checked as undefined.
         return Array.from(value, (item, index) =>
             _genoExternFromHost(item, shape[1], [path, "[" + index + "]"], depth));
@@ -5437,7 +5447,7 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "map") {
         const entries = _genoExternEntries(value, path);
-        _checkCollectionKind("Map", entries.length);
+        _genoExternSize("Map", entries.length);
         return _mapLiteral(entries.map(([key, item]) =>
             [key, _genoExternFromHost(item, shape[1], [path, _genoJsonKey(key)], depth)]));
     }
@@ -5457,17 +5467,17 @@ function _genoExternJsonFromHost(value, path, depth) {
             : JsonFloat(value);
     }
     if (typeof value === "string") {
-        _checkCollectionKind("String", _stringLength(value));
+        _genoExternSize("String", _stringLength(value));
         return JsonString(value);
     }
     if (Array.isArray(value)) {
-        _checkCollectionKind("List", value.length);
+        _genoExternSize("List", value.length);
         return JsonArray(Array.from(value, (item, index) =>
             _genoExternJsonFromHost(item, [path, "[" + index + "]"], depth + 1)));
     }
     if (value instanceof _GENO_MAP || (typeof value === "object" && value !== undefined)) {
         const entries = _genoExternEntries(value, path);
-        _checkCollectionKind("Map", entries.length);
+        _genoExternSize("Map", entries.length);
         return JsonObject(entries.map(([key, item]) =>
             [key, _genoExternJsonFromHost(item, [path, _genoJsonKey(key)], depth + 1)]));
     }
@@ -5539,9 +5549,13 @@ function _genoExternCall(name, binding, args, params, result) {
         try {
             return _genoExternFromHost(value, result, null, 0);
         } catch (e) {
-            if (!(e instanceof _GenoExternMismatch)) throw e;
-            throw new _GenoExternFailure("Extern function '" + name
-                + "' returned a value that is not " + _genoExternTypeText(result) + ": " + e.message);
+            if (e instanceof _GenoExternMismatch) {
+                throw new _GenoExternFailure("Extern function '" + name
+                    + "' returned a value that is not " + _genoExternTypeText(result) + ": " + e.message);
+            }
+            if (e && typeof e === "object" && _GENO_EXTERN_LIMIT_ERRORS.has(e)) throw e;
+            throw new _GenoExternFailure("Extern function '" + name + "' failed: "
+                + _genoExternErrorText(e));
         }
     } catch (e) {
         if (e instanceof _GenoExternFailure) panic(e.message);
