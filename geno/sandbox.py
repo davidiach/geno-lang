@@ -36,6 +36,7 @@ from .execution_limits import (
     DEFAULT_PROCESS_MAX_MEMORY_BYTES,
     INLINE_RECURSION_LIMIT,
 )
+from .values import int_from_text
 
 if TYPE_CHECKING:
     from .isolated_host import IsolatedRunPolicy
@@ -2386,8 +2387,8 @@ class ProcessSandbox:
             parsed: dict[str, Any] | None = None
             if result_json is not None:
                 try:
-                    parsed = json.loads(result_json)
-                except json.JSONDecodeError:
+                    parsed = json.loads(result_json, parse_int=int_from_text)
+                except (json.JSONDecodeError, ValueError):
                     parsed = None
 
             if parsed is not None:
@@ -2555,6 +2556,214 @@ def _emit_worker_error(error, error_type, extra=None):
     if extra:
         _payload.update(extra)
     sys.stderr.write(json.dumps(_payload) + '\n')
+
+class _WorkerResultTooLarge(Exception):
+    pass
+
+def _worker_is_int_digit_limit_error(error):
+    return isinstance(error, ValueError) and "integer string conversion" in str(error)
+
+def _worker_min_int_digits(value):
+    bits = abs(value).bit_length()
+    if bits == 0:
+        return 1
+    return (bits - 1) * 3 // 10 + 1
+
+def _worker_decimal_digits(value):
+    # Under 1,000 bits (302 digits) is below CPython's lowest limit (640).
+    if value.bit_length() < 1_000:
+        return str(value)
+    half = value.bit_length() * 3 // 20
+    high, low = divmod(value, 10**half)
+    return _worker_decimal_digits(high) + _worker_decimal_digits(low).zfill(half)
+
+def _worker_int_text(value, limit=None):
+    if limit is not None and _worker_min_int_digits(value) > limit:
+        raise _WorkerResultTooLarge()
+    try:
+        text = str(value)
+    except ValueError as err:
+        if not _worker_is_int_digit_limit_error(err):
+            raise
+        if value < 0:
+            text = "-" + _worker_decimal_digits(-value)
+        else:
+            text = _worker_decimal_digits(value)
+    if limit is not None and len(text) > limit:
+        raise _WorkerResultTooLarge()
+    return text
+
+def _worker_json_key(key, limit):
+    if isinstance(key, str):
+        return json.dumps(key)
+    if isinstance(key, bool):
+        return '"true"' if key else '"false"'
+    if isinstance(key, int):
+        return '"' + _worker_int_text(key, limit) + '"'
+    if isinstance(key, float):
+        import math as _math
+        if _math.isnan(key) or _math.isinf(key):
+            raise ValueError("Out of range float values are not JSON compliant")
+        return json.dumps(json.dumps(key, allow_nan=False))
+    if key is None:
+        return '"null"'
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
+
+def _worker_json_chunks(obj, seen, limit):
+    if obj is None:
+        yield "null"
+        return
+    if isinstance(obj, bool):
+        yield "true" if obj else "false"
+        return
+    if isinstance(obj, int):
+        yield _worker_int_text(obj, limit)
+        return
+    if isinstance(obj, float):
+        import math as _math
+        if _math.isnan(obj) or _math.isinf(obj):
+            raise ValueError("Out of range float values are not JSON compliant")
+        yield json.dumps(obj, allow_nan=False)
+        return
+    if isinstance(obj, str):
+        yield json.dumps(obj)
+        return
+    if isinstance(obj, (list, tuple)):
+        obj_id = id(obj)
+        if obj_id in seen:
+            raise ValueError("Circular reference detected")
+        seen.add(obj_id)
+        try:
+            yield "["
+            for idx, item in enumerate(obj):
+                if idx:
+                    yield ", "
+                yield from _worker_json_chunks(item, seen, limit)
+            yield "]"
+        finally:
+            seen.remove(obj_id)
+        return
+    if isinstance(obj, dict):
+        obj_id = id(obj)
+        if obj_id in seen:
+            raise ValueError("Circular reference detected")
+        seen.add(obj_id)
+        try:
+            yield "{"
+            for idx, (k, v) in enumerate(obj.items()):
+                if idx:
+                    yield ", "
+                yield _worker_json_key(k, limit)
+                yield ": "
+                yield from _worker_json_chunks(v, seen, limit)
+            yield "}"
+        finally:
+            seen.remove(obj_id)
+        return
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+def _worker_json_dumps_under_limit(obj, limit):
+    parts = []
+    size = 0
+    for chunk in _worker_json_chunks(obj, set(), limit):
+        size += len(chunk)
+        if limit is not None and size + 1 > limit:
+            raise _WorkerResultTooLarge()
+        parts.append(chunk)
+    return "".join(parts)
+
+def _worker_safe_repr(value, seen, budget):
+    def _take(text):
+        if budget is not None:
+            budget[0] -= len(text)
+            if budget[0] < 0:
+                raise _WorkerResultTooLarge()
+        return text
+
+    if isinstance(value, bool):
+        return _take("True" if value else "False")
+    if isinstance(value, int):
+        return _take(_worker_int_text(value, budget[0] if budget is not None else None))
+    try:
+        return _take(repr(value))
+    except ValueError as err:
+        if not _worker_is_int_digit_limit_error(err):
+            raise
+    obj_id = id(value)
+    if obj_id in seen:
+        return _take("...")
+    seen.add(obj_id)
+    try:
+        if isinstance(value, (list, tuple, set)):
+            if isinstance(value, set) and not value:
+                return _take("set()")
+            open_ch, close_ch = (
+                ("[", "]")
+                if isinstance(value, list)
+                else ("(", ")")
+                if isinstance(value, tuple)
+                else ("{", "}")
+            )
+            parts = [_take(open_ch)]
+            for idx, item in enumerate(value):
+                if idx:
+                    parts.append(_take(", "))
+                parts.append(_worker_safe_repr(item, seen, budget))
+            if isinstance(value, tuple) and len(value) == 1:
+                parts.append(_take(","))
+            parts.append(_take(close_ch))
+            return "".join(parts)
+        if isinstance(value, dict):
+            parts = [_take("{")]
+            for idx, (k, v) in enumerate(value.items()):
+                if idx:
+                    parts.append(_take(", "))
+                parts.append(_worker_safe_repr(k, seen, budget))
+                parts.append(_take(": "))
+                parts.append(_worker_safe_repr(v, seen, budget))
+            parts.append(_take("}"))
+            return "".join(parts)
+        import dataclasses as _dataclasses
+        if _dataclasses.is_dataclass(value) and not isinstance(value, type):
+            parts = [_take(type(value).__name__ + "(")]
+            for idx, f in enumerate(_dataclasses.fields(value)):
+                if idx:
+                    parts.append(_take(", "))
+                parts.append(_take(f.name + "="))
+                parts.append(_worker_safe_repr(getattr(value, f.name), seen, budget))
+            parts.append(_take(")"))
+            return "".join(parts)
+        return _take(f"<{type(value).__name__}>")
+    finally:
+        seen.remove(obj_id)
+
+def _worker_safe_str(value, limit):
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, int):
+        return _worker_int_text(value, limit)
+    try:
+        return str(value)
+    except ValueError as err:
+        if not _worker_is_int_digit_limit_error(err):
+            raise
+    budget = [limit] if limit is not None else None
+    return _worker_safe_repr(value, set(), budget)
+
+def _worker_serialize_result(result, result_limit):
+    limit = result_limit if result_limit > 0 else None
+    envelope = {"result": result, "success": True, "error": None}
+    try:
+        return json.dumps(envelope, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        if _worker_is_int_digit_limit_error(exc):
+            try:
+                return _worker_json_dumps_under_limit(envelope, limit)
+            except (TypeError, ValueError):
+                pass
+        return json.dumps(
+            {"result": _worker_safe_str(result, limit), "success": True, "error": None}
+        )
 
 def _worker_rlimit_as_ceiling(requested_bytes):
     if sys.platform != "darwin":
@@ -3624,16 +3833,25 @@ def main():
             exec(_prelude_blob_code, globals_dict)  # nosec B102
         exec(code, globals_dict)  # nosec B102
         result = globals_dict.get('__result__')
-        # Serialize result (handle non-JSON types)
-        try:
-            json_result = json.dumps({"result": result, "success": True, "error": None}, allow_nan=False)
-        except (TypeError, ValueError):
-            json_result = json.dumps({"result": str(result), "success": True, "error": None})
         # The parent keeps only the tail of stderr. A result line that cannot
         # fit inside that capture window would come back with its head cut
         # off and the run would be reported as a failure with a lost result;
         # emit a deterministic, parseable error instead.
         result_limit = int(config.get("stderr_result_limit", 0))
+        # Serialize result (handle non-JSON types and long ints past CPython's digit limit)
+        try:
+            json_result = _worker_serialize_result(result, result_limit)
+        except _WorkerResultTooLarge:
+            _emit_worker_error(
+                "result_too_large: serialized result exceeds the sandbox "
+                "result limit of "
+                + str(result_limit)
+                + " (results must fit within max_output_length "
+                + str(max_result_error)
+                + " plus framing overhead)",
+                "result_too_large",
+            )
+            sys.exit(1)
         if result_limit and len(json_result) + 1 > result_limit:
             _emit_worker_error(
                 "result_too_large: serialized result is "
