@@ -4826,6 +4826,7 @@ def _geno_extern_from_host(
         for key, item in value.items():
             if not isinstance(key, str):
                 _geno_extern_mismatch(path, "a dict with str keys", key)
+            _geno_extern_size(ops, "String", len(key))
             key = _geno_extern_str(key)
             pairs.append(
                 (
@@ -4870,6 +4871,7 @@ def _geno_extern_json_from_host(value: Any, path: Any, ops: Any, depth: int) -> 
         for key, item in value.items():
             if not isinstance(key, str):
                 _geno_extern_mismatch(path, "a dict with str keys", key)
+            _geno_extern_size(ops, "String", len(key))
             key = _geno_extern_str(key)
             entries.append(
                 (

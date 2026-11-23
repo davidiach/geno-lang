@@ -85,6 +85,10 @@ def count_to(n):
     return list(range(n))
 
 
+def map_with_key_len(n):
+    return {"a" * n: 1}
+
+
 import enum
 import http
 
@@ -199,6 +203,17 @@ module.exports = {
     cycle: () => { const items = []; items.push(items); return items; },
     argsSeen: (...args) => JSON.stringify(args),
     countTo: n => Array.from({ length: n }, (_, index) => index),
+    mapWithKeyLen: n => ({ ["a".repeat(n)]: 1 }),
+    oversizedObjectWithGetter: n => {
+        const obj = {};
+        for (let i = 0; i < n; i++) {
+            Object.defineProperty(obj, "k" + i, {
+                enumerable: true,
+                get() { throw new Error("should_not_read_property"); },
+            });
+        }
+        return obj;
+    },
     notCallable: 42,
     counter: { value: 5, read() { return this.value; } },
 };
@@ -1274,6 +1289,93 @@ def test_a_host_result_is_bound_by_the_collection_limit(
         assert proc.returncode != 0, proc.stdout
         message = _failure_line(proc.stderr)
     assert "size exceeds limit" in message, message
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("return_type", ["Map[String, Int]", "JsonValue"])
+def test_a_host_map_or_json_key_is_bound_by_the_string_limit(
+    backend: str, return_type: str, host_dir: Path
+) -> None:
+    source = _extern(
+        "map_with_key_len",
+        f"(n: Int) -> {return_type}",
+        "ffi_host:map_with_key_len",
+        "./ffi_host.js#mapWithKeyLen",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            let value = map_with_key_len(20)
+            print("returned")
+        end func
+        """
+    )
+    if backend == "interpreter":
+        result = api.run(
+            source,
+            config=api.RunConfig(
+                capabilities={"ffi", "print"}, allow_ffi=True, max_collection_size=10
+            ),
+        )
+        assert not result.ok
+        message = result.diagnostics[0].message
+    else:
+        if backend == "python":
+            path = host_dir / "program.py"
+            code = "_GENO_MAX_COLLECTION_SIZE = 10\n" + compile_to_python(source)
+            command = [sys.executable, str(path)]
+        else:
+            path = host_dir / "program.js"
+            js = compile_to_js(source)
+            assert isinstance(js, str)
+            code = "globalThis.__GENO_MAX_COLLECTION_SIZE = 10;\n" + js
+            command = ["node", str(path)]
+        path.write_text(code, encoding="utf-8")
+        proc = subprocess.run(
+            [*command, "--cap", "ffi,print"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=host_dir,
+            env={**os.environ, "PYTHONPATH": str(host_dir)},
+        )
+        assert proc.returncode != 0, proc.stdout
+        message = _failure_line(proc.stderr)
+    assert "String size exceeds limit" in message, message
+
+
+@needs_node
+def test_js_oversized_object_fails_before_reading_property_values(
+    host_dir: Path,
+) -> None:
+    source = _extern(
+        "big_obj",
+        "(n: Int) -> Map[String, Int]",
+        None,
+        "./ffi_host.js#oversizedObjectWithGetter",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            let value = big_obj(20)
+            print("returned")
+        end func
+        """
+    )
+    path = host_dir / "program.js"
+    js = compile_to_js(source)
+    assert isinstance(js, str)
+    path.write_text(
+        "globalThis.__GENO_MAX_COLLECTION_SIZE = 10;\n" + js, encoding="utf-8"
+    )
+    proc = subprocess.run(
+        ["node", str(path), "--cap", "ffi,print"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=host_dir,
+    )
+    assert proc.returncode != 0, proc.stdout
+    message = _failure_line(proc.stderr)
+    assert "Map size exceeds limit" in message, message
 
 
 @pytest.mark.parametrize("backend", ["python", pytest.param("js", marks=needs_node)])
