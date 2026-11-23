@@ -318,3 +318,20 @@ def test_a_json_literal_past_the_integer_limit_is_refused_early() -> None:
     assert "Integer exceeds maximum size" in result.diagnostics[0].message
     with pytest.raises(RuntimeError, match="Integer exceeds maximum size"):
         _compiled_python_output(source)
+
+
+@needs_digit_limit
+def test_int_from_text_handles_surrounding_whitespace_and_sign() -> None:
+    from geno.values import int_from_text
+
+    digits = "9" * 1500
+    expected = int("9" * 600) * 10**900 + int("9" * 600) * 10**300 + int("9" * 300)
+    with _limit(640):
+        assert int_from_text(f" -{digits}\n") == -expected
+        assert int_from_text(f"\t+{digits} ") == expected
+        assert int_from_text(" " * 700 + f"-{digits}") == -expected
+        assert int_from_text(f"  {digits}  ") == expected
+        with pytest.raises(ValueError):
+            int_from_text(f"--{digits}")
+        with pytest.raises(ValueError):
+            int_from_text(f" - {digits}")
