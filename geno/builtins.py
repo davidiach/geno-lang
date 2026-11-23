@@ -2365,13 +2365,20 @@ def _validate_json_nesting(text: str) -> None:
             depth -= 1
 
 
-def _python_to_json_value(obj: Any, limit: int | None = None) -> ConstructorValue:
+def _python_to_json_value(
+    obj: Any, limit: int | None = None, max_integer_bits: int | None = None
+) -> ConstructorValue:
     """Convert a Python object (from json.loads) to a Geno JsonValue."""
     if obj is None:
         return ConstructorValue("JsonNull", {})
     if isinstance(obj, bool):
         return ConstructorValue("JsonBool", {"value": obj})
     if isinstance(obj, int):
+        if max_integer_bits is not None and obj.bit_length() > max_integer_bits:
+            raise RuntimeLimitError(
+                f"Integer exceeds maximum size ({obj.bit_length()} bits)",
+                limit="integer size",
+            )
         return ConstructorValue("JsonInt", {"value": obj})
     if isinstance(obj, float):
         if not math.isfinite(obj):
@@ -2384,23 +2391,26 @@ def _python_to_json_value(obj: Any, limit: int | None = None) -> ConstructorValu
     if isinstance(obj, list):
         if limit is not None:
             _check_collection_size("List", len(obj), limit)
-        items = [_python_to_json_value(item, limit) for item in obj]
+        items = [_python_to_json_value(item, limit, max_integer_bits) for item in obj]
         return ConstructorValue("JsonArray", {"items": items})
     if isinstance(obj, dict):
         if limit is not None:
             _check_collection_size("Map", len(obj), limit)
-        entries = [_python_to_json_value_entry(k, v, limit) for k, v in obj.items()]
+        entries = [
+            _python_to_json_value_entry(k, v, limit, max_integer_bits)
+            for k, v in obj.items()
+        ]
         return ConstructorValue("JsonObject", {"entries": entries})
     raise RuntimeError(f"json_parse: unsupported JSON value type: {type(obj).__name__}")
 
 
 def _python_to_json_value_entry(
-    key: str, value: Any, limit: int | None = None
+    key: str, value: Any, limit: int | None = None, max_integer_bits: int | None = None
 ) -> tuple[str, ConstructorValue]:
     """Convert a dict entry to a (String, JsonValue) tuple."""
     if limit is not None:
         _check_collection_size("String", len(key), limit)
-    return (key, _python_to_json_value(value, limit))
+    return (key, _python_to_json_value(value, limit, max_integer_bits))
 
 
 def _json_value_to_python(
@@ -2691,7 +2701,13 @@ def _json_int(text: str, max_integer_bits: int) -> int:
             f"Integer exceeds maximum size (more than {max_integer_bits} bits)",
             limit="integer size",
         )
-    return int_from_text(text)
+    value = int_from_text(text)
+    if value.bit_length() > max_integer_bits:
+        raise RuntimeLimitError(
+            f"Integer exceeds maximum size ({value.bit_length()} bits)",
+            limit="integer size",
+        )
+    return value
 
 
 def builtin_json_parse(
@@ -2720,7 +2736,7 @@ def builtin_json_parse(
                 parse_constant=_reject_json_constant,
                 parse_int=partial(_json_int, max_integer_bits=max_integer_bits),
             )
-        value = _python_to_json_value(obj, limit)
+        value = _python_to_json_value(obj, limit, max_integer_bits)
     except (ValueError, RecursionError) as e:
         return ConstructorValue("Err", {"error": str(e)})
     return ConstructorValue("Ok", {"value": value})

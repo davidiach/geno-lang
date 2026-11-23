@@ -3947,6 +3947,8 @@ def _geno_json_int(text: str) -> int:
             f"Integer exceeds maximum size (more than {_MAX_INTEGER_BITS} bits)"
         )
     value = _geno_int_from_digits(digits)
+    if value.bit_length() > _MAX_INTEGER_BITS:
+        raise RuntimeError(f"Integer exceeds maximum size ({value.bit_length()} bits)")
     return -value if text.startswith("-") else value
 
 
