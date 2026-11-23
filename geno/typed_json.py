@@ -45,7 +45,7 @@ class InterpreterJsonOps:
         return ConstructorValue(tag, dict(zip(_NODE_FIELDS[tag], values)))
 
     def unit(self) -> Any:
-        return None
+        return ()
 
     def none(self) -> ConstructorValue:
         return ConstructorValue("None", {})

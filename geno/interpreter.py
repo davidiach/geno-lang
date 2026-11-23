@@ -3040,7 +3040,7 @@ class Interpreter:
                         try:
                             for stmt in func.body:
                                 self.exec_stmt(stmt, call_env)
-                            result = None  # No explicit return
+                            result = ()  # No explicit return (Unit)
                         except ReturnException as ret:
                             result = ret.value
                         except TailCallException as tail:
@@ -3130,6 +3130,8 @@ class Interpreter:
             self._step()
             try:
                 result = func.func(*args)
+                if result is None:
+                    result = ()
             # These arms run only once a builtin has failed, so a successful
             # call pays nothing for them (proposal 0018).
             except SandboxError as e:
@@ -3599,7 +3601,7 @@ class Interpreter:
             try:
                 for stmt in func.body:
                     self.exec_stmt(stmt, call_env)
-                result = None
+                result = ()
             except ReturnException as ret:
                 result = ret.value
             except PropagateException as prop:
@@ -3708,10 +3710,10 @@ class Interpreter:
 
         raise RuntimeError(f"Unknown constructor: {expr.constructor}", expr.location)
 
-    def _eval_tuple(self, expr: TupleExpr, env: Environment) -> Any:
+    def _eval_tuple(self, expr: TupleExpr, env: Environment) -> tuple:
         """Evaluate a tuple expression."""
         if not expr.elements:
-            return None  # Unit
+            return ()  # Unit
         self._check_collection_size("Tuple", len(expr.elements), expr.location)
         result = tuple(self.eval_expr(e, env) for e in expr.elements)
         self._check_collection_limits([result], expr.location)
