@@ -1534,6 +1534,19 @@ class TestParentSnippetReader:
         assert self._read(link, tree) is None
         assert self._read(outside / "secret.geno", tree) is None
 
+    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+    def test_a_geno_symlink_to_a_non_geno_file_is_not_read(
+        self, tmp_path: Path
+    ) -> None:
+        secret = tmp_path / ".env"
+        secret.write_text("SECRET=hunter2\n")
+        link = tmp_path / "leak.geno"
+        try:
+            link.symlink_to(secret)
+        except OSError:
+            pytest.skip("symlinks are not available")
+        assert self._read(link, tmp_path) is None
+
     def test_an_oversized_file_is_not_read_past_the_cap(self, tmp_path: Path) -> None:
         big = tmp_path / "big.geno"
         filler = "// " + "x" * 1000 + "\n"
