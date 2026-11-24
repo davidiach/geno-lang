@@ -340,3 +340,30 @@ class TestSitePagesLinkToHostedDocs:
                 if target not in hosted:
                     missing.append(f"{page.relative_to(SITE)}: {href}")
         assert missing == []
+
+
+class TestCommittedOutputsAreCurrent:
+    """Generated files committed so the site works without a build stay current.
+
+    Regenerate them with ``python3 website/build.py --no-bundle``.
+    """
+
+    def test_examples_js_matches_example_sources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shutil.copytree(SITE / "shared" / "examples", tmp_path / "examples")
+        (tmp_path / "js").mkdir()
+        monkeypatch.setattr(build, "SHARED", tmp_path)
+        # The build reports the file it wrote relative to the repository.
+        monkeypatch.setattr(build, "REPO", tmp_path)
+        build.build_examples(verify=False)
+        committed = (SITE / "shared" / "js" / "examples.js").read_text()
+        assert committed == (tmp_path / "js" / "examples.js").read_text()
+
+    def test_sitemap_lists_every_hosted_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shutil.copytree(SITE / "_templates", tmp_path / "_templates")
+        monkeypatch.setattr(build, "SITE", tmp_path)
+        expected = build.sitemap(build.load_posts(), build.build_docs())
+        assert (SITE / "sitemap.xml").read_text() == expected
