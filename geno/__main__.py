@@ -18,6 +18,7 @@ Usage:
 import argparse
 import math
 import os
+import sys
 from typing import Any, cast
 
 from .capabilities import (
@@ -887,7 +888,42 @@ def main(argv: list[str] | None = None) -> int | None:
     """
     parser = build_parser()
     args, extra = parser.parse_known_args(argv)
-    return dispatch_args(parser, args, extra)
+    try:
+        try:
+            status = dispatch_args(parser, args, extra)
+        finally:
+            # Flush inside the guard, on sys.exit() too: buffered output whose
+            # reader left would otherwise fail again at interpreter exit.
+            _flush_stdout()
+    except BrokenPipeError:
+        # The reader of stdout went away (`geno run app | head`). Nothing more
+        # can reach it, so end without a traceback, as other Unix tools do.
+        _discard_stdout()
+        return 1
+    return status
+
+
+def _flush_stdout() -> None:
+    """Flush stdout unless a command already closed it (the LSP server does)."""
+    stream = sys.stdout
+    if stream is None or getattr(stream, "closed", False):
+        return
+    stream.flush()
+
+
+def _discard_stdout() -> None:
+    """Point stdout at the null device so Python's exit-time flush cannot fail."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(devnull, sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        # stdout is closed, replaced or not backed by a file descriptor.
+        pass
+    finally:
+        os.close(devnull)
 
 
 if __name__ == "__main__":

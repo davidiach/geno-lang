@@ -1357,6 +1357,55 @@ end func main
         assert data["diagnostics"][0]["location"]["filename"] == str(utils.resolve())
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows reports a closed pipe as EINVAL, not BrokenPipeError",
+)
+class TestClosedStdoutPipe:
+    """A reader that is gone (``geno run app | head``) ends the CLI quietly."""
+
+    _HELLO = 'func main() -> Unit with io\n    print("hello")\nend func\n'
+    # `run --json` prints the failure envelope, then leaves through sys.exit(1).
+    _TYPE_ERROR = 'func main() -> Int\n    return "not an int"\nend func\n'
+
+    @pytest.mark.parametrize("buffered", [True, False], ids=["buffered", "unbuffered"])
+    @pytest.mark.parametrize(
+        ("command", "source"),
+        [
+            (["run", "--json", "--cap", "print"], _HELLO),
+            (["run", "--json"], _TYPE_ERROR),
+            (["run", "--unsafe", "--cap", "print"], _HELLO),
+            (["check"], _HELLO),
+        ],
+        ids=["run-json", "run-json-exit", "run-text", "check"],
+    )
+    def test_closed_stdout_exits_without_traceback(
+        self, tmp_path, command, source, buffered
+    ):
+        app = tmp_path / "app.geno"
+        app.write_text(source)
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        if not buffered:
+            env["PYTHONUNBUFFERED"] = "1"
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "geno", *command, str(app)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        assert proc.stdout is not None
+        # Close the read end before the CLI writes, so its first write to
+        # stdout always fails with EPIPE whatever the output size or timing.
+        proc.stdout.close()
+        _, stderr = proc.communicate(timeout=GENERATED_PROGRAM_TIMEOUT)
+
+        assert b"Traceback" not in stderr
+        assert b"BrokenPipeError" not in stderr
+        assert b"Exception ignored" not in stderr
+        assert proc.returncode == 1
+
+
 class TestGenoCheck:
     """Test the 'geno check' command."""
 

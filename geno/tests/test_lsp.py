@@ -8053,3 +8053,40 @@ class TestRedeclaredVarWarnings:
 
         latest = self._open(monkeypatch, helper_file.as_uri(), self.BUGGY)
         self._assert_one_warning(latest[helper_file.as_uri()])
+
+
+class TestLspProcessExit:
+    """`geno lsp` as an editor runs it: a separate process speaking over stdio."""
+
+    def test_shutdown_then_exit_ends_cleanly(self):
+        import json
+        import subprocess
+
+        def message(payload: dict) -> bytes:
+            body = json.dumps(payload).encode()
+            return b"Content-Length: %d\r\n\r\n" % len(body) + body
+
+        session = b"".join(
+            message(payload)
+            for payload in (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"processId": None, "rootUri": None, "capabilities": {}},
+                },
+                {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "shutdown"},
+                {"jsonrpc": "2.0", "method": "exit"},
+            )
+        )
+        # The server closes stdout on `exit`; the CLI must not touch it again.
+        result = subprocess.run(
+            [sys.executable, "-m", "geno", "lsp"],
+            input=session,
+            capture_output=True,
+            timeout=60,
+        )
+        assert b"Traceback" not in result.stderr
+        assert result.returncode == 0
+        assert b'"id": 2' in result.stdout or b'"id":2' in result.stdout
